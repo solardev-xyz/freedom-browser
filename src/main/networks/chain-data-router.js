@@ -48,9 +48,10 @@ READ_METHODS.add('web3_sha3');
 //   listed here serves the method as far as the router knows, and its adapter
 //   still refuses what depends on the request (Myotis: which methods its addon
 //   version serves, block tags other than `latest`, state overrides, blob
-//   transactions; see requestMyotis), which is reported as that source's
-//   failure. A Myotis refusal of the request itself is not a source failure:
-//   it is the answer (see nativeResult).
+//   transactions; see requestMyotis. Colibri: a block it can't prove at; see
+//   requestColibri), which is reported as that source's failure. A Myotis
+//   refusal of the request itself is not a source failure: it is the answer
+//   (see nativeResult).
 // - logSpan: the widest eth_getLogs block span the source serves.
 //   'learned-per-endpoint' means each RPC endpoint's cap is learned from its
 //   range-limit replies and the source asks only endpoints whose cap covers
@@ -101,6 +102,20 @@ READ_METHODS.add('web3_sha3');
 // alike. (Verification itself no longer blocks the browser: it runs in a
 // worker thread since #495, where a wide range used to freeze the main
 // process for 20-30 s.)
+//
+// Colibri doesn't prove every answer either (#1046). Colibri 3.0.3 classes
+// some requests as unproofable (src/chains/eth/verifier/eth_verify.c), sends
+// those to one of its `eth_rpc` servers and returns that server's `result`
+// as a success, even under Strategy.VerifiedOnly (rpc_handle_unproofable,
+// src/api/colibri_common.c). The servers are the package's default public
+// RPC hosts, which the user never configured. Such an answer is one public
+// RPC's word, and would be labelled verified. So Colibri serves neither kind:
+// - eth_gasPrice and eth_feeHistory, which it never proves
+//   (`not_verifieable_yet_methods`): `unsupported` below;
+// - a read at a `pending` or `earliest` block (`eth_has_unproofable_block_tag`:
+//   a pending block has no beacon block, and the earliest predates the beacon
+//   chain): requestColibri refuses it before Colibri is asked
+//   (colibriUnprovableTag), and the next source answers.
 const COST = Object.freeze({
   SERIALIZED: 'serialized',
   PROOF: 'proof',
@@ -120,7 +135,7 @@ const SOURCE_CAPABILITIES = Object.freeze({
     cost: COST.SERIALIZED,
   }),
   colibri: Object.freeze({
-    unsupported: new Set([...SINGLE_NODE_METHODS, 'eth_getLogs']),
+    unsupported: new Set([...SINGLE_NODE_METHODS, 'eth_getLogs', 'eth_gasPrice', 'eth_feeHistory']),
     // Its upstream refuses more than 10,000 blocks per log query, then retries
     // another node (#496). Not consulted while eth_getLogs is unsupported.
     logSpan: 10_000,
@@ -152,6 +167,31 @@ const SOURCE_CAPABILITIES = Object.freeze({
 // requestSource, which refuses it as before.
 function sourceServesMethod(source, method) {
   return !SOURCE_CAPABILITIES[source]?.unsupported.has(method);
+}
+
+// Where each read method Colibri serves takes its block parameter, as
+// Colibri 3.0.3 reads it (`eth_block_tag_index` in eth_verify.c, which
+// mirrors its prover modules). Methods not listed take none.
+const COLIBRI_BLOCK_PARAM = new Map([
+  ['eth_getBalance', 1],
+  ['eth_getCode', 1],
+  ['eth_getTransactionCount', 1],
+  ['eth_call', 1],
+  ['eth_estimateGas', 1],
+  ['eth_getStorageAt', 2],
+  ['eth_getBlockByNumber', 0],
+]);
+// The block tags Colibri can't prove a read at. It compares the JSON string
+// exactly (`eth_json_is_unproofable_tag`), so does this.
+const COLIBRI_UNPROVABLE_TAGS = new Set(['pending', 'earliest']);
+
+// The block tag that makes this read one Colibri would answer unproven, or
+// null.
+function colibriUnprovableTag(method, params) {
+  const index = COLIBRI_BLOCK_PARAM.get(method);
+  if (index === undefined || !Array.isArray(params)) return null;
+  const tag = params[index];
+  return COLIBRI_UNPROVABLE_TAGS.has(tag) ? tag : null;
 }
 
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
@@ -869,19 +909,21 @@ async function feeQuote(source, gasPriceValue, priorityValue = null, getBlock = 
   const gasPrice = BigInt(gasPriceValue);
   if (gasPrice <= 0n) throw new Error(`${source} returned a non-positive gas price`);
 
+  // Not Colibri: it can't prove eth_gasPrice, so any quote it made would
+  // rest on one public RPC's word (#1046), and it doesn't serve the method.
   const metadata = {
     source,
-    verified: source === 'myotis' || source === 'colibri' || source === 'quorum',
+    verified: source === 'myotis' || source === 'quorum',
   };
 
   const priority = priorityValue == null ? null : BigInt(priorityValue);
   // A provider can implement both methods yet return fee hints that cannot
-  // form a valid type-2 transaction (Colibri's verified priority fee is
-  // 1 gwei while mainnet's gas price is a fraction of that). Never combine
-  // the hint with another provider's gas price. The block that prices an
-  // unusable hint comes from `getBlock`: the same source for Colibri and
-  // Direct, but the router's other sources for Myotis, which serves no
-  // blocks (see getFeeQuote).
+  // form a valid type-2 transaction (Colibri's verified priority fee was
+  // 1 gwei while mainnet's gas price was a fraction of that, when it still
+  // quoted). Never combine the hint with another provider's gas price. The
+  // block that prices an unusable hint comes from `getBlock`: the same
+  // source for the quorum and Direct, but the router's other sources for
+  // Myotis, which serves no blocks (see getFeeQuote).
   if (priority != null && priority >= 0n && priority <= gasPrice) {
     return eip1559Quote(gasPrice - priority, priority, metadata);
   }
@@ -1193,6 +1235,10 @@ function noteColibriFault(chainId, method, now = Date.now()) {
 async function requestColibri(chainId, method, params, routeKey = null, deadlineMs = null) {
   if (!sourceServesMethod('colibri', method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
+  }
+  const unprovableTag = colibriUnprovableTag(method, params);
+  if (unprovableTag !== null) {
+    throw new SourceUnavailableError(`Colibri cannot prove ${method} at block "${unprovableTag}"`);
   }
   if (colibriBackedOff(chainId, method)) {
     throw new SourceUnavailableError(

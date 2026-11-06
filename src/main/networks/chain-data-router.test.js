@@ -197,22 +197,26 @@ describe('chain-data-router', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  // Neither Myotis nor Colibri can prove a read at `pending` (#1046), so the
+  // nonce a new transaction needs comes from an RPC, and is labelled as one.
   test('sends pending nonce reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, nonce: 3 });
     mockRequestViaColibri.mockResolvedValue('0x5');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x6' }) }));
 
     await expect(
       request(100, 'eth_getTransactionCount', ['0xabc', 'pending'])
     ).resolves.toEqual({
-      result: '0x5',
-      source: 'colibri',
-      verified: true,
+      result: '0x6',
+      source: 'direct',
+      verified: false,
     });
     expect(mockMyotis.getAccount).not.toHaveBeenCalled();
-    expect(mockRequestViaColibri).toHaveBeenCalledWith(100, 'eth_getTransactionCount', [
-      '0xabc',
-      'pending',
-    ], { deadlineMs: expect.any(Number) });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({
+      method: 'eth_getTransactionCount',
+      params: ['0xabc', 'pending'],
+    });
   });
 
   test('sends historical balance reads to a source that honours the block tag', async () => {
@@ -231,7 +235,7 @@ describe('chain-data-router', () => {
     mockRequestViaColibri.mockResolvedValue('0x5208');
 
     await expect(
-      request(100, 'eth_estimateGas', [{ to: '0xabc' }, 'pending'])
+      request(100, 'eth_estimateGas', [{ to: '0xabc' }, '0x10d4f00'])
     ).resolves.toMatchObject({ source: 'colibri' });
     expect(mockMyotis.estimateGas).not.toHaveBeenCalled();
   });
@@ -555,17 +559,18 @@ describe('chain-data-router', () => {
       expect(BigInt(quote.maxFeePerGas)).toBeGreaterThan(139083121n + MIN_TIP);
     });
 
-    test('prices an inconsistent Colibri quote from its own verified latest block', async () => {
-      // Measured against mainnet's prover on 2026-10-19: Colibri verifies
-      // eth_maxPriorityFeePerGas as 1 gwei while eth_gasPrice is ~0.12 gwei,
-      // so the hint is larger than the price and cannot form a type-2 quote.
-      // This is why #749's quotes were all legacy.
-      onlySource('colibri');
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => ({
+    test('prices an inconsistent quorum quote from its own latest block', async () => {
+      // The shape measured on mainnet on 2026-10-19 (then from Colibri): a
+      // priority hint of 1 gwei while eth_gasPrice is ~0.12 gwei, so the
+      // hint is larger than the price and cannot form a type-2 quote. This
+      // is why #749's quotes were all legacy.
+      onlySource('quorum');
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example', 'https://c.example']);
+      fakeRpc({
         eth_gasPrice: hex(120_664_785n),
         eth_maxPriorityFeePerGas: hex(GWEI),
         eth_getBlockByNumber: { number: '0x1903a1b', baseFeePerGas: hex(125_664_220n) },
-      })[method]);
+      });
 
       await expect(getFeeQuote(1)).resolves.toEqual({
         type: 'eip1559',
@@ -575,26 +580,23 @@ describe('chain-data-router', () => {
         maxPriorityFeePerGas: MIN_TIP.toString(),
         maxFeePerGas: (125_664_220n * 2n + MIN_TIP).toString(),
         effectiveGasPrice: (125_664_220n + MIN_TIP).toString(),
-        source: 'colibri',
+        source: 'quorum',
         verified: true,
       });
-      expect(mockRequestViaColibri.mock.calls.map(([, method, params]) => [method, params])).toEqual([
-        ['eth_gasPrice', []],
-        ['eth_maxPriorityFeePerGas', []],
-        ['eth_getBlockByNumber', ['latest', false]],
+      expect([...new Set(fetchedMethods().map(([, method]) => method))]).toEqual([
+        'eth_gasPrice',
+        'eth_maxPriorityFeePerGas',
+        'eth_getBlockByNumber',
       ]);
     });
 
     test('prices a source without eth_maxPriorityFeePerGas from its latest block', async () => {
-      onlySource('colibri');
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => {
-        if (method === 'eth_maxPriorityFeePerGas') {
-          throw Object.assign(new Error('Method not supported'), { code: 4200 });
-        }
-        return {
-          eth_gasPrice: hex(12n * GWEI),
-          eth_getBlockByNumber: { baseFeePerGas: hex(10n * GWEI) },
-        }[method];
+      onlySource('quorum');
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example', 'https://c.example']);
+      fakeRpc({
+        eth_gasPrice: hex(12n * GWEI),
+        eth_maxPriorityFeePerGas: new Error('the method eth_maxPriorityFeePerGas does not exist'),
+        eth_getBlockByNumber: { baseFeePerGas: hex(10n * GWEI) },
       });
 
       await expect(getFeeQuote(1)).resolves.toMatchObject({
@@ -604,7 +606,8 @@ describe('chain-data-router', () => {
         maxPriorityFeePerGas: (2n * GWEI).toString(),
         maxFeePerGas: (22n * GWEI).toString(),
         effectiveGasPrice: (12n * GWEI).toString(),
-        source: 'colibri',
+        source: 'quorum',
+        verified: true,
       });
     });
 
@@ -714,16 +717,19 @@ describe('chain-data-router', () => {
 
     test('prefers a later source\'s type-2 quote over a legacy one whose block failed', async () => {
       mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['colibri', 'direct'] },
+        access: { readOrder: ['myotis', 'direct'] },
         quorum: { k: 3, m: 2, timeoutMs: 1000 },
       });
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => {
-        if (method === 'eth_getBlockByNumber') throw new Error('proof failed');
-        return { eth_gasPrice: hex(GWEI), eth_maxPriorityFeePerGas: hex(2n * GWEI) }[method];
+      // Myotis's hint can't price a type-2 quote, and the block that would
+      // price it fails: its quote is the legacy last resort.
+      mockMyotis.feeEstimate.mockResolvedValue({
+        gasPriceWei: GWEI.toString(),
+        maxPriorityFeePerGasWei: (2n * GWEI).toString(),
       });
       fakeRpc({
         eth_gasPrice: hex(3n * GWEI),
         eth_maxPriorityFeePerGas: hex(GWEI),
+        eth_getBlockByNumber: new Error('header not found'),
       });
 
       await expect(getFeeQuote(1)).resolves.toMatchObject({
@@ -734,18 +740,19 @@ describe('chain-data-router', () => {
     });
 
     test('falls back to a headroomed legacy quote when no source can read a block', async () => {
-      onlySource('colibri');
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => {
-        if (method === 'eth_getBlockByNumber') throw new Error('proof failed');
-        if (method === 'eth_maxPriorityFeePerGas') throw new Error('proof failed');
-        return hex(4n * GWEI);
+      onlySource('quorum');
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example', 'https://c.example']);
+      fakeRpc({
+        eth_gasPrice: hex(4n * GWEI),
+        eth_maxPriorityFeePerGas: new Error('the method eth_maxPriorityFeePerGas does not exist'),
+        eth_getBlockByNumber: new Error('header not found'),
       });
 
       await expect(getFeeQuote(1)).resolves.toEqual({
         type: 'legacy',
         gasPrice: (5n * GWEI + MIN_TIP).toString(),
         effectiveGasPrice: (5n * GWEI + MIN_TIP).toString(),
-        source: 'colibri',
+        source: 'quorum',
         verified: true,
       });
     });
@@ -2173,13 +2180,24 @@ describe('chain-data-router', () => {
       expect(err).toMatchObject({ message: 'Colibri request failed', code: 4900 });
     });
 
-    test('replaces it in a fee quote too', async () => {
+    // A fee quote asks Colibri only for the block that prices a Myotis
+    // quote: it can't prove eth_gasPrice (#1046).
+    test('replaces it in a fee quote\'s block read too', async () => {
       onlyColibri();
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['myotis', 'colibri'] },
+        quorum: { k: 3, m: 2, timeoutMs: 1000 },
+      });
+      mockMyotis.feeEstimate.mockResolvedValue({ gasPriceWei: '3000000000' });
       mockRequestViaColibri.mockRejectedValue(transportError());
 
-      const err = await rejection(getFeeQuote(1));
+      await expect(getFeeQuote(1)).resolves.toMatchObject({ type: 'legacy', source: 'myotis' });
 
-      expect(err.message).toBe('Colibri request failed');
+      expect(mockRequestViaColibri.mock.calls.map(([, method]) => method)).toEqual(['eth_getBlockByNumber']);
+      expect(mockLog.verbose).toHaveBeenCalledWith(
+        expect.stringContaining('its latest block failed: Colibri request failed')
+      );
+      expect(logged()).not.toMatch(/secret|user:|prover\.example|https?:/);
     });
 
     test.each([
@@ -2456,9 +2474,242 @@ describe('Ant bridge cancellation', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  // Colibri 3.0.3 answers eth_gasPrice, eth_feeHistory and any read at a
+  // `pending` or `earliest` block from one of its default public RPC hosts,
+  // unproven, as a success (#1046). It is never asked them, and the answer
+  // is labelled as the source that gave it.
+  describe("Colibri's unproven answers (#1046)", () => {
+    const CALL = { to: '0xabc', data: '0x70a08231' };
+    // Each read method with a block parameter Colibri reads, and its params
+    // with `tag` in that place.
+    const TAGGED = [
+      ['eth_getBalance', (tag) => ['0xabc', tag]],
+      ['eth_getCode', (tag) => ['0xabc', tag]],
+      ['eth_getTransactionCount', (tag) => ['0xabc', tag]],
+      ['eth_call', (tag) => [CALL, tag]],
+      ['eth_estimateGas', (tag) => [CALL, tag]],
+      ['eth_getStorageAt', (tag) => ['0xabc', '0x0', tag]],
+      ['eth_getBlockByNumber', (tag) => [tag, false]],
+    ];
+    const UNPROVABLE = TAGGED.flatMap(([method, params]) =>
+      ['pending', 'earliest'].map((tag) => [method, tag, params(tag)])
+    );
+
+    function readOrder(order) {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: order },
+        quorum: { k: 3, m: 2, timeoutMs: 1000 },
+      });
+      mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+        role === 'prover'
+          ? ['https://prover.example']
+          : ['https://a.example', 'https://b.example', 'https://c.example']
+      );
+    }
+
+    // Every RPC endpoint answers `rpc:<method>`.
+    function rpcAnswers() {
+      global.fetch = jest.fn(async (_url, options) => {
+        const { method } = JSON.parse(options.body);
+        return { ok: true, json: async () => ({ result: `rpc:${method}` }) };
+      });
+    }
+    const asked = () => global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+
+    test.each(UNPROVABLE)('%s at "%s" skips Colibri for Direct, unverified', async (method, _tag, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(asked()).toEqual([expect.objectContaining({ method, params })]);
+    });
+
+    test.each(UNPROVABLE)('%s at "%s" skips Colibri for the quorum, which labels it', async (method, _tag, params) => {
+      readOrder(['myotis', 'colibri', 'quorum', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'quorum',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test.each(UNPROVABLE)('%s at "%s" is refused by a Colibri-only read order', async (method, tag, params) => {
+      readOrder(['colibri']);
+      global.fetch = jest.fn();
+
+      await expect(request(1, method, params)).rejects.toThrow(
+        `All chain sources failed for ${method} ` +
+          `(colibri: Colibri cannot prove ${method} at block "${tag}")`
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    // Every other block Colibri proves at: a named tag, a number, a hash.
+    test.each(TAGGED.flatMap(([method, params]) =>
+      ['latest', 'safe', 'finalized', '0x10d4f00'].map((tag) => [method, tag, params(tag)])
+    ))('%s at "%s" is still Colibri\'s, verified', async (method, _tag, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: 'colibri:proven',
+        source: 'colibri',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledWith(1, method, params, { deadlineMs: expect.any(Number) });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    // The tag is read where the method takes its block, nowhere else.
+    test.each([
+      ['eth_getStorageAt', ['0xabc', 'pending', 'latest']],
+      ['eth_getBalance', ['pending']],
+      ['eth_getBlockByNumber', ['latest', 'pending']],
+      ['eth_getBlockByHash', ['0x' + '11'.repeat(32), 'pending']],
+      ['eth_getTransactionReceipt', ['pending']],
+      ['eth_blockNumber', ['earliest']],
+    ])('%s with a tag outside its block parameter %j is still asked of Colibri', async (method, params) => {
+      readOrder(['colibri']);
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri', verified: true });
+    });
+
+    test.each(['eth_gasPrice', 'eth_feeHistory'])('%s is never asked of Colibri', async (method) => {
+      const params = method === 'eth_feeHistory' ? ['0x4', 'latest', [25, 75]] : [];
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      readOrder(['colibri']);
+      await expect(request(1, method, params)).rejects.toThrow(
+        `No chain source left for ${method} on chain 1: read order [colibri], ` +
+          'excluded for this request: colibri'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('a fee quote skips Colibri for the quorum, labelled verified', async () => {
+      readOrder(['colibri', 'quorum', 'direct']);
+      global.fetch = jest.fn(async (_url, options) => {
+        const { method } = JSON.parse(options.body);
+        const result = {
+          eth_gasPrice: '0x3b9aca00',
+          eth_maxPriorityFeePerGas: '0x5f5e100',
+        }[method];
+        return { ok: true, json: async () => ({ result }) };
+      });
+      mockRequestViaColibri.mockResolvedValue('0x1');
+
+      await expect(getFeeQuote(1)).resolves.toMatchObject({
+        type: 'eip1559',
+        baseFee: '900000000',
+        maxPriorityFeePerGas: '100000000',
+        source: 'quorum',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('a fee quote skips Colibri for Direct, labelled unverified', async () => {
+      readOrder(['colibri', 'direct']);
+      global.fetch = jest.fn(async (_url, options) => {
+        const { method } = JSON.parse(options.body);
+        const result = {
+          eth_gasPrice: '0x3b9aca00',
+          eth_maxPriorityFeePerGas: '0x5f5e100',
+        }[method];
+        return { ok: true, json: async () => ({ result }) };
+      });
+      mockRequestViaColibri.mockResolvedValue('0x1');
+
+      await expect(getFeeQuote(1)).resolves.toMatchObject({
+        type: 'eip1559',
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('a Colibri-only read order has no fee quote', async () => {
+      readOrder(['colibri']);
+      mockRequestViaColibri.mockResolvedValue('0x3b9aca00');
+
+      await expect(getFeeQuote(1)).rejects.toThrow(
+        'All chain sources failed for fee quote (colibri: Colibri does not support eth_gasPrice)'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // The trust panel (navigation-utils' buildTrustRows) renders the trust a
+    // read carries: for a pending read it is the RPC's, never Colibri's proof.
+    test('the trust panel shows the answering source\'s label', async () => {
+      const originalWindow = global.window;
+      global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} } };
+      try {
+        const { buildTrustRows } = await import('../../renderer/lib/navigation-utils.js');
+        const panel = (trust) => buildTrustRows({
+          trust,
+          level: trust.level,
+          onchainProvenance: {
+            chainId: 1, network: 'Ethereum', contract: '0xabc', htmlHash: '0x' + '00'.repeat(32), trust,
+          },
+        });
+        readOrder(['colibri', 'direct']);
+        mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+          role === 'prover' ? ['https://prover.example'] : ['https://rpc.example']
+        );
+        rpcAnswers();
+        mockRequestViaColibri.mockResolvedValue('0x2a');
+
+        const pending = await request(1, 'eth_call', [CALL, 'pending'], { includeTrust: true });
+        expect(pending).toMatchObject({
+          source: 'direct',
+          verified: false,
+          trust: { level: 'unverified', method: 'direct', queried: ['rpc.example'] },
+        });
+        const shown = panel(pending.trust);
+        expect(shown.status).toBe('Onchain application retrieval not verified');
+        expect(JSON.stringify(shown.trustRows)).not.toMatch(/sync-committee|prover\.example/i);
+
+        // The same read at `latest` is Colibri's, and is shown as its proof.
+        const latest = await request(1, 'eth_call', [CALL, 'latest'], { includeTrust: true });
+        expect(latest).toMatchObject({
+          source: 'colibri',
+          verified: true,
+          trust: { level: 'verified', method: 'colibri', prover: 'prover.example' },
+        });
+        expect(panel(latest.trust).status).toBe('Onchain application retrieval verified');
+      } finally {
+        global.window = originalWindow;
+      }
+    });
+  });
+
   describe('source capabilities (#497)', () => {
     test('each source declares what it never serves', () => {
       expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_getLogs')).toBe(true);
+      // Colibri answers these from a public RPC, unproven (#1046).
+      expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_gasPrice')).toBe(true);
+      expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_feeHistory')).toBe(true);
+      expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_maxPriorityFeePerGas')).toBe(false);
       for (const source of ['myotis', 'colibri', 'quorum']) {
         expect(SOURCE_CAPABILITIES[source].unsupported.has('eth_newFilter')).toBe(true);
         expect(SOURCE_CAPABILITIES[source].unsupported.has('web3_clientVersion')).toBe(true);
