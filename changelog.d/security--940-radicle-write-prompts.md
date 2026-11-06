@@ -1,0 +1,2 @@
+- Sites with Radicle signing access ask before each issue, comment or state change they publish as you ([#940](https://github.com/solardev-xyz/freedom-browser/issues/940))
+  - An optional per-site "always allow" rule skips the prompt, up to 50 writes a day

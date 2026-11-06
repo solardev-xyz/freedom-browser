@@ -148,18 +148,7 @@ async function handleRadicleRequest(webview, request) {
       if (!SIGNED_WRITE_METHODS.has(method)) {
         result = await forwardToMain(method, params, permissionKey);
       } else {
-        // The grant answers a write without a prompt, except on a tab in
-        // Agent custody: there the user approves each write's content
-        // (main refuses a grant-answered write on its own custody reading).
-        const prompted = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
-        if (prompted) {
-          await showRadicleSignedWriteApproval(permissionKey, method, params, webview);
-          assertSameDocument();
-        }
-        result = await forwardToMain(method, params, permissionKey, {
-          webContentsId: guestIdOf(webview),
-          approval: prompted ? 'user' : 'auto',
-        });
+        result = await signedWrite(webview, method, params, permissionKey, assertSameDocument);
       }
     } else {
       // Remaining connection-tier methods: getNodeStatus, listSeededRepos,
@@ -189,6 +178,43 @@ async function handleRadicleRequest(webview, request) {
       data: error.data,
     });
   }
+}
+
+/**
+ * One COB write (R-6). The grant lets a site ask; each write still needs
+ * the user: its own prompt, showing the content, or the site's "always
+ * allow writes" rule (autoApprove.signing), which the prompt's checkbox
+ * sets. Main counts rule-answered writes per origin and refuses one past
+ * its limit (`auto_write_limit`); that write falls back to the prompt. A
+ * tab in Agent custody always prompts, and its prompt offers no rule.
+ */
+async function signedWrite(webview, method, params, permissionKey, assertSameDocument) {
+  const meta = { webContentsId: guestIdOf(webview) };
+  const agentHeld = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
+  const ruleOn =
+    !agentHeld && Boolean(await window.radiclePermissions.getAutoApprove(permissionKey, 'signing'));
+  if (ruleOn) {
+    assertSameDocument();
+    try {
+      return await forwardToMain(method, params, permissionKey, { ...meta, approval: 'auto' });
+    } catch (error) {
+      if (error?.data?.reason !== 'auto_write_limit') throw error;
+    }
+  }
+  // Either await above (the rule lookup, a rule-answered write main sent
+  // back past its limit) can outlast the document: a prompt for one that
+  // has gone would sit in the single consent slot and block its successor's.
+  assertSameDocument();
+  const answer = await showRadicleSignedWriteApproval(permissionKey, method, params, webview, {
+    agentHeld,
+    alwaysAllow: ruleOn,
+  });
+  assertSameDocument();
+  if (!agentHeld && typeof answer?.alwaysAllow === 'boolean' && answer.alwaysAllow !== ruleOn) {
+    await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', answer.alwaysAllow);
+    assertSameDocument();
+  }
+  return forwardToMain(method, params, permissionKey, { ...meta, approval: 'user' });
 }
 
 async function handleRequestAccess(webview, permissionKey, assertSameDocument) {
