@@ -27,6 +27,8 @@
 const log = require('../logger');
 const { MODE, getAntApiUrl, getService } = require('../service-registry');
 const { handleDwebRequest } = require('../dweb/dweb-handler');
+const { dwebVerifier } = require('../core/dweb-verify');
+const { getActiveProfile } = require('../profile-resolver');
 const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-transport');
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
 const { unlessAborted } = require('../lib/unless-aborted');
@@ -147,10 +149,28 @@ async function fetchOnce(url, { method, headers, signal, headersTimeoutMs }, tra
 }
 
 /**
+ * "Verify content from this node" for the profile's Swarm node
+ * (freedom-core design 0009, Modes): kept with the node's endpoint in the
+ * profile (`nodes.bee`, the Swarm slot's key), on unless the profile turned
+ * it off.
+ */
+function verifiesExternalAnt() {
+  return getActiveProfile()?.metadata?.nodes?.bee?.verify !== false;
+}
+
+/**
  * The Ant serving `bzz:` now, captured when a request is admitted and kept
  * for it, retries included, so a settings change mid-request can't redirect
  * the fetch (design 0006, Binding). The core learns only its mode and
  * whether it is up, never its URL.
+ *
+ * Its verification is captured with it (freedom-core design 0009, Verify
+ * plans): an external Ant, a reused one among them, carries `verify: true`
+ * while the profile's setting is on. Ant has no probe: Bee's API, which Ant
+ * follows, always serves `/chunks` and `/bytes`. The bundled Ant, and an
+ * external one with the setting off, keep the two-key reference, as does
+ * every Ant against a core without the verifier (protocol 1), which can't
+ * serve a verify plan.
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session
@@ -159,8 +179,9 @@ async function fetchOnce(url, { method, headers, signal, headersTimeoutMs }, tra
 function antBackend({ session = null, fetchImpl = fetch } = {}) {
   const url = getAntApiUrl() || null;
   const mode = getService('ant')?.mode === MODE.BUNDLED ? 'bundled' : 'external';
+  const verify = mode === 'external' && verifiesExternalAnt() && dwebVerifier() !== null;
   return {
-    ref: { ant: mode, up: Boolean(url) },
+    ref: { ant: mode, up: Boolean(url), ...(verify && { verify: true }) },
     url,
     request: ({ path, ...init }) => fetchOnce(`${url}${path}`, init, { session, fetchImpl }),
   };

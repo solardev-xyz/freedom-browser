@@ -1397,6 +1397,78 @@ describe('ipc-handlers', () => {
     }
   });
 
+  // "Verify content from this node" (freedom-core design 0009): a boolean
+  // beside the Swarm and IPFS endpoints, patched on its own.
+  test("updates a node's verification on its own, as a boolean, for Swarm and IPFS only", async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      isDev: false,
+      metadata: {
+        slot: 1,
+        nodes: {
+          bee: { mode: 'external', externalApi: 'http://127.0.0.1:1633' },
+          ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080' },
+        },
+      },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+    ctx.mod.registerBaseIpcHandlers();
+
+    for (const protocol of ['bee', 'ipfs']) {
+      for (const verify of [false, true]) {
+        await expect(
+          ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+            protocol,
+            config: { verify },
+          })
+        ).resolves.toEqual(success({ profile: expect.any(Object) }));
+        expect(ctx.updateActiveProfileNodeConfig).toHaveBeenLastCalledWith(protocol, { verify });
+      }
+    }
+    const calls = ctx.updateActiveProfileNodeConfig.mock.calls.length;
+
+    // Only a boolean: nothing is written for anything else.
+    for (const verify of ['false', 0, 1, null, {}]) {
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+          protocol: 'ipfs',
+          config: { verify },
+        })
+      ).resolves.toEqual(
+        failure('INVALID_PROFILE_NODE_CONFIG', 'Node verification must be on or off', {
+          field: 'verify',
+        })
+      );
+    }
+    // The other nodes have no such setting: the field is dropped, and a patch
+    // with nothing else is empty.
+    for (const protocol of ['tor', 'myotis', 'radicle']) {
+      await expect(
+        ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+          protocol,
+          config: { verify: false },
+        })
+      ).resolves.toEqual(
+        failure('EMPTY_PROFILE_NODE_CONFIG', 'No supported profile node config fields')
+      );
+    }
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledTimes(calls);
+
+    // With a mode and endpoint, as one patch.
+    expect(
+      ctx.mod.validateProfileNodeConfigUpdate('bee', {
+        mode: 'external',
+        externalApi: 'http://127.0.0.1:1633',
+        verify: false,
+      })
+    ).toEqual({
+      ok: true,
+      sanitized: { mode: 'external', externalApi: 'http://127.0.0.1:1633', verify: false },
+    });
+  });
+
   test('rejects invalid active profile node updates', async () => {
     const ctx = loadIpcHandlersModule({
       activeProfile: {
