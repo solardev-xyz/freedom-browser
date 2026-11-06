@@ -15,6 +15,9 @@
  *   hashes}, closed by hand once it is shown as Couldn't confirm)
  *   | 'x402-payment' (an HTTP 402 payment's {webContentsId, detectionId,
  *   url, acceptIndex, accept, grant} as its approval card shows it)
+ *   | 'x402-cap-update' (an edit of a site's auto-pay cap: {origin,
+ *   chainId, asset, capAmount?, windowSeconds?}; main adds the window and
+ *   the cap as it holds it)
  * @param {number|null} accountIndex - the signing wallet / Safe index
  *   (ignored for 'wallet-send' and 'x402-payment': main binds the active
  *   account)

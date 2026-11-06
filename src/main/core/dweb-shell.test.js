@@ -347,6 +347,23 @@ describe('the handler, as the client calls it', () => {
     await expect(get(chunk())).resolves.toEqual({ failed });
   });
 
+  test("a retry's log names only an error code, never text from the node (F-6)", async () => {
+    const leak = 'no /ipfs/secret-page?next=https://private.example';
+    const node = fakeNode('ant', () => {
+      throw Object.assign(new Error('dial failed'), { code: leak });
+    });
+    open(node, 'ant', { attempts: 2 });
+    await expect(get(chunk())).resolves.toEqual({ failed: 'error' });
+    expect(node.attempts).toHaveLength(2);
+    const lines = log.debug.mock.calls
+      .map((args) => args.join(' '))
+      .filter((l) => l.includes('retry'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('(status=error)');
+    expect(lines.join('\n')).not.toContain('secret-page');
+    expect(lines.join('\n')).not.toContain('private.example');
+  });
+
   test('too_large: a whole piece declaring more than max_bytes, or reading more; a raw block declaring more', async () => {
     const declared = source(10);
     let answer = () =>

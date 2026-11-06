@@ -492,9 +492,15 @@ function validateProfileDeletionForActiveApp(profileId, expectedDisplayName) {
   return true;
 }
 
-// `withIpfsGate(dir, fn)` holds the profile's IPFS data gate while its data
-// is removed (freedom-core design 0007, "Lifetime lock"; ipfs/ipfsd-gate.js).
-async function deleteProfileForActiveApp(profileId, expectedDisplayName, { withIpfsGate } = {}) {
+// `withCoreGate(dir, fn)` holds the profile's core gate for the whole delete
+// (freedom-core design 0001, "Lifetime lock"; core/core-gate.js), and
+// `withIpfsGate(dir, fn)` its IPFS data gate while its data is removed
+// (design 0007, "Lifetime lock"; ipfs/ipfsd-gate.js).
+async function deleteProfileForActiveApp(
+  profileId,
+  expectedDisplayName,
+  { withCoreGate, withIpfsGate } = {}
+) {
   if (!activeProfile || activeProfile.source !== 'catalog') {
     return null;
   }
@@ -505,6 +511,7 @@ async function deleteProfileForActiveApp(profileId, expectedDisplayName, { withI
 
   return deleteProfile(activeProfile.appRoot, profileId, expectedDisplayName, {
     ...getProfileCatalogOptions(),
+    withCoreGate,
     withIpfsGate,
     isProfileLocked: (record) =>
       isProfileLocked({

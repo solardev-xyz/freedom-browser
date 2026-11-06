@@ -494,6 +494,81 @@ describe('signing-confirmation', () => {
     });
   });
 
+  // #1023: an edit of an auto-pay cap binds the window it was confirmed
+  // in, the cap's key, the cap as main held it, and the change.
+  describe('x402 cap edits bind the window, the cap and the change', () => {
+    const EDIT = Object.freeze({
+      window: 1,
+      origin: 'https://pay.example',
+      chainId: 8453,
+      asset: '0xabc',
+      current: Object.freeze({ capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 7 }),
+      capAmount: '20000000',
+      windowSeconds: undefined,
+    });
+
+    test('the edit as confirmed applies, once', () => {
+      const { token } = issueConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
+      // Another spelling of the same site is not a difference.
+      expect(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, {
+        ...EDIT,
+        origin: 'https://pay.example/settings',
+      })).not.toThrow();
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, EDIT)).message)
+        .toMatch(/unknown or already used/);
+    });
+
+    const changes = {
+      'another window': { window: 2 },
+      'another site': { origin: 'https://other.example' },
+      'another chain': { chainId: 100 },
+      'another asset': { asset: '0xdef' },
+      'another amount': { capAmount: '30000000' },
+      'a window added': { windowSeconds: 86400 },
+      'the cap granted again': { current: { ...EDIT.current, createdAt: 2000, generation: 8 } },
+      // Revoked and granted again within one second: only the generation tells.
+      'the cap granted again in the same second': { current: { ...EDIT.current, generation: 8 } },
+      'the cap edited meanwhile': { current: { ...EDIT.current, capAmount: '15000000' } },
+      'its window moved meanwhile': { current: { ...EDIT.current, expiresAt: 99999 } },
+    };
+    for (const [name, change] of Object.entries(changes)) {
+      test(name, () => {
+        const { token } = issueConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
+        expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).code)
+          .toBe(NOT_CONFIRMED);
+      });
+    }
+
+    test('no other kind spends it', () => {
+      const { token } = issueConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, null, EDIT)).code)
+        .toBe(NOT_CONFIRMED);
+    });
+
+    test('a malformed edit is not issued a token', () => {
+      for (const [change, message] of [
+        [{ window: undefined }, /window/],
+        [{ window: -1 }, /window/],
+        [{ origin: '' }, /site/],
+        [{ chainId: 0 }, /chainId/],
+        [{ asset: '' }, /asset/],
+        [{ current: null }, /No such auto-pay cap/],
+        [{ current: { ...EDIT.current, createdAt: 'then' } }, /auto-pay cap/],
+        [{ current: { ...EDIT.current, generation: undefined } }, /auto-pay cap/],
+        [{ current: { ...EDIT.current, generation: 0 } }, /auto-pay cap/],
+        [{ current: { ...EDIT.current, generation: '7' } }, /auto-pay cap/],
+        [{ capAmount: undefined }, /Nothing to change/],
+        [{ capAmount: '1.5' }, /cap/],
+        [{ capAmount: 5 }, /cap/],
+        [{ windowSeconds: 0 }, /window/],
+        [{ windowSeconds: '86400' }, /window/],
+      ]) {
+        expect(() => issueConfirmation(KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).toThrow(message);
+      }
+      expect(_outstandingCount()).toBe(0);
+    });
+  });
+
   test('malformed requests are not issued a token', () => {
     expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, gasLimit: 'lots' })).toThrow(/gasLimit/);
     expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, chainId: 0 })).toThrow(/chainId/);
