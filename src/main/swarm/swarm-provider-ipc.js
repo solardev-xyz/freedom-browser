@@ -1035,12 +1035,15 @@ async function handleWriteSingleOwnerChunk(params, origin) {
 
   const originEntry = getOriginEntry(origin);
   const activeIdentity = getActiveOriginIdentity(originEntry);
+  // #89 first: a stored identity in the removed mode keeps its plain error.
+  const unavailable = unavailableIdentityError(activeIdentity);
+  if (unavailable) return unavailable;
   // SW-1: the identifier is the page's to choose, so under an identity other
-  // sites sign with too (the Ant wallet, an Ethereum wallet account, a
-  // publisher key another origin holds) a raw SOC could be another site's
-  // feed entry, keccak256(topic || index), written as that shared owner.
-  // Feeds stay available under such an identity: their topics are
-  // origin-namespaced. Raw SOCs need an identity only this site uses.
+  // sites sign with too (the Ant wallet, a publisher key another origin
+  // holds) a raw SOC could be another site's feed entry,
+  // keccak256(topic || index), written as that shared owner. Feeds stay
+  // available under such an identity: their topics are origin-namespaced.
+  // Raw SOCs need an identity only this site uses.
   if (isIdentitySharedWithOtherOrigins(origin, activeIdentity)) {
     return {
       error: {

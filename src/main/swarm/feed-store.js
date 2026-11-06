@@ -553,10 +553,11 @@ async function enrichIdentityOwner(identity, options = {}) {
 }
 
 /**
- * Whether `identity` signs for other sites too (SW-1). The Ant wallet key
- * and the browser's Ethereum wallet accounts can be chosen by any site, so
- * they are shared by nature. An app-scoped identity is shared when another
- * origin holds the same publisher key index.
+ * Whether `identity` signs for other sites too (SW-1). The Ant wallet key can
+ * be chosen by any site, so it is shared by nature, and so is anything that
+ * isn't app-scoped (a stored ethereum-wallet identity, #89, is refused before
+ * this is asked). An app-scoped identity is shared when another origin holds
+ * the same publisher key index.
  *
  * Feeds are safe under a shared identity: their topics are namespaced by
  * origin. A raw Single Owner Chunk is not: its identifier is the page's to

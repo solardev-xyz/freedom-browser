@@ -326,11 +326,11 @@ back to another key, which would be another owner and so another feed.
 - Signing needs the identity vault to be unlocked.
 - `swarm_writeSingleOwnerChunk` needs an identity **only this origin uses**:
   an `app-scoped` one whose key index no other origin holds. Under
-  `bee-wallet`, `ethereum-wallet` or a shared index it fails with `4100`
-  `shared_identity`, and the signing prompt says so. A raw SOC's identifier
-  is the page's to choose, so under an owner other sites also sign with, a
-  page could write another site's feed entries (`keccak256(topic || index)`).
-  Feeds and `swarm_getSigningIdentity` work under every identity, since feed
+  `bee-wallet` or a shared index it fails with `4100` `shared_identity`, and
+  the signing prompt says so. A raw SOC's identifier is the page's to choose,
+  so under an owner other sites also sign with, a page could write another
+  site's feed entries (`keccak256(topic || index)`). Feeds and
+  `swarm_getSigningIdentity` work under every available identity, since feed
   topics are namespaced by origin.
 
 Messaging is different: PSS decrypts with the **node's** key, so
