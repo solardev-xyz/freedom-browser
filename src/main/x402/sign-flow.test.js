@@ -38,6 +38,10 @@ jest.mock('./permissions', () => ({
   grant: jest.fn(),
   getPermission: jest.fn(() => null),
   tryConsume: jest.fn(() => true),
+  // A cap that covers everything unless a test says otherwise (#1024).
+  charge: jest.fn((origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 })),
+  refund: jest.fn(() => true),
+  chargeStands: jest.fn(() => true),
 }));
 
 const intercept = require('./intercept');
@@ -73,6 +77,10 @@ beforeEach(() => {
   mockLoadURL.mockClear();
   permissions.grant.mockClear();
   permissions.tryConsume.mockClear().mockReturnValue(true);
+  permissions.charge.mockClear().mockImplementation(
+    (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 }));
+  permissions.refund.mockClear().mockReturnValue(true);
+  permissions.chargeStands.mockClear().mockReturnValue(true);
 });
 
 // Inspect the pending-payment slot the way the injector does, to
@@ -154,14 +162,14 @@ describe('signAndQueueRetry — selectedAccept resolution', () => {
       authorizedBy: 'cap',
     });
 
-    consumePending(7, 'bzz://Paywall.eth/segment');
-
-    expect(permissions.tryConsume).toHaveBeenCalledWith(
+    expect(permissions.charge).toHaveBeenCalledWith(
       'paywall.eth',
       8453,
       BASE_USDC,
       '10000'
     );
+    expect(consumePending(7, 'bzz://Paywall.eth/segment')?.requestHeaders['PAYMENT-SIGNATURE'])
+      .toBeDefined();
   });
 });
 

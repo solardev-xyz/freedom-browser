@@ -83,13 +83,43 @@ const mockRevoke = jest.fn();
 const mockRevokeAllForOrigin = jest.fn();
 const mockUpdatePermission = jest.fn();
 const mockGetAllPermissions = jest.fn();
+// The cap charge (#1024): taken before a payment is signed, given back if
+// it is withheld. By default a charge fits whatever cap mockGetPermission
+// returns, every refund lands, and a charged cap still stands.
+const mockCharge = jest.fn();
+const mockRefund = jest.fn();
+const mockChargeStands = jest.fn();
+const coveringCharge = (origin, chainId, asset, amount) => {
+  const cap = mockGetPermission(origin, chainId, asset);
+  if (!cap || BigInt(cap.capAmount) - BigInt(cap.spentAmount ?? '0') < BigInt(amount)) return null;
+  return { origin, chainId, asset, amount, createdAt: cap.createdAt };
+};
+// A cap that takes any charge.
+const anyCharge = (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, createdAt: 1 });
 jest.mock('./permissions', () => ({
   grant: (...a) => mockGrant(...a),
   getPermission: (...a) => mockGetPermission(...a),
   tryConsume: (...a) => mockTryConsume(...a),
+  charge: (...a) => mockCharge(...a),
+  refund: (...a) => mockRefund(...a),
+  chargeStands: (...a) => mockChargeStands(...a),
   revoke: (...a) => mockRevoke(...a),
   revokeAllForOrigin: (...a) => mockRevokeAllForOrigin(...a),
   updatePermission: (...a) => mockUpdatePermission(...a),
+  // An edit as main confirms and checks it: the window, the key, the cap
+  // as the store holds it, and the change (#1023).
+  capUpdateRequest: (windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) => {
+    const cap = mockGetPermission(origin, chainId, asset);
+    return {
+      window: windowId,
+      origin,
+      chainId,
+      asset,
+      capAmount,
+      windowSeconds,
+      current: cap ? { capAmount: cap.capAmount, createdAt: cap.createdAt, expiresAt: cap.expiresAt } : null,
+    };
+  },
   getAllPermissions: (...a) => mockGetAllPermissions(...a),
 }));
 
@@ -125,6 +155,9 @@ beforeEach(() => {
   mockGrant.mockReset();
   mockGetPermission.mockReset().mockReturnValue(null);
   mockTryConsume.mockReset().mockReturnValue(false);
+  mockCharge.mockReset().mockImplementation(coveringCharge);
+  mockRefund.mockReset().mockReturnValue(true);
+  mockChargeStands.mockReset().mockReturnValue(true);
   mockRevoke.mockReset();
   mockRevokeAllForOrigin.mockReset();
   mockUpdatePermission.mockReset();
@@ -525,7 +558,7 @@ describe('x402:approve', () => {
     expect(intercept.getDetectedPayment(42)).toBeNull();
   });
 
-  test('cap-authorized inject (snapshot path) stamps authorizedBy=cap so a raced-over cap withholds the signature', async () => {
+  test('an auto-pay (snapshot path) is charged before it is signed, and withheld if its cap goes before the retry', async () => {
     const snapshot = {
       url: 'https://api.example/article',
       requirements: v2Detected().requirements,
@@ -536,26 +569,48 @@ describe('x402:approve', () => {
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
     });
+    mockCharge.mockImplementation(anyCharge);
 
     const { signAndQueueRetry } = require('./sign-flow');
     await signAndQueueRetry(42, { detection: snapshot, authorizedBy: 'cap' });
 
-    // Now simulate the raced-over cap by returning false on the inject.
-    mockTryConsume.mockReturnValueOnce(false);
+    // #1024: the cap is charged before the authorization is signed.
+    expect(mockCharge).toHaveBeenCalledTimes(1);
+    expect(mockCharge.mock.invocationCallOrder[0])
+      .toBeLessThan(mockClient.createPaymentPayload.mock.invocationCallOrder[0]);
+    // The cap was revoked before the retry: withheld, and given back.
+    mockChargeStands.mockReturnValueOnce(false);
     const injected = intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: {},
     });
     expect(injected).toBeNull();
+    expect(mockRefund).toHaveBeenCalledWith(expect.objectContaining({ amount: '10000' }));
+  });
+
+  test('an auto-pay its cap no longer covers is not signed at all', async () => {
+    const snapshot = {
+      url: 'https://api.example/article',
+      requirements: v2Detected().requirements,
+      resourceType: 'mainFrame',
+    };
+    mockCharge.mockReturnValue(null);
+
+    const { signAndQueueRetry } = require('./sign-flow');
+    await expect(signAndQueueRetry(42, { detection: snapshot, authorizedBy: 'cap' }))
+      .rejects.toMatchObject({ code: 'X402_CAP_NOT_COVERED' });
+    expect(mockCreateClient).not.toHaveBeenCalled();
+    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
   });
 
   test('IPC approve on a cap-tagged detection (vault-unlock resume path) signs with cap authorization', async () => {
     // Auto-pay was blocked by a locked vault. The detector tagged the
     // detection authorizedBy=cap (covered by an intercept.test.js test);
     // here we simulate the end state and verify that x402:approve reads
-    // the tag and threads it through to signAndQueueRetry, so the inject
-    // handler will still withhold on a raced-over cap.
+    // the tag and threads it through to signAndQueueRetry: the cap is
+    // charged before the sign, and the inject handler still withholds if
+    // that cap has gone.
     seedDetection(42);
     Object.assign(intercept.getDetectedPayment(42), { authorizedBy: 'cap' });
 
@@ -564,12 +619,14 @@ describe('x402:approve', () => {
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
     });
+    mockCharge.mockImplementation(anyCharge);
 
     const result = await approveAsCard(42);
     expect(result.success).toBe(true);
+    expect(mockCharge).toHaveBeenCalledTimes(1);
 
-    // The pending payment carries CAP authorization. Race-over withholds.
-    mockTryConsume.mockReturnValueOnce(false);
+    // The pending payment carries CAP authorization. A cap gone withholds.
+    mockChargeStands.mockReturnValueOnce(false);
     const injected = intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
@@ -579,6 +636,8 @@ describe('x402:approve', () => {
   });
 
   test('vault-unlock resume: x402:resume-unlock uses the stashed snapshot, even if a NEWER 402 replaced the map detection', async () => {
+    // A's cap takes its charge whenever A is signed.
+    mockCharge.mockImplementation(anyCharge);
     // Full reproduction of the reviewer's bad-interleaving scenario:
     //   1. Cap-covered A 402s; vault is locked; resume token captured.
     //   2. Newer B 402s and replaces detectedPayments[id].
@@ -633,11 +692,10 @@ describe('x402:approve', () => {
     const result = await ipcHandlers['x402:resume-unlock'](senderEvent(42));
     expect(result.success).toBe(true);
 
-    // (4) Pending payment is for A (the resume token), not B. We let the
-    // cap-consume succeed for this probe so inject attaches the header
-    // — the CAP-withhold behaviour is tested elsewhere; here we're
-    // verifying the right URL was signed.
-    mockTryConsume.mockReturnValueOnce(true);
+    // (4) Pending payment is for A (the resume token), not B: its cap
+    // still stands, so inject attaches the header — the CAP-withhold
+    // behaviour is tested elsewhere; here we're verifying the right URL
+    // was signed.
     expect(intercept.injectPaymentSignatureHandler({
       webContentsId: 42, url: urlA, requestHeaders: {},
     })).not.toBeNull();
@@ -649,6 +707,8 @@ describe('x402:approve', () => {
   });
 
   test('x402:approve does NOT consume an unrelated resume token (source-mixing fix)', async () => {
+    // A's cap takes its charge whenever A is signed.
+    mockCharge.mockImplementation(anyCharge);
     // Scenario: A is cap-covered + vault locked → resume token stashed.
     // Before unlock, B 402s and the sidebar shows a manual approval card.
     // The user clicks Pay for B. The resume token for A must survive —
@@ -697,7 +757,6 @@ describe('x402:approve', () => {
     expect(approveResult.success).toBe(true);
 
     // Pending payment is for B (what the user actually approved), not A.
-    mockTryConsume.mockReturnValueOnce(true);
     expect(intercept.injectPaymentSignatureHandler({
       webContentsId: 42, url: urlB, requestHeaders: {},
     })).not.toBeNull();
@@ -948,40 +1007,132 @@ describe('x402:get-all-permissions + x402:revoke-permission', () => {
     expect(mockRevokeAllForOrigin).toHaveBeenCalledWith('https://a.example');
   });
 
-  test('update-permission forwards the patch to the store and returns the record', async () => {
-    mockUpdatePermission.mockReturnValueOnce({
+  // #1023: an edit of a cap is applied only with a token minted for
+  // exactly that edit, by the window sending it, while the cap is as main
+  // held it at the mint.
+  describe('update-permission needs a confirmation for exactly this edit', () => {
+    const CAP = {
       origin: 'https://a.example',
       chainId: 8453,
       asset: '0xabc',
-      capAmount: '20000000',
+      capAmount: '10000000',
       spentAmount: '500000',
-    });
-    const result = await ipcHandlers['x402:update-permission'](senderEvent(42), {
-      origin: 'https://a.example',
-      chainId: 8453,
-      asset: '0xabc',
-      capAmount: '20000000',
-    });
-    expect(result.success).toBe(true);
-    expect(result.permission).toMatchObject({ capAmount: '20000000', spentAmount: '500000' });
-    expect(mockUpdatePermission).toHaveBeenCalledWith('https://a.example', 8453, '0xabc', {
-      capAmount: '20000000',
-      windowSeconds: undefined,
-    });
-  });
+      createdAt: 1000,
+      expiresAt: 1000 + 86400,
+    };
+    const EDIT = { origin: 'https://a.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
+    const { capUpdateRequest } = require('./permissions');
+    // The token the cap editor mints in window `windowId` for `edit`, as
+    // wallet:confirm-signing mints it (main adds the window and the cap).
+    const mintFor = (edit, windowId = CHROME.id) =>
+      confirmations.issueConfirmation(
+        confirmations.KINDS.X402_CAP_UPDATE, null, capUpdateRequest(windowId, edit)).token;
 
-  test('update-permission surfaces validation errors', async () => {
-    mockUpdatePermission.mockImplementationOnce(() => {
-      throw new Error('x402-permissions: no permission to update');
+    beforeEach(() => {
+      mockGetPermission.mockReturnValue(CAP);
+      mockUpdatePermission.mockReturnValue({ ...CAP, capAmount: '20000000' });
     });
-    const result = await ipcHandlers['x402:update-permission'](senderEvent(42), {
-      origin: 'https://a.example',
-      chainId: 8453,
-      asset: '0xabc',
-      capAmount: '20000000',
+
+    test('with a token for this edit, from the window that minted it: applied, once', async () => {
+      const confirmation = mintFor(EDIT);
+      const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
+      expect(result).toMatchObject({ success: true, permission: { capAmount: '20000000', spentAmount: '500000' } });
+      expect(mockUpdatePermission).toHaveBeenCalledWith('https://a.example', 8453, '0xabc', {
+        capAmount: '20000000',
+        windowSeconds: undefined,
+      });
+
+      const replay = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
+      expect(replay).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(mockUpdatePermission).toHaveBeenCalledTimes(1);
     });
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/no permission/);
+
+    test('a bare call is refused, and nothing is changed', async () => {
+      const result = await ipcHandlers['x402:update-permission'](fromChrome, EDIT);
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(result.error).toMatch(/no confirmation token/);
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('a token for one edit makes no other: a larger cap, a window, another cap', async () => {
+      for (const other of [
+        { ...EDIT, capAmount: '99000000' },
+        { ...EDIT, windowSeconds: 365 * 86400 },
+        { ...EDIT, asset: '0xdef' },
+        { ...EDIT, chainId: 100 },
+        { ...EDIT, origin: 'https://b.example' },
+      ]) {
+        const confirmation = mintFor(EDIT);
+        const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...other, confirmation });
+        expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      }
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('a window edit is bound the same way', async () => {
+      const edit = { origin: 'https://a.example', chainId: 8453, asset: '0xabc', windowSeconds: 7 * 86400 };
+      const confirmation = mintFor(edit);
+      await expect(ipcHandlers['x402:update-permission'](fromChrome, { ...edit, windowSeconds: 30 * 86400, confirmation }))
+        .resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      await expect(ipcHandlers['x402:update-permission'](fromChrome, { ...edit, confirmation: mintFor(edit) }))
+        .resolves.toMatchObject({ success: true });
+    });
+
+    test('another window cannot spend the token, and burns it', async () => {
+      const confirmation = mintFor(EDIT);
+      const other = await ipcHandlers['x402:update-permission']({ sender: { id: 9 } }, { ...EDIT, confirmation });
+      expect(other).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      const own = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
+      expect(own).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('a sender that is no window is refused', async () => {
+      const confirmation = mintFor(EDIT);
+      const result = await ipcHandlers['x402:update-permission']({}, { ...EDIT, confirmation });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('a cap that changed since the token was minted is not edited by it', async () => {
+      const confirmation = mintFor(EDIT);
+      // Granted again with a new window in between.
+      mockGetPermission.mockReturnValue({ ...CAP, createdAt: 2000, expiresAt: 2000 + 86400 });
+      const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('an expired token is refused', async () => {
+      const realNow = Date.now;
+      const confirmation = mintFor(EDIT);
+      Date.now = () => realNow() + 3 * 60 * 1000;
+      try {
+        const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation });
+        expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      } finally {
+        Date.now = realNow;
+      }
+      expect(mockUpdatePermission).not.toHaveBeenCalled();
+    });
+
+    test('no token is minted for a cap that does not exist, nor for an edit that changes nothing', () => {
+      mockGetPermission.mockReturnValue(null);
+      expect(() => mintFor(EDIT)).toThrow(/No such auto-pay cap/);
+      mockGetPermission.mockReturnValue(CAP);
+      expect(() => mintFor({ origin: EDIT.origin, chainId: 8453, asset: '0xabc' })).toThrow(/Nothing to change/);
+      expect(() => mintFor({ ...EDIT, capAmount: '1.5' })).toThrow(/Invalid cap/);
+      expect(() => mintFor({ ...EDIT, windowSeconds: -1 })).toThrow(/Invalid window/);
+    });
+
+    test('update-permission surfaces the store\'s validation errors', async () => {
+      mockUpdatePermission.mockImplementationOnce(() => {
+        throw new Error('x402-permissions: no permission to update');
+      });
+      const result = await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation: mintFor(EDIT) });
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/no permission/);
+    });
   });
 });
 
