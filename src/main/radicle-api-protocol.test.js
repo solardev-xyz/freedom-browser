@@ -538,8 +538,40 @@ describe('radapi protocol', () => {
   test('does not expose private repositories through the public repo API', async () => {
     embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private' } });
     const response = await serveRepoApi(RID, '/issues');
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(embedded.issues).not.toHaveBeenCalled();
+  });
+
+  // R-2: 403 for a stored private RID beside 404 for an absent one told any
+  // page which private repositories this node holds.
+  test.each(['', '/issues', `/tree/${REVISION}`, `/commits/${REVISION}`])(
+    'a private repository and an absent one answer alike for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private', allow: [] } });
+      const privateRepo = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absentRepo = await serveRepoApi(RID, apiPath);
+
+      const shape = async (response) => ({
+        status: response.status,
+        headers: [...response.headers.entries()].sort(),
+        body: await response.text(),
+      });
+      const privateShape = await shape(privateRepo);
+      expect(privateShape).toEqual(await shape(absentRepo));
+      expect(privateShape.status).toBe(404);
+      expect(JSON.parse(privateShape.body)).toEqual({ error: 'repository not found' });
+      expect(privateShape.body).not.toContain(RID);
+    }
+  );
+
+  test('other repoInfo failures are still 500s, and radapi: still serves private repos', async () => {
+    embedded.repoInfo.mockRejectedValueOnce(new Error('storage is locked'));
+    expect((await serveRepoApi(RID, '')).status).toBe(500);
+
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
+    embedded.buildRepoMeta.mockResolvedValueOnce({ rid: RID });
+    expect((await serveRepoApi(RID, '', { allowPrivate: true })).status).toBe(200);
   });
 
   test.each([

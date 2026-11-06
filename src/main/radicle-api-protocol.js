@@ -47,6 +47,9 @@ const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 // dns.lookup, zlib and crypto across main wait behind the queue (#514).
 const REPO_LIST_CONCURRENCY = 2;
 const REVISION_RE = /^[0-9a-f]{40}$/;
+const MISSING_RE = /not found|does not exist|NotFound/i;
+// What `rad:` answers for a repository it will not serve, private or absent.
+const REPO_NOT_FOUND = Object.freeze({ error: 'repository not found' });
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
 // The one page allowed to reach `radapi:`. Unlike `rad:` — public repo
@@ -233,9 +236,18 @@ async function serveRepoApi(
 
   try {
     if (!allowPrivate) {
-      const info = await embedded.repoInfo(rid);
+      // A private repository answers exactly as one that is not stored: the
+      // same status and body. A 403 for private beside a 404 for absent let
+      // any page test whether a private RID is on this node (R-2).
+      let info;
+      try {
+        info = await embedded.repoInfo(rid);
+      } catch (err) {
+        if (MISSING_RE.test(err.message)) return reply(REPO_NOT_FOUND, 404);
+        throw err;
+      }
       if (info?.visibility?.type !== 'public') {
-        return reply({ error: 'repository is not public' }, 403);
+        return reply(REPO_NOT_FOUND, 404);
       }
     }
     let response;
@@ -313,7 +325,7 @@ async function serveRepoApi(
     }
     return method === 'HEAD' ? withoutBody(response) : response;
   } catch (err) {
-    const missing = /not found|does not exist|NotFound/i.test(err.message);
+    const missing = MISSING_RE.test(err.message);
     if (!missing) {
       // PRIVATE MODE GUARD: this core serves both `rad:` and `radapi:`, and
       // both registrations mark private sessions — the RID, the repo path

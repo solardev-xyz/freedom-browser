@@ -239,7 +239,10 @@ Successful COB mutations announce their updated refs before returning.
   `radicle_commitAndPush({ rid, changes[] })`, but v1 ships COB writes
   only (issues + patch comments cover the collaboration loop around
   existing patches).
-- **Private repos** are invisible to the public `rad:` URL scheme. v1 does
+- **Private repos** are invisible to the public `rad:` URL scheme: a
+  private repository answers exactly as one this node does not store (404,
+  `{ "error": "repository not found" }`), so a page cannot tell them apart.
+  v1 does
   not expose them through the provider either.
 - **No repo creation** (`rad init`) in v1 — it needs a working copy and
   raises squatting/spam questions; revisit with patch creation.
