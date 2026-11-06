@@ -158,7 +158,11 @@ async function elapse(ms) {
 }
 
 const rowOf = (run, reply) => run.history.getById(reply.paymentId);
-const sha256 = (hex) => crypto.createHash('sha256').update(Buffer.from(hex.slice(2), 'hex')).digest('hex');
+const sha256 = (hex) =>
+  crypto
+    .createHash('sha256')
+    .update(Buffer.from(hex.slice(2), 'hex'))
+    .digest('hex');
 
 describe('a phone payment not visible at the answer', () => {
   test('is recorded unverified, with the fields it was confirmed for, and polls no receipt', async () => {
@@ -168,7 +172,12 @@ describe('a phone payment not visible at the answer', () => {
     expect(reply).toMatchObject({ hash: HASH, phoneCheck: 'unverified', recorded: true });
     expect(reply).not.toHaveProperty('phoneRecord');
     const row = rowOf(run, reply);
-    expect(row).toMatchObject({ status: 'unverified', txHash: HASH, toAddress: RECIPIENT, amount: '1000' });
+    expect(row).toMatchObject({
+      status: 'unverified',
+      txHash: HASH,
+      toAddress: RECIPIENT,
+      amount: '1000',
+    });
     expect(row.metadata.phoneCheck).toEqual({
       state: 'unverified',
       from: ALICE.address.toLowerCase(),
@@ -324,6 +333,27 @@ describe('a restart between the answer and the transaction appearing', () => {
     });
     await elapse(DAY);
     expect(rowOf(next, reply).status).toBe('wrong-transaction');
+  });
+
+  test('the next run resumes every unverified payment, past one page of history', async () => {
+    const first = start();
+    const reply = await pay(first);
+    const row = rowOf(first, reply);
+    // 500 more unverified phone payments, so the oldest sits past the first page.
+    for (let i = 0; i < 500; i += 1) {
+      first.history.append({
+        kind: row.kind,
+        chainId: row.chainId,
+        amount: row.amount,
+        status: 'unverified',
+        txHash: `0x${(i + 1).toString(16).padStart(64, '0')}`,
+        createdAt: row.createdAt + 1 + i,
+        metadata: row.metadata,
+      });
+    }
+
+    const next = crashAndStart();
+    expect(next.recorder.resumePhoneChecks()).toBe(501);
   });
 
   test('the next run checks it at its start: the same transaction is verified, then confirmed', async () => {

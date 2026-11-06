@@ -282,7 +282,8 @@ async function checkPhonePayment(rowId) {
     ? await phonePayments.recheck(row.txHash, record, row.chainId, Date.now())
     : { state: 'unknown' };
   if (result.state === 'unverified') {
-    if (result.error) log.warn(`[TxRecorder] phone check lookup failed for row ${rowId}: ${result.error}`);
+    if (result.error)
+      log.warn(`[TxRecorder] phone check lookup failed for row ${rowId}: ${result.error}`);
     return record;
   }
   // Re-read: the lookup awaited, and the row may have been removed.
@@ -299,30 +300,45 @@ async function checkPhonePayment(rowId) {
     metadata: { ...(current.metadata || {}), phoneCheck },
   });
   if (result.state === 'mismatch') {
-    log.warn(`[TxRecorder] phone payment row ${rowId} is not the transaction confirmed (${result.code})`);
+    log.warn(
+      `[TxRecorder] phone payment row ${rowId} is not the transaction confirmed (${result.code})`
+    );
   }
   if (result.state === 'verified') pollReceipt(rowId, current.txHash, current.chainId);
   return null;
 }
 
-// How many unverified rows a start looks at: the records' own bound.
-const PHONE_LOOKBACK = 500;
+// One page of unverified rows a start reads at a time: the history store's
+// own page cap (payment-history.js MAX_LIMIT).
+const PHONE_PAGE = 500;
 
 /**
  * At a start: check every phone payment an earlier run left unverified,
- * now (its age first), then as watchPhonePayment does. Best-effort, like
- * every history read: returns how many it watches.
+ * now (its age first), then as watchPhonePayment does. It pages through
+ * all of them, not just the newest page, so none is left unverified past
+ * its 24 hours. The pages are read before any check runs (each check is
+ * scheduled, not run inline), so a row changing state can't shift the
+ * offsets. Best-effort, like every history read: returns how many it
+ * watches.
  */
 function resumePhoneChecks() {
-  let rows;
+  const ids = [];
   try {
-    rows = paymentHistory.getRecent({ status: STATUSES.UNVERIFIED, limit: PHONE_LOOKBACK });
+    for (let offset = 0; ; offset += PHONE_PAGE) {
+      const page = paymentHistory.getRecent({
+        status: STATUSES.UNVERIFIED,
+        limit: PHONE_PAGE,
+        offset,
+      });
+      for (const row of page) ids.push(row.id);
+      if (page.length < PHONE_PAGE) break;
+    }
   } catch (err) {
     log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
-    return 0;
+    if (ids.length === 0) return 0;
   }
-  for (const row of rows) watchPhonePayment(row.id, 0);
-  return rows.length;
+  for (const id of new Set(ids)) watchPhonePayment(id, 0);
+  return new Set(ids).size;
 }
 
 const ERC20_TRANSFER = '0xa9059cbb';
