@@ -1790,8 +1790,9 @@ describe("x402 payment authority belongs to the window hosting the payment's tab
 
   // An allowance covers tab `tabId`'s paywall, the vault is locked when
   // auto-pay signs, and main stashes the payment until the user unlocks.
+  // The allowance stays, so it still covers the payment on resume.
   async function lockedAutoPayOn(tabId, id) {
-    mockGetPermission.mockReturnValueOnce({
+    mockGetPermission.mockReturnValue({
       origin: 'https://api.example',
       chainId: 8453,
       asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
