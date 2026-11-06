@@ -462,6 +462,22 @@ describe('redactedHandler', () => {
     });
   });
 
+  test('a key in a property name, or an array with its own map, does not get through', async () => {
+    const keyedName = { [URL_WITH_KEY]: true, [`k=${KEY}`]: 1 };
+    const sneaky = [`at ${URL_WITH_KEY}`];
+    Object.defineProperty(sneaky, 'map', { value: () => [URL_WITH_KEY] });
+    for (const error of [keyedName, { data: keyedName }, sneaky, { list: sneaky }]) {
+      const sync = JSON.stringify(redactedHandler(() => ({ success: false, error }))());
+      const asyncReply = JSON.stringify(
+        await redactedHandler(async () => ({ success: false, error }))()
+      );
+      for (const reply of [sync, asyncReply]) {
+        expect(reply).not.toContain(KEY);
+        expect(reply).not.toContain('/v2/');
+      }
+    }
+  });
+
   test('a thrown error whose message is a throwing getter gives only "error"', () => {
     const thrown = new Error('x');
     Object.defineProperty(thrown, 'message', {

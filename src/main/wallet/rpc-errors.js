@@ -110,6 +110,8 @@ function providerRpcError(err, chainId, chainName) {
 // it (design 0005), and a keyed endpoint could nest its URL or key in it.
 const MAX_REDACT_DEPTH = 8;
 const TOO_DEEP = '[redacted: nested too deep]';
+// How many items or keys of one array or record are kept.
+const MAX_REDACT_ITEMS = 256;
 
 const NOT_PLAIN = '[redacted: not a plain value]';
 
@@ -138,7 +140,15 @@ function redactValue(value, depth = 0) {
   if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (typeof value !== 'object') return undefined;
   if (depth >= MAX_REDACT_DEPTH) return TOO_DEEP;
-  if (Array.isArray(value)) return value.map((item) => redactValue(item, depth + 1));
+  if (Array.isArray(value)) {
+    // Read by index from own data properties: an input's own `map` (or a
+    // getter on an index) is never called.
+    const length = ownData(value, 'length');
+    const count = Number.isInteger(length) ? Math.min(length, MAX_REDACT_ITEMS) : 0;
+    const out = [];
+    for (let i = 0; i < count; i += 1) out.push(redactValue(ownData(value, String(i)), depth + 1));
+    return out;
+  }
   if (value instanceof Error) {
     const message = ownData(value, 'message');
     const out = { message: typeof message === 'string' ? redactRpcText(message) : 'error' };
@@ -147,9 +157,11 @@ function redactValue(value, depth = 0) {
     return out;
   }
   if (!isPlain(value)) return NOT_PLAIN;
-  const out = {};
-  for (const key of Object.keys(value)) {
-    out[key] = redactValue(ownData(value, key), depth + 1);
+  // A null-prototype record, so no key is special; each key is redacted
+  // like a value, since a node can put its echoed URL in a property name.
+  const out = Object.create(null);
+  for (const key of Object.keys(value).slice(0, MAX_REDACT_ITEMS)) {
+    out[redactRpcText(key)] = redactValue(ownData(value, key), depth + 1);
   }
   return out;
 }
