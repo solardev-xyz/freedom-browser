@@ -204,6 +204,23 @@ describe('after the dial', () => {
     expect(log.warn).toHaveBeenCalled();
   });
 
+  // #814: the warning carries the redacted URL and a code-shaped code, never
+  // the error's text, which can name the page in any window.
+  test.each([
+    ['Ant', 'ant', ANT_FETCH, { cause: { code: 'ECONNREFUSED' } }, ' (ECONNREFUSED)'],
+    ['the native node', 'native', NATIVE_FETCH, {}, ''],
+    ['the gateway', 'gateway', GATEWAY_FETCH, { code: 'UND_ERR_SOCKET' }, ' (UND_ERR_SOCKET)'],
+    ['a code with text in it', 'ant', ANT_FETCH, { code: 'no /ipfs/secret-page' }, ''],
+  ])("%s: the warning holds no error text", async (_label, kind, fetch, props, suffix) => {
+    fakeClock();
+    const err = Object.assign(new Error('could not load /ipfs/secret-page/index.html'), props);
+    const { response } = run(fetch, kind, [err], { redactUrl: () => '<private>' });
+    await jest.advanceTimersByTimeAsync(DELAYS.reduce((a, b) => a + b));
+    await response;
+    expect(log.warn.mock.calls).toEqual([[`[test] fetch failed for <private>${suffix}`]]);
+    expect(JSON.stringify(log.debug.mock.calls)).not.toContain('secret-page');
+  });
+
   // Design 0007, "Main's side": the executor's one change. The service's
   // `busy` is capacity, not a failed node: a 503, as admission's own, while
   // every other rejection stays the 502 above.
