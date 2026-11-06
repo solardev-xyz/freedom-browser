@@ -70,11 +70,10 @@
  *     asset), the cap as main holds it (its amount, createdAt, expiresAt
  *     and the generation of the grant it is: a cap revoked and granted
  *     again within one second has the same createdAt) and the new amount
- *     or window, or both. Main fills in the
- *     window and the cap itself, when the token is minted and when
- *     `x402:update-permission` spends it, so a token can't change another
- *     cap, make another change, apply after the cap has changed, or be
- *     spent by another window.
+ *     or window, or both. Main fills in the window and the cap itself,
+ *     when the token is minted and when `x402:update-permission` spends
+ *     it, so a token can't change another cap, make another change, apply
+ *     after the cap has changed, or be spent by another window.
  *
  * Auto-approved dApp requests carry no token: `wallet-ipc.js` evaluates the
  * stored auto-approve policy in main instead of trusting the renderer's

@@ -347,9 +347,10 @@ function updatePermission(origin, chainId, asset, patch = {}) {
  * An edit of a cap as main confirms it and checks it (#1023): the chrome
  * window it comes from, the cap's key, the cap as main holds it now (its
  * grant's generation among it, so a cap granted again in the same second
- * is not the one the token was minted for) and the change. `wallet:confirm-signing` mints an `x402-cap-update` token
- * for this, and `x402:update-permission` spends it against this, each
- * from its own sender and main's own record, never from the caller's.
+ * is not the one the token was minted for) and the change.
+ * `wallet:confirm-signing` mints an `x402-cap-update` token for this, and
+ * `x402:update-permission` spends it against this, each from its own
+ * sender and main's own record, never from the caller's.
  *
  * @param {number} windowId - the sending chrome webContents' id
  */
