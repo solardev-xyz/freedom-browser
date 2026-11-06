@@ -4,8 +4,9 @@
  * configured for the core.
  *
  * - **The handshake** is `core.hello`: the protocol, the shell's version,
- *   the vault's auto-lock and `frames: ["fragment"]` (main takes fragmented
- *   responses, so the handshake grants the core main's bulk credit). A
+ *   the vault's auto-lock and `frames: ["fragment", "stream"]` (`fragment`:
+ *   main takes fragmented responses, so the handshake grants the core main's
+ *   bulk credit; `stream`: see Streams below). A
  *   valid result has protocol 2, and names the core's version, its
  *   capabilities (with `streams`) and any node identity write its startup
  *   recovery couldn't finish.
