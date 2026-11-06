@@ -15,7 +15,8 @@ const { vaultBackend } = require('./core/vault-backend');
 const { withPrivateDir } = require('./private-files');
 
 // The vault file in the identity directory. Its hash binds a credential to
-// this vault; the file is public (encrypted), so main reads it directly.
+// this vault; the file is encrypted, so main reads it itself (the core
+// writes it), through the identity directory's handle (K-3).
 const VAULT_FILE = 'identity-vault.json';
 
 const CREDENTIAL_VERSION = 2;

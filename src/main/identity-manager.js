@@ -1430,9 +1430,9 @@ async function deleteVaultData(password) {
  * Startup repair (K-3): the vault and the quick-unlock credential an older
  * build wrote with the umask's mode (usually 0644) become owner-only,
  * through a no-follow descriptor, so a link planted at either name is left
- * alone. Writes of the vault go through its own atomic writer (vault.js);
- * quick-unlock.js reads and writes the credential through the same
- * directory handle as here.
+ * alone. The core writes the vault (an atomic 0600 replace) and tightens an
+ * older one at its own startup too; quick-unlock.js reads the vault and
+ * reads and writes the credential through the same directory handle as here.
  */
 function repairIdentityFiles() {
   try {
