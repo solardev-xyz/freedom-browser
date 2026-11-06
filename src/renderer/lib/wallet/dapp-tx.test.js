@@ -545,6 +545,24 @@ describe('dapp-tx approval lifecycle', () => {
     expect(rememberedRules()).toEqual(['https://app.example']);
   });
 
+  // #935: with no request chain, the approval falls back to the chain the
+  // page sees (the wallet's selection), never the chain saved with the grant.
+  test("a transaction is quoted and sent on the wallet's chain, not the grant's", async () => {
+    const { elements, send, openApproval } = await loadDappTx();
+    window.dappPermissions.getPermission.mockResolvedValue({ walletIndex: LEDGER_INDEX, chainId: 100 });
+    const { promise } = await openApproval();
+
+    expect(elements['dapp-tx-network'].textContent).toBe('Base');
+    expect(window.wallet.getGasPrice).toHaveBeenCalledWith(8453);
+
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({ success: true, hash: '0xhash' });
+    await promise;
+
+    const [sentTx] = window.wallet.dappSendTransaction.mock.calls[0];
+    expect(sentTx).toMatchObject({ chainId: 8453 });
+  });
+
   // Review of #788, round 3: a dApp's Safe transaction is confirmed for the
   // site, which main records its payment under (D12).
   test("a Safe account's transaction is confirmed for the site that asked", async () => {
