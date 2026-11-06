@@ -267,6 +267,45 @@ function loadAntManagerModule(options = {}) {
     readFileSync: jest.fn(() => options.configContents || ''),
     writeFileSync: jest.fn(),
   };
+  // private-files.js over the same fake fs: directory handles whose reads
+  // and writes land on fsMock, with repairs recorded. `unsafeKeysDir`
+  // makes opening keys/ refuse, as a keys/ that is a link would.
+  const handles = [];
+  const fakeDir = (dir) => {
+    const handle = {
+      path: dir,
+      read: jest.fn((name) => {
+        const target = path.join(dir, name);
+        return fsMock.existsSync(target)
+          ? Buffer.from(String(fsMock.readFileSync(target, 'utf-8')))
+          : null;
+      }),
+      write: jest.fn((name, data) =>
+        fsMock.writeFileSync(path.join(dir, name), data, { mode: 0o600 })
+      ),
+      repair: jest.fn(() => true),
+      openDir: jest.fn((name) => {
+        if (options.unsafeKeysDir) {
+          const err = new Error(`Refusing ${path.join(dir, name)}: it is a symbolic link`);
+          err.code = 'UNSAFE_PRIVATE_PATH';
+          throw err;
+        }
+        return fakeDir(path.join(dir, name));
+      }),
+      close: jest.fn(),
+    };
+    handles.push(handle);
+    return handle;
+  };
+  const privateFiles = {
+    openPrivateDir: jest.fn((dir) => fakeDir(dir)),
+    // profile-paths creates the data directory through this.
+    ensurePrivateDir: jest.fn((dir) => {
+      if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      return dir;
+    }),
+    handleFor: (dir) => handles.find((handle) => handle.path === dir),
+  };
   const httpGet = createHttpGetMock(options.httpResponse);
   const noteAntApiUrl = jest.fn();
   const saveSettings = jest.fn(() => true);
@@ -301,6 +340,7 @@ function loadAntManagerModule(options = {}) {
         randomBytes,
       }),
       fs: () => fsMock,
+      [require.resolve('./private-files')]: () => privateFiles,
       http: () => ({
         get: httpGet,
       }),
@@ -361,6 +401,7 @@ function loadAntManagerModule(options = {}) {
     dataDir,
     execSync,
     fsMock,
+    privateFiles,
     registry,
     httpGet,
     ipcMain,
@@ -527,6 +568,71 @@ describe('ant-manager', () => {
     await stopPromise;
     expect(jest.getTimerCount()).toBe(0);
     expect(ctx.mod.getSpawnedAt()).toBeNull();
+  });
+
+  test('narrows keys an older build left readable to other users (K-3)', async () => {
+    jest.useFakeTimers();
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const keysDir = path.join(dataDir, 'keys');
+    const swarmKeyPath = path.join(keysDir, 'swarm.key');
+    const configPath = path.join(dataDir, 'config.yaml');
+    const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
+    const binaryName = process.platform === 'win32' ? 'antd.exe' : 'antd';
+    const antBinPath = path.join(PROJECT_ROOT, 'ant-bin', `${platform}-${process.arch}`, binaryName);
+    const ctx = loadAntManagerModule({
+      existsSync: (target) =>
+        target === antBinPath || target === swarmKeyPath || target === configPath,
+      configContents: 'api-addr: 127.0.0.1:1633\npassword: injected-keystore-password\n',
+      portSequence: [false],
+      httpResponse: (url) =>
+        url === 'http://127.0.0.1:1633/health'
+          ? { statusCode: 200, body: { version: '2.1.0' } }
+          : { statusCode: 500, body: '' },
+    });
+
+    ctx.mod.setUseInjectedIdentity(true);
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    // The data directory and its keys/ are opened as handles; the keys an
+    // older build left are repaired, and the config is read and written
+    // through the data directory's handle, which is closed after.
+    expect(ctx.privateFiles.openPrivateDir).toHaveBeenCalledWith(dataDir);
+    const data = ctx.privateFiles.handleFor(dataDir);
+    expect(data.openDir).toHaveBeenCalledWith('keys', { create: false });
+    expect(ctx.privateFiles.handleFor(keysDir).repair).toHaveBeenCalledWith('swarm.key');
+    expect(data.read).toHaveBeenCalledWith('config.yaml');
+    expect(data.write).toHaveBeenCalledWith('config.yaml', expect.any(String));
+    expect(data.close).toHaveBeenCalled();
+    expect(ctx.fsMock.writeFileSync).toHaveBeenCalledWith(configPath, expect.any(String), {
+      mode: 0o600,
+    });
+
+    const stopPromise = ctx.mod.stopAnt();
+    await jest.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await stopPromise;
+  });
+
+  test('a keys/ that is a link stops the start before anything is written (K-3)', async () => {
+    const dataDir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+    const ctx = loadAntManagerModule({
+      unsafeKeysDir: true,
+      portSequence: [false],
+    });
+
+    await ctx.mod.startAnt();
+
+    const data = ctx.privateFiles.handleFor(dataDir);
+    expect(data.openDir).toHaveBeenCalledWith('keys', { create: false });
+    expect(data.write).not.toHaveBeenCalled();
+    expect(data.close).toHaveBeenCalled();
+    expect(ctx.fsMock.writeFileSync).not.toHaveBeenCalled();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.mod.getStatus()).toEqual({
+      status: 'error',
+      error: expect.stringContaining('symbolic link'),
+    });
   });
 
   test('reuses an existing daemon and clears the health-check interval on stop', async () => {
@@ -1104,7 +1210,11 @@ describe('ant-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
-    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true });
+    expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true, mode: 0o700 });
+    // config.yaml holds the keystore password: written owner-only (K-3).
+    expect(ctx.fsMock.writeFileSync).toHaveBeenCalledWith(ctx.configPath, expect.any(String), {
+      mode: 0o600,
+    });
     expect(ctx.randomBytes).toHaveBeenCalledWith(32);
     // antd self-initializes its identity; Freedom no longer runs an init step.
     expect(ctx.execSync).not.toHaveBeenCalled();
