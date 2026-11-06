@@ -88,12 +88,17 @@ function authorizationRunwaySeconds(payload) {
  * `detection.requestShape` (captured `{ method, range }`) threads
  * through to setPendingPayment for shape-keyed FIFO bucketing.
  *
+ * `opts.walletIndex` is the account to sign with: the one an approval's
+ * confirmation token was checked against (x402:approve). Auto-pay omits
+ * it and signs with the active account.
+ *
  * @param {number} webContentsId
  * @param {{
  *   grant?: { capAmount: string, windowSeconds: number },
  *   detection?: { url: string, requirements: object, resourceType?: string, selectedAccept?: object, requestShape?: { method: string, range: string | null } },
  *   selectedAccept?: object,
  *   authorizedBy?: 'cap' | 'manual',
+ *   walletIndex?: number,
  * }} [opts]
  */
 async function signAndQueueRetry(webContentsId, opts = {}) {
@@ -118,7 +123,7 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   catch { throw new Error('Refusing to pay: unparseable URL'); }
   if (!origin) throw new Error('Refusing to pay: unnormalisable origin');
 
-  const client = await createX402Client(getActiveWalletIndex());
+  const client = await createX402Client(opts.walletIndex ?? getActiveWalletIndex());
   // Pre-filter `accepts[]` down to the chosen entry so the SDK's default
   // first-of-filtered selector signs the right one. Avoids registering a
   // custom paymentRequirementsSelector for what is effectively a one-

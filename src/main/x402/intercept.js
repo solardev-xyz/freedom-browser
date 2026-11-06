@@ -410,9 +410,9 @@ function mintDetectionId(details) {
 
 /**
  * Create a pending approval entry and return a Promise the detector
- * awaits. Resolves with `{ approved: boolean, grant? }` when the user
- * decides (IPC), or rejects when the entry is aborted (tab destroyed,
- * superseded by a newer detection).
+ * awaits. Resolves with `{ approved, grant?, selectedAcceptIndex?,
+ * walletIndex? }` when the user decides (IPC), or rejects when the entry
+ * is aborted (tab destroyed, superseded by a newer detection).
  */
 function setPendingApproval(detectionId, ctx) {
   return new Promise((resolve, reject) => {
@@ -964,8 +964,8 @@ async function detectPaymentRequiredHandler(details) {
   //
   // - mainFrame: fire the event and return null. The page renders the
   //   402 while the user decides; the sidebar's Approve button calls
-  //   x402:approve, which signs + wc.loadURL via signAndQueueRetry.
-  //   Existing behaviour, unchanged.
+  //   x402:approve with a confirmation token, which signs + wc.loadURL
+  //   via signAndQueueRetry.
   //
   // - Subresource: hold onHeadersReceived open (await the approval
   //   Promise). On approve → sign + return 307; Chromium follows the
@@ -1049,11 +1049,15 @@ async function detectPaymentRequiredHandler(details) {
       // facilitator is the real settlement-time gate. If the cache
       // was stale and signing succeeds against insufficient funds,
       // the response logger writes a `failed` payment-history row.
+      // x402:approve settles only after checking the user's confirmation
+      // token against this entry, account and grant (ipc.js); the
+      // account rides on the decision so the signature uses it.
       await signAndQueueRetry(details.webContentsId, {
         detection: { url: details.url, requirements, resourceType: details.resourceType, requestShape },
         selectedAccept,
         authorizedBy: AUTHORIZED_BY.MANUAL,
         grant: decision.grant,
+        walletIndex: decision.walletIndex,
       });
       log.info(`[x402:approval] subresource ${sanitizeUrlForLog(details.url)} signed; returning 307`);
       notifyHost('x402:approval-result', {

@@ -611,7 +611,9 @@ function registerWalletIpc() {
 
   // Issue a confirmation token for a request the user just confirmed on an
   // approval screen (O-7). The signing handler below it will sign exactly
-  // this request, once. A wallet send binds the account active right now.
+  // this request, once. A wallet send binds the account active right now,
+  // and so does an x402 payment, which `x402:approve` signs with the active
+  // account (x402/ipc.js).
   //
   // A transaction's confirmation is also the moment of its approval for the
   // fee check (design 0005, A): judged against evidence at most 60 s old, a
@@ -620,7 +622,10 @@ function registerWalletIpc() {
   // verdict it gets back.
   ipcMain.handle('wallet:confirm-signing', async (_event, kind, accountIndex, payload, options) => {
     try {
-      const index = kind === CONFIRM_KINDS.WALLET_SEND ? getActiveWalletIndex() : accountIndex;
+      const index =
+        kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
+          ? getActiveWalletIndex()
+          : accountIndex;
       if (FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index)) {
         const verdict = await checkAtApproval(payload, {
           acknowledged: options?.feeAcknowledged === true,

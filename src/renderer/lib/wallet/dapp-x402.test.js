@@ -299,8 +299,16 @@ async function loadDappX402(options = {}) {
     x402RevokeAllForOrigin: jest.fn().mockResolvedValue({ success: true }),
   };
 
+  // Main's `wallet:confirm-signing`: the token Pay mints for the payment.
+  const wallet = {
+    confirmSigning: jest.fn().mockResolvedValue(
+      options.confirmResult || { success: true, token: 'x402-token-1', expiresAt: 1 }
+    ),
+  };
+
   global.window = {
     electronAPI,
+    wallet,
     identity: {
       getStatus: jest.fn().mockResolvedValue(options.identityStatus || { isUnlocked: true }),
       getVaultMeta: jest.fn().mockResolvedValue({ userKnowsPassword: true }),
@@ -350,6 +358,7 @@ async function loadDappX402(options = {}) {
     document,
     elements: document.elements,
     electronAPI,
+    wallet,
     approvalNeededHandlers,
     approvalResultHandlers,
     balancesUpdatedHandlers,
@@ -399,6 +408,19 @@ describe('dapp-x402 approval card lifecycle', () => {
 
     await ctx.elements['x402-approval-approve'].fire('click');
 
+    // Pay mints a token for the payment as shown, grant included…
+    expect(ctx.wallet.confirmSigning).toHaveBeenCalledWith('x402-payment', null, {
+      webContentsId: 7,
+      detectionId: 'det-1',
+      url: 'https://pay.example/article',
+      acceptIndex: 0,
+      accept: createAccept().accept,
+      grant: {
+        capAmount: '10000000',
+        windowSeconds: 30 * 24 * 60 * 60,
+      },
+    });
+    // …and hands it to the approval.
     expect(ctx.electronAPI.x402Approve).toHaveBeenCalledWith({
       webContentsId: 7,
       detectionId: 'det-1',
@@ -407,6 +429,7 @@ describe('dapp-x402 approval card lifecycle', () => {
         capAmount: '10000000',
         windowSeconds: 30 * 24 * 60 * 60,
       },
+      confirmation: 'x402-token-1',
     });
     expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(true);
     expect(ctx.identityView.classList.contains('hidden')).toBe(false);
@@ -429,11 +452,17 @@ describe('dapp-x402 approval card lifecycle', () => {
 
     expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
     expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+    expect(ctx.wallet.confirmSigning).toHaveBeenCalledWith(
+      'x402-payment',
+      null,
+      expect.objectContaining({ detectionId: 'det-1', acceptIndex: 0, grant: null })
+    );
     expect(ctx.electronAPI.x402Approve).toHaveBeenCalledWith({
       webContentsId: 7,
       detectionId: 'det-1',
       grant: undefined,
       selectedAcceptIndex: 0,
+      confirmation: 'x402-token-1',
     });
 
     ctx.approvalResultHandlers[0]({
@@ -456,6 +485,72 @@ describe('dapp-x402 approval card lifecycle', () => {
   // user is confirming — so it must exempt an in-flight signature. The
   // global lock (signature-flight.js) stops hideAllSubscreens() from
   // reaching the hider at all; this covers a direct hider call.
+  test('Pay confirms the entry the chooser has selected', async () => {
+    const dai = createAccept({
+      accept: {
+        amount: '3000000000000000000',
+        asset: '0xDAI',
+        network: 'base',
+        payTo: '0x1111111111111111111111111111111111111111',
+      },
+      balanceKey: '8453:0xDAI',
+      asset: { symbol: 'DAI', decimals: 18 },
+    });
+    const ctx = await loadDappX402({
+      details: {
+        success: true,
+        detectionId: 'det-1',
+        url: 'https://pay.example/article',
+        accepts: [createAccept(), dai],
+        initialSelectionIndex: 0,
+      },
+    });
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+
+    const radio = new FakeInputElement();
+    radio.name = 'x402-chooser';
+    radio.value = '1';
+    await ctx.elements['x402-approval-chooser-options'].fire('change', { target: radio });
+    await ctx.elements['x402-approval-approve'].fire('click');
+
+    expect(ctx.wallet.confirmSigning).toHaveBeenCalledWith(
+      'x402-payment',
+      null,
+      expect.objectContaining({ acceptIndex: 1, accept: dai.accept })
+    );
+    expect(ctx.electronAPI.x402Approve).toHaveBeenCalledWith(
+      expect.objectContaining({ selectedAcceptIndex: 1, confirmation: 'x402-token-1' })
+    );
+  });
+
+  test('a refused confirmation approves nothing and gives the card back', async () => {
+    const ctx = await loadDappX402({
+      confirmResult: { success: false, error: 'Invalid detection id' },
+    });
+    const flight = await import('./signature-flight.js');
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+
+    await ctx.elements['x402-approval-approve'].fire('click');
+
+    expect(ctx.electronAPI.x402Approve).not.toHaveBeenCalled();
+    expect(ctx.elements['x402-approval-error'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].textContent).toBe('Pay');
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(false);
+    expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
   test('a screen hider fired mid-payment leaves the card and the detection alone', async () => {
     const ctx = await loadDappX402({ approveResult: { success: true, pending: true } });
     // After loadDappX402's resetModules, so this is the same lock instance

@@ -1,0 +1,2 @@
+- An x402 payment you approve is signed only with a single-use confirmation from its approval card, bound to the tab, the payment option, the account and any allowance granted with it ([#1015](https://github.com/solardev-xyz/freedom-browser/issues/1015))
+  - Payments within a site's allowance still go through without a prompt
