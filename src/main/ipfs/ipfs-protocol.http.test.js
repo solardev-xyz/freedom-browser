@@ -43,11 +43,32 @@ const NAVIGATION_ACCEPT =
 
 const rangeOrigin = rangeResponder({ content: CONTENT, etag: ETAG, contentType: 'video/mp4' });
 
-// The manager's reachability probe, answered like a real gateway and kept out
-// of `gateway.requests`.
+// The manager's reachability probe, and the trustless probe that follows it
+// at activation (freedom-core design 0009, Modes), answered like a real
+// gateway serving raw blocks and ordered CARs (unless `trustless` says it
+// serves no raw blocks), and kept out of `gateway.requests`. `probes` records
+// the trustless ones.
+const probes = [];
+const trustless = { raw: true };
 function answerProbe(req, res) {
-  if (req.url !== PROBE_PATH) return false;
-  res.writeHead(200, { 'X-Ipfs-Path': PROBE_PATH });
+  if (req.url === PROBE_PATH) {
+    res.writeHead(200, { 'X-Ipfs-Path': PROBE_PATH });
+    res.end();
+    return true;
+  }
+  const type = {
+    [`${PROBE_PATH}?format=raw`]: 'application/vnd.ipld.raw',
+    [`${PROBE_PATH}?format=car&dag-scope=entity`]:
+      'application/vnd.ipld.car; version=1; order=dfs; dups=y',
+  }[req.url];
+  if (!type) return false;
+  probes.push({ url: req.url, accept: req.headers.accept });
+  if (type === 'application/vnd.ipld.raw' && !trustless.raw) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('not found');
+    return true;
+  }
+  res.writeHead(200, { 'Content-Type': type, 'X-Ipfs-Path': PROBE_PATH });
   res.end();
   return true;
 }
@@ -58,7 +79,7 @@ function answerProbe(req, res) {
 // profile, the logger and the core's planner. The transport refuses any URL but
 // the gateway's: the manager's background Kubo RPC version probe would
 // otherwise dial :5001 on this machine.
-async function loadExternalStack(externalGateway) {
+async function loadExternalStack(externalGateway, { verifier = null, verify } = {}) {
   const refused = [];
   const mockResolveEnsContent = jest.fn();
   const driver = createFakeDwebDriver({
@@ -78,9 +99,12 @@ async function loadExternalStack(externalGateway) {
       }),
       [require.resolve('../profile-resolver')]: () => ({
         getActiveProfile: () => ({
-          metadata: { nodes: { ipfs: { mode: 'external', externalGateway } } },
+          metadata: { nodes: { ipfs: { mode: 'external', externalGateway, verify } } },
         }),
       }),
+      // The core's verifier, attached only at protocol 2: none unless a test
+      // plays one.
+      [require.resolve('../core/dweb-verify')]: () => ({ dwebVerifier: () => verifier }),
       [require.resolve('./gateway-transport')]: () => {
         const actual = jest.requireActual('./gateway-transport');
         return {
@@ -105,6 +129,7 @@ async function loadExternalStack(externalGateway) {
   await manager.startIpfs();
   return {
     manager,
+    driver,
     log,
     refused,
     mockResolveEnsContent,
@@ -120,6 +145,8 @@ let stack;
 const ipfs = (path, init) => stack.ipfs(new Request(`ipfs://${CID}${path}`, init));
 
 beforeEach(async () => {
+  probes.length = 0;
+  trustless.raw = true;
   gateway = await startFakeHttpNode({ prelude: answerProbe });
   stack = await loadExternalStack(gateway.origin);
 });
@@ -137,6 +164,21 @@ describe('ipfs: external gateway, Range over HTTP', () => {
     expect(stack.manager.getNativeDiagnostics().externalGateway).toBe(gateway.origin);
     // Only the Kubo RPC version probe was kept off the network.
     expect(stack.refused).toEqual(['http://127.0.0.1:5001/api/v0/version']);
+  });
+
+  test('the trustless probe asked once, at activation, with its Accept headers', () => {
+    expect(probes).toEqual([
+      { url: `${PROBE_PATH}?format=raw`, accept: 'application/vnd.ipld.raw' },
+      {
+        url: `${PROBE_PATH}?format=car&dag-scope=entity`,
+        accept: 'application/vnd.ipld.car; version=1; order=dfs; dups=y',
+      },
+    ]);
+    expect(stack.manager.getExternalGatewaySupport()).toEqual({ raw: true, car: true });
+    expect(stack.manager.getNativeDiagnostics().externalSupport).toEqual({ raw: true, car: true });
+    // Against a core without the verifier (protocol 1), the reference keeps
+    // its two-key form, so these requests are planned as fetches, as before.
+    expect(stack.manager.ipfsBackend().ref).toEqual({ ipfs: 'gateway', up: true });
   });
 
   test('forwards Range and passes the 206 and its Content-Range through', async () => {
@@ -560,5 +602,85 @@ describe('ipfs: URL forms through the registered handlers', () => {
     expect(stack.mockResolveEnsContent).toHaveBeenCalledWith('vitalik.eth');
     expect(gateway.requests.map((r) => r.url)).toEqual([`/ipfs/${CID}/video.mp4?t=1`]);
     expect(Buffer.from(await res.arrayBuffer())).toEqual(CONTENT);
+  });
+});
+
+// freedom-core design 0009 with the core's verifier attached (protocol 2):
+// the real manager probes the fake gateway over HTTP at activation, and the
+// backend each request captures carries the result to the core.
+describe('ipfs: external gateway, verification captured with the backend', () => {
+  // A verifier answering every `dweb.verify` with a bodiless verified head,
+  // recording its params and capture.
+  function recordingVerifier() {
+    const calls = [];
+    return {
+      calls,
+      send: jest.fn((gen, params, capture) => {
+        calls.push({ params, capture });
+        const result = {
+          status: 200,
+          headers: [['content-type', 'video/mp4']],
+          body: false,
+          trust: { name: null, content: 'verified' },
+        };
+        return { head: Promise.resolve({ result, body: null }), close: () => {} };
+      }),
+    };
+  }
+
+  async function reload(options) {
+    await stack.manager.stopIpfs();
+    probes.length = 0;
+    stack = await loadExternalStack(gateway.origin, options);
+  }
+
+  test('a gateway with raw blocks and CARs: `verify` to the core, `car` in dweb.verify', async () => {
+    const verifier = recordingVerifier();
+    await reload({ verifier });
+    gateway.handle(rangeOrigin);
+
+    const res = await ipfs('/video.mp4', { method: 'HEAD' });
+
+    expect(res.status).toBe(200);
+    expect(stack.driver.calls[0].backend).toEqual({ ipfs: 'gateway', up: true, verify: true });
+    expect(verifier.calls).toHaveLength(1);
+    const [{ params, capture }] = verifier.calls;
+    expect(params.plan.verify).toMatchObject({
+      node: 'ipfs',
+      root: { ipfs: CID },
+      path: '/video.mp4',
+    });
+    expect(params.car).toBe(true);
+    expect(capture.backend.car).toBe(true);
+    // The core fetches the pieces itself: nothing went to the gateway but
+    // the probes.
+    expect(gateway.requests).toHaveLength(0);
+  });
+
+  test("a gateway without raw blocks: `unsupported`, and today's fetch from the gateway", async () => {
+    trustless.raw = false;
+    const verifier = recordingVerifier();
+    await reload({ verifier });
+    gateway.handle(rangeOrigin);
+
+    const res = await ipfs('/video.mp4', { headers: { Range: 'bytes=0-9' } });
+
+    expect(stack.driver.calls[0].backend).toEqual({ ipfs: 'gateway', up: true, unsupported: true });
+    expect(verifier.calls).toEqual([]);
+    expect(res.status).toBe(206);
+    expect(gateway.requests.map((r) => r.url)).toEqual([`/ipfs/${CID}/video.mp4`]);
+    expect(stack.manager.getExternalGatewaySupport()).toEqual({ raw: false, car: false });
+  });
+
+  test('with the setting off: the two-key reference and an unverified fetch', async () => {
+    const verifier = recordingVerifier();
+    await reload({ verifier, verify: false });
+    gateway.handle(rangeOrigin);
+
+    const res = await ipfs('/video.mp4', { headers: { Range: 'bytes=0-9' } });
+
+    expect(stack.driver.calls[0].backend).toEqual({ ipfs: 'gateway', up: true });
+    expect(verifier.calls).toEqual([]);
+    expect(res.status).toBe(206);
   });
 });

@@ -1251,6 +1251,10 @@ const PROFILE_NODE_SERVICES = [
     label: 'Swarm',
     modes: ['managed', 'external', 'disabled'],
     externalFields: [{ key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' }],
+    // "Verify content from this node", and the note under it while it is off.
+    verifiable: true,
+    unverifiedNote:
+      'Freedom does not verify content from this node — it is trusted for every bzz:// page it serves.',
     endpointLines: (config, service) =>
       [
         config?.externalApi ||
@@ -1265,10 +1269,11 @@ const PROFILE_NODE_SERVICES = [
     externalFields: [
       { key: 'externalGateway', label: 'Gateway', placeholder: 'http://127.0.0.1:8080' },
     ],
-    // Shown under the gateway field whenever "Use external node" is
-    // selected: the embedded node verifies what it retrieves, an external
-    // gateway is trusted for the bytes it serves.
-    externalNote:
+    // "Verify content from this node", and the note under it while it is
+    // off: the embedded node verifies what it retrieves, and an external
+    // gateway left unverified is trusted for the bytes it serves.
+    verifiable: true,
+    unverifiedNote:
       'Freedom does not verify content integrity in this mode — the gateway is trusted for every ipfs:// page it serves.',
     endpointLines: (config) =>
       config?.externalGateway ? [config.externalGateway] : ['Embedded freedom-ipfs native node'],
@@ -1378,14 +1383,9 @@ const renderExternalEditor = (protocol, config, mode, draft) => {
       </div>`;
   });
 
-  const note = definition?.externalNote
-    ? `<p class="profile-node-note">${esc(definition.externalNote)}</p>`
-    : '';
-
   return `
     <div class="profile-node-editor" data-external-editor ${mode === 'external' ? '' : 'hidden'}>
       ${fields.join('')}
-      ${note}
     </div>`;
 };
 
@@ -1405,6 +1405,42 @@ const setExternalEditorVisible = (row, mode) => {
   row?.querySelector('[data-external-editor]')?.toggleAttribute('hidden', mode !== 'external');
 };
 
+// "Verify content from this node" (freedom-core design 0009, Modes): per
+// profile, on unless turned off, beside the endpoint of every node Freedom
+// verifies: an external one, or a Swarm node Freedom found already running
+// and reuses, which counts as external. The bundled nodes check what they
+// retrieve, so their rows have no such switch.
+const showsVerifySetting = (definition, mode, reused) =>
+  definition?.verifiable === true && (mode === 'external' || (mode === 'managed' && reused));
+
+const renderVerifySetting = (protocol, config, mode, reused) => {
+  const definition = SERVICE_DEFINITIONS[protocol];
+  if (definition?.verifiable !== true) return '';
+  const on = config?.verify !== false;
+  const shown = showsVerifySetting(definition, mode, reused);
+  return `
+    <div class="profile-node-verify" data-verify-setting${shown ? '' : ' hidden'}>
+      <label for="profile-${protocol}-verify">Verify content from this node</label>
+      <label class="toggle">
+        <input type="checkbox" id="profile-${protocol}-verify" data-node-verify${on ? ' checked' : ''} />
+        <span class="slider"></span>
+      </label>
+    </div>
+    <p class="profile-node-note" data-unverified-note${shown && !on ? '' : ' hidden'}>${esc(definition.unverifiedNote)}</p>`;
+};
+
+// Shows or hides a row's verification switch for `mode`, and its note for
+// the switch's state.
+const applyVerifySetting = (row, mode) => {
+  const definition = SERVICE_DEFINITIONS[row?.dataset.protocol];
+  const setting = row?.querySelector('[data-verify-setting]');
+  if (!setting) return;
+  const shown = showsVerifySetting(definition, mode, row.dataset.reused === 'true');
+  setting.toggleAttribute('hidden', !shown);
+  const on = setting.querySelector('[data-node-verify]')?.checked !== false;
+  row.querySelector('[data-unverified-note]')?.toggleAttribute('hidden', !shown || on);
+};
+
 const renderProfileNodes = (profile, registry, settings) => {
   const nodes = profile?.nodes || {};
   storedProfileNodes = nodes;
@@ -1418,13 +1454,14 @@ const renderProfileNodes = (profile, registry, settings) => {
     // saved — the stored config underneath is untouched.
     const draft = nodeDrafts.get(protocol);
     const mode = draft?.mode || config.mode || 'managed';
+    const reused = service.mode === 'reused';
     const lines = endpointLines(definition, config, service);
     const details = lines.length
       ? lines.map((line) => `<div class="profile-node-detail">${esc(line)}</div>`).join('')
       : '<div class="profile-node-detail">No endpoint</div>';
 
     return `
-      <div class="profile-node" data-protocol="${protocol}">
+      <div class="profile-node" data-protocol="${protocol}" data-reused="${reused}">
         <div class="profile-node-main">
           <p class="profile-node-name">${SERVICE_LABELS[protocol]}</p>
           <select data-node-mode>
@@ -1435,6 +1472,7 @@ const renderProfileNodes = (profile, registry, settings) => {
           <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
           ${details}
           ${renderExternalEditor(protocol, config, mode, draft)}
+          ${renderVerifySetting(protocol, config, mode, reused)}
           <p class="profile-node-error" data-node-error role="alert"${draft?.error ? '' : ' hidden'}>${esc(draft?.error || '')}</p>
         </div>
       </div>`;
@@ -1450,19 +1488,20 @@ const renderProfileNodes = (profile, registry, settings) => {
           protocol: active.closest('.profile-node')?.dataset.protocol,
           field: active.dataset?.endpointField,
           mode: active.matches?.('[data-node-mode]'),
+          verify: active.matches?.('[data-node-verify]'),
           value: active.value,
         }
       : null;
 
   profileFields.nodesCard.innerHTML = rows.join('');
 
-  if (focused?.protocol && (focused.field || focused.mode)) {
+  if (focused?.protocol && (focused.field || focused.mode || focused.verify)) {
     const row = profileFields.nodesCard.querySelector(
       `.profile-node[data-protocol="${focused.protocol}"]`
     );
     const target = focused.field
       ? row?.querySelector(`[data-endpoint-field="${focused.field}"]`)
-      : row?.querySelector('[data-node-mode]');
+      : row?.querySelector(focused.verify ? '[data-node-verify]' : '[data-node-mode]');
     if (target) {
       if (focused.field) target.value = focused.value;
       target.focus();
@@ -1735,11 +1774,63 @@ const commitNodeRow = (row) => {
   return nodeSave;
 };
 
+// "Verify content from this node" commits on its own, as a patch of that
+// one field: it applies to the pages loaded after it, with no restart
+// (freedom-core design 0006, Binding). A refused commit puts the switch back.
+const commitNodeVerify = (row, input) => {
+  const protocol = row?.dataset.protocol;
+  if (!protocol) return Promise.resolve();
+  const label = SERVICE_LABELS[protocol];
+  const verify = input.checked;
+  nodeSave = nodeSave
+    .catch(() => {})
+    .then(async () => {
+      setNodesStatus(`Saving ${label} node settings…`, 'testing');
+      try {
+        const result = await freedomAPI.updateProfileNodeConfig?.(protocol, { verify });
+        const saved = result?.success || result?.error?.details?.saved === true;
+        if (!saved) {
+          throw new Error(result?.error?.message || 'Profile node settings were not saved');
+        }
+        const storedNodes = result.profile?.nodes;
+        if (
+          storedNodes &&
+          typeof storedNodes === 'object' &&
+          result.profile.id === activeProfileId
+        ) {
+          storedProfileNodes = storedNodes;
+        }
+        setNodesStatus(`${label} saved. It applies to pages loaded from now on.`, 'success');
+        await refreshProfileSection(true);
+      } catch (err) {
+        const live = profileFields.nodesCard?.querySelector(
+          `.profile-node[data-protocol="${protocol}"]`
+        );
+        const control = live?.querySelector('[data-node-verify]');
+        if (control) control.checked = storedProfileNodes?.[protocol]?.verify !== false;
+        if (live) applyVerifySetting(live, live.querySelector('[data-node-mode]')?.value);
+        setNodesStatus(
+          `${String(err?.message || 'Profile node settings were not saved').replace(/[.\s]+$/, '')}. Not saved.`,
+          'error'
+        );
+      }
+    });
+  return nodeSave;
+};
+
 profileFields.nodesCard?.addEventListener('change', (event) => {
+  const verifyInput = event.target?.closest?.('[data-node-verify]');
+  if (verifyInput) {
+    const row = verifyInput.closest('.profile-node');
+    applyVerifySetting(row, row?.querySelector('[data-node-mode]')?.value);
+    commitNodeVerify(row, verifyInput);
+    return;
+  }
   const modeSelect = event.target?.closest?.('[data-node-mode]');
   if (!modeSelect) return;
   const row = modeSelect.closest('.profile-node');
   setExternalEditorVisible(row, modeSelect.value);
+  applyVerifySetting(row, modeSelect.value);
   commitNodeRow(row);
 });
 

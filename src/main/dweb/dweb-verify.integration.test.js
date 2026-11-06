@@ -196,6 +196,32 @@ describeIfCore('verified page loads with the real freedom-cored at protocol 2', 
     expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
   });
 
+  // The members main captures from the setting and the probe
+  // (ipfs-manager.js, bzz-protocol.js): a gateway the probe found without
+  // raw blocks, and a node whose verification is off, get today's fetch.
+  test('`unsupported`, and verification off: the core plans an unverified fetch', async () => {
+    for (const ref of [
+      { ipfs: 'gateway', up: true, unsupported: true },
+      { ipfs: 'gateway', up: true },
+    ]) {
+      node.asked.length = 0;
+      const res = await load(`ipfs://${SITE_V1}/index.html`, loopbackBackend(ref, node.url));
+      // The fake node serves blocks only: the fetch's own 404, passed on.
+      expect(res.status).toBe(404);
+      await res.arrayBuffer();
+      expect(node.asked.map(({ url }) => url)).toEqual([`/ipfs/${SITE_V1}/index.html`]);
+    }
+    const off = await load(
+      `bzz://${SITE_A}/index.html`,
+      loopbackBackend({ ant: 'external', up: true }, node.url)
+    );
+    expect(off.status).toBe(404);
+    await off.arrayBuffer();
+    expect(shell.stats()).toEqual({ verifies: 0, pieces: 0 });
+    expect(mockAdmission.stats().active).toBe(0);
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
   test("a node that is down: the core's error plan, and the error page for a navigation", async () => {
     const down = await fakeNode(world);
     const downUrl = down.url;

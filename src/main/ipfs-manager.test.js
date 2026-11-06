@@ -16,6 +16,12 @@ const NATIVE_IPFS_DATA_DIR = path.join(PROFILE_IPFS_DATA_DIR, 'freedom-ipfs');
 const loadedContexts = [];
 
 const GATEWAY_PROBE_PATH = '/ipfs/bafkqaaa';
+// The trustless probe that follows it at activation (freedom-core design
+// 0009, Modes), for the same identity CID.
+const RAW_PROBE_PATH = `${GATEWAY_PROBE_PATH}?format=raw`;
+const CAR_PROBE_PATH = `${GATEWAY_PROBE_PATH}?format=car&dag-scope=entity`;
+const RAW_TYPE = 'application/vnd.ipld.raw';
+const CAR_TYPE = 'application/vnd.ipld.car; version=1; order=dfs; dups=y';
 
 // What a real gateway answers the probe CID with: an empty 200 carrying the
 // `X-Ipfs-Path` header every IPFS gateway sets. A plain 200 with a body is
@@ -25,9 +31,23 @@ function gatewayProbeResponse() {
   return new Response(null, { status: 200, headers: { 'x-ipfs-path': GATEWAY_PROBE_PATH } });
 }
 
+// What a gateway serving trustless responses answers the trustless probe
+// with: raw blocks, and ordered CARs with duplicates. Null for any other URL.
+function trustlessProbeResponse(url) {
+  if (String(url).endsWith(RAW_PROBE_PATH)) {
+    return new Response(null, { status: 200, headers: { 'content-type': RAW_TYPE } });
+  }
+  if (String(url).endsWith(CAR_PROBE_PATH)) {
+    return new Response(null, { status: 200, headers: { 'content-type': CAR_TYPE } });
+  }
+  return null;
+}
+
 function mockGatewayFetch(handler) {
   return jest.fn(async (url, init) => {
     if (String(url).endsWith(GATEWAY_PROBE_PATH)) return gatewayProbeResponse();
+    const probed = trustlessProbeResponse(url);
+    if (probed) return probed;
     if (handler) return handler(url, init);
     return new Response('external-body', { status: 200 });
   });
@@ -235,6 +255,9 @@ function loadIpfsManagerModule(options = {}) {
   // Main's grant check (freedom-core design 0010), which the service node
   // calls before each spawn: here it records the path it was asked about.
   const ipfsGrantRefusal = jest.fn(() => null);
+  // The core's verifier (core/dweb-verify.js), attached only when the core
+  // speaks protocol 2: none by default, as against the pinned core today.
+  const verifier = { attached: options.verifierAttached === true };
 
   const { mod } = loadMainModule(require.resolve('./ipfs-manager'), {
     app,
@@ -268,6 +291,9 @@ function loadIpfsManagerModule(options = {}) {
       }),
       [require.resolve('./dweb/fetch-admission')]: () => ({
         onDwebSessionClosed: (listener) => closeListeners.push(listener),
+      }),
+      [require.resolve('./core/dweb-verify')]: () => ({
+        dwebVerifier: () => (verifier.attached ? {} : null),
       }),
       [require.resolve('./service-locks')]: () => ({ getLockDir: () => '/tmp/freedom-locks' }),
       [require.resolve('./ipfs/ipfsd-gate')]: () => ({ takeIpfsGate }),
@@ -335,6 +361,7 @@ function loadIpfsManagerModule(options = {}) {
     torListeners,
     takeIpfsGate,
     ipfsGrantRefusal,
+    verifier,
     setStatusMessage,
     setErrorState,
     clearErrorState,
@@ -2795,12 +2822,18 @@ describe('external gateway transport', () => {
 
       expect(response.status).toBe(200);
       expect(await response.text()).toBe('external-body');
+      // The trustless probe goes the same way as the reachability probe.
       expect(net.urls()).toEqual([
         `${REMOTE_GATEWAY}${GATEWAY_PROBE_PATH}`,
+        `${REMOTE_GATEWAY}${RAW_PROBE_PATH}`,
+        `${REMOTE_GATEWAY}${CAR_PROBE_PATH}`,
         `${REMOTE_GATEWAY}/ipfs/bafy`,
       ]);
-      // The request headers the protocol handler sanitized still travel.
-      expect(net.requests[1].sentHeaders).toEqual({ range: 'bytes=0-5' });
+      // The probe asks with its `Accept`, and the request headers the
+      // protocol handler sanitized still travel.
+      expect(net.requests[1].sentHeaders).toEqual({ Accept: RAW_TYPE });
+      expect(net.requests[2].sentHeaders).toEqual({ Accept: CAR_TYPE });
+      expect(net.requests[3].sentHeaders).toEqual({ range: 'bytes=0-5' });
       // Neither the probe nor the content fetch may touch Chromium's HTTP
       // cache: a cached probe answer (Kubo serves `/ipfs/<cid>` `immutable,
       // max-age=29030400`) would report a dead gateway healthy forever, and a
@@ -2892,9 +2925,11 @@ describe('external gateway transport', () => {
     // was torn down rather than left following the redirect.
     expect(net.urls()).toEqual([
       `${REMOTE_GATEWAY}${GATEWAY_PROBE_PATH}`,
+      `${REMOTE_GATEWAY}${RAW_PROBE_PATH}`,
+      `${REMOTE_GATEWAY}${CAR_PROBE_PATH}`,
       `${REMOTE_GATEWAY}/ipfs/bafydir/docs`,
     ]);
-    expect(net.requests[1].aborted).toBe(true);
+    expect(net.requests[3].aborted).toBe(true);
   });
 
   test('strips content-encoding/content-length and hop-by-hop headers over Chromium', async () => {
@@ -3096,10 +3131,18 @@ describe('external gateway transport', () => {
         await jest.advanceTimersByTimeAsync(5000);
         await jest.advanceTimersByTimeAsync(1);
         await drainMicrotasks();
+        // The same again for the trustless probe the activation waits for.
+        await jest.advanceTimersByTimeAsync(1);
+        await drainMicrotasks();
 
         // The armed probe dials the onion name itself (remote DNS at the
         // proxy) and the start completes with no user action.
-        expect(net.urls()).toEqual([`${ONION_GATEWAY}${GATEWAY_PROBE_PATH}`]);
+        // Its trustless probe follows, over the same route, before it serves.
+        expect(net.urls()).toEqual([
+          `${ONION_GATEWAY}${GATEWAY_PROBE_PATH}`,
+          `${ONION_GATEWAY}${RAW_PROBE_PATH}`,
+          `${ONION_GATEWAY}${CAR_PROBE_PATH}`,
+        ]);
         await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
           status: 'running',
         });
@@ -3790,5 +3833,342 @@ describe('the freedom-ipfsd backend (the default)', () => {
       nativeServiceStats: '{"store":{"block_count":3},"budget":{}}',
     });
     expect(node.refreshStats).toHaveBeenCalledTimes(1);
+  });
+});
+
+// freedom-core design 0009: "Verify content from this node", the gateway's
+// trustless probe at activation, and both in the backend each request
+// captures (Modes, Verify plans; step 6, amendment 2's `car`).
+describe('verification of an external gateway', () => {
+  const GATEWAY = 'http://127.0.0.1:8080';
+  const realFetch = global.fetch;
+
+  beforeEach(() => {
+    selectBackend('addon');
+  });
+
+  afterEach(async () => {
+    for (const ctx of loadedContexts.splice(0)) {
+      await ctx.mod.stopIpfs();
+    }
+    global.fetch = realFetch;
+    selectBackend(originalBackend);
+    jest.useRealTimers();
+    jest.clearAllMocks();
+  });
+
+  const drainMicrotasks = async () => {
+    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+  };
+
+  // A gateway answering the probes as `answers` says: `raw` and `car` are the
+  // trustless probe's responses (a Response, or a function of the request
+  // init), and everything else is content.
+  function gatewayAnswering({ up = () => true, raw, car } = {}) {
+    return jest.fn(async (url, init) => {
+      const target = String(url);
+      if (!up()) return new Response('bad gateway', { status: 502 });
+      if (target.endsWith(GATEWAY_PROBE_PATH)) return gatewayProbeResponse();
+      if (target.endsWith(RAW_PROBE_PATH)) {
+        return typeof raw === 'function'
+          ? raw(init)
+          : (raw ?? new Response(null, { status: 200, headers: { 'content-type': RAW_TYPE } }));
+      }
+      if (target.endsWith(CAR_PROBE_PATH)) {
+        return typeof car === 'function'
+          ? car(init)
+          : (car ?? new Response(null, { status: 200, headers: { 'content-type': CAR_TYPE } }));
+      }
+      return new Response('external-body', { status: 200 });
+    });
+  }
+
+  const probesOf = (fetchMock) =>
+    fetchMock.mock.calls
+      .map(([url]) => String(url).slice(GATEWAY.length))
+      .filter((target) => target === RAW_PROBE_PATH || target === CAR_PROBE_PATH);
+
+  function profileWith(ipfs) {
+    return {
+      metadata: { nodes: { ipfs: { mode: 'external', externalGateway: GATEWAY, ...ipfs } } },
+    };
+  }
+
+  async function startExternal({ ipfs = {}, attached = true, ...answers } = {}) {
+    global.fetch = gatewayAnswering(answers);
+    const activeProfile = profileWith(ipfs);
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      activeProfile,
+      verifierAttached: attached,
+    });
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    return { ctx, activeProfile };
+  }
+
+  const backendOf = (ctx) => {
+    const { ref, car } = ctx.mod.ipfsBackend();
+    return { ref, car };
+  };
+
+  test('on by default: a gateway with raw blocks and ordered CARs verifies, with `car`', async () => {
+    const { ctx } = await startExternal();
+    expect(backendOf(ctx)).toEqual({
+      ref: { ipfs: 'gateway', up: true, verify: true },
+      car: true,
+    });
+    expect(ctx.mod.getExternalGatewaySupport()).toEqual({ raw: true, car: true });
+    expect(ctx.mod.getNativeDiagnostics().externalSupport).toEqual({ raw: true, car: true });
+  });
+
+  test('the probe: two requests after bafkqaaa, each with its Accept, never following', async () => {
+    const { ctx } = await startExternal();
+    const calls = global.fetch.mock.calls.map(([url, init]) => [String(url), init]);
+    const targets = calls.map(([url]) => url.slice(GATEWAY.length));
+    // The reachability probe first, then the trustless one, before anything
+    // is served (the Kubo version probe goes elsewhere).
+    expect(targets.filter((t) => t.startsWith('/ipfs/'))).toEqual([
+      GATEWAY_PROBE_PATH,
+      RAW_PROBE_PATH,
+      CAR_PROBE_PATH,
+    ]);
+    const init = (target) => calls.find(([url]) => url === `${GATEWAY}${target}`)[1];
+    expect(init(RAW_PROBE_PATH)).toMatchObject({
+      method: 'GET',
+      headers: { Accept: RAW_TYPE },
+      redirect: 'manual',
+    });
+    expect(init(CAR_PROBE_PATH)).toMatchObject({
+      method: 'GET',
+      headers: { Accept: CAR_TYPE },
+      redirect: 'manual',
+    });
+    expect(ctx.log.info).toHaveBeenCalledWith(
+      '[IPFS] External gateway serves raw blocks: yes, ordered CARs: yes'
+    );
+  });
+
+  test('raw blocks without ordered CARs: verified, every block fetched raw', async () => {
+    for (const car of [
+      new Response(null, {
+        status: 200,
+        headers: { 'content-type': 'application/vnd.ipld.car; version=1' },
+      }),
+      new Response('nope', { status: 400 }),
+      () => Promise.reject(new TypeError('fetch failed')),
+    ]) {
+      const { ctx } = await startExternal({ car });
+      expect(backendOf(ctx)).toEqual({
+        ref: { ipfs: 'gateway', up: true, verify: true },
+        car: false,
+      });
+      expect(ctx.mod.getExternalGatewaySupport()).toEqual({ raw: true, car: false });
+      await ctx.mod.stopIpfs();
+    }
+  });
+
+  test('a gateway without raw blocks is `unsupported`, with no `verify` and no `car`', async () => {
+    for (const raw of [
+      // A gateway that ignores `format`, a dev server, a refusal, a
+      // redirect (not followed), a network failure.
+      new Response('', { status: 200, headers: { 'content-type': 'text/plain' } }),
+      new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+      new Response('not acceptable', { status: 406 }),
+      new Response(null, { status: 301, headers: { location: '/elsewhere' } }),
+      () => Promise.reject(new TypeError('fetch failed')),
+    ]) {
+      // Its CAR answer counts for nothing without raw blocks.
+      const { ctx } = await startExternal({ raw });
+      expect(backendOf(ctx)).toEqual({
+        ref: { ipfs: 'gateway', up: true, unsupported: true },
+        car: false,
+      });
+      expect(ctx.mod.getExternalGatewaySupport()).toEqual({ raw: false, car: false });
+      await ctx.mod.stopIpfs();
+    }
+  });
+
+  test('a probe that never answers is bounded, and reads as no raw blocks', async () => {
+    jest.useFakeTimers();
+    const hang = (init) =>
+      new Promise((_, reject) => {
+        init.signal.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError'))
+        );
+      });
+    global.fetch = gatewayAnswering({ raw: hang, car: hang });
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      activeProfile: profileWith({}),
+      verifierAttached: true,
+    });
+    ctx.mod.registerIpfsIpc();
+    const started = ctx.mod.startIpfs();
+    await drainMicrotasks();
+    // Not serving until the probe is over.
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'starting',
+    });
+    await jest.advanceTimersByTimeAsync(2000);
+    await started;
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'running',
+    });
+    expect(backendOf(ctx).ref).toEqual({ ipfs: 'gateway', up: true, unsupported: true });
+  });
+
+  test('with the setting off, the two-key reference and no `car`, the probe still asked', async () => {
+    const { ctx } = await startExternal({ ipfs: { verify: false } });
+    expect(backendOf(ctx)).toEqual({ ref: { ipfs: 'gateway', up: true }, car: false });
+    // Probed all the same, so turning the setting on needs no restart.
+    expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
+    expect(ctx.mod.getExternalGatewaySupport()).toEqual({ raw: true, car: true });
+
+    // Off on an unsupported gateway: nothing either.
+    await ctx.mod.stopIpfs();
+    const unsupported = await startExternal({
+      ipfs: { verify: false },
+      raw: new Response('', { status: 404 }),
+    });
+    expect(backendOf(unsupported.ctx)).toEqual({
+      ref: { ipfs: 'gateway', up: true },
+      car: false,
+    });
+  });
+
+  test('a change of the setting applies to the backends captured after it (Binding)', async () => {
+    const { ctx, activeProfile } = await startExternal();
+    const before = ctx.mod.ipfsBackend();
+    activeProfile.metadata.nodes.ipfs.verify = false;
+    const off = ctx.mod.ipfsBackend();
+    activeProfile.metadata.nodes.ipfs.verify = true;
+    const on = ctx.mod.ipfsBackend();
+
+    // A captured backend keeps what it was captured with.
+    expect(before.ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+    expect(before.car).toBe(true);
+    expect(off.ref).toEqual({ ipfs: 'gateway', up: true });
+    expect(off.car).toBe(false);
+    expect(on.ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+    // No probe for either change: the result is the activation's.
+    expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
+  });
+
+  test('against a core without the verifier (protocol 1), the two-key reference', async () => {
+    const { ctx } = await startExternal({ attached: false });
+    expect(backendOf(ctx)).toEqual({ ref: { ipfs: 'gateway', up: true }, car: false });
+    // The probe's result is kept all the same.
+    expect(ctx.mod.getExternalGatewaySupport()).toEqual({ raw: true, car: true });
+    ctx.verifier.attached = true;
+    expect(backendOf(ctx).ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+    ctx.verifier.attached = false;
+    expect(backendOf(ctx).ref).toEqual({ ipfs: 'gateway', up: true });
+  });
+
+  test('the result is fixed for the activation: a gateway that stops serving raw blocks fails, not falls back', async () => {
+    jest.useFakeTimers();
+    let serving = true;
+    global.fetch = gatewayAnswering({
+      raw: () =>
+        serving
+          ? new Response(null, { status: 200, headers: { 'content-type': RAW_TYPE } })
+          : new Response('gone', { status: 404 }),
+    });
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      activeProfile: profileWith({}),
+      verifierAttached: true,
+    });
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    serving = false;
+    // The 5 s health checks go on probing bafkqaaa, never the trustless forms.
+    await jest.advanceTimersByTimeAsync(15000);
+    expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
+    expect(backendOf(ctx).ref).toEqual({ ipfs: 'gateway', up: true, verify: true });
+
+    // A new activation probes again.
+    await ctx.mod.stopIpfs();
+    expect(ctx.mod.getExternalGatewaySupport()).toBeNull();
+    await ctx.mod.startIpfs();
+    expect(backendOf(ctx).ref).toEqual({ ipfs: 'gateway', up: true, unsupported: true });
+  });
+
+  test('a gateway that was down at start is probed when it comes up, before it serves', async () => {
+    jest.useFakeTimers();
+    let up = false;
+    global.fetch = gatewayAnswering({ up: () => up });
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      activeProfile: profileWith({}),
+      verifierAttached: true,
+    });
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'error',
+    });
+    // Standing by: the native node's absence, and no probe's result.
+    expect(backendOf(ctx).ref).toEqual({ ipfs: 'native', up: false });
+    expect(ctx.mod.getExternalGatewaySupport()).toBeNull();
+    expect(probesOf(global.fetch)).toEqual([]);
+
+    up = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    await drainMicrotasks();
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'running',
+    });
+    expect(probesOf(global.fetch)).toEqual([RAW_PROBE_PATH, CAR_PROBE_PATH]);
+    expect(backendOf(ctx)).toEqual({
+      ref: { ipfs: 'gateway', up: true, verify: true },
+      car: true,
+    });
+  });
+
+  test('a standby whose state moves on while its probe is out does not activate', async () => {
+    jest.useFakeTimers();
+    let up = false;
+    let releaseRaw;
+    global.fetch = gatewayAnswering({
+      up: () => up,
+      raw: () =>
+        new Promise((resolve) => {
+          releaseRaw = () =>
+            resolve(new Response(null, { status: 200, headers: { 'content-type': RAW_TYPE } }));
+        }),
+    });
+    const ctx = loadIpfsManagerModule({
+      nativeAvailable: false,
+      activeProfile: profileWith({}),
+      verifierAttached: true,
+    });
+    ctx.mod.registerIpfsIpc();
+    await ctx.mod.startIpfs();
+    up = true;
+    await jest.advanceTimersByTimeAsync(5000);
+    await drainMicrotasks();
+    expect(releaseRaw).toBeDefined();
+    // The user stops the node while the trustless probe is out.
+    await ctx.mod.stopIpfs();
+    releaseRaw();
+    await drainMicrotasks();
+    await expect(ctx.ipcMain.invoke(IPC.IPFS_GET_STATUS)).resolves.toMatchObject({
+      status: 'stopped',
+    });
+    expect(ctx.mod.getExternalGatewaySupport()).toBeNull();
+    expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: false });
+  });
+
+  test('the bundled node keeps its two-key reference, with the setting and the verifier', async () => {
+    const ctx = loadIpfsManagerModule({
+      activeProfile: { metadata: { nodes: { ipfs: { mode: 'managed', verify: true } } } },
+      verifierAttached: true,
+    });
+    await ctx.mod.startIpfs();
+    expect(ctx.mod.ipfsBackend().ref).toEqual({ ipfs: 'native', up: true });
+    expect(ctx.mod.ipfsBackend().car).toBeUndefined();
+    expect(ctx.mod.getExternalGatewaySupport()).toBeNull();
   });
 });

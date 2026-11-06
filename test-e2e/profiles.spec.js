@@ -246,6 +246,87 @@ test('Nodes commit on change, and an external switch waits for its endpoint (#27
   await expect(mode).toHaveValue('managed');
 });
 
+// "Verify content from this node" (freedom-core design 0009, Modes): on by
+// default beside an external node's endpoint, committed on change as a patch
+// of its own, and the unverified note shown only while it is off. A managed
+// node has no switch.
+test('Nodes: an external node verifies by default, and its switch commits on its own', async ({
+  window,
+  electronApp,
+}) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/nodes');
+  await input.press('Enter');
+
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/settings.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+
+  const stored = (protocol) =>
+    page.evaluate(
+      (p) => window.freedomAPI.getActiveProfile().then((profile) => profile?.nodes?.[p] || {}),
+      protocol
+    );
+  const status = page.locator('#profile-nodes-status');
+  // Focus moves into the settings page, so typing lands in its fields rather
+  // than in the address bar the URL was typed into.
+  await status.click();
+
+  for (const [protocol, field, endpoint] of [
+    ['bee', 'externalApi', 'http://127.0.0.1:1733'],
+    ['ipfs', 'externalGateway', 'http://127.0.0.1:8088'],
+  ]) {
+    const row = page.locator(`.profile-node[data-protocol="${protocol}"]`);
+    const setting = row.locator('[data-verify-setting]');
+    const verify = row.locator('[data-node-verify]');
+    const note = row.locator('[data-unverified-note]');
+    const mode = row.locator('[data-node-mode]');
+    await expect(row).toBeVisible();
+    expect((await stored(protocol)).mode || 'managed').toBe('managed');
+    await expect(setting).toBeHidden();
+
+    // Picking external shows it at once, on, with no note.
+    await mode.selectOption('external');
+    await expect(setting).toBeVisible();
+    await expect(verify).toBeChecked();
+    await expect(note).toBeHidden();
+    await expect(row.getByText('Verify content from this node', { exact: true })).toBeVisible();
+    const endpointField = row.locator(`[data-endpoint-field="${field}"]`);
+    await endpointField.fill(endpoint);
+    await endpointField.press('Tab');
+    await expect.poll(async () => (await stored(protocol)).mode).toBe('external');
+    // On by default: nothing stored for it.
+    expect((await stored(protocol)).verify).toBeUndefined();
+
+    // Off: saved on its own, endpoint untouched, the note says what it means.
+    // The switch is the slider the user clicks; its input has no size.
+    await setting.locator('.slider').click();
+    await expect.poll(async () => (await stored(protocol)).verify).toBe(false);
+    expect(await stored(protocol)).toMatchObject({ mode: 'external', [field]: endpoint });
+    await expect(status).toHaveText(/saved\. It applies to pages loaded from now on\./);
+    await expect(verify).not.toBeChecked();
+    await expect(note).toBeVisible();
+    await expect(note).toHaveText(/Freedom does not verify content/);
+
+    // Back on.
+    await setting.locator('.slider').click();
+    await expect(verify).toBeChecked();
+    await expect.poll(async () => (await stored(protocol)).verify).toBe(true);
+    await expect(note).toBeHidden();
+
+    // Managed again: no switch, and the stored choice stays for next time.
+    await mode.selectOption('managed');
+    await expect.poll(async () => (await stored(protocol)).mode).toBe('managed');
+    await expect(setting).toBeHidden();
+    expect((await stored(protocol)).verify).toBe(true);
+  }
+});
+
 // Three edges of the Nodes commit path: a write that landed but whose apply
 // step threw is reported as saved, a refusal that isn't about the endpoint
 // doesn't flag the endpoint field, and an older refresh landing after a

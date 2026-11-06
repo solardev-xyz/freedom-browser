@@ -551,6 +551,67 @@ describe('profile catalog', () => {
     expect(catalog.profiles[0].slot).toBe(7);
   });
 
+  // "Verify content from this node" (freedom-core design 0009) is kept with
+  // the node's endpoint: absent means on, and a stored choice survives an
+  // update of another field, a launch's normalization, and an adoption's
+  // rebase.
+  test('keeps the Swarm and IPFS verification setting wherever node config is rebuilt', () => {
+    const appRoot = track(makeTempDir());
+    const profileDir = path.join(appRoot, 'Profiles', 'work');
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, 'profile.json'),
+      JSON.stringify({
+        version: 1,
+        id: 'work',
+        displayName: 'Work',
+        slot: 3,
+        nodes: {
+          bee: { mode: 'external', externalApi: 'http://127.0.0.1:1633', verify: false },
+          ipfs: { mode: 'external', externalGateway: 'http://127.0.0.1:8080', verify: false },
+        },
+      })
+    );
+
+    // Adopted: the rebase keeps the stored choice.
+    const adopted = ensureProfile(appRoot, 'work');
+    expect(adopted.metadata.nodes.bee).toMatchObject({ mode: 'external', verify: false });
+    expect(adopted.metadata.nodes.ipfs).toMatchObject({ mode: 'external', verify: false });
+
+    // A later launch's normalization keeps it too.
+    const relaunched = ensureProfile(appRoot, 'work');
+    expect(relaunched.metadata.nodes.bee.verify).toBe(false);
+    expect(relaunched.metadata.nodes.ipfs.verify).toBe(false);
+
+    // Patched on its own, it merges with the mode and endpoint.
+    const profile = {
+      id: 'work',
+      appRoot,
+      userDataDir: profileDir,
+      metadata: relaunched.metadata,
+    };
+    const on = updateProfileNodeConfig(profile, 'ipfs', { verify: true });
+    expect(on.metadata.nodes.ipfs).toMatchObject({
+      mode: 'external',
+      externalGateway: 'http://127.0.0.1:8080',
+      verify: true,
+      backend: 'freedom-ipfs',
+    });
+    const endpoint = updateProfileNodeConfig(profile, 'bee', {
+      mode: 'external',
+      externalApi: 'http://127.0.0.1:1634',
+    });
+    expect(endpoint.metadata.nodes.bee).toMatchObject({
+      externalApi: 'http://127.0.0.1:1634',
+      verify: false,
+    });
+
+    // A profile that never chose has no member at all: on by default.
+    const fresh = ensureProfile(appRoot, 'fresh');
+    expect(fresh.metadata.nodes.bee).not.toHaveProperty('verify');
+    expect(fresh.metadata.nodes.ipfs).not.toHaveProperty('verify');
+  });
+
   test("lists every profile with its slot: the catalog's, and those it doesn't list", () => {
     const appRoot = track(makeTempDir());
     const { record } = ensureProfile(appRoot, 'work');
