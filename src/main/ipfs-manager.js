@@ -23,7 +23,6 @@ const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const { ipfsGrantRefusal } = require('./service-grant');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const { dwebVerifier } = require('./core/dweb-verify');
-const { verificationFailures } = require('./dweb/verify-failures');
 const {
   IPFS_CAR_ACCEPT,
   IPFS_CAR_PROBE_PATH,
@@ -34,6 +33,8 @@ const {
   isIpfsGatewayProbeResponse,
   isRawProbeResponse,
 } = require('./ipfs/ipfs-gateway-probe');
+// The nodes panel's count of the gateway's verification failures (0009).
+const { verificationFailures } = require('./dweb/verify-failures');
 // Every dial of the configured gateway goes through this one transport, so a
 // remote endpoint follows the session's proxy policy (the Tor PAC) instead of
 // undici's own socket stack, which never sees it. See ipfs/gateway-transport.js.
