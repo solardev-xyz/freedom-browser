@@ -2491,8 +2491,18 @@ describe('Ant bridge cancellation', () => {
       ['eth_getStorageAt', (tag) => ['0xabc', '0x0', tag]],
       ['eth_getBlockByNumber', (tag) => [tag, false]],
     ];
+    // The blocks Colibri can't prove a read at, and how its refusal names
+    // each: the two tags, and EIP-1898's two block objects, which it binds
+    // to no block.
+    const NOT_A_STRING = "a block that isn't a string";
+    const BLOCKS = [
+      ['"pending"', 'pending', 'block "pending"'],
+      ['"earliest"', 'earliest', 'block "earliest"'],
+      ['an EIP-1898 block hash', { blockHash: '0x' + '11'.repeat(32), requireCanonical: true }, NOT_A_STRING],
+      ['an EIP-1898 block number', { blockNumber: '0x10d4f00' }, NOT_A_STRING],
+    ];
     const UNPROVABLE = TAGGED.flatMap(([method, params]) =>
-      ['pending', 'earliest'].map((tag) => [method, tag, params(tag)])
+      BLOCKS.map(([label, block, refusal]) => [method, label, params(block), refusal])
     );
 
     function readOrder(order) {
@@ -2516,7 +2526,7 @@ describe('Ant bridge cancellation', () => {
     }
     const asked = () => global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
 
-    test.each(UNPROVABLE)('%s at "%s" skips Colibri for Direct, unverified', async (method, _tag, params) => {
+    test.each(UNPROVABLE)('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
       readOrder(['colibri', 'direct']);
       rpcAnswers();
       mockRequestViaColibri.mockResolvedValue('colibri:unproven');
@@ -2530,7 +2540,7 @@ describe('Ant bridge cancellation', () => {
       expect(asked()).toEqual([expect.objectContaining({ method, params })]);
     });
 
-    test.each(UNPROVABLE)('%s at "%s" skips Colibri for the quorum, which labels it', async (method, _tag, params) => {
+    test.each(UNPROVABLE)('%s at %s skips Colibri for the quorum, which labels it', async (method, _label, params) => {
       readOrder(['myotis', 'colibri', 'quorum', 'direct']);
       rpcAnswers();
       mockRequestViaColibri.mockResolvedValue('colibri:unproven');
@@ -2543,17 +2553,60 @@ describe('Ant bridge cancellation', () => {
       expect(mockRequestViaColibri).not.toHaveBeenCalled();
     });
 
-    test.each(UNPROVABLE)('%s at "%s" is refused by a Colibri-only read order', async (method, tag, params) => {
+    test.each(UNPROVABLE)('%s at %s is refused by a Colibri-only read order', async (method, _label, params, refusal) => {
       readOrder(['colibri']);
       global.fetch = jest.fn();
 
       await expect(request(1, method, params)).rejects.toThrow(
         `All chain sources failed for ${method} ` +
-          `(colibri: Colibri cannot prove ${method} at block "${tag}")`
+          `(colibri: Colibri cannot prove ${method} at ${refusal})`
       );
       expect(mockRequestViaColibri).not.toHaveBeenCalled();
       expect(global.fetch).not.toHaveBeenCalled();
     });
+
+    // Any other value there that isn't a string goes elsewhere too, a
+    // present `undefined` included (it is sent as null).
+    test.each(TAGGED.flatMap(([method, params]) =>
+      [['null', null], ['a number', 16], ['a boolean', true], ['an array', ['latest']], ['undefined', undefined]]
+        .map(([label, block]) => [method, label, params(block)])
+    ))('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // No block parameter at all asks for `latest`, which Colibri proves.
+    test.each([
+      ['eth_getBalance', ['0xabc']],
+      ['eth_getCode', ['0xabc']],
+      ['eth_getTransactionCount', ['0xabc']],
+      ['eth_call', [CALL]],
+      ['eth_estimateGas', [CALL]],
+      ['eth_getStorageAt', ['0xabc', '0x0']],
+      ['eth_getBlockByNumber', []],
+    ])(
+      '%s without its block parameter %j is still Colibri\'s, verified',
+      async (method, params) => {
+        readOrder(['colibri', 'direct']);
+        rpcAnswers();
+        mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+        await expect(request(1, method, params)).resolves.toEqual({
+          result: 'colibri:proven',
+          source: 'colibri',
+          verified: true,
+        });
+        expect(global.fetch).not.toHaveBeenCalled();
+      }
+    );
 
     // Every other block Colibri proves at: a named tag, a number, a hash.
     test.each(TAGGED.flatMap(([method, params]) =>

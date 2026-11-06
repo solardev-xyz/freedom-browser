@@ -115,7 +115,9 @@ READ_METHODS.add('web3_sha3');
 // - a read at a `pending` or `earliest` block (`eth_has_unproofable_block_tag`:
 //   a pending block has no beacon block, and the earliest predates the beacon
 //   chain): requestColibri refuses it before Colibri is asked
-//   (colibriUnprovableTag), and the next source answers.
+//   (colibriUnprovableBlock), and the next source answers.
+// It refuses a block that isn't a string too, such as an EIP-1898 object:
+// Colibri would answer it as success, but for another block, or fail it.
 const COST = Object.freeze({
   SERIALIZED: 'serialized',
   PROOF: 'proof',
@@ -185,13 +187,24 @@ const COLIBRI_BLOCK_PARAM = new Map([
 // exactly (`eth_json_is_unproofable_tag`), so does this.
 const COLIBRI_UNPROVABLE_TAGS = new Set(['pending', 'earliest']);
 
-// The block tag that makes this read one Colibri would answer unproven, or
-// null.
-function colibriUnprovableTag(method, params) {
+// The block that makes this read one Colibri can't prove, as its refusal
+// names it, or null. That is the value where the method takes its block
+// parameter, when it is:
+// - `pending` or `earliest`, which Colibri answers from a public RPC;
+// - anything but a string: an EIP-1898 object (`{ blockHash,
+//   requireCanonical }` or `{ blockNumber }`), null, a number. Colibri 3.0.3
+//   binds no such block. In privacy mode its call path reads any non-string
+//   as `latest` (call_ctx.c's call_lazy_fetch_block_header, verify_call.c's
+//   proof_call), and its account verifier compares no requested block with
+//   the proven one (verify_account_proof.c).
+// A params array too short to hold the parameter asks for `latest`, as
+// every source reads it, and stays Colibri's.
+function colibriUnprovableBlock(method, params) {
   const index = COLIBRI_BLOCK_PARAM.get(method);
-  if (index === undefined || !Array.isArray(params)) return null;
-  const tag = params[index];
-  return COLIBRI_UNPROVABLE_TAGS.has(tag) ? tag : null;
+  if (index === undefined || !Array.isArray(params) || index >= params.length) return null;
+  const block = params[index];
+  if (typeof block !== 'string') return 'a block that isn\'t a string';
+  return COLIBRI_UNPROVABLE_TAGS.has(block) ? `block "${block}"` : null;
 }
 
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
@@ -1236,9 +1249,9 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   if (!sourceServesMethod('colibri', method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
   }
-  const unprovableTag = colibriUnprovableTag(method, params);
-  if (unprovableTag !== null) {
-    throw new SourceUnavailableError(`Colibri cannot prove ${method} at block "${unprovableTag}"`);
+  const unprovable = colibriUnprovableBlock(method, params);
+  if (unprovable !== null) {
+    throw new SourceUnavailableError(`Colibri cannot prove ${method} at ${unprovable}`);
   }
   if (colibriBackedOff(chainId, method)) {
     throw new SourceUnavailableError(
