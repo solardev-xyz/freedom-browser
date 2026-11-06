@@ -707,6 +707,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # Profile delete under the profile's core gate, against the binary just
+      # downloaded, on each OS (freedom-core design 0001, "Lifetime lock"):
+      # a running core fails the delete and no core starts during one, and
+      # the default profile's delete in the macOS and Windows layout keeps
+      # the shared lock directory, so another profile's core keeps its gate.
+      - name: freedom-cored gate (real binary)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/core/core-gate.integration.test.js
+        env:
+          FREEDOM_CORED_GATE_TEST: '1'
+
       # ── was the `e2e-address-bar-clipboard` job ──
       # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
       - name: Run address-bar clipboard E2E

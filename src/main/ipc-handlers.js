@@ -40,6 +40,7 @@ const { openOrFocusProfile } = require('./profile-launcher');
 const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
+const { withCoreGate } = require('./core/core-gate');
 const { withIpfsGate } = require('./ipfs/ipfsd-gate');
 const { relaunchArgs } = require('./launch-urls');
 
@@ -605,10 +606,12 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
       );
     }
 
-    // Its IPFS data is removed under the data directory's gate: a writer
-    // that holds it fails the delete (freedom-core design 0007, "Lifetime
-    // lock"; ipfs/ipfsd-gate.js).
+    // It is removed under every gate it has, the core's first: its core
+    // still running on its identity directory fails the delete (freedom-core
+    // design 0001, "Lifetime lock"; core/core-gate.js), and so does a writer
+    // holding its IPFS data directory's gate (design 0007; ipfs/ipfsd-gate.js).
     const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName, {
+      withCoreGate,
       withIpfsGate,
     });
     if (!result) {
