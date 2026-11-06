@@ -926,7 +926,9 @@ async function detectPaymentRequiredHandler(details) {
   // approval card below, the same refusal wallet-ipc applies to dApp
   // auto-approve rules. Nor does a request main cannot attribute to a live
   // user tab (the id names no guest, or one already gone): custody cannot
-  // be read for it, so it fails closed to the card as well.
+  // be read for it, so it fails closed to the card as well. Custody is read
+  // again as the auto-pay is charged and signed (sign-flow.js), so one held
+  // for an unlock or a device doesn't pay once its tab is in Agent custody.
   //
   // The cap is charged here, in the same turn as the coverage check and
   // before anything is signed (#1024): two auto-pays can't both be signed
@@ -999,9 +1001,10 @@ async function detectPaymentRequiredHandler(details) {
           held = null;
           if (isCapNotCoveredError(err)) {
             // The cap no longer covers it (spent while the vault was
-            // being unlocked, say): nothing was signed, and it goes to
-            // the approval card below like any other charge.
-            log.info(`[x402:auto-pay] cap no longer covers ${sanitizeUrlForLog(url)}; asking the user`);
+            // being unlocked, say), or the tab has gone into Agent
+            // custody since it was detected: nothing was signed, and it
+            // goes to the approval card below like any other charge.
+            log.info(`[x402:auto-pay] not paid from the cap (${err.message}): ${sanitizeUrlForLog(url)}; asking the user`);
             overCap = true;
             break;
           }
@@ -1027,8 +1030,20 @@ async function detectPaymentRequiredHandler(details) {
       // briefly while wc.loadURL kicks off the retry.
       setImmediate(() => {
         // Lazy require to dodge the intercept ↔ sign-flow circular dep.
-        const { signAndQueueRetry } = require('./sign-flow');
+        const { signAndQueueRetry, isCapNotCoveredError } = require('./sign-flow');
         signAndQueueRetry(id, { detection, authorizedBy: AUTHORIZED_BY.CAP, charge }).catch((err) => {
+          // The tab went into Agent custody before the signature could be
+          // stashed (#1044): nothing went out and the charge is back.
+          // Loading the page again brings its 402 back, which now goes to
+          // the approval card, as x402:resume-unlock does for a paywall
+          // the cap no longer covers.
+          if (isCapNotCoveredError(err)) {
+            log.info(`[x402:auto-pay] not paid from the cap (${err.message}); reloading ${sanitizeUrlForLog(url)} for the card`);
+            webContents.fromId(id)?.loadURL(url).catch((navErr) => {
+              log.error(`[x402:auto-pay] reload failed: ${navErr.message}`);
+            });
+            return;
+          }
           // Vault auto-locked between detection and sign: the cap already
           // authorised the charge, so we don't need a fresh approval —
           // just a vault unlock. Stash a resume token carrying THIS

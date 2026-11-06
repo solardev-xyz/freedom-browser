@@ -1,0 +1,1 @@
+- A site's x402 auto-pay allowance no longer pays for a tab that went into Agent custody while the payment waited for you to unlock the wallet or confirm on a hardware wallet. The payment asks you on its approval card instead, and nothing is counted against the allowance ([#1044](https://github.com/solardev-xyz/freedom-browser/issues/1044))

@@ -32,15 +32,30 @@ const {
 } = require('./intercept');
 const { grant: grantPermission, charge: chargeCap, refund: refundCharge } = require('./permissions');
 const { tupleFromAccept } = require('./payment-utils');
+const { isUserPageId } = require('../wallet/agent-tab-custody');
 
 // An auto-pay whose cap no longer covers it, at the moment it would be
 // signed: nothing is signed, and the charge goes to the approval card.
+// A tab that has gone into Agent custody is not covered either.
 const CAP_NOT_COVERED = 'X402_CAP_NOT_COVERED';
 
-function capNotCoveredError() {
-  const err = new Error("This payment is no longer within the site's auto-pay allowance");
+function capNotCoveredError(message = "This payment is no longer within the site's auto-pay allowance") {
+  const err = new Error(message);
   err.code = CAP_NOT_COVERED;
   return err;
+}
+
+// An allowance pays only for a live tab the user controls (#1044).
+// Detection reads custody as the 402 arrives (intercept.js); an auto-pay
+// is signed later, after an unlock the user may take minutes over, or a
+// confirmation on a hardware wallet, and the tab can have gone into Agent
+// custody meanwhile. So custody is read again as the auto-pay is charged
+// and signed. A tab in Agent custody is not covered, as at detection:
+// nothing is signed for it, and the charge goes to the approval card.
+function refuseUnlessUserTab(webContentsId) {
+  if (!isUserPageId(webContentsId)) {
+    throw capNotCoveredError("The site's auto-pay allowance pays only for an open tab that isn't in Agent custody");
+  }
 }
 
 function isCapNotCoveredError(err) {
@@ -111,7 +126,9 @@ function authorizationRunwaySeconds(payload) {
  * (`authorizedBy: CAP`) is signed only against a charge: the one the
  * detector took in the same turn as its coverage check (`opts.charge`),
  * or one taken here. If the cap no longer covers it, nothing is signed
- * and this throws CAP_NOT_COVERED. A payment the user approved is
+ * and this throws CAP_NOT_COVERED. It throws the same for a tab that is
+ * not a live one the user controls, read before the charge and again
+ * just before the stash (#1044). A payment the user approved is
  * charged to a cap that covers it (the one granted with it, say) as its
  * signature is stashed, as accounting; it goes out either way. The charge
  * rides on the pending payment: it is given back if the signature is
@@ -171,6 +188,9 @@ async function signAndStash(webContentsId, opts, held) {
 
   const tuple = tupleFromAccept(selectedAccept);
   const authorizedBy = opts.authorizedBy ?? AUTHORIZED_BY.MANUAL;
+  // An auto-pay is for a tab the user controls now, before the cap is
+  // charged or the vault opened: one resumed after an unlock included.
+  if (authorizedBy === AUTHORIZED_BY.CAP) refuseUnlessUserTab(webContentsId);
   // An auto-pay is charged before it is signed, with no await between
   // the charge and the decision to sign.
   if (authorizedBy === AUTHORIZED_BY.CAP && !held.charge) {
@@ -219,6 +239,12 @@ async function signAndStash(webContentsId, opts, held) {
       'Payment authorization expired while it was being confirmed. Please try again.'
     );
   }
+
+  // And again once it is signed: the sign awaited the vault, and perhaps a
+  // device, and the tab can have gone into Agent custody meanwhile. Nothing
+  // awaits from here to the stash, so a signature made for such a tab is
+  // dropped unsent, and its charge given back.
+  if (authorizedBy === AUTHORIZED_BY.CAP) refuseUnlessUserTab(webContentsId);
 
   const headerValue = Buffer.from(JSON.stringify(payload)).toString('base64');
   const headerName = outgoingHeaderForVersion(detected.requirements.x402Version);
