@@ -10,7 +10,8 @@
  *
  * **Which kinds a connection takes** is what its handshake granted
  * (`CORE_KINDS`, `serviceKinds(side)`). A freedom-cored connection takes
- * JSON and the fragment kinds, and refuses 0x02–0x0F. A service connection
+ * JSON and the fragment kinds, and refuses 0x02–0x0F until its protocol-2
+ * hello settles (`CORE_STREAM_KINDS` from then on). A service connection
  * whose handshake granted `stream` (design 0007, Frames) takes JSON and the
  * stream frames the other side sends, and no fragments:
  * - 0x02 data: an 8-byte big-endian stream ID, then 1 to 65 536 body bytes;
@@ -233,8 +234,8 @@ function decodeBegin(payload) {
 
 // ---- the kinds a connection takes -----------------------------------------
 
-/** A freedom-cored connection at protocol 1: JSON and the fragment kinds.
- * It never grants streams, so 0x02–0x0F are refused. */
+/** A freedom-cored connection before its hello settles protocol 2: JSON
+ * and the fragment kinds. No streams yet, so 0x02–0x0F are refused. */
 const CORE_KINDS = Object.freeze({ fragments: true, streams: null });
 
 /** A freedom-cored connection at protocol 2 (design 0009): JSON, the

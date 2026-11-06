@@ -198,13 +198,13 @@ jobs:
       # `core-deadlines.test.js` checks main's deadline table against, at one
       # reviewed commit: moved on purpose when the protocol's vectors or
       # method table change, never with freedom-core's main. It is the
-      # commit the pinned core, `cored-v0.10.0`, was built from. Each suite
+      # commit the pinned core, `cored-v0.11.0`, was built from. Each suite
       # fails if the file it is pointed at is missing.
       - name: Check out freedom-core's stream vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 88d4e229a4425abdb4b5f90aff22651029f704fe
+          ref: b9b69098972224d1c9fe7cd87173cf9173ceb36b
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
