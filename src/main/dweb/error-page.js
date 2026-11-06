@@ -19,17 +19,60 @@
  *   escaped as the details line.
  * - **Its texts** are plain-words versions of the messages, one per cause
  *   (0009's Failures table), the user's to change. A message the table
- *   doesn't know gets the generic text.
+ *   doesn't know gets the generic text. Strict mode's five refusals (0009,
+ *   Strict mode) each say why the page can't be verified and what the user
+ *   can do: the switch to turn on or off in Settings → Nodes, or another
+ *   node.
  *
  * The handler answers a request, not a tab, so the page can't be the
  * shell's own `pages/error.html`; it follows that page's look and words.
  */
+
+const { STRICT_MESSAGE } = require('./verify-plan');
 
 /** The longest URL the page shows; a longer one (a 414's) is left out. */
 const MAX_SHOWN_URL = 2048;
 
 const SWARM = 'your external Swarm node';
 const GATEWAY = 'your external IPFS gateway';
+
+/** Strict mode's page: one headline, and its cause and remedy in words. */
+const STRICT_TITLE = 'This profile loads only verified content';
+const STRICT_SETTING = '"Load only verified content from external nodes"';
+const strictText = (cause, remedy) =>
+  `This profile loads only content Freedom can verify, and this page can't be verified: ${cause}. ` +
+  `To load it, ${remedy}${remedy ? ', or ' : ''}turn off ${STRICT_SETTING} in Settings → Nodes.`;
+const STRICT_TEXTS = [
+  [
+    STRICT_MESSAGE.off,
+    strictText(
+      'verification is off for your external node',
+      'turn on "Verify content from this node"'
+    ),
+  ],
+  [
+    STRICT_MESSAGE.unsupported,
+    strictText(
+      `${GATEWAY} doesn't serve responses Freedom can verify`,
+      'use a gateway that serves raw blocks'
+    ),
+  ],
+  [
+    STRICT_MESSAGE.dnslink,
+    strictText("its address is a DNSLink name, which Freedom can't verify", ''),
+  ],
+  [
+    STRICT_MESSAGE.key,
+    strictText("its address is an IPNS name whose key type Freedom can't verify", ''),
+  ],
+  [
+    STRICT_MESSAGE.encrypted,
+    strictText(
+      "its address is an encrypted Swarm reference, which Freedom can't verify with an external node",
+      "use Freedom's own Swarm node"
+    ),
+  ],
+].map(([message, text]) => [message, { title: STRICT_TITLE, text }]);
 
 /** A cause's headline and plain words, by the exact message. */
 const TEXTS = new Map([
@@ -103,6 +146,7 @@ const TEXTS = new Map([
       text: 'A part of Freedom that loads this content stopped. Try again in a moment.',
     },
   ],
+  ...STRICT_TEXTS,
 ]);
 
 /** A node's final answer: "The external Swarm node answered 500". */

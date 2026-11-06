@@ -18,8 +18,16 @@
  * host's own; its query the admitted URL's; its content trust `verified`.
  * With verification on, a fetch is refused at `path` for any target the
  * core verifies: a hash host's request plans a verify, and a name's result
- * stays a fetch only in 0009's three unverified forms. Strict mode's checks
- * come with its setting.
+ * stays a fetch only in 0009's three unverified forms.
+ *
+ * Against a strict backend (`strict: true`, 0009 "Strict mode"), two checks
+ * change: a fetch is refused at `trust`, after every other check, since its
+ * content would be `unverified`; and an error plan may be a 403 with exactly
+ * one of strict mode's fixed messages. A 403 for a backend that isn't
+ * strict is refused at `error`. The request's own plan, which a plan's
+ * target is tied to, is made without strict mode, as the core's
+ * `request_target` makes it: strict mode is checked on its own, and the
+ * target is the same either way.
  *
  * A fetch plan is also judged against the request's own plan, made again
  * here with main's copy of the core's planning (`dweb-open.js`), as the
@@ -52,6 +60,8 @@ const {
 const {
   rootInForm,
   staysUnverified,
+  STRICT_MESSAGES,
+  STRICT_STATUS,
   VERIFY_BOUND_ERRORS,
   VERIFY_HEADERS,
   VERIFY_RESPONSE_OPS,
@@ -68,7 +78,9 @@ const MAX_QUEUE_MS = 15_000;
 const MAX_HEADERS_MS = 30_000;
 const MAX_BODY_IDLE_MS = 60_000;
 
-/** The statuses an error plan may carry: today's. */
+/** The statuses an error plan may carry: today's. 0009's refusals with
+ * fixed messages (strict mode's 403, the verifier's 414 and 431) are
+ * checked apart (`checkError`). */
 const ERROR_STATUSES = new Set([400, 404, 405, 415, 502, 503]);
 /** An error plan's message, in UTF-16 code units: twice the URL bound. */
 const MAX_MESSAGE_UNITS = 131_072;
@@ -263,10 +275,12 @@ function checkTrust(trust, backend, named) {
  * request (`dweb-open.js`): a hash host's target (`{ named: false, target }`),
  * which depends on the URL alone; a name host (`{ named: true }`), whose
  * target comes from the name's resolution; or null when no fetch answers the
- * request (a gateway-form URL, an invalid host).
+ * request (a gateway-form URL, an invalid host). Planned without strict
+ * mode, which is checked on its own: the target is the same either way.
  */
 function requestHost(request) {
-  const opened = openDweb({ url: request.url, method: request.method, backend: request.backend });
+  const { strict: _strict, ...backend } = request.backend || {};
+  const opened = openDweb({ url: request.url, method: request.method, backend });
   if (opened?.pending) return { named: true, target: null };
   if (opened?.fetch) return { named: false, target: opened.fetch.path };
   // A hash host the core verifies: the verify plan it plans to.
@@ -405,6 +419,8 @@ function checkFetch(body, request, scheme) {
   if (!checkRetry(body.retry, kind)) return 'retry';
   if (!checkTimers(body.timers, kind)) return 'timers';
   if (!checkResponse(body.response, kind)) return 'response';
+  // A strict backend never gets a fetch: its content would be unverified.
+  if (backend.strict === true) return 'trust';
   if (!checkTrust(body.trust, backend, host.named)) return 'trust';
   return null;
 }
@@ -426,11 +442,17 @@ function checkRedirect(body, request, scheme) {
   return same ? null : 'redirect';
 }
 
-/** One of today's statuses, the same code, and a bounded message; or,
- * against a backend whose verification is on, the verifier's 414 or 431
- * with its fixed message (0009, Bounds). */
+/** One of today's statuses, the same code, and a bounded message; or a
+ * refusal of 0009's with its fixed message: against a strict backend,
+ * strict mode's 403 with one of its messages (0009, Strict mode); against a
+ * backend whose verification is on, the verifier's 414 or 431 (0009,
+ * Bounds). */
 function checkError(body, request) {
   if (!exact(body, ['status', 'code', 'message'])) return 'shape';
+  if (body.status === STRICT_STATUS) {
+    const ok = request.backend?.strict === true && STRICT_MESSAGES.includes(body.message);
+    return ok && body.code === body.status ? null : 'error';
+  }
   const bound = Object.values(VERIFY_BOUND_ERRORS).find(({ status }) => status === body.status);
   if (bound) {
     const ok = request.backend?.verify === true && body.message === bound.message;
@@ -446,7 +468,8 @@ function checkError(body, request) {
  *
  * @param {unknown} plan - `dweb.open`'s `plan`
  * @param {{url: string, method?: string, backend: object}} request - as main
- *   admitted it; `backend` is the reference main sent (`{ ant | ipfs: mode, up }`)
+ *   admitted it; `backend` is the reference main sent (`{ ant | ipfs: mode,
+ *   up }`, with 0009's `verify`, `unsupported` and `strict` where true)
  * @returns {string|null} the refusal, or null for a plan main may use
  */
 function validatePlan(plan, request) {

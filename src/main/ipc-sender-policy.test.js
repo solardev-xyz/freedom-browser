@@ -160,6 +160,18 @@ describe('isSenderAllowed', () => {
     expect(refusedSettingsKeys(web(), { enableAi: true })).toEqual(['enableAi']);
   });
 
+  test('only Settings or the chrome may write strict mode over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    const off = { loadOnlyVerifiedContent: false };
+    expect(refusedSettingsKeys(page('settings.html'), off)).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), off)).toEqual([]);
+    for (const file of ['home.html', 'history.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { ...off, theme: 'dark' })).toEqual(['loadOnlyVerifiedContent']);
+    }
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), off)).toEqual(['loadOnlyVerifiedContent']);
+    expect(refusedSettingsKeys(web(), { enableAi: true, ...off })).toEqual(['enableAi', 'loadOnlyVerifiedContent']);
+  });
+
   test('a chrome sender must be the top frame of our index.html in a window', () => {
     expect(isSenderAllowed('wallet:send-transaction', chrome({ subFrame: true }))).toBe(false);
     expect(isSenderAllowed('wallet:send-transaction', chrome({ noFrame: true }))).toBe(false);

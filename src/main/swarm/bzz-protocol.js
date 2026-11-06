@@ -28,6 +28,7 @@ const log = require('../logger');
 const { MODE, getAntApiUrl, getService } = require('../service-registry');
 const { handleDwebRequest } = require('../dweb/dweb-handler');
 const { dwebVerifier } = require('../core/dweb-verify');
+const { loadsOnlyVerifiedContent } = require('../dweb/strict-mode');
 const { getActiveProfile } = require('../profile-resolver');
 const { isLoopbackGatewayUrl, netGatewayFetch } = require('../ipfs/gateway-transport');
 const { announceMainProcessAntDial } = require('./ant-api-main-dials');
@@ -167,10 +168,13 @@ function verifiesExternalAnt() {
  * Its verification is captured with it (freedom-core design 0009, Verify
  * plans): an external Ant, a reused one among them, carries `verify: true`
  * while the profile's setting is on. Ant has no probe: Bee's API, which Ant
- * follows, always serves `/chunks` and `/bytes`. The bundled Ant, and an
- * external one with the setting off, keep the two-key reference, as does
- * every Ant against a core without the verifier (protocol 1), which can't
- * serve a verify plan.
+ * follows, always serves `/chunks` and `/bytes`. The profile's strict mode
+ * is captured with it too: an external Ant carries `strict: true` while
+ * "Load only verified content from external nodes" is on, its verification
+ * on or off (`dweb/strict-mode.js`). The bundled Ant, and an external one
+ * with both settings off, keep the two-key reference, as does every Ant
+ * against a core without the verifier (protocol 1), which can't serve a
+ * verify plan or know strict mode.
  *
  * @param {object} [transport]
  * @param {Electron.Session} [transport.session] - the request's session
@@ -179,9 +183,17 @@ function verifiesExternalAnt() {
 function antBackend({ session = null, fetchImpl = fetch } = {}) {
   const url = getAntApiUrl() || null;
   const mode = getService('ant')?.mode === MODE.BUNDLED ? 'bundled' : 'external';
-  const verify = mode === 'external' && verifiesExternalAnt() && dwebVerifier() !== null;
+  // An external Ant, against a core whose verifier is attached.
+  const attached = mode === 'external' && dwebVerifier() !== null;
+  const verify = attached && verifiesExternalAnt();
+  const strict = attached && loadsOnlyVerifiedContent();
   return {
-    ref: { ant: mode, up: Boolean(url), ...(verify && { verify: true }) },
+    ref: {
+      ant: mode,
+      up: Boolean(url),
+      ...(verify && { verify: true }),
+      ...(strict && { strict: true }),
+    },
     url,
     request: ({ path, ...init }) => fetchOnce(`${url}${path}`, init, { session, fetchImpl }),
   };

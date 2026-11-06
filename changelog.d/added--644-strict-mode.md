@@ -1,0 +1,5 @@
+- Load only verified content from external nodes, off by default under Settings > Nodes, refuses what an external Swarm node or IPFS gateway would serve unverified, instead of loading it ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - It refuses content from a node whose verification is off or a gateway that can't be verified, a DNSLink name, an IPNS name whose key type can't be checked, and an encrypted Swarm reference
+  - A page it refuses says why, and how to load it
+  - Verified content still loads, and Freedom's own nodes aren't affected
+  - Turning it on or off applies to the pages loaded after it, with no restart

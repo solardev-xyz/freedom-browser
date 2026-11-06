@@ -79,7 +79,7 @@ function answerProbe(req, res) {
 // profile, the logger and the core's planner. The transport refuses any URL but
 // the gateway's: the manager's background Kubo RPC version probe would
 // otherwise dial :5001 on this machine.
-async function loadExternalStack(externalGateway, { verifier = null, verify } = {}) {
+async function loadExternalStack(externalGateway, { verifier = null, verify, settings } = {}) {
   const refused = [];
   const mockResolveEnsContent = jest.fn();
   const driver = createFakeDwebDriver({
@@ -105,6 +105,13 @@ async function loadExternalStack(externalGateway, { verifier = null, verify } = 
       // The core's verifier, attached only at protocol 2: none unless a test
       // plays one.
       [require.resolve('../core/dweb-verify')]: () => ({ dwebVerifier: () => verifier }),
+      // The profile's settings, when a test sets them (strict mode).
+      ...(settings && {
+        [require.resolve('../settings-store')]: () => ({
+          loadSettings: () => settings,
+          onSettingsChanged: () => () => {},
+        }),
+      }),
       [require.resolve('./gateway-transport')]: () => {
         const actual = jest.requireActual('./gateway-transport');
         return {
@@ -682,5 +689,50 @@ describe('ipfs: external gateway, verification captured with the backend', () =>
     expect(stack.driver.calls[0].backend).toEqual({ ipfs: 'gateway', up: true });
     expect(verifier.calls).toEqual([]);
     expect(res.status).toBe(206);
+  });
+
+  // Strict mode (0009, Strict mode): `strict` captured with the backend; the
+  // planner refuses what would load unverified, and nothing reaches the
+  // gateway for it, while verified content is served as without it.
+  test("strict mode: `strict` to the core, its 403 in place of the gateway's answer", async () => {
+    const { STRICT_MESSAGE } = require('../dweb/verify-plan');
+    const settings = { loadOnlyVerifiedContent: true };
+    const verifier = recordingVerifier();
+    for (const [options, ref, message] of [
+      [{ verify: false }, { ipfs: 'gateway', up: true, strict: true }, STRICT_MESSAGE.off],
+      [
+        { raw: false },
+        { ipfs: 'gateway', up: true, unsupported: true, strict: true },
+        STRICT_MESSAGE.unsupported,
+      ],
+    ]) {
+      trustless.raw = options.raw !== false;
+      await reload({ verifier, verify: options.verify, settings });
+      gateway.handle(rangeOrigin);
+      const res = await ipfs('/video.mp4', { headers: { Accept: NAVIGATION_ACCEPT } });
+      expect(stack.driver.calls[0].backend).toEqual(ref);
+      expect(res.status).toBe(403);
+      // A navigation: the error page, with the planner's message.
+      expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+      expect(await res.text()).toContain('This profile loads only verified content');
+      const json = await ipfs('/video.mp4');
+      expect(await json.json()).toEqual({ code: 403, message });
+      expect(gateway.requests).toHaveLength(0);
+    }
+    expect(verifier.calls).toEqual([]);
+
+    // Verified content: the verify plan, as without strict mode.
+    trustless.raw = true;
+    await reload({ verifier, settings });
+    const res = await ipfs('/video.mp4', { method: 'HEAD' });
+    expect(res.status).toBe(200);
+    expect(stack.driver.calls[0].backend).toEqual({
+      ipfs: 'gateway',
+      up: true,
+      verify: true,
+      strict: true,
+    });
+    expect(verifier.calls).toHaveLength(1);
+    expect(gateway.requests).toHaveLength(0);
   });
 });

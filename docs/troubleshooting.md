@@ -87,6 +87,7 @@ launch opens unchanged.
 - External mode is per profile and per protocol
 - The Nodes panel shows external/shared status when connected to an external node. For an IPFS gateway that doesn't serve raw blocks it also says "This gateway doesn't serve verifiable responses" while **Verify content from this node** is on: Freedom can't check what that gateway serves, so its content loads unverified
 - Freedom does not stop external nodes on quit
+- A page that says "This profile loads only verified content" was refused by **Load only verified content from external nodes** in **Settings → Nodes**: the page says why it couldn't be verified. Turn on **Verify content from this node** if that's the cause, or turn the setting off to load unverified content again
 
 ## ENS resolution not working
 
