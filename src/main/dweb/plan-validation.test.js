@@ -514,6 +514,86 @@ describe('verify plans (freedom-core design 0009)', () => {
     expect(planned(dnslink).verify).toBeUndefined();
   });
 
+  test("past the verifier's 8 KiB bound, a 414 or 431 in place of the verify plan", () => {
+    const { MAX_VERIFY_PATH: N, VERIFY_BOUND_ERRORS } = require('./verify-plan');
+    expect(N).toBe(8192);
+    const path = (n) => `/${'p'.repeat(n - 1)}`;
+    const query = (n) => `?${'q'.repeat(n - 1)}`;
+    const range = (n) => [['Range', `bytes=${'0'.repeat(n - 7)}-`]];
+    const url414 = { error: VERIFY_BOUND_ERRORS.url };
+    const header431 = { error: VERIFY_BOUND_ERRORS.header };
+    expect(url414.error).toEqual({
+      status: 414,
+      code: 414,
+      message: 'request URL too long to verify',
+    });
+    expect(header431.error).toEqual({
+      status: 431,
+      code: 431,
+      message: 'request header too large to verify',
+    });
+    // The path below the root, for every root.
+    for (const [base, backend] of [
+      [`bzz://${HASH}`, EXTERNAL_ANT],
+      [`ipfs://${CID}`, VERIFIED_GATEWAY],
+      [`ipns://${ED25519_NAME}`, VERIFIED_GATEWAY],
+    ]) {
+      const at = request(`${base}${path(N)}`, backend);
+      expect(planned(at).verify.path).toHaveLength(N);
+      expect(validatePlan(planned(at), at)).toBeNull();
+      const past = request(`${base}${path(N + 1)}`, backend);
+      expect(planned(past)).toEqual(url414);
+      expect(validatePlan(planned(past), past)).toBeNull();
+    }
+    // A Swarm path and query together.
+    const swarmAt = request(`bzz://${HASH}${path(N - 16)}${query(16)}`, EXTERNAL_ANT);
+    expect(planned(swarmAt).verify.query).toHaveLength(16);
+    const swarmPast = request(`bzz://${HASH}${path(N - 16)}${query(17)}`, EXTERNAL_ANT);
+    expect(planned(swarmPast)).toEqual(url414);
+    // An IPFS or IPNS query isn't counted: it only ties the plan to its URL.
+    for (const base of [`ipfs://${CID}`, `ipns://${ED25519_NAME}`]) {
+      for (const below of [path(2), path(N)]) {
+        const long = request(`${base}${below}${query(32_768)}`, VERIFIED_GATEWAY);
+        const plan = planned(long);
+        expect(plan.verify.query).toHaveLength(32_768);
+        expect(validatePlan(plan, long)).toBeNull();
+      }
+    }
+    // A header the verifier keeps; one it doesn't is never counted.
+    for (const [url, backend] of [
+      [`bzz://${HASH}/a`, EXTERNAL_ANT],
+      [`ipfs://${CID}/a`, VERIFIED_GATEWAY],
+    ]) {
+      expect(planned(request(url, backend, 'GET', range(N))).verify.headers).toHaveLength(1);
+      const past = request(url, backend, 'GET', range(N + 1));
+      expect(planned(past)).toEqual(header431);
+      expect(validatePlan(planned(past), past)).toBeNull();
+    }
+    const tag = [['If-None-Match', `"${'t'.repeat(N - 1)}"`]];
+    expect(planned(request(`ipfs://${CID}/a`, VERIFIED_GATEWAY, 'GET', tag))).toEqual(header431);
+    const other = [['X-Custom', 'x'.repeat(N + 1)]];
+    expect(
+      planned(request(`ipfs://${CID}/a`, VERIFIED_GATEWAY, 'GET', other)).verify
+    ).toBeDefined();
+  });
+
+  test("the verifier's 414 and 431 only with verification on, and only in their words", () => {
+    const { VERIFY_BOUND_ERRORS } = require('./verify-plan');
+    const verified = request(`bzz://${HASH}/`, EXTERNAL_ANT);
+    const off = request(`bzz://${HASH}/`, { ant: 'external', up: true });
+    const unsupported = request(`ipfs://${CID}/`, { ipfs: 'gateway', up: true, unsupported: true });
+    for (const error of Object.values(VERIFY_BOUND_ERRORS)) {
+      expect(validatePlan({ error }, verified)).toBeNull();
+      expect(validatePlan({ error }, off)).toBe('error');
+      expect(validatePlan({ error }, unsupported)).toBe('error');
+      expect(validatePlan({ error: { ...error, message: 'too long' } }, verified)).toBe('error');
+      expect(validatePlan({ error: { ...error, code: 400 } }, verified)).toBe('error');
+    }
+    const { url, header } = VERIFY_BOUND_ERRORS;
+    expect(validatePlan({ error: { ...url, message: header.message } }, verified)).toBe('error');
+    expect(validatePlan({ error: { ...header, message: url.message } }, verified)).toBe('error');
+  });
+
   test('every unknown or missing member is a shape refusal', () => {
     const req = request(`bzz://${HASH}/`, EXTERNAL_ANT);
     const plan = planned(req);
