@@ -58,3 +58,48 @@ test('a URL past what the page shows is left out, with its Try again link', asyn
   expect(html).not.toContain('Try again');
   expect(html).toContain('414: request URL too long');
 });
+
+// Strict mode's refusals (0009, Strict mode): each cause its own words, why
+// the page can't be verified and what the user can do, under one headline.
+test("strict mode's five refusals each have plain words: the cause and the way out", async () => {
+  const { STRICT_MESSAGE, STRICT_MESSAGES } = require('./verify-plan');
+  const generic = textsFor('something main never writes');
+  const texts = STRICT_MESSAGES.map((message) => textsFor(message));
+  expect(new Set(texts.map(({ text }) => text)).size).toBe(5);
+  for (const { title, text } of texts) {
+    expect(title).toBe('This profile loads only verified content');
+    expect(text).not.toBe(generic.text);
+    expect(text).toMatch(
+      /^This profile loads only content Freedom can verify, and this page can't be verified: /
+    );
+    expect(text).toContain(
+      'turn off "Load only verified content from external nodes" in Settings → Nodes.'
+    );
+  }
+  // Distinct from the other causes' words.
+  const others = new Set(MESSAGES.map((message) => textsFor(message).text));
+  expect(texts.some(({ text }) => others.has(text))).toBe(false);
+  expect(textsFor(STRICT_MESSAGE.off).text).toBe(
+    "This profile loads only content Freedom can verify, and this page can't be verified: " +
+      'verification is off for your external node. To load it, turn on "Verify content from ' +
+      'this node", or turn off "Load only verified content from external nodes" in Settings → Nodes.'
+  );
+  expect(textsFor(STRICT_MESSAGE.unsupported).text).toContain(
+    "your external IPFS gateway doesn't serve responses Freedom can verify"
+  );
+  expect(textsFor(STRICT_MESSAGE.dnslink).text).toContain('a DNSLink name');
+  expect(textsFor(STRICT_MESSAGE.key).text).toContain('an IPNS name whose key type');
+  expect(textsFor(STRICT_MESSAGE.encrypted).text).toContain(
+    "an encrypted Swarm reference, which Freedom can't verify with an external node. " +
+      "To load it, use Freedom's own Swarm node"
+  );
+
+  // The page: its 403, the words escaped, and the core's message as details.
+  const html = await errorPage(403, STRICT_MESSAGE.dnslink, 'ipns://docs.example.org/').text();
+  expect(html).toContain('<title>This profile loads only verified content</title>');
+  expect(html).toContain('&quot;Load only verified content from external nodes&quot;');
+  expect(html).toContain(
+    '403: This profile loads only verified content, and a DNSLink name can&#39;t be verified'
+  );
+  expect(html).toContain('href="ipns://docs.example.org/"');
+});

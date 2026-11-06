@@ -150,7 +150,8 @@ function timers(backend) {
 
 /** A fetch for a node-relative target (`/<namespace>/<ref>…`), or the
  * node's absence as an error; a verify plan for it when the backend's
- * verification is on (`verify-plan.js`). */
+ * verification is on, and strict mode's 403 in place of an unverified fetch
+ * for a strict backend (`verify-plan.js`). */
 function fetchPlan(scheme, backend, target, headers, smallText, nameTrust = null) {
   if (!backend.up) return notRunning(backend);
   let response;
@@ -172,7 +173,8 @@ function fetchPlan(scheme, backend, target, headers, smallText, nameTrust = null
     },
   };
   // A backend whose verification is on gets a verify plan instead, unless
-  // the content stays unverified (freedom-core design 0009).
+  // the content stays unverified; a strict backend then gets strict mode's
+  // 403 (freedom-core design 0009).
   return composeVerify(plan, backend, smallText);
 }
 

@@ -298,7 +298,15 @@ function isSenderAllowed(channel, event) {
 // consent step for Freedom Agent: it is turned on in Settings, so a script
 // running in any other internal page (an XSS in history, say) must not be able
 // to opt the user in. The start page writes `aiInvitationDismissed` only.
-const SETTINGS_KEY_WRITERS = new Map([['enableAi', new Set([SETTINGS_FILE])]]);
+// Strict mode (`loadOnlyVerifiedContent`, freedom-core design 0009) is set
+// there too, and switching it off would let unverified content from an
+// external node load again, so no other internal page may write it either;
+// the nodes' own "Verify content from this node" goes through the profile
+// IPC, which takes only Settings and the profile manager.
+const SETTINGS_KEY_WRITERS = new Map([
+  ['enableAi', new Set([SETTINGS_FILE])],
+  ['loadOnlyVerifiedContent', new Set([SETTINGS_FILE])],
+]);
 
 /**
  * @returns {string[]} the keys of `settings` that `event`'s sender may not

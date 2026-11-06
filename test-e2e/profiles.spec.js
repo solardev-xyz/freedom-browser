@@ -327,6 +327,47 @@ test('Nodes: an external node verifies by default, and its switch commits on its
   }
 });
 
+// "Load only verified content from external nodes" (freedom-core design 0009,
+// Strict mode): one switch for the profile under Nodes, off by default, saved
+// to the profile's settings on change, with no restart.
+test('Nodes: strict mode is off by default, and its switch saves at once', async ({
+  window,
+  electronApp,
+}) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/nodes');
+  await input.press('Enter');
+
+  let page;
+  await expect
+    .poll(() => {
+      page = electronApp.windows().find((p) => p.url().includes('/pages/settings.html'));
+      return Boolean(page);
+    })
+    .toBe(true);
+
+  const stored = () =>
+    page.evaluate(() => window.freedomAPI.getSettings().then((s) => s.loadOnlyVerifiedContent));
+  const row = page.locator('#load-only-verified-row');
+  const strict = page.locator('#load-only-verified');
+  await expect(row).toBeVisible();
+  await expect(
+    row.getByText('Load only verified content from external nodes', { exact: true })
+  ).toBeVisible();
+  await expect(strict).not.toBeChecked();
+  expect(await stored()).toBe(false);
+
+  // The switch is the slider the user clicks; its input has no size.
+  await row.locator('.slider').click();
+  await expect(strict).toBeChecked();
+  await expect.poll(stored).toBe(true);
+
+  await row.locator('.slider').click();
+  await expect(strict).not.toBeChecked();
+  await expect.poll(stored).toBe(false);
+});
+
 // Three edges of the Nodes commit path: a write that landed but whose apply
 // step threw is reported as saved, a refusal that isn't about the endpoint
 // doesn't flag the endpoint field, and an older refresh landing after a

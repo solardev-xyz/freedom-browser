@@ -23,6 +23,7 @@ const { takeIpfsGate } = require('./ipfs/ipfsd-gate');
 const { ipfsGrantRefusal } = require('./service-grant');
 const { onDwebSessionClosed } = require('./dweb/fetch-admission');
 const { dwebVerifier } = require('./core/dweb-verify');
+const { loadsOnlyVerifiedContent } = require('./dweb/strict-mode');
 const {
   IPFS_CAR_ACCEPT,
   IPFS_CAR_PROBE_PATH,
@@ -1259,15 +1260,19 @@ async function requestExternalGateway(
  * captured with it: with the profile's setting on, `verify: true` in the
  * reference when the activation's probe found raw blocks, else
  * `unsupported: true`, and `car`, the probe's word on ordered CARs, which
- * `dweb.verify` carries for an IPFS plan. Each is absent when off, so the
- * native node, and a gateway whose verification is off, keep the two-key
- * reference. A core without the verifier (protocol 1) can't serve a verify
- * plan, so against it the reference keeps that form too.
+ * `dweb.verify` carries for an IPFS plan. The profile's strict mode is
+ * captured with it too: `strict: true` while "Load only verified content
+ * from external nodes" is on, the gateway's verification on, off or
+ * unsupported (`dweb/strict-mode.js`). Each is absent when off, so the
+ * native node, and a gateway whose verification and strict mode are off,
+ * keep the two-key reference. A core without the verifier (protocol 1)
+ * can't serve a verify plan or know strict mode, so against it the
+ * reference keeps that form too.
  *
  * @param {{partition?: string|null}} [options] - the request's partition
  * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean, verify?: true,
- *   unsupported?: true}, url: string|null, car?: boolean, request: Function,
- *   release: Function}}
+ *   unsupported?: true, strict?: true}, url: string|null, car?: boolean,
+ *   request: Function, release: Function}}
  * @throws {BackendBusy} a private partition that needs an instance while
  *   all 8 are pinned by others
  */
@@ -1275,14 +1280,17 @@ function ipfsBackend({ partition = null } = {}) {
   if (currentMode === MODE.EXTERNAL) {
     const url = currentState === STATUS.RUNNING && externalGatewayUrl ? externalGatewayUrl : null;
     const support = externalGatewaySupport;
-    const verifying = verifiesExternalGateway() && dwebVerifier() !== null;
+    const attached = dwebVerifier() !== null;
+    const verifying = attached && verifiesExternalGateway();
     const verify = verifying && support?.raw === true;
+    const strict = attached && loadsOnlyVerifiedContent();
     return {
       ref: {
         ipfs: 'gateway',
         up: Boolean(url),
         ...(verify && { verify: true }),
         ...(verifying && !verify && { unsupported: true }),
+        ...(strict && { strict: true }),
       },
       url,
       car: verify && support.car === true,

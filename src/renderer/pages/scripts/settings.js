@@ -11,6 +11,7 @@ const fields = {
   startMyotisGnosis: $('start-myotis-gnosis-at-launch'),
   unverifiedEnsAction: $('unverified-ens-action'),
   openWithoutGateway: $('open-without-gateway'),
+  loadOnlyVerified: $('load-only-verified'),
   askWhereToSave: $('ask-where-to-save'),
   startRadicle: $('start-radicle-at-launch'),
   enableTor: $('enable-tor-integration'),
@@ -1876,6 +1877,7 @@ const currentFormState = () => ({
   autoUpdate: fields.autoUpdate.checked,
   blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
   openWithoutGateway: fields.openWithoutGateway.checked,
+  loadOnlyVerifiedContent: fields.loadOnlyVerified.checked,
   adblockEnabled: fields.adblockEnabled.checked,
   adblockAds: fields.adblockAds.checked,
   adblockPrivacy: fields.adblockPrivacy.checked,
@@ -1902,6 +1904,7 @@ const applyFormState = (settings) => {
   fields.autoUpdate.checked = settings.autoUpdate !== false;
   fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
   fields.openWithoutGateway.checked = settings.openWithoutGateway === true;
+  fields.loadOnlyVerified.checked = settings.loadOnlyVerifiedContent === true;
   fields.adblockEnabled.checked = settings.adblockEnabled !== false;
   fields.adblockAds.checked = settings.adblockAds !== false;
   fields.adblockPrivacy.checked = settings.adblockPrivacy !== false;
@@ -2400,6 +2403,9 @@ fields.showIpfsProgressStatus.addEventListener('change', save);
 fields.autoUpdate.addEventListener('change', save);
 fields.unverifiedEnsAction.addEventListener('change', save);
 fields.openWithoutGateway.addEventListener('change', save);
+// Strict mode (freedom-core design 0009): no restart, it applies to the
+// pages loaded after it.
+fields.loadOnlyVerified.addEventListener('change', save);
 fields.adblockEnabled.addEventListener('change', () => {
   applyAdblockGating();
   save();
