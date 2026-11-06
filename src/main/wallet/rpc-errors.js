@@ -111,14 +111,47 @@ function providerRpcError(err, chainId, chainName) {
 const MAX_REDACT_DEPTH = 8;
 const TOO_DEEP = '[redacted: nested too deep]';
 
+const NOT_PLAIN = '[redacted: not a plain value]';
+
+// A code a renderer may see: a string or an integer, nothing else.
+const scalarCode = (code) =>
+  typeof code === 'string' || Number.isInteger(code) ? code : undefined;
+
+// What a value's own data property holds, or undefined. Accessors are never
+// called: a getter can throw text of its own or change between reads.
+function ownData(object, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(object, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function isPlain(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+// Only strings, numbers, booleans, null, arrays and plain records are walked.
+// An Error becomes its redacted message and code. Anything else (a typed
+// array or Buffer, whose bytes would spell a key; a Map, a class instance, a
+// proxy's traps) is replaced, never read.
 function redactValue(value, depth = 0) {
   if (typeof value === 'string') return redactRpcText(value);
-  if (value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value !== 'object') return undefined;
   if (depth >= MAX_REDACT_DEPTH) return TOO_DEEP;
   if (Array.isArray(value)) return value.map((item) => redactValue(item, depth + 1));
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, redactValue(item, depth + 1)])
-  );
+  if (value instanceof Error) {
+    const message = ownData(value, 'message');
+    const out = { message: typeof message === 'string' ? redactRpcText(message) : 'error' };
+    const code = scalarCode(ownData(value, 'code'));
+    if (code !== undefined) out.code = code;
+    return out;
+  }
+  if (!isPlain(value)) return NOT_PLAIN;
+  const out = {};
+  for (const key of Object.keys(value)) {
+    out[key] = redactValue(ownData(value, key), depth + 1);
+  }
+  return out;
 }
 
 /** A handler's reply with its `error` redacted. */
@@ -126,13 +159,27 @@ function redactedReply(reply) {
   if (reply === null || typeof reply !== 'object' || !Object.hasOwn(reply, 'error')) {
     return reply;
   }
-  return { ...reply, error: redactValue(reply.error) };
+  try {
+    return { ...reply, error: redactValue(ownData(reply, 'error')) };
+  } catch {
+    // Redaction itself failed (a proxy's trap threw, say): send nothing of it.
+    return { ...reply, error: 'RPC error' };
+  }
 }
 
 /** A thrown error as the renderer gets it: its text, redacted. */
 function redactedThrow(err) {
-  const error = new Error(redactRpcText(err?.message ?? err));
-  if (typeof err?.code === 'string' || Number.isInteger(err?.code)) error.code = err.code;
+  let text = 'error';
+  let code;
+  try {
+    const message = err instanceof Error ? ownData(err, 'message') : err;
+    if (typeof message === 'string') text = redactRpcText(message);
+    if (err !== null && typeof err === 'object') code = scalarCode(ownData(err, 'code'));
+  } catch {
+    // An error whose own properties throw when read: it gives only "error".
+  }
+  const error = new Error(text);
+  if (code !== undefined) error.code = code;
   return error;
 }
 
@@ -149,9 +196,12 @@ function redactedHandler(listener) {
       throw redactedThrow(err);
     }
     if (reply && typeof reply.then === 'function') {
-      return reply.then(redactedReply, (err) => {
-        throw redactedThrow(err);
-      });
+      return reply.then(
+        (value) => redactedReply(value),
+        (err) => {
+          throw redactedThrow(err);
+        }
+      );
     }
     return redactedReply(reply);
   };

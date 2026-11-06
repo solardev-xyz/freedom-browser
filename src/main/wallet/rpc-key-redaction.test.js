@@ -426,6 +426,55 @@ describe('redactedHandler', () => {
     expect(reply).toContain('[redacted: nested too deep]');
   });
 
+  test('a non-plain error value is never read: getters, proxies, bytes', async () => {
+    const leak = `getter at ${URL_WITH_KEY}`;
+    const withGetter = {};
+    Object.defineProperty(withGetter, 'details', {
+      enumerable: true,
+      get() {
+        throw new Error(leak);
+      },
+    });
+    const proxy = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error(leak);
+        },
+      }
+    );
+    const bytes = { buffer: Buffer.from(KEY), view: new Uint8Array(Buffer.from(KEY)) };
+    for (const error of [withGetter, proxy, bytes]) {
+      const sync = JSON.stringify(redactedHandler(() => ({ success: false, error }))());
+      const asyncReply = JSON.stringify(
+        await redactedHandler(async () => ({ success: false, error }))()
+      );
+      for (const reply of [sync, asyncReply]) {
+        expect(reply).not.toContain(KEY);
+        expect(reply).not.toContain('/v2/');
+      }
+    }
+    // Bytes would let the renderer rebuild the key: they are replaced, unread.
+    const reply = redactedHandler(() => ({ success: false, error: bytes }))();
+    expect(reply.error).toEqual({
+      buffer: '[redacted: not a plain value]',
+      view: '[redacted: not a plain value]',
+    });
+  });
+
+  test('a thrown error whose message is a throwing getter gives only "error"', () => {
+    const thrown = new Error('x');
+    Object.defineProperty(thrown, 'message', {
+      get() {
+        throw new Error(`at ${URL_WITH_KEY}`);
+      },
+    });
+    const wrapped = redactedHandler(() => {
+      throw thrown;
+    });
+    expect(() => wrapped()).toThrow(/^error$/);
+  });
+
   test('a reply without an error is passed as it is', () => {
     const reply = { success: true, explorerUrl: 'https://gnosisscan.io/tx/0xabc' };
     expect(redactedHandler(() => reply)()).toBe(reply);
