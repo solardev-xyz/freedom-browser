@@ -118,6 +118,13 @@ function normalizeIpfsMode(mode, fallback = 'managed') {
   return fallback;
 }
 
+// "Verify content from this node" (freedom-core design 0009), kept with an
+// external node's endpoint. Absent means on; a stored choice survives a
+// rebase as it was.
+function keptVerifySetting(config) {
+  return typeof config?.verify === 'boolean' ? { verify: config.verify } : {};
+}
+
 function rebaseNodeConfig(nodes = {}, ports) {
   const defaults = buildNodeConfig(ports);
   return {
@@ -125,11 +132,13 @@ function rebaseNodeConfig(nodes = {}, ports) {
       ...defaults.bee,
       mode: nodes.bee?.mode || defaults.bee.mode,
       externalApi: nodes.bee?.externalApi || null,
+      ...keptVerifySetting(nodes.bee),
     },
     ipfs: {
       ...defaults.ipfs,
       mode: normalizeIpfsMode(nodes.ipfs?.mode, defaults.ipfs.mode),
       externalGateway: nodes.ipfs?.externalGateway || null,
+      ...keptVerifySetting(nodes.ipfs),
       backend: 'freedom-ipfs',
     },
     myotis: {

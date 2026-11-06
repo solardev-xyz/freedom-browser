@@ -950,6 +950,25 @@
         line-height: 1.45;
       }
 
+      /* "Verify content from this node" (freedom-core design 0009): a
+         switch beside an external node's endpoint. */
+      .profile-node-verify {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 4px;
+      }
+
+      .profile-node-verify[hidden] {
+        display: none;
+      }
+
+      .profile-node-verify > label:first-child {
+        color: var(--text);
+        font-size: 13px;
+      }
+
       /* Nodes commit on change (#271): a row that could not be saved — an
          external switch with an empty endpoint, or one the main process
          refused — says so inline and flags the field. */
