@@ -262,3 +262,49 @@ describe('buildRepoMeta shape', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('shutdown proof (R-8)', () => {
+  afterEach(() => {
+    delete process.env.FREEDOM_RADICLE_ADDON;
+    jest.resetModules();
+  });
+
+  test('the node counts as started until the add-on proves it stopped', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    // The first shutdown fails before the node's thread has joined; the
+    // second one succeeds.
+    fs.writeFileSync(
+      fake,
+      'let shutdowns = 0;' +
+        'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'start: async () => JSON.stringify({ did: "did:key:z6MkTest" }),' +
+        'shutdown: async () => { shutdowns += 1;' +
+        ' return shutdowns === 1' +
+        '  ? JSON.stringify({ error: "control channel closed" })' +
+        '  : JSON.stringify({ ok: true }); },' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const embedded = require('./radicle-embedded');
+        await embedded.start(dir, 'Alias');
+        expect(embedded.isStarted()).toBe(true);
+
+        const stopping = embedded.shutdown();
+        // Still started while the add-on has not answered, and after it
+        // failed to prove the node stopped.
+        expect(embedded.isStarted()).toBe(true);
+        await expect(stopping).rejects.toThrow('control channel closed');
+        expect(embedded.isStarted()).toBe(true);
+
+        await expect(embedded.shutdown()).resolves.toEqual({ ok: true });
+        expect(embedded.isStarted()).toBe(false);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
