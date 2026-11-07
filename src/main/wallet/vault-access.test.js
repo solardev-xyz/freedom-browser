@@ -11,6 +11,9 @@ jest.mock('../identity-manager', () => ({
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
+  // Mirrors identity-manager's hasVaultKey.
+  hasVaultKey: (index, record) =>
+    (!record || record.type === 'mnemonic') && (index < 1000000 || Boolean(record?.path)),
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));
 jest.mock('../vault-timer', () => ({
@@ -36,7 +39,7 @@ describe('withVaultPrivateKey', () => {
   test('passes the exported key to the callback and returns its result', async () => {
     const result = await withVaultPrivateKey(0, (pk) => `signed:${pk}`);
     expect(result).toBe(`signed:${TEST_KEY}`);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(0, undefined);
   });
 
   test('awaits async callbacks', async () => {
@@ -72,7 +75,23 @@ describe('withVaultPrivateKey', () => {
 
   test('forwards the wallet index to exportPrivateKey', async () => {
     await withVaultPrivateKey(3, () => undefined);
-    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3, undefined);
+  });
+
+  test('derives a mnemonic account in the high range at its stored path', async () => {
+    const path = "m/44'/60'/0'/0/2";
+    mockGetWalletRecord.mockReturnValue({ index: 1000000, type: 'mnemonic', path });
+    await withVaultPrivateKey(1000000, () => undefined);
+    expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(1000000, path);
+  });
+
+  test('refuses a mnemonic record in the high range that names no path', async () => {
+    // Nothing writes this record, but deriving at its index would be the
+    // phantom account the deleted-account test below guards against.
+    mockGetWalletRecord.mockReturnValue({ index: 1000000, type: 'mnemonic' });
+    await expect(withVaultPrivateKey(1000000, () => 'unreachable'))
+      .rejects.toThrow('This account keeps its key on another device');
+    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
   });
 
   test.each([

@@ -809,6 +809,224 @@ describe('identity-manager wallet index allocation', () => {
   });
 });
 
+describe('identity-manager wallets at an explicit path', () => {
+  // Hardhat's default seed, whose published accounts are MetaMask's scheme.
+  const MNEMONIC = 'test test test test test test test test test test test junk';
+  const MAIN_ADDRESS = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
+  const METAMASK_2_PATH = "m/44'/60'/0'/0/2";
+  const METAMASK_2_ADDRESS = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
+  const HARDWARE_INDEX_BASE = 1000000;
+
+  let tmpDir;
+  let envSnapshot;
+  let identityManager;
+  let mnemonic;
+  let derivation;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-path-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    mnemonic = MNEMONIC;
+    derivation = jest.requireActual('./identity/derivation');
+    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => ({
+          ...derivation,
+          getMnemonic: jest.fn(() => mnemonic),
+          isUnlocked: jest.fn(() => mnemonic !== null),
+          exportPrivateKey: jest.fn((index, walletPath) =>
+            walletPath
+              ? derivation.deriveWalletAtPath(mnemonic, walletPath).privateKey
+              : derivation.deriveUserWallet(mnemonic, index).privateKey
+          ),
+        }),
+        [require.resolve('./swarm/feed-store')]: () => ({
+          getEthereumWalletIdentityReferences: jest.fn(() => []),
+        }),
+      },
+    }).mod;
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: MAIN_ADDRESS },
+      derivedWallets: [{ index: 0, name: 'Main Wallet', address: MAIN_ADDRESS }],
+    });
+  });
+
+  afterEach(() => {
+    restoreEnv(envSnapshot);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeVaultMeta(meta) {
+    fs.writeFileSync(path.join(tmpDir, 'vault-meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
+  }
+
+  function readVaultMeta() {
+    return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
+  }
+
+  test('stores a mnemonic record with the canonical path, in the never-reused range', async () => {
+    const wallet = await identityManager.addWalletAtPath(' Imported ', "44'/60'/0'/0/2");
+
+    expect(wallet).toEqual({
+      index: HARDWARE_INDEX_BASE,
+      name: 'Imported',
+      address: METAMASK_2_ADDRESS,
+      type: 'mnemonic',
+      path: METAMASK_2_PATH,
+    });
+    expect(readVaultMeta().derivedWallets[1]).toEqual(wallet);
+    expect(readVaultMeta().nextHardwareWalletIndex).toBe(HARDWARE_INDEX_BASE + 1);
+  });
+
+  test('every way of reading the account uses its path, not its index', async () => {
+    const { index } = await identityManager.addWalletAtPath('Imported', METAMASK_2_PATH);
+    const expected = derivation.deriveWalletAtPath(MNEMONIC, METAMASK_2_PATH);
+
+    const wallets = await identityManager.getDerivedWallets();
+    expect(wallets[1]).toMatchObject({ index, address: METAMASK_2_ADDRESS, path: METAMASK_2_PATH });
+
+    expect((await identityManager.getUserWalletKey(index)).privateKey).toBe(expected.privateKey);
+    expect(await identityManager.exportPrivateKeyForAccount(index)).toBe(expected.privateKey);
+
+    await identityManager.setActiveWalletIndex(index);
+    expect(await identityManager.getActiveWalletAddress()).toBe(METAMASK_2_ADDRESS);
+  });
+
+  test('export is refused for device accounts and for a deleted account', async () => {
+    const ledger = await identityManager.addLedgerWallet(
+      'Stax',
+      '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      "44'/60'/0'/0/0"
+    );
+    const byPath = await identityManager.addWalletAtPath('Imported', METAMASK_2_PATH);
+    await identityManager.deleteDerivedWallet(byPath.index);
+
+    for (const index of [ledger.index, byPath.index]) {
+      expect(() => identityManager.assertPrivateKeyExportable(index)).toThrow(
+        'no exportable private key'
+      );
+      await expect(identityManager.exportPrivateKeyForAccount(index)).rejects.toThrow(
+        'no exportable private key'
+      );
+    }
+  });
+
+  test('shows the stored address while the vault is locked', async () => {
+    const { index } = await identityManager.addWalletAtPath('Imported', METAMASK_2_PATH);
+    mnemonic = null;
+
+    const wallets = await identityManager.getDerivedWallets();
+    expect(wallets.find((wallet) => wallet.index === index).address).toBe(METAMASK_2_ADDRESS);
+    await expect(identityManager.addWalletAtPath('Another', "m/44'/60'/0'/0/3")).rejects.toThrow(
+      'unlocked'
+    );
+    await expect(identityManager.previewWalletAtPath("m/44'/60'/0'/0/3")).rejects.toThrow(
+      'unlocked'
+    );
+  });
+
+  test('refuses a path whose address is already listed', async () => {
+    await expect(identityManager.addWalletAtPath('Again', "m/44'/60'/0'/0/0")).rejects.toThrow(
+      'already in your wallet list as "Main Wallet"'
+    );
+    expect(readVaultMeta().derivedWallets).toHaveLength(1);
+  });
+
+  test.each([
+    ['the Swarm node wallet', "m/44'/60'/0'/0/1", 'Swarm node'],
+    ['a publisher key', "m/44'/73406'/0'/0/0", 'reserved'],
+    ['a malformed path', 'not a path', 'Enter a path like'],
+  ])('writes nothing for %s', async (_label, walletPath, message) => {
+    await expect(identityManager.addWalletAtPath('Nope', walletPath)).rejects.toThrow(message);
+    await expect(identityManager.previewWalletAtPath(walletPath)).rejects.toThrow(message);
+    expect(readVaultMeta().derivedWallets).toHaveLength(1);
+    expect(readVaultMeta().nextHardwareWalletIndex).toBeUndefined();
+  });
+
+  test('previews an address without a key, and names a listed account', async () => {
+    expect(await identityManager.previewWalletAtPath("44'/60'/0'/0/2")).toEqual({
+      path: METAMASK_2_PATH,
+      address: METAMASK_2_ADDRESS,
+      existingName: null,
+    });
+    expect((await identityManager.previewWalletAtPath("m/44'/60'/0'/0/0")).existingName).toBe(
+      'Main Wallet'
+    );
+  });
+
+  test('the default next account skips a key already added by path', async () => {
+    const byPath = await identityManager.addWalletAtPath('Imported', "m/44'/60'/1'/0/0");
+
+    const next = await identityManager.createDerivedWallet('Next');
+
+    expect(next.index).toBe(2);
+    expect(next.address).toBe(derivation.deriveUserWallet(MNEMONIC, 2).address);
+    expect(next.address).not.toBe(byPath.address);
+  });
+
+  test('does not hand a deleted account index to the next one', async () => {
+    const first = await identityManager.addWalletAtPath('First', METAMASK_2_PATH);
+    await identityManager.deleteDerivedWallet(first.index);
+
+    const second = await identityManager.addWalletAtPath('Second', "m/44'/60'/0'/0/3");
+
+    expect(second.index).toBe(HARDWARE_INDEX_BASE + 1);
+  });
+
+  describe('hasVaultKey', () => {
+    test.each([
+      ['a low index with no record', 3, null, true],
+      ['a default mnemonic account', 3, { type: 'mnemonic' }, true],
+      ['a low-index ledger', 3, { type: 'ledger' }, false],
+      ['a deleted high-range account', HARDWARE_INDEX_BASE, null, false],
+      ['a high-range mnemonic record with no path', HARDWARE_INDEX_BASE, { type: 'mnemonic' }, false],
+      ['a high-range ledger with a path', HARDWARE_INDEX_BASE, { type: 'ledger', path: 'x' }, false],
+      ['a phone account', HARDWARE_INDEX_BASE, { type: 'remote' }, false],
+      ['an account at a path', HARDWARE_INDEX_BASE, { type: 'mnemonic', path: 'x' }, true],
+    ])('%s', (_label, index, record, expected) => {
+      expect(identityManager.hasVaultKey(index, record)).toBe(expected);
+    });
+  });
+
+  describe('a reserved path written straight into vault-meta', () => {
+    const BEE_PATH = "m/44'/60'/0'/0/1";
+    const tampered = {
+      index: HARDWARE_INDEX_BASE,
+      name: 'Tampered',
+      address: METAMASK_2_ADDRESS,
+      type: 'mnemonic',
+      path: BEE_PATH,
+    };
+
+    beforeEach(() => {
+      writeVaultMeta({ ...readVaultMeta(), derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: MAIN_ADDRESS },
+        tampered,
+      ] });
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    test('never yields the key', async () => {
+      await expect(identityManager.getUserWalletKey(tampered.index)).rejects.toThrow('Swarm node');
+      await expect(identityManager.exportPrivateKeyForAccount(tampered.index)).rejects.toThrow(
+        'Swarm node'
+      );
+    });
+
+    test('leaves the rest of the wallet list readable', async () => {
+      const wallets = await identityManager.getDerivedWallets();
+      expect(wallets.map((wallet) => wallet.address)).toEqual([MAIN_ADDRESS, METAMASK_2_ADDRESS]);
+    });
+  });
+});
+
 /**
  * Regression guard for issue #90: Bee's restart after (re)injection is owned by
  * injectBeeIdentity via the lifecycle hook (stop → wipe → start), so Bee must

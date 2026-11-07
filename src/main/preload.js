@@ -785,6 +785,8 @@ contextBridge.exposeInMainWorld('wallet', {
   getActiveIndex: () => ipcRenderer.invoke('wallet:get-active-index'),
   setActiveWallet: (index) => ipcRenderer.invoke('wallet:set-active-wallet', index),
   createDerivedWallet: (name) => ipcRenderer.invoke('wallet:create-derived-wallet', name),
+  previewWalletAtPath: (path) => ipcRenderer.invoke('wallet:preview-wallet-at-path', path),
+  addWalletAtPath: (name, path) => ipcRenderer.invoke('wallet:add-wallet-at-path', name, path),
   renameWallet: (index, newName) => ipcRenderer.invoke('wallet:rename-wallet', index, newName),
   deleteWallet: (index) => ipcRenderer.invoke('wallet:delete-wallet', index),
   getActiveAddress: () => ipcRenderer.invoke('wallet:get-active-address'),
