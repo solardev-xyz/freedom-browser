@@ -19,19 +19,20 @@ const binary = process.env.FREEDOM_CORED_PATH;
 const describeIfBinary = binary ? describe : describe.skip;
 const quietLog = { info() {}, warn() {}, error() {} };
 
-// Colibri alone, with a prover: every lookup is a verified operation.
+// Myotis alone, enabled and ready: every lookup is a verified operation.
+// (Colibri runs none, #1076.)
 const sources = {
   ens: {
     getEffectiveRpcEndpoints: () => ['https://a.rpc.example'],
     getDirectRpcCandidate: () => ({ url: null }),
-    resolutionPolicy: () => ({ order: ['colibri'] }),
+    resolutionPolicy: () => ({ order: ['myotis'] }),
   },
   tezos: { getRpcEndpoints: () => [] },
   registry: {
     getNetwork: () => ({ zkProof: true }),
-    getEndpoints: (_chain, role) => (role === 'prover' ? ['https://prover.example'] : []),
+    getEndpoints: () => [],
   },
-  myotis: { isEnabled: () => false, isReady: () => false },
+  myotis: { isEnabled: () => true, isReady: () => true },
 };
 
 describeIfBinary('shell.verified with the real freedom-cored', () => {
@@ -68,13 +69,12 @@ describeIfBinary('shell.verified with the real freedom-cored', () => {
     });
     registerNamingVerified(client, config, {
       adapters: {
-        colibriResolve: async () => {
+        myotisRecord: async () => {
           // As ethers leaves a node's error: the data under info.error.
           throw Object.assign(new Error('backend unavailable'), {
             info: { error: { code: -32000, data: thrown.shift() } },
           });
         },
-        callResolver: () => () => {},
       },
     });
     await client.start();

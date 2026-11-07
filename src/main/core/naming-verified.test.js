@@ -14,21 +14,21 @@ function setUp(adapters = {}) {
   const handlers = new Map();
   const client = { handle: (method, fn) => handlers.set(method, fn) };
   const config = { generations: { ens: 1, tezos: 1, lifecycle: 3 } };
-  const resolvers = { ur: () => 'ur', name_nft: () => 'nft', name_nft_reverse: () => 'nftr' };
   const all = {
     myotisRecord: jest.fn(async () => ({ verified: false, blockNumber: null, status: 'ok' })),
     myotisCall: jest.fn(async () => ({ status: 'ok', resultHex: '0x01' })),
     myotisStatus: jest.fn(() => ({ optimisticBlockNumber: 21_000_000 })),
-    colibriResolve: jest.fn(async () => ({ resolvedData: '0x02', resolverAddress: ADDRESS })),
-    colibriReverse: jest.fn(async () => ({ name: 'vitalik.eth' })),
-    callResolver: (name) => resolvers[name],
     ...adapters,
   };
   const { running } = registerNamingVerified(client, config, { adapters: all });
   const call = (params, signal = new AbortController().signal) =>
     Promise.resolve().then(() => handlers.get('shell.verified')({ ...GEN, ...params }, { signal }));
-  return { call, adapters: all, resolvers, running, config };
+  return { call, adapters: all, running, config };
 }
+
+/** A Myotis reverse record: the operation the tests below run their
+ * adapter's outcomes through. */
+const REVERSE = { myotis: 'record', method: 'reverse', name: null, address: ADDRESS, coin_type: 60 };
 
 /** An adapter call that waits until released. */
 function held() {
@@ -144,29 +144,33 @@ describe('shell.verified', () => {
     });
   });
 
-  test('a Colibri resolve takes the call resolver it names', async () => {
-    const { call, adapters, resolvers } = setUp();
-    for (const resolver of ['ur', 'name_nft', 'name_nft_reverse']) {
-      expect(
-        await call({ colibri: 'resolve', name: 'alice.wei', call_data: '0xabcd', resolver })
-      ).toEqual({ resolved_data: '0x02', resolver_address: ADDRESS });
-      expect(adapters.colibriResolve).toHaveBeenLastCalledWith(
-        'alice.wei',
-        '0xabcd',
-        resolvers[resolver]
-      );
+  // Colibri 3.0.3 runs a lookup's eth_call on contract code from a public
+  // RPC, unchecked against the proven code hash, so one of those RPCs could
+  // choose the answer (#1076). A core that still asks for a Colibri
+  // operation is refused, as for anything malformed, and no adapter runs.
+  test('Colibri operations are refused: Colibri verifies no name (#1076)', async () => {
+    const forged = {
+      colibriResolve: jest.fn(async () => ({ resolvedData: '0x02', resolverAddress: ADDRESS })),
+      colibriReverse: jest.fn(async () => ({ name: 'forged.eth' })),
+    };
+    const { call, adapters, running } = setUp(forged);
+    for (const op of [
+      ...['ur', 'name_nft', 'name_nft_reverse'].map((resolver) => ({
+        colibri: 'resolve',
+        name: 'alice.wei',
+        call_data: '0xabcd',
+        resolver,
+      })),
+      { colibri: 'reverse', address: ADDRESS, coin_type: 60 },
+    ]) {
+      await expect(call(op)).rejects.toMatchObject({ code: 'refused' });
     }
+    expect(forged.colibriResolve).not.toHaveBeenCalled();
+    expect(forged.colibriReverse).not.toHaveBeenCalled();
+    expect(adapters.myotisRecord).not.toHaveBeenCalled();
+    expect(running).toEqual({ myotis: 0, colibri: 0 });
   });
 
-  test('a Colibri reverse takes the address as bytes and the coin type', async () => {
-    const { call, adapters } = setUp();
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
-      name: 'vitalik.eth',
-    });
-    const [bytes, coin] = adapters.colibriReverse.mock.calls[0];
-    expect(Buffer.from(bytes).toString('hex')).toBe('ab'.repeat(20));
-    expect(coin).toBe(60n);
-  });
 
   test('an error is its revert data, or its class: never its text', async () => {
     const thrown = (err) => jest.fn(async () => Promise.reject(err));
@@ -197,8 +201,8 @@ describe('shell.verified', () => {
       ['a string', { failure: 'error' }],
     ];
     for (const [err, expected] of cases) {
-      const { call } = setUp({ colibriReverse: thrown(err) });
-      expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual(expected);
+      const { call } = setUp({ myotisRecord: thrown(err) });
+      expect(await call(REVERSE)).toEqual(expected);
     }
   });
 
@@ -217,10 +221,8 @@ describe('shell.verified', () => {
     expect(running.myotis).toBe(MAX_PER_VERIFIER);
     expect(await call(op)).toEqual({ failure: 'unavailable' });
     expect(myotis.fn).toHaveBeenCalledTimes(MAX_PER_VERIFIER);
-    // The other verifier is its own.
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
-      name: 'vitalik.eth',
-    });
+    // Colibri's count, which chain data's operations use, is its own.
+    expect(running.colibri).toBe(0);
     // Cancelled, they still count until the adapter settles.
     cancels.forEach((c) => c.abort());
     const errors = await Promise.all(pending);
@@ -251,16 +253,16 @@ describe('shell.verified', () => {
       // In UTF-8 bytes: 2 each.
       ['é'.repeat(MAX_REPLY_BYTES / 2), { failure: 'too_large' }],
     ]) {
-      const { call } = setUp({ colibriReverse: jest.fn(async () => ({ name })) });
-      expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual(expected);
+      const { call } = setUp({ myotisRecord: jest.fn(async () => ({ name })) });
+      expect(await call(REVERSE)).toEqual(expected);
     }
     const revert = `0x${'00'.repeat(MAX_REPLY_BYTES / 2)}`;
     const { call } = setUp({
-      colibriReverse: jest.fn(async () =>
+      myotisRecord: jest.fn(async () =>
         Promise.reject(Object.assign(new Error('r'), { data: revert }))
       ),
     });
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
+    expect(await call(REVERSE)).toEqual({
       failure: 'too_large',
     });
   });
@@ -274,13 +276,13 @@ describe('shell.verified', () => {
       const handlers = new Map();
       registerNamingVerified({ handle: (m, fn) => handlers.set(m, fn) }, { generations: { lifecycle: 0 } }, {
         adapters: {
-          colibriReverse: async () => {
+          myotisRecord: async () => {
             throw Object.assign(new Error('r'), { data: '0x' + 'ab'.repeat(2_000_000) });
           },
         },
       });
       handlers.get('shell.verified')(
-        { colibri: 'reverse', address: '0x' + 'ab'.repeat(20), coin_type: 60, generations: { lifecycle: 0 } },
+        { myotis: 'record', method: 'reverse', address: '0x' + 'ab'.repeat(20), coin_type: 60, generations: { lifecycle: 0 } },
         { signal: new AbortController().signal }
       ).then((r) => process.stdout.write(JSON.stringify(r)), (e) => process.stdout.write('threw ' + e.name));
     `;
@@ -292,8 +294,8 @@ describe('shell.verified', () => {
   });
 
   test('a result JSON cannot carry is an error', async () => {
-    const { call } = setUp({ colibriReverse: jest.fn(async () => ({ name: 1n })) });
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
+    const { call } = setUp({ myotisRecord: jest.fn(async () => ({ name: 1n })) });
+    expect(await call(REVERSE)).toEqual({
       failure: 'error',
     });
   });
@@ -325,22 +327,22 @@ describe('shell.verified', () => {
     ]) {
       await expect(call(op)).rejects.toMatchObject({ code: 'refused' });
     }
-    for (const fn of ['myotisRecord', 'myotisCall', 'colibriResolve', 'colibriReverse']) {
+    for (const fn of ['myotisRecord', 'myotisCall']) {
       expect(adapters[fn]).not.toHaveBeenCalled();
     }
   });
 
   test("the deadline is timeout, the operation runs on; a cancel is the core's", async () => {
-    const colibri = held();
-    const { call, running } = setUp({ colibriReverse: colibri.fn });
-    const op = { colibri: 'reverse', address: ADDRESS, coin_type: 60 };
+    const myotis = held();
+    const { call, running } = setUp({ myotisRecord: myotis.fn });
+    const op = REVERSE;
     const timedOut = await call({ ...op, deadline_ms: 5 }).catch((e) => e);
     expect(timedOut).toBeInstanceOf(ShellError);
     expect(timedOut.code).toBe('timeout');
-    expect(running.colibri).toBe(1);
-    colibri.releases[0].reject(new Error('late'));
+    expect(running.myotis).toBe(1);
+    myotis.releases[0].reject(new Error('late'));
     await tick();
-    expect(running.colibri).toBe(0);
+    expect(running.myotis).toBe(0);
     const cancel = new AbortController();
     cancel.abort();
     const cancelled = await call(op, cancel.signal).catch((e) => e);

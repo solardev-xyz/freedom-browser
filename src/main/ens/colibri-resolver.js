@@ -201,9 +201,9 @@ async function getClient(chainId = 1) {
   }
 }
 
-// The chain-data router's reads. ENS, reverse and NameNFT lookups don't use
-// Colibri (#1076): it runs their `eth_call` on contract code from a public
-// RPC, unchecked against the proven code hash.
+// Chain data's Colibri operations (core/chain-verified.js). ENS, reverse and
+// NameNFT lookups don't use Colibri (#1076): it runs their `eth_call` on
+// contract code from a public RPC, unchecked against the proven code hash.
 //
 // `deadlineMs` is how long the caller will wait: past it, a worker still
 // verifying this request is terminated rather than left running.

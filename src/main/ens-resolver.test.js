@@ -37,19 +37,13 @@ jest.mock('./networks/network-registry', () => mockRegistry);
 // so the call encodings are really exercised.
 const mockUrResolve = jest.fn();
 const mockUrReverse = jest.fn();
-const mockNameNftContenthash = jest.fn();
-const mockNameNftAddr = jest.fn();
-const mockNameNftReverseResolve = jest.fn();
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers').ethers;
   return {
     ethers: {
-      Contract: jest.fn().mockImplementation((address) => ({
+      Contract: jest.fn().mockImplementation(() => ({
         resolve: (...args) => mockUrResolve(...args),
         reverse: (...args) => mockUrReverse(...args),
-        contenthash: (...args) => mockNameNftContenthash(address, ...args),
-        addr: (...args) => mockNameNftAddr(address, ...args),
-        reverseResolve: (...args) => mockNameNftReverseResolve(address, ...args),
       })),
       dnsEncode: actual.dnsEncode,
       namehash: actual.namehash,
@@ -76,8 +70,6 @@ const {
   universalResolverCall,
   universalResolverReverse,
   fastNormalize,
-  nameNftResolverCall,
-  nameNftReverseResolverCall,
   isResolverNotFoundError,
   hostOf,
 } = require('./ens-resolver');
@@ -89,12 +81,9 @@ const IPC = require('../shared/ipc-channels');
 const actualEthers = jest.requireActual('ethers').ethers;
 const abi = actualEthers.AbiCoder.defaultAbiCoder();
 const UR_ADDRESS = '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe';
-const WNS_ADDRESS = '0x0000000000696760E15f265e828DB644A0c242EB';
-const GNS_ADDRESS = '0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6';
 const FAKE_RESOLVER = '0x0000000000000000000000000000000000001234';
 const ADDRESS = '0x' + 'ab'.repeat(20);
 const CONTENTHASH_SELECTOR = '0xbc1c58d1';
-const ADDR_SELECTOR = '0x3b3b57de';
 
 function coreDriver() {
   return {
@@ -438,19 +427,46 @@ describe('configuration sources', () => {
       expect(
         resolutionPolicy({
           verification: {
-            order: ['colibri', 'bogus', 'quorum', 'colibri', 'direct'],
+            order: ['myotis', 'bogus', 'quorum', 'myotis', 'direct'],
             preferVerified: 'yes',
           },
         })
-      ).toEqual({ order: ['colibri', 'quorum', 'direct'], preferVerified: false });
+      ).toEqual({ order: ['myotis', 'quorum', 'direct'], preferVerified: false });
       expect(
         resolutionPolicy({ verification: { order: ['myotis'], preferVerified: true } })
       ).toEqual({ order: ['myotis'], preferVerified: true });
     });
 
+    // Colibri answers no name lookup (#1076): its proofs don't bind the
+    // contract code a lookup runs. The order the core gets never names it.
+    test('Colibri is never in the order the core gets', () => {
+      expect(
+        resolutionPolicy({
+          verification: { order: ['colibri', 'quorum', 'colibri', 'direct'], preferVerified: true },
+        })
+      ).toEqual({ order: ['quorum', 'direct'], preferVerified: true });
+      expect(
+        resolutionPolicy({
+          verification: { order: ['myotis', 'colibri', 'quorum'], preferVerified: true },
+        })
+      ).toEqual({ order: ['myotis', 'quorum'], preferVerified: true });
+      // An order of Colibri alone keeps Myotis and the quorum, as the old
+      // default did after Colibri.
+      for (const verification of [
+        { primary: 'colibri', order: ['colibri'], preferVerified: true },
+        { primary: 'colibri' },
+        { order: ['colibri'] },
+      ]) {
+        expect(resolutionPolicy({ verification })).toEqual({
+          order: ['myotis', 'quorum'],
+          preferVerified: false,
+        });
+      }
+    });
+
     test("a legacy configuration's primary, with Myotis first and quorum as fallback", () => {
       expect(resolutionPolicy(undefined)).toEqual({
-        order: ['myotis', 'colibri', 'quorum'],
+        order: ['myotis', 'quorum'],
         preferVerified: false,
       });
       expect(resolutionPolicy({ verification: { primary: 'quorum', order: [] } })).toEqual({
@@ -463,7 +479,7 @@ describe('configuration sources', () => {
       });
       expect(
         resolutionPolicy({ verification: { primary: 'custom-rpc', preferVerified: true } })
-      ).toEqual({ order: ['myotis', 'colibri', 'quorum'], preferVerified: false });
+      ).toEqual({ order: ['myotis', 'quorum'], preferVerified: false });
     });
   });
 });
@@ -545,81 +561,6 @@ describe('universalResolverReverse', () => {
     err.data = '0xef9c03ce00';
     mockUrReverse.mockRejectedValue(err);
     await expect(universalResolverReverse({}, actualEthers.getBytes(ADDRESS))).rejects.toBe(err);
-  });
-});
-
-describe('nameNftResolverCall', () => {
-  const callFor = (selector, name) => selector + actualEthers.namehash(name).slice(2);
-
-  test("reads a .wei contenthash from the WNS contract in the UR's raw shape", async () => {
-    mockNameNftContenthash.mockResolvedValue('0xe301017012');
-    const callData = callFor(CONTENTHASH_SELECTOR, 'meinhard.wei');
-    const result = await nameNftResolverCall({}, 'meinhard.wei', callData);
-    expect(result).toEqual({
-      resolvedData: abi.encode(['bytes'], ['0xe301017012']),
-      resolverAddress: WNS_ADDRESS,
-    });
-    expect(mockNameNftContenthash).toHaveBeenCalledWith(
-      WNS_ADDRESS,
-      actualEthers.namehash('meinhard.wei'),
-      {}
-    );
-  });
-
-  test('reads a .gwei address from the GNS contract; none is the zero address', async () => {
-    mockNameNftAddr.mockResolvedValue(ADDRESS);
-    const callData = callFor(ADDR_SELECTOR, 'apoorv.gwei');
-    expect(await nameNftResolverCall({}, 'apoorv.gwei', callData)).toEqual({
-      resolvedData: abi.encode(['address'], [ADDRESS]),
-      resolverAddress: GNS_ADDRESS,
-    });
-    mockNameNftAddr.mockResolvedValue(null);
-    expect((await nameNftResolverCall({}, 'apoorv.gwei', callData)).resolvedData).toBe(
-      abi.encode(['address'], [actualEthers.ZeroAddress])
-    );
-    expect(mockNameNftAddr.mock.calls[0][0]).toBe(GNS_ADDRESS);
-  });
-
-  test('refuses an ENS name, malformed call data and other selectors', async () => {
-    await expect(
-      nameNftResolverCall({}, 'vitalik.eth', callFor(CONTENTHASH_SELECTOR, 'vitalik.eth'))
-    ).rejects.toThrow('No NameNFT contract configured for ENS');
-    await expect(nameNftResolverCall({}, 'a.wei', '0xbc1c58d1')).rejects.toThrow(
-      'Invalid resolver call data'
-    );
-    await expect(nameNftResolverCall({}, 'a.wei', callFor('0xf1cb7e06', 'a.wei'))).rejects.toThrow(
-      'Unsupported WNS resolver selector: 0xf1cb7e06'
-    );
-  });
-});
-
-describe('nameNftReverseResolverCall', () => {
-  const iface = new actualEthers.Interface([
-    'function reverseResolve(address addr) view returns (string)',
-  ]);
-
-  test("reads the reverse claim from the contract the synthetic name's suffix selects", async () => {
-    mockNameNftReverseResolve.mockResolvedValue('meinhard.wei');
-    const callData = iface.encodeFunctionData('reverseResolve', [ADDRESS]);
-    expect(await nameNftReverseResolverCall({}, 'reverse.wei', callData)).toEqual({
-      resolvedData: abi.encode(['string'], ['meinhard.wei']),
-      resolverAddress: WNS_ADDRESS,
-    });
-    expect(mockNameNftReverseResolve.mock.calls[0][0]).toBe(WNS_ADDRESS);
-    expect(mockNameNftReverseResolve.mock.calls[0][1].toLowerCase()).toBe(ADDRESS);
-
-    mockNameNftReverseResolve.mockResolvedValue(null);
-    expect(await nameNftReverseResolverCall({}, 'reverse.gwei', callData)).toEqual({
-      resolvedData: abi.encode(['string'], ['']),
-      resolverAddress: GNS_ADDRESS,
-    });
-  });
-
-  test('refuses a name without a NameNFT contract', async () => {
-    const callData = iface.encodeFunctionData('reverseResolve', [ADDRESS]);
-    await expect(nameNftReverseResolverCall({}, 'reverse.eth', callData)).rejects.toThrow(
-      'No NameNFT contract configured for ENS'
-    );
   });
 });
 

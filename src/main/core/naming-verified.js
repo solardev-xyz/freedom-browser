@@ -1,8 +1,8 @@
 /**
  * Main's executor for the naming core's verified operations (freedom-core
  * design 0004, Verified operations): `shell.verified` runs one whole
- * operation through today's Myotis or Colibri adapter and replies with its
- * outcome, as the reference receives it, without text:
+ * operation through today's Myotis adapter and replies with its outcome, as
+ * the reference receives it, without text:
  *
  * - a result, its keys in snake_case;
  * - `{ revert }`, the proven revert data an error carries;
@@ -10,9 +10,15 @@
  *
  * Main runs no epoch check of its own: the adapters guard themselves, and
  * the core's method checks after them as today's caller does.
+ *
+ * Colibri runs no naming operation (#1076): Colibri 3.0.3 runs a lookup's
+ * `eth_call` on contract code from one of its public RPCs, unchecked against
+ * the proven code hash, and proves nothing for a call that reads no storage.
+ * So `{ colibri: 'resolve' }` and `{ colibri: 'reverse' }` are refused, as
+ * anything malformed is, and a core that still asks gets no answer to label
+ * verified: its order moves on to the next method.
  */
 
-const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
 const { withDeadline, unlessAborted } = require('./naming-shell');
 const { MAX_PAYLOAD } = require('./frame');
@@ -23,7 +29,7 @@ const { isHexData } = require('../ens/ccip-fetch');
 
 /** Operations running per verifier, counted until the adapter settles
  * (not when the core cancels): more are `unavailable` at once. Chain
- * data's operations share the count (design 0005). */
+ * data's operations share the count (design 0005), Colibri's among them. */
 const MAX_PER_VERIFIER = 8;
 /** A reply whose response can't fit one frame (1 MiB) is `too_large`
  * (deviation `verified-reply-size`): its envelope, with the largest ID,
@@ -79,22 +85,10 @@ function revertOf(err) {
 /** Today's adapters, loaded when first used (they load the resolvers). */
 function defaultAdapters() {
   const myotis = () => require('../myotis/myotis-manager');
-  const colibri = () => require('../ens/colibri-resolver');
-  const ens = () => require('../ens-resolver');
   return {
     myotisRecord: (params) => require('../ens/myotis-resolver').resolveRecord(params),
     myotisCall: (params) => myotis().ethCall(params),
     myotisStatus: () => myotis().getStatus(),
-    colibriResolve: (name, callData, callResolver) =>
-      colibri().resolveCallViaColibri(name, callData, callResolver),
-    colibriReverse: (addressBytes, coinType) =>
-      colibri().resolveReverseViaColibri(addressBytes, coinType),
-    callResolver: (resolver) =>
-      ({
-        ur: ens().universalResolverCall,
-        name_nft: ens().nameNftResolverCall,
-        name_nft_reverse: ens().nameNftReverseResolverCall,
-      })[resolver],
   };
 }
 
@@ -106,7 +100,8 @@ const coinType = (value) => {
 
 /**
  * The operation `params` names: its verifier, and how to run it with the
- * adapters. Anything malformed is refused.
+ * adapters. Anything malformed is refused, and so is any Colibri operation
+ * (#1076).
  */
 function operation(params, adapters) {
   if (params.myotis === 'record') {
@@ -143,26 +138,6 @@ function operation(params, adapters) {
           optimistic_block_number: status.optimisticBlockNumber ?? null,
         };
       },
-    };
-  }
-  if (params.colibri === 'resolve') {
-    const { name, call_data: callData } = params;
-    if (typeof name !== 'string') throw refused();
-    if (!isHexData(callData)) throw refused();
-    if (!['ur', 'name_nft', 'name_nft_reverse'].includes(params.resolver)) throw refused();
-    const callResolver = adapters.callResolver(params.resolver);
-    return {
-      verifier: 'colibri',
-      run: async () => wire(await adapters.colibriResolve(name, callData, callResolver)),
-    };
-  }
-  if (params.colibri === 'reverse') {
-    const { address } = params;
-    if (typeof address !== 'string' || !ADDRESS.test(address)) throw refused();
-    const coin = coinType(params.coin_type);
-    return {
-      verifier: 'colibri',
-      run: async () => wire(await adapters.colibriReverse(ethers.getBytes(address), coin)),
     };
   }
   throw refused();
