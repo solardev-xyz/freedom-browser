@@ -310,3 +310,53 @@ describe('disk storage adapter', () => {
     expect(() => storage.del('locked')).toThrow(/EACCES/);
   });
 });
+
+// A private window's worker (#1058): the host passes no storage dir, and the
+// verifier's state stays in the worker's memory.
+describe('memory storage for a private worker', () => {
+  async function captureStorage(storageDir) {
+    const fake = fakeRuntime();
+    const service = createColibriService({ runtime: fake.runtime, storageDir, post: () => {} });
+    await service.init();
+    expect(fake.runtime.Colibri.register_storage).toHaveBeenCalledTimes(1);
+    return fake.runtime.Colibri.register_storage.mock.calls[0][0];
+  }
+
+  test.each([
+    ['no storage dir', null],
+    ['an undefined one', undefined],
+    ['an empty one', ''],
+  ])('with %s, keeps every key in memory and never touches the disk', async (_label, dir) => {
+    const storage = await captureStorage(dir);
+    const address = '0x00000000000000000000000000000000000000aa';
+
+    expect(storage.get(`call_1_${address}`)).toBeNull();
+    storage.set(`call_1_${address}`, new Uint8Array([1, 2]));
+    storage.set('tx_cache_1', Buffer.from([3]));
+    expect(storage.get(`call_1_${address}`)).toEqual(Buffer.from([1, 2]));
+    storage.del('tx_cache_1');
+    expect(storage.get('tx_cache_1')).toBeNull();
+
+    for (const fn of [mockMkdirSync, mockReaddirSync, mockReadFileSync, mockWriteFileSync,
+      mockRenameSync, mockUnlinkSync]) {
+      expect(fn).not.toHaveBeenCalled();
+    }
+  });
+
+  test('hands out copies, so a caller cannot change what is stored', async () => {
+    const storage = await captureStorage(null);
+    const value = new Uint8Array([7]);
+    storage.set('code_0x01', value);
+    value[0] = 8;
+    const read = storage.get('code_0x01');
+    read[0] = 9;
+    expect(storage.get('code_0x01')).toEqual(Buffer.from([7]));
+  });
+
+  test('two private workers do not share a store', async () => {
+    const first = await captureStorage(null);
+    const second = await captureStorage(null);
+    first.set('headers_1', Buffer.from([1]));
+    expect(second.get('headers_1')).toBeNull();
+  });
+});
