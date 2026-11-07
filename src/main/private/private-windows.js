@@ -32,12 +32,16 @@
  * and the name resolvers behind them are guarded a level down, by the
  * async-context marker in src/main/private/private-log-context.js — set
  * once by whoever knows the session (the per-session protocol registration,
- * the resolver IPC handlers) and read by every log site underneath.
+ * the resolver IPC handlers) and read by every log site underneath. The
+ * same marker keeps Colibri's reads off its disk store, and a cleanup hook
+ * drops the private windows' in-memory Colibri store once the last of them
+ * has closed (src/main/ens/colibri-resolver.js).
  */
 
 const crypto = require('crypto');
 const log = require('../logger');
 const { BrowserWindow, session } = require('electron');
+const { openPrivateSession, endPrivateSession } = require('./private-log-context');
 
 // Lazy: this module is required by the write guards (history, favicons,
 // publish-service) purely for isPrivateWebContents(); pulling the window
@@ -235,6 +239,9 @@ function createPrivateWindow(initialUrl = null) {
     return null;
   }
 
+  // The private session (private-log-context.js) is open from here until
+  // the last private window has closed.
+  openPrivateSession();
   const window = requireCreateMainWindow()(initialUrl, { privatePartition: partition });
   privateWindows.set(window.id, { partition, session: privateSession });
   everPrivateWindowIds.add(window.id);
@@ -242,6 +249,9 @@ function createPrivateWindow(initialUrl = null) {
 
   window.on('closed', () => {
     privateWindows.delete(window.id);
+    // Before the hooks: work still running for the ended session sees that
+    // it ended, whichever hook its next step races.
+    if (privateWindows.size === 0) endPrivateSession();
     runCleanupHooks(partition);
     destroyPrivateSession(privateSession, partition).finally(() => {
       privateSessions.delete(privateSession);
