@@ -73,9 +73,10 @@ describe('endpoint identity (#1094)', () => {
     differ('http://10.0.0.1:8545', 'http://127.0.0.1:8545');
   });
 
-  test("a URL that doesn't parse is its own provider, by its exact text", () => {
+  test("a URL that doesn't parse, or has no host, is its own provider, by its exact text", () => {
     expect(endpointIdentity('not a url')).toBe('url:not a url');
     differ('not a url', 'not a url/');
+    differ('file:///one', 'file:///two');
   });
 
   test('distinctEndpoints keeps the first URL of each provider, in order', () => {

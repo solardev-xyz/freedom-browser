@@ -17,7 +17,8 @@
 // - both hosts are under one provider's `providerDomains` in the
 //   endpoint-sources catalog: a keyed provider such as Alchemy, Infura or
 //   DRPC is one provider whatever its key, path or host.
-// A URL that doesn't parse is its own provider, by its exact text.
+// A URL that doesn't parse, or has no host, is its own provider, by its
+// exact text.
 
 const net = require('node:net');
 const catalog = require('../../shared/endpoint-sources.json');
