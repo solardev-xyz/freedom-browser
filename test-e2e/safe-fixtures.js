@@ -12,6 +12,7 @@
 
 const { test: base, expect, _electron: electron } = require('@playwright/test');
 const { spawn, spawnSync } = require('child_process');
+const net = require('net');
 const path = require('path');
 const fs = require('fs');
 
@@ -57,6 +58,67 @@ function safeE2eAvailable() {
   return !missing;
 }
 
+/**
+ * One test's diagnostics (#1101): anvil's lifecycle and output, the
+ * forwarder's exchanges, the app's main-process output and the chrome
+ * window's console, each line stamped with the milliseconds since the test
+ * began. Written to the test's output directory and attached when the test
+ * fails, so an attempt that a retry hides still leaves them in the job's
+ * uploaded test-results.
+ */
+const DIAGNOSTIC_LINES = 50_000;
+
+function createDiagnostics() {
+  const started = Date.now();
+  const lines = [];
+  let dropped = 0;
+  const add = (source, text) => {
+    for (const line of String(text).split('\n')) {
+      if (!line.trim()) continue;
+      if (lines.length < DIAGNOSTIC_LINES) {
+        lines.push(`+${Date.now() - started}ms [${source}] ${line}`);
+      } else {
+        dropped += 1;
+      }
+    }
+  };
+  return {
+    add,
+    /** Every line `stream` writes, as `source`'s. */
+    pipe(source, stream) {
+      let rest = '';
+      stream?.on('data', (chunk) => {
+        const text = rest + chunk.toString('utf8');
+        const end = text.lastIndexOf('\n');
+        if (end === -1) {
+          rest = text;
+          return;
+        }
+        add(source, text.slice(0, end));
+        rest = text.slice(end + 1);
+      });
+      stream?.on('end', () => rest && add(source, rest));
+    },
+    text() {
+      return lines.join('\n') + (dropped ? `\n(${dropped} more lines dropped)` : '') + '\n';
+    },
+  };
+}
+
+/** Whether something accepts connections on 127.0.0.1:`port`. */
+function portAccepting(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    const done = (accepting) => {
+      socket.destroy();
+      resolve(accepting);
+    };
+    socket.setTimeout(1000, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
 async function rpc(method, params = []) {
   const res = await fetch(ANVIL_URL, {
     method: 'POST',
@@ -68,22 +130,34 @@ async function rpc(method, params = []) {
   return result;
 }
 
-async function startAnvilFork() {
+async function startAnvilFork(diagnostics) {
+  if (await portAccepting(ANVIL_PORT)) {
+    diagnostics.add('fixture', `port ${ANVIL_PORT} accepts connections before anvil starts`);
+  }
   // --block-time (not automine): ethers' waitForTransaction — which the
   // app relies on for confirmations — only re-checks receipts when new
-  // blocks arrive, exactly like on the real chain.
+  // blocks arrive, exactly like on the real chain. Not --silent: its
+  // output goes to the diagnostics.
   const proc = spawn('anvil', [
     '--fork-url', GNOSIS_FORK_URL,
     '--port', String(ANVIL_PORT),
     '--block-time', '2',
-    '--silent',
   ]);
+  diagnostics.add('fixture', `anvil spawned, pid ${proc.pid}`);
+  diagnostics.pipe('anvil', proc.stdout);
+  diagnostics.pipe('anvil:err', proc.stderr);
+  proc.once('exit', (code, signal) =>
+    diagnostics.add('fixture', `anvil pid ${proc.pid} exited: code ${code}, signal ${signal}`)
+  );
   const deadline = Date.now() + 120_000;
   for (;;) {
     if (proc.exitCode !== null) throw new Error(`anvil exited with ${proc.exitCode}`);
     try {
       const chainId = await rpc('eth_chainId');
-      if (parseInt(chainId, 16) === 100) return proc;
+      if (parseInt(chainId, 16) === 100) {
+        diagnostics.add('fixture', 'anvil answered eth_chainId 100');
+        return proc;
+      }
       throw new Error(`unexpected chain id ${chainId}`);
     } catch (err) {
       if (Date.now() > deadline) {
@@ -96,15 +170,28 @@ async function startAnvilFork() {
 
 const test = base.extend({
   // eslint-disable-next-line no-empty-pattern
-  anvil: async ({}, use) => {
-    const proc = await startAnvilFork();
-    const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
+  diagnostics: async ({}, use, testInfo) => {
+    const diagnostics = createDiagnostics();
+    await use(diagnostics);
+    if (testInfo.status !== testInfo.expectedStatus) {
+      const file = testInfo.outputPath('safe-e2e-diagnostics.log');
+      fs.writeFileSync(file, diagnostics.text());
+      await testInfo.attach('safe-e2e-diagnostics', { path: file, contentType: 'text/plain' });
+    }
+  },
+
+  anvil: async ({ diagnostics }, use) => {
+    const proc = await startAnvilFork(diagnostics);
+    const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT, {
+      log: (line) => diagnostics.add('forwarder', line),
+    });
     await use({ url: ANVIL_URL, forwarderUrl: forwarder.url, rpc });
     await forwarder.close();
+    diagnostics.add('fixture', `stopping anvil pid ${proc.pid}`);
     proc.kill();
   },
 
-  electronApp: async ({ anvil }, use) => {
+  electronApp: async ({ anvil, diagnostics }, use) => {
     // /tmp, not os.tmpdir() — see remote-signing-fixtures for why.
     const tmpRoot = fs.mkdtempSync('/tmp/f-safe-');
     const userDataDir = path.join(tmpRoot, 'userData');
@@ -214,6 +301,9 @@ const test = base.extend({
       },
       timeout: 20_000,
     });
+    diagnostics.add('fixture', `app launched, pid ${app.process().pid}`);
+    diagnostics.pipe('app', app.process().stdout);
+    diagnostics.pipe('app:err', app.process().stderr);
 
     await use(app);
 
@@ -221,8 +311,11 @@ const test = base.extend({
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 
-  window: async ({ electronApp }, use) => {
+  window: async ({ electronApp, diagnostics }, use) => {
     const window = await electronApp.firstWindow();
+    window.on('console', (message) =>
+      diagnostics.add('renderer', `${message.type()}: ${message.text()}`)
+    );
     await window.waitForLoadState('domcontentloaded');
     await use(window);
   },
