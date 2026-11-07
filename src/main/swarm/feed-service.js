@@ -239,9 +239,10 @@ function declaredLength(response) {
  * than one chunk, the node's join of the chunk the SOC wraps (`GET /bytes`).
  *
  * The SOC is charged as soon as it is read. The wrapped chunk's span gives
- * the entry's size: past the meter's maxBytes it is data_too_large, and
- * otherwise the rest of that size (the SOC counts towards it) is reserved
- * before `/bytes` is asked for. The join is then held to that size.
+ * the entry's size. An entry that fits in the SOC is its payload held to that
+ * size. A larger one past the meter's maxBytes is data_too_large; otherwise
+ * the rest of its size (the SOC counts towards it) is reserved before
+ * `/bytes` is asked for, and the join is held to that size.
  */
 async function readExactFeedEntry(bee, owner, topic, index, meter) {
   const feedIndex = normalizeFeedIndex(index);
@@ -252,12 +253,21 @@ async function readExactFeedEntry(bee, owner, topic, index, meter) {
   const soc = bee.unmarshalSingleOwnerChunk(raw, reference);
   const cac = bee.makeContentAddressedChunk(soc.payload, soc.span);
 
+  // The entry's size, with the redundancy level cleared, as readData reads a root.
+  const size = dataSizeFromSpan(cac.span.toUint8Array());
   let payload;
   if (cac.span.toBigInt() <= 4096n) {
     if (socRefusal) throw meterRefusal(socRefusal);
-    payload = Buffer.from(cac.payload.toUint8Array());
+    // The entry is the SOC's payload held to that size, as readData holds a
+    // one-chunk root: bytes past the span are not the entry, and a span past
+    // the payload is an entry the chunk doesn't hold.
+    const expected = Number(size);
+    const inline = Buffer.from(cac.payload.toUint8Array());
+    if (inline.length < expected) {
+      throw new Error(`Node returned ${inline.length} bytes for a ${expected}-byte feed entry`);
+    }
+    payload = inline.subarray(0, expected);
   } else {
-    const size = dataSizeFromSpan(cac.span.toUint8Array());
     if (size > BigInt(meter.maxBytes)) {
       throw entryTooLarge(meter.maxBytes, size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(size) : size);
     }
@@ -546,6 +556,19 @@ async function updateFeed(signer, topicString, contentReference, batchId, option
 }
 
 /**
+ * The page's payload can't be written. An SOC carries 1 to 4096 bytes and a
+ * larger payload goes up through /bytes, so the one payload refused here is
+ * an empty one, at the point where bee-js would refuse it as it builds the
+ * chunk. `reason` marks it as the page's, so the provider tells it apart from
+ * a node's failure whatever either one's message says (#1054).
+ */
+function unwritablePayloadError() {
+  const err = new Error('A feed entry needs at least 1 byte of data');
+  err.reason = 'payload_too_large';
+  return err;
+}
+
+/**
  * Write arbitrary payload data to a feed index as a Single Owner Chunk.
  * Wrapped in the per-topic write lock.
  *
@@ -593,6 +616,7 @@ async function writeFeedPayload(signer, topicString, data, options = {}) {
       writeIndex = await resolveNextIndex(reader, bee, owner, topic);
     }
 
+    if (dataSize === 0) throw unwritablePayloadError();
     // As bee-js's writer: strings are UTF-8; more than one chunk goes up
     // through /bytes and the SOC wraps that upload's root chunk.
     const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;

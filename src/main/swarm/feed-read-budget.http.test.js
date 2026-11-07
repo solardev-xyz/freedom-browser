@@ -440,6 +440,26 @@ describe('a lying or missing span', () => {
     expect(result.error.message).toBe('Node returned 100 bytes for a 5000-byte feed entry');
   });
 
+  test('an entry held in its SOC is cut to the wrapped span', async () => {
+    // A signed SOC whose wrapped chunk says 1 byte but carries 4,096.
+    putEntry(11, { payload: Buffer.alloc(4096, 0x5a), span: 1 });
+
+    const result = await read({ index: 11 });
+
+    expect(decoded(result)).toEqual(Buffer.from([0x5a]));
+    expect(requestsTo('/bytes/')).toHaveLength(0);
+  });
+
+  test('an entry held in its SOC with a span past its payload is refused', async () => {
+    putEntry(12, { payload: Buffer.alloc(10, 0x5a), span: 100 });
+
+    const result = await read({ index: 12 });
+
+    expect(result.error.code).toBe(-32603);
+    expect(result.error.message).toBe('Node returned 10 bytes for a 100-byte feed entry');
+    expect(requestsTo('/bytes/')).toHaveLength(0);
+  });
+
   test('an SOC too short to carry a span is refused before any join', async () => {
     const bee = new Bee(ant.origin);
     socs.set(

@@ -1534,8 +1534,10 @@ async function handleWriteFeedEntry(params, origin) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'index_already_exists' } } };
     }
 
-    // Translate SOC payload size errors
-    if (err.message && (err.message.includes('too large') || err.message.includes('payload size'))) {
+    // The page's payload, refused by feed-service. Matched by reason, not by
+    // text: a node's malformed answer can read "payload size … exceeds" too,
+    // and that is the node's failure, a retryable -32603 (#1054).
+    if (err.reason === 'payload_too_large') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Payload exceeds maximum SOC size', data: { reason: 'payload_too_large' } } };
     }
 
