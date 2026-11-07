@@ -25,6 +25,7 @@ const { withVaultAccount, isValidWalletIndex } = require('./vault-access');
 const {
   getWalletRecord,
   isHardwareWalletIndex,
+  recordLedgerAddressCheck,
   recordRemoteAddressCheck,
   WALLET_TYPES,
 } = require('../identity-manager');
@@ -171,7 +172,11 @@ function getSigner(walletIndex) {
   let backend;
   let vaultSigned = false;
   if (record && record.type === WALLET_TYPES.LEDGER) {
-    backend = createLedgerBackend(record);
+    backend = createLedgerBackend(record, {
+      // What the device said about a record no device has matched yet
+      // (#1065): kept on the record.
+      onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
+    });
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record, {
       // What the phone's answer showed about the record (#1078): kept on
@@ -206,13 +211,17 @@ function getSigner(walletIndex) {
       const normalized = normalizeTypedData(typedData);
       // Every backend: the Ledger and phone ones walk the types with ethers.
       assertBoundedTypeGraph(normalized?.types);
-      if (!vaultSigned) {
-        const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
-        if (expectedHash !== undefined && hash !== expectedHash) {
-          throw new Error('The typed data changed after it was confirmed');
-        }
+      if (vaultSigned) {
+        return backend.signTypedData(normalized, { expectedHash });
       }
-      return backend.signTypedData(normalized, { expectedHash });
+      const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
+      if (expectedHash !== undefined && hash !== expectedHash) {
+        throw new Error('The typed data changed after it was confirmed');
+      }
+      // `digest`: the hash a device's signature must recover over (#1063):
+      // the one the user confirmed, or the core's own for main's typed
+      // data, never one rebuilt from what the device was sent.
+      return backend.signTypedData(normalized, { expectedHash, digest: hash });
     },
   };
   // Optional capability: backends that sign AND broadcast through their
