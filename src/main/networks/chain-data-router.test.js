@@ -42,6 +42,17 @@ jest.mock('../ens/colibri-resolver', () => ({
 }));
 jest.mock('../logger', () => ({ verbose: jest.fn(), warn: jest.fn() }));
 const mockLog = require('../logger');
+// The Safe E2E's provider-identity seam with its real gate, under the
+// launch facts a test sets (packaged and no variable unless it says).
+let mockE2eLaunch = { isPackaged: true, env: {} };
+jest.mock('./e2e-provider-identities', () => {
+  const actual = jest.requireActual('./e2e-provider-identities');
+  return {
+    ...actual,
+    activeProviderIdentityOverrides: () =>
+      actual.providerIdentityOverrides({ ...mockE2eLaunch, fromAsar: false }),
+  };
+});
 
 const {
   request,
@@ -2246,6 +2257,11 @@ describe('chain-data-router', () => {
       ["a keyed provider's keyed and public hosts", ['https://lb.drpc.live/ethereum/key', 'https://eth.drpc.org']],
       ['localhost and 127.0.0.1', ['http://127.0.0.1:8545', 'http://localhost:8545']],
       ['127.0.0.1 and ::1', ['http://127.0.0.1:8545', 'http://[::1]:8545/']],
+      // Every loopback endpoint is one trust domain (#1097 round 1): a local
+      // process can listen on, or forward itself to, another port or address.
+      ['two loopback ports', ['http://127.0.0.1:8545', 'http://localhost:8546']],
+      ['127.0.0.1 and 127.0.0.2 on one port', ['http://127.0.0.1:8545', 'http://127.0.0.2:8545']],
+      ['::1 and 127.0.0.1 on two ports', ['http://[::1]:8545', 'http://127.0.0.1:18549']],
     ];
     const READS = [
       ['eth_getCode', ['0x41aD4887971f90BB3fE4d83eCa65177281283261', 'latest'], '0x60806040'],
@@ -2325,7 +2341,7 @@ describe('chain-data-router', () => {
 
     test.each([
       ['two hosts', ['https://a.example', 'https://b.example']],
-      ['two loopback ports', ['http://127.0.0.1:8545', 'http://localhost:8546']],
+      ['a host and a loopback node', ['https://a.example', 'http://127.0.0.1:8545']],
       ['two keyed providers', ['https://lb.drpc.live/ethereum/key', 'https://mainnet.infura.io/v3/key']],
     ])('%s that agree are still a verified quorum', async (_name, urls) => {
       useEndpoints(urls, ['quorum']);
@@ -2347,6 +2363,43 @@ describe('chain-data-router', () => {
         source: 'direct',
       });
       expect(fetchedUrls()).toEqual(['https://a.example', 'https://b.example']);
+    });
+
+    // The Safe E2E lists its anvil fork and a forwarder in front of it, two
+    // loopback URLs, and names them as two providers through a test-only
+    // seam (e2e-provider-identities.js) so a Safe can activate on a verified
+    // read. The router honors it only for an unpackaged launch with the
+    // variable set.
+    describe('the Safe E2E seam (test-only)', () => {
+      const E2E = ['http://127.0.0.1:18847', 'http://127.0.0.1:18849'];
+      const LABELS = { [E2E[0]]: 'e2e-anvil', [E2E[1]]: 'e2e-anvil-forwarder' };
+      const env = { FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify(LABELS) };
+      afterEach(() => {
+        mockE2eLaunch = { isPackaged: true, env: {} };
+      });
+
+      test('an unpackaged launch with the variable: the two make a verified quorum', async () => {
+        mockE2eLaunch = { isPackaged: false, env };
+        useEndpoints(E2E, ['quorum']);
+        answerEverywhere('0x60806040');
+        await expect(
+          request(100, 'eth_getCode', ['0x41aD4887971f90BB3fE4d83eCa65177281283261', 'latest'])
+        ).resolves.toEqual({ result: '0x60806040', source: 'quorum', verified: true });
+        expect(fetchedUrls().sort()).toEqual([...E2E].sort());
+      });
+
+      test.each([
+        ['a packaged build, with the variable', { isPackaged: true, env }],
+        ['an unpackaged launch without the variable', { isPackaged: false, env: {} }],
+      ])('%s: the two are one provider, and no quorum', async (_name, launch) => {
+        mockE2eLaunch = launch;
+        useEndpoints(E2E, ['quorum', 'direct']);
+        answerEverywhere('0x60806040');
+        await expect(
+          request(100, 'eth_getCode', ['0x41aD4887971f90BB3fE4d83eCa65177281283261', 'latest'])
+        ).resolves.toEqual({ result: '0x60806040', source: 'direct', verified: false });
+        expect(fetchedUrls()).toEqual([E2E[0]]);
+      });
     });
   });
 });

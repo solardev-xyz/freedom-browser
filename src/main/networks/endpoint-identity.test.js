@@ -54,15 +54,33 @@ describe('endpoint identity (#1094)', () => {
     for (const alias of aliases) same(alias, 'http://localhost:8545');
   });
 
-  test('a loopback port is a process of its own', () => {
-    differ('http://127.0.0.1:8545', 'http://127.0.0.1:8546');
-    differ('http://localhost:8545', 'http://[::1]:8546');
+  // #1097 round 1: a local process can listen on, or forward itself to, any
+  // number of ports and loopback addresses, so every loopback endpoint is
+  // one trust domain. Two separate local nodes count once: that costs
+  // availability, never a false verified label.
+  test('two loopback ports are one provider', () => {
+    same('http://127.0.0.1:8545', 'http://127.0.0.1:8546');
+    same('http://localhost:8545', 'http://localhost:18549/rpc');
+    same('http://localhost', 'https://localhost');
   });
 
-  test("a loopback URL without a port is on its scheme's default port", () => {
-    same('http://localhost', 'https://127.0.0.1:80');
-    same('https://localhost', 'http://[::1]:443');
-    differ('http://localhost', 'https://localhost');
+  test('127.0.0.1 and 127.0.0.2 at one port are one provider', () => {
+    same('http://127.0.0.1:8545', 'http://127.0.0.2:8545');
+    same('http://127.0.0.1:8545', 'http://127.255.255.254:9000');
+  });
+
+  test('::1 is the same provider as every other loopback address and port', () => {
+    same('http://[::1]:8545', 'http://127.0.0.1:8545');
+    same('http://[::1]:8546', 'http://127.0.0.2:8545');
+    same('http://[::1]', 'http://node.localhost:30303');
+  });
+
+  test("the unspecified address dials this machine, so it's loopback too", () => {
+    same('http://0.0.0.0:8545', 'http://127.0.0.1:8546');
+    same('http://0:8545', 'http://localhost:8545');
+    same('http://[::]:8545', 'http://[::1]:8545');
+    same('http://[::ffff:0.0.0.0]:8545', 'http://localhost:8545');
+    differ('http://0.0.0.1:8545', 'http://127.0.0.1:8545');
   });
 
   test('distinct providers stay distinct', () => {
@@ -71,6 +89,16 @@ describe('endpoint identity (#1094)', () => {
     differ('https://gnosis.drpc.org', 'https://eth-mainnet.g.alchemy.com/v2/k');
     differ('http://127.0.0.1:8545', 'https://rpc.example');
     differ('http://10.0.0.1:8545', 'http://127.0.0.1:8545');
+    differ('http://128.0.0.1:8545', 'http://127.0.0.1:8545');
+    differ('http://[::2]:8545', 'http://[::1]:8545');
+    differ('http://[::ffff:8.8.8.8]:8545', 'http://127.0.0.1:8545');
+  });
+
+  test('two different hostnames are still two providers (#1100)', () => {
+    // Even when DNS takes both to one node: identity is the configured
+    // name's, decided before anything is dialled.
+    differ('https://rpc-one.example', 'https://rpc-two.example');
+    differ('https://loopback-name.example:8545', 'http://127.0.0.1:8545');
   });
 
   test("a URL that doesn't parse, or has no host, is its own provider, by its exact text", () => {
@@ -89,12 +117,13 @@ describe('endpoint identity (#1094)', () => {
         'http://127.0.0.1:8545',
         'https://b.example/two',
         'http://127.0.0.1:8546',
+        'https://c.example',
       ])
     ).toEqual([
       'https://a.example/',
       'http://localhost:8545',
       'https://b.example/one',
-      'http://127.0.0.1:8546',
+      'https://c.example',
     ]);
     expect(distinctEndpoints([])).toEqual([]);
     expect(distinctEndpoints(undefined)).toEqual([]);
@@ -102,7 +131,13 @@ describe('endpoint identity (#1094)', () => {
 
   test('every URL collapsing to one provider leaves one endpoint', () => {
     expect(
-      distinctEndpoints(['http://127.0.0.1:8545', 'http://localhost:8545/', 'http://[::1]:8545'])
+      distinctEndpoints([
+        'http://127.0.0.1:8545',
+        'http://localhost:8545/',
+        'http://[::1]:8545',
+        'http://127.0.0.1:8546',
+        'http://127.0.0.2:8545',
+      ])
     ).toEqual(['http://127.0.0.1:8545']);
   });
 });
