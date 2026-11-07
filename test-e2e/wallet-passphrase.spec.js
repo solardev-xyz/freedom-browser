@@ -664,15 +664,17 @@ for (const startFrom of ['the password field', 'the Continue button']) {
     await holdIpc(electronApp, 'identity:generate-mnemonic');
     if (startFrom === 'the password field') {
       await win.focus('#create-password-confirm');
-      await win.keyboard.press('Enter');
     } else {
-      await step.locator('[data-action="create-vault"]').click();
+      // Focused, as a click leaves it on Linux and Windows (not on macOS).
+      await step.locator('[data-action="create-vault"]').focus();
     }
-    await expect(win.locator('#onboarding-loading')).toBeVisible();
-
+    // Straight after, before anything else can move focus: on a slow machine
+    // the keys arrive before Chromium takes focus off what just went inert.
+    await win.keyboard.press('Enter');
     await win.keyboard.press('Enter');
     await win.keyboard.press('Space');
     await win.keyboard.press('Escape');
+    await expect(win.locator('#onboarding-loading')).toBeVisible();
     expect(await heldIpcCount(electronApp)).toBe(1);
     await releaseIpc(electronApp);
 

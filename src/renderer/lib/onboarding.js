@@ -26,7 +26,11 @@ const STEP_CONFIG = {
   welcome: { close: true },
   createPassword: { title: 'Create a Password', large: true, back: 'Welcome' },
   import: { title: 'Import Recovery Phrase', large: true, back: 'Welcome' },
-  passphrase: () => ({ title: 'Passphrase', back: isImportFlow ? 'Import' : 'Password', done: true }),
+  passphrase: () => ({
+    title: 'Passphrase',
+    back: isImportFlow ? 'Import' : 'Password',
+    done: true,
+  }),
   path: { title: 'Derivation Path', back: 'Import', done: true },
   backup: { title: 'Back Up Your Phrase', large: true, startOver: true },
 };
@@ -103,29 +107,45 @@ function setupNavigationBar() {
   // prevented when Escape is pressed twice with nothing else in between, and on
   // the document because focus can fall out of the dialog when a button hides.
   modal.addEventListener('cancel', (e) => e.preventDefault());
-  document.addEventListener('keydown', (e) => {
-    // Another dialog can open over this one (Create Profile, from the app menu).
-    const isOurs = modal.contains(e.target) || e.target === document.body;
-    if (!modal.open || !isOurs) return;
-    const isBusy = !loading.classList.contains('hidden');
-
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      if (!startOverSheet.classList.contains('hidden')) {
-        startOverSheet.classList.add('hidden');
-      } else if (!isBusy && nav.canGoBack()) {
-        goBack();
+  // While a step is running, nothing in the dialog can be pressed again, by
+  // mouse or by keyboard, however focus got where it is.
+  modal.addEventListener(
+    'click',
+    (e) => {
+      if (!loading.classList.contains('hidden')) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
       }
-      return;
-    }
+    },
+    true
+  );
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      // Another dialog can open over this one (Create Profile, from the app menu).
+      const isOurs = modal.contains(e.target) || e.target === document.body;
+      if (!modal.open || !isOurs) return;
+      const isBusy = !loading.classList.contains('hidden');
 
-    // Enter in a field does what the screen's main button does.
-    if (e.key === 'Enter' && e.target.matches('input:not([type="checkbox"], [type="radio"])')) {
-      e.preventDefault();
-      const primary = steps[nav.current()].querySelector('.onboarding-btn.primary');
-      if (!isBusy && primary && !primary.disabled) primary.click();
-    }
-  }, true);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (!startOverSheet.classList.contains('hidden')) {
+          startOverSheet.classList.add('hidden');
+        } else if (!isBusy && nav.canGoBack()) {
+          goBack();
+        }
+        return;
+      }
+
+      // Enter in a field does what the screen's main button does.
+      if (e.key === 'Enter' && e.target.matches('input:not([type="checkbox"], [type="radio"])')) {
+        e.preventDefault();
+        const primary = steps[nav.current()].querySelector('.onboarding-btn.primary');
+        if (!isBusy && primary && !primary.disabled) primary.click();
+      }
+    },
+    true
+  );
 }
 
 /** One screen back. Back at the start, what was typed for that flow is dropped. */
@@ -195,6 +215,9 @@ function showLoading(text = 'Setting up your identity…') {
   loadingText.textContent = text;
   loading.classList.remove('hidden');
   setScreensInert(true);
+  // Chromium takes focus off an inert button a moment later, and a key pressed
+  // in between would still press it. Linux and Windows focus a clicked button.
+  modal.focus({ preventScroll: true });
 }
 
 /**
