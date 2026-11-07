@@ -47,17 +47,8 @@ jest.mock('../networks/network-registry', () => ({
   getEndpoints: (_chainId, role) => (role === 'prover' ? ['https://prover.example'] : []),
 }));
 
-// The ENS calls the resolver makes through its provider: one eth_call to a
-// stand-in Universal Resolver, through ethers' real BrowserProvider.
-const mockUniversalResolver = '0x00000000000000000000000000000000000000e5';
+// Only hostOf is imported: Colibri runs no ENS call (#1076).
 jest.mock('../ens-resolver', () => ({
-  universalResolverCall: async (provider, _name, callData) => ({
-    resolvedData: await provider.call({ to: mockUniversalResolver, data: callData }),
-    resolverAddress: mockUniversalResolver,
-  }),
-  universalResolverReverse: async (provider) => ({
-    resolvedData: await provider.call({ to: mockUniversalResolver, data: '0x5d78a217' }),
-  }),
   hostOf: (url) => new URL(url).host,
 }));
 
@@ -142,8 +133,7 @@ function filesUnder(dir) {
 }
 
 const balance = (address) => resolver.requestViaColibri(1, 'eth_getBalance', [address, 'latest']);
-const forward = () => resolver.resolveCallViaColibri('secret.eth', '0x9061b923');
-const reverse = () => resolver.resolveReverseViaColibri(new Uint8Array(20));
+const code = (address) => resolver.requestViaColibri(1, 'eth_getCode', [address, 'latest']);
 
 beforeEach(() => {
   mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-colibri-private-'));
@@ -165,20 +155,20 @@ afterEach(() => {
 describe('Colibri store for private windows (#1058)', () => {
   test('a normal window keeps its reads in <userData>/colibri, as before', async () => {
     await expect(balance(CONTRACT)).resolves.toBe(MISS);
-    await expect(forward()).resolves.toMatchObject({ resolvedData: MISS });
+    await expect(code(OTHER)).resolves.toBe(MISS);
 
     expect(filesUnder(mockUserData)).toEqual([
       path.join('colibri', callKey(CONTRACT)),
-      path.join('colibri', callKey(mockUniversalResolver)),
+      path.join('colibri', callKey(OTHER)),
     ]);
     // And they stay warm across reads.
     await expect(balance(CONTRACT)).resolves.toBe(HIT);
   });
 
+  // Chain data is Colibri's only caller: names don't use it (#1076).
   test.each([
-    ['a chain-data read', () => balance(CONTRACT)],
-    ['an ENS forward lookup', forward],
-    ['an ENS reverse lookup', reverse],
+    ['a balance read', () => balance(CONTRACT)],
+    ['a code read', () => code(CONTRACT)],
   ])('%s from a private window writes nothing under <userData>', async (_label, read) => {
     privateWindows.createPrivateWindow();
     await inPrivate(read);
@@ -209,7 +199,7 @@ describe('Colibri store for private windows (#1058)', () => {
     const second = privateWindows.createPrivateWindow();
     await balance(OTHER);
     await inPrivate(() => balance(CONTRACT));
-    await inPrivate(forward);
+    await inPrivate(() => code(OTHER));
     const [, privateLane] = mockLanes;
     expect(privateLane.storageDir).toBeNull();
 
@@ -224,7 +214,7 @@ describe('Colibri store for private windows (#1058)', () => {
     // The next private window starts from an empty store, on a new worker.
     privateWindows.createPrivateWindow();
     await expect(inPrivate(() => balance(CONTRACT))).resolves.toBe(MISS);
-    await expect(inPrivate(forward)).resolves.toMatchObject({ resolvedData: MISS });
+    await expect(inPrivate(() => code(OTHER))).resolves.toBe(MISS);
     expect(mockLanes.map((lane) => lane.storageDir)).toEqual([
       path.join(mockUserData, 'colibri'),
       null,
@@ -236,8 +226,9 @@ describe('Colibri store for private windows (#1058)', () => {
     expect(filesUnder(mockUserData)).toEqual([path.join('colibri', callKey(OTHER))]);
   });
 
-  // Codex review of #1070, finding 2: ENS asks Myotis before Colibri, so a
-  // private lookup can still be waiting when its last window closes.
+  // Codex review of #1070, finding 2: a read can wait on Myotis or the
+  // network before it reaches Colibri, so a private one can still be waiting
+  // when its last window closes.
   test('a private read still waiting when the last private window closes starts no worker', async () => {
     const win = privateWindows.createPrivateWindow();
     await inPrivate(() => balance(OTHER));
@@ -251,7 +242,7 @@ describe('Colibri store for private windows (#1058)', () => {
 
     win.emit('closed');
     expect(mockLanes[0].worker.stopped).toBe(true);
-    // The next private window opens before the old lookup resumes.
+    // The next private window opens before the old read resumes.
     privateWindows.createPrivateWindow();
     releaseMyotis();
 
@@ -265,10 +256,11 @@ describe('Colibri store for private windows (#1058)', () => {
 });
 
 
-// On this branch every Colibri read is one of the cores' `shell.verified`
-// operations, run by main's executors with their real adapters. The core's
+// On this branch every Colibri read is one of chain data's `shell.verified`
+// operations, run by main's executor with its real adapters. The core's
 // request names no window; the client's `private` (service-client.js
-// forPrivate) does, and the executors run the read in that context.
+// forPrivate) does, and the executor runs the read in that context. Naming's
+// executor runs no Colibri read at all (#1076).
 describe("Colibri store through the cores' shell.verified (#1058)", () => {
   const { registerChainVerified } = require('../core/chain-verified');
   const { registerNamingVerified } = require('../core/naming-verified');
@@ -299,16 +291,22 @@ describe("Colibri store through the cores' shell.verified (#1058)", () => {
       resolver: 'ur',
       deadline_ms: 10_000,
     }, extra);
+  const ensReverse = (extra) =>
+    naming({
+      generations: { lifecycle: 0 },
+      colibri: 'reverse',
+      address: CONTRACT,
+      coin_type: 60,
+      deadline_ms: 10_000,
+    }, extra);
 
   // The private session a request sent from a private window now names, as
   // service-client.js records it.
   const { privateContextSession } = require('../private/private-log-context');
   const openSession = () => runWithPrivateLogContext(true, () => privateContextSession());
 
-  test.each([
-    ['a chain-data read', (extra) => chainRead(CONTRACT, extra)],
-    ['an ENS lookup', ensLookup],
-  ])('%s the core asks for a private window writes nothing under <userData>', async (_label, read) => {
+  test('a chain-data read the core asks for a private window writes nothing under <userData>', async () => {
+    const read = (extra) => chainRead(CONTRACT, extra);
     privateWindows.createPrivateWindow();
     await read({ private: true, privateSession: openSession() });
     // Unknown counts as private, and with no session it is refused.
@@ -318,16 +316,14 @@ describe("Colibri store through the cores' shell.verified (#1058)", () => {
   });
 
   // Codex review of #1071, finding 2.
-  test.each([
-    ['a chain-data read', (extra) => chainRead(CONTRACT, extra)],
-    ['an ENS lookup', ensLookup],
-  ])('%s the core asks for a private session that has ended starts no worker', async (_label, read) => {
+  test('a chain-data read the core asks for a private session that has ended starts no worker', async () => {
+    const read = (extra) => chainRead(CONTRACT, extra);
     const win = privateWindows.createPrivateWindow();
     const ended = openSession();
     await read({ private: true, privateSession: ended });
     win.emit('closed');
     expect(mockLanes[0].worker.stopped).toBe(true);
-    // A new private window opens before the old lookup's verifier step.
+    // A new private window opens before the old read's verifier step.
     privateWindows.createPrivateWindow();
     await read({ private: true, privateSession: ended });
     expect(mockLanes).toHaveLength(1);
@@ -339,11 +335,28 @@ describe("Colibri store through the cores' shell.verified (#1058)", () => {
 
   test('a normal window’s reads keep the disk store', async () => {
     await expect(chainRead(CONTRACT, { private: false })).resolves.toEqual({ result: MISS });
-    await expect(ensLookup({ private: false })).resolves.toMatchObject({ resolved_data: MISS });
+    await expect(chainRead(OTHER, { private: false })).resolves.toEqual({ result: MISS });
     await expect(chainRead(CONTRACT, { private: false })).resolves.toEqual({ result: HIT });
     expect(filesUnder(mockUserData)).toEqual([
       path.join('colibri', callKey(CONTRACT)),
-      path.join('colibri', callKey(mockUniversalResolver)),
+      path.join('colibri', callKey(OTHER)),
     ]);
+  });
+
+  // #1076: the naming executor, with its real adapters, refuses the old
+  // Colibri operations. No worker starts and no store is touched, so no name
+  // can come from Colibri, from a private window or a normal one.
+  test.each([
+    ['an ENS forward lookup', ensLookup],
+    ['an ENS reverse lookup', ensReverse],
+  ])('%s the core asks for is refused and reaches no Colibri worker', async (_label, lookup) => {
+    privateWindows.createPrivateWindow();
+    for (const extra of [{ private: true, privateSession: openSession() }, { private: false }, {}]) {
+      await expect(Promise.resolve().then(() => lookup(extra))).rejects.toMatchObject({
+        code: 'refused',
+      });
+    }
+    expect(mockLanes).toEqual([]);
+    expect(filesUnder(mockUserData)).toEqual([]);
   });
 });

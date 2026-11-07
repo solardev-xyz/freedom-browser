@@ -1826,7 +1826,8 @@ async function handleSendPss(params, origin) {
     await messagingService.sendPss({
       topic: params.topic,
       targets: targets.toLowerCase(),
-      recipient,
+      // Sent to the node as is: the compressed SEC1 key, 66 hex (#1062).
+      recipient: recipient.toLowerCase(),
       data: payload,
     });
     return { result: { sent: true } };

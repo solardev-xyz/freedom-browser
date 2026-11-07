@@ -294,7 +294,10 @@ async function buildRepoMeta(rid) {
   try {
     seeding = (await seeders(rid)).seeding;
   } catch (err) {
-    log.warn('[RadicleEmbedded] seeders() failed:', err.message);
+    // PRIVATE MODE GUARD: the failure is swallowed here, so the protocol's
+    // redacted catch never sees it, and its text can name the repository's
+    // storage path (#1050).
+    log.warn('[RadicleEmbedded] seeders() failed:', redactForLog(err.message));
   }
   return {
     rid: info.rid,

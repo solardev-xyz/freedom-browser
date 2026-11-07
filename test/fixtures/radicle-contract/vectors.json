@@ -932,7 +932,7 @@
           "application/json"
         ]
       ],
-      "body": "{\"error\":\"the path 'missing.txt' does not exist in the given tree; class=Tree (14); code=NotFound (-3)\"}"
+      "body": "{\"error\":\"not found\"}"
     },
     "rad HEAD /blob/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8/README.md": {
       "status": 200,
@@ -1030,7 +1030,7 @@
           "application/json"
         ]
       ],
-      "body": "{\"error\":\"odb: cannot read object: null OID cannot exist; class=Odb (9); code=NotFound (-3)\"}"
+      "body": "{\"error\":\"not found\"}"
     },
     "rad GET /stats/tree/6a34708a404f7cbd3a622807f6d5ce08af2ba6d8": {
       "status": 200,
@@ -1114,7 +1114,7 @@
           "application/json"
         ]
       ],
-      "body": "{\"error\":\"revspec '0000000000000000000000000000000000000000' not found; class=Reference (4); code=NotFound (-3)\"}"
+      "body": "{\"error\":\"not found\"}"
     },
     "rad GET /patches": {
       "status": 200,
