@@ -53,7 +53,7 @@ async function startCore() {
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
     // `dweb.forget`. It's the client's only protocol, and the only one the
-    // pinned core (0.12.1) takes; a core that answers another is a
+    // pinned core (0.12.2) takes; a core that answers another is a
     // mismatch, not restarted.
     protocol: PROTOCOL_VERSION_STREAMS,
   });
