@@ -3306,6 +3306,17 @@ describe('ens-resolver', () => {
           `[ens] reverse policy address=${ADDR} order=[myotis,quorum] preferVerified=true`
         );
         expect(lines.join('\n')).not.toContain('method=colibri');
+
+        // The old default, a Colibri primary and no order.
+        mockLoadSettings.mockReturnValue({
+          ...mockLoadSettings(),
+          ensResolutionOrder: undefined,
+          ensResolutionMethod: 'colibri',
+        });
+        await resolveEnsAddress('legacy.eth');
+        expect(infoSpy.mock.calls.map(([line]) => line)).toContain(
+          '[ens] policy name=legacy.eth kind=addr order=[myotis,quorum] preferVerified=false'
+        );
       } finally {
         infoSpy.mockRestore();
       }
