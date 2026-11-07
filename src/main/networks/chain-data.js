@@ -74,7 +74,17 @@ const SOURCE_CAPABILITIES = (() => {
   const { READ_SOURCES } = require('../core/chain-driver');
   const unsupported = {
     myotis: [...SINGLE_NODE_METHODS],
-    colibri: [...SINGLE_NODE_METHODS, 'eth_getLogs'],
+    // Colibri answers the two fee methods from a public RPC, unproven, and
+    // runs the two calls on contract code from one, unchecked (#1046): the
+    // core leaves all four to the next source (freedom-core #276).
+    colibri: [
+      ...SINGLE_NODE_METHODS,
+      'eth_getLogs',
+      'eth_gasPrice',
+      'eth_feeHistory',
+      'eth_call',
+      'eth_estimateGas',
+    ],
     quorum: [...SINGLE_NODE_METHODS],
     direct: [],
     // Every read method but eth_getLogs.

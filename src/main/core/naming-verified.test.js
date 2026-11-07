@@ -1,6 +1,7 @@
 const { ShellError } = require('./core-client');
 const {
   registerNamingVerified,
+  runVerified,
   MAX_PER_VERIFIER,
   MAX_REPLY_BYTES,
   ENVELOPE_BYTES,
@@ -347,5 +348,124 @@ describe('shell.verified', () => {
     cancel.abort();
     const cancelled = await call(op, cancel.signal).catch((e) => e);
     expect(cancelled).not.toBeInstanceOf(ShellError);
+  });
+});
+
+// PRIVATE MODE GUARD (Colibri store, #1058): Colibri keeps a private window's
+// reads in memory when its async context says private. The core's request
+// names no window; the client's `private` (service-client.js forPrivate)
+// does, and `runVerified` sets the context from it. Naming has no Colibri
+// operation (#1076): chain data's executor is the one that runs Colibri reads
+// through `runVerified` (chain-verified.test.js drives it end to end).
+describe('private windows', () => {
+  const logContext = require('../private/private-log-context');
+  const { isPrivateLogContext, runWithPrivateLogContext } = logContext;
+
+  // A verifier step that records the context it ran in.
+  function observed() {
+    const seen = [];
+    const live = [];
+    const run = jest.fn(async () => {
+      seen.push(isPrivateLogContext());
+      live.push(logContext.privateSessionLive());
+      return 'answer';
+    });
+    return { seen, live, run };
+  }
+
+  test('a Colibri read runs in the context the request may serve', async () => {
+    const { seen, run } = observed();
+    await expect(runVerified('colibri', run, { private: true })).resolves.toBe('answer');
+    await runVerified('colibri', run, { private: false });
+    // A handler running in a private context (the one the core process was
+    // started from) still runs a normal request's read as normal.
+    await runWithPrivateLogContext(true, () => runVerified('colibri', run, { private: false }));
+    expect(seen).toEqual([true, false, false]);
+  });
+
+  test('a request whose private-ness is unknown counts as private', async () => {
+    const { seen, run } = observed();
+    await runVerified('colibri', run, {});
+    await runVerified('colibri', run, undefined);
+    expect(seen).toEqual([true, true]);
+  });
+
+  // Codex review of #1071, finding 2: the read carries the private session
+  // the request was sent in, so Colibri can refuse an ended one.
+  test('a Colibri read carries the private session it was sent in', async () => {
+    const { live, run } = observed();
+    logContext.openPrivateSession();
+    const session = runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    await runVerified('colibri', run, { private: true, privateSession: session });
+    await runVerified('colibri', run, { private: true, privateSession: null });
+    await runVerified('colibri', run, { private: true });
+    logContext.endPrivateSession();
+    await runVerified('colibri', run, { private: true, privateSession: session });
+    expect(live).toEqual([true, false, false, false]);
+  });
+
+  test('a Myotis step is left as it was', async () => {
+    const { seen, run } = observed();
+    await runVerified('myotis', run, { private: true });
+    expect(seen).toEqual([false]);
+  });
+
+  function setUpSeen() {
+    const seen = [];
+    const record = (answer) => jest.fn(async () => {
+      seen.push(isPrivateLogContext());
+      return answer;
+    });
+    const forged = {
+      colibriResolve: record({ resolvedData: '0x02', resolverAddress: ADDRESS }),
+      colibriReverse: record({ name: 'forged.eth' }),
+    };
+    const handlers = new Map();
+    const client = { handle: (method, fn) => handlers.set(method, fn) };
+    const config = { generations: { ens: 1, tezos: 1, lifecycle: 3 } };
+    const { running } = registerNamingVerified(client, config, {
+      adapters: {
+        myotisRecord: record({ verified: false, blockNumber: null, status: 'ok' }),
+        myotisCall: jest.fn(),
+        myotisStatus: jest.fn(() => ({})),
+        ...forged,
+        callResolver: () => 'ur',
+      },
+    });
+    const call = (params, extra) =>
+      Promise.resolve().then(() =>
+        handlers.get('shell.verified')(
+          { ...GEN, ...params },
+          { signal: new AbortController().signal, ...extra }
+        )
+      );
+    return { seen, call, forged, running };
+  }
+
+  // #1076 in a private window too: the old Colibri operations are refused
+  // before any adapter runs, whatever the request's private-ness.
+  test.each([
+    ['resolve', { colibri: 'resolve', name: 'secret.eth', call_data: '0x', resolver: 'ur' }],
+    ['reverse', { colibri: 'reverse', address: ADDRESS, coin_type: 60 }],
+  ])('a Colibri %s is refused, private or not', async (_label, params) => {
+    const { seen, call, forged, running } = setUpSeen();
+    logContext.openPrivateSession();
+    const session = runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    for (const extra of [{ private: true, privateSession: session }, { private: false }, {}]) {
+      await expect(call(params, extra)).rejects.toMatchObject({ code: 'refused' });
+    }
+    logContext.endPrivateSession();
+    expect(forged.colibriResolve).not.toHaveBeenCalled();
+    expect(forged.colibriReverse).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+    expect(running).toEqual({ myotis: 0, colibri: 0 });
+  });
+
+  test('a Myotis operation is left as it was', async () => {
+    const { seen, call } = setUpSeen();
+    await call({ myotis: 'record', method: 'contenthash', name: 'a.eth', coin_type: 60 }, {
+      private: true,
+    });
+    expect(seen).toEqual([false]);
   });
 });
