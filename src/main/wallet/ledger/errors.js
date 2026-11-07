@@ -18,6 +18,9 @@ const LEDGER_ERROR_CODES = {
   BUSY: 'LEDGER_BUSY',
   WRONG_DEVICE: 'LEDGER_WRONG_DEVICE',
   BLIND_SIGNING_REQUIRED: 'LEDGER_BLIND_SIGNING_REQUIRED',
+  // The device's signature doesn't recover to the account over what was
+  // asked (a mis-encoded request, a confused device, a faulty transport).
+  BAD_SIGNATURE: 'LEDGER_BAD_SIGNATURE',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -32,6 +35,8 @@ const MESSAGES = {
     'This Ledger does not hold the selected account. Connect the device this account was added from.',
   [LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED]:
     'Ledger cannot display this contract call. Enable "Blind signing" (called "Contract data" on older app versions) in the Ethereum app settings, then try again.',
+  [LEDGER_ERROR_CODES.BAD_SIGNATURE]:
+    "The Ledger returned a signature that doesn't match this request. Nothing was sent.",
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 
