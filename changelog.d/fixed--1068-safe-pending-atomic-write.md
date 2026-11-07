@@ -1,0 +1,1 @@
+- An unreadable or torn pending Safe transaction store is set aside instead of silently lost, and writes go through an atomic temporary swap with fsync ([#1068](https://github.com/solardev-xyz/freedom-browser/issues/1068))
