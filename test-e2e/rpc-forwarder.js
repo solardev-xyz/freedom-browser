@@ -1,13 +1,15 @@
 // A second JSON-RPC endpoint for the Safe E2E's anvil fork: a plain
 // forwarder on a loopback port of its own.
 //
-// The chain router counts providers, not URLs (#1094): `127.0.0.1` and
-// `localhost` are one loopback host, so the fork listed under both names is
-// one endpoint and no quorum. A loopback port is a process of its own, so
-// this forwarder is a second endpoint, and the fork's answers through both
-// make a verified quorum, as two providers that agree would. It exercises
-// the Safe flow's labels, not independent providers: both answers are the
-// same anvil's.
+// The chain router counts providers, not URLs (#1094), and every loopback
+// endpoint is one provider, whatever its port: a local process can listen
+// on, or forward itself to, as many ports as it likes. So this forwarder
+// alone is no second provider. The fixtures name anvil and the forwarder as
+// two through a test-only seam, FREEDOM_E2E_PROVIDER_IDENTITIES
+// (src/main/networks/e2e-provider-identities.js), which only an unpackaged
+// app honors. The fork's answers through both then make a verified quorum,
+// as two providers that agree would. It exercises the Safe flow's labels,
+// not independent providers: both answers are the same anvil's.
 //
 // Two anvil processes forking the same chain can't stand in for it. A
 // broadcast goes to one endpoint (Direct walks them in order), so the other

@@ -133,7 +133,8 @@ const test = base.extend({
       path.join(userDataDir, 'network-config.json'),
       JSON.stringify({
         // Two endpoints for the one fork: anvil itself and a forwarder on a
-        // second loopback port (rpc-forwarder.js says why not two anvils).
+        // second loopback port (rpc-forwarder.js says why not two anvils),
+        // named as two providers by FREEDOM_E2E_PROVIDER_IDENTITIES below.
         endpointSources: {
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
           'e2e-anvil-gnosis-forwarder': {
@@ -186,6 +187,16 @@ const test = base.extend({
         ...process.env,
         FREEDOM_TEST_MODE: '1',
         FREEDOM_TEST_USER_DATA: userDataDir,
+        // Test-only seam (src/main/networks/e2e-provider-identities.js).
+        // Every loopback endpoint is one provider, so anvil and the
+        // forwarder in front of it would be one quorum member; this names
+        // them as two, so the fork's answers make the verified quorum a
+        // Safe's activation needs. Only an unpackaged app honors it, and the
+        // label it yields is this fixture's say-so, not two providers.
+        FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify({
+          [anvil.url]: 'e2e-anvil',
+          [anvil.forwarderUrl]: 'e2e-anvil-forwarder',
+        }),
         FREEDOM_IDENTITY_DATA: identityDir,
         FREEDOM_RADICLE_DATA: radicleDir,
         FREEDOM_OPENLV_SIGNALING: services.mqttUrl,
