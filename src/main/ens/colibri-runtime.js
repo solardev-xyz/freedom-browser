@@ -140,6 +140,101 @@ function resetPoisonedRuntime(runtime, err) {
   }
 }
 
+// A failed remote proof is a failure, never a local proof (#1059; F-9 of
+// freedom-core's design 0014). Freedom runs Colibri in remote-prover mode: the
+// configured prover builds each proof and this process only verifies it. But
+// when that first prover request fails (an HTTP error, every prover down),
+// 3.0.3's RPC context proves the read itself instead
+// (`rpc_handle_remote_proof`, `src/api/colibri_common.c:504-511`; `c4w.wasm`
+// links the prover). Its prover asks the package's built-in public beacon API
+// and RPC hosts, which the user never configured, for the read's account and
+// block data, and the proving runs in Colibri's worker. The answer is still
+// verified; what changes is who learns what the user reads, and where the work
+// runs.
+//
+// The package has no setting for this: both prover modes that ask a remote
+// prover (`remote`, `proxy`) fall back, and the other modes prove locally from
+// the start. Refusing whole server types on the fetch side would break honest
+// reads: the verifier's own requests use the same types (the light-client sync
+// on `beacon_api`, a contract call's code and storage reads on `eth_rpc`), and
+// a local prover's request can look like one of those.
+//
+// So the stop sits on the one transition into the fallback. A context that
+// starts with a remote proof (a proofable method in a remote mode, as the C
+// core decides with the same `getMethodType`) returns exactly that prover
+// request from its first execute. Once the host sets an error on it, the next
+// execute is where the C core would create the local prover; instead the
+// context ends with the remote error, and no prover is ever created. Every
+// other request passes through untouched, including the prover requests the
+// verifier makes itself (a contract call's proof, a transaction lookup's
+// cache), whose failures the verifier handles on its own.
+const PROVER_MODE_REMOTE = 1; // C4_PROVER_MODE_REMOTE (colibri_common.h)
+const PROVER_MODE_PROXY = 3; // C4_PROVER_MODE_PROXY
+const METHOD_PROOFABLE = 1; // MethodType.PROOFABLE (types.js)
+const NO_LOCAL_PROVING_ERROR = 'remote proof failed (no local proving)';
+
+function refuseLocalProving(runtime) {
+  // context -> its remote proof: the request's pointer once the first execute
+  // has returned it, and whether the host answered it or failed it.
+  const remoteProofs = new Map();
+  // request pointer -> the same record, for the host's set calls.
+  const byRequest = new Map();
+  const forget = (ctx) => {
+    const proof = remoteProofs.get(ctx);
+    if (!proof) return;
+    remoteProofs.delete(ctx);
+    if (proof.reqPtr !== undefined) byRequest.delete(proof.reqPtr);
+  };
+  return {
+    ...runtime,
+    createRpcCtx(method, paramsJson, chainId, proverFlags, verifyFlags, proverMode) {
+      const ctx = runtime.createRpcCtx(method, paramsJson, chainId, proverFlags, verifyFlags, proverMode);
+      if (
+        ctx &&
+        (proverMode === PROVER_MODE_REMOTE || proverMode === PROVER_MODE_PROXY) &&
+        runtime.getMethodType(chainId, method, paramsJson, verifyFlags) === METHOD_PROOFABLE
+      ) {
+        forget(ctx);
+        remoteProofs.set(ctx, { reqPtr: undefined, answered: false, error: undefined });
+      }
+      return ctx;
+    },
+    executeRpcCtx(ctx) {
+      const proof = remoteProofs.get(ctx);
+      if (proof?.error !== undefined) {
+        return { status: 'error', error: `${NO_LOCAL_PROVING_ERROR}: ${proof.error}` };
+      }
+      // Answered: the proof is the verifier's from here on.
+      if (proof?.answered) forget(ctx);
+      const state = runtime.executeRpcCtx(ctx);
+      if (proof && proof.reqPtr === undefined) {
+        const requests = state?.status === 'pending' && Array.isArray(state.requests) ? state.requests : [];
+        if (requests.length === 1 && requests[0]?.type === 'prover') {
+          proof.reqPtr = requests[0].req_ptr;
+          byRequest.set(proof.reqPtr, proof);
+        } else {
+          forget(ctx);
+        }
+      }
+      return state;
+    },
+    reqSetResponse(req, data, nodeIndex) {
+      const proof = byRequest.get(req?.req_ptr);
+      if (proof) proof.answered = true;
+      return runtime.reqSetResponse(req, data, nodeIndex);
+    },
+    reqSetError(req, error, nodeIndex) {
+      const proof = byRequest.get(req?.req_ptr);
+      if (proof) proof.error = String(error);
+      return runtime.reqSetError(req, error, nodeIndex);
+    },
+    freeRpcCtx(ctx) {
+      forget(ctx);
+      return runtime.freeRpcCtx(ctx);
+    },
+  };
+}
+
 // Route every call into the WASM instance through one place so a trap from any
 // of them (execute, free, create, decode...) retires the instance, and so a
 // retired instance can refuse work. A trap can leave the heap, the C stack
@@ -178,7 +273,7 @@ function guardRuntime(runtime) {
 }
 
 async function provideRuntime() {
-  const runtime = guardRuntime(await loadFreshWasmRuntime());
+  const runtime = guardRuntime(refuseLocalProving(await loadFreshWasmRuntime()));
   // Storage lives on the Emscripten instance, so a replacement starts on the
   // package's default (cwd-backed) adapter. Re-attach whatever the host
   // registered last — Colibri's disk store in the chain-data/ENS worker, the
@@ -221,4 +316,7 @@ module.exports = {
     onRuntimeReset = listener;
   },
   runtimeResetCount: () => runtimeResets,
+  // Exported for its tests; every runtime this module provides already has it.
+  refuseLocalProving,
+  NO_LOCAL_PROVING_ERROR,
 };
