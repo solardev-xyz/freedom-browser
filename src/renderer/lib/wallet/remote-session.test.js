@@ -168,6 +168,24 @@ describe('remote-session broker', () => {
     expect(harness.session.close).toHaveBeenCalled();
   });
 
+  test("main's account check is worded as such, other jobs as a dApp's (#1078)", async () => {
+    const harness = createHarness();
+    const broker = await startBroker(harness);
+    const events = [];
+    broker.onJobEvent((e) => events.push(e));
+
+    harness.handlers.request({ ...JOB, jobId: 'job-check', purpose: 'account-check' });
+    harness.handlers.request({ ...JOB, jobId: 'job-dapp' });
+    harness.handlers.request({ ...JOB, jobId: 'job-other', purpose: 'something-else' });
+    await tick();
+
+    const contextOf = (jobId) => events.find((e) => e.jobId === jobId && e.phase === 'qr').context;
+    expect(contextOf('job-check')).toBe('account-check');
+    expect(contextOf('job-dapp')).toBe('dapp');
+    expect(contextOf('job-other')).toBe('dapp');
+    broker.stop();
+  });
+
   test('asks main only once the request is about to be handed to the phone', async () => {
     const harness = createHarness();
     await startBroker(harness);

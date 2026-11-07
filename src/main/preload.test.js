@@ -528,6 +528,8 @@ describe('preload', () => {
       [exposures.publishSetup, 'restartNode', [], IPC.SWARM_SETUP_RESTART_NODE, []],
       [exposures.browsingCredit, 'getState', [], IPC.SWARM_CREDIT_GET_STATE, []],
       [exposures.browsingCredit, 'setSwapEnable', [false], IPC.SWARM_CREDIT_SET_SWAP_ENABLE, [false]],
+      [exposures.remoteSigner, 'addAccount', ['My Phone', '0xabc'], 'wallet:add-remote-wallet', ['My Phone', '0xabc']],
+      [exposures.remoteSigner, 'checkAccount', [1000001], 'wallet:check-remote-wallet', [1000001]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {

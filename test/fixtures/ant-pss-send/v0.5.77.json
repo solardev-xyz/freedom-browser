@@ -1,0 +1,64 @@
+{
+  "description": [
+    "POST /pss/send answers recorded from the Ant release the browser pins (scripts/fetch-ant.js), for #1062.",
+    "antd ran on loopback with no peers, chain or caches (--no-peerstore --no-disk-cache --gnosis-logs-rpc-url \"\" and an unreachable bootnode), so it holds no postage batch.",
+    "Ant checks the recipient before the batch: a recipient it can parse gets the batch error, one it cannot gets \"invalid recipient public key\".",
+    "The key is the public key of private key 0x1111...11 (32 bytes of 0x11)."
+  ],
+  "ant": "antd/0.5.77",
+  "recordedAt": "2026-11-07",
+  "topic": "chat",
+  "topicHex": "7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee",
+  "targets": "abcd",
+  "batchId": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+  "request": {
+    "method": "POST",
+    "headers": {
+      "content-type": "application/octet-stream",
+      "swarm-postage-batch-id": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+    },
+    "bodyHex": "6869"
+  },
+  "exchanges": [
+    {
+      "name": "compressed66",
+      "recipientForm": "the compressed SEC1 key (33 bytes), what Freedom sends now",
+      "path": "/pss/send/7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee/abcd?recipient=034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "status": 400,
+      "statusText": "Bad Request",
+      "body": "{\"code\":400,\"message\":\"batch 0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef not usable\"}"
+    },
+    {
+      "name": "compressed66Upper",
+      "recipientForm": "the same key in upper case",
+      "path": "/pss/send/7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee/abcd?recipient=034F355BDCB7CC0AF728EF3CCEB9615D90684BB5B2CA5F859AB0F0B704075871AA",
+      "status": 400,
+      "statusText": "Bad Request",
+      "body": "{\"code\":400,\"message\":\"batch 0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef not usable\"}"
+    },
+    {
+      "name": "uncompressed130",
+      "recipientForm": "the uncompressed SEC1 key (65 bytes, 04 prefix)",
+      "path": "/pss/send/7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee/abcd?recipient=044f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa385b6b1b8ead809ca67454d9683fcf2ba03456d6fe2c4abe2b07f0fbdbb2f1c1",
+      "status": 400,
+      "statusText": "Bad Request",
+      "body": "{\"code\":400,\"message\":\"batch 0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef not usable\"}"
+    },
+    {
+      "name": "xy128",
+      "recipientForm": "the 64-byte x || y that a bee-js PublicKey holds, with no SEC1 prefix",
+      "path": "/pss/send/7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee/abcd?recipient=4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa385b6b1b8ead809ca67454d9683fcf2ba03456d6fe2c4abe2b07f0fbdbb2f1c1",
+      "status": 400,
+      "statusText": "Bad Request",
+      "body": "{\"code\":400,\"message\":\"invalid recipient public key\"}"
+    },
+    {
+      "name": "objectObject",
+      "recipientForm": "what bee-js 13.2.0 pssSend actually puts in the query: its request options are deep-merged into plain objects, so the PublicKey prints as [object Object]",
+      "path": "/pss/send/7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee/abcd?recipient=%5Bobject+Object%5D",
+      "status": 400,
+      "statusText": "Bad Request",
+      "body": "{\"code\":400,\"message\":\"invalid recipient public key\"}"
+    }
+  ]
+}
