@@ -5,6 +5,8 @@
  *   - ready:        activation fee quote + who pays + Activate button
  *   - needs-funds:  blocking "fund <executor> with ≥ X xDAI" card
  *   - no-executor:  none of the owners is a browser account that can pay
+ *   - error:        the status check failed (no verified answer, RPC down…),
+ *                   with a Try again button that runs it again
  * (Pending SafeTxs live in the wallet-wide "unfinished transactions"
  * row — see safe-pending-list.js.) A deployed Safe shows no card. The Send button's
  * availability is owned by send.js; this module just triggers the
@@ -32,15 +34,30 @@ import {
 
 let card;
 let refreshToken = 0;
+// The status check in flight, if any: Try again starts no second one.
+let statusCheck = null;
 
 /**
  * Re-evaluate the card for the active account. Called whenever the
  * active account changes (wallet-selector) and after activation.
  */
 export async function refreshSafeStatusCard() {
+  await checkSafeStatus(() =>
+    render(`<div class="safe-status-text">Checking account status…</div>`)
+  );
+}
+
+/**
+ * The status check behind refreshSafeStatusCard and Try again.
+ * `showChecking` paints the card while getSafeStatus runs.
+ */
+async function checkSafeStatus(showChecking) {
   card = document.getElementById('safe-status-card');
   if (!card) return;
 
+  // Before any early return: a check still in flight for the account
+  // shown before must not paint over this one's card.
+  const token = ++refreshToken;
   updateSendAvailability();
 
   const wallet = walletRecord();
@@ -56,13 +73,19 @@ export async function refreshSafeStatusCard() {
     return;
   }
 
-  const token = ++refreshToken;
-  render(`<div class="safe-status-text">Checking account status…</div>`);
+  showChecking();
 
-  const statusResult = await window.wallet.getSafeStatus(wallet.index);
+  const check = window.wallet.getSafeStatus(wallet.index);
+  statusCheck = check;
+  let statusResult;
+  try {
+    statusResult = await check;
+  } finally {
+    if (statusCheck === check) statusCheck = null;
+  }
   if (token !== refreshToken) return; // superseded by an account switch
   if (!statusResult.success) {
-    render(`<div class="safe-status-text">${escapeHtml(statusResult.error)}</div>`);
+    renderStatusError(statusResult.error);
     return;
   }
 
@@ -75,6 +98,29 @@ export async function refreshSafeStatusCard() {
   }
 
   renderStatus(statusResult.status);
+}
+
+/**
+ * A failed status check (#1112): its error, and Try again. Main's copy
+ * for an unverified answer tells the user to try again.
+ */
+function renderStatusError(message) {
+  render(`
+    <div class="safe-status-text">${escapeHtml(message)}</div>
+    <button type="button" class="safe-status-btn" id="safe-status-retry">Try again</button>
+  `);
+  document.getElementById('safe-status-retry')?.addEventListener('click', retryStatusCheck);
+}
+
+function retryStatusCheck() {
+  if (statusCheck) return; // a check is already running
+  return checkSafeStatus(() => {
+    const button = document.getElementById('safe-status-retry');
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Checking…';
+    }
+  });
 }
 
 function renderStatus(status) {
