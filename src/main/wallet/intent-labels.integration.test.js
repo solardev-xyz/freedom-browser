@@ -410,7 +410,14 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
       'eth_getTransactionReceipt',
     ]);
 
-    test("with a prover and Colibri proving the reads, the search reaches a block beyond the endpoints' window", async () => {
+    // freedom-core #279 (main's #1060): Colibri proves an account read
+    // from an authenticated block without checking that it is the one asked
+    // for, so from 0.12.0 it answers one only at `latest`. The search reads
+    // each nonce at a block named by its hash ({ blockHash }), so none is
+    // Colibri's: they go to the quorum, and past the endpoints' window the
+    // label is held, as with no prover. Colibri still answers the headers
+    // by number and hash, which it checks, but not `finalized`.
+    test("with a prover and Colibri proving the reads, no nonce read is Colibri's: past the endpoints' window, held", async () => {
       const chain = takenAt(2700);
       const colibri = colibriProving(chain, ALL);
       const { request, replies } = await start(chain, honest, {
@@ -419,19 +426,30 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
         colibri,
       });
       await expect(readLabel(intent, { request })).resolves.toMatchObject({
-        label: LABELS.TAKEN,
-        block: 3000,
+        label: LABELS.HELD,
+        nonceAtF: { used: true },
       });
+      const asked = colibri.mock.calls.map(([, method, params]) => [method, params[0]]);
+      expect(asked.filter(([method]) => method === 'eth_getTransactionCount')).toEqual([]);
+      expect(asked).not.toContainEqual(['eth_getBlockByNumber', 'finalized']);
+      expect(asked.some(([method]) => method.startsWith('eth_getBlockBy'))).toBe(true);
       const counts = replies.filter(({ method }) => method === 'eth_getTransactionCount');
-      expect(counts.length).toBeGreaterThan(1);
-      for (const { reply } of counts) {
-        expect(reply).toMatchObject({ source: 'colibri', trust: { level: 'verified' } });
-      }
-      expect(colibri).toHaveBeenCalled();
+      expect(counts.length).toBeGreaterThan(0);
+      for (const { reply } of counts) expect(reply).toMatchObject({ source: 'quorum' });
     });
 
     test("with no prover, Colibri out of the order or failing, or a nonce read it doesn't prove, the reads fall to the quorum, within the window", async () => {
       const cases = [
+        {
+          // Colibri proves them all, but answers no nonce read at a block
+          // hash (freedom-core #279), as above.
+          name: 'proving every read',
+          options: (chain) => ({
+            readOrder: ['colibri', 'quorum'],
+            prover: true,
+            colibri: colibriProving(chain, ALL),
+          }),
+        },
         {
           name: 'no prover',
           options: (chain) => ({

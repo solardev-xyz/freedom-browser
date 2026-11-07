@@ -20,7 +20,17 @@ const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[ke
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'v0.1.0-test';
-const PINNED_TAG = 'cored-v0.11.0';
+const PINNED_TAG = 'cored-v0.12.0';
+// The SHA256SUMS cored-v0.12.0 published, byte for byte. Its sha256 is the
+// pinned digest, so a bump has to replace it along with the tag and digest.
+const PUBLISHED_SUMS = [
+  '06f87d18c2676563b92a76ca5a8aa57b011d831b44a2b0c213654822dd8f9eb8  freedom-cored-v0.12.0-darwin-amd64.tar.gz',
+  '3f1d7bfe36563c324cf132de83a97ecd963958e74069fd7b0c827d92325114b0  freedom-cored-v0.12.0-darwin-arm64.tar.gz',
+  'fbc191e520ee8005b60d762021b136a20e95c451f590b748b1cf6702fc5e50a1  freedom-cored-v0.12.0-linux-amd64.tar.gz',
+  'f1f063537976c688db153de66f2fc466e503a38bee6854270e6b1f5e726751d8  freedom-cored-v0.12.0-linux-arm64.tar.gz',
+  '9379bc9fdf20f096ce31db7466ba2c681ca78d6cadafd6e725dbe1298c4ea6c0 *freedom-cored-v0.12.0-windows-amd64.zip',
+  '',
+].join('\n');
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
 let fetcher;
 let https;
@@ -248,6 +258,15 @@ describe('manifest and asset selection', () => {
       expect(fetcher.assetFor([prefixed], target, tag)).toBeUndefined();
     }
   });
+
+  test('names exactly the archives the pinned release published', () => {
+    const published = Object.keys(fetcher.parseChecksums(PUBLISHED_SUMS)).sort();
+    const assets = published.map((name) => ({ name }));
+    const named = fetcher.TARGETS.map(
+      (target) => fetcher.assetFor(assets, target, PINNED_TAG)?.name
+    );
+    expect(named.sort()).toEqual(published);
+  });
 });
 
 describe('verified installation', () => {
@@ -309,6 +328,30 @@ describe('verified installation', () => {
       'Error:',
       expect.objectContaining({
         message: expect.stringMatching(/does not match the pinned digest/),
+      })
+    );
+  });
+
+  test('accepts the published SHA256SUMS against the pinned digest', async () => {
+    load(PINNED_TAG);
+    const fixture = releaseFixture(PINNED_TAG);
+    fixture.sums = PUBLISHED_SUMS;
+    // The fixture's archives are not the published ones, so the first fails
+    // its checksum: past the pinned digest, never extracted.
+    const calls = installResponses(fixture);
+    await fetcher.main({ outputDir: dir });
+    expect(console.log).toHaveBeenCalledWith(
+      'Verified SHA256SUMS against the in-repo pinned digest'
+    );
+    expect(process.exitCode).toBe(1);
+    expect(calls).toHaveLength(3);
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      'Error:',
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /^Checksum mismatch for freedom-cored-v0\.12\.0-darwin-arm64\.tar\.gz: expected 3f1d7bfe/
+        ),
       })
     );
   });

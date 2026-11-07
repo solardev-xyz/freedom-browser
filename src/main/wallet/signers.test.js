@@ -40,8 +40,10 @@ jest.mock('../core/vault-backend', () => ({
   ),
 }));
 const coreCalls = (method) => mockCore.calls.filter(([name]) => name === method);
+const mockRecordLedgerAddressCheck = jest.fn();
 jest.mock('../identity-manager', () => ({
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
+  recordLedgerAddressCheck: (...args) => mockRecordLedgerAddressCheck(...args),
   recordRemoteAddressCheck: (...args) => mockRecordRemoteAddressCheck(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
@@ -468,8 +470,19 @@ describe('getSigner (ledger-backed dispatch)', () => {
     const signer = getSigner(2);
     await expect(signer.getAddress()).resolves.toBe(LEDGER_RECORD.address);
     await expect(signer.signTransaction({ chainId: 1 })).resolves.toBe('0xsignedtx');
-    expect(mockCreateLedgerBackend).toHaveBeenCalledWith(LEDGER_RECORD);
+    expect(mockCreateLedgerBackend).toHaveBeenCalledWith(LEDGER_RECORD, {
+      onAddressCheck: expect.any(Function),
+    });
     expect(mockCore.calls).toEqual([]);
+  });
+
+  test('what the device says about the record is kept on the record (#1065)', () => {
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+    onAddressCheck(false);
+    expect(mockRecordLedgerAddressCheck).toHaveBeenCalledWith(2, false);
+    onAddressCheck(true);
+    expect(mockRecordLedgerAddressCheck).toHaveBeenLastCalledWith(2, true);
   });
 
   test('factory-level normalization applies to ledger backends too', async () => {
@@ -482,7 +495,11 @@ describe('getSigner (ledger-backed dispatch)', () => {
     // JSON-string typed data reaches the backend parsed
     const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
     await signer.signTypedData(JSON.stringify(typed));
-    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+    // With the core's hash, for the backend to recover the signature over.
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, {
+      expectedHash: undefined,
+      digest: TypedDataEncoder.hash(typed.domain, typed.types, typed.message),
+    });
   });
 
   // freedom-core #88: a device signs what it shows, so main checks the
@@ -492,7 +509,7 @@ describe('getSigner (ledger-backed dispatch)', () => {
     const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
     const hash = TypedDataEncoder.hash(typed.domain, typed.types, typed.message);
     await signer.signTypedData(typed, { expectedHash: hash });
-    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: hash });
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: hash, digest: hash });
     mockLedgerBackend.signTypedData.mockClear();
     const altered = { ...typed, message: { v: 2 } };
     await expect(signer.signTypedData(altered, { expectedHash: hash })).rejects.toThrow(
@@ -666,7 +683,11 @@ describe("getSigner: main's own typed data on a device", () => {
         types: { [primaryType]: typed.types[primaryType] },
         message: typed.message,
       });
-      expect(backend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+      // With the core's hash, for the backend to recover the signature over.
+      expect(backend.signTypedData).toHaveBeenCalledWith(typed, {
+        expectedHash: undefined,
+        digest: TypedDataEncoder.hash(typed.domain, { [primaryType]: typed.types[primaryType] }, typed.message),
+      });
       // Nothing of the vault's: no key, no vault signature.
       expect(coreCalls('sign.typed_data')).toEqual([]);
     });
