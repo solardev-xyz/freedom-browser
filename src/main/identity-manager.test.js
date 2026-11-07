@@ -736,9 +736,37 @@ describe('identity-manager safe accounts', () => {
     await identityManager.markSafeDeployed(wallet.index, 100);
 
     expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({ 100: true });
-    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({ 100: true });
+    // The stored mark says a verified check wrote it (#1066).
+    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({ 100: { verified: true } });
 
     await expect(identityManager.markSafeDeployed(0, 100)).rejects.toThrow(/not a Safe/i);
+  });
+
+  test('a deployed mark from a release before #1066 reads as not deployed until marked again', async () => {
+    await seedOwners();
+    const wallet = await addSafe();
+    // Before #1066, one endpoint's eth_getCode answer stored a bare `true`.
+    const meta = readVaultMeta();
+    meta.derivedWallets[2].deployed = { 100: true, 8453: true };
+    writeVaultMeta(meta);
+
+    expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({});
+    const listed = (await identityManager.getDerivedWallets()).find((w) => w.index === wallet.index);
+    expect(listed.deployed).toEqual({});
+    // Nothing is deleted: the record and its old mark stay on disk.
+    expect(readVaultMeta().derivedWallets[2]).toMatchObject({
+      type: 'safe',
+      address: SAFE_ADDRESS,
+      deployed: { 100: true, 8453: true },
+    });
+
+    // A verified check marks it again, on that chain only.
+    await identityManager.markSafeDeployed(wallet.index, 100);
+    expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({ 100: true });
+    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({
+      100: { verified: true },
+      8453: true,
+    });
   });
 
   test('an owner of a safe cannot be deleted while the safe exists', async () => {

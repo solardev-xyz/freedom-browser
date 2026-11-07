@@ -1,2 +1,3 @@
 - A new Safe account's address no longer rests on one RPC provider's answer, and activating a Safe refuses to deploy it at any other address ([#1066](https://github.com/solardev-xyz/freedom-browser/issues/1066))
-  - A Safe counts as activated only once a verified source (Myotis, Colibri, or RPC providers that agree) sees it on chain
+  - A Safe counts as activated only once a verified source (Myotis, Colibri, or RPC providers that agree) sees it on chain or gives its activation's receipt
+  - A Safe an earlier version marked activated is checked again before it can send or sign for apps

@@ -52,6 +52,8 @@ function destroyWebContents(id) {
   }
 }
 
+// Records as vault-meta stores them: `deployed` holds the stored marks,
+// which the record seam filters as identity-manager's does (#1066).
 const mockWalletRecords = {
   0: { index: 0, name: 'Main Wallet', address: OWNERS[0], type: 'mnemonic' },
   2: { index: 2, name: 'My Stax', address: OWNERS[1], type: 'ledger' },
@@ -64,7 +66,7 @@ const mockWalletRecords = {
     owners: [0, 2, 4],
     threshold: 2,
     saltNonce: '7508',
-    deployed: { 100: true },
+    deployed: { 100: { verified: true } },
   },
   6: {
     index: 6,
@@ -84,15 +86,35 @@ const mockWalletRecords = {
     owners: [0, 2],
     threshold: 1,
     saltNonce: '11',
+    deployed: { 100: { verified: true } },
+  },
+  // Marked deployed by a release before #1066, on one endpoint's answer.
+  8: {
+    index: 8,
+    name: 'Old mark',
+    address: getAddress(SAFE_ADDRESS.toLowerCase().replace('0x41', '0x44')),
+    type: 'safe',
+    owners: [0, 2],
+    threshold: 1,
+    saltNonce: '13',
     deployed: { 100: true },
   },
 };
 const mockIsVaultUnlocked = jest.fn(async () => true);
-jest.mock('../../identity-manager', () => ({
-  getWalletRecord: (index) => mockWalletRecords[index] || null,
-  isVaultUnlocked: (...args) => mockIsVaultUnlocked(...args),
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
-}));
+jest.mock('../../identity-manager', () => {
+  const { verifiedDeployments } = jest.requireActual('./deployed-mark');
+  return {
+    getWalletRecord: (index) => {
+      const record = mockWalletRecords[index];
+      if (!record) return null;
+      return record.type === 'safe'
+        ? { ...record, deployed: verifiedDeployments(record.deployed) }
+        : record;
+    },
+    isVaultUnlocked: (...args) => mockIsVaultUnlocked(...args),
+    WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+  };
+});
 
 // Distinct 65-byte signature blobs per owner so concatenation order is
 // visible in completeSafeMessage's output.
@@ -166,7 +188,7 @@ const startPersonal = (safeIndex = 5, message = HEX_MESSAGE, requester = TAB_A) 
 beforeEach(() => {
   jest.clearAllMocks();
   mockIsVaultUnlocked.mockResolvedValue(true);
-  for (const index of [5, 6, 7]) discardSession(index);
+  for (const index of [5, 6, 7, 8]) discardSession(index);
   mockWebContentsById.clear();
   fakeWebContents(TAB_A.webContentsId);
   fakeWebContents(TAB_B.webContentsId);
@@ -346,6 +368,13 @@ describe('startSafeMessage', () => {
     await expect(
       startSafeMessage({ safeIndex: 5, request: { method: 'eth_sign', params: [] }, display: {} })
     ).rejects.toThrow(/unsupported/i);
+  });
+
+  test('refuses a Safe whose deployed mark no verified check wrote (#1066)', async () => {
+    // Pending until getSafeStatus's verified read marks it again.
+    await expect(startPersonal(8)).rejects.toThrow(/activate/i);
+    expect(getSession(8)).toBeFalsy();
+    expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
   });
 
   test('re-requesting the SAME message from the SAME page resumes, signatures intact', async () => {

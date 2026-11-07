@@ -102,6 +102,20 @@ async function createSafeAccount({ name, ownerIndexes, threshold }) {
 }
 
 /**
+ * Whether a verified check has marked the Safe deployed on `chainId`
+ * (#1066). This is the only way any caller accepts a Safe as active:
+ * status and activation (isDeployedOnChain), Send and SafeMessages.
+ *
+ * The record seams expose only verified marks. A mark a release before
+ * #1066 wrote from one endpoint's answer reads as not deployed, so that
+ * Safe stays pending until isDeployedOnChain's verified read marks it
+ * again; the status card runs it whenever the account is shown.
+ */
+function isMarkedDeployed(record, chainId = DEPLOY_CHAIN_ID) {
+  return record?.deployed?.[chainId] === true;
+}
+
+/**
  * Deployment truth: the record short-circuits (deployment is permanent),
  * otherwise the chain is asked and a positive answer heals the record
  * (covers deploys that confirmed after the app quit).
@@ -114,7 +128,7 @@ async function createSafeAccount({ name, ownerIndexes, threshold }) {
  * Activation is not offered on it either: the Safe may well be deployed.
  */
 async function isDeployedOnChain(record, chainId) {
-  if (record.deployed?.[chainId]) {
+  if (isMarkedDeployed(record, chainId)) {
     return true;
   }
   const { result: code, verified } = await chainData.request(chainId, 'eth_getCode', [
@@ -239,6 +253,9 @@ async function getSafeStatus(index) {
  * `SAFE_ADDRESS_MISMATCH`, with nothing sent, when the deployment would
  * create another address than the record's, and `SAFE_UNVERIFIED` when
  * the chain shows code at the address that no verified source confirms.
+ * After the deployment is sent, it also throws `SAFE_UNVERIFIED`, with
+ * nothing marked, when neither its receipt nor the Safe's code is
+ * verified (confirmDeployment).
  *
  * The executor's fee is judged by the fee check at confirmation (design
  * 0005, A): one that needs the user stops with nothing signed
@@ -286,14 +303,47 @@ async function activateSafe(index, { feeConfirmation = null } = {}) {
   if (receipt.status !== 'confirmed') {
     throw new Error('Safe deployment transaction failed on chain');
   }
-  await markSafeDeployed(index, DEPLOY_CHAIN_ID);
+  await confirmDeployment(record, receipt);
   return { safeAddress, hash: tx.hash };
+}
+
+/**
+ * Mark the Safe deployed after its deployment's receipt, but only on a
+ * verified check (#1066). The receipt may come from one endpoint, and so
+ * may the broadcast: a dishonest one can return the right hash without
+ * relaying the transaction, then answer a successful receipt for it.
+ *
+ * So the receipt marks the Safe only when a verified source gave it.
+ * Otherwise a verified eth_getCode read must show the Safe's code. If
+ * neither does, nothing is marked and the Safe stays pending: activation
+ * refuses with SAFE_UNVERIFIED, and the next status check reads again.
+ */
+async function confirmDeployment(record, receipt) {
+  if (receipt.verified === true) {
+    await markSafeDeployed(record.index, DEPLOY_CHAIN_ID);
+    return;
+  }
+  let deployed = false;
+  try {
+    deployed = await isDeployedOnChain(record, DEPLOY_CHAIN_ID);
+  } catch (err) {
+    console.warn('[SafeService] Could not verify the Safe deployment:', err.message);
+  }
+  if (!deployed) {
+    throw codedError(
+      "Freedom sent the activation, but couldn't verify on Gnosis that it went through. " +
+        'It checks again the next time you open this account. ' +
+        'If it stays unverified, add an RPC provider in Settings.',
+      SAFE_UNVERIFIED
+    );
+  }
 }
 
 module.exports = {
   DEPLOY_CHAIN_ID,
   chainRead,
   getSafeRecord,
+  isMarkedDeployed,
   resolveOwnerAddresses,
   createSafeAccount,
   getSafeStatus,

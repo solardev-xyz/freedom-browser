@@ -27,6 +27,7 @@ const {
   getSafeRecord,
   resolveOwnerAddresses,
   chainRead,
+  isMarkedDeployed,
   DEPLOY_CHAIN_ID,
 } = require('./safe-service');
 const { getPending, setPending, clearPending, listPendingIndexes } = require('./pending-store');
@@ -128,7 +129,9 @@ async function startSafeSend({ safeIndex, tx, display, chainId }) {
   if (!Number.isInteger(sendChainId) || sendChainId !== DEPLOY_CHAIN_ID) {
     throw new Error('Multi-signature accounts can only send on Gnosis');
   }
-  if (!record.deployed?.[DEPLOY_CHAIN_ID]) {
+  // Only a verified check's mark counts (#1066): a Safe still pending
+  // verification is refused like one not yet activated.
+  if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
     throw new Error('Activate this account on Gnosis before sending');
   }
   if (getPending(safeIndex)) {
@@ -212,6 +215,11 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
   const pending = getPending(safeIndex);
   if (!pending) {
     throw new Error('No pending transaction for this account');
+  }
+  // A SafeTx saved while a release before #1066 trusted an unverified
+  // deployed mark waits until a verified check marks the Safe again.
+  if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
+    throw new Error('Activate this account on Gnosis before sending');
   }
 
   acquire(safeIndex);
