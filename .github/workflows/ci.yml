@@ -1350,18 +1350,32 @@ jobs:
           test-e2e/updates.spec.js
           test-e2e/swarm-cache.spec.js
 
-      # Not only on failure: a test that passes on a Playwright retry leaves
-      # a green job, and its failed attempt's trace, screenshot and (for the
-      # Safe specs) app and anvil diagnostics would go with the runner
-      # (#1101). Passed tests leave no files (`trace: 'retain-on-failure'`),
-      # so a clean run uploads nothing.
       - name: Upload Playwright traces and screenshots
-        if: ${{ !cancelled() }}
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-settings-wallet-traces
           path: |
             test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # A test that fails and then passes on a Playwright retry leaves a green
+      # job, which the step above skips: its failed attempt's evidence went
+      # with the runner (#1101). These are the files only a failed attempt
+      # leaves: its trace (`trace: 'retain-on-failure'`), error context and
+      # attachments (close-app.js's screenshot; the Safe fixtures' anvil,
+      # forwarder and app log). The screenshots passing specs write to
+      # test-results/ stay out, so a run with no retried test uploads nothing.
+      - name: Upload retried tests' traces
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-settings-wallet-retried
+          path: |
+            test-results/**/trace.zip
+            test-results/**/error-context.md
+            test-results/**/attachments/
           if-no-files-found: ignore
           retention-days: 14
 
