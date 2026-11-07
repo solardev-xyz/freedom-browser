@@ -326,6 +326,22 @@ describe('startSafeMessage', () => {
       }
     });
 
+    test('a record left with only an old deployed mark meanwhile gets no session (#1066)', async () => {
+      const release = pauseHash();
+      const starting = start();
+      const saved = mockWalletRecords[5];
+      // Same address, but only a mark no verified check wrote.
+      mockWalletRecords[5] = { ...saved, deployed: { 100: true } };
+      try {
+        release();
+        await expect(starting).rejects.toThrow('changed while');
+        expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+        expect(getSession(5)).toBeFalsy();
+      } finally {
+        mockWalletRecords[5] = saved;
+      }
+    });
+
     test('the page listeners are removed once hashing is done', async () => {
       await start();
       const contents = mockWebContentsById.get(TAB_A.webContentsId);

@@ -257,7 +257,10 @@ async function startSafeMessage({ safeIndex, request, display, requester }) {
   }
   // The account may have changed meanwhile (deleted: getSafeRecord throws).
   const record = getSafeRecord(safeIndex);
-  if (getAddress(record.address) !== getAddress(initial.address) || !record.deployed?.[DEPLOY_CHAIN_ID]) {
+  if (
+    getAddress(record.address) !== getAddress(initial.address) ||
+    !isMarkedDeployed(record, DEPLOY_CHAIN_ID)
+  ) {
     throw new Error('This account changed while the signature request was opening');
   }
   const safeAddress = getAddress(record.address);

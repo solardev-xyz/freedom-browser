@@ -981,10 +981,10 @@ async function signAndSendTransaction(
  *   send and every confirm timer, so it reads receipts without Colibri;
  *   quorum still verifies the answer.
  * @returns {Promise<Object>} Transaction status. A receipt's status carries
- *   `verified`: true only when the chain router labelled the receipt
- *   verified (Colibri or the RPC quorum). A caller that writes something
- *   for good on a receipt, like a Safe's deployed mark (#1066), must
- *   require it.
+ *   `verified`: true only when the core's chain data labelled the receipt
+ *   verified (design 0005: Colibri or the RPC quorum). A caller that
+ *   writes something for good on a receipt, like a Safe's deployed mark
+ *   (#1066), must require it.
  */
 async function getTransactionStatus(txHash, chainId, { from, nonce, sweep = false } = {}) {
   try {

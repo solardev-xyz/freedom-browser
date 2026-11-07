@@ -656,7 +656,7 @@ describe('getTransactionStatus', () => {
 
   // #1066: a Safe's deployed mark is written on a receipt only when a
   // verified source gave it.
-  test('a receipt carries whether the router labelled it verified', async () => {
+  test('a receipt carries whether the core labelled it verified', async () => {
     const receipt = { status: '0x1', blockNumber: '0x10', gasUsed: '0x5208' };
     for (const [answer, verified] of [
       [{ result: receipt, source: 'quorum', verified: true }, true],
