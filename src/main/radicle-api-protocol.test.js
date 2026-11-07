@@ -962,6 +962,63 @@ describe('radapi protocol', () => {
     expect(warnings[0]).toEqual(['[radapi]', RID, `/tree/${REVISION}/src`, '→', 'tree read failed']);
   });
 
+  // PRIVATE MODE GUARD (#1050): the node-status and listing catches log
+  // their own line, and the add-on's text can name its storage path. A
+  // private registration logs none of it; a normal one keeps the detail.
+  describe('node-status and listing failures', () => {
+    const log = require('./logger');
+    const HOME = '/home/alice/.config/Freedom/profiles/default/radicle';
+    const DETAIL = `failed to open '${HOME}/storage/${RID.slice(4)}': Permission denied; class=Os (2)`;
+    const ROUTES = [
+      ['node status', 'radapi://local/', 'status', '[radapi] node status failed:', 503],
+      [
+        'node stats',
+        'radapi://local/api/v1/stats',
+        'listRepos',
+        '[radapi] node status failed:',
+        503,
+      ],
+      [
+        'the repository listing',
+        'radapi://local/api/v1/repos',
+        'buildRepoMeta',
+        '[radapi] repository listing failed:',
+        500,
+      ],
+    ];
+    const serve = (privatePartition, url) => {
+      const targetSession = { protocol: { handle: jest.fn() } };
+      registerRadicleApiProtocol(targetSession, { privatePartition });
+      const handler = targetSession.protocol.handle.mock.calls[0][1];
+      return handler(new Request(url));
+    };
+
+    test.each(ROUTES)(
+      '%s: a private registration logs no add-on detail',
+      async (_label, url, call, prefix, status) => {
+        embedded[call].mockRejectedValueOnce(new Error(DETAIL));
+        const response = await serve('private-abc', url);
+        expect(response.status).toBe(status);
+        expect(log.warn.mock.calls.filter((args) => args[0] === prefix)).toEqual([
+          [prefix, '<private>'],
+        ]);
+        expect(JSON.stringify(log.warn.mock.calls)).not.toContain(HOME);
+      }
+    );
+
+    test.each(ROUTES)(
+      '%s: a normal registration logs the add-on detail',
+      async (_label, url, call, prefix, status) => {
+        embedded[call].mockRejectedValueOnce(new Error(DETAIL));
+        const response = await serve(null, url);
+        expect(response.status).toBe(status);
+        expect(log.warn.mock.calls.filter((args) => args[0] === prefix)).toEqual([
+          [prefix, DETAIL],
+        ]);
+      }
+    );
+  });
+
   // The dispatcher's registry is process-wide and rejects a duplicate
   // name, so the guard must be installed once however many sessions
   // (default plus one per private window) register the protocol.
