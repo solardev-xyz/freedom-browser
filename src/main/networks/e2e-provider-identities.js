@@ -29,6 +29,12 @@ function urlKey(url) {
   }
 }
 
+// Whether `dir` is inside an asar archive, as a packaged build's source is
+// (`.../resources/app.asar/src/main/networks`).
+function insideAsar(dir) {
+  return /\.asar([\\/]|$)/i.test(String(dir));
+}
+
 /**
  * The E2E's provider labels by URL key, or null when the seam is off.
  *
@@ -67,7 +73,7 @@ function activeProviderIdentityOverrides() {
   }
   active = providerIdentityOverrides({
     isPackaged,
-    fromAsar: /\.asar([\\/]|$)/i.test(__dirname),
+    fromAsar: insideAsar(__dirname),
     env: process.env,
   });
   if (active) {
@@ -81,6 +87,7 @@ function activeProviderIdentityOverrides() {
 module.exports = {
   ENV_VAR,
   urlKey,
+  insideAsar,
   providerIdentityOverrides,
   activeProviderIdentityOverrides,
 };

@@ -1,4 +1,4 @@
-const { ENV_VAR, providerIdentityOverrides } = require('./e2e-provider-identities');
+const { ENV_VAR, insideAsar, providerIdentityOverrides } = require('./e2e-provider-identities');
 const { endpointIdentity, distinctEndpoints } = require('./endpoint-identity');
 
 // The Safe E2E's anvil fork and the forwarder in front of it: two loopback
@@ -39,6 +39,15 @@ describe('the E2E provider-identity seam (test-only)', () => {
     }
   );
 
+  test("a packaged build's source is inside an asar archive; the source tree isn't", () => {
+    expect(insideAsar('/opt/Freedom/resources/app.asar/src/main/networks')).toBe(true);
+    expect(insideAsar('C:\\Freedom\\resources\\app.asar\\src\\main\\networks')).toBe(true);
+    expect(insideAsar('/Applications/Freedom.app/Contents/Resources/app.asar')).toBe(true);
+    expect(insideAsar(__dirname)).toBe(false);
+    expect(insideAsar('/home/dev/freedom-browser/src/main/networks')).toBe(false);
+    expect(insideAsar('/home/dev/my.asar.notes/src')).toBe(false);
+  });
+
   test.each([
     ['absent', {}],
     ['empty', { [ENV_VAR]: '' }],
@@ -65,8 +74,11 @@ describe('the E2E provider-identity seam (test-only)', () => {
       else process.env[ENV_VAR] = saved;
     });
 
-    // A fresh endpoint-identity under an Electron whose app is `app`, or
-    // under no Electron app at all (Jest's own `require('electron')`).
+    // distinctEndpoints([ANVIL, FORWARDER]) from a fresh endpoint-identity
+    // under an Electron whose app is `app`, or under no Electron app at all
+    // (Jest's own `require('electron')`). The seam reads Electron and the
+    // logger on its first call, so that call runs inside isolateModules too:
+    // outside it, Jest would cache the first test's mocks for the rest.
     function freshDistinct(app, value) {
       if (value === undefined) delete process.env[ENV_VAR];
       else process.env[ENV_VAR] = value;
@@ -78,14 +90,14 @@ describe('the E2E provider-identity seam (test-only)', () => {
         else jest.dontMock('electron');
         warn = jest.fn();
         jest.doMock('../logger', () => ({ warn }));
-        distinct = require('./endpoint-identity').distinctEndpoints;
+        distinct = require('./endpoint-identity').distinctEndpoints([ANVIL, FORWARDER]);
       });
       return { distinct, warn };
     }
 
     test('unpackaged, with the variable: two providers, and the launch logs it', () => {
       const { distinct, warn } = freshDistinct({ isPackaged: false }, LABELS);
-      expect(distinct([ANVIL, FORWARDER])).toEqual([ANVIL, FORWARDER]);
+      expect(distinct).toEqual([ANVIL, FORWARDER]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(ENV_VAR));
     });
 
@@ -95,7 +107,7 @@ describe('the E2E provider-identity seam (test-only)', () => {
       ['no Electron app, with the variable', null, LABELS],
     ])('%s: one provider', (_name, app, value) => {
       const { distinct, warn } = freshDistinct(app, value);
-      expect(distinct([ANVIL, FORWARDER])).toEqual([ANVIL]);
+      expect(distinct).toEqual([ANVIL]);
       expect(warn).not.toHaveBeenCalled();
     });
   });
