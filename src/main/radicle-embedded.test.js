@@ -143,6 +143,50 @@ describe('radicle-embedded addon loading', () => {
     });
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  // PRIVATE MODE GUARD (#1073): a private window's seed or sync reaches the
+  // progress callback in its log context, and JSON.parse's error quotes part
+  // of the event (a short one whole), whose fetch errors can name the
+  // Radicle storage path.
+  const BAD_EVENT = '/home/alice';
+  test.each([
+    ['a private', true],
+    ['a normal', false],
+  ])('an invalid clone progress event in %s context', async (_label, isPrivate) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(
+      fake,
+      'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'cloneRepoWithProgress: async (_rid, _timeout, callback) => {' +
+        ` callback(${JSON.stringify(BAD_EVENT)});` +
+        ' return JSON.stringify({ ok: true }); },' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    await jest.isolateModulesAsync(async () => {
+      const log = require('./logger');
+      const { runWithPrivateLogContext } = require('./private/private-log-context');
+      const embedded = require('./radicle-embedded');
+      await runWithPrivateLogContext(isPrivate, () =>
+        embedded.cloneRepoWithProgress('rad:zAbc', 1234, () => {})
+      );
+      const lines = log.warn.mock.calls.filter(([first]) =>
+        String(first).includes('Ignoring invalid clone progress event')
+      );
+      expect(lines).toHaveLength(1);
+      if (isPrivate) {
+        expect(lines[0]).toEqual([
+          '[RadicleEmbedded] Ignoring invalid clone progress event:',
+          '<private>',
+        ]);
+      } else {
+        expect(lines[0][1]).toContain('/home/alice');
+      }
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('raw reads (#514)', () => {

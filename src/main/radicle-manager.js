@@ -10,6 +10,11 @@ const embedded = require('./radicle-embedded');
 const { nodeBlockReason } = require('./core/node-identity-guard');
 const { withPrivateDir } = require('./private-files');
 const { isPrivateSender } = require('./private/private-sender');
+// PRIVATE MODE GUARD (#1073): window.radicle requests reach the log lines
+// below inside the provider's private log context. The add-on's text can
+// name its storage path, and a RID names the repository, so each goes
+// through redactForLog. The context alone redacts nothing.
+const { redactForLog } = require('./private/private-log-context');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -72,7 +77,7 @@ function pushInfoUpdate() {
   if (infoUpdatePromise) return infoUpdatePromise;
   infoUpdatePromise = getConnections()
     .then((info) => broadcastStatus({ info }))
-    .catch((err) => log.warn('[Radicle] Could not publish node info:', err.message))
+    .catch((err) => log.warn('[Radicle] Could not publish node info:', redactForLog(err.message)))
     .finally(() => {
       infoUpdatePromise = null;
     });
@@ -310,7 +315,10 @@ async function isSeeded(fullRid) {
     const repos = await embedded.listSeededRepos();
     return Array.isArray(repos) && repos.some((repo) => repo?.rid === fullRid);
   } catch (err) {
-    log.warn(`[Radicle] Could not read seeding policies for ${fullRid}:`, err.message);
+    log.warn(
+      `[Radicle] Could not read seeding policies for ${redactForLog(fullRid)}:`,
+      redactForLog(err.message)
+    );
     return false;
   }
 }
@@ -363,7 +371,10 @@ async function cancelCloneWithRetry(rid) {
       const result = await embedded.cancelClone(rid);
       if (result?.cancelled) return true;
     } catch (err) {
-      log.warn(`[Radicle] Could not request clone cancellation for ${rid}:`, err.message);
+      log.warn(
+        `[Radicle] Could not request clone cancellation for ${redactForLog(rid)}:`,
+        redactForLog(err.message)
+      );
       return false;
     }
   }
@@ -385,7 +396,12 @@ async function unseedRepository(rid) {
   if (fetchDone) {
     void Promise.all([fetchDone, cancellation])
       .then(() => embedded.unseedRepo(fullRid))
-      .catch((err) => log.warn(`[Radicle] Final unseed failed for ${fullRid}:`, err.message));
+      .catch((err) =>
+        log.warn(
+          `[Radicle] Final unseed failed for ${redactForLog(fullRid)}:`,
+          redactForLog(err.message)
+        )
+      );
   }
   try {
     await embedded.unseedRepo(fullRid);
@@ -413,7 +429,7 @@ async function getConnections() {
       const repos = await embedded.listRepos();
       reposCount = Array.isArray(repos) ? repos.length : null;
     } catch (err) {
-      log.warn('[Radicle] Could not read seeded repository count:', err.message);
+      log.warn('[Radicle] Could not read seeded repository count:', redactForLog(err.message));
     }
     return success({
       count: connectedPeers,
