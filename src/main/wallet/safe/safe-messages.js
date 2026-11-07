@@ -28,7 +28,7 @@ const { getAddress, hashMessage, TypedDataEncoder } = require('ethers');
 const { getEip712MessageTypes, buildSignatureBytes } = require('@safe-global/protocol-kit');
 
 const { SAFE_VERSION } = require('./safe-executor');
-const { getSafeRecord, DEPLOY_CHAIN_ID } = require('./safe-service');
+const { getSafeRecord, isMarkedDeployed, DEPLOY_CHAIN_ID } = require('./safe-service');
 const {
   normalizeMessage,
   normalizeTypedData,
@@ -207,8 +207,9 @@ function getSafeMessageState(safeIndex, token) {
 async function startSafeMessage({ safeIndex, request, display, requester }) {
   const record = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
-  // against before activation.
-  if (!record.deployed?.[DEPLOY_CHAIN_ID]) {
+  // against before activation. Only a verified check's mark counts
+  // (#1066): a Safe still pending verification is refused too.
+  if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
     throw new Error('Activate this account on Gnosis before signing for apps');
   }
   const digest = requestDigest(request.method, request.params);

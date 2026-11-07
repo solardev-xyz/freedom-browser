@@ -23,6 +23,7 @@ const {
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
+const { verifiedDeployedMark, verifiedDeployments } = require('./wallet/safe/deployed-mark');
 
 // Identity module - loaded lazily
 let identityModule = null;
@@ -850,7 +851,7 @@ function extraRecordFields(record) {
     fields.owners = record.owners;
     fields.threshold = record.threshold;
     fields.saltNonce = record.saltNonce;
-    fields.deployed = record.deployed || {};
+    fields.deployed = verifiedDeployments(record.deployed);
   }
   return fields;
 }
@@ -1156,6 +1157,10 @@ async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
  * Record that a Safe's contract is now live on a chain. Deployment state
  * is the ONLY mutable part of a safe record — init params stay frozen.
  *
+ * The caller must have verified the deployment (#1066): the mark says so
+ * (wallet/safe/deployed-mark.js), and replaces a mark of a release before
+ * #1066 on that chain.
+ *
  * @param {number} index - Wallet index of the safe record
  * @param {number} chainId
  */
@@ -1169,7 +1174,7 @@ async function markSafeDeployed(index, chainId) {
   if (!record || record.type !== WALLET_TYPES.SAFE) {
     throw new Error(`Wallet ${index} is not a Safe account`);
   }
-  record.deployed = { ...(record.deployed || {}), [chainId]: true };
+  record.deployed = { ...(record.deployed || {}), [chainId]: verifiedDeployedMark() };
   saveVaultMeta({ ...meta, derivedWallets: wallets });
 }
 
