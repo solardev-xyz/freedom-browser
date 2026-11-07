@@ -1209,7 +1209,7 @@ function renderRecipientReview(container, address, resolution) {
 
   const badge = buildRecipientVerifiedBadge(trust);
   if (badge) children.push(badge);
-  if (trust?.level === 'unverified') {
+  if (trust?.level === 'unverified' || isColibriNameTrust(trust)) {
     children.push(buildRecipientWarning(describeUnverifiedForward(name)));
   }
 
@@ -1244,19 +1244,23 @@ function buildRecipientWarning(detail) {
   return warn;
 }
 
+// Colibri verifies no name (#1076): it runs a lookup's call on contract code
+// from a public RPC, unchecked against the proven code hash. Main no longer
+// asks it, and a recipient name that still claims its proof is unverified
+// here, so a forged address can never carry the checkmark.
+function isColibriNameTrust(trust) {
+  return trust?.method === 'colibri';
+}
+
 // Verified checkmark for the recipient cell when trust is verifiable.
 // Tooltip copy is sourced from the address-bar popover's status table
-// so the two surfaces can't drift; for Colibri
-// the prover host is appended as the one inline detail this surface adds.
+// so the two surfaces can't drift.
 function buildRecipientVerifiedBadge(trust) {
-  if (!trust) return null;
+  if (!trust || isColibriNameTrust(trust)) return null;
   if (trust.level !== 'verified' && trust.level !== 'user-configured') return null;
 
-  const isColibri = trust.level === 'verified' && trust.method === 'colibri';
-  const key = isColibri ? 'verified-colibri' : trust.level;
-  let title = getTrustStatusSentence(key, trust);
+  const title = getTrustStatusSentence(trust.level, trust);
   if (!title) return null;
-  if (isColibri && trust.prover) title += ` (${trust.prover})`;
 
   const badge = document.createElement('span');
   badge.className = 'send-review-verified';

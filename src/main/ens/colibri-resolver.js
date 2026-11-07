@@ -1,12 +1,10 @@
-const { ethers } = require('ethers');
-const { ccipReadFetch } = require('./ccip-fetch');
 // Colibri itself runs in a per-chain worker thread (#495): proof verification
 // is synchronous WASM and must never block Electron's main process. The worker
 // owns the package (via colibri-runtime), its disk storage and trap recovery.
 const workerHost = require('./colibri-worker-host');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
-const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');
+const { hostOf } = require('../ens-resolver');
 
 const clients = new Map();
 const inFlightBuilds = new Map();
@@ -46,7 +44,7 @@ function retireClient(client) {
   destroyClient(client);
 }
 
-// Obtain a live client + its provider with a reference already held, closing
+// Obtain a live client with a reference already held, closing
 // the use-after-destroy window: retainClient only ran inside the old
 // useClient, i.e. after `await getClient` resolved, and in that microtask gap a
 // concurrent request's failure path could release the last ref and destroy the
@@ -61,7 +59,7 @@ async function acquireClient(chainId) {
     retainClient(client);
     const cached = clients.get(id);
     if (cached?.client === client && !retiredClients.has(client)) {
-      return { client, provider: cached.provider };
+      return { client };
     }
     // Evicted or rebuilt during the acquire gap — drop our ref and retry.
     releaseClient(client);
@@ -163,16 +161,7 @@ async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
   }
 
   const previousClient = clients.get(chainId)?.client;
-  // Co-locate the provider with its client in one entry so acquireClient
-  // captures the {client, provider} pair atomically — a separate providers
-  // map can return undefined mid-rebuild or a provider from another
-  // generation.
-  const provider = new ethers.BrowserProvider(client);
-  // Colibri pins EVM reads internally, so ethers sees "latest" and follows
-  // OffchainLookup automatically. Its inherited gateway fetch has no body
-  // cap and a 300s timeout; use the same bounds as Myotis and pinned RPCs.
-  provider.ccipReadFetch = ccipReadFetch;
-  clients.set(chainId, { client, key, provider });
+  clients.set(chainId, { client, key });
   retireClient(previousClient);
   log.info(`[colibri] chain ${chainId} client ready (prover=${hostOf(proverUrl)}, zk=${zkProof})`);
   return client;
@@ -212,31 +201,10 @@ async function getClient(chainId = 1) {
   }
 }
 
-// Drop-in for what a single `consensusResolve` leg does today, but the
-// answer is cryptographically verified by Colibri rather than corroborated
-// across multiple public RPCs. No blockTag override — Colibri's verifier
-// pins to head − 1 by construction (sync committee signatures for block N
-// live in block N+1).
-async function resolveCallViaColibri(name, callData, callResolver = universalResolverCall) {
-  return withColibriClientRetry(1, ({ provider }) =>
-    callResolver(provider, name, callData)
-  );
-}
-
-async function resolveViaColibri(name, callData) {
-  return resolveCallViaColibri(name, callData, universalResolverCall);
-}
-
-// Reverse counterpart: cryptographically-verified `ur.reverse` for an
-// address. Returns { name } on a successful (forward-verified) lookup.
-// Throws on revert (UR's ResolverNotFound / ReverseAddressMismatch) or
-// network/verification failure — the orchestrator classifies.
-async function resolveReverseViaColibri(addressBytes, coinType = 60n) {
-  return withColibriClientRetry(1, ({ provider }) =>
-    universalResolverReverse(provider, addressBytes, {}, coinType)
-  );
-}
-
+// The chain-data router's reads. ENS, reverse and NameNFT lookups don't use
+// Colibri (#1076): it runs their `eth_call` on contract code from a public
+// RPC, unchecked against the proven code hash.
+//
 // `deadlineMs` is how long the caller will wait: past it, a worker still
 // verifying this request is terminated rather than left running.
 async function requestViaColibri(chainId, method, params = [], { deadlineMs } = {}) {
@@ -262,9 +230,6 @@ function clearColibriClientForTest() {
 }
 
 module.exports = {
-  resolveCallViaColibri,
-  resolveViaColibri,
-  resolveReverseViaColibri,
   requestViaColibri,
   clearColibriClientForTest,
 };
