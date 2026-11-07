@@ -6,7 +6,7 @@ const IPC = require('../shared/ipc-channels');
 const registry = require('./networks/network-registry');
 const { UNAVAILABLE } = require('./core/naming-driver');
 const { runWithPrivateLogContext, redactForLog } = require('./private/private-log-context');
-const { isPrivateWebContents } = require('./private/private-windows');
+const { isPrivateSender } = require('./private/private-sender');
 
 // ENS, WNS and GNS names are resolved by the naming core (freedom-core
 // design 0004): the lookups below go to its driver, which returns the
@@ -387,8 +387,13 @@ async function resolveEnsReverse(address, chainId = 1) {
 // point where the sender's private-ness is still known. Marking the async
 // subtree redacts every downstream log site, and the driver tells the core
 // with each lookup. The resolution itself is unchanged.
+//
+// The same mark keeps the lookup's Colibri reads off the disk store (#1058),
+// so it fails closed: only a sender main places in a known public window is
+// public. One it can't place (none, destroyed, mid-teardown, or a lookup
+// that throws) counts as private (private/private-sender.js).
 function privateResolveContext(event) {
-  return isPrivateWebContents(event?.sender);
+  return isPrivateSender(event);
 }
 
 function registerEnsIpc() {
