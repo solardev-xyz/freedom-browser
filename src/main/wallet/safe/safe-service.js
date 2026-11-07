@@ -37,7 +37,7 @@ const {
 } = require('../transaction-service');
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
 const { getEip1193Provider } = require('../provider-manager');
-const chainData = require('../../networks/chain-data-router');
+const chainData = require('../../networks/chain-data');
 const {
   codedError,
   SAFE_NEEDS_FUNDS,
@@ -107,10 +107,11 @@ async function createSafeAccount({ name, ownerIndexes, threshold }) {
  * (covers deploys that confirmed after the app quit).
  *
  * The mark is for good, so only a verified answer makes it (#1066): the
- * chain router's Myotis, Colibri or RPC quorum. Code that no verified
- * source confirms marks nothing and is reported as unverified
- * (SAFE_UNVERIFIED), and the next status check asks again. Activation is
- * not offered on it either: the Safe may well be deployed.
+ * core's chain router labels a read `verified` from Myotis, Colibri or a
+ * quorum of agreeing distinct endpoints (freedom-core design 0005). Code
+ * that no verified source confirms marks nothing and is reported as
+ * unverified (SAFE_UNVERIFIED), and the next status check asks again.
+ * Activation is not offered on it either: the Safe may well be deployed.
  */
 async function isDeployedOnChain(record, chainId) {
   if (record.deployed?.[chainId]) {

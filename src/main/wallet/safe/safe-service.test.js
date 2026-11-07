@@ -65,9 +65,10 @@ jest.mock('../provider-manager', () => ({
   getEip1193Provider: () => ({ request: (...args) => mockRpcRequest(...args) }),
 }));
 
-// Deployment truth: eth_getCode through the chain router, with its label.
+// Deployment truth: eth_getCode through the core's chain router, with its
+// label.
 const mockChainRequest = jest.fn();
-jest.mock('../../networks/chain-data-router', () => ({
+jest.mock('../../networks/chain-data', () => ({
   request: (...args) => mockChainRequest(...args),
 }));
 
