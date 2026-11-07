@@ -353,8 +353,8 @@ describe('shell.verified', () => {
 
 // PRIVATE MODE GUARD (Colibri store, #1058): Colibri keeps a private window's
 // reads in memory when its async context says private. The core's request
-// names no window; the client's `private` (service-client.js forPrivate)
-// does, and `runVerified` sets the context from it. Naming has no Colibri
+// names main's requests it serves; the client's `private` (service-client.js
+// privacyOf) tells from those, and `runVerified` sets the context from it. Naming has no Colibri
 // operation (#1076): chain data's executor is the one that runs Colibri reads
 // through `runVerified` (chain-verified.test.js drives it end to end).
 describe('private windows', () => {

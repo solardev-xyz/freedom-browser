@@ -328,7 +328,8 @@ function registerChainVerified(client, config, deps = {}) {
       try {
         // The whole operation, whoever still waits for it: a cancel or the
         // deadline doesn't end it, and the reply goes only once it settles.
-        // A Colibri read in the context of the window it may serve (#1058).
+        // A Colibri read in the context of the window it serves (#1058), as
+        // the requests its `serves` names tell (freedom-core #285).
         reply = await Promise.resolve()
           .then(() => runVerified(verifier, run, context))
           .then(null, failed);
