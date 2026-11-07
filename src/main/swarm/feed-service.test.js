@@ -59,6 +59,11 @@ class MockFeedIndex {
 class MockSpan {
   constructor(value) { this._value = BigInt(value); }
   toBigInt() { return this._value; }
+  toUint8Array() {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigUInt64LE(this._value);
+    return bytes;
+  }
 }
 
 // Stand-in for bee-js Bytes — an object wrapping a Uint8Array.
@@ -195,7 +200,7 @@ function make404WrappedChunk() {
   return new MockBeeResponseError(404, 'wrapped chunk cannot be retrieved');
 }
 
-function mockExactFeedPayload(data = 'exact data', span = 1n) {
+function mockExactFeedPayload(data = 'exact data', span = BigInt(Buffer.byteLength(data))) {
   const reference = new MockReference('ee'.repeat(32));
   const payload = new MockBytes(data);
   const soc = { payload, span: new MockSpan(span) };
