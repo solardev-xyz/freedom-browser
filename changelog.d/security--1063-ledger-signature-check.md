@@ -1,0 +1,1 @@
+- Ledger signatures are now checked against your account and the request, and refused before anything is sent or given to a site ([#1063](https://github.com/solardev-xyz/freedom-browser/issues/1063))

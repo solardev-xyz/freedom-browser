@@ -119,6 +119,16 @@ function walletTypeBadge(type) {
   return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
 }
 
+/** A Ledger account the last connected Ledger doesn't hold (#1065). */
+function addressCheckBadge(wallet) {
+  if (wallet.type !== 'ledger' || wallet.addressCheck !== 'mismatched') return '';
+  return (
+    '<span class="wallet-selector-item-badge" ' +
+    'title="The Ledger last connected doesn\'t hold this address. Connect the Ledger that does.">' +
+    "Doesn't match</span>"
+  );
+}
+
 function renderWalletList() {
   if (!walletSelectorList) return;
 
@@ -138,7 +148,7 @@ function renderWalletList() {
 
     item.innerHTML = `
       <div class="wallet-selector-item-info">
-        <span class="wallet-selector-item-name">${escapeHtml(wallet.name)}${walletTypeBadge(wallet.type)}</span>
+        <span class="wallet-selector-item-name">${escapeHtml(wallet.name)}${walletTypeBadge(wallet.type)}${addressCheckBadge(wallet)}</span>
         <div class="wallet-selector-item-address-row">
           <code class="wallet-selector-item-address">${truncatedAddress}</code>
           ${wallet.address ? `
