@@ -151,7 +151,14 @@ describe('SOURCE_CAPABILITIES', () => {
     expect(unsupported('myotis')).toEqual(single);
     expect(unsupported('quorum')).toEqual(single);
     expect(unsupported('colibri')).toEqual(
-      [...single, 'eth_getLogs', 'eth_gasPrice', 'eth_feeHistory'].sort()
+      [
+        ...single,
+        'eth_getLogs',
+        'eth_gasPrice',
+        'eth_feeHistory',
+        'eth_call',
+        'eth_estimateGas',
+      ].sort()
     );
     expect(unsupported('direct')).toEqual([]);
     expect(unsupported('blockscout')).toEqual(
