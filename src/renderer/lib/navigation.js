@@ -410,7 +410,7 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
 // `scheme:…` with no whitespace (so a query like "rad: what is it" still
 // searches).
 const EXPLICIT_DWEB_ADDRESS_RE =
-  /^(?:(?:bzz|ipfs|ipns|ens|web3|freedom):\/\/|(?:bzz|ipfs|ipns|ens|web3|freedom|rad|ethereum):\S*$)/i;
+  /^(?:(?:bzz|ipfs|ipns|ens|web3|freedom|pubky):\/\/|(?:bzz|ipfs|ipns|ens|web3|freedom|rad|ethereum|pubky):\S*$)/i;
 
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
 // shown in the address bar and on the page. `extras` can include:
@@ -2287,6 +2287,23 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = value;
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(value);
+    syncTargetBzzBase(null);
+    return;
+  }
+
+  // Pubky: `pubky://<key>/pub/...`, or the SDK's display form
+  // `pubky<key>/pub/...`. The main-process handler validates the address.
+  const pubkyMatch = value.trim().match(/^pubky(?::\/\/)?([a-z0-9]{52})(\/\S*)?$/i);
+  if (pubkyMatch) {
+    // A bare key opens the listing of its public files.
+    const pubkyPath = !pubkyMatch[2] || pubkyMatch[2] === '/' ? '/pub/' : pubkyMatch[2];
+    const pubkyUrl = `pubky://${pubkyMatch[1].toLowerCase()}${pubkyPath}`;
+    setAddressDisplayForTab(displayOverride || pubkyUrl, targetTabId);
+    pushDebug(`[AddressBar] Loading Pubky target: ${pubkyUrl}`);
+    navState.pendingTitleForUrl = pubkyUrl;
+    navState.pendingNavigationUrl = pubkyUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(pubkyUrl);
     syncTargetBzzBase(null);
     return;
   }
