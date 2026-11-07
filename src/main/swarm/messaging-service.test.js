@@ -64,12 +64,19 @@ var mockBee = {
   calculateSingleOwnerChunkAddress: mockCalculateSingleOwnerChunkAddress,
 };
 
-jest.mock('@ethersphere/bee-js', () => ({
-  Topic: MockTopic,
-  Identifier: MockIdentifier,
-  Bytes: MockBytes,
-  PrivateKey: MockPrivateKey,
-}));
+jest.mock('@ethersphere/bee-js', () => {
+  // The PSS send keeps bee-js's own checks and error type: the real ones.
+  const { PublicKey, BatchId, BeeResponseError } = jest.requireActual('@ethersphere/bee-js');
+  return {
+    Topic: MockTopic,
+    Identifier: MockIdentifier,
+    Bytes: MockBytes,
+    PrivateKey: MockPrivateKey,
+    PublicKey,
+    BatchId,
+    BeeResponseError,
+  };
+});
 
 jest.mock('./gsoc-miner', () => ({
   mineSigner: mockMineSigner,
@@ -299,26 +306,80 @@ describe('resolvePssTopicHex', () => {
 });
 
 describe('sendPss', () => {
-  test('sends with an auto-selected batch, topic, target, and recipient', async () => {
-    await sendPss({ topic: 'dm:alice', targets: 'aabb', recipient: '02' + 'ab'.repeat(32), data: 'hello' });
+  // On the curve (bee-js's PublicKey accepts it).
+  const RECIPIENT = '02' + 'ab'.repeat(32);
+  const realFetch = global.fetch;
+  let fetchMock;
 
-    expect(mockPssSend).toHaveBeenCalledTimes(1);
+  beforeEach(() => {
+    fetchMock = jest.fn(async () => new Response(null, { status: 201, statusText: 'Created' }));
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  test('posts to /pss/send with the batch, topic, target, and the compressed recipient', async () => {
+    await sendPss({ topic: 'dm:alice', targets: 'aabb', recipient: RECIPIENT, data: Buffer.from('hello') });
+
     // Messaging opts into the full-mutable-batch fallback (ephemeral traffic).
     expect(mockSelectBestBatch).toHaveBeenCalledWith(4096, { allowFullMutable: true });
-    const [batchId, topic, target, data, recipient] = mockPssSend.mock.calls[0];
-    expect(batchId).toBe(BATCH_ID);
-    expect(topic.toHex()).toBe(MockTopic.fromString('dm:alice').toHex());
-    expect(target).toBe('aabb');
-    expect(data).toBe('hello');
-    expect(recipient).toBe('02' + 'ab'.repeat(32));
+    expect(mockPssSend).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    const topicHex = MockTopic.fromString('dm:alice').toHex();
+    expect(url).toBe(`http://127.0.0.1:1633/pss/send/${topicHex}/aabb?recipient=${RECIPIENT}`);
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      accept: 'application/json, text/plain, */*',
+      'content-type': 'application/octet-stream',
+      'swarm-postage-batch-id': BATCH_ID,
+    });
+    expect(Buffer.from(init.body).toString()).toBe('hello');
   });
 
   test('fails without a usable batch', async () => {
     mockSelectBestBatch.mockResolvedValue(null);
     await expect(
-      sendPss({ topic: 't', targets: 'aa', recipient: '02' + 'ab'.repeat(32), data: 'x' })
+      sendPss({ topic: 't', targets: 'aa', recipient: RECIPIENT, data: 'x' })
     ).rejects.toThrow(/postage batch/);
-    expect(mockPssSend).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('refuses a recipient off the curve without a request', async () => {
+    await expect(
+      sendPss({ topic: 't', targets: 'aa', recipient: '02' + '00'.repeat(32), data: 'x' })
+    ).rejects.toThrow(/^bad point: is not on curve/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [
+      'a JSON body',
+      () => new Response('{"code":400,"message":"nope"}', { status: 400, statusText: 'Bad Request' }),
+      'Bad Request: {"code":400,"message":"nope"}',
+    ],
+    [
+      'a text body',
+      () => new Response('oops', { status: 500, statusText: 'Internal Server Error' }),
+      'Internal Server Error: oops',
+    ],
+    ['no body', () => new Response(null, { status: 503, statusText: 'Service Unavailable' }), 'Service Unavailable'],
+  ])('a refusal with %s fails in bee-js wording', async (_name, answer, message) => {
+    fetchMock.mockImplementation(async () => answer());
+    const err = await sendPss({ topic: 't', targets: 'aa', recipient: RECIPIENT, data: 'x' }).catch((e) => e);
+    expect(err.message).toBe(message);
+    expect(err.name).toBe('BeeResponseError');
+    expect(err.status).toBe(answer().status);
+  });
+
+  test('no answer fails in bee-js wording', async () => {
+    const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1633'), { code: 'ECONNREFUSED' });
+    fetchMock.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));
+    await expect(
+      sendPss({ topic: 't', targets: 'aa', recipient: RECIPIENT, data: 'x' })
+    ).rejects.toThrow('fetch failed: connect ECONNREFUSED 127.0.0.1:1633');
   });
 });
 
