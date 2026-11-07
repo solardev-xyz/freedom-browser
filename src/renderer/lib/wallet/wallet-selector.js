@@ -119,6 +119,16 @@ function walletTypeBadge(type) {
   return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
 }
 
+/** A phone account its phone last answered from another account (#1078). */
+export function addressCheckBadge(wallet) {
+  if (wallet.type !== 'remote' || wallet.addressCheck !== 'mismatched') return '';
+  return (
+    '<span class="wallet-selector-item-badge" ' +
+    'title="Your phone last answered from a different account. Select this account on your phone and check it again from Wallet Settings.">' +
+    "Doesn't match</span>"
+  );
+}
+
 function renderWalletList() {
   if (!walletSelectorList) return;
 
@@ -138,7 +148,7 @@ function renderWalletList() {
 
     item.innerHTML = `
       <div class="wallet-selector-item-info">
-        <span class="wallet-selector-item-name">${escapeHtml(wallet.name)}${walletTypeBadge(wallet.type)}</span>
+        <span class="wallet-selector-item-name">${escapeHtml(wallet.name)}${walletTypeBadge(wallet.type)}${addressCheckBadge(wallet)}</span>
         <div class="wallet-selector-item-address-row">
           <code class="wallet-selector-item-address">${truncatedAddress}</code>
           ${wallet.address ? `

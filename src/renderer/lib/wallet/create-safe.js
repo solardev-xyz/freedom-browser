@@ -111,6 +111,20 @@ function eligibleOwners() {
   );
 }
 
+/**
+ * A phone account its phone hasn't shown it holds can't own a Safe
+ * (#1078): main refuses it, and the list says why before the user tries.
+ */
+export function ownerSubLabel(wallet) {
+  const address = truncateAddress(wallet.address);
+  if (wallet.type !== 'remote' || !wallet.addressCheck || wallet.addressCheck === 'matched') {
+    return address;
+  }
+  return wallet.addressCheck === 'mismatched'
+    ? `${address} · your phone answered from another account`
+    : `${address} · not checked on your phone yet`;
+}
+
 function renderOwnerList() {
   const owners = eligibleOwners();
   const selectedAddresses = new Set(
@@ -124,7 +138,7 @@ function renderOwnerList() {
     owners.map((wallet) => ({
       address: wallet.address,
       label: wallet.name,
-      subLabel: truncateAddress(wallet.address),
+      subLabel: ownerSubLabel(wallet),
       index: wallet.index,
     })),
     {
