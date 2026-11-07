@@ -119,14 +119,21 @@ function walletTypeBadge(type) {
   return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
 }
 
-/** A phone account its phone last answered from another account (#1078). */
+/** Why a device account's badge says it doesn't match (#1065 for Ledger, #1078 for phones). */
+const MISMATCH_TITLES = new Map([
+  ['ledger', "The Ledger last connected doesn't hold this address. Connect the Ledger that does."],
+  [
+    'remote',
+    'Your phone last answered from a different account. ' +
+      'Select this account on your phone and check it again from Wallet Settings.',
+  ],
+]);
+
+/** A device account its device last didn't match: a Ledger that doesn't hold it, or a phone on another account. */
 export function addressCheckBadge(wallet) {
-  if (wallet.type !== 'remote' || wallet.addressCheck !== 'mismatched') return '';
-  return (
-    '<span class="wallet-selector-item-badge" ' +
-    'title="Your phone last answered from a different account. Select this account on your phone and check it again from Wallet Settings.">' +
-    "Doesn't match</span>"
-  );
+  const title = MISMATCH_TITLES.get(wallet.type);
+  if (!title || wallet.addressCheck !== 'mismatched') return '';
+  return `<span class="wallet-selector-item-badge" title="${title}">` + "Doesn't match</span>";
 }
 
 function renderWalletList() {

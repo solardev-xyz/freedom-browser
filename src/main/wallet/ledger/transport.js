@@ -128,4 +128,24 @@ async function listAccounts({ scheme = 'live', start = 0, count = 5 } = {}) {
   });
 }
 
-module.exports = { withEthApp, listAccounts, PATH_SCHEMES, OFFLINE_LOAD_CONFIG };
+/**
+ * Read the addresses the attached device derives at `paths`, in one
+ * session and in order, without showing them on the device. Main uses
+ * this to check an account's address against the device itself rather
+ * than taking the chrome's word for it (#1065).
+ *
+ * @param {string[]} paths - Derivation paths in device format
+ * @returns {Promise<string[]>}
+ */
+async function readAddresses(paths) {
+  return withEthApp(async (eth) => {
+    const addresses = [];
+    for (const path of paths) {
+      const { address } = await eth.getAddress(path, false);
+      addresses.push(address);
+    }
+    return addresses;
+  });
+}
+
+module.exports = { withEthApp, listAccounts, readAddresses, PATH_SCHEMES, OFFLINE_LOAD_CONFIG };
