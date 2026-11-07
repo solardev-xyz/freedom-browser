@@ -23,6 +23,11 @@
  * then sees `isPrivateLogContext()`, and each log site redacts its
  * browsing-identifying values through `redactForLog()`.
  *
+ * The same marker picks Colibri's store (src/main/ens/colibri-resolver.js,
+ * #1058): a read in a private context runs on the chain's private worker,
+ * whose verifier store is in memory only, instead of the one on disk under
+ * <userData>/colibri.
+ *
  * Deliberate edge: concurrent resolves of the same name share one
  * in-flight promise. If a private caller creates it and a normal window
  * joins, the shared body logs redacted (safe direction — we lose a

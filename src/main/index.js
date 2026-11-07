@@ -481,6 +481,7 @@ const {
   isPrivateWebContents,
   setPrivateSessionConfigurator,
   registerPrivateCleanup,
+  getPrivateWindowCount,
 } = require('./private/private-windows');
 const { initUpdater } = require('./updater');
 const { setupApplicationMenu, stopHistoryMenuRefresh, updateTabMenuItems } = require('./menu');
@@ -798,6 +799,12 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => dropPrivateDownloads(partition));
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
+  // Colibri's private store (#1058): the private windows share one in-memory
+  // verifier store per chain, dropped once the last of them has closed.
+  require('./ens/colibri-resolver').registerColibriPrivateCleanup({
+    registerPrivateCleanup,
+    getPrivateWindowCount,
+  });
 
   registerWebContentsHandlers({
     isManagedPage: contents => hiddenPageManager?.ownsWebContents(contents) === true,

@@ -23,7 +23,8 @@ const RETIRED_RUNTIME_ERROR = /Colibri WASM runtime was retired after a trap/;
 // The bundled default writes these to process.cwd(), which means launching
 // the browser from a different directory loses the warm-cache state and
 // scatters files across the filesystem. The host passes a stable per-app dir
-// (`<userData>/colibri`); keys are chain-scoped, so workers for *different*
+// (`<userData>/colibri`) to the normal windows' workers (a private window's
+// gets none: createMemoryStorage below); keys are chain-scoped, so workers for *different*
 // chains never write the same file. Two workers for the *same* chain can,
 // though: when a WASM trap retires a worker that still has requests in
 // flight, it keeps draining (with a fresh instance on the same storage) while
@@ -108,6 +109,32 @@ function createDiskStorage(dir) {
   };
 }
 
+// A private window's verifier state (#1058). Besides headers and sync state,
+// Colibri saves `tx_cache_<chain>`, `code_<hash>` and `call_<chain>_<address>`
+// records, and the last names every contract a page called: on disk they
+// would outlive the private window. The host spawns the private windows'
+// workers with no storage dir, and they get this instead, the same
+// interface held in the worker's own memory. It ends with the worker, which
+// the host terminates when the last private window closes.
+function createMemoryStorage() {
+  const entries = new Map();
+  return {
+    get: (key) => (entries.has(key) ? Buffer.from(entries.get(key)) : null),
+    set: (key, value) => { entries.set(key, Buffer.from(value)); },
+    del: (key) => { entries.delete(key); },
+  };
+}
+
+// The worker's storage: on disk under `storageDir`, or in memory when the
+// host passes none. Anything but a non-empty path gets memory: a missing
+// dir must never fall back to some disk location (Colibri's own default is
+// process.cwd()).
+function createStorage(storageDir) {
+  return typeof storageDir === 'string' && storageDir !== ''
+    ? createDiskStorage(storageDir)
+    : createMemoryStorage();
+}
+
 // Only plain, cloneable fields cross back to the main process. The router and
 // ethers' BrowserProvider read `code`, `data` (EVM revert bytes) and `message`.
 function serializeError(err) {
@@ -152,7 +179,7 @@ function createColibriService({ runtime, storageDir, post }) {
     runtime.setRuntimeResetListener?.((err) => {
       post({ type: 'trap', message: serializeError(err).message });
     });
-    await Colibri.register_storage(createDiskStorage(storageDir));
+    await Colibri.register_storage(createStorage(storageDir));
   }
 
   async function handle(message) {
@@ -201,4 +228,10 @@ if (!isMainThread && parentPort) {
   }
 }
 
-module.exports = { createColibriService, createDiskStorage, serializeError, STALE_TMP_MS };
+module.exports = {
+  createColibriService,
+  createDiskStorage,
+  createMemoryStorage,
+  serializeError,
+  STALE_TMP_MS,
+};

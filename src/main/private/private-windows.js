@@ -32,7 +32,10 @@
  * and the name resolvers behind them are guarded a level down, by the
  * async-context marker in src/main/private/private-log-context.js — set
  * once by whoever knows the session (the per-session protocol registration,
- * the resolver IPC handlers) and read by every log site underneath.
+ * the resolver IPC handlers) and read by every log site underneath. The
+ * same marker keeps Colibri's reads off its disk store, and a cleanup hook
+ * drops the private windows' in-memory Colibri store once the last of them
+ * has closed (src/main/ens/colibri-resolver.js).
  */
 
 const crypto = require('crypto');

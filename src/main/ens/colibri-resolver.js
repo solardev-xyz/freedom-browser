@@ -6,8 +6,22 @@ const { ccipReadFetch } = require('./ccip-fetch');
 const workerHost = require('./colibri-worker-host');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
+const { isPrivateLogContext } = require('../private/private-log-context');
 const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');
 
+// PRIVATE MODE GUARD (Colibri store, #1058). Colibri's store names every
+// contract a read touched (`call_<chain>_<address>`), so a private window's
+// reads must not go to the disk-backed one under <userData>/colibri. Every
+// read here runs on one of two lanes per chain: the normal one, on the
+// chain's disk-backed worker as before, or the private one, on the chain's
+// private worker, whose store is in memory only and ends with the last
+// private window (colibri-worker-host.js, `endPrivateColibriSession`). The
+// lane is the async context's: the entry points that know the window (the
+// ENS IPC handlers and the dweb, onchain-app and gateway-offer handlers of a
+// private session) mark their whole subtree private
+// (private/private-log-context.js), and every path down to here, ENS and
+// chain data alike, runs inside it. Clients, builds and their generations
+// are kept per lane.
 const clients = new Map();
 const inFlightBuilds = new Map();
 const clientReferences = new Map();
@@ -54,12 +68,17 @@ function retireClient(client) {
 // then re-validate that the retained client is still the cached one (and not
 // retired); if it was swapped/evicted during the gap, release and re-acquire.
 // The caller releases in a finally.
-async function acquireClient(chainId) {
+function laneKey(chainId, privateLane) {
+  return privateLane ? `${chainId}:private` : String(chainId);
+}
+
+async function acquireClient(chainId, privateLane = false) {
   const id = Number(chainId);
+  const lane = laneKey(id, privateLane);
   for (;;) {
-    const client = await getClient(id);
+    const client = await getClient(id, privateLane);
     retainClient(client);
-    const cached = clients.get(id);
+    const cached = clients.get(lane);
     if (cached?.client === client && !retiredClients.has(client)) {
       return { client, provider: cached.provider };
     }
@@ -113,10 +132,10 @@ function colibriErrorForLog(err) {
 
 // Evict only the client that actually failed. If another concurrent request
 // or a settings change has already installed a replacement, leave it intact.
-function evictFailedClient(chainId, failedClient) {
-  const cached = clients.get(chainId);
+function evictFailedClient(lane, failedClient) {
+  const cached = clients.get(lane);
   if (cached?.client !== failedClient) return;
-  clients.delete(chainId);
+  clients.delete(lane);
   retireClient(failedClient);
 }
 
@@ -126,7 +145,9 @@ function evictFailedClient(chainId, failedClient) {
 // EVM revert data are never retried or reclassified.
 async function withColibriClientRetry(chainId, operation) {
   const id = Number(chainId);
-  const first = await acquireClient(id);
+  // Read once: the retry stays on the lane the request started on.
+  const privateLane = isPrivateLogContext();
+  const first = await acquireClient(id, privateLane);
   try {
     return await operation(first);
   } catch (err) {
@@ -135,8 +156,8 @@ async function withColibriClientRetry(chainId, operation) {
       `[colibri] chain ${id} request failed; rebuilding client and retrying once ` +
       colibriErrorForLog(err)
     );
-    evictFailedClient(id, first.client);
-    const retry = await acquireClient(id);
+    evictFailedClient(laneKey(id, privateLane), first.client);
+    const retry = await acquireClient(id, privateLane);
     try {
       return await operation(retry);
     } finally {
@@ -150,19 +171,23 @@ async function withColibriClientRetry(chainId, operation) {
   }
 }
 
-async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
-  // The chain's worker registers the verifier's disk storage before it reports
-  // ready; settings-change rebuilds reuse the same worker and storage.
-  await workerHost.ensureWorker(chainId);
+async function buildClient({ chainId, privateLane, key, proverUrl, zkProof, generation }) {
+  const lane = laneKey(chainId, privateLane);
+  // The chain's worker registers the verifier's storage before it reports
+  // ready; settings-change rebuilds reuse the same worker and storage. The
+  // private lane's is its private worker, with storage in memory only.
+  const lanePrivate = privateLane ? { private: true } : null;
+  if (lanePrivate) await workerHost.ensureWorker(chainId, lanePrivate);
+  else await workerHost.ensureWorker(chainId);
 
-  const client = workerHost.createClient({ chainId, proverUrl, zkProof });
+  const client = workerHost.createClient({ chainId, proverUrl, zkProof, ...lanePrivate });
 
-  if (generation !== buildGenerations.get(chainId)) {
+  if (generation !== buildGenerations.get(lane)) {
     destroyClient(client);
-    return getClient(chainId);
+    return getClient(chainId, privateLane);
   }
 
-  const previousClient = clients.get(chainId)?.client;
+  const previousClient = clients.get(lane)?.client;
   // Co-locate the provider with its client in one entry so acquireClient
   // captures the {client, provider} pair atomically — a separate providers
   // map can return undefined mid-rebuild or a provider from another
@@ -172,9 +197,12 @@ async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
   // OffchainLookup automatically. Its inherited gateway fetch has no body
   // cap and a 300s timeout; use the same bounds as Myotis and pinned RPCs.
   provider.ccipReadFetch = ccipReadFetch;
-  clients.set(chainId, { client, key, provider });
+  clients.set(lane, { client, key, provider });
   retireClient(previousClient);
-  log.info(`[colibri] chain ${chainId} client ready (prover=${hostOf(proverUrl)}, zk=${zkProof})`);
+  log.info(
+    `[colibri] chain ${chainId}${privateLane ? ' (private)' : ''} client ready ` +
+    `(prover=${hostOf(proverUrl)}, zk=${zkProof})`
+  );
   return client;
 }
 
@@ -184,31 +212,32 @@ async function buildClient({ chainId, key, proverUrl, zkProof, generation }) {
 // on first use, not module load. `inFlightBuild` collapses concurrent
 // first-call lookups onto a single construction. The generation counter
 // prevents a slower old-settings build from replacing a newer client.
-async function getClient(chainId = 1) {
+async function getClient(chainId = 1, privateLane = false) {
   const id = Number(chainId);
+  const lane = laneKey(id, privateLane);
   const [proverUrl] = registry.getEndpoints(id, 'prover');
   if (!proverUrl) {
     throw new Error(`No Colibri prover configured for chain ${id}`);
   }
   const zkProof = registry.getNetwork(id)?.zkProof !== false;
   const key = `${proverUrl}|${zkProof}`;
-  const cached = clients.get(id);
-  const inFlight = inFlightBuilds.get(id);
+  const cached = clients.get(lane);
+  const inFlight = inFlightBuilds.get(lane);
   if (cached?.client && cached.key === key) {
     if (inFlight && inFlight.key !== key) {
-      buildGenerations.set(id, (buildGenerations.get(id) || 0) + 1);
+      buildGenerations.set(lane, (buildGenerations.get(lane) || 0) + 1);
     }
     return cached.client;
   }
   if (inFlight && inFlight.key === key) return inFlight.promise;
 
-  const generation = (buildGenerations.get(id) || 0) + 1;
-  buildGenerations.set(id, generation);
-  const promise = buildClient({ chainId: id, key, proverUrl, zkProof, generation });
-  inFlightBuilds.set(id, { key, promise, generation });
+  const generation = (buildGenerations.get(lane) || 0) + 1;
+  buildGenerations.set(lane, generation);
+  const promise = buildClient({ chainId: id, privateLane, key, proverUrl, zkProof, generation });
+  inFlightBuilds.set(lane, { key, promise, generation });
   try { return await promise; }
   finally {
-    if (inFlightBuilds.get(id)?.promise === promise) inFlightBuilds.delete(id);
+    if (inFlightBuilds.get(lane)?.promise === promise) inFlightBuilds.delete(lane);
   }
 }
 
@@ -245,14 +274,44 @@ async function requestViaColibri(chainId, method, params = [], { deadlineMs } = 
   );
 }
 
+// The last private window has closed (#1058): drop every private lane's
+// client, discard a private build still in flight, and end the private
+// session in the worker host, which terminates the private workers and
+// their in-memory stores. Normal lanes are untouched. A private read after
+// this starts a fresh, empty store.
+function endPrivateColibriSession() {
+  const privateLanes = new Set(
+    [...clients.keys(), ...inFlightBuilds.keys(), ...buildGenerations.keys()]
+      .filter((lane) => lane.endsWith(':private'))
+  );
+  for (const lane of privateLanes) {
+    buildGenerations.set(lane, (buildGenerations.get(lane) || 0) + 1);
+    inFlightBuilds.delete(lane);
+    const cached = clients.get(lane);
+    clients.delete(lane);
+    if (cached) retireClient(cached.client);
+  }
+  workerHost.endPrivateSession();
+}
+
+// Registers the end of the private session: once the last private window
+// has closed, its Colibri store goes (`endPrivateColibriSession`). The
+// private-window registry's hooks run after the closed window has left the
+// count (private/private-windows.js).
+function registerColibriPrivateCleanup({ registerPrivateCleanup, getPrivateWindowCount }) {
+  registerPrivateCleanup(() => {
+    if (getPrivateWindowCount() === 0) endPrivateColibriSession();
+  });
+}
+
 function clearColibriClientForTest() {
   for (const { client } of clients.values()) retireClient(client);
-  for (const chainId of new Set([
+  for (const lane of new Set([
     ...clients.keys(),
     ...inFlightBuilds.keys(),
     ...buildGenerations.keys(),
   ])) {
-    buildGenerations.set(chainId, (buildGenerations.get(chainId) || 0) + 1);
+    buildGenerations.set(lane, (buildGenerations.get(lane) || 0) + 1);
   }
   clients.clear();
   inFlightBuilds.clear();
@@ -266,5 +325,7 @@ module.exports = {
   resolveViaColibri,
   resolveReverseViaColibri,
   requestViaColibri,
+  endPrivateColibriSession,
+  registerColibriPrivateCleanup,
   clearColibriClientForTest,
 };

@@ -3544,6 +3544,41 @@ describe('ens-resolver private-window logging', () => {
     expect(text).toContain('[ens] Resolved: <private>');
   });
 
+  // PRIVATE MODE GUARD (Colibri store, #1058): Colibri keeps a private
+  // window's reads in memory when its async context is marked private, so the
+  // mark these handlers set must reach the Colibri calls under them.
+  test.each([
+    ['ENS_RESOLVE', IPC.ENS_RESOLVE, { name: SECRET }, mockResolveViaColibri],
+    [
+      'ENS_RESOLVE_REVERSE',
+      IPC.ENS_RESOLVE_REVERSE,
+      { address: '0x1111111111111111111111111111111111111111' },
+      mockResolveReverseViaColibri,
+    ],
+  ])('%s asks Colibri in the sender’s private-window context', async (_label, channel, payload, colibri) => {
+    const { isPrivateLogContext } = jest.requireActual('./private/private-log-context');
+    mockLoadSettings.mockReturnValue({
+      ...mockLoadSettings(),
+      ensResolutionMethod: 'colibri',
+      ensResolutionOrder: ['colibri'],
+    });
+    const seen = [];
+    colibri.mockImplementation(async () => {
+      seen.push(isPrivateLogContext());
+      throw new Error('prover unavailable');
+    });
+
+    await handlerFor(channel)(privateEvent, payload);
+    const fromPrivate = seen.splice(0);
+    clearEnsResolutionCaches();
+    await handlerFor(channel)(normalEvent, payload);
+
+    expect(fromPrivate.length).toBeGreaterThan(0);
+    expect(fromPrivate).not.toContain(false);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain(true);
+  });
+
   test('a normal ENS_RESOLVE keeps the full diagnostic line', async () => {
     await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'public-site.eth' });
 
