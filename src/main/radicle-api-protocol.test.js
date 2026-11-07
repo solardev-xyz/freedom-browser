@@ -422,7 +422,194 @@ describe('radapi protocol', () => {
     embedded.commitRaw.mockRejectedValueOnce(new Error('odb corrupted'));
     const failed = await serveRepoApi(RID, `/commits/${REVISION}`);
     expect(failed.status).toBe(500);
-    await expect(failed.json()).resolves.toEqual({ error: 'odb corrupted' });
+    await expect(failed.json()).resolves.toEqual({ error: 'the read failed' });
+  });
+
+  // #1050: libradicle's text for a repository that isn't stored names its
+  // storage path, `<radicle home>/storage/<rid>`, under the user's profile,
+  // and its storage and git errors can name files there too. `rad:` answers
+  // any page, so it answers an add-on error with a fixed text for its
+  // category; the status is still decided on the add-on's text.
+  describe('add-on error texts', () => {
+    const { handleRadRequest } = require('./radicle/rad-protocol');
+    const log = require('./logger');
+    const RID_Z = RID.slice('rad:'.length);
+    // Today's test of an add-on text for a 404, the rest being a 500.
+    const MISSING = /not found|does not exist|NotFound/i;
+
+    // Absolute paths of each kind.
+    const UNIX_PATH = /(?:^|[\s'"(=:,])\/(?!\/)[^\s'"/]/;
+    const DRIVE_PATH = /\b[A-Za-z]:[\\/]/;
+    const UNC_PATH = /(?:^|[\s'"(=:,])\\\\[^\\?\s]/;
+    const VERBATIM_PATH = /\\\\\?\\/;
+    const ABSOLUTE_PATHS = [UNIX_PATH, DRIVE_PATH, UNC_PATH, VERBATIM_PATH];
+
+    // A Radicle home of each kind, under a profile directory: its label,
+    // the home, its separator, and the detector that must find it.
+    const HOMES = [
+      ['a Unix home', '/home/alice/.config/Freedom/profiles/default/radicle', '/', UNIX_PATH],
+      [
+        'a Windows drive',
+        'C:\\Users\\alice\\AppData\\Roaming\\Freedom\\profiles\\default\\radicle',
+        '\\',
+        DRIVE_PATH,
+      ],
+      [
+        'a UNC share',
+        '\\\\fileserver\\homes\\alice\\Freedom\\profiles\\default\\radicle',
+        '\\',
+        UNC_PATH,
+      ],
+      [
+        'a \\\\?\\ path',
+        '\\\\?\\C:\\Users\\alice\\AppData\\Roaming\\Freedom\\profiles\\default\\radicle',
+        '\\',
+        VERBATIM_PATH,
+      ],
+    ];
+
+    // `call` fails on `rad:`, `radapiCall` (default `call`) on `radapi:`,
+    // which has no visibility read first.
+    const ROWS = [
+      {
+        label: 'an unknown RID',
+        path: '/',
+        call: 'repoInfo',
+        radapiCall: 'buildRepoMeta',
+        message: (home, sep) =>
+          `failed to resolve path '${[home, 'storage', RID_Z].join(sep)}': ` +
+          'No such file or directory; class=Os (2); code=NotFound (-3)',
+        status: 404,
+        body: { error: 'repository not found' },
+      },
+      {
+        label: 'a missing path in a public repository',
+        path: `/blob/${REVISION}/docs/missing.md`,
+        call: 'blobAtRaw',
+        message: () =>
+          "the path 'docs/missing.md' does not exist in the given tree; " +
+          'class=Tree (14); code=NotFound (-3)',
+        status: 404,
+        body: { error: 'not found' },
+        pathless: true,
+      },
+      {
+        label: 'a repository gone after the visibility read',
+        path: `/tree/${REVISION}/src`,
+        call: 'treeAtRaw',
+        message: (home, sep) =>
+          `failed to resolve path '${[home, 'storage', RID_Z].join(sep)}': ` +
+          'No such file or directory; class=Os (2); code=NotFound (-3)',
+        status: 404,
+        body: { error: 'not found' },
+      },
+      {
+        label: 'a storage error',
+        path: `/readme/${REVISION}`,
+        call: 'readmeAtRaw',
+        message: (home, sep) =>
+          `failed to open '${[home, 'storage', RID_Z, 'objects', 'pack'].join(sep)}': ` +
+          'Permission denied; class=Os (2)',
+        status: 500,
+        body: { error: 'the read failed' },
+      },
+      {
+        label: 'a git error',
+        path: '/remotes',
+        call: 'remotes',
+        message: (home, sep) =>
+          'corrupted loose reference file: ' +
+          `${[home, 'storage', RID_Z, 'refs', 'heads', 'main'].join(sep)}; class=Reference (4)`,
+        status: 500,
+        body: { error: 'the read failed' },
+      },
+    ];
+
+    // A row whose text names no path runs once.
+    const CASES = HOMES.flatMap(([homeLabel, home, sep, detector], index) =>
+      ROWS.filter((row) => !row.pathless || index === 0).map((row) => ({
+        ...row,
+        homeLabel,
+        home,
+        detector,
+        text: row.message(home, sep),
+      }))
+    );
+
+    // The texts a body is checked in: its raw JSON, where `\` is escaped,
+    // and its parsed error.
+    const textsOf = (raw) => [raw, JSON.parse(raw).error];
+
+    test.each(CASES.filter((c) => !c.pathless))(
+      'the add-on text for $label names $homeLabel',
+      ({ text, home, detector }) => {
+        expect(text).toContain(home);
+        expect(detector.test(text)).toBe(true);
+      }
+    );
+
+    test.each(CASES)(
+      'rad: answers $label under $homeLabel with no path and its status',
+      async ({ path, call, text, home, status, body }) => {
+        embedded[call].mockRejectedValueOnce(new Error(text));
+        const response = await handleRadRequest(new Request(`rad://${RID_Z}${path}`));
+        expect(response.status).toBe(status);
+        // The status is today's, decided on the add-on's own text.
+        expect(response.status).toBe(MISSING.test(text) ? 404 : 500);
+        expect(response.headers.get('access-control-allow-origin')).toBe('*');
+        const raw = await response.text();
+        expect(JSON.parse(raw)).toEqual(body);
+        for (const value of textsOf(raw)) {
+          expect(value).not.toContain(home);
+          expect(value).not.toContain(JSON.stringify(home).slice(1, -1));
+          for (const absolute of ABSOLUTE_PATHS) expect(absolute.test(value)).toBe(false);
+        }
+        // The detail is logged as before: through redactForLog, for a read
+        // that failed; never for one that is missing.
+        const warnings = log.warn.mock.calls.filter((args) => args[0] === '[radapi]');
+        expect(warnings).toEqual(status === 500 ? [['[radapi]', RID, path, '→', text]] : []);
+      }
+    );
+
+    test.each(CASES)(
+      'radapi: keeps the add-on text for $label under $homeLabel',
+      async ({ path, call, radapiCall, text, status }) => {
+        embedded[radapiCall || call].mockRejectedValueOnce(new Error(text));
+        const response = await handleRadicleApiRequest(
+          new Request(
+            `radapi://local/api/v1/repos/${encodeURIComponent(RID)}${path === '/' ? '' : path}`
+          )
+        );
+        expect(response.status).toBe(status);
+        expect(response.headers.get('access-control-allow-origin')).toBeNull();
+        await expect(response.json()).resolves.toEqual({ error: text });
+      }
+    );
+
+    const TOO_LARGE = { error: 'repository data too large to serve here' };
+    const CANCELLED = { error: 'request cancelled' };
+    const FAILED = { error: 'the read failed' };
+    test.each([
+      ["libradicle's size bound", '41943040 bytes is over the limit of 33554432', TOO_LARGE],
+      ["libradicle's depth bound", 'the tree is nested deeper than 64 levels', TOO_LARGE],
+      ['a cancelled read', 'cancelled', CANCELLED],
+      ["an older add-on's cancel", 'clone cancelled', CANCELLED],
+      [
+        'a failure naming a cancelled directory',
+        "failed to open '/home/alice/cancelled/radicle/storage': Permission denied",
+        FAILED,
+      ],
+      [
+        'a failure quoting a bound',
+        "failed to read '/home/alice/2 bytes is over the limit of 1': Input/output error",
+        FAILED,
+      ],
+    ])('rad: answers %s with its category and a 500', async (_label, text, body) => {
+      embedded.treeAtRaw.mockRejectedValueOnce(new Error(text));
+      const response = await handleRadRequest(new Request(`rad://${RID_Z}/tree/${REVISION}/src`));
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual(body);
+    });
   });
 
   test('a missing readme is a 404', async () => {
@@ -622,6 +809,63 @@ describe('radapi protocol', () => {
     const warnings = log.warn.mock.calls.filter((call) => call[0] === '[radapi]');
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toEqual(['[radapi]', RID, `/tree/${REVISION}/src`, '→', 'tree read failed']);
+  });
+
+  // PRIVATE MODE GUARD (#1050): the node-status and listing catches log
+  // their own line, and the add-on's text can name its storage path. A
+  // private registration logs none of it; a normal one keeps the detail.
+  describe('node-status and listing failures', () => {
+    const log = require('./logger');
+    const HOME = '/home/alice/.config/Freedom/profiles/default/radicle';
+    const DETAIL = `failed to open '${HOME}/storage/${RID.slice(4)}': Permission denied; class=Os (2)`;
+    const ROUTES = [
+      ['node status', 'radapi://local/', 'status', '[radapi] node status failed:', 503],
+      [
+        'node stats',
+        'radapi://local/api/v1/stats',
+        'listRepos',
+        '[radapi] node status failed:',
+        503,
+      ],
+      [
+        'the repository listing',
+        'radapi://local/api/v1/repos',
+        'buildRepoMeta',
+        '[radapi] repository listing failed:',
+        500,
+      ],
+    ];
+    const serve = (privatePartition, url) => {
+      const targetSession = { protocol: { handle: jest.fn() } };
+      registerRadicleApiProtocol(targetSession, { privatePartition });
+      const handler = targetSession.protocol.handle.mock.calls[0][1];
+      return handler(new Request(url));
+    };
+
+    test.each(ROUTES)(
+      '%s: a private registration logs no add-on detail',
+      async (_label, url, call, prefix, status) => {
+        embedded[call].mockRejectedValueOnce(new Error(DETAIL));
+        const response = await serve('private-abc', url);
+        expect(response.status).toBe(status);
+        expect(log.warn.mock.calls.filter((args) => args[0] === prefix)).toEqual([
+          [prefix, '<private>'],
+        ]);
+        expect(JSON.stringify(log.warn.mock.calls)).not.toContain(HOME);
+      }
+    );
+
+    test.each(ROUTES)(
+      '%s: a normal registration logs the add-on detail',
+      async (_label, url, call, prefix, status) => {
+        embedded[call].mockRejectedValueOnce(new Error(DETAIL));
+        const response = await serve(null, url);
+        expect(response.status).toBe(status);
+        expect(log.warn.mock.calls.filter((args) => args[0] === prefix)).toEqual([
+          [prefix, DETAIL],
+        ]);
+      }
+    );
   });
 
   // The dispatcher's registry is process-wide and rejects a duplicate
