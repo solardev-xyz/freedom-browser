@@ -10,18 +10,23 @@
  * reference tells main's executors whose generation a request must be
  * current in. A re-added endpoint gets its reference back, and nothing
  * outside this process can map one back.
+ *
+ * The core merges only equal references, so main lists each provider once
+ * (design 0005, Configuration: `endpoint-dedup`; #1094): two URLs that
+ * reach one provider would be two quorum members that agree.
  */
 
 const crypto = require('crypto');
 const { EndpointReferences } = require('./naming-config');
 const { IMMEDIATE_WATCHDOG_MS } = require('./core-deadlines');
 const { EndpointChecks } = require('./endpoint-checks');
+const { distinctEndpoints } = require('../networks/endpoint-identity');
 
 /** A control request's hang watchdog (design 0001): the core answers it at
  * once, so its deadline is just the watchdog's margin. */
 const CONTROL_WATCHDOG_MS = IMMEDIATE_WATCHDOG_MS;
 /** The core takes at most this many RPC endpoints per chain (design 0005,
- * Configuration): the first ones in registry order. */
+ * Configuration): the first distinct providers in registry order. */
 const MAX_RPC_ENDPOINTS = 64;
 /** The router's orders for a chain whose registry entry names none. */
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
@@ -115,10 +120,16 @@ function wireChains(registry) {
   return chains;
 }
 
-/** A chain's RPC endpoints the snapshot may list: the first ones in
- * registry order. */
+/** A chain's RPC endpoints the snapshot may list: each provider once, by
+ * the first URL listed for it (networks/endpoint-identity.js says when two
+ * URLs are one provider: a trailing slash, another path or key, a keyed
+ * provider's other host, `localhost` for `127.0.0.1`), then the first ones
+ * in registry order. A user source sorts ahead of every builtin, so a
+ * provider the user added keeps the user's URL and `user_configured`. Only
+ * these are checked for their chain (`rpcPairs`): a provider whose first
+ * URL doesn't answer it is left out, whatever its other URLs answer. */
 const rpcUrls = (registry, chainId) =>
-  strings(registry.getEndpoints(chainId, 'rpc')).slice(0, MAX_RPC_ENDPOINTS);
+  distinctEndpoints(strings(registry.getEndpoints(chainId, 'rpc'))).slice(0, MAX_RPC_ENDPOINTS);
 
 /** Every (chain, URL) whose chain the snapshot's endpoints are checked
  * for. */

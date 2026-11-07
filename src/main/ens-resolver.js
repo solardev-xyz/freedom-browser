@@ -52,9 +52,10 @@ function getEffectiveRpcEndpoints() {
   const list = envOverride ? [envOverride, ...saved] : [...saved];
 
   // Drop empties, then keep each provider once (#1094,
-  // networks/endpoint-identity.js): the quorum below counts providers, and
-  // one listed twice, say with a trailing slash or as both `localhost` and
-  // `127.0.0.1`, would agree with itself.
+  // networks/endpoint-identity.js): the naming core's quorum counts
+  // providers, it gets one reference per URL (NamingConfig), and one
+  // provider listed twice, say with a trailing slash or as both `localhost`
+  // and `127.0.0.1`, would agree with itself.
   return distinctEndpoints(list.filter((url) => typeof url === 'string' && url.trim()));
 }
 

@@ -413,6 +413,35 @@ describe('configuration sources', () => {
     expect(getEffectiveRpcEndpoints()).toEqual(['https://B.example', 'https://a.example']);
   });
 
+  test('the effective RPC pool keeps each provider once, by its first URL (#1094)', () => {
+    delete process.env.ETH_RPC;
+    mockRegistry.getEndpoints.mockReturnValue([
+      'https://a.example/v2/one',
+      'https://a.example/',
+      'https://a.example/v2/two',
+      'http://127.0.0.1:8545',
+      'http://localhost:8545',
+      'https://lb.drpc.live/ethereum/key',
+      'https://eth.drpc.org',
+      'https://b.example',
+    ]);
+    expect(getEffectiveRpcEndpoints()).toEqual([
+      'https://a.example/v2/one',
+      'http://127.0.0.1:8545',
+      'https://lb.drpc.live/ethereum/key',
+      'https://b.example',
+    ]);
+
+    // ETH_RPC stands for its provider.
+    process.env.ETH_RPC = 'http://[::1]:8545';
+    expect(getEffectiveRpcEndpoints()).toEqual([
+      'http://[::1]:8545',
+      'https://a.example/v2/one',
+      'https://lb.drpc.live/ethereum/key',
+      'https://b.example',
+    ]);
+  });
+
   describe('the direct candidate', () => {
     const sources = (id) => [
       { id, role: 'rpc', keyed: false, coverage: { 1: 'https://x.example' } },
