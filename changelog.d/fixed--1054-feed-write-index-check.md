@@ -1,0 +1,2 @@
+- A `window.swarm` feed write at an explicit index no longer writes over an entry the node failed to fetch ([#1054](https://github.com/solardev-xyz/freedom-browser/issues/1054))
+  - Only the node's "not found" frees the index; any other answer refuses the write, which can be retried
