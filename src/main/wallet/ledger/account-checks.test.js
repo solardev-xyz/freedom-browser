@@ -11,7 +11,7 @@ jest.mock('./transport', () => ({ readAddresses: (...args) => mockReadAddresses(
 jest.mock('../../identity-manager', () => ({
   getLedgerRecordsToCheck: (...args) => mockGetLedgerRecordsToCheck(...args),
   recordLedgerAddressCheck: (...args) => mockRecordLedgerAddressCheck(...args),
-  LEDGER_ADDRESS_CHECK: { UNCHECKED: 'unchecked', MATCHED: 'matched', MISMATCHED: 'mismatched' },
+  ADDRESS_CHECK: { UNCHECKED: 'unchecked', MATCHED: 'matched', MISMATCHED: 'mismatched' },
 }));
 
 const { checkLedgerAccounts } = require('./account-checks');

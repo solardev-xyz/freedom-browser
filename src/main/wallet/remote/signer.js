@@ -9,6 +9,9 @@
  * phone over openlv, and returns the phone's answer. The answer is never
  * trusted: signatures must recover to the account's address (a phone
  * answering from a different account fails with REMOTE_WRONG_ACCOUNT).
+ * What an answer showed about the record (signed as the account, or
+ * answered from another one) is reported through `onAddressCheck`, so
+ * the signer factory can keep it on the record (#1078).
  *
  * Phone wallets expose `eth_sendTransaction`, not raw transaction
  * signing, so this backend implements the optional `sendTransaction`
@@ -56,21 +59,63 @@ function buildChainDescriptor(chainId) {
 }
 
 /**
+ * Shape-check a phone's signature and require it to recover to `address`.
+ * Every phone signature goes through it, and so does the check that a
+ * phone holds an account (./account-proof.js).
+ *
+ * @param {string} address - The account the signature must come from
+ * @param {unknown} signature - The phone's answer
+ * @param {(signature: string) => string} recover - Recovers the signer over what was asked
+ * @returns {string} The signature
+ */
+function verifiedSignature(address, signature, recover) {
+  if (typeof signature !== 'string' || !SIGNATURE_RE.test(signature)) {
+    throw createRemoteError(REMOTE_ERROR_CODES.BAD_RESPONSE);
+  }
+  if (recover(signature).toLowerCase() !== address.toLowerCase()) {
+    throw createRemoteError(REMOTE_ERROR_CODES.WRONG_ACCOUNT);
+  }
+  return signature;
+}
+
+/**
  * @param {{index: number, address: string}} record - Remote wallet record from vault-meta
+ * @param {Object} [options]
+ * @param {(matched: boolean) => void} [options.onAddressCheck] - Told, after a
+ *   phone's answer, whether it signed as the account (true) or answered from
+ *   another account (false). Not called when no answer came.
  * @returns {import('../signers').Signer & {sendTransaction: (tx: object) => Promise<string>}}
  */
-function createRemoteBackend(record) {
+function createRemoteBackend(record, { onAddressCheck } = {}) {
   const request = (method, params, chain) =>
     requestRemoteSignature({ walletIndex: record.index, address: record.address, method, params, chain });
 
-  /** Shape-check the phone's signature and require it to recover to the account. */
-  function verifiedSignature(signature, recover) {
-    if (typeof signature !== 'string' || !SIGNATURE_RE.test(signature)) {
-      throw createRemoteError(REMOTE_ERROR_CODES.BAD_RESPONSE);
+  /** Report what the phone's answer showed about the record (#1078). */
+  function report(matched) {
+    if (!onAddressCheck) return;
+    try {
+      onAddressCheck(matched);
+    } catch (err) {
+      // The signature stands or falls on its own check; keeping the
+      // result is a courtesy for the next Safe the account may own.
+      console.warn('[RemoteSigner] Could not keep the address check:', err.message);
     }
-    if (recover(signature).toLowerCase() !== record.address.toLowerCase()) {
-      throw createRemoteError(REMOTE_ERROR_CODES.WRONG_ACCOUNT);
+  }
+
+  /**
+   * The phone's signature, required to be the account's. A phone that
+   * answers from another account (a signature that recovers elsewhere, or
+   * the wallet's own EIP-1193 4100) shows the record doesn't match it.
+   */
+  async function accountSignature(answer, recover) {
+    let signature;
+    try {
+      signature = verifiedSignature(record.address, await answer, recover);
+    } catch (err) {
+      if (err?.code === REMOTE_ERROR_CODES.WRONG_ACCOUNT) report(false);
+      throw err;
     }
+    report(true);
     return signature;
   }
 
@@ -86,22 +131,19 @@ function createRemoteBackend(record) {
 
     signMessage: async (message) => {
       const bytes = messageToBytes(message);
-      const signature = await request('personal_sign', [
-        '0x' + bytes.toString('hex'),
-        record.address,
-      ]);
-      return verifiedSignature(signature, (sig) => verifyMessage(bytes, sig));
+      return accountSignature(
+        request('personal_sign', ['0x' + bytes.toString('hex'), record.address]),
+        (sig) => verifyMessage(bytes, sig),
+      );
     },
 
     signTypedData: async (typedData) => {
       // eth_signTypedData_v4 takes the full EIP-712 wire payload.
       const { domain, strippedTypes, payload } = getEip712WirePayload(typedData);
-      const signature = await request('eth_signTypedData_v4', [
-        record.address,
-        JSON.stringify(payload),
-      ]);
-      return verifiedSignature(signature, (sig) =>
-        verifyTypedData(domain, strippedTypes, typedData.message, sig));
+      return accountSignature(
+        request('eth_signTypedData_v4', [record.address, JSON.stringify(payload)]),
+        (sig) => verifyTypedData(domain, strippedTypes, typedData.message, sig),
+      );
     },
 
     /**
@@ -136,4 +178,4 @@ function createRemoteBackend(record) {
   };
 }
 
-module.exports = { createRemoteBackend };
+module.exports = { createRemoteBackend, verifiedSignature };

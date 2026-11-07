@@ -18,6 +18,7 @@ const { makeHop } = require('./naming-shell');
 const { registerChainShell } = require('./chain-shell');
 const { registerChainVerified } = require('./chain-verified');
 const { servesChain } = require('../../../test/helpers/core-chain-probe');
+const { proverOutageError } = require('../../../test/helpers/colibri-prover-outage');
 
 jest.mock('../ens-prefetch', () => ({ prefetchGatewayUrl: jest.fn() }));
 
@@ -501,6 +502,34 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     ]);
     expect(adapters.colibriRequest).toHaveBeenCalledTimes(2);
   });
+
+  // #1059: Colibri no longer proves a read itself when its prover is down;
+  // the prover's error is its whole answer, and the read moves on.
+  test('a failed remote proof falls through to the next source, labelled as that source', async () => {
+    const outage = proverOutageError();
+    const adapters = { colibriRequest: jest.fn(async () => Promise.reject(outage)) };
+    const { main } = await start(adapters);
+    main.refs.set('e1', `${rpc.base}/`);
+    await main.configure(
+      snapshot({
+        read_order: ['colibri', 'direct'],
+        prover: { endpoint: 'p1', zk: true },
+        rpc: [{ endpoint: 'e1', user_configured: true }],
+      })
+    );
+    for (let i = 0; i < 3; i += 1) {
+      expect(await main.read('eth_getBalance', [ADDRESS, 'latest'])).toEqual({
+        result: '0x10',
+        source: 'direct',
+        verified: false,
+        undefined_keys: [],
+        generation: main.generation,
+      });
+    }
+    // No verifier fault: Colibri is asked every time.
+    expect(adapters.colibriRequest).toHaveBeenCalledTimes(3);
+    expect(rpc.seen).toHaveLength(3);
+  }, 60_000);
 
   // The wallet's finality labels take a quorum read as evidence only with
   // m ≥ 2 (intent-labels.js): the core's trust label must carry m.

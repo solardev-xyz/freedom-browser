@@ -37,6 +37,9 @@ const REQUEST_LABELS = {
   'safe-message:eth_signTypedData_v4':
     'Sign on your phone to approve this request with your multi-owner account.',
   eth_sendTransaction: 'Approve and send the transaction from your phone.',
+  // Main's check that the phone holds the account (#1078).
+  'account-check:personal_sign':
+    'Sign on your phone to show this account is yours. Nothing is sent and it costs nothing.',
 };
 
 const CLOSING_PHASES = new Set(['done', 'cancelled', 'aborted', 'error']);

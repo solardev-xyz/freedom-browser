@@ -11,6 +11,7 @@ const mockIdentity = {
 const mockResetVaultAutoLockTimer = jest.fn();
 
 const mockGetWalletRecord = jest.fn();
+const mockRecordRemoteAddressCheck = jest.fn();
 const mockLedgerBackend = {
   getAddress: jest.fn(),
   signTransaction: jest.fn(),
@@ -43,6 +44,7 @@ const mockRecordLedgerAddressCheck = jest.fn();
 jest.mock('../identity-manager', () => ({
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
   recordLedgerAddressCheck: (...args) => mockRecordLedgerAddressCheck(...args),
+  recordRemoteAddressCheck: (...args) => mockRecordRemoteAddressCheck(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
@@ -566,9 +568,21 @@ describe('getSigner (remote-backed dispatch)', () => {
   test('routes to the remote backend built from the wallet record, never the vault', async () => {
     const signer = getSigner(4);
     await expect(signer.getAddress()).resolves.toBe(REMOTE_RECORD.address);
-    expect(mockCreateRemoteBackend).toHaveBeenCalledWith(REMOTE_RECORD);
+    expect(mockCreateRemoteBackend).toHaveBeenCalledWith(REMOTE_RECORD, {
+      onAddressCheck: expect.any(Function),
+    });
     expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+  });
+
+  test("keeps what the phone's answer showed on the record (#1078)", () => {
+    getSigner(4);
+    const [, { onAddressCheck }] = mockCreateRemoteBackend.mock.calls[0];
+
+    onAddressCheck(true);
+    expect(mockRecordRemoteAddressCheck).toHaveBeenLastCalledWith(4, true);
+    onAddressCheck(false);
+    expect(mockRecordRemoteAddressCheck).toHaveBeenLastCalledWith(4, false);
   });
 
   test('advertises the backend sendTransaction capability', async () => {

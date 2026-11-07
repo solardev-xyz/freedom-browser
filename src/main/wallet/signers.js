@@ -26,6 +26,7 @@ const {
   getWalletRecord,
   isHardwareWalletIndex,
   recordLedgerAddressCheck,
+  recordRemoteAddressCheck,
   WALLET_TYPES,
 } = require('../identity-manager');
 const { vaultBackend } = require('../core/vault-backend');
@@ -177,7 +178,11 @@ function getSigner(walletIndex) {
       onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
     });
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
-    backend = createRemoteBackend(record);
+    backend = createRemoteBackend(record, {
+      // What the phone's answer showed about the record (#1078): kept on
+      // it, so a record added before the phone check gets checked.
+      onAddressCheck: (matched) => recordRemoteAddressCheck(walletIndex, matched),
+    });
   } else {
     backend = createVaultBackend(walletIndex);
     vaultSigned = true;
