@@ -5,6 +5,7 @@ const { ens_normalize } = require('@adraffy/ens-normalize');
 const IPC = require('../shared/ipc-channels');
 const { cidV1BytesToBase32 } = require('../shared/cid-utils');
 const registry = require('./networks/network-registry');
+const { distinctEndpoints } = require('./networks/endpoint-identity');
 const { prefetchGatewayUrl, NOOP_HANDLE: NOOP_PREFETCH } = require('./ens-prefetch');
 const myotisManager = require('./myotis/myotis-manager');
 const { ccipReadFetch } = require('./ens/ccip-fetch');
@@ -134,17 +135,11 @@ function getEffectiveRpcEndpoints() {
   const envOverride = (process.env.ETH_RPC || '').trim();
   const list = envOverride ? [envOverride, ...saved] : [...saved];
 
-  // De-dupe by case-insensitive URL; drop empties.
-  const seen = new Set();
-  return list.filter((url) => {
-    if (typeof url !== 'string') return false;
-    const trimmed = url.trim();
-    if (!trimmed) return false;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // Drop empties, then keep each provider once (#1094,
+  // networks/endpoint-identity.js): the quorum below counts providers, and
+  // one listed twice, say with a trailing slash or as both `localhost` and
+  // `127.0.0.1`, would agree with itself.
+  return distinctEndpoints(list.filter((url) => typeof url === 'string' && url.trim()));
 }
 
 // Shuffled provider order, recomputed only when the effective list changes.

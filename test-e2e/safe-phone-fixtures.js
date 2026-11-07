@@ -20,10 +20,13 @@ const { createBridgeServer } = require(path.join(repoRoot, 'scripts', 'serve-bri
 const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 'local-mqtt-broker.js'));
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
 const { closeApp } = require('./close-app');
+const { startRpcForwarder } = require('./rpc-forwarder');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-Phone-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
 const ANVIL_PORT = 18848; // distinct from the other suites
+// The fork's second endpoint, a forwarder (rpc-forwarder.js).
+const FORWARDER_PORT = 18850;
 const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 // Anvil/Hardhat-default test key — well-known, never funded on mainnet.
@@ -84,7 +87,9 @@ const test = base.extend({
   // eslint-disable-next-line no-empty-pattern
   anvil: async ({}, use) => {
     const proc = await startAnvilFork();
-    await use({ url: ANVIL_URL, rpc });
+    const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
+    await use({ url: ANVIL_URL, forwarderUrl: forwarder.url, rpc });
+    await forwarder.close();
     proc.kill();
   },
 
@@ -127,8 +132,16 @@ const test = base.extend({
     fs.writeFileSync(
       path.join(userDataDir, 'network-config.json'),
       JSON.stringify({
+        // Two endpoints for the one fork: anvil itself and a forwarder on a
+        // second loopback port (rpc-forwarder.js says why not two anvils),
+        // named as two providers by FREEDOM_E2E_PROVIDER_IDENTITIES below.
         endpointSources: {
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
+          'e2e-anvil-gnosis-forwarder': {
+            role: 'rpc',
+            keyed: false,
+            coverage: { 100: anvil.forwarderUrl },
+          },
         },
         removedSources: BUILTIN_GNOSIS_SOURCES,
         // Read Gnosis from the fork only. Myotis and Colibri verify against
@@ -140,7 +153,11 @@ const test = base.extend({
         // a Colibri receipt lookup trapping in WASM) is fixed in
         // colibri-runtime.js and pinned by colibri-runtime.test.js under
         // Electron's full main process.
-        networks: { 100: { access: { readOrder: ['direct'] } } },
+        //
+        // The quorum is asked first, so the Safe flow runs on verified reads,
+        // as it would with two providers that agree. Direct answers when the
+        // two disagree, e.g. one read lands just after a new block.
+        networks: { 100: { access: { readOrder: ['quorum', 'direct'] } } },
       }),
       'utf-8'
     );
@@ -168,6 +185,16 @@ const test = base.extend({
         ...process.env,
         FREEDOM_TEST_MODE: '1',
         FREEDOM_TEST_USER_DATA: userDataDir,
+        // Test-only seam (src/main/networks/e2e-provider-identities.js).
+        // Every loopback endpoint is one provider, so anvil and the
+        // forwarder in front of it would be one quorum member; this names
+        // them as two, so the fork's answers make the verified quorum a
+        // Safe's activation needs. Only an unpackaged app honors it, and the
+        // label it yields is this fixture's say-so, not two providers.
+        FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify({
+          [anvil.url]: 'e2e-anvil',
+          [anvil.forwarderUrl]: 'e2e-anvil-forwarder',
+        }),
         FREEDOM_IDENTITY_DATA: identityDir,
         FREEDOM_RADICLE_DATA: radicleDir,
         FREEDOM_OPENLV_SIGNALING: services.mqttUrl,
