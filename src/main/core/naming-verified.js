@@ -14,6 +14,7 @@
 
 const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
+const { runWithLogContext } = require('../private/private-log-context');
 const { withDeadline, unlessAborted } = require('./naming-shell');
 const { MAX_PAYLOAD } = require('./frame');
 // `0x` and whole bytes, checked in constant stack: a large value can't
@@ -168,6 +169,23 @@ function operation(params, adapters) {
   throw refused();
 }
 
+/**
+ * PRIVATE MODE GUARD (Colibri store, #1058): runs a verified operation, a
+ * Colibri one in the async context of the window it may serve. Colibri
+ * keeps a private window's reads in memory instead of <userData>/colibri
+ * when that context is private (ens/colibri-resolver.js). The core's request
+ * names no window, so the client tells, as `context.private`
+ * (service-client.js `forPrivate`): true while a request main sent for a
+ * private window is pending. Without it, the operation counts as private.
+ * The marker is set either way: the handler may run in a context that
+ * says nothing about the request (the one the core process was started
+ * from). Shared with chain data's executor.
+ */
+function runVerified(verifier, run, context) {
+  if (verifier !== 'colibri') return run();
+  return runWithLogContext(context?.private !== false, run);
+}
+
 /** The reply as it will be sent: one over the cap, or one JSON can't
  * carry, is a failure. */
 function bounded(reply) {
@@ -196,7 +214,8 @@ function registerNamingVerified(client, config, deps = {}) {
   const adapters = deps.adapters || defaultAdapters();
   const running = deps.running || { myotis: 0, colibri: 0 };
 
-  client.handle('shell.verified', (params, { signal }) => {
+  client.handle('shell.verified', (params, context) => {
+    const { signal } = context;
     const generation = params.generations?.lifecycle;
     if (!Number.isSafeInteger(generation) || generation < config.generations.lifecycle) {
       throw new ShellError('stale_generation');
@@ -207,7 +226,7 @@ function registerNamingVerified(client, config, deps = {}) {
     // The whole operation, which never rejects: it runs on to its end
     // whoever waits for it.
     const done = Promise.resolve()
-      .then(run)
+      .then(() => runVerified(verifier, run, context))
       .then(bounded, (err) => {
         const revert = revertOf(err);
         return bounded(revert ? { revert } : { failure: failureClass(err) });
@@ -223,6 +242,7 @@ function registerNamingVerified(client, config, deps = {}) {
 
 module.exports = {
   registerNamingVerified,
+  runVerified,
   MAX_PER_VERIFIER,
   MAX_REPLY_BYTES,
   ENVELOPE_BYTES,

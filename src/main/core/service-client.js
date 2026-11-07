@@ -100,6 +100,7 @@
 
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
+const { isPrivateLogContext } = require('../private/private-log-context');
 const {
   encodeBegin,
   encodeCredit,
@@ -570,8 +571,10 @@ class ServiceClient extends EventEmitter {
    * `StreamedReply` is an internal error.
    *
    * Every handler is called as `handler(params, { signal, charge, streams,
-   * generation })`: `generation` is the number of the process that asked,
-   * as `onSent` (requestTo) reports it for main's own requests.
+   * generation, private })`: `generation` is the number of the process that
+   * asked, as `onSent` (requestTo) reports it for main's own requests.
+   * `private` is whether the request may serve a private window
+   * (`forPrivate`).
    */
   handle(method, handler, { when = null, streams = false } = {}) {
     if (streams) this.streamHandlers.add(handler);
@@ -1176,6 +1179,9 @@ class ServiceClient extends EventEmitter {
       entry.stream = true;
       entry.signal = signal;
     }
+    // Sent for a private window, as its async context says
+    // (private/private-log-context.js): see `forPrivate`.
+    entry.private = isPrivateLogContext();
     if (signal) this.cancellable(gen, id, entry, signal, untilResponse);
     if (watchdogMs !== null) {
       // The hang watchdog (design 0001): the process enforces the request's
@@ -1399,6 +1405,9 @@ class ServiceClient extends EventEmitter {
    */
   onCoreRequest(gen, message) {
     const { id, method, params } = message;
+    // Taken as the request arrives: a response read in the same chunk can
+    // settle one of main's requests before the handler starts.
+    const forPrivate = this.forPrivate(gen);
     if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
     if (id <= gen.lastIncomingId) return this.protocolFault(gen, 'reused_id');
     if (typeof method !== 'string' || !METHOD_NAME.test(method)) {
@@ -1447,6 +1456,7 @@ class ServiceClient extends EventEmitter {
             charge: lease.charge,
             streams,
             generation: gen.number,
+            private: forPrivate,
           });
         } catch (err) {
           return { error: shellErrorBody(err, controller.signal) };
@@ -1466,6 +1476,23 @@ class ServiceClient extends EventEmitter {
         }
       });
     return undefined;
+  }
+
+  /**
+   * PRIVATE MODE GUARD (#1058): whether a request the process makes now may
+   * serve a private window. Its requests name no window, and one of them
+   * can be on behalf of any of main's requests to it still pending: those
+   * stay pending until the process's one response (a stream's head), even
+   * once cancelled, and the process makes the requests a lookup needs
+   * before that response, on the same pipe. So it is true while any
+   * request main sent from a private window's async context waits for its
+   * response. A request the process makes for a normal window while a
+   * private one waits counts as private too, never the other way round.
+   * Used for Colibri's store (naming-verified.js `runVerified`).
+   */
+  forPrivate(gen) {
+    for (const entry of gen.pending.values()) if (entry.private) return true;
+    return false;
   }
 
   /** Whether `gen` still serves the process's requests. */

@@ -27,7 +27,7 @@
  */
 
 const { ShellError } = require('./core-client');
-const { MAX_PER_VERIFIER, ENVELOPE_BYTES } = require('./naming-verified');
+const { MAX_PER_VERIFIER, ENVELOPE_BYTES, runVerified } = require('./naming-verified');
 const { MAX_MESSAGE } = require('./frame');
 const { isChainRequest, chainHandler, NOT_SENT } = require('./chain-shell');
 const { isHexData } = require('../ens/ccip-fetch');
@@ -311,7 +311,8 @@ function registerChainVerified(client, config, deps = {}) {
 
   client.handle(
     'shell.verified',
-    chainHandler(async (params, { signal, charge }) => {
+    chainHandler(async (params, context) => {
+      const { signal, charge } = context;
       const { chain_id: chainId, generation } = params;
       if (!Number.isSafeInteger(chainId) || chainId < 0) throw refused();
       // Stale (one main hasn't seen yet is newer, never stale), or
@@ -327,7 +328,10 @@ function registerChainVerified(client, config, deps = {}) {
       try {
         // The whole operation, whoever still waits for it: a cancel or the
         // deadline doesn't end it, and the reply goes only once it settles.
-        reply = await Promise.resolve().then(run).then(null, failed);
+        // A Colibri read in the context of the window it may serve (#1058).
+        reply = await Promise.resolve()
+          .then(() => runVerified(verifier, run, context))
+          .then(null, failed);
       } finally {
         running[verifier] -= 1;
       }

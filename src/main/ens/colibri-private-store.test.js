@@ -237,3 +237,61 @@ describe('Colibri store for private windows (#1058)', () => {
   });
 });
 
+
+// On this branch every Colibri read is one of the cores' `shell.verified`
+// operations, run by main's executors with their real adapters. The core's
+// request names no window; the client's `private` (service-client.js
+// forPrivate) does, and the executors run the read in that context.
+describe("Colibri store through the cores' shell.verified (#1058)", () => {
+  const { registerChainVerified } = require('../core/chain-verified');
+  const { registerNamingVerified } = require('../core/naming-verified');
+
+  function executor(register, config) {
+    const routes = [];
+    register({ hello: null, handle: (method, fn) => routes.push(fn) }, config);
+    return (params, extra) =>
+      routes[0](params, { signal: new AbortController().signal, charge: () => true, ...extra });
+  }
+  const chain = executor(registerChainVerified, { generation: () => 0 });
+  const naming = executor(registerNamingVerified, { generations: { lifecycle: 0 } });
+  const chainRead = (address, extra) =>
+    chain({
+      chain_id: 1,
+      generation: 0,
+      colibri: 'request',
+      method: 'eth_getBalance',
+      params: [address, 'latest'],
+      deadline_ms: 10_000,
+    }, extra);
+  const ensLookup = (extra) =>
+    naming({
+      generations: { lifecycle: 0 },
+      colibri: 'resolve',
+      name: 'secret.eth',
+      call_data: '0x9061b923',
+      resolver: 'ur',
+      deadline_ms: 10_000,
+    }, extra);
+
+  test.each([
+    ['a chain-data read', (extra) => chainRead(CONTRACT, extra)],
+    ['an ENS lookup', ensLookup],
+  ])('%s the core asks for a private window writes nothing under <userData>', async (_label, read) => {
+    privateWindows.createPrivateWindow();
+    await read({ private: true });
+    // Unknown counts as private.
+    await read({});
+    expect(filesUnder(mockUserData)).toEqual([]);
+    expect(mockLanes.map((lane) => lane.storageDir)).toEqual([null]);
+  });
+
+  test('a normal window’s reads keep the disk store', async () => {
+    await expect(chainRead(CONTRACT, { private: false })).resolves.toEqual({ result: MISS });
+    await expect(ensLookup({ private: false })).resolves.toMatchObject({ resolved_data: MISS });
+    await expect(chainRead(CONTRACT, { private: false })).resolves.toEqual({ result: HIT });
+    expect(filesUnder(mockUserData)).toEqual([
+      path.join('colibri', callKey(CONTRACT)),
+      path.join('colibri', callKey(mockUniversalResolver)),
+    ]);
+  });
+});

@@ -2394,3 +2394,98 @@ describe('CoreClient', () => {
     });
   });
 });
+
+// PRIVATE MODE GUARD (Colibri store, #1058): the core's requests name no
+// window, so a handler learns whether one may serve a private window from
+// main's own requests still pending (`forPrivate`).
+describe("the core's requests and private windows", () => {
+  const { runWithPrivateLogContext } = require('../private/private-log-context');
+
+  async function setUp() {
+    const asked = [];
+    const made = makeClient([helloHandler((message) => asked.push(message))]);
+    const seen = [];
+    made.client.handle('shell.verified', (_params, context) => {
+      seen.push(context.private);
+      return {};
+    });
+    await made.client.start();
+    const core = made.children[0];
+    let nextId = 1;
+    const ask = () =>
+      core.reply({
+        type: 'request',
+        id: nextId++,
+        method: 'shell.verified',
+        params: {},
+        context: { caller: 'shell' },
+      });
+    const answer = (message) => core.reply({ type: 'response', id: message.id, result: {} });
+    const settle = async () => {
+      for (let i = 0; i < 4; i++) await tick();
+    };
+    return { ...made, core, asked, seen, ask, answer, settle };
+  }
+
+  test('says private while a request sent from a private window waits for its response', async () => {
+    const { client, asked, seen, ask, answer, settle } = await setUp();
+    ask();
+    await settle();
+
+    const normal = client.request('naming.resolve', { name: 'public.eth' });
+    const priv = runWithPrivateLogContext(true, () =>
+      client.request('naming.resolve', { name: 'secret.eth' })
+    );
+    await settle();
+    const [normalAsk, privateAsk] = asked.filter((m) => m.method === 'naming.resolve');
+    ask();
+    await settle();
+
+    answer(privateAsk);
+    await priv;
+    ask();
+    await settle();
+    answer(normalAsk);
+    await normal;
+    ask();
+    await settle();
+
+    // Nothing pending; a normal and a private one; the normal one alone;
+    // nothing.
+    expect(seen).toEqual([false, true, false, false]);
+  });
+
+  test('takes the answer as the request arrives, not when its handler runs', async () => {
+    const { client, asked, seen, ask, answer, settle } = await setUp();
+    const priv = runWithPrivateLogContext(true, () => client.request('naming.resolve', {}));
+    await settle();
+    const [privateAsk] = asked.filter((m) => m.method === 'naming.resolve');
+    // The core's request, then the response, in one read: the request came
+    // while the private one was still pending.
+    ask();
+    answer(privateAsk);
+    await priv;
+    await settle();
+    expect(seen).toEqual([true]);
+  });
+
+  test('a cancelled private request counts until the core has answered it', async () => {
+    const { client, asked, seen, ask, answer, settle } = await setUp();
+    const life = new AbortController();
+    const priv = runWithPrivateLogContext(true, () =>
+      client.requestTo(client.current, 'naming.resolve', {}, undefined, { signal: life.signal })
+    );
+    priv.catch(() => {});
+    await settle();
+    const [privateAsk] = asked.filter((m) => m.method === 'naming.resolve');
+    life.abort();
+    await expect(priv).rejects.toMatchObject({ code: 'cancelled' });
+    ask();
+    await settle();
+    answer(privateAsk);
+    await settle();
+    ask();
+    await settle();
+    expect(seen).toEqual([true, false]);
+  });
+});

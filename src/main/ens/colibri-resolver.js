@@ -16,12 +16,11 @@ const { universalResolverCall, universalResolverReverse, hostOf } = require('../
 // chain's disk-backed worker as before, or the private one, on the chain's
 // private worker, whose store is in memory only and ends with the last
 // private window (colibri-worker-host.js, `endPrivateColibriSession`). The
-// lane is the async context's: the entry points that know the window (the
-// ENS IPC handlers and the dweb, onchain-app and gateway-offer handlers of a
-// private session) mark their whole subtree private
-// (private/private-log-context.js), and every path down to here, ENS and
-// chain data alike, runs inside it. Clients, builds and their generations
-// are kept per lane.
+// lane is the async context's (private/private-log-context.js). Every read
+// here is one of the cores' `shell.verified` operations, ENS and chain data
+// alike, and their executor sets that context from whether the operation
+// may serve a private window (core/naming-verified.js `runVerified`).
+// Clients, builds and their generations are kept per lane.
 const clients = new Map();
 const inFlightBuilds = new Map();
 const clientReferences = new Map();

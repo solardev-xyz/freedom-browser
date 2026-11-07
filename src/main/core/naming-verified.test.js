@@ -347,3 +347,72 @@ describe('shell.verified', () => {
     expect(cancelled).not.toBeInstanceOf(ShellError);
   });
 });
+
+// PRIVATE MODE GUARD (Colibri store, #1058): Colibri keeps a private window's
+// reads in memory when its async context says private. The core's request
+// names no window; the client's `private` (service-client.js forPrivate)
+// does, and the executor sets the context from it.
+describe('private windows', () => {
+  const {
+    isPrivateLogContext,
+    runWithPrivateLogContext,
+  } = require('../private/private-log-context');
+
+  function setUpSeen() {
+    const seen = [];
+    const record = (answer) => jest.fn(async () => {
+      seen.push(isPrivateLogContext());
+      return answer;
+    });
+    const handlers = new Map();
+    const client = { handle: (method, fn) => handlers.set(method, fn) };
+    const config = { generations: { ens: 1, tezos: 1, lifecycle: 3 } };
+    registerNamingVerified(client, config, {
+      adapters: {
+        myotisRecord: record({ verified: false, blockNumber: null, status: 'ok' }),
+        myotisCall: jest.fn(),
+        myotisStatus: jest.fn(() => ({})),
+        colibriResolve: record({ resolvedData: '0x02', resolverAddress: ADDRESS }),
+        colibriReverse: record({ name: 'vitalik.eth' }),
+        callResolver: () => 'ur',
+      },
+    });
+    const call = (params, extra) =>
+      Promise.resolve().then(() =>
+        handlers.get('shell.verified')(
+          { ...GEN, ...params },
+          { signal: new AbortController().signal, ...extra }
+        )
+      );
+    return { seen, call };
+  }
+  const RESOLVE = { colibri: 'resolve', name: 'secret.eth', call_data: '0x', resolver: 'ur' };
+  const REVERSE = { colibri: 'reverse', address: ADDRESS, coin_type: 60 };
+
+  test.each([['resolve', RESOLVE], ['reverse', REVERSE]])(
+    'a Colibri %s runs in the context the request may serve',
+    async (_label, params) => {
+      const { seen, call } = setUpSeen();
+      await call(params, { private: true });
+      await call(params, { private: false });
+      // A handler running in a private context (the one the core process was
+      // started from) still runs a normal request's read as normal.
+      await runWithPrivateLogContext(true, () => call(params, { private: false }));
+      expect(seen).toEqual([true, false, false]);
+    }
+  );
+
+  test('a request whose private-ness is unknown counts as private', async () => {
+    const { seen, call } = setUpSeen();
+    await call(RESOLVE, {});
+    expect(seen).toEqual([true]);
+  });
+
+  test('a Myotis operation is left as it was', async () => {
+    const { seen, call } = setUpSeen();
+    await call({ myotis: 'record', method: 'contenthash', name: 'a.eth', coin_type: 60 }, {
+      private: true,
+    });
+    expect(seen).toEqual([false]);
+  });
+});

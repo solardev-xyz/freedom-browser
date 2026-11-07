@@ -30,7 +30,10 @@
  * The same marker picks Colibri's store (src/main/ens/colibri-resolver.js,
  * #1058): a read in a private context runs on the chain's private worker,
  * whose verifier store is in memory only, instead of the one on disk under
- * <userData>/colibri.
+ * <userData>/colibri. Colibri's reads come from the cores' `shell.verified`
+ * requests, which name no window: core/service-client.js `forPrivate` tells
+ * whether one may serve a private window, and core/naming-verified.js
+ * `runVerified` sets the marker from it.
  */
 
 const { AsyncLocalStorage } = require('async_hooks');
@@ -45,6 +48,16 @@ const store = new AsyncLocalStorage();
 function runWithPrivateLogContext(isPrivate, fn) {
   if (!isPrivate) return fn();
   return store.run(true, fn);
+}
+
+/**
+ * Run `fn` with the marker set to exactly `isPrivate`, either way: unlike
+ * `runWithPrivateLogContext`, a false one also leaves a private context.
+ * For code that learns the window some other way than its caller's async
+ * context: the core's requests (core/naming-verified.js `runVerified`).
+ */
+function runWithLogContext(isPrivate, fn) {
+  return store.run(isPrivate === true, fn);
 }
 
 /** True when the current async context serves a private window. */
@@ -124,6 +137,7 @@ function errorCodeForLog(err) {
 
 module.exports = {
   runWithPrivateLogContext,
+  runWithLogContext,
   isPrivateLogContext,
   redactForLog,
   redactUrlForLog,
