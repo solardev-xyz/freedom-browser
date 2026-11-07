@@ -3,13 +3,12 @@
  * design 0009): what the `{ verify }` plans' executor (dweb/
  * verify-executor.js) sends through, and the private partitions' end.
  *
- * - **Protocol 2 only.** `attachDwebVerify` attaches a verifier only to a
- *   client that asks for protocol 2, beside dweb-shell.js's
- *   `shell.dweb_get`. core-process.js asks for protocol 2, which the
- *   pinned core (0.10.0) speaks, so the app's client has the verifier.
- *   Without one (no core, or a client at protocol 1) `dwebVerifier()` is
- *   null: a `{ verify }` plan is refused, and nothing is sent when a
- *   partition closes.
+ * - **Protocol 2.** `attachDwebVerify` attaches a verifier to the core
+ *   client, which speaks only protocol 2 (the pinned core, 0.11.0, refuses
+ *   1), beside dweb-shell.js's `shell.dweb_get`, so the app's client has
+ *   it. Without one (no core, or no dweb shell) `dwebVerifier()` is null:
+ *   a `{ verify }` plan is refused, and nothing is sent when a partition
+ *   closes.
  * - **`send`** writes `dweb.verify` to the core process that made the plan,
  *   with a hang watchdog of the head deadline and 0001's margin, and opens
  *   its pieces' context in dweb-shell.js under the envelope ID and
@@ -26,7 +25,6 @@
  */
 
 const defaultLog = require('../logger');
-const { PROTOCOL_VERSION_STREAMS } = require('./core-client');
 const { WATCHDOG_MARGIN_MS, IMMEDIATE_WATCHDOG_MS } = require('./core-deadlines');
 const { onDwebSessionClosed } = require('../dweb/fetch-admission');
 
@@ -119,8 +117,7 @@ let verifier = null;
 let unlisten = null;
 
 /**
- * Attaches the verifier to `client` when it speaks protocol 2 and has the
- * dweb shell, and sends `dweb.forget` for each private partition that
+ * Attaches the verifier to `client` when it has the dweb shell, and sends `dweb.forget` for each private partition that
  * closes from then on. The verifier, or null.
  *
  * @param {import('./core-client').CoreClient} client
@@ -130,7 +127,7 @@ let unlisten = null;
  */
 function attachDwebVerify(client, shell, deps = {}) {
   detachDwebVerify();
-  if (!shell || client.protocol !== PROTOCOL_VERSION_STREAMS) return null;
+  if (!shell) return null;
   const { onSessionClosed = onDwebSessionClosed, ...rest } = deps;
   const attached = new DwebVerifier({ client, shell, ...rest });
   verifier = attached;
@@ -148,7 +145,7 @@ function detachDwebVerify() {
   verifier = null;
 }
 
-/** The attached verifier, or null (no core, or a client at protocol 1). */
+/** The attached verifier, or null (no core, or no dweb shell). */
 function dwebVerifier() {
   return verifier;
 }

@@ -482,6 +482,15 @@ function registerX402Ipc() {
     //
     // Both are keyed by the tab, so the tab named is the one judged.
     // Another window's call leaves the wait and the token in place.
+    //
+    // Neither shape pays from the cap for a tab that has gone into Agent
+    // custody while the payment was held (#1044). Both reach sign-flow
+    // with nothing awaited on the way (the wait's detector resumes in a
+    // microtask), and sign-flow reads custody again there, before it
+    // charges the cap or opens the vault, refusing such a tab as one the
+    // cap doesn't cover. The wait and the token are spent either way: the
+    // subresource goes to the approval card in the detector, and the
+    // paywall reloads to its card below.
     const id = args.webContentsId;
     if (!guestHostedBy(event.sender, id)) {
       return { success: false, error: NOT_THIS_WINDOW };
@@ -503,9 +512,10 @@ function registerX402Ipc() {
       });
       return { success: true };
     } catch (err) {
-      // The cap no longer covers it (spent while the vault was locked):
-      // nothing was signed. Loading the page again brings its 402 back,
-      // which now goes to the approval card.
+      // The cap no longer covers it (spent while the vault was locked), or
+      // the tab is in Agent custody now: nothing was charged or signed.
+      // Loading the page again brings its 402 back, which now goes to the
+      // approval card.
       if (isCapNotCoveredError(err) && resume?.detection?.url) {
         webContents.fromId(id)?.loadURL(resume.detection.url).catch((navErr) => {
           log.error(`[x402:resume-unlock] reload failed: ${navErr.message}`);

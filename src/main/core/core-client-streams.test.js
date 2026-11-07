@@ -4,9 +4,8 @@
  * both directions on the one connection. Main's own requests' bodies come
  * from the core and end only with its verified bodies' codes; the bodies
  * main sends in answer to the core's requests (`StreamedReply`) go under
- * the core's credit and end only with a piece's codes. Protocol 1,
- * CoreClient's default, stays exactly as it was: the app asks for 2
- * (core-process.js), and the pinned core (0.10.0) still takes 1.
+ * the core's credit and end only with a piece's codes. Protocol 2 is the
+ * only one CoreClient speaks: the pinned core (0.11.0) refuses 1.
  */
 
 const { EventEmitter } = require('events');
@@ -79,7 +78,7 @@ function named(frame) {
 
 /**
  * A scripted freedom-cored: `handler(message, core)` answers main's JSON
- * messages. It reads main's frames as the core does: at protocol 1 no
+ * messages. It reads main's frames as the core does: before the hello no
  * stream frames, and from a protocol-2 hello reply on all four kinds. Main's
  * JSON messages are in `messages`, its stream frames in `streams`.
  */
@@ -166,7 +165,7 @@ class FakeCore extends EventEmitter {
 }
 
 function hello(protocol, capabilities = ['vault.status', 'fragments', 'streams']) {
-  return { protocol, core_version: '0.10.0', capabilities };
+  return { protocol, core_version: '0.11.0', capabilities };
 }
 
 /** Answers the hello at `protocol` (with `result` if given), shutdown, and
@@ -256,40 +255,36 @@ function source(id, length, chunk = MAX_DATA, { fail = null } = {}) {
   return state;
 }
 
-describe("the core at protocol 1 (the client's default)", () => {
-  test('main asks for protocol 1 with fragments only, and reads no stream frame', async () => {
-    makeClient(coreAt(PROTOCOL_VERSION, () => {}, hello(1, ['vault.status', 'fragments'])));
-    const ready = await client.start();
-    expect(ready.protocol).toBe(1);
-    expect(core().messages[0]).toEqual({
-      type: 'request',
-      id: 1,
-      method: 'core.hello',
-      params: { protocol: 1, shell_version: 'test', auto_lock_ms: 900000, frames: ['fragment'] },
-      context: { caller: 'shell' },
+describe('protocol 2 only (1 is gone)', () => {
+  test('the client speaks only protocol 2, its default: asking for 1, or 3, throws', () => {
+    expect(PROTOCOL_VERSION).toBe(2);
+    expect(PROTOCOL_VERSION_STREAMS).toBe(PROTOCOL_VERSION);
+    expect(makeClient(() => {}).protocol).toBe(2);
+    expect(makeClient(() => {}, { protocol: 2 }).protocol).toBe(2);
+    expect(() => makeClient(() => {}, { protocol: 1 })).toThrow('unknown core protocol 1');
+    expect(() => makeClient(() => {}, { protocol: 3 })).toThrow('unknown core protocol 3');
+  });
+
+  test('a stream frame before the hello settles breaks the protocol', async () => {
+    // Main reads stream frames only from a valid hello on, as the core
+    // does (its `before_the_hello_a_stream_frame_is_unknown`).
+    makeClient((message, fake) => {
+      if (message.method === 'core.hello') fake.write(encodeEnd(1));
     });
-    expect(client.streamStats()).toBeNull();
-    // A stream frame from a protocol-1 core breaks the protocol.
-    core().write(encodeEnd(1));
+    client.start().catch(() => {});
     await until(() => log.error.mock.calls.length > 0, 'the fault');
     expect(log.error).toHaveBeenCalledWith('[Core] protocol error', { category: 'unknown_kind' });
   });
 
-  test('a streams handler is called without streams, and a StreamedReply is an internal error', async () => {
+  test('a handler registered without streams is called without them, and a StreamedReply from it is an internal error', async () => {
     let seen;
     const answered = [];
-    makeClient(
-      coreAt(PROTOCOL_VERSION, (message) => answered.push(message), hello(1, ['fragments']))
-    );
+    makeClient(coreAt(2, (message) => answered.push(message)));
     const body = source(1, 10);
-    client.handle(
-      'shell.dweb_get',
-      (_params, { streams }) => {
-        seen = streams;
-        return new StreamedReply({ status: 200, headers: [] }, body.stream);
-      },
-      { streams: true }
-    );
+    client.handle('shell.dweb_get', (_params, { streams }) => {
+      seen = streams;
+      return new StreamedReply({ status: 200, headers: [] }, body.stream);
+    });
     await client.start();
     core().send({ type: 'request', id: 1, method: 'shell.dweb_get', params: {} });
     await until(() => answered.length === 1, 'the reply');
@@ -305,11 +300,11 @@ describe("the core at protocol 1 (the client's default)", () => {
 
 describe('the hello at protocol 2', () => {
   test('main offers fragments and streams; a valid reply says streams', async () => {
-    makeClient(coreAt(PROTOCOL_VERSION_STREAMS), { protocol: 2 });
+    makeClient(coreAt(PROTOCOL_VERSION_STREAMS));
     const ready = await client.start();
     expect(ready).toEqual({
       protocol: 2,
-      core_version: '0.10.0',
+      core_version: '0.11.0',
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
     });
@@ -332,10 +327,7 @@ describe('the hello at protocol 2', () => {
   });
 
   test('a protocol-2 reply without streams is refused', async () => {
-    makeClient(
-      coreAt(2, () => {}, hello(2, ['vault.status', 'fragments'])),
-      { protocol: 2 }
-    );
+    makeClient(coreAt(2, () => {}, hello(2, ['vault.status', 'fragments'])));
     client.start().catch(() => {});
     await until(() => log.error.mock.calls.length > 0, 'the refusal');
     expect(log.error).toHaveBeenCalledWith('[Core] invalid core.hello result');
@@ -351,22 +343,18 @@ describe('the hello at protocol 2', () => {
           error: { code: 'protocol_mismatch', message: 'Protocol mismatch' },
         }),
     ]) {
-      makeClient(reply, { protocol: 2 });
+      makeClient(reply);
       await expect(client.start()).rejects.toThrow();
       await until(() => client.state === 'failed', 'the failure');
       expect(log.error).toHaveBeenCalledWith('[Core] protocol mismatch');
       expect(children).toHaveLength(1);
     }
   });
-
-  test('only protocols 1 and 2 are known', () => {
-    expect(() => makeClient(() => {}, { protocol: 3 })).toThrow('unknown core protocol 3');
-  });
 });
 
 describe("main's requests' bodies from the core (dweb.verify)", () => {
   async function verifiedBody() {
-    makeClient(coreAt(2), { protocol: 2 });
+    makeClient(coreAt(2));
     await client.start();
     const id = client.current.nextId;
     const answer = client.callStream('dweb.verify', { plan: {} });
@@ -436,8 +424,7 @@ describe('the bodies main sends the core (shell.dweb_get with stream: true)', ()
     makeClient(
       coreAt(2, (message) => {
         if (message.type === 'response') replies.push(message);
-      }),
-      { protocol: 2 }
+      })
     );
     client.handle('shell.dweb_get', answer, { streams: true });
     await client.start();
@@ -879,8 +866,7 @@ describe("main's frames reach the core in the order main made them", () => {
         if (message.method === 'dweb.forget') {
           fake.send({ type: 'response', id: message.id, result: {} });
         }
-      }),
-      { protocol: 2 }
+      })
     );
     await client.start();
     const admission = createFetchAdmission();
@@ -956,7 +942,7 @@ describe("main's frames reach the core in the order main made them", () => {
       { highWaterMark: 0 }
     );
     const long = source(7, 1_000_000);
-    makeClient(coreAt(2), { protocol: 2 });
+    makeClient(coreAt(2));
     client.handle(
       'shell.dweb_get',
       (params) =>

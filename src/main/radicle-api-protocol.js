@@ -47,6 +47,9 @@ const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 // dns.lookup, zlib and crypto across main wait behind the queue (#514).
 const REPO_LIST_CONCURRENCY = 2;
 const REVISION_RE = /^[0-9a-f]{40}$/;
+const MISSING_RE = /not found|does not exist|NotFound/i;
+// What `rad:` answers for a repository it will not serve, private or absent.
+const REPO_NOT_FOUND = Object.freeze({ error: 'repository not found' });
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
 // The one page allowed to reach `radapi:`. Unlike `rad:` — public repo
@@ -114,6 +117,82 @@ async function mapWithConcurrency(items, limit, fn) {
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
+}
+
+const OVER_CAP = Symbol('over the cap');
+
+/**
+ * `JSON.stringify(value)` for the JSON data serveRepoApi replies with,
+ * stopping once the text would pass `maxChars`: null then, before the rest
+ * is built. A string is measured before it is escaped (its JSON form is at
+ * least its length + 2), so one huge string never gets copied either.
+ * Without a cap it is JSON.stringify.
+ */
+function boundedStringify(value, maxChars) {
+  if (maxChars === null || maxChars === undefined) return JSON.stringify(value);
+  const parts = [];
+  let length = 0;
+  const push = (text) => {
+    length += text.length;
+    if (length > maxChars) throw OVER_CAP;
+    parts.push(text);
+  };
+  // A string's JSON form is at least its length + 2: refuse it unescaped.
+  const quote = (text) => {
+    if (length + text.length + 2 > maxChars) throw OVER_CAP;
+    return JSON.stringify(text);
+  };
+  const resolve = (item, key) =>
+    item !== null && typeof item === 'object' && typeof item.toJSON === 'function'
+      ? item.toJSON(key)
+      : item;
+  // What JSON.stringify leaves out of an object, and writes as null in an array.
+  const omitted = (item) =>
+    item === undefined || typeof item === 'function' || typeof item === 'symbol';
+  const write = (item) => {
+    if (item === null) return push('null');
+    switch (typeof item) {
+      case 'string':
+        return push(quote(item));
+      case 'number':
+        return push(Number.isFinite(item) ? String(item) : 'null');
+      case 'boolean':
+        return push(item ? 'true' : 'false');
+      case 'bigint':
+        return push(JSON.stringify(item)); // throws, as JSON.stringify does
+      default:
+        break;
+    }
+    if (Array.isArray(item)) {
+      push('[');
+      for (let index = 0; index < item.length; index += 1) {
+        if (index > 0) push(',');
+        const element = resolve(item[index], String(index));
+        if (omitted(element)) push('null');
+        else write(element);
+      }
+      return push(']');
+    }
+    push('{');
+    let first = true;
+    for (const name of Object.keys(item)) {
+      const member = resolve(item[name], name);
+      if (omitted(member)) continue;
+      push(`${first ? '' : ','}${quote(name)}:`);
+      first = false;
+      write(member);
+    }
+    return push('}');
+  };
+  const top = resolve(value, '');
+  if (omitted(top)) return undefined;
+  try {
+    write(top);
+  } catch (err) {
+    if (err === OVER_CAP) return null;
+    throw err;
+  }
+  return parts.join('');
 }
 
 function withoutBody(response) {
@@ -211,7 +290,17 @@ function pageParams(searchParams) {
 async function serveRepoApi(
   rid,
   apiPath,
-  { method = 'GET', search = '', allowPrivate = false } = {}
+  { method = 'GET', search = '', allowPrivate = false, maxResponseChars = null, signal = null } = {}
+) {
+  return embedded.withReadBounds({ signal, maxReplyChars: maxResponseChars }, () =>
+    serveBoundedRepoApi(rid, apiPath, { method, search, allowPrivate, maxResponseChars, signal })
+  );
+}
+
+async function serveBoundedRepoApi(
+  rid,
+  apiPath,
+  { method, search, allowPrivate, maxResponseChars, signal }
 ) {
   // `rad:` (public repos only, served to any dweb page) keeps the wildcard
   // ACAO; `radapi:` (allowPrivate: node-level and private-repo data, internal
@@ -219,10 +308,27 @@ async function serveRepoApi(
   // Chromium does not enforce CORS on custom schemes — but a private
   // response should not advertise itself as readable by any origin either
   // (docs/security-audit-electron.md, O-12).
-  const reply = (payload, status = 200) => json(payload, status, { cors: !allowPrivate });
+  // `rad:` caps what it hands a page (R-3). An addon reply over the cap is
+  // refused before it is parsed (radicle-embedded's read bounds), and a
+  // composed reply stops serializing at the cap: either is a 502. The
+  // add-on has already built its own string by then; R-18 bounds that.
+  const tooLarge = (text) => maxResponseChars !== null && text.length > maxResponseChars;
+  const tooLargeReply = () =>
+    json({ error: 'repository data too large to serve here' }, 502, { cors: !allowPrivate });
+  // The read has ended for its caller (R-3: gone, or out of time), who
+  // reads nothing more: no serialization, no further addon call.
+  const endedReply = () => json({ error: 'request cancelled' }, 503, { cors: !allowPrivate });
+  const reply = (payload, status = 200) => {
+    if (signal?.aborted) return endedReply();
+    const text = boundedStringify(payload, maxResponseChars);
+    return text === null ? tooLargeReply() : jsonText(text, status, { cors: !allowPrivate });
+  };
   // Blob, readme, tree and commit reads are forwarded as the addon's JSON
   // text: a big file or diff is not parsed and re-stringified on main.
-  const replyText = (text) => jsonText(text, 200, { cors: !allowPrivate });
+  const replyText = (text) => {
+    if (signal?.aborted) return endedReply();
+    return tooLarge(text) ? tooLargeReply() : jsonText(text, 200, { cors: !allowPrivate });
+  };
   if (!RID_RE.test(rid)) {
     return reply({ error: 'invalid RID' }, 400);
   }
@@ -233,11 +339,24 @@ async function serveRepoApi(
 
   try {
     if (!allowPrivate) {
-      const info = await embedded.repoInfo(rid);
+      // A private repository answers exactly as one that is not stored: the
+      // same status and body. A 403 for private beside a 404 for absent let
+      // any page test whether a private RID is on this node (R-2).
+      let info;
+      try {
+        info = await embedded.repoInfo(rid);
+      } catch (err) {
+        if (MISSING_RE.test(err.message)) return reply(REPO_NOT_FOUND, 404);
+        throw err;
+      }
       if (info?.visibility?.type !== 'public') {
-        return reply({ error: 'repository is not public' }, 403);
+        return reply(REPO_NOT_FOUND, 404);
       }
     }
+    // Every addon call checks the read's signal first (withReadBounds);
+    // this one makes the visibility read's end the read's end too, before
+    // any section's call.
+    if (signal?.aborted) return endedReply();
     let response;
     if (!section) {
       response = reply(await embedded.buildRepoMeta(rid));
@@ -313,7 +432,11 @@ async function serveRepoApi(
     }
     return method === 'HEAD' ? withoutBody(response) : response;
   } catch (err) {
-    const missing = /not found|does not exist|NotFound/i.test(err.message);
+    if (err instanceof embedded.ReadEnded) return endedReply();
+    if (err instanceof embedded.ReplyTooLarge) {
+      return method === 'HEAD' ? withoutBody(tooLargeReply()) : tooLargeReply();
+    }
+    const missing = MISSING_RE.test(err.message);
     if (!missing) {
       // PRIVATE MODE GUARD: this core serves both `rad:` and `radapi:`, and
       // both registrations mark private sessions — the RID, the repo path
@@ -431,5 +554,6 @@ module.exports = {
   serveRepoApi,
   decodeRepoApiPath,
   mapWithConcurrency,
+  boundedStringify,
   REPO_LIST_CONCURRENCY,
 };

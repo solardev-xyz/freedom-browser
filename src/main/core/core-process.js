@@ -52,8 +52,9 @@ async function startCore() {
     log,
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
-    // `dweb.forget`. The pinned core (0.10.0) is the first that speaks it;
-    // a core that answers another protocol is a mismatch, not restarted.
+    // `dweb.forget`. It's the client's only protocol, and the only one the
+    // pinned core (0.11.0) takes; a core that answers another is a
+    // mismatch, not restarted.
     protocol: PROTOCOL_VERSION_STREAMS,
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));

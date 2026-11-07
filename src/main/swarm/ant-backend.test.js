@@ -2,7 +2,7 @@
 // (freedom-core design 0009, Modes and Verify plans): an external Ant, a
 // reused one among them, carries `verify: true` while the profile's "Verify
 // content from this node" is on; Ant has no probe. The bundled Ant, and every
-// Ant against a core without the verifier (protocol 1), keep the two-key
+// Ant while the core's verifier isn't attached, keep the two-key
 // reference. The profile's strict mode (design 0009, Strict mode) is captured
 // with it: `strict: true` on an external Ant while "Load only verified content
 // from external nodes" is on. The handler's use of it is in
@@ -78,7 +78,7 @@ describe("the Ant backend's verification", () => {
     expect(antBackend().ref).toEqual({ ant: 'bundled', up: false });
   });
 
-  test('against a core without the verifier (protocol 1), the two-key reference', () => {
+  test('without the verifier attached, the two-key reference', () => {
     mockVerifier = null;
     mockRegistry.mode = 'external';
     expect(antBackend().ref).toEqual({ ant: 'external', up: true });
@@ -141,7 +141,7 @@ describe('strict mode on the Ant backend', () => {
     expect(antBackend().ref).toEqual({ ant: 'bundled', up: false });
   });
 
-  test('against a core without the verifier (protocol 1), the two-key reference', () => {
+  test('without the verifier attached, the two-key reference', () => {
     mockSettings = STRICT;
     mockVerifier = null;
     for (const mode of ['external', 'reused']) {

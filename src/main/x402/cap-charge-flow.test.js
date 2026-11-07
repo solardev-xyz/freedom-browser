@@ -245,6 +245,140 @@ describe('a paywall auto-pay held for a vault unlock (#1024)', () => {
   });
 });
 
+// #1044: an allowance pays only for a tab the user controls. Detection reads
+// custody as the 402 arrives; a held auto-pay reads it again as it is
+// charged and signed, so a tab that went into Agent custody meanwhile gets
+// the approval card, with nothing charged or signed.
+describe('a held auto-pay does not pay from the cap once its tab is in Agent custody (#1044)', () => {
+  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+  const { createX402Client } = require('./client');
+  const lockVaultOnce = () => createX402Client.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+  const resume = (tabId) => ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: tabId });
+  const toAgent = (tabId) => setAgentPageCustody(mockTabs.get(tabId), true);
+
+  beforeEach(() => createX402Client.mockClear());
+
+  test('a subresource held for the unlock goes to the card, uncharged and unsigned', async () => {
+    grantCap(PRICE);
+    lockVaultOnce();
+    const pending = detect(42, { id: 51 });
+    await settle();
+    expect(intercept.hasPendingUnlockWait(42)).toBe(true);
+    expect(spent()).toBe('0');
+
+    toAgent(42);
+    await expect(resume(42)).resolves.toMatchObject({ success: true });
+    await settle();
+
+    // The vault was not even opened again: only the locked attempt.
+    expect(createX402Client).toHaveBeenCalledTimes(1);
+    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(spent()).toBe('0');
+    expect(cardsRaised()).toEqual(['req-51']);
+    // Nothing held is left for a later resume, and nothing signed to attach.
+    expect(intercept.hasPendingUnlockWait(42)).toBe(false);
+    expect(intercept.consumePendingUnlockResume(42)).toBeNull();
+    expect(retry(42, `${ORIGIN}/seg/51`, 61)).toBeNull();
+
+    intercept.cleanupWebContents(42);
+    await expect(pending).resolves.toBeNull();
+  });
+
+  test('a paywall held for the unlock reloads to its card, uncharged and unsigned', async () => {
+    grantCap(PRICE);
+    lockVaultOnce();
+    expect(await detect(42, { id: 52, resourceType: 'mainFrame', url: `${ORIGIN}/e` })).toBeNull();
+    await settle();
+    expect(spent()).toBe('0');
+
+    toAgent(42);
+    await expect(resume(42)).resolves.toMatchObject({ success: false, code: 'X402_CAP_NOT_COVERED' });
+    expect(createX402Client).toHaveBeenCalledTimes(1);
+    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(spent()).toBe('0');
+    // The resume token is spent: a later resume finds nothing to sign.
+    await expect(resume(42)).resolves.toMatchObject({
+      success: false,
+      error: 'No pending unlock-resume for this tab',
+    });
+
+    // The page loads again, and its 402 goes to the card, as any 402 on a
+    // tab in Agent custody does.
+    expect(mockTabs.get(42).loadURL).toHaveBeenCalledWith(`${ORIGIN}/e`);
+    expect(await detect(42, { id: 53, resourceType: 'mainFrame', url: `${ORIGIN}/e` })).toBeNull();
+    await settle();
+    expect(cardsRaised()).toEqual(['req-53']);
+    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(spent()).toBe('0');
+  });
+
+  test('a subresource whose tab goes into Agent custody while it is on the device: dropped, given back, to the card', async () => {
+    grantCap(PRICE);
+    const release = holdSign();
+    const pending = detect(42, { id: 54 });
+    expect(spent()).toBe(PRICE);
+    await settle();
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+
+    toAgent(42);
+    release();
+    await settle();
+
+    expect(spent()).toBe('0');
+    expect(cardsRaised()).toEqual(['req-54']);
+    expect(retry(42, `${ORIGIN}/seg/54`, 64)).toBeNull();
+
+    intercept.cleanupWebContents(42);
+    await expect(pending).resolves.toBeNull();
+  });
+
+  test('a paywall whose tab goes into Agent custody while it is on the device: dropped, given back, reloaded to the card', async () => {
+    grantCap(PRICE);
+    const release = holdSign();
+    expect(await detect(42, { id: 55, resourceType: 'mainFrame', url: `${ORIGIN}/f` })).toBeNull();
+    await settle();
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(spent()).toBe(PRICE);
+
+    toAgent(42);
+    release();
+    await settle();
+
+    expect(spent()).toBe('0');
+    expect(retry(42, `${ORIGIN}/f`, 65)).toBeNull();
+    expect(mockTabs.get(42).loadURL).toHaveBeenCalledTimes(1);
+    expect(mockTabs.get(42).loadURL).toHaveBeenCalledWith(`${ORIGIN}/f`);
+  });
+
+  test("a tab back in the user's hands by the unlock is paid from the cap", async () => {
+    grantCap(PRICE);
+    lockVaultOnce();
+    const pending = detect(42, { id: 56 });
+    await settle();
+
+    toAgent(42);
+    setAgentPageCustody(mockTabs.get(42), false);
+    await expect(resume(42)).resolves.toMatchObject({ success: true });
+    await expect(pending).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+    expect(spent()).toBe(PRICE);
+    expect(cardsRaised()).toEqual([]);
+    expect(retry(42, `${ORIGIN}/seg/56`, 66)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+  });
+
+  test("another tab in Agent custody does not stop a user tab's held paywall", async () => {
+    grantCap(PRICE);
+    lockVaultOnce();
+    expect(await detect(42, { id: 57, resourceType: 'mainFrame', url: `${ORIGIN}/g` })).toBeNull();
+    await settle();
+
+    toAgent(41);
+    await expect(resume(42)).resolves.toMatchObject({ success: true });
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(spent()).toBe(PRICE);
+    expect(retry(42, `${ORIGIN}/g`, 67)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+  });
+});
+
 describe('a charge is given back when its signature never goes out (#1024)', () => {
   async function signedAutoPay(id) {
     grantCap('20000');

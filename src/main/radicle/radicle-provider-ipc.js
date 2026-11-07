@@ -20,6 +20,11 @@
  *                radicle_commentIssue, radicle_editIssueState,
  *                radicle_commentPatch
  *
+ * Signed writes (the COB methods) each need the user's approval: the
+ * renderer's per-write prompt, or the site's "always allow writes" rule
+ * (autoApprove.signing), which this module rate-limits per origin. See
+ * SIGNED_WRITE_METHODS below.
+ *
  * Seeding is honest about replication: radicle_seed writes the policy and
  * kicks off a background fetch, returning immediately with an initial
  * status. Progress is pushed through the provider's `seedStatus` event;
@@ -48,7 +53,10 @@ const {
 } = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
+const { createAutoWriteLimiter } = require('./auto-write-limiter');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
+const { isPrivateSender } = require('../private/private-sender');
 
 const SPEC_VERSION = '0.2';
 
@@ -89,6 +97,19 @@ const METHOD_TIERS = {
 };
 
 const KNOWN_METHODS = new Set(Object.keys(METHOD_TIERS));
+
+// COB writes sign with the user's node identity and publish irrevocably.
+// Each needs the user's approval for that write ('user': the renderer
+// showed the per-write prompt), or the site's "always allow writes" rule,
+// whose writes autoWriteLimiter counts. Anything else is automatic, and
+// is refused unless the rule exists and the limit admits it (R-6).
+const SIGNED_WRITE_METHODS = new Set([
+  'radicle_createIssue',
+  'radicle_commentIssue',
+  'radicle_editIssueState',
+  'radicle_commentPatch',
+]);
+const autoWriteLimiter = createAutoWriteLimiter();
 const PUSH_METHODS = new Set(['radicle_seed', 'radicle_sync', 'radicle_getSeedStatus']);
 const seedStatusBroadcasters = new Map();
 
@@ -278,11 +299,23 @@ async function handleCobWrite(fn, params) {
  * @param {string} method
  * @param {object} params
  * @param {string} origin - display-URL-derived origin from the renderer
+ * @param {{onSeedStatus?: Function, privateSender?: boolean}} [options]
+ *   privateSender: the request came from a private (or unclassifiable)
+ *   window. Lasting changes are refused, and use is not recorded (R-9).
  */
-async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus } = {}) {
+async function executeRadicleMethod(
+  method,
+  params = {},
+  origin,
+  { onSeedStatus, approval, privateSender = false } = {}
+) {
   if (!KNOWN_METHODS.has(method)) {
     throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
   }
+  const privateRefusal = privateWindowRefusal(privateSender, method);
+  if (privateRefusal) throw privateRefusal;
+  // Snapshot-only for a private window, whatever the caller passed.
+  if (privateSender) onSeedStatus = undefined;
   if (!origin || typeof origin !== 'string') {
     throw providerError(ERRORS.UNAUTHORIZED, 'Missing origin');
   }
@@ -309,7 +342,22 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
         reason: 'node-stopped',
       });
     }
-    permissions.updateLastUsed(origin);
+    if (SIGNED_WRITE_METHODS.has(method) && approval !== 'user') {
+      if (!permissions.getAutoApprove(origin, 'signing')) {
+        throw providerError(ERRORS.UNAUTHORIZED, 'This write needs the user\'s approval', {
+          reason: 'approval_required',
+        });
+      }
+      if (!autoWriteLimiter.admit(normalizeOrigin(origin))) {
+        throw providerError(
+          ERRORS.UNAUTHORIZED,
+          'This site has used up its automatic writes for now; this one needs the user\'s approval',
+          { reason: 'auto_write_limit' }
+        );
+      }
+    }
+    // A private window's use is not recorded (R-9).
+    if (!privateSender) permissions.updateLastUsed(origin);
   }
 
   switch (method) {
@@ -340,6 +388,7 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
       // the inverse of requestAccess, no consent needed.
       permissions.revokePermission(origin);
       removeSeedStatusBroadcaster(origin);
+      autoWriteLimiter.forget(normalizeOrigin(origin));
       return { connected: false };
     case 'radicle_getIdentity':
       return handleCobWrite(() => cob.getIdentity(), params);
@@ -366,18 +415,10 @@ async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus 
 // applies to dApp auto-approve rules.
 const AUTO_APPROVABLE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
 
-// COB writes sign with the user's node identity and publish irrevocably.
-// The site's standing signing grant answers them without a prompt, so it is
-// the same kind of automatic approval: only 'user' (the renderer showed the
+// A signed write the site's "always allow writes" rule answers is the same
+// kind of automatic approval: only 'user' (the renderer showed the
 // per-write prompt) skips the check, and a request that names no path is
-// read as the grant answering.
-const SIGNED_WRITE_METHODS = new Set([
-  'radicle_createIssue',
-  'radicle_commentIssue',
-  'radicle_editIssueState',
-  'radicle_commentPatch',
-]);
-
+// read as automatic.
 function agentCustodyRefusal(sender, method, meta) {
   const signedWrite = SIGNED_WRITE_METHODS.has(method);
   if (!signedWrite && !AUTO_APPROVABLE_METHODS.has(method)) return null;
@@ -397,6 +438,32 @@ function agentCustodyRefusal(sender, method, meta) {
   return null;
 }
 
+// PRIVATE MODE GUARD (R-9): a private window must leave nothing behind.
+// The provider is not installed in private windows, but the chrome
+// renderer forwards any guest's provider message, so main decides on the
+// sender it can see, the window's chrome renderer, and fails closed: a
+// sender it cannot classify as a known public window counts as private
+// (private-sender.js). From such a sender:
+//  - every method that changes lasting state is refused: the seeding
+//    policy and fetched repositories (seed, unseed, sync), signed COB
+//    writes, and the origin's grant (disconnect revokes it);
+//  - the reads that stay allowed do not record their use: no lastUsed
+//    write to radicle-permissions.json.
+const PRIVATE_REFUSED_METHODS = new Set([
+  'radicle_seed',
+  'radicle_unseed',
+  'radicle_sync',
+  'radicle_disconnect',
+  ...SIGNED_WRITE_METHODS,
+]);
+
+function privateWindowRefusal(privateSender, method) {
+  if (!privateSender || !PRIVATE_REFUSED_METHODS.has(method)) return null;
+  return providerError(ERRORS.UNAUTHORIZED, 'Not available in private windows', {
+    reason: 'private_window',
+  });
+}
+
 function registerRadicleProviderIpc() {
   // Chrome-facing alias management (sidebar Nodes tab). Registered here —
   // not in radicle-manager — because the alias write must also invalidate
@@ -410,14 +477,25 @@ function registerRadicleProviderIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (event, { method, params, origin, meta } = {}) => {
+    // Before the seed-status broadcaster or the backend is touched.
+    const privateSender = isPrivateSender(event);
+    const privateRefusal = privateWindowRefusal(privateSender, method);
+    if (privateRefusal) return { error: privateRefusal };
     const refusal = agentCustodyRefusal(event?.sender, method, meta);
     if (refusal) return { error: refusal };
     const hadBroadcaster = seedStatusBroadcasters.has(origin);
-    const onSeedStatus = PUSH_METHODS.has(method)
-      ? getSeedStatusBroadcaster(origin)
-      : undefined;
+    // A private window's seed-status read is a snapshot: no broadcaster
+    // for its origin and no subscription to the fetch, since nothing a
+    // private window does may outlive it, and the disconnect that would
+    // remove them is refused to it (R-9).
+    const onSeedStatus =
+      PUSH_METHODS.has(method) && !privateSender ? getSeedStatusBroadcaster(origin) : undefined;
     try {
-      const result = await executeRadicleMethod(method, params, origin, { onSeedStatus });
+      const result = await executeRadicleMethod(method, params, origin, {
+        onSeedStatus,
+        approval: meta?.approval,
+        privateSender,
+      });
       return { result };
     } catch (err) {
       if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
@@ -434,4 +512,5 @@ function registerRadicleProviderIpc() {
 module.exports = {
   executeRadicleMethod,
   registerRadicleProviderIpc,
+  _resetAutoWriteLimiter: () => autoWriteLimiter.reset(),
 };

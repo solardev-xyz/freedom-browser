@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { CoreClient } = require('./core-client');
-const { encodeCredit, MAX_MESSAGE, MAX_PAYLOAD } = require('./frame');
+const { encodeCredit, encodeFrame, FrameDecoder, MAX_MESSAGE, MAX_PAYLOAD } = require('./frame');
 
 const binary = process.env.FREEDOM_CORED_PATH;
 const describeIfBinary = binary ? describe : describe.skip;
@@ -59,8 +59,10 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   test('handshake, status, shutdown', async () => {
     const core = client(path.join(root, 'identity'), path.join(root, 'locks'));
     const hello = await core.start();
-    expect(hello.protocol).toBe(1);
+    expect(hello.protocol).toBe(2);
     expect(hello.capabilities).toContain('vault.status');
+    expect(hello.capabilities).toContain('streams');
+    expect(core.streamStats()).toMatchObject({ outstanding: 0, pieces: 0, sending: 0 });
     await expect(core.request('vault.status')).resolves.toEqual({
       exists: false,
       unlocked: false,
@@ -72,36 +74,38 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     expect(core.state).toBe('stopped');
   });
 
-  test('protocol 2, which the app asks for: the core speaks it and says streams', async () => {
-    // From 0.10.0, the pinned core (design 0009, step 5). A core that speaks
-    // only 1 refuses it without a restart: core-client-streams.test.js.
-    let spawned = 0;
-    const core = new CoreClient({
-      spawn: (...args) => {
-        spawned += 1;
-        return spawn(...args);
-      },
-      command: binary,
-      args: [
-        'serve',
-        '--data-dir',
-        path.join(root, 'identity'),
-        '--lock-dir',
-        path.join(root, 'locks'),
-        '--parent-pid',
-        String(process.pid),
-      ],
-      log: quietLog,
-      shellVersion: 'jest',
-      protocol: 2,
+  test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
+    // From 0.11.0, the pinned core (freedom-core #265): only protocol 2.
+    // CoreClient can't ask for 1, so this is a raw hello, as main's was.
+    const child = spawn(
+      binary,
+      ['serve', '--data-dir', path.join(root, 'identity'), '--lock-dir', path.join(root, 'locks')],
+      { stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+    const decoder = new FrameDecoder();
+    const messages = [];
+    child.stdout.on('data', (chunk) => {
+      for (const { message } of decoder.push(chunk)) messages.push(message);
     });
-    running = core;
-    const hello = await core.start();
-    expect(spawned).toBe(1);
-    expect(hello.protocol).toBe(2);
-    expect(hello.capabilities).toContain('streams');
-    expect(core.streamStats()).toMatchObject({ outstanding: 0, pieces: 0, sending: 0 });
-    await expect(core.request('vault.status')).resolves.toMatchObject({ exists: false });
+    child.stdin.on('error', () => {});
+    child.stdin.write(
+      encodeFrame({
+        type: 'request',
+        id: 1,
+        method: 'core.hello',
+        params: { protocol: 1, shell_version: 'jest', auto_lock_ms: 60000, frames: ['fragment'] },
+        context: { caller: 'shell' },
+      })
+    );
+    expect(await exited).toBe(76);
+    expect(messages).toEqual([
+      {
+        type: 'response',
+        id: 1,
+        error: { code: 'protocol_mismatch', message: 'Protocol mismatch', data: { core: 2 } },
+      },
+    ]);
   });
 
   test('stop() racing the handshake settles without a restart', async () => {
