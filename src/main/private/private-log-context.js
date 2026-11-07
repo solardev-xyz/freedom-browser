@@ -40,6 +40,14 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 const store = new AsyncLocalStorage();
 
+// The private session (#1058): from the first private window opening to the
+// last one closing (private-windows.js). A private context remembers the
+// session it was entered in, or none when no private window was open then,
+// so work that outlives its session can tell (`privateSessionLive`):
+// Colibri's private store must not take a read from a session that ended.
+let session = 0;
+let sessionOpen = false;
+
 /**
  * Run `fn` with the private-logging context set when `isPrivate`, so every
  * log site reached from it (however deep, however async) redacts.
@@ -47,12 +55,36 @@ const store = new AsyncLocalStorage();
  */
 function runWithPrivateLogContext(isPrivate, fn) {
   if (!isPrivate) return fn();
-  return store.run(true, fn);
+  return store.run({ session: sessionOpen ? session : null }, fn);
 }
 
 /** True when the current async context serves a private window. */
 function isPrivateLogContext() {
-  return store.getStore() === true;
+  const context = store.getStore();
+  return typeof context === 'object' && context !== null;
+}
+
+/**
+ * True when the current async context is private and was entered in the
+ * private session that is still open. False for a normal context, and for
+ * a private one whose session has ended (or that began with none open).
+ */
+function privateSessionLive() {
+  if (!isPrivateLogContext()) return false;
+  const entered = store.getStore().session;
+  return sessionOpen && entered !== null && entered === session;
+}
+
+/** A private window opened: the private session is open (idempotent). */
+function openPrivateSession() {
+  sessionOpen = true;
+}
+
+/** The last private window closed: its session has ended. */
+function endPrivateSession() {
+  if (!sessionOpen) return;
+  sessionOpen = false;
+  session += 1;
 }
 
 /**
@@ -116,6 +148,9 @@ function redactedFailure(status, build, ...browsingValues) {
 module.exports = {
   runWithPrivateLogContext,
   isPrivateLogContext,
+  privateSessionLive,
+  openPrivateSession,
+  endPrivateSession,
   redactForLog,
   redactUrlForLog,
   redactedFailure,

@@ -6,7 +6,7 @@ const { ccipReadFetch } = require('./ccip-fetch');
 const workerHost = require('./colibri-worker-host');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
-const { isPrivateLogContext } = require('../private/private-log-context');
+const { isPrivateLogContext, privateSessionLive } = require('../private/private-log-context');
 const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');
 
 // PRIVATE MODE GUARD (Colibri store, #1058). Colibri's store names every
@@ -22,6 +22,12 @@ const { universalResolverCall, universalResolverReverse, hostOf } = require('../
 // (private/private-log-context.js), and every path down to here, ENS and
 // chain data alike, runs inside it. Clients, builds and their generations
 // are kept per lane.
+//
+// A private read must also belong to the private session that is still
+// open (`privateSessionLive`). A lookup that waited on Myotis, the network or
+// anything else before reaching here can find its last private window
+// closed: it is refused rather than given a fresh private worker, whose store
+// would then carry its read into the next private session.
 const clients = new Map();
 const inFlightBuilds = new Map();
 const clientReferences = new Map();
@@ -70,6 +76,20 @@ function retireClient(client) {
 // The caller releases in a finally.
 function laneKey(chainId, privateLane) {
   return privateLane ? `${chainId}:private` : String(chainId);
+}
+
+// A private read from a session that has ended: refused as a bystander, as
+// the worker host refuses a stale private client, so the router's fault
+// backoff does not count it and ENS falls through to its next method.
+function privateSessionEnded() {
+  const err = new Error('Colibri private session ended');
+  err.name = 'ColibriWorkerError';
+  err.colibriBystander = true;
+  return err;
+}
+
+function assertLaneLive(privateLane) {
+  if (privateLane && !privateSessionLive()) throw privateSessionEnded();
 }
 
 async function acquireClient(chainId, privateLane = false) {
@@ -147,6 +167,7 @@ async function withColibriClientRetry(chainId, operation) {
   const id = Number(chainId);
   // Read once: the retry stays on the lane the request started on.
   const privateLane = isPrivateLogContext();
+  assertLaneLive(privateLane);
   const first = await acquireClient(id, privateLane);
   try {
     return await operation(first);
@@ -215,6 +236,9 @@ async function buildClient({ chainId, privateLane, key, proverUrl, zkProof, gene
 async function getClient(chainId = 1, privateLane = false) {
   const id = Number(chainId);
   const lane = laneKey(id, privateLane);
+  // Checked on every acquire: a retry, or a rebuild after the session's end
+  // discarded its build, must not start the next session's worker.
+  assertLaneLive(privateLane);
   const [proverUrl] = registry.getEndpoints(id, 'prover');
   if (!proverUrl) {
     throw new Error(`No Colibri prover configured for chain ${id}`);
