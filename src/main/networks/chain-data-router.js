@@ -433,6 +433,39 @@ function configuredSourceTimeoutMs(chainId) {
   return Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
 }
 
+// The quorum asks `k` endpoints and settles on `m` that agree.
+function quorumSize(chainId) {
+  const network = registry.getNetwork(chainId) || {};
+  const k = Math.max(1, Number(network.quorum?.k) || 3);
+  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
+  return { k, m };
+}
+
+// A quorum's answer is verified only when it takes at least two endpoints
+// that agree (#1092, as freedom-core's router: deviation `singleton-quorum`).
+// With m = 1, however the configuration comes to it, it is one endpoint's
+// answer: not `verified`, and its trust level is the one Direct gives that
+// endpoint.
+function quorumVerifies(chainId) {
+  return quorumSize(chainId).m > 1;
+}
+
+// Whether an answer from `source` on `chainId` is labelled verified.
+function sourceVerifies(source, chainId) {
+  if (source === 'quorum') return quorumVerifies(chainId);
+  return source === 'myotis' || source === 'colibri' || source === 'blockscout';
+}
+
+// The chain's RPC endpoints, each once, in its first place in registry order
+// (#1092, as freedom-core's router: deviation `endpoint-dedup`). Every entry
+// is a quorum member of its own, so a URL listed twice (a user source that
+// repeats a builtin's) agreed with itself and reached m = 2 alone. Two
+// entries are one endpoint when their resolved URLs are the same string: the
+// identity main's endpoint references give the core, one per (chain, URL).
+function rpcEndpoints(chainId) {
+  return [...new Set(registry.getEndpoints(chainId, 'rpc'))];
+}
+
 // The two-second budget is a *fall-through* allowance, not a global ceiling.
 // Spending it only pays off when a later source can still answer and a page
 // the user is watching is waiting on the result. Applied unconditionally it
@@ -865,13 +898,16 @@ function legacyQuote(gasPrice, metadata) {
 // the quote legacy. A legacy quote always carries headroom; signing the raw
 // eth_gasPrice put the fee cap on the base fee, and the transaction was
 // dropped the moment the base fee rose (#749).
-async function feeQuote(source, gasPriceValue, priorityValue = null, getBlock = null) {
+async function feeQuote(chainId, source, gasPriceValue, priorityValue = null, getBlock = null) {
   const gasPrice = BigInt(gasPriceValue);
   if (gasPrice <= 0n) throw new Error(`${source} returned a non-positive gas price`);
 
+  // A quorum with m = 1 quotes from one endpoint's answers, its last resort
+  // included (#1092).
   const metadata = {
     source,
-    verified: source === 'myotis' || source === 'colibri' || source === 'quorum',
+    verified: source === 'myotis' || source === 'colibri' ||
+      (source === 'quorum' && quorumVerifies(chainId)),
   };
 
   const priority = priorityValue == null ? null : BigInt(priorityValue);
@@ -1369,11 +1405,8 @@ function requestQuorumRound(
     logRange = null,
   }
 ) {
-  const network = registry.getNetwork(chainId) || {};
-  const quorum = network.quorum || {};
-  const k = Math.max(1, Number(quorum.k) || 3);
-  const m = Math.max(1, Math.min(k, Number(quorum.m) || 2));
-  const configuredTimeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
+  const { m } = quorumSize(chainId);
+  const configuredTimeoutMs = configuredSourceTimeoutMs(chainId);
   // A background caller (Ant's log scans) may widen the budget; it is never
   // narrowed below the configured timeout, and an interactive deadline below
   // that still applies.
@@ -1414,10 +1447,16 @@ function requestQuorumRound(
         return;
       }
       const agreedUrls = new Set(group.urls);
+      // m = 1 is one endpoint's answer: Direct's level for it (#1092).
+      const level = quorumVerifies(chainId)
+        ? 'verified'
+        : group.urls.some((url) => isUserConfiguredRpc(chainId, url))
+          ? 'user-configured'
+          : 'unverified';
       resolve({
         result: group.value,
         trust: {
-          level: 'verified',
+          level,
           method: 'quorum',
           block: null,
           agreed: group.urls.map(endpointHost).filter(Boolean),
@@ -1540,10 +1579,8 @@ function requestQuorumRound(
 }
 
 async function requestQuorum(chainId, method, params, options = {}) {
-  const network = registry.getNetwork(chainId) || {};
-  const k = Math.max(1, Number(network.quorum?.k) || 3);
-  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
-  const endpoints = registry.getEndpoints(chainId, 'rpc');
+  const { k, m } = quorumSize(chainId);
+  const endpoints = rpcEndpoints(chainId);
   const { logRange = null, keeper = createErrorKeeper(null) } = options;
   const askQuorum = (urls) =>
     requestQuorumRound(chainId, method, params, { ...options, keeper, urls });
@@ -1631,10 +1668,8 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   if ((logIndexCoolUntil.get(chainId) || 0) > now) {
     throw new SourceUnavailableError('Blockscout is left alone for a while after its last failure');
   }
-  const network = registry.getNetwork(chainId) || {};
-  const k = Math.max(1, Number(network.quorum?.k) || 3);
-  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
-  const endpoints = registry.getEndpoints(chainId, 'rpc');
+  const { m } = quorumSize(chainId);
+  const endpoints = rpcEndpoints(chainId);
   if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
   const quorumSpan = quorumLogSpan(chainId, endpoints, m, now);
   if (quorumSpan >= logRange.span) {
@@ -1843,7 +1878,7 @@ async function requestDirect(
 ) {
   const configuredTimeoutMs = configuredDirectTimeoutMs(chainId);
   const timeoutMs = directUrlTimeoutMs(chainId, requestedTimeoutMs);
-  const urls = registry.getEndpoints(chainId, 'rpc');
+  const urls = rpcEndpoints(chainId);
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   if (directFallback && urls.includes(directFallback.url) &&
       Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
@@ -1888,7 +1923,7 @@ async function requestDirect(
 async function requestDirectFeeQuote(chainId) {
   const network = registry.getNetwork(chainId) || {};
   const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
-  const urls = registry.getEndpoints(chainId, 'rpc');
+  const urls = rpcEndpoints(chainId);
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   let lastError;
   let legacyFallback = null;
@@ -1904,7 +1939,7 @@ async function requestDirectFeeQuote(chainId) {
         // Legacy transactions remain valid when this endpoint does not expose
         // an EIP-1559 priority-fee hint.
       }
-      return await feeQuote('direct', gasPrice, priority, () =>
+      return await feeQuote(chainId, 'direct', gasPrice, priority, () =>
         requestRpcUrl(url, 'eth_getBlockByNumber', ['latest', false], timeoutMs)
       );
     } catch (err) {
@@ -2225,7 +2260,7 @@ async function request(
         txLookup.unverified = {
           result,
           source,
-          verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+          verified: sourceVerifies(source, Number(chainId)),
           ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
         };
         sourceIndex = order.length - 2;
@@ -2250,7 +2285,7 @@ async function request(
       return {
         result,
         source,
-        verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+        verified: sourceVerifies(source, Number(chainId)),
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
@@ -2337,7 +2372,7 @@ async function getFeeQuote(chainId) {
         // When one is used, the quote names the source that read it and is
         // only as verified as that read.
         let blockRead = null;
-        const quote = await feeQuote(source, gasPrice, priority, async () => {
+        const quote = await feeQuote(chainId, source, gasPrice, priority, async () => {
           blockRead = await request(chainId, 'eth_getBlockByNumber', ['latest', false]);
           return blockRead.result;
         });
@@ -2359,7 +2394,7 @@ async function getFeeQuote(chainId) {
         // Preserve source coherence: this source's own latest block prices
         // the quote rather than the next source's half of one.
       }
-      return await feeQuote(source, gasPrice, priority, () =>
+      return await feeQuote(chainId, source, gasPrice, priority, () =>
         requestSource(source, chainId, 'eth_getBlockByNumber', ['latest', false])
       );
     } catch (err) {

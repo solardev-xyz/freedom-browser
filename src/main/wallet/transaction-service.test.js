@@ -521,6 +521,25 @@ describe('getTransactionStatus', () => {
     await getTransactionStatus(HASH, 1);
     expect(mockChainRequest).toHaveBeenCalledWith(1, 'eth_getTransactionReceipt', [HASH], undefined);
   });
+
+  // #1066: a Safe's deployed mark is written on a receipt only when a
+  // verified source gave it.
+  test('a receipt carries whether the router labelled it verified', async () => {
+    const receipt = { status: '0x1', blockNumber: '0x10', gasUsed: '0x5208' };
+    for (const [answer, verified] of [
+      [{ result: receipt, source: 'quorum', verified: true }, true],
+      [{ result: receipt, source: 'direct', verified: false }, false],
+      [{ result: receipt, source: 'direct' }, false],
+      [{ result: { ...receipt, status: '0x0' }, source: 'colibri', verified: true }, true],
+    ]) {
+      mockChainRequest.mockReset();
+      mockChainRequest.mockResolvedValueOnce(answer);
+      await expect(getTransactionStatus(HASH, 1)).resolves.toMatchObject({
+        status: answer.result.status === '0x1' ? 'confirmed' : 'failed',
+        verified,
+      });
+    }
+  });
 });
 
 describe('capability-aware transaction routing', () => {
