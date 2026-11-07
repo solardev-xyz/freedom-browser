@@ -38,11 +38,16 @@ const ADDRESS = '0x1111111111111111111111111111111111111111';
 // 3 MiB of hex: main's reply to the core, and the core's to main, both go
 // in fragments.
 const LARGE = `0x${'ab'.repeat(1.5 * MIB)}`;
+/** The widest `eth_getLogs` span the local node serves. */
+const LOG_CAP = 10_000;
 
 /**
  * A local JSON-RPC node. `/` answers by method; `/redirect` is a 307 to
  * `/` (an absolute location, which naming's rule follows); `/away?to=…` a
- * 307 to `to`; `/limited` a 429; `/reset` drops the connection. Every
+ * 307 to `to`; `/limited` a 429; `/reset` drops the connection. An
+ * `eth_getLogs` over more than 10,000 blocks is refused as a capped
+ * endpoint refuses it, and one within them finds no log. A GET under
+ * `/blockscout/` is a Blockscout page with no transfer, the last. Every
  * request is recorded.
  */
 async function node() {
@@ -71,7 +76,24 @@ async function node() {
         req.socket.destroy();
         return;
       }
-      const { id, method } = JSON.parse(body);
+      if (req.method === 'GET' && req.url.startsWith('/blockscout/')) {
+        res
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ items: [], next_page_params: null }));
+        return;
+      }
+      const { id, method, params } = JSON.parse(body);
+      if (method === 'eth_getLogs') {
+        const [{ fromBlock, toBlock }] = params;
+        const capped = Number(toBlock) - Number(fromBlock) + 1 > LOG_CAP;
+        const answer = capped
+          ? { error: { code: -32701, message: `exceed maximum block range: ${LOG_CAP}` } }
+          : { result: [] };
+        res
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ jsonrpc: '2.0', id, ...answer }));
+        return;
+      }
       const result = method === 'eth_call' ? LARGE : '0x10';
       res
         .writeHead(200, { 'content-type': 'application/json' })
@@ -136,9 +158,10 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
       log: quietLog,
       shellVersion: 'jest',
     });
-    const main = { refs: new Map(), generation: 0, ahead: null };
+    const main = { refs: new Map(), chainId: 1, generation: 0, ahead: null };
     const config = {
-      endpoint: (ref) => (main.refs.has(ref) ? { url: main.refs.get(ref), chainId: 1 } : null),
+      endpoint: (ref) =>
+        main.refs.has(ref) ? { url: main.refs.get(ref), chainId: main.chainId } : null,
       generation: () => main.ahead ?? main.generation,
     };
     registerChainShell(client, config, { hop: makeHop({ fetch: transport }) });
@@ -149,7 +172,8 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
       client.requestTo(gen, method, params, { caller: 'chrome' }, { watchdogMs: 60_000 });
     main.configure = async (chain) => {
       const { generations } = await call('chain.configure', { chains: [chain] });
-      main.generation = generations['1'];
+      main.chainId = chain.chain_id;
+      main.generation = generations[String(chain.chain_id)];
     };
     main.read = (method, params) =>
       call('chain.request', {
@@ -682,4 +706,82 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     expect(direct).toMatchObject({ source: 'direct', verified: false });
     expect(isVerifiedEvidence(direct)).toBe(false);
   });
+
+  // freedom-core #297 (main's #1097): Blockscout's newest blocks are the
+  // RPC quorum's, so from 0.12.1 its answer is verified only where that
+  // quorum's is, with m > 1. At m = 1 it is one endpoint's word: unverified,
+  // and so is its trust's level. The trust's quorum is the pair's own, two
+  // of two, either way. The scans are the Ant profile's, as the core's own
+  // test of this rule makes them.
+  test.each([
+    [1, false, 'unverified'],
+    [2, true, 'verified'],
+  ])(
+    "Blockscout's label follows its quorum's: at m = %i, verified is %s",
+    async (m, verified, level) => {
+      const { call, main } = await start();
+      main.refs.set('a', `${rpc.base}/`);
+      main.refs.set('b', `${rpc.base}/?second`);
+      main.refs.set('index', `${rpc.base}/blockscout`);
+      await main.configure(
+        snapshot({
+          chain_id: 100,
+          display_name: 'Gnosis',
+          read_order: ['quorum'],
+          quorum: { k: 2, m, timeout_ms: 5000 },
+          rpc: [
+            { endpoint: 'a', user_configured: false },
+            { endpoint: 'b', user_configured: false },
+          ],
+          blockscout: { endpoint: 'index' },
+        })
+      );
+      // An xBZZ Transfer scan by sender, 500 blocks wider than an endpoint
+      // serves.
+      const to = 30_000_000;
+      const hex = (n) => `0x${n.toString(16)}`;
+      const scan = () =>
+        call('chain.request', {
+          chain_id: 100,
+          method: 'eth_getLogs',
+          params: [
+            {
+              address: '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da',
+              fromBlock: hex(to - LOG_CAP - 499),
+              toBlock: hex(to),
+              topics: [
+                '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef',
+                `0x${'0'.repeat(24)}971f31aaeac713b47aa55e50c06409afc1de46b9`,
+              ],
+            },
+          ],
+          include_trust: true,
+          background: true,
+          profile: 'ant_scan',
+          deadline_ms: 60_000,
+        });
+      const pages = () => rpc.seen.filter(({ url }) => url.startsWith('/blockscout/'));
+      // The first teaches the core the endpoints' cap: both refuse it, and
+      // Blockscout isn't asked while a quorum may serve the span.
+      expect((await scan().catch((e) => e)).code).toBe('chain_error');
+      expect(pages()).toEqual([]);
+      // The second is Blockscout's: an endpoint pairs with it for the older
+      // blocks, the quorum reads the newest, and all agree on no log.
+      const reply = await scan();
+      expect(reply).toMatchObject({
+        result: [],
+        source: 'blockscout',
+        verified,
+        trust: {
+          level,
+          method: 'blockscout',
+          agreed: [{ ref: 'index' }, { ref: expect.stringMatching(/^[ab]$/) }],
+          dissented: [],
+          quorum: { k: 2, m: 2, achieved: true },
+        },
+      });
+      expect(pages()).toHaveLength(1);
+    },
+    120_000
+  );
 });
