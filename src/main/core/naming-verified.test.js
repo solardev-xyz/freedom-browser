@@ -1,6 +1,7 @@
 const { ShellError } = require('./core-client');
 const {
   registerNamingVerified,
+  runVerified,
   MAX_PER_VERIFIER,
   MAX_REPLY_BYTES,
   ENVELOPE_BYTES,
@@ -14,21 +15,21 @@ function setUp(adapters = {}) {
   const handlers = new Map();
   const client = { handle: (method, fn) => handlers.set(method, fn) };
   const config = { generations: { ens: 1, tezos: 1, lifecycle: 3 } };
-  const resolvers = { ur: () => 'ur', name_nft: () => 'nft', name_nft_reverse: () => 'nftr' };
   const all = {
     myotisRecord: jest.fn(async () => ({ verified: false, blockNumber: null, status: 'ok' })),
     myotisCall: jest.fn(async () => ({ status: 'ok', resultHex: '0x01' })),
     myotisStatus: jest.fn(() => ({ optimisticBlockNumber: 21_000_000 })),
-    colibriResolve: jest.fn(async () => ({ resolvedData: '0x02', resolverAddress: ADDRESS })),
-    colibriReverse: jest.fn(async () => ({ name: 'vitalik.eth' })),
-    callResolver: (name) => resolvers[name],
     ...adapters,
   };
   const { running } = registerNamingVerified(client, config, { adapters: all });
   const call = (params, signal = new AbortController().signal) =>
     Promise.resolve().then(() => handlers.get('shell.verified')({ ...GEN, ...params }, { signal }));
-  return { call, adapters: all, resolvers, running, config };
+  return { call, adapters: all, running, config };
 }
+
+/** A Myotis reverse record: the operation the tests below run their
+ * adapter's outcomes through. */
+const REVERSE = { myotis: 'record', method: 'reverse', name: null, address: ADDRESS, coin_type: 60 };
 
 /** An adapter call that waits until released. */
 function held() {
@@ -144,29 +145,33 @@ describe('shell.verified', () => {
     });
   });
 
-  test('a Colibri resolve takes the call resolver it names', async () => {
-    const { call, adapters, resolvers } = setUp();
-    for (const resolver of ['ur', 'name_nft', 'name_nft_reverse']) {
-      expect(
-        await call({ colibri: 'resolve', name: 'alice.wei', call_data: '0xabcd', resolver })
-      ).toEqual({ resolved_data: '0x02', resolver_address: ADDRESS });
-      expect(adapters.colibriResolve).toHaveBeenLastCalledWith(
-        'alice.wei',
-        '0xabcd',
-        resolvers[resolver]
-      );
+  // Colibri 3.0.3 runs a lookup's eth_call on contract code from a public
+  // RPC, unchecked against the proven code hash, so one of those RPCs could
+  // choose the answer (#1076). A core that still asks for a Colibri
+  // operation is refused, as for anything malformed, and no adapter runs.
+  test('Colibri operations are refused: Colibri verifies no name (#1076)', async () => {
+    const forged = {
+      colibriResolve: jest.fn(async () => ({ resolvedData: '0x02', resolverAddress: ADDRESS })),
+      colibriReverse: jest.fn(async () => ({ name: 'forged.eth' })),
+    };
+    const { call, adapters, running } = setUp(forged);
+    for (const op of [
+      ...['ur', 'name_nft', 'name_nft_reverse'].map((resolver) => ({
+        colibri: 'resolve',
+        name: 'alice.wei',
+        call_data: '0xabcd',
+        resolver,
+      })),
+      { colibri: 'reverse', address: ADDRESS, coin_type: 60 },
+    ]) {
+      await expect(call(op)).rejects.toMatchObject({ code: 'refused' });
     }
+    expect(forged.colibriResolve).not.toHaveBeenCalled();
+    expect(forged.colibriReverse).not.toHaveBeenCalled();
+    expect(adapters.myotisRecord).not.toHaveBeenCalled();
+    expect(running).toEqual({ myotis: 0, colibri: 0 });
   });
 
-  test('a Colibri reverse takes the address as bytes and the coin type', async () => {
-    const { call, adapters } = setUp();
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
-      name: 'vitalik.eth',
-    });
-    const [bytes, coin] = adapters.colibriReverse.mock.calls[0];
-    expect(Buffer.from(bytes).toString('hex')).toBe('ab'.repeat(20));
-    expect(coin).toBe(60n);
-  });
 
   test('an error is its revert data, or its class: never its text', async () => {
     const thrown = (err) => jest.fn(async () => Promise.reject(err));
@@ -197,8 +202,8 @@ describe('shell.verified', () => {
       ['a string', { failure: 'error' }],
     ];
     for (const [err, expected] of cases) {
-      const { call } = setUp({ colibriReverse: thrown(err) });
-      expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual(expected);
+      const { call } = setUp({ myotisRecord: thrown(err) });
+      expect(await call(REVERSE)).toEqual(expected);
     }
   });
 
@@ -217,10 +222,8 @@ describe('shell.verified', () => {
     expect(running.myotis).toBe(MAX_PER_VERIFIER);
     expect(await call(op)).toEqual({ failure: 'unavailable' });
     expect(myotis.fn).toHaveBeenCalledTimes(MAX_PER_VERIFIER);
-    // The other verifier is its own.
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
-      name: 'vitalik.eth',
-    });
+    // Colibri's count, which chain data's operations use, is its own.
+    expect(running.colibri).toBe(0);
     // Cancelled, they still count until the adapter settles.
     cancels.forEach((c) => c.abort());
     const errors = await Promise.all(pending);
@@ -251,16 +254,16 @@ describe('shell.verified', () => {
       // In UTF-8 bytes: 2 each.
       ['é'.repeat(MAX_REPLY_BYTES / 2), { failure: 'too_large' }],
     ]) {
-      const { call } = setUp({ colibriReverse: jest.fn(async () => ({ name })) });
-      expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual(expected);
+      const { call } = setUp({ myotisRecord: jest.fn(async () => ({ name })) });
+      expect(await call(REVERSE)).toEqual(expected);
     }
     const revert = `0x${'00'.repeat(MAX_REPLY_BYTES / 2)}`;
     const { call } = setUp({
-      colibriReverse: jest.fn(async () =>
+      myotisRecord: jest.fn(async () =>
         Promise.reject(Object.assign(new Error('r'), { data: revert }))
       ),
     });
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
+    expect(await call(REVERSE)).toEqual({
       failure: 'too_large',
     });
   });
@@ -274,13 +277,13 @@ describe('shell.verified', () => {
       const handlers = new Map();
       registerNamingVerified({ handle: (m, fn) => handlers.set(m, fn) }, { generations: { lifecycle: 0 } }, {
         adapters: {
-          colibriReverse: async () => {
+          myotisRecord: async () => {
             throw Object.assign(new Error('r'), { data: '0x' + 'ab'.repeat(2_000_000) });
           },
         },
       });
       handlers.get('shell.verified')(
-        { colibri: 'reverse', address: '0x' + 'ab'.repeat(20), coin_type: 60, generations: { lifecycle: 0 } },
+        { myotis: 'record', method: 'reverse', address: '0x' + 'ab'.repeat(20), coin_type: 60, generations: { lifecycle: 0 } },
         { signal: new AbortController().signal }
       ).then((r) => process.stdout.write(JSON.stringify(r)), (e) => process.stdout.write('threw ' + e.name));
     `;
@@ -292,8 +295,8 @@ describe('shell.verified', () => {
   });
 
   test('a result JSON cannot carry is an error', async () => {
-    const { call } = setUp({ colibriReverse: jest.fn(async () => ({ name: 1n })) });
-    expect(await call({ colibri: 'reverse', address: ADDRESS, coin_type: 60 })).toEqual({
+    const { call } = setUp({ myotisRecord: jest.fn(async () => ({ name: 1n })) });
+    expect(await call(REVERSE)).toEqual({
       failure: 'error',
     });
   });
@@ -325,22 +328,22 @@ describe('shell.verified', () => {
     ]) {
       await expect(call(op)).rejects.toMatchObject({ code: 'refused' });
     }
-    for (const fn of ['myotisRecord', 'myotisCall', 'colibriResolve', 'colibriReverse']) {
+    for (const fn of ['myotisRecord', 'myotisCall']) {
       expect(adapters[fn]).not.toHaveBeenCalled();
     }
   });
 
   test("the deadline is timeout, the operation runs on; a cancel is the core's", async () => {
-    const colibri = held();
-    const { call, running } = setUp({ colibriReverse: colibri.fn });
-    const op = { colibri: 'reverse', address: ADDRESS, coin_type: 60 };
+    const myotis = held();
+    const { call, running } = setUp({ myotisRecord: myotis.fn });
+    const op = REVERSE;
     const timedOut = await call({ ...op, deadline_ms: 5 }).catch((e) => e);
     expect(timedOut).toBeInstanceOf(ShellError);
     expect(timedOut.code).toBe('timeout');
-    expect(running.colibri).toBe(1);
-    colibri.releases[0].reject(new Error('late'));
+    expect(running.myotis).toBe(1);
+    myotis.releases[0].reject(new Error('late'));
     await tick();
-    expect(running.colibri).toBe(0);
+    expect(running.myotis).toBe(0);
     const cancel = new AbortController();
     cancel.abort();
     const cancelled = await call(op, cancel.signal).catch((e) => e);
@@ -351,12 +354,61 @@ describe('shell.verified', () => {
 // PRIVATE MODE GUARD (Colibri store, #1058): Colibri keeps a private window's
 // reads in memory when its async context says private. The core's request
 // names no window; the client's `private` (service-client.js forPrivate)
-// does, and the executor sets the context from it.
+// does, and `runVerified` sets the context from it. Naming has no Colibri
+// operation (#1076): chain data's executor is the one that runs Colibri reads
+// through `runVerified` (chain-verified.test.js drives it end to end).
 describe('private windows', () => {
-  const {
-    isPrivateLogContext,
-    runWithPrivateLogContext,
-  } = require('../private/private-log-context');
+  const logContext = require('../private/private-log-context');
+  const { isPrivateLogContext, runWithPrivateLogContext } = logContext;
+
+  // A verifier step that records the context it ran in.
+  function observed() {
+    const seen = [];
+    const live = [];
+    const run = jest.fn(async () => {
+      seen.push(isPrivateLogContext());
+      live.push(logContext.privateSessionLive());
+      return 'answer';
+    });
+    return { seen, live, run };
+  }
+
+  test('a Colibri read runs in the context the request may serve', async () => {
+    const { seen, run } = observed();
+    await expect(runVerified('colibri', run, { private: true })).resolves.toBe('answer');
+    await runVerified('colibri', run, { private: false });
+    // A handler running in a private context (the one the core process was
+    // started from) still runs a normal request's read as normal.
+    await runWithPrivateLogContext(true, () => runVerified('colibri', run, { private: false }));
+    expect(seen).toEqual([true, false, false]);
+  });
+
+  test('a request whose private-ness is unknown counts as private', async () => {
+    const { seen, run } = observed();
+    await runVerified('colibri', run, {});
+    await runVerified('colibri', run, undefined);
+    expect(seen).toEqual([true, true]);
+  });
+
+  // Codex review of #1071, finding 2: the read carries the private session
+  // the request was sent in, so Colibri can refuse an ended one.
+  test('a Colibri read carries the private session it was sent in', async () => {
+    const { live, run } = observed();
+    logContext.openPrivateSession();
+    const session = runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    await runVerified('colibri', run, { private: true, privateSession: session });
+    await runVerified('colibri', run, { private: true, privateSession: null });
+    await runVerified('colibri', run, { private: true });
+    logContext.endPrivateSession();
+    await runVerified('colibri', run, { private: true, privateSession: session });
+    expect(live).toEqual([true, false, false, false]);
+  });
+
+  test('a Myotis step is left as it was', async () => {
+    const { seen, run } = observed();
+    await runVerified('myotis', run, { private: true });
+    expect(seen).toEqual([false]);
+  });
 
   function setUpSeen() {
     const seen = [];
@@ -364,16 +416,19 @@ describe('private windows', () => {
       seen.push(isPrivateLogContext());
       return answer;
     });
+    const forged = {
+      colibriResolve: record({ resolvedData: '0x02', resolverAddress: ADDRESS }),
+      colibriReverse: record({ name: 'forged.eth' }),
+    };
     const handlers = new Map();
     const client = { handle: (method, fn) => handlers.set(method, fn) };
     const config = { generations: { ens: 1, tezos: 1, lifecycle: 3 } };
-    registerNamingVerified(client, config, {
+    const { running } = registerNamingVerified(client, config, {
       adapters: {
         myotisRecord: record({ verified: false, blockNumber: null, status: 'ok' }),
         myotisCall: jest.fn(),
         myotisStatus: jest.fn(() => ({})),
-        colibriResolve: record({ resolvedData: '0x02', resolverAddress: ADDRESS }),
-        colibriReverse: record({ name: 'vitalik.eth' }),
+        ...forged,
         callResolver: () => 'ur',
       },
     });
@@ -384,57 +439,26 @@ describe('private windows', () => {
           { signal: new AbortController().signal, ...extra }
         )
       );
-    return { seen, call };
+    return { seen, call, forged, running };
   }
-  const RESOLVE = { colibri: 'resolve', name: 'secret.eth', call_data: '0x', resolver: 'ur' };
-  const REVERSE = { colibri: 'reverse', address: ADDRESS, coin_type: 60 };
 
-  test.each([['resolve', RESOLVE], ['reverse', REVERSE]])(
-    'a Colibri %s runs in the context the request may serve',
-    async (_label, params) => {
-      const { seen, call } = setUpSeen();
-      await call(params, { private: true });
-      await call(params, { private: false });
-      // A handler running in a private context (the one the core process was
-      // started from) still runs a normal request's read as normal.
-      await runWithPrivateLogContext(true, () => call(params, { private: false }));
-      expect(seen).toEqual([true, false, false]);
-    }
-  );
-
-  test('a request whose private-ness is unknown counts as private', async () => {
-    const { seen, call } = setUpSeen();
-    await call(RESOLVE, {});
-    expect(seen).toEqual([true]);
-  });
-
-  // Codex review of #1071, finding 2: the read carries the private session
-  // the request was sent in, so Colibri can refuse an ended one.
-  test('a Colibri read carries the private session it was sent in', async () => {
-    const logContext = require('../private/private-log-context');
-    const live = [];
-    const handlers = new Map();
-    registerNamingVerified({ handle: (method, fn) => handlers.set(method, fn) },
-      { generations: { ens: 1, tezos: 1, lifecycle: 3 } }, {
-        adapters: {
-          colibriResolve: async () => {
-            live.push(logContext.privateSessionLive());
-            return { resolvedData: '0x02', resolverAddress: ADDRESS };
-          },
-          callResolver: () => 'ur',
-        },
-      });
-    const resolve = (extra) => handlers.get('shell.verified')(
-      { ...GEN, ...RESOLVE }, { signal: new AbortController().signal, ...extra }
-    );
+  // #1076 in a private window too: the old Colibri operations are refused
+  // before any adapter runs, whatever the request's private-ness.
+  test.each([
+    ['resolve', { colibri: 'resolve', name: 'secret.eth', call_data: '0x', resolver: 'ur' }],
+    ['reverse', { colibri: 'reverse', address: ADDRESS, coin_type: 60 }],
+  ])('a Colibri %s is refused, private or not', async (_label, params) => {
+    const { seen, call, forged, running } = setUpSeen();
     logContext.openPrivateSession();
-    const session = logContext.runWithPrivateLogContext(true, () => logContext.privateContextSession());
-    await resolve({ private: true, privateSession: session });
-    await resolve({ private: true, privateSession: null });
-    await resolve({ private: true });
+    const session = runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    for (const extra of [{ private: true, privateSession: session }, { private: false }, {}]) {
+      await expect(call(params, extra)).rejects.toMatchObject({ code: 'refused' });
+    }
     logContext.endPrivateSession();
-    await resolve({ private: true, privateSession: session });
-    expect(live).toEqual([true, false, false, false]);
+    expect(forged.colibriResolve).not.toHaveBeenCalled();
+    expect(forged.colibriReverse).not.toHaveBeenCalled();
+    expect(seen).toEqual([]);
+    expect(running).toEqual({ myotis: 0, colibri: 0 });
   });
 
   test('a Myotis operation is left as it was', async () => {

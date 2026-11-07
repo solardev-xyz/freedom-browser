@@ -3823,6 +3823,10 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     { id: 'direct', link: '#networks/1', linkLabel: 'Configure' },
   ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
+  // Colibri answers no name lookup (#1076): its proofs don't cover the
+  // contract code a lookup runs. The resolver skips it wherever the order
+  // puts it, so its row here says so instead of offering verified answers.
+  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. The next method answers.";
 
   let config = { networks: {}, sources: [] };
   let enabledOrder = ['myotis', 'colibri', 'quorum'];
@@ -3905,12 +3909,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       setBadge('myotis', 'Syncing…', 'warning');
     }
 
-    const hasProver = activeSources('prover').length > 0;
-    setBadge(
-      'colibri',
-      hasProver ? 'Verified' : 'No proof server',
-      hasProver ? 'verified' : 'warning'
-    );
+    setBadge('colibri', 'Not used for names', 'warning');
     setBadge(
       'quorum',
       `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -3990,7 +3989,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <p class="row-label">${esc(method.label)}</p>
                 <span class="resolver-badge" data-method-status="${id}">Loading…</span>
               </div>
-              ${networkSourceHelp(id)}
+              ${id === 'colibri' ? `<p class="row-help">${esc(COLIBRI_NAMES_HELP)}</p>` : networkSourceHelp(id)}
               ${link}
               ${networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })}
             </div>
