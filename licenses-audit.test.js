@@ -704,6 +704,7 @@ describe('copyleft', () => {
       'ipfsd-v0.2.0': [['attohttpc', '0.30.1']],
       'ipfsd-v0.2.1': [['attohttpc', '0.30.1']],
       'ipfsd-v0.3.0': [['attohttpc', '0.30.1']],
+      'ipfsd-v0.4.0': [['attohttpc', '0.30.1']],
     },
   };
 

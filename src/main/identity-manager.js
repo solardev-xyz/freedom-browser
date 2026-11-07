@@ -46,6 +46,26 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
+// Optional Radicle node lifecycle hook, wired by the main process (see
+// index.js). The embedded node writes node/, cobs/ and storage/ while it
+// runs, so a re-key must stop it, with proof that it stopped, before wiping
+// them (R-8). `withStopped(work)` runs `work` as one operation of the node's
+// lifecycle queue (radicle-manager withRadicleStopped): it stops the node
+// (throwing, without running `work`, when the stop is not proven), awaits
+// `work`, and restarts a node that was running. Starts, alias changes and
+// other re-keys queue behind it.
+let radicleLifecycle = { withStopped: null };
+
+/**
+ * Register the Radicle node lifecycle hook used around identity (re)injection.
+ * @param {{withStopped?: <T>(work: () => Promise<T>) => Promise<T>}} hooks
+ */
+function setRadicleLifecycle(hooks = {}) {
+  radicleLifecycle = {
+    withStopped: typeof hooks.withStopped === 'function' ? hooks.withStopped : null,
+  };
+}
+
 // Track which nodes have been injected
 let injectedNodes = {
   bee: false,
@@ -630,35 +650,50 @@ async function injectRadicleIdentityNow(alias) {
   const expected = await deriveAddresses();
   if (!expected) throw new Error(VAULT_LOCKED_MESSAGE);
 
-  blockNode('radicle', 'writing');
-  let result;
-  try {
-    // When re-injecting with a new key, Radicle's persisted node state
-    // (fingerprint, routing db, etc.) becomes invalid. Remove stale state
-    // directories.
-    const staleDirs = ['node', 'cobs', 'storage'];
-    for (const dir of staleDirs) {
-      if (await removePathWithRetry(path.join(dataDir, dir))) {
-        console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+  // The wipe and the key write, with the node stopped (R-8). blockNode keeps
+  // new starts out, but it does not stop a node that is already running, so
+  // they run inside one operation of the node's lifecycle queue: the node is
+  // stopped, with the add-on's proof, before the first removal, and nothing
+  // starts it again until the key is written (or the write fails); then it
+  // restarts if it was running. A stop without proof throws before any of
+  // this, and the data is left alone. Only an installed write unblocks the
+  // node, so after a failed one the restart is refused with its reason. The
+  // core refuses the write while the vault is locked.
+  const rekey = async () => {
+    blockNode('radicle', 'writing');
+    let written;
+    try {
+      // When re-injecting with a new key, Radicle's persisted node state
+      // (fingerprint, routing db, etc.) becomes invalid. Remove stale state
+      // directories.
+      const staleDirs = ['node', 'cobs', 'storage'];
+      for (const dir of staleDirs) {
+        if (await removePathWithRetry(path.join(dataDir, dir))) {
+          console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+        }
       }
+      // The core writes keys/radicle, keys/radicle.pub and the config.json
+      // alias together, through its journal.
+      written = await vaultBackend.writeNodeIdentity(
+        { node: 'radicle', home: dataDir, alias },
+        crypto.randomUUID()
+      );
+    } catch (err) {
+      blockNode('radicle', 'pending_recovery');
+      throw err;
     }
-    // The core writes keys/radicle, keys/radicle.pub and the config.json
-    // alias together, through its journal.
-    result = await vaultBackend.writeNodeIdentity(
-      { node: 'radicle', home: dataDir, alias },
-      crypto.randomUUID()
-    );
-  } catch (err) {
-    blockNode('radicle', 'pending_recovery');
-    throw err;
-  }
-  if (result.status !== 'installed') {
-    blockNode('radicle', result.status);
-    throw new Error(`The Radicle identity write did not finish (${result.status})`);
-  }
-  unblockNode('radicle');
+    if (written.status !== 'installed') {
+      blockNode('radicle', written.status);
+      throw new Error(`The Radicle identity write did not finish (${written.status})`);
+    }
+    unblockNode('radicle');
 
-  injectedNodes.radicle = true;
+    injectedNodes.radicle = true;
+    return written;
+  };
+  const result = radicleLifecycle.withStopped
+    ? await radicleLifecycle.withStopped(rekey)
+    : await rekey();
 
   const did = result.did || expected.radicle.did;
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
@@ -714,8 +749,10 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     const wasInjected = isRadicleIdentityInjected();
     results.radicle = await injectRadicleIdentity(radicleAlias);
     if (wasInjected && force) {
+      // Radicle's restart is owned by injectRadicleIdentity (the lifecycle
+      // hook stops the node before the wipe and restarts it after), so it is
+      // not in needsRestart: the renderer would restart it a second time.
       results.radicle.reinjected = true;
-      results.needsRestart.push('radicle');
     }
   } else {
     results.radicle = { did: addresses.radicle.did, alreadyInjected: true };
@@ -1744,6 +1781,7 @@ module.exports = {
 
   // Identity injection
   setBeeLifecycle,
+  setRadicleLifecycle,
   repairIdentityFiles,
   removeStaleBeeDirs,
   wipeStaleBeeState,

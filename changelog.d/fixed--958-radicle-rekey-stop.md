@@ -1,0 +1,1 @@
+- Re-creating your identity stops the Radicle node before resetting its data, then starts it again ([#958](https://github.com/solardev-xyz/freedom-browser/issues/958))
