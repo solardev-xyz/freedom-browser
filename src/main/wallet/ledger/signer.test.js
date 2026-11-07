@@ -133,6 +133,16 @@ describe('createLedgerBackend / signMessage', () => {
     const signature = await backend.signMessage(bytes);
     expect(verifyMessage(bytes, signature)).toBe(deviceWallet.address);
   });
+
+  test.each(['0x', '', Buffer.alloc(0)])('refuses empty message (%p) before device call', async (emptyMessage) => {
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signMessage(emptyMessage)).rejects.toMatchObject({
+      code: 'LEDGER_EMPTY_MESSAGE',
+      message: 'Ledger cannot sign an empty message.',
+    });
+    expect(mockEth.getAddress).not.toHaveBeenCalled();
+    expect(mockEth.signPersonalMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('createLedgerBackend / signTypedData', () => {
