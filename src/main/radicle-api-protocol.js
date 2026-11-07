@@ -47,7 +47,37 @@ const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 // dns.lookup, zlib and crypto across main wait behind the queue (#514).
 const REPO_LIST_CONCURRENCY = 2;
 const REVISION_RE = /^[0-9a-f]{40}$/;
+const MISSING_RE = /not found|does not exist|NotFound/i;
+// What `rad:` answers for a repository that isn't stored here.
+const REPO_NOT_FOUND = Object.freeze({ error: 'repository not found' });
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
+
+// What `rad:` answers for any other add-on error: a fixed text for its
+// category, never the add-on's own. libradicle's text for a repository that
+// isn't stored names its storage path, `<radicle home>/storage/<rid>`, under
+// the user's profile, and its storage and git errors can name files there
+// too (#1050). The status is still decided on the add-on's text: 404 for
+// MISSING_RE, 500 for the rest. The texts are freedom-radicled's where it
+// has one (`not found`, `the read failed`).
+const PUBLIC_READ_ERRORS = Object.freeze({
+  missing: Object.freeze({ error: 'not found' }),
+  tooLarge: Object.freeze({ error: 'repository data too large to serve here' }),
+  cancelled: Object.freeze({ error: 'request cancelled' }),
+  failed: Object.freeze({ error: 'the read failed' }),
+});
+// libradicle's texts for a read past one of its bounds (`TooLarge`,
+// `TooDeep`), and for a cancelled one (`Cancelled`; `clone cancelled` in
+// older add-ons).
+const TOO_LARGE_RE =
+  /^(?:\d+ bytes is over the limit of \d+|the tree is nested deeper than \d+ levels)$/;
+const CANCELLED_RE = /^(?:clone )?cancelled$/;
+
+function publicReadError(message, missing) {
+  if (missing) return PUBLIC_READ_ERRORS.missing;
+  if (TOO_LARGE_RE.test(message)) return PUBLIC_READ_ERRORS.tooLarge;
+  if (CANCELLED_RE.test(message)) return PUBLIC_READ_ERRORS.cancelled;
+  return PUBLIC_READ_ERRORS.failed;
+}
 
 // The one page allowed to reach `radapi:`. Unlike `rad:` — public repo
 // data any dweb page may read — this scheme exposes node-level endpoints
@@ -233,7 +263,13 @@ async function serveRepoApi(
 
   try {
     if (!allowPrivate) {
-      const info = await embedded.repoInfo(rid);
+      let info;
+      try {
+        info = await embedded.repoInfo(rid);
+      } catch (err) {
+        if (MISSING_RE.test(err.message)) return reply(REPO_NOT_FOUND, 404);
+        throw err;
+      }
       if (info?.visibility?.type !== 'public') {
         return reply({ error: 'repository is not public' }, 403);
       }
@@ -313,7 +349,7 @@ async function serveRepoApi(
     }
     return method === 'HEAD' ? withoutBody(response) : response;
   } catch (err) {
-    const missing = /not found|does not exist|NotFound/i.test(err.message);
+    const missing = MISSING_RE.test(err.message);
     if (!missing) {
       // PRIVATE MODE GUARD: this core serves both `rad:` and `radapi:`, and
       // both registrations mark private sessions — the RID, the repo path
@@ -321,7 +357,10 @@ async function serveRepoApi(
       // for a private window.
       log.warn('[radapi]', redactForLog(rid), redactForLog(apiPath), '→', redactForLog(err.message));
     }
-    return reply({ error: err.message }, missing ? 404 : 500);
+    // `radapi:` keeps the add-on's text: its replies reach the internal
+    // viewer only (guardRadicleApiRequest). `rad:` replies to any page.
+    const body = allowPrivate ? { error: err.message } : publicReadError(err.message, missing);
+    return reply(body, missing ? 404 : 500);
   }
 }
 
