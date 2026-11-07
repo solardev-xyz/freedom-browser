@@ -1,1 +1,1 @@
-- Radicle errors no longer show sites that use `window.radicle` where your profile keeps its Radicle data on disk ([#1073](https://github.com/solardev-xyz/freedom-browser/issues/1073))
+- Radicle errors no longer show sites that use `window.radicle` where your profile keeps its Radicle data on disk, and a private window's Radicle requests no longer write that location or the repository they name to the app's log ([#1073](https://github.com/solardev-xyz/freedom-browser/issues/1073))
