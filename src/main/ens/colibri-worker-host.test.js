@@ -556,7 +556,7 @@ describe('colibri worker host', () => {
       lastWorker().emit('message', { type: 'ready' });
       await expect(ready).resolves.toBeUndefined();
 
-      host.ensureWorker(1);
+      host.ensureWorker(1).catch(() => {});
       await flush();
       expect(Worker).toHaveBeenCalledTimes(2);
       expect(workerData(lastWorker())).toEqual({ storageDir: STORAGE_DIR });

@@ -168,8 +168,8 @@ describe('Colibri store for private windows (#1058)', () => {
     await expect(forward()).resolves.toMatchObject({ resolvedData: MISS });
 
     expect(filesUnder(mockUserData)).toEqual([
-      path.join('colibri', callKey(mockUniversalResolver)),
       path.join('colibri', callKey(CONTRACT)),
+      path.join('colibri', callKey(mockUniversalResolver)),
     ]);
     // And they stay warm across reads.
     await expect(balance(CONTRACT)).resolves.toBe(HIT);
