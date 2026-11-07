@@ -169,7 +169,9 @@ async function serveNodeApi(pathname) {
       peers: { connected: status?.connectedPeers ?? 0 },
     }, 200, { cors: false });
   } catch (err) {
-    log.warn('[radapi] node status failed:', err.message);
+    // PRIVATE MODE GUARD: a private session's registration marks this, and
+    // the add-on's text can name its storage path (#1050).
+    log.warn('[radapi] node status failed:', redactForLog(err.message));
     return json({ error: err.message }, 503, { cors: false });
   }
 }
@@ -412,7 +414,8 @@ async function handleRadicleApiRequest(request) {
       );
       return method === 'HEAD' ? withoutBody(response) : response;
     } catch (err) {
-      log.warn('[radapi] repository listing failed:', err.message);
+      // PRIVATE MODE GUARD: as for node status; the text can name a RID.
+      log.warn('[radapi] repository listing failed:', redactForLog(err.message));
       return json({ error: err.message }, 500, { cors: false });
     }
   }
