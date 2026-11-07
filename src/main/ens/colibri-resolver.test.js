@@ -1,9 +1,3 @@
-jest.mock('electron', () => ({
-  // CCIP gateways are dialled through Electron `net` (#359); the automatic-CCIP
-  // tests below swap in a fake `request`.
-  net: { request: () => ({}) },
-}));
-
 const mockLogInfo = jest.fn();
 const mockLogWarn = jest.fn();
 jest.mock('../logger', () => ({
@@ -16,8 +10,11 @@ jest.mock('../logger', () => ({
 // replaced by in-process fake clients. The worker side has its own suites.
 // Mock-prefixed names so Jest's "out-of-scope variable" guard permits them
 // in the factory (the factory runs before top-level `const` initializers).
+// Every client's `request` goes through `mockRequest(client, ...)`, so a
+// test scripts answers across rebuilds and sees which client asked.
 const mockCreateClient = jest.fn();
 const mockEnsureWorker = jest.fn(() => Promise.resolve());
+const mockRequest = jest.fn();
 const mockEndPrivateSession = jest.fn();
 const mockClientInstances = [];
 jest.mock('./colibri-worker-host', () => ({
@@ -28,16 +25,11 @@ jest.mock('./colibri-worker-host', () => ({
     const client = {
       config,
       destroy: jest.fn(),
-      request: jest.fn().mockResolvedValue('0x2a'),
     };
+    client.request = jest.fn((...args) => mockRequest(client, ...args));
     mockClientInstances.push(client);
     return client;
   },
-}));
-
-const mockBrowserProvider = jest.fn().mockImplementation((client) => ({ kind: 'browser-provider', client }));
-jest.mock('ethers', () => ({
-  ethers: { BrowserProvider: mockBrowserProvider },
 }));
 
 // The registry is mocked; tests still pump a legacy-shaped object via
@@ -53,25 +45,19 @@ jest.mock('../networks/network-registry', () => ({
       : [],
 }));
 
-// Surgical: only stub the two symbols this module imports. Re-exporting the
-// whole ens-resolver here would pull every ENS dependency into the test.
-const mockUniversalResolverCall = jest.fn();
-const mockUniversalResolverReverse = jest.fn();
+// Only hostOf is imported. Re-exporting the whole ens-resolver here would
+// pull every ENS dependency into the test.
 jest.mock('../ens-resolver', () => ({
-  universalResolverCall: (...args) => mockUniversalResolverCall(...args),
-  universalResolverReverse: (...args) => mockUniversalResolverReverse(...args),
   hostOf: (url) => { try { return new URL(url).host; } catch { return url; } },
 }));
 
+const colibriResolver = require('./colibri-resolver');
 const {
-  resolveViaColibri,
-  resolveCallViaColibri,
-  resolveReverseViaColibri,
   requestViaColibri,
   endPrivateColibriSession,
   registerColibriPrivateCleanup,
   clearColibriClientForTest,
-} = require('./colibri-resolver');
+} = colibriResolver;
 const {
   runWithPrivateLogContext,
   openPrivateSession,
@@ -83,97 +69,39 @@ const DEFAULTS = {
   ensColibriZkProof: true,
 };
 
-// Exercise ethers' actual automatic CCIP path. A mock UR that only returns
-// canned data cannot detect an unbounded inherited BrowserProvider fetcher.
-describe('automatic CCIP through the Colibri provider', () => {
-  test.each(['forward', 'reverse'])(
-    '%s callbacks use the bounded gateway fetcher',
-    async (direction) => {
-      const { ethers } = jest.requireActual('ethers');
-      const abi = ethers.AbiCoder.defaultAbiCoder();
-      const ur = '0xeEeEEEeE14D718C2B47D9923Deab1335E144EeEe';
-      const iface = new ethers.Interface([
-        'error OffchainLookup(address sender,string[] urls,bytes callData,bytes4 callbackFunction,bytes extraData)',
-      ]);
-      let provider;
-      mockBrowserProvider.mockImplementationOnce((client) => {
-        provider = new ethers.BrowserProvider(client);
-        client.request.mockImplementation(async ({ method, params }) => {
-          if (method === 'eth_chainId') return '0x1';
-          if (method !== 'eth_call') throw new Error(`Unexpected RPC ${method}`);
-          if (params[0].data.startsWith('0x12345678')) return '0xcafe';
-          throw Object.assign(new Error('execution reverted'), {
-            code: 3,
-            data: iface.encodeErrorResult('OffchainLookup', [
-              ur,
-              ['https://ccip.example/{data}'],
-              '0xbeef',
-              '0x12345678',
-              '0xdead',
-            ]),
-          });
-        });
-        return provider;
-      });
-      const resolve =
-        direction === 'forward' ? mockUniversalResolverCall : mockUniversalResolverReverse;
-      resolve.mockImplementationOnce((p) =>
-        p.call({ to: ur, data: '0xabcdef01', enableCcipRead: true })
-      );
-      const inherited = jest
-        .spyOn(ethers.AbstractProvider.prototype, 'ccipReadFetch')
-        .mockRejectedValue(new Error('unbounded inherited fetch must not run'));
-      // CCIP gateways are dialled through Electron `net` (#359).
-      const electron = require('electron');
-      const { createNetMock, emitResponse } = require('../../../test/helpers/fake-electron-net');
-      const originalNetRequest = electron.net.request;
-      const net = createNetMock((request) =>
-        emitResponse(request, { chunks: [JSON.stringify({ data: '0xabcd' })] })
-      );
-      electron.net.request = net.request;
-      try {
-        const result =
-          direction === 'forward'
-            ? await resolveViaColibri('test.offchaindemo.eth', '0x')
-            : await resolveReverseViaColibri(ethers.getBytes(ur), 2147492101n);
-        expect(result).toBe('0xcafe');
-        expect(inherited).not.toHaveBeenCalled();
-        expect(net.request).toHaveBeenCalledTimes(1);
-        expect(mockClientInstances[0].request).toHaveBeenCalledWith({
-          method: 'eth_call',
-          params: [
-            {
-              to: ur.toLowerCase(),
-              data: '0x12345678' + abi.encode(['bytes', 'bytes'], ['0xabcd', '0xdead']).slice(2),
-            },
-            'latest',
-          ],
-        });
-      } finally {
-        provider?.destroy();
-        inherited.mockRestore();
-        electron.net.request = originalNetRequest;
-      }
-    }
-  );
-});
-
 beforeEach(() => {
   clearColibriClientForTest();
   jest.clearAllMocks();
   mockClientInstances.length = 0;
   mockLoadSettings.mockReturnValue({ ...DEFAULTS });
-  mockUniversalResolverCall.mockResolvedValue({
-    resolvedData: '0xdeadbeef',
-    resolverAddress: '0x000000000000000000000000000000000000ffff',
-  });
-  mockUniversalResolverReverse.mockResolvedValue({ name: 'vitalik.eth' });
+  mockRequest.mockResolvedValue('0x2a');
 });
 
-describe('resolveViaColibri', () => {
+// Colibri 3.0.3 runs an `eth_call` on contract code from a public RPC,
+// unchecked against the proven code hash, and proves nothing for a call
+// that reads no storage. So it serves no ENS, reverse or NameNFT lookup
+// (#1076): the module has no adapter for one. The private session's two
+// exports (#1058) only end it.
+test('offers chain-data requests only, with no name-resolution adapter', () => {
+  expect(Object.keys(colibriResolver).sort()).toEqual([
+    'clearColibriClientForTest',
+    'endPrivateColibriSession',
+    'registerColibriPrivateCleanup',
+    'requestViaColibri',
+  ]);
+});
+
+describe('the Colibri client', () => {
+  const BLOCK = ['eth_blockNumber', []];
+  const asked = (client, method = 'eth_blockNumber', params = []) => [
+    client,
+    { method, params },
+    { deadlineMs: undefined },
+  ];
+
   test('constructs the worker client lazily with the configured prover', async () => {
     expect(mockCreateClient).not.toHaveBeenCalled();
-    await resolveViaColibri('vitalik.eth', '0xbc1c58d1...');
+    await requestViaColibri(1, ...BLOCK);
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
     expect(mockCreateClient).toHaveBeenCalledWith({
       chainId: 1,
@@ -183,7 +111,7 @@ describe('resolveViaColibri', () => {
   });
 
   test('waits for the chain worker before creating the first client', async () => {
-    await resolveViaColibri('a.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
     expect(mockEnsureWorker).toHaveBeenCalledWith(1);
     expect(mockEnsureWorker.mock.invocationCallOrder[0])
       .toBeLessThan(mockCreateClient.mock.invocationCallOrder[0]);
@@ -191,50 +119,48 @@ describe('resolveViaColibri', () => {
 
   test('fails the request when the chain worker cannot start', async () => {
     mockEnsureWorker.mockRejectedValueOnce(new Error('Colibri worker failed to start: boom'));
-    await expect(resolveViaColibri('a.eth', '0x')).rejects.toThrow(/failed to start/);
+    await expect(requestViaColibri(1, ...BLOCK)).rejects.toThrow(/failed to start/);
     expect(mockCreateClient).not.toHaveBeenCalled();
-    await expect(resolveViaColibri('b.eth', '0x')).resolves.toBeDefined();
+    await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0x2a');
   });
 
   test('reuses the singleton across calls when settings are unchanged', async () => {
-    await resolveViaColibri('one.eth', '0x');
-    await resolveViaColibri('two.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
+    await requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest']);
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
+    expect(mockRequest).toHaveBeenCalledWith(
+      ...asked(mockClientInstances[0], 'eth_getBalance', ['0xabc', 'latest'])
+    );
   });
 
   test('concurrent first calls collapse onto one construction', async () => {
-    const [a, b, c] = await Promise.all([
-      resolveViaColibri('a.eth', '0x'),
-      resolveViaColibri('b.eth', '0x'),
-      resolveViaColibri('c.eth', '0x'),
+    const results = await Promise.all([
+      requestViaColibri(1, ...BLOCK),
+      requestViaColibri(1, ...BLOCK),
+      requestViaColibri(1, ...BLOCK),
     ]);
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
-    expect(a).toBeDefined();
-    expect(b).toBeDefined();
-    expect(c).toBeDefined();
+    expect(results).toEqual(['0x2a', '0x2a', '0x2a']);
   });
 
   test('rebuilds the client when the prover URL changes', async () => {
-    await resolveViaColibri('one.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
     const firstClient = mockClientInstances[0];
     mockLoadSettings.mockReturnValue({
       ...DEFAULTS,
       ensColibriProverUrl: 'https://other-prover.example',
     });
-    await resolveViaColibri('two.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
     expect(mockCreateClient).toHaveBeenCalledTimes(2);
     expect(mockCreateClient.mock.calls[1][0].proverUrl).toBe('https://other-prover.example');
-    expect(mockBrowserProvider).toHaveBeenCalledTimes(2);
     expect(firstClient.destroy).toHaveBeenCalledTimes(1);
     expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
   });
 
   test('rebuilds the client when zk_proof toggles', async () => {
-    await resolveViaColibri('one.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
     mockLoadSettings.mockReturnValue({ ...DEFAULTS, ensColibriZkProof: false });
-    await resolveViaColibri('two.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
     expect(mockCreateClient).toHaveBeenCalledTimes(2);
     expect(mockCreateClient.mock.calls[1][0].zkProof).toBe(false);
   });
@@ -243,12 +169,12 @@ describe('resolveViaColibri', () => {
     let releaseWorker;
     mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
 
-    const first = resolveViaColibri('old.eth', '0x');
+    const first = requestViaColibri(1, 'eth_getBalance', ['0x01', 'latest']);
     mockLoadSettings.mockReturnValue({
       ...DEFAULTS,
       ensColibriProverUrl: 'https://new-prover.example',
     });
-    const second = resolveViaColibri('new.eth', '0x');
+    const second = requestViaColibri(1, 'eth_getBalance', ['0x02', 'latest']);
 
     releaseWorker();
     await Promise.all([first, second]);
@@ -259,16 +185,9 @@ describe('resolveViaColibri', () => {
     const newClient = byProver('https://new-prover.example');
     expect(oldClient.destroy).toHaveBeenCalledTimes(1);
     expect(newClient.destroy).not.toHaveBeenCalled();
-    expect(mockUniversalResolverCall).toHaveBeenCalledWith(
-      expect.objectContaining({ client: newClient }),
-      'old.eth',
-      '0x',
-    );
-    expect(mockUniversalResolverCall).toHaveBeenCalledWith(
-      expect.objectContaining({ client: newClient }),
-      'new.eth',
-      '0x',
-    );
+    expect(mockRequest).toHaveBeenCalledWith(...asked(newClient, 'eth_getBalance', ['0x01', 'latest']));
+    expect(mockRequest).toHaveBeenCalledWith(...asked(newClient, 'eth_getBalance', ['0x02', 'latest']));
+    expect(oldClient.request).not.toHaveBeenCalled();
   });
 
   test('respects a custom prover URL from settings', async () => {
@@ -276,32 +195,14 @@ describe('resolveViaColibri', () => {
       ...DEFAULTS,
       ensColibriProverUrl: 'https://custom.example/keyXYZ',
     });
-    await resolveViaColibri('a.eth', '0x');
+    await requestViaColibri(1, ...BLOCK);
     expect(mockCreateClient.mock.calls[0][0].proverUrl).toBe('https://custom.example/keyXYZ');
   });
 
-  test('passes name + callData through to universalResolverCall via the cached BrowserProvider', async () => {
-    await resolveViaColibri('vitalik.eth', '0xbc1c58d1deadbeef');
-    expect(mockUniversalResolverCall).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'browser-provider' }),
-      'vitalik.eth',
-      '0xbc1c58d1deadbeef',
-    );
-  });
-
-  test('returns the universalResolverCall payload verbatim', async () => {
-    const payload = {
-      resolvedData: '0xfeedface',
-      resolverAddress: '0x000000000000000000000000000000000000beef',
-    };
-    mockUniversalResolverCall.mockResolvedValue(payload);
-    await expect(resolveViaColibri('a.eth', '0x')).resolves.toEqual(payload);
-  });
-
-  test('propagates errors from universalResolverCall (e.g. verification failure)', async () => {
+  test('propagates errors from the client (e.g. verification failure)', async () => {
     const err = new Error('proof verification failed');
-    mockUniversalResolverCall.mockRejectedValue(err);
-    await expect(resolveViaColibri('a.eth', '0x')).rejects.toBe(err);
+    mockRequest.mockRejectedValue(err);
+    await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
   });
 
@@ -311,14 +212,11 @@ describe('resolveViaColibri', () => {
       shortMessage: 'missing revert data',
       info: { error: { code: -32603, message: 'prover returned no response' } },
     });
-    const recovered = { resolvedData: '0xfeed', resolverAddress: '0x1234' };
-    mockUniversalResolverCall
-      .mockRejectedValueOnce(err)
-      .mockResolvedValueOnce(recovered);
+    mockRequest.mockRejectedValueOnce(err).mockResolvedValueOnce('0xfeed');
 
-    await expect(resolveViaColibri('retry.eth', '0x')).resolves.toEqual(recovered);
+    await expect(requestViaColibri(1, ...BLOCK)).resolves.toBe('0xfeed');
 
-    expect(mockUniversalResolverCall).toHaveBeenCalledTimes(2);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
     expect(mockCreateClient).toHaveBeenCalledTimes(2);
     expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
     expect(mockLogWarn).toHaveBeenCalledWith(
@@ -330,33 +228,33 @@ describe('resolveViaColibri', () => {
 
   test('bounds a retryable failure to one rebuild', async () => {
     const err = Object.assign(new Error('request timed out'), { code: 'TIMEOUT' });
-    mockUniversalResolverCall.mockRejectedValue(err);
+    mockRequest.mockRejectedValue(err);
 
-    await expect(resolveViaColibri('still-down.eth', '0x')).rejects.toBe(err);
+    await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
 
-    expect(mockUniversalResolverCall).toHaveBeenCalledTimes(2);
+    expect(mockRequest).toHaveBeenCalledTimes(2);
     expect(mockCreateClient).toHaveBeenCalledTimes(2);
   });
 
   test('does not destroy a failed shared client while a sibling request still uses it', async () => {
     let rejectFirst;
     let resolveSibling;
-    mockUniversalResolverCall
+    mockRequest
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSibling = resolve; }))
-      .mockResolvedValueOnce({ resolvedData: '0xrecovered' });
+      .mockResolvedValueOnce('0xrecovered');
 
-    const first = resolveViaColibri('first.eth', '0x');
-    const sibling = resolveViaColibri('sibling.eth', '0x');
-    while (mockUniversalResolverCall.mock.calls.length < 2) await Promise.resolve();
+    const first = requestViaColibri(1, ...BLOCK);
+    const sibling = requestViaColibri(1, ...BLOCK);
+    while (mockRequest.mock.calls.length < 2) await Promise.resolve();
     const sharedClient = mockClientInstances[0];
 
     rejectFirst(Object.assign(new Error('network unavailable'), { code: 'NETWORK_ERROR' }));
-    await expect(first).resolves.toEqual({ resolvedData: '0xrecovered' });
+    await expect(first).resolves.toBe('0xrecovered');
     expect(sharedClient.destroy).not.toHaveBeenCalled();
 
-    resolveSibling({ resolvedData: '0xsibling' });
-    await expect(sibling).resolves.toEqual({ resolvedData: '0xsibling' });
+    resolveSibling('0xsibling');
+    await expect(sibling).resolves.toBe('0xsibling');
     expect(sharedClient.destroy).toHaveBeenCalledTimes(1);
   });
 
@@ -365,41 +263,12 @@ describe('resolveViaColibri', () => {
       code: 'CALL_EXCEPTION',
       data: '0xdeadbeef',
     });
-    mockUniversalResolverCall.mockRejectedValue(err);
+    mockRequest.mockRejectedValue(err);
 
-    await expect(resolveViaColibri('reverted.eth', '0x')).rejects.toBe(err);
+    await expect(requestViaColibri(1, ...BLOCK)).rejects.toBe(err);
 
-    expect(mockUniversalResolverCall).toHaveBeenCalledTimes(1);
+    expect(mockRequest).toHaveBeenCalledTimes(1);
     expect(mockCreateClient).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('resolveReverseViaColibri', () => {
-  const ADDR_BYTES = new Uint8Array(20).fill(0xab);
-
-  test('delegates to universalResolverReverse via the cached BrowserProvider', async () => {
-    const result = await resolveReverseViaColibri(ADDR_BYTES);
-    expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
-    expect(mockUniversalResolverReverse).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'browser-provider' }),
-      ADDR_BYTES,
-      {},
-      60n,
-    );
-    expect(result).toEqual({ name: 'vitalik.eth' });
-  });
-
-  test('reuses the singleton + cached provider across forward and reverse calls', async () => {
-    await resolveViaColibri('vitalik.eth', '0x');
-    await resolveReverseViaColibri(ADDR_BYTES);
-    expect(mockCreateClient).toHaveBeenCalledTimes(1);
-    expect(mockBrowserProvider).toHaveBeenCalledTimes(1);
-  });
-
-  test('propagates errors verbatim (caller classifies)', async () => {
-    const err = Object.assign(new Error('ReverseAddressMismatch'), { data: '0xef9c03ce' });
-    mockUniversalResolverReverse.mockRejectedValue(err);
-    await expect(resolveReverseViaColibri(ADDR_BYTES)).rejects.toBe(err);
   });
 });
 
@@ -461,10 +330,10 @@ describe('private windows', () => {
   const PRIVATE = { ...NORMAL, private: true };
   const lanes = () => mockCreateClient.mock.calls.map(([config]) => config);
 
+  // Chain data is Colibri's only caller: names don't use it (#1076).
   test.each([
-    ['an ENS forward lookup', () => resolveCallViaColibri('secret.eth', '0x')],
-    ['an ENS reverse lookup', () => resolveReverseViaColibri(new Uint8Array(20))],
-    ['a chain-data read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+    ['a balance read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+    ['a code read', () => requestViaColibri(1, 'eth_getCode', ['0xabc', 'latest'])],
   ])('%s from a private window runs on the private worker', async (_label, read) => {
     await inPrivate(read);
     expect(lanes()).toEqual([PRIVATE]);
@@ -473,9 +342,8 @@ describe('private windows', () => {
   });
 
   test.each([
-    ['an ENS forward lookup', () => resolveCallViaColibri('public.eth', '0x')],
-    ['an ENS reverse lookup', () => resolveReverseViaColibri(new Uint8Array(20))],
-    ['a chain-data read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+    ['a balance read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+    ['a code read', () => requestViaColibri(1, 'eth_getCode', ['0xabc', 'latest'])],
   ])('%s from a normal window keeps the normal worker, as before', async (_label, read) => {
     await read();
     expect(lanes()).toEqual([NORMAL]);
@@ -561,8 +429,9 @@ describe('private windows', () => {
     expect(mockEnsureWorker).toHaveBeenCalledTimes(1);
   });
 
-  // Codex review of #1070, finding 2: ENS asks Myotis before Colibri, so a
-  // private lookup can still be waiting when its last window closes.
+  // Codex review of #1070, finding 2: a read can wait on Myotis or the
+  // network before it reaches Colibri, so a private one can still be waiting
+  // when its last window closes.
   test('a private read whose session ended before it reached Colibri starts nothing', async () => {
     let releaseMyotis;
     const myotis = new Promise((resolve) => { releaseMyotis = resolve; });
@@ -573,7 +442,7 @@ describe('private windows', () => {
     pending.catch(() => {});
 
     closeLastPrivateWindow();
-    openPrivateSession(); // the next private window, before the lookup resumes
+    openPrivateSession(); // the next private window, before the read resumes
     releaseMyotis();
 
     await expect(pending).rejects.toMatchObject({
@@ -589,7 +458,7 @@ describe('private windows', () => {
 
   test('a private read entered with no private window open starts nothing', async () => {
     endPrivateSession();
-    await expect(inPrivate(() => resolveCallViaColibri('late.eth', '0x'))).rejects.toMatchObject({
+    await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).rejects.toMatchObject({
       message: 'Colibri private session ended',
     });
     expect(mockEnsureWorker).not.toHaveBeenCalled();
