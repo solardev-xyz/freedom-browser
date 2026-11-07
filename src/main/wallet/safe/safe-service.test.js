@@ -2,6 +2,7 @@ const { ownerWallet } = require('./__tests__/helpers/test-owners');
 
 const OWNERS = [ownerWallet(0).address, ownerWallet(2).address, ownerWallet(4).address];
 const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+const OTHER_ADDRESS = '0x000000000000000000000000000000000000dEaD';
 
 const mockWalletRecords = {
   0: { index: 0, name: 'Main Wallet', address: OWNERS[0], type: 'mnemonic' },
@@ -58,10 +59,16 @@ jest.mock('../transaction-service', () => ({
   waitForTransaction: (...args) => mockWaitForTransaction(...args),
 }));
 
-// Raw chain reads: eth_getCode (deployment truth) + eth_getBalance.
+// Raw chain reads: eth_getBalance.
 const mockRpcRequest = jest.fn();
 jest.mock('../provider-manager', () => ({
   getEip1193Provider: () => ({ request: (...args) => mockRpcRequest(...args) }),
+}));
+
+// Deployment truth: eth_getCode through the chain router, with its label.
+const mockChainRequest = jest.fn();
+jest.mock('../../networks/chain-data-router', () => ({
+  request: (...args) => mockChainRequest(...args),
 }));
 
 const {
@@ -73,11 +80,16 @@ const {
 
 const DEPLOY_COST = 300000n * 2000000000n; // gasLimit × maxFeePerGas
 
-function stubChainState({ code = '0x', balance = 0n } = {}) {
+function stubChainState({ code = '0x', balance = 0n, verified = true } = {}) {
   mockRpcRequest.mockImplementation(async ({ method }) => {
-    if (method === 'eth_getCode') return code;
     if (method === 'eth_getBalance') return '0x' + balance.toString(16);
     throw new Error(`unexpected rpc ${method}`);
+  });
+  mockChainRequest.mockImplementation(async (chainId, method) => {
+    if (method === 'eth_getCode') {
+      return { result: code, source: verified ? 'colibri' : 'direct', verified };
+    }
+    throw new Error(`unexpected chain read ${method}`);
   });
 }
 
@@ -150,7 +162,7 @@ describe('getSafeStatus', () => {
     expect(status.needsFunds).toBe(true);
   });
 
-  test('code on chain marks the record deployed (self-heal) and skips the quote', async () => {
+  test('verified code on chain marks the record deployed (self-heal) and skips the quote', async () => {
     stubChainState({ code: '0x60806040' });
 
     const status = await getSafeStatus(5);
@@ -158,7 +170,56 @@ describe('getSafeStatus', () => {
     expect(status.deployed).toBe(true);
     expect(status.needsFunds).toBe(false);
     expect(status.estimatedCost).toBeNull();
+    expect(mockChainRequest).toHaveBeenCalledWith(DEPLOY_CHAIN_ID, 'eth_getCode', [
+      SAFE_ADDRESS,
+      'latest',
+    ]);
     expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+  });
+
+  test('unverified code marks nothing, and the next check asks again (#1066)', async () => {
+    stubChainState({ code: '0x60806040', verified: false });
+
+    await expect(getSafeStatus(5)).rejects.toMatchObject({
+      code: 'SAFE_UNVERIFIED',
+      message: /couldn't verify/,
+    });
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+    // not offered for activation either: the Safe may be deployed
+    expect(mockBuildDeploymentTransaction).not.toHaveBeenCalled();
+    expect(mockEstimateGas).not.toHaveBeenCalled();
+
+    // A label other than `true` is no verification either.
+    mockChainRequest.mockResolvedValueOnce({ result: '0x60806040', source: 'direct' });
+    await expect(getSafeStatus(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+
+    // Later a verified source answers, and that read marks it.
+    stubChainState({ code: '0x60806040', verified: true });
+    const status = await getSafeStatus(5);
+    expect(status.deployed).toBe(true);
+    expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
+    expect(mockChainRequest).toHaveBeenCalledTimes(3);
+  });
+
+  test('an unverified "no code" answer leaves the Safe undeployed and offers activation', async () => {
+    stubChainState({ code: '0x', verified: false, balance: DEPLOY_COST * 2n });
+    const status = await getSafeStatus(5);
+    expect(status.deployed).toBe(false);
+    expect(status.needsFunds).toBe(false);
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('a deployment to another address than the record\'s is not quoted (#1066)', async () => {
+    stubChainState({ code: '0x', balance: DEPLOY_COST * 2n });
+    mockBuildDeploymentTransaction.mockResolvedValueOnce({
+      safeAddress: OTHER_ADDRESS,
+      to: '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67',
+      value: '0',
+      data: '0xdeadbeef',
+    });
+    await expect(getSafeStatus(5)).rejects.toMatchObject({ code: 'SAFE_ADDRESS_MISMATCH' });
     expect(mockEstimateGas).not.toHaveBeenCalled();
   });
 
@@ -167,6 +228,7 @@ describe('getSafeStatus', () => {
     const status = await getSafeStatus(5);
     expect(status.deployed).toBe(true);
     expect(mockRpcRequest).not.toHaveBeenCalled();
+    expect(mockChainRequest).not.toHaveBeenCalled();
     mockWalletRecords[5].deployed = {};
   });
 
@@ -225,6 +287,32 @@ describe('activateSafe', () => {
     const result = await activateSafe(5);
     expect(result).toEqual({ safeAddress: SAFE_ADDRESS, alreadyDeployed: true });
     expect(mockDeploySafe).not.toHaveBeenCalled();
+  });
+
+  test('refuses, with nothing sent, a deployment to another address than the record\'s (#1066)', async () => {
+    stubChainState({ code: '0x', balance: DEPLOY_COST * 2n });
+    // e.g. a record whose address came from a wrong proxyCreationCode()
+    // answer before #1066: the init params now derive another address.
+    mockBuildDeploymentTransaction.mockResolvedValueOnce({
+      safeAddress: OTHER_ADDRESS,
+      to: '0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67',
+      value: '0',
+      data: '0xdeadbeef',
+    });
+
+    await expect(activateSafe(5)).rejects.toMatchObject({
+      code: 'SAFE_ADDRESS_MISMATCH',
+      message: new RegExp(`${SAFE_ADDRESS}.*${OTHER_ADDRESS}`),
+    });
+    expect(mockDeploySafe).not.toHaveBeenCalled();
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+  });
+
+  test('neither deploys nor marks on unverified code at the address (#1066)', async () => {
+    stubChainState({ code: '0x60806040', verified: false, balance: DEPLOY_COST * 2n });
+    await expect(activateSafe(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockDeploySafe).not.toHaveBeenCalled();
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
   });
 
   test('does not mark deployed when the deploy tx fails', async () => {

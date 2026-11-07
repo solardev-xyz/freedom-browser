@@ -15,7 +15,7 @@
  */
 
 const crypto = require('crypto');
-const { formatEther } = require('ethers');
+const { formatEther, getAddress } = require('ethers');
 
 const {
   getWalletRecord,
@@ -37,7 +37,13 @@ const {
 } = require('../transaction-service');
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
 const { getEip1193Provider } = require('../provider-manager');
-const { codedError, SAFE_NEEDS_FUNDS } = require('./errors');
+const chainData = require('../../networks/chain-data-router');
+const {
+  codedError,
+  SAFE_NEEDS_FUNDS,
+  SAFE_UNVERIFIED,
+  SAFE_ADDRESS_MISMATCH,
+} = require('./errors');
 
 /** v1: Safes deploy on Gnosis only (decision 5). */
 const DEPLOY_CHAIN_ID = 100;
@@ -99,17 +105,48 @@ async function createSafeAccount({ name, ownerIndexes, threshold }) {
  * Deployment truth: the record short-circuits (deployment is permanent),
  * otherwise the chain is asked and a positive answer heals the record
  * (covers deploys that confirmed after the app quit).
+ *
+ * The mark is for good, so only a verified answer makes it (#1066): the
+ * chain router's Myotis, Colibri or RPC quorum. Code that no verified
+ * source confirms marks nothing and is reported as unverified
+ * (SAFE_UNVERIFIED), and the next status check asks again. Activation is
+ * not offered on it either: the Safe may well be deployed.
  */
 async function isDeployedOnChain(record, chainId) {
   if (record.deployed?.[chainId]) {
     return true;
   }
-  const code = await chainRead(chainId, 'eth_getCode', [record.address, 'latest']);
-  if (code && code !== '0x') {
-    await markSafeDeployed(record.index, chainId);
-    return true;
+  const { result: code, verified } = await chainData.request(chainId, 'eth_getCode', [
+    record.address,
+    'latest',
+  ]);
+  if (!code || code === '0x') {
+    return false;
   }
-  return false;
+  if (verified !== true) {
+    throw codedError(
+      "Freedom couldn't verify on Gnosis whether this account is activated. " +
+        'Try again, or add an RPC provider in Settings.',
+      SAFE_UNVERIFIED
+    );
+  }
+  await markSafeDeployed(record.index, chainId);
+  return true;
+}
+
+/**
+ * The deployment must create the record's own address (#1066): the one
+ * the Safe was shown with and funds may already have been sent to. A
+ * deployment to another address is refused before it is quoted or sent.
+ */
+function assertDeploysRecordAddress(record, deployment) {
+  if (getAddress(deployment.safeAddress) !== getAddress(record.address)) {
+    throw codedError(
+      `This account's address is ${record.address}, but activating it would create ` +
+        `${deployment.safeAddress}. Freedom won't activate it.`,
+      SAFE_ADDRESS_MISMATCH
+    );
+  }
 }
 
 /**
@@ -148,6 +185,7 @@ async function assessActivation(record) {
       saltNonce: record.saltNonce,
       chainId,
     }).then((built) => {
+      assertDeploysRecordAddress(record, built);
       deployment = built;
       return estimateGas({
         from: executorAddress,
@@ -196,7 +234,10 @@ async function getSafeStatus(index) {
  * for confirmation and only then marks the record deployed.
  *
  * Throws with `code: 'SAFE_NEEDS_FUNDS'` when nothing can pay — callers
- * should render getSafeStatus's blocking state instead of retrying.
+ * should render getSafeStatus's blocking state instead of retrying. Throws
+ * `SAFE_ADDRESS_MISMATCH`, with nothing sent, when the deployment would
+ * create another address than the record's, and `SAFE_UNVERIFIED` when
+ * the chain shows code at the address that no verified source confirms.
  *
  * The executor's fee is judged by the fee check at confirmation (design
  * 0005, A): one that needs the user stops with nothing signed
