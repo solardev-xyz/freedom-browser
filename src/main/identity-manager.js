@@ -1013,11 +1013,37 @@ const DEVICE_LABELS = {
   [WALLET_TYPES.SAFE]: 'Safe',
 };
 
+/**
+ * Whether a device has shown that it holds a Ledger record's address at
+ * the record's path (#1065). Main reads the address back from the device
+ * when an account is added, so a new record starts `matched`. Records
+ * added before that took the chrome's word for the address and start
+ * `unchecked`: the first Ledger connected with them checks them. A record
+ * a device doesn't match is `mismatched`, kept, and shown as such; a
+ * device that later does match it makes it `matched`. Only a `matched`
+ * record can own a new Safe.
+ */
+const LEDGER_ADDRESS_CHECK = {
+  UNCHECKED: 'unchecked',
+  MATCHED: 'matched',
+  MISMATCHED: 'mismatched',
+};
+
+function ledgerAddressCheck(record) {
+  return record.addressCheck === LEDGER_ADDRESS_CHECK.MATCHED ||
+    record.addressCheck === LEDGER_ADDRESS_CHECK.MISMATCHED
+    ? record.addressCheck
+    : LEDGER_ADDRESS_CHECK.UNCHECKED;
+}
+
 /** Type-specific record fields to expose through the record seams. */
 function extraRecordFields(record) {
   const fields = {};
   if (record.path) {
     fields.path = record.path;
+  }
+  if (record.type === WALLET_TYPES.LEDGER) {
+    fields.addressCheck = ledgerAddressCheck(record);
   }
   if (record.type === WALLET_TYPES.SAFE) {
     fields.owners = record.owners;
@@ -1253,16 +1279,84 @@ async function addDeviceWallet(type, name, address, extra = {}) {
 /**
  * Add a Ledger hardware-wallet account.
  *
+ * The address and path come from the chrome, which read them from the
+ * device during discovery. Main doesn't take its word for the address: it
+ * asks the attached device for the address at that path (without showing
+ * it on the device) and refuses the account unless the two are the same
+ * (#1065), so a compromised chrome can't list an address the user's
+ * Ledger doesn't hold.
+ *
  * @param {string} name - Display name ('' → auto "Ledger N")
  * @param {string} address - Checksummed address read from the device
  * @param {string} path - Derivation path in device format (e.g. "44'/60'/0'/0/0")
- * @returns {Promise<{index: number, name: string, address: string, type: string, path: string}>}
+ * @returns {Promise<{index: number, name: string, address: string, type: string, path: string, addressCheck: string}>}
  */
 async function addLedgerWallet(name, address, path) {
   if (typeof path !== 'string' || !path) {
     throw new Error('Missing derivation path for Ledger account');
   }
-  return addDeviceWallet(WALLET_TYPES.LEDGER, name, address, { path });
+  const { isAddress } = require('ethers');
+  if (typeof address !== 'string' || !isAddress(address)) {
+    throw new Error('Invalid Ledger account address');
+  }
+  const { readAddresses } = require('./wallet/ledger/transport');
+  const { LEDGER_ERROR_CODES, createLedgerError } = require('./wallet/ledger/errors');
+  const [onDevice] = await readAddresses([path]);
+  if (typeof onDevice !== 'string' || onDevice.toLowerCase() !== address.toLowerCase()) {
+    throw createLedgerError(LEDGER_ERROR_CODES.ADDRESS_MISMATCH);
+  }
+  return addDeviceWallet(WALLET_TYPES.LEDGER, name, address, {
+    path,
+    addressCheck: LEDGER_ADDRESS_CHECK.MATCHED,
+  });
+}
+
+/**
+ * Ledger records no device has matched yet (`unchecked` or
+ * `mismatched`), for the check that runs when a Ledger is connected.
+ *
+ * @returns {Array<{index: number, name: string, address: string, path: string, addressCheck: string}>}
+ */
+function getLedgerRecordsToCheck() {
+  const meta = getVaultMeta();
+  if (!meta) {
+    return [];
+  }
+  return getWalletList(meta)
+    .filter((wallet) => wallet.type === WALLET_TYPES.LEDGER)
+    .map((wallet) => getWalletRecord(wallet.index, meta))
+    .filter((record) => record.addressCheck !== LEDGER_ADDRESS_CHECK.MATCHED);
+}
+
+/**
+ * Record what a device said about a Ledger record: whether it derives the
+ * record's address at the record's path. A `matched` record stays
+ * matched: a device that doesn't match it later is another Ledger, and
+ * signing checks the device every time anyway. Never deletes a record.
+ *
+ * @param {number} index - Wallet index of the Ledger record
+ * @param {boolean} matched
+ * @returns {string|null} The record's check state, or null if it isn't a Ledger record
+ */
+function recordLedgerAddressCheck(index, matched) {
+  const meta = getVaultMeta();
+  if (!meta) {
+    return null;
+  }
+  const wallets = getWalletList(meta);
+  const record = wallets.find((w) => w.index === index && w.type === WALLET_TYPES.LEDGER);
+  if (!record) {
+    return null;
+  }
+  const next =
+    matched || ledgerAddressCheck(record) === LEDGER_ADDRESS_CHECK.MATCHED
+      ? LEDGER_ADDRESS_CHECK.MATCHED
+      : LEDGER_ADDRESS_CHECK.MISMATCHED;
+  if (record.addressCheck !== next) {
+    record.addressCheck = next;
+    saveVaultMeta({ ...meta, derivedWallets: wallets });
+  }
+  return next;
 }
 
 /**
@@ -1314,6 +1408,19 @@ async function addSafeWallet(name, { address, owners, threshold, saltNonce }) {
     }
     if (record.type === WALLET_TYPES.SAFE) {
       throw new Error('A Safe cannot own another Safe');
+    }
+    // A Ledger owner's address must have been read back from a device
+    // (#1065): in a 1-of-2 Safe, an address planted by the chrome would
+    // control the funds alone.
+    if (record.type === WALLET_TYPES.LEDGER && record.addressCheck !== LEDGER_ADDRESS_CHECK.MATCHED) {
+      const { LEDGER_ERROR_CODES } = require('./wallet/ledger/errors');
+      const err = new Error(
+        record.addressCheck === LEDGER_ADDRESS_CHECK.MISMATCHED
+          ? `"${record.name}" can't own a Safe: the Ledger last connected doesn't hold it. Connect the Ledger that does and open Connect Hardware Wallet, then try again.`
+          : `"${record.name}" can't own a Safe until it has been checked on its Ledger. Connect that Ledger and open Connect Hardware Wallet, then try again.`
+      );
+      err.code = LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED;
+      throw err;
     }
   }
   if (typeof saltNonce !== 'string' || !/^\d+$/.test(saltNonce)) {
@@ -1839,7 +1946,7 @@ function registerIdentityIpc() {
       const wallet = await addLedgerWallet(name, address, path);
       return { success: true, wallet };
     } catch (err) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.message, code: err.code };
     }
   });
 
@@ -1918,6 +2025,9 @@ module.exports = {
   setActiveWalletIndex,
   createDerivedWallet,
   addLedgerWallet,
+  LEDGER_ADDRESS_CHECK,
+  getLedgerRecordsToCheck,
+  recordLedgerAddressCheck,
   addRemoteWallet,
   addSafeWallet,
   markSafeDeployed,

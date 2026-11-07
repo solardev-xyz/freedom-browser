@@ -39,8 +39,10 @@ jest.mock('../core/vault-backend', () => ({
   ),
 }));
 const coreCalls = (method) => mockCore.calls.filter(([name]) => name === method);
+const mockRecordLedgerAddressCheck = jest.fn();
 jest.mock('../identity-manager', () => ({
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
+  recordLedgerAddressCheck: (...args) => mockRecordLedgerAddressCheck(...args),
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
@@ -466,8 +468,19 @@ describe('getSigner (ledger-backed dispatch)', () => {
     const signer = getSigner(2);
     await expect(signer.getAddress()).resolves.toBe(LEDGER_RECORD.address);
     await expect(signer.signTransaction({ chainId: 1 })).resolves.toBe('0xsignedtx');
-    expect(mockCreateLedgerBackend).toHaveBeenCalledWith(LEDGER_RECORD);
+    expect(mockCreateLedgerBackend).toHaveBeenCalledWith(LEDGER_RECORD, {
+      onAddressCheck: expect.any(Function),
+    });
     expect(mockCore.calls).toEqual([]);
+  });
+
+  test('what the device says about the record is kept on the record (#1065)', () => {
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+    onAddressCheck(false);
+    expect(mockRecordLedgerAddressCheck).toHaveBeenCalledWith(2, false);
+    onAddressCheck(true);
+    expect(mockRecordLedgerAddressCheck).toHaveBeenLastCalledWith(2, true);
   });
 
   test('factory-level normalization applies to ledger backends too', async () => {
