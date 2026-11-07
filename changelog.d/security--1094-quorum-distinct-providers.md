@@ -1,0 +1,3 @@
+- Two RPC URLs that reach one provider no longer count as two endpoints toward a verified answer ([#1094](https://github.com/solardev-xyz/freedom-browser/issues/1094))
+  - A trailing slash, another path, another API key at the same provider, or `localhost` for `127.0.0.1` now counts once, in chain reads and ENS lookups
+  - A Blockscout log scan is shown as verified only when its quorum is

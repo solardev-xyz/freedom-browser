@@ -20,10 +20,13 @@ const { createBridgeServer } = require(path.join(repoRoot, 'scripts', 'serve-bri
 const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 'local-mqtt-broker.js'));
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
 const { closeApp } = require('./close-app');
+const { startRpcForwarder } = require('./rpc-forwarder');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-Phone-2026!';
 const GNOSIS_FORK_URL = 'https://rpc.gnosischain.com';
 const ANVIL_PORT = 18848; // distinct from the other suites
+// The fork's second endpoint, a forwarder (rpc-forwarder.js).
+const FORWARDER_PORT = 18850;
 const ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 // Anvil/Hardhat-default test key — well-known, never funded on mainnet.
@@ -84,7 +87,9 @@ const test = base.extend({
   // eslint-disable-next-line no-empty-pattern
   anvil: async ({}, use) => {
     const proc = await startAnvilFork();
-    await use({ url: ANVIL_URL, rpc });
+    const forwarder = await startRpcForwarder(ANVIL_URL, FORWARDER_PORT);
+    await use({ url: ANVIL_URL, forwarderUrl: forwarder.url, rpc });
+    await forwarder.close();
     proc.kill();
   },
 
@@ -127,18 +132,14 @@ const test = base.extend({
     fs.writeFileSync(
       path.join(userDataDir, 'network-config.json'),
       JSON.stringify({
-        // Test-only scaffolding: one anvil process listed as two logical
-        // endpoints, 127.0.0.1 and localhost. They are distinct URLs, so the
-        // RPC quorum, which counts each URL once (#1092), labels their
-        // agreement verified, as a Safe's activation needs (#1066). This
-        // exercises the Safe flow's labels; it doesn't test independent
-        // providers. The fork is the chain here.
+        // Two endpoints for the one fork: anvil itself and a forwarder on a
+        // second loopback port (rpc-forwarder.js says why not two anvils).
         endpointSources: {
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
-          'e2e-anvil-gnosis-localhost': {
+          'e2e-anvil-gnosis-forwarder': {
             role: 'rpc',
             keyed: false,
-            coverage: { 100: anvil.url.replace('127.0.0.1', 'localhost') },
+            coverage: { 100: anvil.forwarderUrl },
           },
         },
         removedSources: BUILTIN_GNOSIS_SOURCES,
@@ -152,8 +153,9 @@ const test = base.extend({
         // colibri-runtime.js and pinned by colibri-runtime.test.js under
         // Electron's full main process.
         //
-        // The quorum is asked first. Direct answers when the two disagree,
-        // e.g. one read lands just after a new block.
+        // The quorum is asked first, so the Safe flow runs on verified reads,
+        // as it would with two providers that agree. Direct answers when the
+        // two disagree, e.g. one read lands just after a new block.
         networks: { 100: { access: { readOrder: ['quorum', 'direct'] } } },
       }),
       'utf-8'
