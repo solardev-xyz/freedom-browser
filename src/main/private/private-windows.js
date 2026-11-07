@@ -32,12 +32,16 @@
  * and the name resolvers behind them are guarded a level down, by the
  * async-context marker in src/main/private/private-log-context.js — set
  * once by whoever knows the session (the per-session protocol registration,
- * the resolver IPC handlers) and read by every log site underneath.
+ * the resolver IPC handlers) and read by every log site underneath. The
+ * same marker keeps Colibri's reads off its disk store, and a cleanup hook
+ * drops the private windows' in-memory Colibri store once the last of them
+ * has closed (src/main/ens/colibri-resolver.js).
  */
 
 const crypto = require('crypto');
 const log = require('../logger');
 const { BrowserWindow, session } = require('electron');
+const { openPrivateSession, endPrivateSession } = require('./private-log-context');
 
 // Lazy: this module is required by the write guards (history, favicons,
 // publish-service) purely for isPrivateWebContents(); pulling the window
@@ -118,6 +122,38 @@ function isPrivateWebContents(webContents) {
     return !!win && everPrivateWindowIds.has(win.id);
   } catch {
     return false;
+  }
+}
+
+/**
+ * Strict classification, for guards that must fail closed:
+ *  - 'private': a webview on a private session, or the chrome renderer (or
+ *    a guest) of a window that was ever private;
+ *  - 'public': the live, non-private window main finds for it;
+ *  - 'unknown': anything else (no webContents, a destroyed one or a
+ *    destroyed host, no window main can find, or a lookup that throws).
+ * isPrivateWebContents answers false for 'unknown'. A guard that must leave
+ * nothing behind from a private window refuses it.
+ * @returns {'private'|'public'|'unknown'}
+ */
+function classifyWebContents(webContents) {
+  if (!webContents) return 'unknown';
+  try {
+    if (typeof webContents.isDestroyed === 'function' && webContents.isDestroyed()) {
+      return 'unknown';
+    }
+    if (webContents.session && privateSessions.has(webContents.session)) return 'private';
+    const host = webContents.hostWebContents || webContents;
+    if (host !== webContents && typeof host.isDestroyed === 'function' && host.isDestroyed()) {
+      return 'unknown';
+    }
+    const win = BrowserWindow.fromWebContents(host);
+    if (!win) return 'unknown';
+    if (everPrivateWindowIds.has(win.id)) return 'private';
+    if (typeof win.isDestroyed === 'function' && win.isDestroyed()) return 'unknown';
+    return 'public';
+  } catch {
+    return 'unknown';
   }
 }
 
@@ -203,6 +239,9 @@ function createPrivateWindow(initialUrl = null) {
     return null;
   }
 
+  // The private session (private-log-context.js) is open from here until
+  // the last private window has closed.
+  openPrivateSession();
   const window = requireCreateMainWindow()(initialUrl, { privatePartition: partition });
   privateWindows.set(window.id, { partition, session: privateSession });
   everPrivateWindowIds.add(window.id);
@@ -210,6 +249,9 @@ function createPrivateWindow(initialUrl = null) {
 
   window.on('closed', () => {
     privateWindows.delete(window.id);
+    // Before the hooks: work still running for the ended session sees that
+    // it ended, whichever hook its next step races.
+    if (privateWindows.size === 0) endPrivateSession();
     runCleanupHooks(partition);
     destroyPrivateSession(privateSession, partition).finally(() => {
       privateSessions.delete(privateSession);
@@ -241,6 +283,7 @@ module.exports = {
   registerPrivateCleanup,
   isPrivatePartition,
   isPrivateWebContents,
+  classifyWebContents,
   getPartitionForWebContents,
   getPrivateWindowCount,
   _resetState,
