@@ -430,3 +430,30 @@ describe('createLedgerBackend / the device check is kept on the record', () => {
     expect(verifyMessage('hi', signature)).toBe(deviceWallet.address);
   });
 });
+
+/**
+ * On integration the signer factory passes the identity core's hash of the
+ * typed data, the one the user confirmed (freedom-core #88): the device's
+ * signature is recovered over exactly that hash.
+ */
+describe('createLedgerBackend / typed data is recovered over the confirmed digest', () => {
+  const domain = { name: 'Mail', version: '1', chainId: 1, verifyingContract: '0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC' };
+  const types = { Mail: [{ name: 'contents', type: 'string' }] };
+  const message = { contents: 'Hello, Bob!' };
+  const hash = TypedDataEncoder.hash(domain, types, message);
+
+  beforeEach(() => {
+    mockEth.signEIP712Message.mockResolvedValue(toDeviceSig(deviceWallet.signingKey.sign(hash)));
+  });
+
+  test('a signature over the digest passes', async () => {
+    const signature = await createLedgerBackend(RECORD).signTypedData({ domain, types, message }, { digest: hash });
+    expect(verifyTypedData(domain, types, message, signature)).toBe(deviceWallet.address);
+  });
+
+  test('a signature over the typed data but not over the digest is refused', async () => {
+    const confirmed = TypedDataEncoder.hash(domain, types, { contents: 'Hello, Carol!' });
+    await expect(createLedgerBackend(RECORD).signTypedData({ domain, types, message }, { digest: confirmed }))
+      .rejects.toMatchObject({ code: 'LEDGER_BAD_SIGNATURE' });
+  });
+});

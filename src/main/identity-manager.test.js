@@ -539,10 +539,7 @@ describe('identity-manager ledger accounts', () => {
     const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
-        [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => null),
-          isUnlocked: jest.fn(() => false),
-        }),
+        ...vaultBackendMocks(makeVaultBackendMock({ unlocked: false })),
         [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
       },
     });

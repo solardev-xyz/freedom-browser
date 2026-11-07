@@ -7,7 +7,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Wallet, keccak256 } = require('ethers');
+const { Wallet, Transaction, keccak256 } = require('ethers');
 const { readJournal } = require('../lib/durable-journal');
 
 const mockChainRequest = jest.fn();
@@ -58,6 +58,9 @@ jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
+// A fake Ledger, for the test that runs the real Ledger backend.
+const mockLedgerEth = { getAddress: jest.fn(), signTransaction: jest.fn() };
+jest.mock('./ledger/transport', () => ({ withEthApp: (task) => task(mockLedgerEth) }));
 jest.mock('./provider-manager', () => ({
   getEip1193Provider: () => {
     throw new Error('unit tests must inject a provider');
@@ -341,6 +344,29 @@ describe('a new intent', () => {
     signer.signTransaction.mockRejectedValueOnce(rejection);
 
     await expect(tx.signAndSendTransaction(PARAMS, signer)).rejects.toBe(rejection);
+    expect(store.list()).toEqual([]);
+    expect(fs.existsSync(intentFile())).toBe(false);
+    expect(mockBroadcast).not.toHaveBeenCalled();
+    await expect(tx.signAndSendTransaction(PARAMS, signer)).resolves.toMatchObject({ nonce: 7 });
+  });
+
+  test('a Ledger signature that is not the account\'s leaves no record, and the nonce free (#1063)', async () => {
+    const { tx, store } = start();
+    // The real Ledger backend over a fake device that holds the account's
+    // address but answers with another key's signature.
+    const { createLedgerBackend } = require('./ledger/signer');
+    const otherKey = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+    mockLedgerEth.getAddress.mockResolvedValue({ address: ALICE.address });
+    mockLedgerEth.signTransaction.mockImplementation(async (_path, rawHex) => {
+      const { signature } = Transaction.from(await otherKey.signTransaction(Transaction.from('0x' + rawHex)));
+      return { r: signature.r.slice(2), s: signature.s.slice(2), v: signature.yParity.toString(16) };
+    });
+    const ledger = createLedgerBackend({ index: 1000000, address: ALICE.address, path: "44'/60'/0'/0/0" });
+
+    await expect(tx.signAndSendTransaction(PARAMS, ledger)).rejects.toMatchObject({
+      code: 'LEDGER_BAD_SIGNATURE',
+    });
+    expect(mockLedgerEth.signTransaction).toHaveBeenCalledTimes(1);
     expect(store.list()).toEqual([]);
     expect(fs.existsSync(intentFile())).toBe(false);
     expect(mockBroadcast).not.toHaveBeenCalled();

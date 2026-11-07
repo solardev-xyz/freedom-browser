@@ -206,13 +206,17 @@ function getSigner(walletIndex) {
       const normalized = normalizeTypedData(typedData);
       // Every backend: the Ledger and phone ones walk the types with ethers.
       assertBoundedTypeGraph(normalized?.types);
-      if (!vaultSigned) {
-        const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
-        if (expectedHash !== undefined && hash !== expectedHash) {
-          throw new Error('The typed data changed after it was confirmed');
-        }
+      if (vaultSigned) {
+        return backend.signTypedData(normalized, { expectedHash });
       }
-      return backend.signTypedData(normalized, { expectedHash });
+      const hash = await vaultBackend.typedDataHash(toCoreTypedData(normalized));
+      if (expectedHash !== undefined && hash !== expectedHash) {
+        throw new Error('The typed data changed after it was confirmed');
+      }
+      // `digest`: the hash a device's signature must recover over (#1063):
+      // the one the user confirmed, or the core's own for main's typed
+      // data, never one rebuilt from what the device was sent.
+      return backend.signTypedData(normalized, { expectedHash, digest: hash });
     },
   };
   // Optional capability: backends that sign AND broadcast through their

@@ -32,7 +32,14 @@
  * later — that decision belongs to the user, not this module.
  */
 
-const { Transaction, Signature, TypedDataEncoder, verifyMessage, verifyTypedData } = require('ethers');
+const {
+  Transaction,
+  Signature,
+  TypedDataEncoder,
+  verifyMessage,
+  verifyTypedData,
+  recoverAddress,
+} = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
@@ -152,7 +159,13 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
       });
     },
 
-    signTypedData: async (typedData) => {
+    /**
+     * `digest`: the EIP-712 hash the signature must recover over. The
+     * signer factory passes the identity core's hash, which is the one
+     * the user confirmed (freedom-core #88). Without it, ethers' hash of
+     * the typed data.
+     */
+    signTypedData: async (typedData, { digest } = {}) => {
       // The device wants the full EIP-712 wire payload.
       const { domain, strippedTypes, payload } = getEip712WirePayload(typedData);
 
@@ -171,7 +184,9 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
         // Recovered over the EIP-712 hash of the typed data itself, never
         // over what was sent to the device: either path must sign it.
         return checkedSignature(record, sig, (serialized) =>
-          verifyTypedData(domain, strippedTypes, typedData.message, serialized));
+          digest !== undefined
+            ? recoverAddress(digest, serialized)
+            : verifyTypedData(domain, strippedTypes, typedData.message, serialized));
       });
     },
   };

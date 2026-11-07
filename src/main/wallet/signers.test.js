@@ -493,7 +493,11 @@ describe('getSigner (ledger-backed dispatch)', () => {
     // JSON-string typed data reaches the backend parsed
     const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
     await signer.signTypedData(JSON.stringify(typed));
-    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+    // With the core's hash, for the backend to recover the signature over.
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, {
+      expectedHash: undefined,
+      digest: TypedDataEncoder.hash(typed.domain, typed.types, typed.message),
+    });
   });
 
   // freedom-core #88: a device signs what it shows, so main checks the
@@ -503,7 +507,7 @@ describe('getSigner (ledger-backed dispatch)', () => {
     const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
     const hash = TypedDataEncoder.hash(typed.domain, typed.types, typed.message);
     await signer.signTypedData(typed, { expectedHash: hash });
-    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: hash });
+    expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: hash, digest: hash });
     mockLedgerBackend.signTypedData.mockClear();
     const altered = { ...typed, message: { v: 2 } };
     await expect(signer.signTypedData(altered, { expectedHash: hash })).rejects.toThrow(
@@ -665,7 +669,11 @@ describe("getSigner: main's own typed data on a device", () => {
         types: { [primaryType]: typed.types[primaryType] },
         message: typed.message,
       });
-      expect(backend.signTypedData).toHaveBeenCalledWith(typed, { expectedHash: undefined });
+      // With the core's hash, for the backend to recover the signature over.
+      expect(backend.signTypedData).toHaveBeenCalledWith(typed, {
+        expectedHash: undefined,
+        digest: TypedDataEncoder.hash(typed.domain, { [primaryType]: typed.types[primaryType] }, typed.message),
+      });
       // Nothing of the vault's: no key, no vault signature.
       expect(coreCalls('sign.typed_data')).toEqual([]);
     });
