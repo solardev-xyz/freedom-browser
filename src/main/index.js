@@ -427,6 +427,7 @@ const {
   getCurrentStatus: getRadicleStatus,
   syncProfileMode: syncRadicleProfileMode,
   setUseInjectedIdentity: setRadicleInjectedIdentity,
+  createRadicleLifecycle,
 } = require('./radicle-manager');
 const {
   registerTorIpc,
@@ -436,7 +437,12 @@ const {
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
-const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-manager');
+const {
+  registerIdentityIpc,
+  hasVault,
+  setBeeLifecycle,
+  setRadicleLifecycle,
+} = require('./identity-manager');
 const { startCore, stopCore } = require('./core/core-process');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
@@ -663,6 +669,9 @@ async function bootstrap() {
   // (which it holds a LevelDB lock on) and restart it with the new key. Without
   // this, the wipe fails with EPERM on Windows during onboarding (issue #90).
   setBeeLifecycle(createAntLifecycle());
+  // Same for Radicle: a re-key stops the embedded node, and waits for it,
+  // before wiping node/, cobs/ and storage/ (R-8).
+  setRadicleLifecycle(createRadicleLifecycle());
   registerTokenRegistryIpc();
   registerNetworkConfigIpc();
   registerDappPermissionsIpc();

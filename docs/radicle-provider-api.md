@@ -38,7 +38,14 @@ The provider exists for everything that is **not** a public read:
 Installed in the page's main world of every web page's top frame before any
 of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
 A page's Content Security Policy does not affect it. It is not installed in
-private windows, in sub-frames, or on Freedom's internal pages.
+private windows, in sub-frames, or on Freedom's internal pages. Main also
+refuses every method that changes lasting state when it comes from a private
+window, or from a sender main cannot place in a known window: `radicle_seed`,
+`radicle_unseed`, `radicle_sync`, `radicle_disconnect` and the COB writes
+(`4100`, reason `private_window`). The reads it still answers there don't
+record their use in the permission store, and no grant is recorded from a
+private window. A page that reaches the provider channel anyway leaves
+nothing behind.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>
@@ -70,7 +77,10 @@ provider:
 
 `data.reason` values include: `invalid_rid`, `invalid_id`, `invalid_title`,
 `invalid_body`, `not_seeded`, `repo_not_found`, `announce_failed`,
-`payload_too_large`.
+`payload_too_large`. A signed write main refuses carries `4100` with
+`approval_required` (no per-write approval and no "always allow writes"
+rule), `auto_write_limit` (the rule's rate limit is used up; Freedom then
+shows the per-write prompt itself) or `agent_custody`.
 
 ## Permission tiers
 
@@ -89,13 +99,21 @@ provider:
    First call MAY prompt; rejection → 4001. Writes sign with the user's
    node identity — there are no per-origin sub-identities in v1 (a forge
    wants you to be _you_; see Design decisions).
-   On a tab Freedom Agent holds, the grant does not answer a write on its
-   own: each write prompts with its content, and main refuses one the
-   renderer reports as grant-answered (`4100`, reason `agent_custody`).
+   The grant lets a site ask; it does not answer a write. Each COB write
+   prompts with its exact content, saying that it is signed with the
+   user's Radicle identity and is public and permanent; rejection → 4001.
+   The prompt offers a per-site **"always allow writes"** rule
+   (`autoApprove.signing`). Writes the rule answers are rate-limited per
+   origin in main: a burst of 5, then 1 per 30 s, and at most 50 in any
+   24 hours. Past the limit a write falls back to the prompt, where the
+   user can also turn the rule off. The counts are held in memory.
+   On a tab Freedom Agent holds, the rule does not apply: each write
+   prompts, and main refuses one the renderer reports as automatic
+   (`4100`, reason `agent_custody`).
 
-Auto-approve per origin and per tier MAY be offered, revocable at any
-time, mirroring the Swarm provider's `{ publish, feeds, signing }` model
-with `{ node, signing }`.
+Auto-approve is stored per origin and per tier as `{ node, signing }`,
+mirroring the Swarm provider's `{ publish, feeds, signing }` model, and
+ends when the site disconnects.
 
 ## Methods
 
@@ -239,7 +257,10 @@ Successful COB mutations announce their updated refs before returning.
   `radicle_commitAndPush({ rid, changes[] })`, but v1 ships COB writes
   only (issues + patch comments cover the collaboration loop around
   existing patches).
-- **Private repos** are invisible to the public `rad:` URL scheme. v1 does
+- **Private repos** are invisible to the public `rad:` URL scheme: a
+  private repository answers exactly as one this node does not store (404,
+  `{ "error": "repository not found" }`), so a page cannot tell them apart.
+  v1 does
   not expose them through the provider either.
 - **No repo creation** (`rad init`) in v1 — it needs a working copy and
   raises squatting/spam questions; revisit with patch creation.
@@ -253,5 +274,6 @@ Successful COB mutations announce their updated refs before returning.
 - Writes are irrevocable once announced. The signing-grant prompt MUST
   make clear that the site will be able to author content as the user on
   the Radicle network.
-- Rate-limit write methods per origin to protect the network and the
-  user's reputation from runaway dApps.
+- Write methods are rate-limited per origin when the "always allow
+  writes" rule answers them (see Permission tiers), to protect the network
+  and the user's reputation from runaway dApps.

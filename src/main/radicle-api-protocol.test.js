@@ -5,6 +5,10 @@ jest.mock('./logger', () => ({
 }));
 
 jest.mock('./radicle-embedded', () => ({
+  // The read bounds are the real ones (R-3); the reads are scripted.
+  withReadBounds: jest.requireActual('./radicle-embedded').withReadBounds,
+  ReadEnded: jest.requireActual('./radicle-embedded').ReadEnded,
+  ReplyTooLarge: jest.requireActual('./radicle-embedded').ReplyTooLarge,
   status: jest.fn(),
   listRepos: jest.fn(),
   buildRepoMeta: jest.fn(),
@@ -41,6 +45,7 @@ const {
   serveRepoApi,
   decodeRepoApiPath,
   mapWithConcurrency,
+  boundedStringify,
   REPO_LIST_CONCURRENCY,
 } = require('./radicle-api-protocol');
 
@@ -409,6 +414,120 @@ describe('radapi protocol', () => {
     }
   });
 
+  test('refuses a response over the caller\'s cap, raw text or parsed (R-3)', async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    embedded.blobAtRaw.mockResolvedValue(`{"content":"${'x'.repeat(200)}"}`);
+    embedded.issues.mockResolvedValue([{ title: 'y'.repeat(200) }]);
+
+    for (const apiPath of [`/blob/${REVISION}/big.bin`, '/issues']) {
+      const capped = await serveRepoApi(RID, apiPath, { maxResponseChars: 100 });
+      expect(capped.status).toBe(502);
+      expect(capped.headers.get('access-control-allow-origin')).toBe('*');
+      await expect(capped.json()).resolves.toEqual({
+        error: 'repository data too large to serve here',
+      });
+
+      // Without a cap (the internal viewer's radapi:) the same read is served.
+      const uncapped = await serveRepoApi(RID, apiPath, { allowPrivate: true });
+      expect(uncapped.status).toBe(200);
+    }
+    const small = await serveRepoApi(RID, `/blob/${REVISION}/big.bin`, {
+      maxResponseChars: 10_000,
+    });
+    expect(small.status).toBe(200);
+  });
+
+  test('stops serializing a composed reply at the cap (R-3, #948 round 1)', async () => {
+    // A discussion of 32,768 comment bodies: about 34 Mi characters of JSON,
+    // over the 16 Mi cap. The reply stops at the cap, without serializing
+    // the rest, and is a 502.
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    const body = 'c'.repeat(1024);
+    let read = 0;
+    const comments = new Proxy(
+      Array.from({ length: 32_768 }, () => ({ id: 'x', body })),
+      {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && /^[0-9]+$/.test(key)) read += 1;
+          return Reflect.get(target, key, receiver);
+        },
+      }
+    );
+    embedded.issue.mockResolvedValue({ id: 'abc', title: 'big', discussion: comments });
+    const stringify = jest.spyOn(JSON, 'stringify');
+    try {
+      const response = await serveRepoApi(RID, '/issues/abc', {
+        maxResponseChars: 16 * 1024 * 1024,
+      });
+      expect(response.status).toBe(502);
+      await expect(response.json()).resolves.toEqual({
+        error: 'repository data too large to serve here',
+      });
+      // About half the comments are read, and never the whole reply.
+      expect(read).toBeGreaterThan(16_000);
+      expect(read).toBeLessThan(17_000);
+      expect(stringify.mock.calls.some(([value]) => value?.discussion === comments)).toBe(false);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
+  test('an addon reply over the cap, refused before it is parsed, is a 502 (R-3)', async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    embedded.issues.mockRejectedValue(new embedded.ReplyTooLarge('issues'));
+    for (const method of ['GET', 'HEAD']) {
+      const response = await serveRepoApi(RID, '/issues', { method, maxResponseChars: 100 });
+      expect(response.status).toBe(502);
+      if (method === 'HEAD') await expect(response.text()).resolves.toBe('');
+    }
+  });
+
+  test('a read that ended is answered without serializing its reply (R-3)', async () => {
+    const ended = new AbortController();
+    embedded.repoInfo.mockImplementation(async () => {
+      ended.abort();
+      return { visibility: { type: 'public' } };
+    });
+    embedded.issues.mockResolvedValue([{ title: 'x' }]);
+    const response = await serveRepoApi(RID, '', { signal: ended.signal });
+    expect(response.status).toBe(503);
+    expect(embedded.buildRepoMeta).not.toHaveBeenCalled();
+    embedded.repoInfo.mockReset();
+    embedded.issues.mockRejectedValue(new embedded.ReadEnded());
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    const cancelled = await serveRepoApi(RID, '/issues', { signal: new AbortController().signal });
+    expect(cancelled.status).toBe(503);
+  });
+
+  describe('boundedStringify', () => {
+    const values = [
+      { a: 1, b: 'two', c: [true, null, undefined, () => 1, Symbol('s')], d: undefined },
+      { nested: { deep: [{ x: -0, y: NaN, z: Infinity, w: 1.5e300 }] }, e: 'é\u2028\ud800"\\' },
+      [],
+      {},
+      'text',
+      42,
+      { toJSON: () => ({ replaced: true }) },
+      { date: new Date(0) },
+    ];
+    test.each(values.map((value, index) => [index, value]))(
+      'is JSON.stringify under the cap (%s)',
+      (_index, value) => {
+        expect(boundedStringify(value, 1_000_000)).toBe(JSON.stringify(value));
+        expect(boundedStringify(value, null)).toBe(JSON.stringify(value));
+      }
+    );
+
+    test('returns null as soon as the text would pass the cap', () => {
+      const value = { list: ['abc', 'defg'] };
+      const text = JSON.stringify(value);
+      expect(boundedStringify(value, text.length)).toBe(text);
+      expect(boundedStringify(value, text.length - 1)).toBeNull();
+      // One string over the cap is refused before it is escaped.
+      expect(boundedStringify({ big: 'x'.repeat(50) }, 40)).toBeNull();
+    });
+  });
+
   test('forwards a commit history page untouched', async () => {
     const text = '[ {"id": "x"} ]';
     embedded.commitsRaw.mockResolvedValue(text);
@@ -538,8 +657,40 @@ describe('radapi protocol', () => {
   test('does not expose private repositories through the public repo API', async () => {
     embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private' } });
     const response = await serveRepoApi(RID, '/issues');
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(embedded.issues).not.toHaveBeenCalled();
+  });
+
+  // R-2: 403 for a stored private RID beside 404 for an absent one told any
+  // page which private repositories this node holds.
+  test.each(['', '/issues', `/tree/${REVISION}`, `/commits/${REVISION}`])(
+    'a private repository and an absent one answer alike for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private', allow: [] } });
+      const privateRepo = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absentRepo = await serveRepoApi(RID, apiPath);
+
+      const shape = async (response) => ({
+        status: response.status,
+        headers: [...response.headers.entries()].sort(),
+        body: await response.text(),
+      });
+      const privateShape = await shape(privateRepo);
+      expect(privateShape).toEqual(await shape(absentRepo));
+      expect(privateShape.status).toBe(404);
+      expect(JSON.parse(privateShape.body)).toEqual({ error: 'repository not found' });
+      expect(privateShape.body).not.toContain(RID);
+    }
+  );
+
+  test('other repoInfo failures are still 500s, and radapi: still serves private repos', async () => {
+    embedded.repoInfo.mockRejectedValueOnce(new Error('storage is locked'));
+    expect((await serveRepoApi(RID, '')).status).toBe(500);
+
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
+    embedded.buildRepoMeta.mockResolvedValueOnce({ rid: RID });
+    expect((await serveRepoApi(RID, '', { allowPrivate: true })).status).toBe(200);
   });
 
   test.each([
