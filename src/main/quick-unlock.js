@@ -251,15 +251,14 @@ async function unlockWithTouchId() {
  * Touch ID in place of the password re-entry `identity:export-mnemonic`
  * asks for. Unlocks the vault (as the password flow does first) and
  * returns the recovery phrase the user asked to see — never the password.
- * @returns {Promise<{success: boolean, mnemonic?: string, error?: string}>}
+ * @returns {Promise<{success: boolean, mnemonic?: string, passphrase?: string, error?: string}>}
  */
 async function exportMnemonicWithTouchId() {
   try {
     const password = await retrievePasswordWithTouchId();
     const identity = identityManager();
     await identity.unlockVault(password);
-    const mnemonic = await identity.exportMnemonic();
-    return { success: true, mnemonic };
+    return { success: true, ...(await identity.exportRecoveryPhrase()) };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export recovery phrase:', err.message);
     return { success: false, error: err.message };

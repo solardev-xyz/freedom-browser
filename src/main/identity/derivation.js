@@ -40,6 +40,30 @@ const MAX_WALLET_PATH_INDEX = 0x7fffffff;
 const INVALID_WALLET_PATH = "Enter a path like m/44'/60'/0'/0/0";
 
 /**
+ * What keys come from: the BIP-39 words, plus the passphrase when the seed has
+ * one. A passphrase is used exactly as typed, so it must not be trimmed or
+ * lowercased: every string gives a valid wallet, with no error for a wrong one.
+ * A bare string is a seed with no passphrase.
+ * @typedef {string|{mnemonic: string, passphrase?: string}} SeedSecret
+ */
+
+/**
+ * @param {SeedSecret} secret
+ * @returns {{mnemonic: string, passphrase: string}}
+ */
+function readSeedSecret(secret) {
+  const { mnemonic, passphrase = '' } =
+    typeof secret === 'string' ? { mnemonic: secret } : (secret ?? {});
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  if (typeof passphrase !== 'string') {
+    throw new Error('Passphrase must be text');
+  }
+  return { mnemonic, passphrase };
+}
+
+/**
  * Generate a new BIP-39 mnemonic
  * @param {number} strength - Entropy bits (128 = 12 words, 256 = 24 words)
  * @returns {string} Space-separated mnemonic words
@@ -59,20 +83,16 @@ function isValidMnemonic(mnemonic) {
 }
 
 /**
- * Derive all keys from a mnemonic
- * @param {string} mnemonic - BIP-39 mnemonic
+ * Derive all keys from a seed
+ * @param {SeedSecret} secret
  * @returns {Object} All derived keys and identities
  */
-function deriveAllKeys(mnemonic) {
-  if (!isValidMnemonic(mnemonic)) {
-    throw new Error('Invalid mnemonic');
-  }
-
-  const seed = mnemonicToSeedSync(mnemonic);
+function deriveAllKeys(secret) {
+  const seed = getSeed(secret);
 
   // Derive Ethereum keys (secp256k1) via ethers.js
-  const userWallet = deriveEthereumKey(mnemonic, PATHS.USER_WALLET);
-  const beeWallet = deriveEthereumKey(mnemonic, PATHS.BEE_WALLET);
+  const userWallet = deriveEthereumKey(secret, PATHS.USER_WALLET);
+  const beeWallet = deriveEthereumKey(secret, PATHS.BEE_WALLET);
 
   // Derive Ed25519 keys via SLIP-0010
   const radicleKey = deriveEd25519Key(seed, PATHS.RADICLE);
@@ -88,13 +108,14 @@ function deriveAllKeys(mnemonic) {
 
 /**
  * Derive an Ethereum key at a specific BIP-44 path
- * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {SeedSecret} secret
  * @param {string} path - Derivation path (e.g., "m/44'/60'/0'/0/0")
  * @returns {Object} { privateKey, publicKey, address }
  */
-function deriveEthereumKey(mnemonic, path) {
+function deriveEthereumKey(secret, path) {
+  const { mnemonic, passphrase } = readSeedSecret(secret);
   // Create Mnemonic object and derive HD wallet at specific path
-  const mnemonicObj = Mnemonic.fromPhrase(mnemonic);
+  const mnemonicObj = Mnemonic.fromPhrase(mnemonic, passphrase);
   const wallet = HDNodeWallet.fromMnemonic(mnemonicObj, path);
 
   return {
@@ -109,20 +130,17 @@ function deriveEthereumKey(mnemonic, path) {
  * Derive a user wallet at a specific account index
  * Uses BIP-44 path: m/44'/60'/{accountIndex}'/0/0
  * Account 0 is the main wallet, accounts 1+ are additional wallets
- * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {SeedSecret} secret
  * @param {number} accountIndex - Account index (0, 1, 2, ...)
  * @returns {Object} { privateKey, publicKey, address, path, accountIndex }
  */
-function deriveUserWallet(mnemonic, accountIndex = 0) {
-  if (!isValidMnemonic(mnemonic)) {
-    throw new Error('Invalid mnemonic');
-  }
+function deriveUserWallet(secret, accountIndex = 0) {
   if (typeof accountIndex !== 'number' || accountIndex < 0 || !Number.isInteger(accountIndex)) {
     throw new Error('Account index must be a non-negative integer');
   }
 
   const path = `m/44'/60'/${accountIndex}'/0/0`;
-  const wallet = deriveEthereumKey(mnemonic, path);
+  const wallet = deriveEthereumKey(secret, path);
 
   return {
     ...wallet,
@@ -162,14 +180,11 @@ function normalizeWalletPath(path) {
  * Freedom's default `m/44'/60'/{accountIndex}'/0/0` scheme. Every derivation
  * re-checks the path, signing included, because the path comes back from
  * vault-meta.json, which sits outside the encrypted vault.
- * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {SeedSecret} secret
  * @param {string} path - Derivation path, with or without the leading `m/`
  * @returns {Object} { privateKey, publicKey, address, path } with `path` canonical
  */
-function deriveWalletAtPath(mnemonic, path) {
-  if (!isValidMnemonic(mnemonic)) {
-    throw new Error('Invalid mnemonic');
-  }
+function deriveWalletAtPath(secret, path) {
   const normalized = normalizeWalletPath(path);
   if (normalized === PATHS.BEE_WALLET) {
     throw new Error("This path is your Swarm node's wallet, so it can't be added as an account");
@@ -180,7 +195,7 @@ function deriveWalletAtPath(mnemonic, path) {
   if (reserved) {
     throw new Error("This path is reserved for Freedom's node and publishing keys");
   }
-  return deriveEthereumKey(mnemonic, normalized);
+  return deriveEthereumKey(secret, normalized);
 }
 
 /**
@@ -206,20 +221,17 @@ function deriveEd25519Key(seed, path) {
  * Uses BIP-44 path: m/44'/73406'/{originIndex}'/0/0
  * These are dedicated secp256k1 keys for feed signing — separate from
  * the user wallet, Bee wallet, and all other identity namespaces.
- * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {SeedSecret} secret
  * @param {number} originIndex - Origin index (0, 1, 2, ...)
  * @returns {Object} { privateKey, publicKey, address, path, originIndex }
  */
-function derivePublisherKey(mnemonic, originIndex) {
-  if (!isValidMnemonic(mnemonic)) {
-    throw new Error('Invalid mnemonic');
-  }
+function derivePublisherKey(secret, originIndex) {
   if (typeof originIndex !== 'number' || originIndex < 0 || !Number.isInteger(originIndex)) {
     throw new Error('Origin index must be a non-negative integer');
   }
 
   const path = `${PATHS.SWARM_PUBLISHER}/${originIndex}'/0/0`;
-  const key = deriveEthereumKey(mnemonic, path);
+  const key = deriveEthereumKey(secret, path);
 
   return {
     ...key,
@@ -228,15 +240,13 @@ function derivePublisherKey(mnemonic, originIndex) {
 }
 
 /**
- * Get the seed from a mnemonic (for direct use with SLIP-0010)
- * @param {string} mnemonic - BIP-39 mnemonic
+ * Get the BIP-39 seed (for direct use with SLIP-0010)
+ * @param {SeedSecret} secret
  * @returns {Uint8Array} 64-byte seed
  */
-function getSeed(mnemonic) {
-  if (!isValidMnemonic(mnemonic)) {
-    throw new Error('Invalid mnemonic');
-  }
-  return mnemonicToSeedSync(mnemonic);
+function getSeed(secret) {
+  const { mnemonic, passphrase } = readSeedSecret(secret);
+  return mnemonicToSeedSync(mnemonic, passphrase);
 }
 
 module.exports = {

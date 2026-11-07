@@ -13,12 +13,13 @@ const {
   unlockVault,
   lockVault,
   isUnlocked,
-  getMnemonic,
+  getSeedSecret,
   changePassword,
   deleteVault,
-  exportMnemonic,
+  exportRecoveryPhrase,
   exportPrivateKey,
 } = require('./vault');
+const { decrypt } = require('@metamask/browser-passworder');
 const { isValidMnemonic, deriveUserWallet, deriveWalletAtPath } = require('./derivation');
 
 const TEST_MNEMONIC =
@@ -93,7 +94,7 @@ describe('vault', () => {
 
       // Verify we can unlock and get the same mnemonic
       await unlockVault(tempDir, 'password123', 0);
-      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+      expect(getSeedSecret().mnemonic).toBe(TEST_MNEMONIC);
     });
 
     test('throws on invalid mnemonic', async () => {
@@ -119,7 +120,7 @@ describe('vault', () => {
       await importVault(tempDir, 'newpassword', newMnemonic, true);
 
       await unlockVault(tempDir, 'newpassword', 0);
-      expect(getMnemonic()).toBe(newMnemonic);
+      expect(getSeedSecret().mnemonic).toBe(newMnemonic);
     });
   });
 
@@ -134,7 +135,7 @@ describe('vault', () => {
       await unlockVault(tempDir, 'password123', 0);
 
       expect(isUnlocked()).toBe(true);
-      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+      expect(getSeedSecret().mnemonic).toBe(TEST_MNEMONIC);
     });
 
     test('throws on incorrect password', async () => {
@@ -150,7 +151,7 @@ describe('vault', () => {
       lockVault();
 
       expect(isUnlocked()).toBe(false);
-      expect(getMnemonic()).toBeNull();
+      expect(getSeedSecret()).toBeNull();
     });
 
     test('throws when no vault exists', async () => {
@@ -162,16 +163,16 @@ describe('vault', () => {
     });
   });
 
-  describe('getMnemonic', () => {
+  describe('getSeedSecret', () => {
     test('returns null when locked', () => {
-      expect(getMnemonic()).toBeNull();
+      expect(getSeedSecret()).toBeNull();
     });
 
     test('returns mnemonic when unlocked', async () => {
       await importVault(tempDir, 'password123', TEST_MNEMONIC);
       await unlockVault(tempDir, 'password123', 0);
 
-      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+      expect(getSeedSecret().mnemonic).toBe(TEST_MNEMONIC);
     });
   });
 
@@ -189,7 +190,7 @@ describe('vault', () => {
 
       // New password should work
       await unlockVault(tempDir, 'newpassword', 0);
-      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+      expect(getSeedSecret().mnemonic).toBe(TEST_MNEMONIC);
     });
 
     test('throws on incorrect current password', async () => {
@@ -221,16 +222,16 @@ describe('vault', () => {
     });
   });
 
-  describe('exportMnemonic', () => {
+  describe('exportRecoveryPhrase', () => {
     test('returns mnemonic when unlocked', async () => {
       await importVault(tempDir, 'password123', TEST_MNEMONIC);
       await unlockVault(tempDir, 'password123', 0);
 
-      expect(exportMnemonic()).toBe(TEST_MNEMONIC);
+      expect(exportRecoveryPhrase()).toEqual({ mnemonic: TEST_MNEMONIC, passphrase: '' });
     });
 
     test('throws when locked', () => {
-      expect(() => exportMnemonic()).toThrow('Vault is locked');
+      expect(() => exportRecoveryPhrase()).toThrow('Vault is locked');
     });
   });
 
@@ -291,6 +292,110 @@ describe('vault', () => {
     test('throws while the vault is locked', () => {
       lockVault();
       expect(() => exportPrivateKey(1000000, PATH)).toThrow('locked');
+    });
+  });
+
+  describe('passphrase', () => {
+    const PASSPHRASE = 'TREZOR ';
+    const SECRET = { mnemonic: TEST_MNEMONIC, passphrase: PASSPHRASE };
+
+    function readVaultFile() {
+      return JSON.parse(fs.readFileSync(getVaultPath(tempDir), 'utf-8'));
+    }
+
+    test('a vault with no passphrase is written as before, at version 1', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      expect(readVaultFile().version).toBe(1);
+
+      const decrypted = await decrypt('password123', readVaultFile().encrypted);
+      expect(decrypted).toEqual({ mnemonic: TEST_MNEMONIC });
+    });
+
+    test('an empty passphrase means none', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC, false, '');
+      expect(readVaultFile().version).toBe(1);
+    });
+
+    test('createVault writes a vault with no passphrase', async () => {
+      await createVault(tempDir, 'password123');
+      expect(readVaultFile().version).toBe(1);
+    });
+
+    test('a passphrase is encrypted with the words, at version 2, exactly as typed', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC, false, PASSPHRASE);
+
+      const file = readVaultFile();
+      expect(file.version).toBe(2);
+      expect(fs.readFileSync(getVaultPath(tempDir), 'utf-8')).not.toContain('TREZOR');
+      expect(await decrypt('password123', file.encrypted)).toEqual(SECRET);
+
+      await unlockVault(tempDir, 'password123', 0);
+      expect(getSeedSecret()).toEqual(SECRET);
+    });
+
+    test('whitespace alone is a real passphrase', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC, false, ' ');
+      expect(readVaultFile().version).toBe(2);
+      await unlockVault(tempDir, 'password123', 0);
+      expect(getSeedSecret().passphrase).toBe(' ');
+    });
+
+    test('changing the password keeps the passphrase and the version', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC, false, PASSPHRASE);
+
+      await changePassword(tempDir, 'password123', 'newpassword');
+      lockVault();
+
+      expect(readVaultFile().version).toBe(2);
+      await unlockVault(tempDir, 'newpassword', 0);
+      expect(getSeedSecret()).toEqual(SECRET);
+    });
+
+    test('changing the password keeps a vault with no passphrase at version 1', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      await changePassword(tempDir, 'password123', 'newpassword');
+      expect(readVaultFile().version).toBe(1);
+    });
+
+    test('locking clears the passphrase with the words', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC, false, PASSPHRASE);
+      await unlockVault(tempDir, 'password123', 0);
+
+      lockVault();
+
+      expect(getSeedSecret()).toBeNull();
+      expect(() => exportRecoveryPhrase()).toThrow('Vault is locked');
+    });
+
+    test('the recovery export includes it, and exported keys are derived with it', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC, false, PASSPHRASE);
+      await unlockVault(tempDir, 'password123', 0);
+
+      expect(exportRecoveryPhrase()).toEqual(SECRET);
+      const path = "m/44'/60'/0'/0/2";
+      expect(exportPrivateKey(0)).toBe(deriveUserWallet(SECRET, 0).privateKey);
+      expect(exportPrivateKey(0)).not.toBe(deriveUserWallet(TEST_MNEMONIC, 0).privateKey);
+      expect(exportPrivateKey(1000000, path)).toBe(deriveWalletAtPath(SECRET, path).privateKey);
+    });
+
+    test('offers no way to read the words alone for deriving keys', () => {
+      expect(require('./vault').getMnemonic).toBeUndefined();
+    });
+
+    test('refuses a passphrase that is not text', async () => {
+      await expect(importVault(tempDir, 'password123', TEST_MNEMONIC, false, 123)).rejects.toThrow(
+        'Passphrase must be text'
+      );
+      expect(vaultExists(tempDir)).toBe(false);
+    });
+
+    test('refuses a vault version it does not know', async () => {
+      await importVault(tempDir, 'password123', TEST_MNEMONIC);
+      fs.writeFileSync(getVaultPath(tempDir), JSON.stringify({ ...readVaultFile(), version: 3 }));
+
+      await expect(unlockVault(tempDir, 'password123', 0)).rejects.toThrow(
+        'Unsupported vault version: 3'
+      );
     });
   });
 });

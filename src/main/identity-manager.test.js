@@ -292,7 +292,7 @@ describe('identity-manager ledger accounts', () => {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => null), // vault locked — ledger ops must not need it
+          getSeedSecret: jest.fn(() => null), // vault locked — ledger ops must not need it
           isUnlocked: jest.fn(() => false),
         }),
       },
@@ -467,7 +467,7 @@ describe('identity-manager safe accounts', () => {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => null), // vault locked — safe ops must not need it
+          getSeedSecret: jest.fn(() => null), // vault locked — safe ops must not need it
           isUnlocked: jest.fn(() => false),
         }),
       },
@@ -689,7 +689,7 @@ describe('identity-manager wallet index allocation', () => {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
-          getMnemonic: jest.fn(() => 'test mnemonic'),
+          getSeedSecret: jest.fn(() => 'test mnemonic'),
           isUnlocked: jest.fn(() => true),
           deriveUserWallet: jest.fn((_mnemonic, index) => ({
             address: `0xderived${index}`,
@@ -834,7 +834,7 @@ describe('identity-manager wallets at an explicit path', () => {
       extraMocks: {
         [require.resolve('./identity')]: () => ({
           ...derivation,
-          getMnemonic: jest.fn(() => mnemonic),
+          getSeedSecret: jest.fn(() => mnemonic),
           isUnlocked: jest.fn(() => mnemonic !== null),
           exportPrivateKey: jest.fn((index, walletPath) =>
             walletPath
@@ -1038,6 +1038,227 @@ describe('identity-manager wallets at an explicit path', () => {
  * The lazily-loaded `./identity` module is mocked so the test exercises the
  * orchestration/branch logic without real key derivation or node binaries.
  */
+describe('identity-manager seeds with a passphrase', () => {
+  // The real vault and derivation, so this fails if any key misses the passphrase.
+  const MNEMONIC =
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  const PASSPHRASE = 'TREZOR';
+  const SECRET = { mnemonic: MNEMONIC, passphrase: PASSPHRASE };
+  const PASSWORD = 'password-for-tests';
+  const MAIN_ADDRESS = '0x9c32F71D4DB8Fb9e1A58B0a80dF79935e7256FA6';
+  const METAMASK_2_PATH = "m/44'/60'/0'/0/2";
+
+  let tmpDir;
+  let envSnapshot;
+  let identityManager;
+  let identity;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-passphrase-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    identity = jest.requireActual('./identity');
+    identity.lockVault();
+    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => identity,
+        [require.resolve('./swarm/feed-store')]: () => ({
+          getEthereumWalletIdentityReferences: jest.fn(() => []),
+        }),
+      },
+    }).mod;
+  });
+
+  afterEach(() => {
+    identity.lockVault();
+    restoreEnv(envSnapshot);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function readVaultMeta() {
+    return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
+  }
+
+  function vaultFileExists() {
+    return fs.existsSync(path.join(tmpDir, 'identity-vault.json'));
+  }
+
+  function importWithPassphrase(options = {}) {
+    return identityManager.importExistingMnemonic(PASSWORD, MNEMONIC, true, {
+      passphrase: PASSPHRASE,
+      ...options,
+    });
+  }
+
+  async function expectEveryKeyFromThePassphrase() {
+    const expected = identity.deriveAllKeys(SECRET);
+    const words = identity.deriveAllKeys(MNEMONIC);
+
+    expect(expected.userWallet.address).toBe(MAIN_ADDRESS);
+    expect(words.userWallet.address).not.toBe(MAIN_ADDRESS);
+
+    // What the nodes are given: the Swarm wallet, Radicle and IPFS keys.
+    const hex = (bytes) => Buffer.from(bytes).toString('hex');
+    const nodeKeys = identityManager.getDerivedKeys();
+    expect(nodeKeys.userWallet.address).toBe(MAIN_ADDRESS);
+    expect(nodeKeys.beeWallet.privateKey).toBe(expected.beeWallet.privateKey);
+    expect(hex(nodeKeys.radicleKey.privateKey)).toBe(hex(expected.radicleKey.privateKey));
+    expect(hex(nodeKeys.ipfsKey.privateKey)).toBe(hex(expected.ipfsKey.privateKey));
+
+    expect((await identityManager.getUserWalletKey(0)).address).toBe(MAIN_ADDRESS);
+    expect(await identityManager.exportPrivateKeyForAccount(0)).toBe(
+      expected.userWallet.privateKey
+    );
+    expect((await identityManager.getPublisherKey(0)).address).toBe(
+      identity.derivePublisherKey(SECRET, 0).address
+    );
+    expect(await identityManager.exportRecoveryPhrase()).toEqual(SECRET);
+    expect(readVaultMeta().addresses).toEqual({
+      userWallet: MAIN_ADDRESS,
+      beeWallet: expected.beeWallet.address,
+    });
+  }
+
+  test('import derives every key from the words and the passphrase', async () => {
+    await expect(importWithPassphrase()).resolves.toBeNull();
+
+    await expectEveryKeyFromThePassphrase();
+  });
+
+  test('the same keys come back after a lock and unlock', async () => {
+    await importWithPassphrase();
+    await identityManager.lockVault();
+
+    await identityManager.unlockVault(PASSWORD);
+
+    await expectEveryKeyFromThePassphrase();
+  });
+
+  test('the same keys come back after changing the vault password', async () => {
+    await importWithPassphrase();
+    await identityManager.changeVaultPassword(PASSWORD, 'another-password');
+    await identityManager.lockVault();
+
+    await identityManager.unlockVault('another-password');
+
+    await expectEveryKeyFromThePassphrase();
+  });
+
+  test('accounts added later use the passphrase too', async () => {
+    await importWithPassphrase();
+
+    const next = await identityManager.createDerivedWallet('Next');
+    expect(next.address).toBe(identity.deriveUserWallet(SECRET, next.index).address);
+
+    const byPath = await identityManager.addWalletAtPath('By path', METAMASK_2_PATH);
+    const expected = identity.deriveWalletAtPath(SECRET, METAMASK_2_PATH);
+    expect(byPath.address).toBe(expected.address);
+    expect((await identityManager.getUserWalletKey(byPath.index)).privateKey).toBe(
+      expected.privateKey
+    );
+
+    const wallets = await identityManager.getDerivedWallets();
+    expect(wallets.map((wallet) => wallet.address)).toEqual([
+      MAIN_ADDRESS,
+      next.address,
+      byPath.address,
+    ]);
+  });
+
+  test('an import with no passphrase opens the words-only wallet at vault version 1', async () => {
+    await identityManager.importExistingMnemonic(PASSWORD, MNEMONIC);
+
+    const words = identity.deriveAllKeys(MNEMONIC);
+    expect((await identityManager.getUserWalletKey(0)).address).toBe(words.userWallet.address);
+    expect(await identityManager.exportRecoveryPhrase()).toEqual({
+      mnemonic: MNEMONIC,
+      passphrase: '',
+    });
+    const file = JSON.parse(fs.readFileSync(path.join(tmpDir, 'identity-vault.json'), 'utf-8'));
+    expect(file.version).toBe(1);
+  });
+
+  describe('importing at a chosen path', () => {
+    test('adds the account next to the main wallet and makes it active', async () => {
+      const wallet = await importWithPassphrase({ path: METAMASK_2_PATH });
+      const expected = identity.deriveWalletAtPath(SECRET, METAMASK_2_PATH);
+
+      expect(wallet).toMatchObject({
+        type: 'mnemonic',
+        path: METAMASK_2_PATH,
+        address: expected.address,
+      });
+      expect(readVaultMeta().activeWalletIndex).toBe(wallet.index);
+      expect(await identityManager.getActiveWalletAddress()).toBe(expected.address);
+
+      const wallets = await identityManager.getDerivedWallets();
+      expect(wallets.map((entry) => entry.address)).toEqual([MAIN_ADDRESS, expected.address]);
+    });
+
+    test('adds nothing when the path is the main wallet', async () => {
+      await expect(importWithPassphrase({ path: "m/44'/60'/0'/0/0" })).resolves.toBeNull();
+
+      expect(readVaultMeta().activeWalletIndex ?? 0).toBe(0);
+      expect(await identityManager.getDerivedWallets()).toHaveLength(1);
+    });
+
+    test.each([
+      ['the Swarm node wallet', "m/44'/60'/0'/0/1", 'Swarm node'],
+      ['a publishing key', "m/44'/73406'/0'/0/0", 'reserved'],
+      ['an unfinished path', '', 'Enter a path like'],
+    ])('refuses %s before anything is written', async (_label, walletPath, message) => {
+      await expect(importWithPassphrase({ path: walletPath })).rejects.toThrow(message);
+
+      expect(vaultFileExists()).toBe(false);
+      expect(fs.existsSync(path.join(tmpDir, 'vault-meta.json'))).toBe(false);
+    });
+  });
+
+  describe('previewImport', () => {
+    test('shows the main wallet with no path, and writes nothing', async () => {
+      await expect(
+        identityManager.previewImport(MNEMONIC, { passphrase: PASSPHRASE })
+      ).resolves.toEqual({
+        address: MAIN_ADDRESS,
+        path: "m/44'/60'/0'/0/0",
+        isMainWallet: true,
+      });
+      expect(vaultFileExists()).toBe(false);
+    });
+
+    test('shows the address at a path, in canonical form', async () => {
+      await expect(
+        identityManager.previewImport(MNEMONIC, {
+          passphrase: PASSPHRASE,
+          path: "44'/60'/0'/0/02",
+        })
+      ).resolves.toEqual({
+        address: identity.deriveWalletAtPath(SECRET, METAMASK_2_PATH).address,
+        path: METAMASK_2_PATH,
+        isMainWallet: false,
+      });
+    });
+
+    test('recognises the main wallet at an explicit path', async () => {
+      const preview = await identityManager.previewImport(MNEMONIC, {
+        passphrase: PASSPHRASE,
+        path: "m/44'/60'/0'/0/0",
+      });
+      expect(preview.isMainWallet).toBe(true);
+    });
+
+    test('refuses a reserved path or invalid words', async () => {
+      await expect(
+        identityManager.previewImport(MNEMONIC, { path: "m/44'/60'/0'/0/1" })
+      ).rejects.toThrow('Swarm node');
+      await expect(identityManager.previewImport('not valid words')).rejects.toThrow(
+        'Invalid mnemonic'
+      );
+    });
+  });
+});
+
 describe('injectAllIdentities restart reporting (issue #90)', () => {
   let root;
   let dataDirs;

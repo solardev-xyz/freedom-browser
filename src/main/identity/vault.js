@@ -1,8 +1,8 @@
 /**
  * Identity Vault
  *
- * Securely stores and manages the user's mnemonic.
- * - Encrypts mnemonic with user password (AES-GCM via PBKDF2)
+ * Securely stores and manages the user's mnemonic and optional BIP-39 passphrase.
+ * - Encrypts them with user password (AES-GCM via PBKDF2)
  * - Stores encrypted vault in app data directory
  * - Provides lock/unlock interface
  */
@@ -18,9 +18,16 @@ const {
 } = require('./derivation');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 
-// Vault state
-let unlockedMnemonic = null;
+// Vault state: { mnemonic, passphrase } while unlocked
+let unlockedSecret = null;
 let autoLockTimer = null;
+
+// A vault holding a passphrase gets its own version, so a build that doesn't
+// understand passphrases refuses it instead of opening a different, empty wallet
+// from the words alone. Every other vault stays readable by those builds.
+const VAULT_VERSION = 1;
+const VAULT_VERSION_WITH_PASSPHRASE = 2;
+const READABLE_VAULT_VERSIONS = [VAULT_VERSION, VAULT_VERSION_WITH_PASSPHRASE];
 
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
@@ -56,7 +63,7 @@ async function createVault(dataDir, password, strength = 256) {
   }
 
   const mnemonic = createMnemonic(strength);
-  await saveVault(dataDir, password, mnemonic);
+  await saveVault(dataDir, password, { mnemonic });
 
   return mnemonic;
 }
@@ -67,24 +74,32 @@ async function createVault(dataDir, password, strength = 256) {
  * @param {string} password - User's password
  * @param {string} mnemonic - The mnemonic to import
  * @param {boolean} overwrite - Whether to overwrite existing vault
+ * @param {string} passphrase - BIP-39 passphrase, as typed ('' for none)
  */
-async function importVault(dataDir, password, mnemonic, overwrite = false) {
+async function importVault(dataDir, password, mnemonic, overwrite = false, passphrase = '') {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic');
+  }
+  if (typeof passphrase !== 'string') {
+    throw new Error('Passphrase must be text');
   }
 
   if (vaultExists(dataDir) && !overwrite) {
     throw new Error('Vault already exists. Set overwrite=true to replace.');
   }
 
-  await saveVault(dataDir, password, mnemonic);
+  await saveVault(dataDir, password, { mnemonic, passphrase });
 }
 
 /**
- * Save mnemonic to vault file
+ * Save the seed to the vault file. A vault with no passphrase is written
+ * exactly as it was before passphrases existed.
  * @private
+ * @param {string} dataDir
+ * @param {string} password
+ * @param {{mnemonic: string, passphrase?: string}} secret
  */
-async function saveVault(dataDir, password, mnemonic) {
+async function saveVault(dataDir, password, { mnemonic, passphrase = '' }) {
   if (!password || password.length < 8) {
     throw new Error('Password must be at least 8 characters');
   }
@@ -94,13 +109,13 @@ async function saveVault(dataDir, password, mnemonic) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // Encrypt mnemonic
-  const encrypted = await encrypt(password, { mnemonic });
+  // Encrypt the seed
+  const encrypted = await encrypt(password, passphrase ? { mnemonic, passphrase } : { mnemonic });
 
   // Save to file
   const vaultPath = getVaultPath(dataDir);
   const vaultData = {
-    version: 1,
+    version: passphrase ? VAULT_VERSION_WITH_PASSPHRASE : VAULT_VERSION,
     encrypted,
     createdAt: new Date().toISOString(),
   };
@@ -109,7 +124,7 @@ async function saveVault(dataDir, password, mnemonic) {
 }
 
 /**
- * Unlock the vault and load mnemonic into memory
+ * Unlock the vault and load the seed into memory
  * @param {string} dataDir - App data directory
  * @param {string} password - User's password
  * @param {number} autoLockMs - Auto-lock timeout (0 to disable)
@@ -123,19 +138,22 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
   const vaultPath = getVaultPath(dataDir);
   const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
 
-  if (vaultData.version !== 1) {
+  if (!READABLE_VAULT_VERSIONS.includes(vaultData.version)) {
     throw new Error(`Unsupported vault version: ${vaultData.version}`);
   }
 
   try {
     const decrypted = await decrypt(password, vaultData.encrypted);
-    unlockedMnemonic = decrypted.mnemonic;
 
     // Validate decrypted mnemonic
-    if (!isValidMnemonic(unlockedMnemonic)) {
-      unlockedMnemonic = null;
+    if (!isValidMnemonic(decrypted.mnemonic)) {
+      unlockedSecret = null;
       throw new Error('Decrypted data is not a valid mnemonic');
     }
+    unlockedSecret = Object.freeze({
+      mnemonic: decrypted.mnemonic,
+      passphrase: decrypted.passphrase ?? '',
+    });
 
     // Set up auto-lock timer
     if (autoLockMs > 0) {
@@ -150,10 +168,10 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 }
 
 /**
- * Lock the vault (clear mnemonic from memory)
+ * Lock the vault (clear the seed from memory)
  */
 function lockVault() {
-  unlockedMnemonic = null;
+  unlockedSecret = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
@@ -165,15 +183,17 @@ function lockVault() {
  * @returns {boolean}
  */
 function isUnlocked() {
-  return unlockedMnemonic !== null;
+  return unlockedSecret !== null;
 }
 
 /**
- * Get the unlocked mnemonic
- * @returns {string|null} Mnemonic or null if locked
+ * The unlocked seed, for deriving keys. There's deliberately no getter for the
+ * words alone: deriving from them would silently give a different wallet when
+ * the seed has a passphrase.
+ * @returns {{mnemonic: string, passphrase: string}|null} Null if locked
  */
-function getMnemonic() {
-  return unlockedMnemonic;
+function getSeedSecret() {
+  return unlockedSecret;
 }
 
 /**
@@ -185,7 +205,7 @@ function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
     clearTimeout(autoLockTimer);
   }
 
-  if (autoLockMs > 0 && unlockedMnemonic) {
+  if (autoLockMs > 0 && unlockedSecret) {
     autoLockTimer = setTimeout(() => {
       console.log('[Vault] Auto-locking due to inactivity');
       lockVault();
@@ -208,12 +228,12 @@ async function changePassword(dataDir, currentPassword, newPassword) {
   // First verify current password by unlocking
   await unlockVault(dataDir, currentPassword, 0);
 
-  if (!unlockedMnemonic) {
+  if (!unlockedSecret) {
     throw new Error('Failed to unlock vault');
   }
 
   // Re-encrypt with new password
-  await saveVault(dataDir, newPassword, unlockedMnemonic);
+  await saveVault(dataDir, newPassword, unlockedSecret);
 }
 
 /**
@@ -257,15 +277,16 @@ async function verifyPassword(dataDir, password) {
 }
 
 /**
- * Export mnemonic (for backup)
+ * Export what's needed to restore this wallet (for backup). The words alone
+ * would restore a different wallet when the seed has a passphrase.
  * Vault must be unlocked
- * @returns {string} The mnemonic
+ * @returns {{mnemonic: string, passphrase: string}}
  */
-function exportMnemonic() {
-  if (!unlockedMnemonic) {
+function exportRecoveryPhrase() {
+  if (!unlockedSecret) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
-  return unlockedMnemonic;
+  return { ...unlockedSecret };
 }
 
 /**
@@ -276,12 +297,12 @@ function exportMnemonic() {
  * @returns {string} The private key (0x-prefixed hex)
  */
 function exportPrivateKey(accountIndex = 0, path) {
-  if (!unlockedMnemonic) {
+  if (!unlockedSecret) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
   const wallet = path
-    ? deriveWalletAtPath(unlockedMnemonic, path)
-    : deriveUserWallet(unlockedMnemonic, accountIndex);
+    ? deriveWalletAtPath(unlockedSecret, path)
+    : deriveUserWallet(unlockedSecret, accountIndex);
   return wallet.privateKey;
 }
 
@@ -293,11 +314,11 @@ module.exports = {
   unlockVault,
   lockVault,
   isUnlocked,
-  getMnemonic,
+  getSeedSecret,
   resetAutoLockTimer,
   changePassword,
   deleteVault,
-  exportMnemonic,
+  exportRecoveryPhrase,
   exportPrivateKey,
   verifyPassword,
 };

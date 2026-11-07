@@ -6,6 +6,7 @@
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
+import { passphraseBackupNote } from './passphrase-fields.js';
 
 // DOM references
 let exportMnemonicScreen;
@@ -21,6 +22,9 @@ let switchTabFn = null;
 // The phrase currently on screen, cleared with the screen. Replaces the
 // vault password this module used to keep around for re-exporting.
 let exportedMnemonic = null;
+// Moves on when the screen is cleared, so a reveal still on its way can't fill
+// it back in.
+let revealRequest = 0;
 
 export function initExportMnemonic(switchTab) {
   switchTabFn = switchTab;
@@ -30,8 +34,12 @@ export function initExportMnemonic(switchTab) {
   exportTouchIdBtn = document.getElementById('export-touchid-btn');
   exportPasswordSection = document.getElementById('export-password-section');
 
-  // Register screen hider
-  registerScreenHider(() => exportMnemonicScreen?.classList.add('hidden'));
+  // Register screen hider. Another screen taking over the sidebar never goes
+  // through closeExportMnemonic, so what's on screen has to be cleared here too.
+  registerScreenHider(() => {
+    clearShownRecovery();
+    exportMnemonicScreen?.classList.add('hidden');
+  });
 
   setupExportMnemonicListeners();
 }
@@ -86,12 +94,7 @@ export async function closeExportMnemonic() {
   // Guard: skip vault lock and cleanup if screen is already hidden
   if (!exportMnemonicScreen || exportMnemonicScreen.classList.contains('hidden')) return;
 
-  const wordsContainer = document.getElementById('mnemonic-words');
-  if (wordsContainer) {
-    wordsContainer.innerHTML = '';
-  }
-
-  exportedMnemonic = null;
+  clearShownRecovery();
   const passwordInput = document.getElementById('export-password-input');
   if (passwordInput) {
     passwordInput.value = '';
@@ -120,6 +123,8 @@ export async function closeExportMnemonic() {
 }
 
 async function configureUnlockUI() {
+  const request = revealRequest;
+
   try {
     const canUseTouchId = await window.quickUnlock.canUseTouchId();
     const touchIdEnabled = await window.quickUnlock.isEnabled();
@@ -144,7 +149,9 @@ async function configureUnlockUI() {
     }
 
     if (canUseTouchId && touchIdEnabled) {
-      setTimeout(() => handleExportTouchIdUnlock(), 100);
+      setTimeout(() => {
+        if (request === revealRequest) handleExportTouchIdUnlock();
+      }, 100);
     }
   } catch (err) {
     console.error('[WalletUI] Failed to configure unlock UI:', err);
@@ -163,6 +170,7 @@ function showExportView(view) {
 
 async function handleExportTouchIdUnlock() {
   const errorEl = document.getElementById('export-unlock-error');
+  const request = revealRequest;
 
   try {
     // Main runs Touch ID, unlocks the vault and exports the phrase itself —
@@ -172,7 +180,7 @@ async function handleExportTouchIdUnlock() {
       throw new Error(result.error || 'Touch ID cancelled');
     }
 
-    renderMnemonicWords(result);
+    renderMnemonicWords(result, request);
   } catch (err) {
     console.error('[WalletUI] Touch ID unlock failed:', err);
     if (errorEl && err.message !== 'Touch ID cancelled') {
@@ -186,6 +194,7 @@ async function handleExportPasswordUnlock() {
   const passwordInput = document.getElementById('export-password-input');
   const errorEl = document.getElementById('export-unlock-error');
   const password = passwordInput?.value;
+  const request = revealRequest;
 
   if (!password) {
     if (errorEl) {
@@ -201,7 +210,7 @@ async function handleExportPasswordUnlock() {
       throw new Error(result.error || 'Incorrect password');
     }
 
-    await showMnemonicWords(password);
+    await showMnemonicWords(password, request);
   } catch (err) {
     console.error('[WalletUI] Password unlock failed:', err);
     if (errorEl) {
@@ -211,11 +220,13 @@ async function handleExportPasswordUnlock() {
   }
 }
 
-async function showMnemonicWords(password) {
-  renderMnemonicWords(await window.identity.exportMnemonic(password));
+async function showMnemonicWords(password, request) {
+  renderMnemonicWords(await window.identity.exportMnemonic(password), request);
 }
 
-function renderMnemonicWords(result) {
+function renderMnemonicWords(result, request) {
+  if (request !== revealRequest) return;
+
   try {
     if (!result.success) {
       throw new Error(result.error || 'Failed to export mnemonic');
@@ -237,6 +248,7 @@ function renderMnemonicWords(result) {
     });
 
     exportedMnemonic = result.mnemonic;
+    renderPassphrase(result.passphrase ?? '');
     showExportView('mnemonic');
   } catch (err) {
     console.error('[WalletUI] Failed to show mnemonic:', err);
@@ -246,6 +258,25 @@ function renderMnemonicWords(result) {
       errorEl.classList.remove('hidden');
     }
   }
+}
+
+function clearShownRecovery() {
+  revealRequest += 1;
+  const wordsContainer = document.getElementById('mnemonic-words');
+  if (wordsContainer) {
+    wordsContainer.innerHTML = '';
+  }
+  exportedMnemonic = null;
+  renderPassphrase('');
+}
+
+function renderPassphrase(passphrase) {
+  // textContent: unlike the words, this is free text the user typed.
+  const value = document.getElementById('export-passphrase-value');
+  if (value) value.textContent = passphrase;
+  const note = document.getElementById('export-passphrase-note');
+  if (note) note.textContent = passphrase ? passphraseBackupNote(passphrase) : '';
+  document.getElementById('export-passphrase')?.classList.toggle('hidden', !passphrase);
 }
 
 async function copyMnemonicToClipboard() {

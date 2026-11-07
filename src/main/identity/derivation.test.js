@@ -15,6 +15,7 @@ const {
   getSeed,
   PATHS,
 } = require('./derivation');
+const { Mnemonic } = require('ethers');
 
 // Well-known test mnemonic (DO NOT use in production!)
 // This is the standard "abandon" test vector used across the ecosystem
@@ -360,6 +361,90 @@ describe('derivation', () => {
     test('throws on an invalid mnemonic or path', () => {
       expect(() => deriveWalletAtPath('invalid', "m/44'/60'/0'/0/2")).toThrow('Invalid mnemonic');
       expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, 'nope')).toThrow('Enter a path like');
+    });
+  });
+
+  describe('BIP-39 passphrase', () => {
+    // The official BIP-39 vector (trezor/python-mnemonic vectors.json).
+    const VECTOR_SEED =
+      'c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04';
+    const MAIN_ADDRESS = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
+    const MAIN_ADDRESS_TREZOR = '0x9c32F71D4DB8Fb9e1A58B0a80dF79935e7256FA6';
+    const SECRET = { mnemonic: TEST_MNEMONIC, passphrase: 'TREZOR' };
+    const hex = (bytes) => Buffer.from(bytes).toString('hex');
+
+    test('the seed matches the official vector', () => {
+      expect(hex(getSeed(SECRET))).toBe(VECTOR_SEED);
+    });
+
+    test('the two libraries in use give the same wallet', () => {
+      expect(deriveEthereumKey(SECRET, PATHS.USER_WALLET).address).toBe(MAIN_ADDRESS_TREZOR);
+      // ethers derives secp256k1 keys and scure the seed for Ed25519 ones.
+      expect(hex(getSeed(SECRET))).toBe(
+        Mnemonic.fromPhrase(TEST_MNEMONIC, 'TREZOR').computeSeed().slice(2)
+      );
+    });
+
+    test('a bare string and an empty passphrase are the same seed', () => {
+      const bare = deriveAllKeys(TEST_MNEMONIC);
+      const empty = deriveAllKeys({ mnemonic: TEST_MNEMONIC, passphrase: '' });
+      const missing = deriveAllKeys({ mnemonic: TEST_MNEMONIC });
+
+      expect(bare.userWallet.address).toBe(MAIN_ADDRESS);
+      expect(empty.userWallet.address).toBe(MAIN_ADDRESS);
+      expect(missing.userWallet.address).toBe(MAIN_ADDRESS);
+    });
+
+    test('changes every key derived from the seed', () => {
+      const without = deriveAllKeys(TEST_MNEMONIC);
+      const withIt = deriveAllKeys(SECRET);
+
+      expect(withIt.userWallet.address).toBe(MAIN_ADDRESS_TREZOR);
+      expect(withIt.beeWallet.address).not.toBe(without.beeWallet.address);
+      expect(hex(withIt.radicleKey.publicKey)).not.toBe(hex(without.radicleKey.publicKey));
+      expect(hex(withIt.ipfsKey.publicKey)).not.toBe(hex(without.ipfsKey.publicKey));
+      expect(deriveUserWallet(SECRET, 3).address).not.toBe(
+        deriveUserWallet(TEST_MNEMONIC, 3).address
+      );
+      expect(derivePublisherKey(SECRET, 0).address).not.toBe(
+        derivePublisherKey(TEST_MNEMONIC, 0).address
+      );
+      expect(deriveWalletAtPath(SECRET, "m/44'/60'/0'/0/2").address).not.toBe(
+        deriveWalletAtPath(TEST_MNEMONIC, "m/44'/60'/0'/0/2").address
+      );
+    });
+
+    test.each([
+      ['a trailing space', 'TREZOR '],
+      ['a leading space', ' TREZOR'],
+      ['different case', 'trezor'],
+    ])('%s gives a different wallet, so it must never be cleaned up', (_label, passphrase) => {
+      expect(deriveUserWallet({ mnemonic: TEST_MNEMONIC, passphrase }, 0).address).not.toBe(
+        MAIN_ADDRESS_TREZOR
+      );
+    });
+
+    test('composed and decomposed Unicode give the same wallet', () => {
+      const composed = deriveAllKeys({ mnemonic: TEST_MNEMONIC, passphrase: 'caf\u00e9' });
+      const decomposed = deriveAllKeys({ mnemonic: TEST_MNEMONIC, passphrase: 'cafe\u0301' });
+
+      expect(composed.userWallet.address).toBe(decomposed.userWallet.address);
+      expect(hex(composed.radicleKey.publicKey)).toBe(hex(decomposed.radicleKey.publicKey));
+    });
+
+    test('still refuses reserved paths', () => {
+      expect(() => deriveWalletAtPath(SECRET, PATHS.BEE_WALLET)).toThrow('Swarm node');
+      expect(() => deriveWalletAtPath(SECRET, "m/44'/73406'/0'/0/0")).toThrow('reserved');
+    });
+
+    test('refuses an invalid seed or a passphrase that is not text', () => {
+      expect(() => deriveAllKeys({ mnemonic: 'invalid', passphrase: 'x' })).toThrow(
+        'Invalid mnemonic'
+      );
+      expect(() => deriveAllKeys(null)).toThrow('Invalid mnemonic');
+      expect(() => deriveAllKeys({ mnemonic: TEST_MNEMONIC, passphrase: 1 })).toThrow(
+        'Passphrase must be text'
+      );
     });
   });
 });
