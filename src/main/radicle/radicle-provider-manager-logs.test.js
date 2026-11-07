@@ -5,7 +5,10 @@
  * radicle-manager, the seed-status tracker and the add-on wrapper. Most log
  * a failure and swallow it, so the provider's own redacted catch never runs:
  * `radicle_getNodeStatus` answers with success after its repository count
- * failed.
+ * failed. On this branch R-9 refuses a private window's seed, sync and unseed
+ * before the manager, and subscribes no listener for its getSeedStatus, so
+ * the repository count is the one line a private window reaches; each line
+ * still redacts in any private log context.
  *
  * Runs the real IPC handler, radicle-manager, seed-status tracker,
  * cob-service, private-window registry (only the window lookup is faked),
@@ -291,6 +294,8 @@ async function run({ before, fail, after, text }, call) {
 beforeAll(async () => {
   // A seed status carries its times; a fixed clock lets two replies compare.
   jest.spyOn(Date, 'now').mockReturnValue(1000);
+  // The core has started and reported no pending node recovery.
+  require('../core/node-identity-guard').setStartupRecovery(null);
   await manager.startRadicle();
   await settle();
 });
@@ -326,8 +331,57 @@ describe('the manager and tracker lines, in any private log context (#1073)', ()
   });
 });
 
+// R-9 refuses these for a private window before the manager.
+const PRIVATE_REFUSED = new Set(['radicle_seed', 'radicle_sync', 'radicle_unseed']);
+const REACHED = CASES.filter((entry) => entry.method === 'radicle_getNodeStatus');
+const NOT_REACHED = CASES.filter((entry) => entry.method !== 'radicle_getNodeStatus');
+// The add-on calls a seed, sync or unseed makes.
+const SEED_CALLS = [
+  'cloneRepoWithProgress',
+  'cancelClone',
+  'unseedRepo',
+  'listSeededRepos',
+  'seeders',
+];
+
 describe('the manager and tracker lines, through window.radicle (#1073)', () => {
-  test.each(CASES)(
+  test.each(NOT_REACHED)(
+    '$label, under $home: a private window never reaches it, a normal one logs the detail',
+    async (entry) => {
+      // Every window send fails, so a listener the request subscribed would
+      // log. The add-on's failure is not set up: nothing reaches the add-on.
+      if (entry.before) await entry.before();
+      jest.clearAllMocks();
+      failSend(entry.text);
+      const privateReply = await execute(privateChrome, entry.method, entry.params);
+      await settle();
+      for (const call of SEED_CALLS) expect(embedded[call]).not.toHaveBeenCalled();
+      mockSend.mockReset();
+      // The fetch started before the request finishes in its own context.
+      if (entry.after) await entry.after();
+      if (PRIVATE_REFUSED.has(entry.method)) {
+        expect(privateReply).toEqual({
+          error: {
+            code: 4100,
+            message: 'Not available in private windows',
+            data: { reason: 'private_window' },
+          },
+        });
+      } else {
+        expect(privateReply).toEqual({ result: expect.objectContaining({ rid: RID }) });
+      }
+      expect(loggedLines()).not.toContainEqual(entry.line('<private>', '<private>'));
+      for (const args of loggedLines()) expect(JSON.stringify(args)).not.toContain(RID_Z);
+
+      jest.clearAllMocks();
+      mockSend.mockReset();
+      seedStatus._reset();
+      await run(entry, () => execute(publicChrome, entry.method, entry.params));
+      expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
+    }
+  );
+
+  test.each(REACHED)(
     '$label, under $home: a private window logs <private>, a normal one the detail',
     async (entry) => {
       const privateReply = await run(entry, () =>
