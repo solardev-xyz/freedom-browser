@@ -1156,8 +1156,8 @@ async function resolveMyotisEnsRecord(params) {
   return resolveRecord(params);
 }
 
-// Re-encode the adapter's decoded values to the raw ABI return shape
-// shared by Colibri and RPC quorum so downstream decoders remain unchanged.
+// Re-encode the adapter's decoded values to the raw ABI return shape the
+// RPC quorum returns, so downstream decoders remain unchanged.
 async function tryMyotisEnsPath(name, callData, nameSystem) {
   const selector = String(callData).slice(0, 10).toLowerCase();
   const method =
@@ -1252,8 +1252,7 @@ async function tryMyotisPath(name, callData, nameSystem) {
 // against the beacon-finalized root; false means the sync-committee-attested
 // optimistic root. Both paths cryptographically verify state and fail closed.
 // Keep the distinction in `finality` and proof copy instead of mislabelling an
-// authenticated optimistic result as an unverified RPC response. This matches
-// Colibri, whose verified proof also targets a recent sync-committee head.
+// authenticated optimistic result as an unverified RPC response.
 function buildMyotisTrust(rec, nameSystem = NAME_SYSTEMS.ens) {
   const finalized = rec.verified === true;
   return {
@@ -1268,82 +1267,6 @@ function buildMyotisTrust(rec, nameSystem = NAME_SYSTEMS.ens) {
     agreed: ['myotis-p2p'],
     dissented: [],
     queried: ['myotis-p2p'],
-    quorum: { k: 1, m: 1, achieved: true },
-  };
-}
-
-// Colibri primary path: a single cryptographically-verified eth_call against
-// the Universal Resolver via @corpus-core/colibri-stateless. The verifier
-// runs the EVM locally against proven storage, so a successful return is
-// already cross-checked against the Ethereum sync committee (or, with
-// zk_proof, a recursive zk sync proof). No anchor corroboration is needed —
-// Colibri pins to head − 1 by construction (sync committee signature for
-// block N lives in block N+1).
-//
-// Throws on proof-verification failure / network error / prover outage so
-// the orchestrator can fall through to the next configured method.
-async function tryColibriPath(
-  name,
-  callData,
-  callResolver = universalResolverCall,
-  nameSystem = NAME_SYSTEMS.ens,
-) {
-  // Lazy require avoids a load-time cycle: colibri-resolver imports
-  // universalResolverCall + hostOf from this module.
-  const { resolveCallViaColibri } = require('./ens/colibri-resolver');
-  const proverHost = colibriProverHost();
-
-  let result;
-  try {
-    result = await resolveCallViaColibri(name, callData, callResolver);
-  } catch (err) {
-    if (isResolverNotFoundError(err)) {
-      return {
-        outcome: 'not_found',
-        reason: 'NO_RESOLVER',
-        trust: buildColibriTrust(proverHost, nameSystem),
-        block: null,
-      };
-    }
-    // A proved resolver failure (for example DNSSEC SignatureNotValidYet)
-    // is not proof of an absent record. Let the configured next method try.
-    throw err;
-  }
-
-  return {
-    outcome: 'data',
-    resolvedData: result.resolvedData,
-    resolverAddress: result.resolverAddress,
-    trust: buildColibriTrust(proverHost, nameSystem),
-    block: null,
-  };
-}
-
-// Host of the configured mainnet Colibri prover, for trust labelling.
-// Empty when none is configured — the colibri path then errors and the
-// orchestrator falls through to the quorum fallback.
-function colibriProverHost() {
-  const [proverUrl] = registry.getEndpoints(1, 'prover');
-  return proverUrl ? hostOf(proverUrl) : '';
-}
-
-function colibriProofLabel() {
-  return registry.getNetwork(1).zkProof === false
-    ? 'Sync-committee proof'
-    : 'ZK sync-committee proof';
-}
-
-function buildColibriTrust(proverHost, nameSystem = NAME_SYSTEMS.ens) {
-  return {
-    level: 'verified',
-    system: nameSystem.id,
-    method: 'colibri',
-    prover: proverHost,
-    proof: colibriProofLabel(),
-    block: null,
-    agreed: [proverHost],
-    dissented: [],
-    queried: [proverHost],
     quorum: { k: 1, m: 1, achieved: true },
   };
 }
@@ -1714,7 +1637,15 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
   };
 }
 
-const RESOLUTION_METHOD_IDS = new Set(['myotis', 'colibri', 'quorum', 'direct']);
+// Colibri isn't a name-resolution method (#1076). Colibri 3.0.3 runs a
+// Universal Resolver or NameNFT `eth_call` on contract code it takes from
+// one of its public `eth_rpc` servers without checking it against the
+// proven code hash, and a call that reads no storage gets no proof at all.
+// So one of those servers could answer any address, name or revert, and it
+// would pass as verified. An order that names Colibri skips it, and the
+// next method answers with its own label. Colibri can come back once a
+// release binds the code it runs, and the whole call, to proven state.
+const RESOLUTION_METHOD_IDS = new Set(['myotis', 'quorum', 'direct']);
 
 function resolutionPolicy(network) {
   const verification = network?.verification || {};
@@ -1732,12 +1663,12 @@ function resolutionPolicy(network) {
 
   // Legacy network-config.json files only have `primary`. Preserve their old
   // behavior until the user saves the new policy: Myotis first when enabled,
-  // the selected remote strategy next, and quorum as Colibri/direct fallback.
-  const primary = ['colibri', 'quorum', 'direct'].includes(verification.primary)
-    ? verification.primary
-    : 'colibri';
+  // the selected remote strategy next, and quorum as the direct fallback.
+  // A Colibri primary, the old default, keeps Myotis and the quorum (#1076),
+  // and so does an order that named no method but Colibri.
+  const primary = verification.primary === 'direct' ? 'direct' : 'quorum';
   return {
-    order: [...new Set(['myotis', primary, ...(primary === 'quorum' ? [] : ['quorum'])])],
+    order: [...new Set(['myotis', primary, 'quorum'])],
     preferVerified: false,
   };
 }
@@ -1775,9 +1706,6 @@ async function resolveWithMethod(method, normalizedName, callData, kind, options
   if (method === 'myotis') {
     if (!myotisManager.isEnabled()) return null;
     return tryMyotisPath(normalizedName, callData, nameSystem);
-  }
-  if (method === 'colibri') {
-    return tryColibriPath(normalizedName, callData, callResolver, nameSystem);
   }
   if (method === 'direct') {
     const direct = getDirectRpcCandidate(1);
@@ -2359,44 +2287,6 @@ async function resolveEnsReverse(address, chainId = 1) {
     (normalized) => doResolveEnsReverse(normalized, chainId), 'reverse', chainId);
 }
 
-// Colibri reverse path: cryptographically-verified `ur.reverse`. Returns
-// the common reverse-result shape plus a `trust` object so the
-// renderer can surface a "verified" indicator. ReverseAddressMismatch
-// surfaces as UNVERIFIED — the proof was valid but the contract reverted,
-// which is the spoofed-reverse-record signal.
-async function tryColibriReverse(normalizedAddress, coinType = ETH_COIN_TYPE) {
-  const { resolveReverseViaColibri } = require('./ens/colibri-resolver');
-  const trust = buildColibriTrust(colibriProverHost());
-  const addrBytes = ethers.getBytes(normalizedAddress);
-
-  let name;
-  try {
-    ({ name } = await resolveReverseViaColibri(addrBytes, coinType));
-  } catch (err) {
-    if (isResolverNotFoundError(err)) {
-      return { ...noReverseResult(normalizedAddress), trust };
-    }
-    if (isReverseAddressMismatchError(err)) {
-      return {
-        success: false,
-        address: normalizedAddress,
-        system: 'ens',
-        reason: 'UNVERIFIED',
-        claimedName: decodeReverseMismatchClaimedName(err),
-        error: `Reverse record for ${normalizedAddress} does not forward-verify`,
-        trust,
-      };
-    }
-    throw err;
-  }
-
-  if (!name) return { ...noReverseResult(normalizedAddress), trust };
-  if (!isNormalizedEnsName(name)) {
-    return unnormalizedReverseResult(normalizedAddress, name, trust);
-  }
-  return { success: true, address: normalizedAddress, name, system: 'ens', trust };
-}
-
 const CONTRACT_BACKED_REVERSE_SYSTEMS = [NAME_SYSTEMS.wns, NAME_SYSTEMS.gns];
 
 // An ENS primary name counts only when it is its own ENSIP-15 normalization.
@@ -2575,8 +2465,6 @@ function reverseConflictResult(normalizedAddress, nameSystem, outcome) {
 }
 
 async function resolveEnsReverseWithMethod(method, normalizedAddress, coinType = ETH_COIN_TYPE) {
-  if (method === 'colibri') return tryColibriReverse(normalizedAddress, coinType);
-
   const outcome = await resolveWithMethod(method, normalizedAddress, '0x', 'reverse-ens', {
     callResolver: (provider, name, data, overrides) =>
       universalResolverReverseCall(provider, name, data, overrides, coinType),
