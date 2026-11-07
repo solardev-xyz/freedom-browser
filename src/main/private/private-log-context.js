@@ -31,9 +31,10 @@
  * #1058): a read in a private context runs on the chain's private worker,
  * whose verifier store is in memory only, instead of the one on disk under
  * <userData>/colibri. Colibri's reads come from the cores' `shell.verified`
- * requests, which name no window: core/service-client.js `forPrivate` tells
- * whether one may serve a private window, and core/naming-verified.js
- * `runVerified` sets the marker from it.
+ * requests, which name the requests of main's they serve (freedom-core
+ * #285): core/service-client.js `privacyOf` tells from those whether one
+ * serves a private window, and core/naming-verified.js `runVerified` sets
+ * the marker from it.
  */
 
 const { AsyncLocalStorage } = require('async_hooks');

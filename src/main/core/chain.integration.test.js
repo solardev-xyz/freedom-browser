@@ -449,6 +449,84 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
   const colibriOnly = () =>
     snapshot({ read_order: ['colibri'], prover: { endpoint: 'p1', zk: true } });
 
+  // PRIVATE MODE GUARD (#1058, freedom-core #285): the core's `shell.verified`
+  // names the request it serves, so each Colibri read runs in exactly that
+  // request's window. A normal window's read while a private one's waits is
+  // normal (the heuristic this replaces made it private: Codex review of
+  // #1071, round 2), and a private one's keeps its session, even once that
+  // session has ended.
+  test('each Colibri read runs in the window of the request it serves', async () => {
+    const logContext = require('../private/private-log-context');
+    const seen = [];
+    const release = [];
+    const adapters = {
+      colibriRequest: jest.fn((_chainId, _method, params) => {
+        seen.push({
+          address: params[0],
+          private: logContext.isPrivateLogContext(),
+          session: logContext.privateContextSession(),
+        });
+        return new Promise((resolve) => release.push(() => resolve('0x10')));
+      }),
+    };
+    const { call, main } = await start(adapters);
+    await main.configure(colibriOnly());
+    const read = (address) =>
+      call('chain.request', {
+        chain_id: 1,
+        method: 'eth_getBalance',
+        params: [address, 'latest'],
+        include_trust: false,
+        background: false,
+        profile: 'default',
+        deadline_ms: 20_000,
+      });
+    const until = async (count) => {
+      for (let i = 0; i < 500 && seen.length < count; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(seen).toHaveLength(count);
+    };
+    const [first, second, normal] = [
+      ADDRESS,
+      '0x2222222222222222222222222222222222222222',
+      '0x3333333333333333333333333333333333333333',
+    ];
+    logContext.openPrivateSession();
+    let reads;
+    let sessions;
+    try {
+      const firstSession = logContext.runWithPrivateLogContext(true, () =>
+        logContext.privateContextSession()
+      );
+      const firstRead = logContext.runWithPrivateLogContext(true, () => read(first));
+      await until(1);
+      // The last private window closes while its read waits, and a new one
+      // opens and reads.
+      logContext.endPrivateSession();
+      logContext.openPrivateSession();
+      const secondSession = logContext.runWithPrivateLogContext(true, () =>
+        logContext.privateContextSession()
+      );
+      const secondRead = logContext.runWithPrivateLogContext(true, () => read(second));
+      await until(2);
+      const normalRead = read(normal);
+      await until(3);
+      for (const done of release) done();
+      reads = await Promise.all([firstRead, secondRead, normalRead]);
+      sessions = [firstSession, secondSession];
+    } finally {
+      logContext.endPrivateSession();
+    }
+    expect(reads.map((r) => r.source)).toEqual(['colibri', 'colibri', 'colibri']);
+    expect(sessions[1]).not.toBe(sessions[0]);
+    expect(seen).toEqual([
+      { address: first, private: true, session: sessions[0] },
+      { address: second, private: true, session: sessions[1] },
+      { address: normal, private: false, session: null },
+    ]);
+  });
+
   // Review of #692 (parity, P2-1), with freedom-core #58: as today's router,
   // the app's route is blocked, and the revert keeps its data.
   test("a Colibri revert that is also a capacity failure keeps its data, and blocks the app's route", async () => {
