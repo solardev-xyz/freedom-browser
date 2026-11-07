@@ -123,6 +123,8 @@ jest.mock('../service-registry', () => ({
 // The SOC upload (chunk-service); feed-service hands it the signed chunk.
 jest.mock('./chunk-service', () => ({
   uploadSingleOwnerChunk: (...args) => mockUploadSingleOwnerChunk(...args),
+  // Pure arithmetic on the span; the reads use it as readData does.
+  dataSizeFromSpan: jest.requireActual('./chunk-service').dataSizeFromSpan,
 }));
 
 jest.mock('electron-log', () => ({
@@ -638,17 +640,18 @@ describe('feed-service', () => {
       await expect(writeFeedPayload(makeSigner(), 'myapp.eth/blog', 'data')).rejects.toThrow('chunk too large');
     });
 
-    test('an empty payload is refused as the page\'s, by reason, before any upload', async () => {
-      const writer = createMockWriter();
-      mockMakeFeedWriter.mockReturnValue(writer);
+    test('an empty payload is refused as the page\'s, by reason, before anything is signed', async () => {
+      mockMakeFeedReader.mockReturnValue(createMockReader());
       mockBatchForAutoSelect();
+      const signer = makeSigner();
 
       for (const data of ['', Buffer.alloc(0)]) {
-        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', data)).rejects.toMatchObject({
+        await expect(writeFeedPayload(signer, 'myapp.eth/blog', data)).rejects.toMatchObject({
           reason: 'payload_too_large',
         });
       }
-      expect(writer.uploadPayload).not.toHaveBeenCalled();
+      expect(signer.signSoc).not.toHaveBeenCalled();
+      expect(mockUploadSingleOwnerChunk).not.toHaveBeenCalled();
     });
 
     describe('only a 404 frees an explicit index (#1054)', () => {

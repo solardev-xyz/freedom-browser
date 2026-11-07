@@ -43,9 +43,18 @@ jest.mock('./feed-store', () => ({
   getOriginEntry: () => ({ identityMode: 'app-scoped', publisherKeyIndex: 0 }),
   getFeed: (_origin, name) => ({ topic: 'stored', owner: 'stored', manifestReference: name }),
 }));
-jest.mock('../identity-manager', () => ({
-  getPublisherKey: async () => ({ privateKey: `0x${'11'.repeat(32)}` }),
-}));
+// Integration signs in the identity core (swarm-signer): the app-scoped
+// identity's signer, whose owner is SIGNER's address. Nothing is signed in
+// these tests; the write is refused, or found taken, first.
+const mockSignSoc = jest.fn();
+jest.mock('./swarm-signer', () => {
+  const { PrivateKey } = require('@ethersphere/bee-js');
+  const owner = new PrivateKey('11'.repeat(32)).publicKey().address().toChecksum();
+  return {
+    getIdentityMode: (identity) => identity?.mode || identity?.identityMode || null,
+    resolveSwarmSigner: async () => ({ owner, signSoc: (...args) => mockSignSoc(...args) }),
+  };
+});
 let mockAntUrl = null;
 jest.mock('../service-registry', () => ({ getAntApiUrl: () => mockAntUrl }));
 // Batch choice is swarm-service's; here there is always one.
@@ -166,6 +175,7 @@ describe('swarm_writeFeedEntry at an explicit index', () => {
     expect(result.error.code).toBe(-32602);
     expect(result.error.data).toEqual({ reason: 'index_already_exists' });
     expect(uploads()).toHaveLength(0);
+    expect(mockSignSoc).not.toHaveBeenCalled();
     // The chunk the provider asked for is that entry's.
     expect(ant.requests[0].url).toBe(`/chunks/${soc.address.toHex()}`);
   });
