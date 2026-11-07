@@ -60,16 +60,16 @@ function safeE2eAvailable() {
   return !missing;
 }
 
+const DIAGNOSTIC_LINES = 50_000;
+
 /**
  * One test's diagnostics (#1101): anvil's lifecycle and output, the
  * forwarder's exchanges, the app's main-process output and the chrome
  * window's console, each line stamped with the milliseconds since the test
  * began. Written to the test's output directory and attached when the test
  * fails, so an attempt that a retry hides still leaves them in the job's
- * uploaded test-results.
+ * uploaded test-results. At most DIAGNOSTIC_LINES lines are kept.
  */
-const DIAGNOSTIC_LINES = 50_000;
-
 function createDiagnostics() {
   const started = Date.now();
   const lines = [];
