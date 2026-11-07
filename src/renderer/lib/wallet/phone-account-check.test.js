@@ -141,43 +141,87 @@ describe('Wallet Settings phone check', () => {
 });
 
 describe('the wallet list and the Safe screen', () => {
-  const stubWalletModules = () => {
+  const WALLETS = [
+    { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+    { ...PHONE, addressCheck: 'unchecked' },
+    { index: 1000002, name: 'Other Phone', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', type: 'remote', addressCheck: 'mismatched' },
+    { index: 1000003, name: 'Checked Phone', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'remote', addressCheck: 'matched' },
+  ];
+
+  const stubWalletModules = (elementsById = {}) => {
     jest.resetModules();
     global.window = {};
-    global.document = createDocument();
+    global.document = createDocument({ elementsById });
+    const renderDeviceAccountList = jest.fn();
     jest.doMock('./wallet-state.js', () => ({
-      walletState: { identityView: createElement('div'), derivedWallets: [] },
+      walletState: {
+        identityView: createElement('div'),
+        derivedWallets: WALLETS,
+        activeWalletIndex: 0,
+        fullAddresses: {},
+      },
       registerScreenHider: jest.fn(),
     }));
     jest.doMock('./balance-display.js', () => ({ refreshBalances: jest.fn() }));
     jest.doMock('./safe-status.js', () => ({ refreshSafeStatusCard: jest.fn() }));
-    jest.doMock('./device-account-list.js', () => ({ renderDeviceAccountList: jest.fn() }));
+    jest.doMock('./device-account-list.js', () => ({ renderDeviceAccountList }));
+    return { renderDeviceAccountList };
   };
 
   test("the wallet list badges a phone account that doesn't match", async () => {
-    stubWalletModules();
+    const list = createElement('div');
+    stubWalletModules({
+      'wallet-selector': createElement('div'),
+      'wallet-selector-btn': createElement('button'),
+      'wallet-selector-dropdown': createElement('div', { classes: ['hidden'] }),
+      'wallet-selector-list': list,
+    });
     jest.dontMock('./wallet-selector.js'); // the settings tests stand it in
-    const { addressCheckBadge } = await import('./wallet-selector.js');
+    const { initWalletSelector, addressCheckBadge } = await import('./wallet-selector.js');
 
-    expect(addressCheckBadge({ ...PHONE, addressCheck: 'mismatched' })).toMatch(/Doesn't match/);
-    expect(addressCheckBadge({ ...PHONE, addressCheck: 'unchecked' })).toBe('');
-    expect(addressCheckBadge({ ...PHONE, addressCheck: 'matched' })).toBe('');
+    initWalletSelector();
+    global.document.getElementById('wallet-selector-btn').dispatch('click');
+
+    // One row per wallet, in order (the fake DOM's escapeHtml drops the names).
+    const rows = list.children.map((item) => item.innerHTML);
+    expect(rows).toHaveLength(WALLETS.length);
+    expect(rows[2]).toMatch(/Doesn't match/); // Other Phone: mismatched
+    expect(rows[1]).not.toMatch(/Doesn't match/); // My Phone: unchecked
+    expect(rows[3]).not.toMatch(/Doesn't match/); // Checked Phone
     expect(addressCheckBadge({ index: 0, name: 'Main Wallet' })).toBe('');
   });
 
   test("the Safe screen says which phone owners aren't checked", async () => {
-    stubWalletModules();
+    const preset = createElement('button', { classes: ['safe-preset'], dataset: { threshold: '1', owners: '2' } });
+    const { renderDeviceAccountList } = stubWalletModules({
+      'sidebar-create-safe': createElement('div', { classes: ['hidden'] }),
+      'create-safe-owner-list': createElement('div'),
+      'create-safe-preset-standard': preset,
+    });
     jest.doMock('./wallet-selector.js', () => ({
       loadDerivedWallets: jest.fn(),
       activateAddedWallet: jest.fn(),
     }));
-    const { ownerSubLabel } = await import('./create-safe.js');
+    jest.doMock('./wallet-utils.js', () => ({
+      truncateAddress: (address) => `${address.slice(0, 6)}…${address.slice(-4)}`,
+      isSafeAccount: () => false,
+      showInlineError: jest.fn(),
+      hideInlineError: jest.fn(),
+    }));
+    const { initCreateSafe, openCreateSafe, ownerSubLabel } = await import('./create-safe.js');
 
-    expect(ownerSubLabel({ ...PHONE, addressCheck: 'unchecked' })).toBe('0x7099…79C8 · not checked on your phone yet');
-    expect(ownerSubLabel({ ...PHONE, addressCheck: 'mismatched' })).toBe(
-      '0x7099…79C8 · your phone answered from another account'
-    );
-    expect(ownerSubLabel({ ...PHONE, addressCheck: 'matched' })).toBe('0x7099…79C8');
-    expect(ownerSubLabel({ index: 0, address: PHONE.address })).toBe('0x7099…79C8');
+    initCreateSafe();
+    openCreateSafe();
+
+    const accounts = renderDeviceAccountList.mock.calls.at(-1)[1];
+    expect(accounts.map((account) => account.subLabel)).toEqual([
+      '0x0000…0001',
+      '0x7099…79C8 · not checked on your phone yet',
+      '0x8335…2913 · your phone answered from another account',
+      '0x2096…287C',
+    ]);
+    // Only phone accounts carry the state.
+    expect(ownerSubLabel({ index: 2, address: PHONE.address, type: 'ledger', addressCheck: 'unchecked' }))
+      .toBe('0x7099…79C8');
   });
 });
