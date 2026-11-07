@@ -779,12 +779,18 @@ async function startAnt() {
   // profile lock, the sweep runs under the keystore lock (at once when no
   // injection or recovery holds it), and it skips the handoffs this
   // process's own starts still own.
-  const handoffBaseDir = getHandoffBaseDir();
-  void keystorePassword
-    .withKeystoreLock(getAntDataPath(), () =>
-      keystorePassword.sweepAbandonedHandoffs(handoffBaseDir)
-    )
-    .catch((err) => log.warn('[Ant] Could not sweep password handoffs:', err.message));
+  try {
+    const handoffBaseDir = getHandoffBaseDir();
+    void keystorePassword
+      .withKeystoreLock(getAntDataPath(), () =>
+        keystorePassword.sweepAbandonedHandoffs(handoffBaseDir)
+      )
+      .catch((err) => log.warn('[Ant] Could not sweep password handoffs:', err.message));
+  } catch (err) {
+    // A data directory that is refused (a link, not ours, not owner-only
+    // once narrowed) stops the start below, with its status (K-3).
+    log.warn('[Ant] Could not sweep password handoffs:', err.message);
+  }
 
   const profileConfig = getProfileAntConfig();
   const managedProfileNode = isManagedAntConfig(profileConfig);
