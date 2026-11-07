@@ -1,0 +1,2 @@
+- One RPC provider's answer is no longer shown as verified by RPC providers that agree ([#1092](https://github.com/solardev-xyz/freedom-browser/issues/1092))
+  - A provider listed twice counts once, and a quorum set to one provider is treated as that provider alone

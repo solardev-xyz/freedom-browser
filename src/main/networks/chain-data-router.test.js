@@ -1467,6 +1467,151 @@ describe('chain-data-router', () => {
     expect(thirdSignal.aborted).toBe(true);
   });
 
+  // #1092, as freedom-core's router does it (deviations `endpoint-dedup` and
+  // `singleton-quorum`): one endpoint's answer is never labelled verified.
+  describe('one endpoint never makes a verified quorum (#1092)', () => {
+    const A = 'https://a.example';
+    const B = 'https://b.example';
+    const MINED_RECEIPT = { transactionHash: '0xmined', blockNumber: '0x10', blockHash: '0xb', status: '0x1' };
+
+    afterEach(() => {
+      mockRegistry.getEndpointSources.mockImplementation(() => []);
+      mockRegistry.getEndpointSourceList.mockImplementation(() => []);
+    });
+
+    function useQuorum(quorum, readOrder = ['quorum']) {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder }, quorum: { timeoutMs: 1000, ...quorum } });
+    }
+
+    // Each URL answers every method with its own value (or by method, from
+    // an object); any other URL refuses the connection.
+    function rpcByUrl(answers) {
+      global.fetch = jest.fn(async (url, init) => {
+        if (!Object.hasOwn(answers, url)) throw new Error(`connect ECONNREFUSED ${url}`);
+        const { method } = JSON.parse(init.body);
+        const answer = answers[url];
+        const result = answer && typeof answer === 'object' && !Array.isArray(answer) && method in answer
+          ? answer[method]
+          : answer;
+        return { ok: true, json: async () => ({ result }) };
+      });
+    }
+    const timesAsked = (url) => global.fetch.mock.calls.filter(([asked]) => asked === url).length;
+
+    test('a URL listed twice is one member, and does not agree with itself', async () => {
+      useQuorum({ k: 3, m: 2 }, ['quorum', 'direct']);
+      mockRegistry.getEndpoints.mockReturnValue([A, A, B]);
+      rpcByUrl({ [A]: '0xdead', [B]: '0x6080' });
+
+      await expect(request(1, 'eth_getCode', ['0xabc', 'latest'], { includeTrust: true })).resolves.toMatchObject({
+        result: '0xdead',
+        source: 'direct',
+        verified: false,
+        trust: {
+          level: 'unverified',
+          method: 'direct',
+          queried: ['a.example', 'b.example'],
+          quorum: { k: 2, m: 2, achieved: false },
+        },
+      });
+      expect(timesAsked(A)).toBe(1);
+      expect(timesAsked(B)).toBe(1);
+    });
+
+    test('a URL listed twice is no quorum on its own', async () => {
+      useQuorum({ k: 3, m: 2 });
+      mockRegistry.getEndpoints.mockReturnValue([A, A]);
+      rpcByUrl({ [A]: '0xdead' });
+
+      await expect(request(1, 'eth_getCode', ['0xabc', 'latest'])).rejects.toThrow(
+        /RPC quorum needs 2 endpoints/
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      [{ m: 1 }],
+      [{ k: 3, m: 1 }],
+      [{ k: 1 }],
+      [{ k: 3, m: 0.5 }],
+    ])('a quorum with m = 1 (%j) is one endpoint\'s answer, not verified', async (quorum) => {
+      useQuorum(quorum);
+      mockRegistry.getEndpoints.mockReturnValue([A, B]);
+      rpcByUrl({ [A]: '0xdead', [B]: '0xdead' });
+
+      await expect(request(1, 'eth_getCode', ['0xabc', 'latest'], { includeTrust: true })).resolves.toMatchObject({
+        result: '0xdead',
+        source: 'quorum',
+        verified: false,
+        trust: { level: 'unverified', method: 'quorum', quorum: { m: 1, achieved: true } },
+      });
+      await expect(request(1, 'eth_getCode', ['0xabc', 'latest'])).resolves.toEqual({
+        result: '0xdead', source: 'quorum', verified: false,
+      });
+    });
+
+    test('a quorum with m = 1 gives the user\'s own endpoint Direct\'s user-configured level', async () => {
+      useQuorum({ k: 3, m: 1 });
+      mockRegistry.getEndpoints.mockReturnValue([A]);
+      mockRegistry.getEndpointSources.mockReturnValue([{ id: 'mine', keyed: false, coverage: { 1: A } }]);
+      mockRegistry.getEndpointSourceList.mockReturnValue([
+        { id: 'mine', builtin: false, removed: false, keyed: false },
+      ]);
+      rpcByUrl({ [A]: '0x6080' });
+
+      await expect(request(1, 'eth_getCode', ['0xabc', 'latest'], { includeTrust: true })).resolves.toMatchObject({
+        source: 'quorum',
+        verified: false,
+        trust: { level: 'user-configured', method: 'quorum', agreed: ['a.example'] },
+      });
+    });
+
+    test.each([
+      [{ k: 3, m: 2 }],
+      [{ k: 2, m: 5 }],
+      [{ k: 3, m: 1.5 }],
+    ])('two distinct endpoints that agree are verified (%j)', async (quorum) => {
+      useQuorum(quorum);
+      mockRegistry.getEndpoints.mockReturnValue([A, B]);
+      rpcByUrl({ [A]: '0x6080', [B]: '0x6080' });
+
+      await expect(request(1, 'eth_getCode', ['0xabc', 'latest'], { includeTrust: true })).resolves.toMatchObject({
+        result: '0x6080',
+        source: 'quorum',
+        verified: true,
+        trust: {
+          level: 'verified',
+          method: 'quorum',
+          agreed: ['a.example', 'b.example'],
+          quorum: { k: 2, achieved: true },
+        },
+      });
+    });
+
+    test('a receipt from a quorum with m = 1 stays unverified when Colibri cannot prove it', async () => {
+      useQuorum({ k: 3, m: 1 }, ['colibri', 'quorum']);
+      mockRegistry.getEndpoints.mockReturnValue([A]);
+      rpcByUrl({ [A]: MINED_RECEIPT });
+      mockRequestViaColibri.mockRejectedValue(new Error('Colibri is not available'));
+
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'])).resolves.toEqual({
+        result: MINED_RECEIPT, source: 'quorum', verified: false,
+      });
+    });
+
+    test.each([
+      [{ k: 3, m: 1 }, false],
+      [{ k: 3, m: 2 }, true],
+    ])('a fee quote from a quorum with %j is verified: %s', async (quorum, verified) => {
+      useQuorum(quorum);
+      mockRegistry.getEndpoints.mockReturnValue([A, B]);
+      const fees = { eth_gasPrice: '0x77359400', eth_maxPriorityFeePerGas: '0x3b9aca00' };
+      rpcByUrl({ [A]: fees, [B]: fees });
+
+      await expect(getFeeQuote(1)).resolves.toMatchObject({ type: 'eip1559', source: 'quorum', verified });
+    });
+  });
+
   test('carries in-flight RPC work past the quorum deadline without restarting it', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     mockRegistry.getNetwork.mockReturnValue({

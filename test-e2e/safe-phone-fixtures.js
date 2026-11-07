@@ -127,10 +127,12 @@ const test = base.extend({
     fs.writeFileSync(
       path.join(userDataDir, 'network-config.json'),
       JSON.stringify({
-        // Two endpoints, both the fork: 127.0.0.1 and localhost are distinct
-        // endpoints to the RPC quorum. A Safe counts as activated only on a
-        // verified answer (#1066), and a quorum of two endpoints that agree
-        // is one; the fork is the chain here.
+        // Test-only scaffolding: one anvil process listed as two logical
+        // endpoints, 127.0.0.1 and localhost. They are distinct URLs, so the
+        // RPC quorum, which counts each URL once (#1092), labels their
+        // agreement verified, as a Safe's activation needs (#1066). This
+        // exercises the Safe flow's labels; it doesn't test independent
+        // providers. The fork is the chain here.
         endpointSources: {
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
           'e2e-anvil-gnosis-localhost': {
