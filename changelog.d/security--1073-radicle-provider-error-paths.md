@@ -1,0 +1,1 @@
+- Radicle errors no longer show sites that use `window.radicle` where your profile keeps its Radicle data on disk ([#1073](https://github.com/solardev-xyz/freedom-browser/issues/1073))
