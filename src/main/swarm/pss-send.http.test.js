@@ -37,6 +37,11 @@ jest.mock('./feed-service', () => ({}));
 jest.mock('./feed-store', () => ({}));
 jest.mock('./publish-history', () => ({}));
 jest.mock('../identity-manager', () => ({}));
+// Integration signs in the identity core (swarm-signer); PSS signs nothing.
+jest.mock('./swarm-signer', () => ({
+  getIdentityMode: () => null,
+  resolveSwarmSigner: jest.fn(),
+}));
 let mockAntUrl = null;
 jest.mock('../service-registry', () => ({ getAntApiUrl: () => mockAntUrl }));
 // Batch choice is swarm-service's; here there is always one.
