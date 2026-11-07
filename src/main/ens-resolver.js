@@ -309,7 +309,15 @@ function getDirectRpcCandidate(chainId) {
   };
 }
 
-const RESOLUTION_METHOD_IDS = new Set(['myotis', 'colibri', 'quorum', 'direct']);
+// Colibri isn't a name-resolution method (#1076). Colibri 3.0.3 runs a
+// Universal Resolver or NameNFT `eth_call` on contract code it takes from
+// one of its public `eth_rpc` servers without checking it against the
+// proven code hash, and a call that reads no storage gets no proof at all.
+// So one of those servers could answer any address, name or revert, and it
+// would pass as verified. An order that names Colibri skips it, and the
+// next method answers with its own label. Colibri can come back once a
+// release binds the code it runs, and the whole call, to proven state.
+const RESOLUTION_METHOD_IDS = new Set(['myotis', 'quorum', 'direct']);
 
 function resolutionPolicy(network) {
   const verification = network?.verification || {};
@@ -327,12 +335,12 @@ function resolutionPolicy(network) {
 
   // Legacy network-config.json files only have `primary`. Preserve their old
   // behavior until the user saves the new policy: Myotis first when enabled,
-  // the selected remote strategy next, and quorum as Colibri/direct fallback.
-  const primary = ['colibri', 'quorum', 'direct'].includes(verification.primary)
-    ? verification.primary
-    : 'colibri';
+  // the selected remote strategy next, and quorum as the direct fallback.
+  // A Colibri primary, the old default, keeps Myotis and the quorum (#1076),
+  // and so does an order that named no method but Colibri.
+  const primary = verification.primary === 'direct' ? 'direct' : 'quorum';
   return {
-    order: [...new Set(['myotis', primary, ...(primary === 'quorum' ? [] : ['quorum'])])],
+    order: [...new Set(['myotis', primary, 'quorum'])],
     preferVerified: false,
   };
 }

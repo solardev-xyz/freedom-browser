@@ -411,6 +411,21 @@ describe('settings.html names each network source once (#269)', () => {
     expect(copy.quorum.help).toBe('');
     expect(SOURCE).toContain('return help ? `<p class="row-help">${esc(help)}</p>` : \'\';');
   });
+
+  // The resolver skips Colibri for names (#1076), so Name Resolution's row
+  // must not call it verified. A chain's detail page keeps the shared copy:
+  // chain data still uses Colibri's proofs.
+  test("Name Resolution's proof-check row says it is skipped for names (#1076)", () => {
+    expect(SOURCE).toContain("setBadge('colibri', 'Not used for names', 'warning');");
+    expect(SOURCE).not.toMatch(/hasProver \? 'Verified'/);
+    const help = SOURCE.match(/const COLIBRI_NAMES_HELP = "([^"]+)";/);
+    expect(help).not.toBeNull();
+    expect(help[1]).toMatch(/^Skipped for names/);
+    expect(help[1]).not.toMatch(/quorum|prover|\bRPC\b|Colibri|verif/i);
+    expect(SOURCE).toContain(
+      "${id === 'colibri' ? `<p class=\"row-help\">${esc(COLIBRI_NAMES_HELP)}</p>` : networkSourceHelp(id)}"
+    );
+  });
 });
 
 describe('settings.html keeps jargon out of the visible layer (#270)', () => {
