@@ -64,6 +64,12 @@ describe('mapLedgerError', () => {
       .toBe(LEDGER_ERROR_CODES.DEVICE_NOT_FOUND);
   });
 
+  test('maps hw-app-eth empty personal_sign TypeError to EMPTY_MESSAGE', () => {
+    const err = new TypeError("Cannot read properties of undefined (reading '0')");
+    expect(mapLedgerError(err).code).toBe(LEDGER_ERROR_CODES.EMPTY_MESSAGE);
+    expect(mapLedgerError(err).message).toBe('Ledger cannot sign an empty message.');
+  });
+
   test('unknown errors get the UNKNOWN code, never throw', () => {
     expect(mapLedgerError(new Error('wat')).code).toBe(LEDGER_ERROR_CODES.UNKNOWN);
     expect(mapLedgerError(undefined).code).toBe(LEDGER_ERROR_CODES.UNKNOWN);

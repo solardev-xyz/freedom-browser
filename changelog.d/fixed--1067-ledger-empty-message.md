@@ -1,0 +1,2 @@
+- Ledger `personal_sign` requests with an empty message (`0x`) are now refused before calling the device ([#1067](https://github.com/solardev-xyz/freedom-browser/issues/1067))
+  - Ledger cannot sign zero-byte personal messages; previously `@ledgerhq/hw-app-eth` skipped message exchanges and crashed while reading the missing response, surfacing a generic reconnection error

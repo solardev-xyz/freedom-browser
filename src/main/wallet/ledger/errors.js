@@ -18,6 +18,7 @@ const LEDGER_ERROR_CODES = {
   BUSY: 'LEDGER_BUSY',
   WRONG_DEVICE: 'LEDGER_WRONG_DEVICE',
   BLIND_SIGNING_REQUIRED: 'LEDGER_BLIND_SIGNING_REQUIRED',
+  EMPTY_MESSAGE: 'LEDGER_EMPTY_MESSAGE',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -32,6 +33,7 @@ const MESSAGES = {
     'This Ledger does not hold the selected account. Connect the device this account was added from.',
   [LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED]:
     'Ledger cannot display this contract call. Enable "Blind signing" (called "Contract data" on older app versions) in the Ethereum app settings, then try again.',
+  [LEDGER_ERROR_CODES.EMPTY_MESSAGE]: 'Ledger cannot sign an empty message.',
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 
@@ -100,6 +102,9 @@ function classifyLedgerError(err) {
   }
   if (/disconnected/i.test(message)) {
     return LEDGER_ERROR_CODES.DISCONNECTED;
+  }
+  if (err instanceof TypeError && /reading ['"]?0['"]?/i.test(message)) {
+    return LEDGER_ERROR_CODES.EMPTY_MESSAGE;
   }
   return LEDGER_ERROR_CODES.UNKNOWN;
 }

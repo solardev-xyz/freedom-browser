@@ -29,7 +29,7 @@ const { Transaction, Signature, TypedDataEncoder } = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
-const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
+const { getEip712WirePayload, messageToBytes, normalizeMessage } = require('../signing-utils');
 
 /** hw-app-eth returns r/s as bare hex and v as hex string or number. */
 function toEthersSignature(sig) {
@@ -76,7 +76,14 @@ function createLedgerBackend(record) {
     },
 
     signMessage: async (message) => {
-      const messageHex = messageToBytes(message).toString('hex');
+      if (!message) {
+        throw createLedgerError(LEDGER_ERROR_CODES.EMPTY_MESSAGE);
+      }
+      const bytes = messageToBytes(normalizeMessage(message));
+      if (bytes.length === 0) {
+        throw createLedgerError(LEDGER_ERROR_CODES.EMPTY_MESSAGE);
+      }
+      const messageHex = bytes.toString('hex');
 
       return withVerifiedDevice(async (eth) => {
         const sig = await eth.signPersonalMessage(record.path, messageHex);
