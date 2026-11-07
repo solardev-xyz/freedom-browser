@@ -735,7 +735,7 @@ const DEVIATIONS = new Map([
     [
       'order-validation',
       failed(
-        'All chain sources failed for eth_call (colibri: No Colibri prover configured; ' +
+        'All chain sources failed for eth_getBalance (colibri: No Colibri prover configured; ' +
           'direct: No RPC endpoint configured)'
       ),
     ],
@@ -815,6 +815,13 @@ const DEVIATIONS = new Map([
   ['fee-headroom-later-type-2-wins', ['fee-combination', answeredBy(1)]],
   // Primary fails at its block, secondary outright: primary's last resort.
   ['fee-headroom-direct-last-resort', ['fee-combination', answeredBy(1)]],
+  // freedom-core #279 (main's #1046, `colibri-unproven`): Colibri has no
+  // quote of its own, so the walk reaches Direct, whose one endpoint's
+  // quote stands, answered: 1. Its header read, which starts with the
+  // collection and goes to Colibri first, is a request the reference never
+  // made, so it fails here; nothing waits for it (replay.rs, 80e023dc).
+  ['boundary-fee-myotis-non-positive-gas-price', ['fee-combination', answeredBy(1)]],
+  ['colibri-unproven-fee-quote-direct', ['fee-combination', answeredBy(1)]],
   // freedom-core #189 (main's #752): Colibri's own error, with no RPC
   // error to prefer, reaches the caller in the core's fixed text, which is
   // main's too since #681; the pinned router rethrows the adapter's.

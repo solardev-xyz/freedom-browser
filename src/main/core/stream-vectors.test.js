@@ -31,7 +31,7 @@
  * apart by the amendment's `abort_code` category. Against 0.9.1's file it
  * runs every case as before and its `core_streams` frames, and lists its
  * duplex cases as to do; against later ones (from #247 on, the pinned
- * core's, 0.11.0's, included), it runs every case.
+ * core's, 0.12.0's, included), it runs every case.
  *
  * Skipped unless the vectors are found: FREEDOM_CORE_STREAM_VECTORS names
  * the file, or it sits beside FREEDOM_CORE_VECTORS, or in the freedom-core
