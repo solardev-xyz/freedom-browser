@@ -436,12 +436,14 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     const { gen, call, main } = await start(adapters);
     const replies = written(gen);
     await main.configure(colibriOnly());
-    // Two identical calls from one app.
+    // Two identical reads from one app: an account read at `latest`, since
+    // Colibri serves no call from 0.12.0 (freedom-core #279), whose own test
+    // of this path asks the same.
     const read = () =>
       call('chain.request', {
         chain_id: 1,
-        method: 'eth_call',
-        params: [{ to: ADDRESS, data: '0x1234' }, 'latest'],
+        method: 'eth_getBalance',
+        params: [ADDRESS, 'latest'],
         include_trust: false,
         origin: 'https://app.example',
         background: false,
@@ -458,7 +460,7 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     const second = await read();
     expect(second.code).toBe('chain_error');
     expect(second.data.message).toBe(
-      'All chain sources failed for eth_call (colibri: temporarily bypassed for this app workload)'
+      'All chain sources failed for eth_getBalance (colibri: temporarily bypassed for this app workload)'
     );
     expect(adapters.colibriRequest).toHaveBeenCalledTimes(1);
     expect(client.serves(gen)).toBe(true);
@@ -529,6 +531,108 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
     // No verifier fault: Colibri is asked every time.
     expect(adapters.colibriRequest).toHaveBeenCalledTimes(3);
     expect(rpc.seen).toHaveLength(3);
+  }, 60_000);
+
+  /** Colibri, then Direct over the local node, with a prover, for chain 1. */
+  async function colibriThenDirect(adapters) {
+    const { main } = await start(adapters);
+    main.refs.set('e1', `${rpc.base}/`);
+    await main.configure(
+      snapshot({
+        read_order: ['colibri', 'direct'],
+        prover: { endpoint: 'p1', zk: true },
+        rpc: [{ endpoint: 'e1', user_configured: true }],
+      })
+    );
+    return main;
+  }
+
+  // freedom-core #279 (main's #1046): Colibri proves no gas price or fee
+  // history, and in privacy mode runs a call or a gas estimate on contract
+  // code it never checks, so from 0.12.0 it serves none of them. Direct
+  // answers, labelled as itself, and Colibri isn't asked.
+  test('Colibri answers no fee method, call or gas estimate: the next source does, as itself', async () => {
+    const adapters = { colibriRequest: jest.fn(async () => '0x1') };
+    const main = await colibriThenDirect(adapters);
+    const reads = [
+      ['eth_gasPrice', []],
+      ['eth_feeHistory', ['0x1', 'latest', []]],
+      ['eth_call', [{ to: ADDRESS, data: '0x1234' }, 'latest']],
+      ['eth_estimateGas', [{ to: ADDRESS, data: '0x1234' }]],
+    ];
+    for (const [method, params] of reads) {
+      const reply = await main.read(method, params);
+      expect({
+        method,
+        source: reply.source,
+        verified: reply.verified,
+        direct: reply.result === (method === 'eth_call' ? LARGE : '0x10'),
+      }).toEqual({ method, source: 'direct', verified: false, direct: true });
+    }
+    expect(adapters.colibriRequest).not.toHaveBeenCalled();
+    expect(rpc.seen.map(({ body }) => JSON.parse(body).method)).toEqual(
+      reads.map(([method]) => method)
+    );
+  }, 60_000);
+
+  // freedom-core #279 (main's #1060): Colibri proves an account read from
+  // an authenticated block without checking that it is the one asked for,
+  // so from 0.12.0 it answers one only at `latest`, whose proof it holds to
+  // a freshness gate, with `latest` appended where the block is left out.
+  // A block by number or hash is still Colibri's, as it checks that block;
+  // `safe`, `finalized`, `pending`, `earliest`, a block number or hash for
+  // an account read, and a block object (EIP-1898) aren't. Those go to
+  // Direct, and Colibri isn't asked.
+  test('Colibri answers only at the blocks it binds: account reads at latest, blocks by number or hash', async () => {
+    const BLOCK_HASH = `0x${'ab'.repeat(32)}`;
+    const BLOCK = { number: '0x10', hash: BLOCK_HASH };
+    const adapters = {
+      colibriRequest: jest.fn(async (_chainId, method) =>
+        method.startsWith('eth_getBlockBy') ? BLOCK : '0x1'
+      ),
+    };
+    const main = await colibriThenDirect(adapters);
+    const bound = [
+      ['eth_getBalance', [ADDRESS, 'latest'], [ADDRESS, 'latest'], '0x1'],
+      ['eth_getTransactionCount', [ADDRESS], [ADDRESS, 'latest'], '0x1'],
+      ['eth_getBlockByNumber', ['latest', false], ['latest', false], BLOCK],
+      ['eth_getBlockByNumber', ['0x10', false], ['0x10', false], BLOCK],
+      ['eth_getBlockByHash', [BLOCK_HASH, false], [BLOCK_HASH, false], BLOCK],
+    ];
+    for (const [method, params, asked, result] of bound) {
+      adapters.colibriRequest.mockClear();
+      expect(await main.read(method, params)).toMatchObject({
+        result,
+        source: 'colibri',
+        verified: true,
+      });
+      expect(adapters.colibriRequest).toHaveBeenCalledWith(1, method, asked, {
+        deadlineMs: expect.any(Number),
+      });
+    }
+    adapters.colibriRequest.mockClear();
+    const unbound = [
+      ['eth_getBalance', [ADDRESS, '0x10']],
+      ['eth_getBalance', [ADDRESS, BLOCK_HASH]],
+      ['eth_getBalance', [ADDRESS, { blockHash: BLOCK_HASH }]],
+      ['eth_getCode', [ADDRESS, 'finalized']],
+      ['eth_getTransactionCount', [ADDRESS, 'safe']],
+      ['eth_getStorageAt', [ADDRESS, '0x0', 'pending']],
+      ['eth_getBalance', [ADDRESS, 'earliest']],
+      ['eth_getBlockByNumber', ['finalized', false]],
+      ['eth_getBlockByNumber', ['safe', false]],
+    ];
+    for (const [method, params] of unbound) {
+      const reply = await main.read(method, params);
+      expect({ method, params, source: reply.source, verified: reply.verified }).toEqual({
+        method,
+        params,
+        source: 'direct',
+        verified: false,
+      });
+    }
+    expect(adapters.colibriRequest).not.toHaveBeenCalled();
+    expect(rpc.seen).toHaveLength(unbound.length);
   }, 60_000);
 
   // The wallet's finality labels take a quorum read as evidence only with

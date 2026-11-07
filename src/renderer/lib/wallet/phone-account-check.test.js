@@ -3,7 +3,8 @@
  * phone sign a check before a phone account is added, and a phone
  * account added before that is unchecked until its phone shows it holds
  * it. Only a matched one can own a Safe. Wallet Settings runs the check;
- * the wallet list and the Safe screen say which accounts aren't checked.
+ * the wallet list and the Safe screen say which accounts aren't checked,
+ * for Ledger accounts (#1065) as well as phone ones.
  */
 
 const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');
@@ -146,6 +147,10 @@ describe('the wallet list and the Safe screen', () => {
     { ...PHONE, addressCheck: 'unchecked' },
     { index: 1000002, name: 'Other Phone', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', type: 'remote', addressCheck: 'mismatched' },
     { index: 1000003, name: 'Checked Phone', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'remote', addressCheck: 'matched' },
+    // Ledger accounts carry the same states, with their own texts (#1065).
+    { index: 1000004, name: 'Old Ledger', address: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', type: 'ledger', path: "44'/60'/0'/0/0", addressCheck: 'unchecked' },
+    { index: 1000005, name: 'Other Ledger', address: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', type: 'ledger', path: "44'/60'/1'/0/0", addressCheck: 'mismatched' },
+    { index: 1000006, name: 'Checked Ledger', address: '0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65', type: 'ledger', path: "44'/60'/2'/0/0", addressCheck: 'matched' },
   ];
 
   const stubWalletModules = (elementsById = {}) => {
@@ -168,7 +173,7 @@ describe('the wallet list and the Safe screen', () => {
     return { renderDeviceAccountList };
   };
 
-  test("the wallet list badges a phone account that doesn't match", async () => {
+  test("the wallet list badges a phone or Ledger account that doesn't match", async () => {
     const list = createElement('div');
     stubWalletModules({
       'wallet-selector': createElement('div'),
@@ -188,10 +193,17 @@ describe('the wallet list and the Safe screen', () => {
     expect(rows[2]).toMatch(/Doesn't match/); // Other Phone: mismatched
     expect(rows[1]).not.toMatch(/Doesn't match/); // My Phone: unchecked
     expect(rows[3]).not.toMatch(/Doesn't match/); // Checked Phone
+    expect(rows[5]).toMatch(/Doesn't match/); // Other Ledger: mismatched
+    expect(rows[4]).not.toMatch(/Doesn't match/); // Old Ledger: unchecked
+    expect(rows[6]).not.toMatch(/Doesn't match/); // Checked Ledger
+    // Each kind's badge says what to do for that kind.
+    expect(addressCheckBadge(WALLETS[2])).toMatch(/Your phone last answered from a different account/);
+    expect(addressCheckBadge(WALLETS[5])).toMatch(/The Ledger last connected doesn't hold this address/);
     expect(addressCheckBadge({ index: 0, name: 'Main Wallet' })).toBe('');
+    expect(addressCheckBadge({ index: 0, name: 'Main Wallet', addressCheck: 'mismatched' })).toBe('');
   });
 
-  test("the Safe screen says which phone owners aren't checked", async () => {
+  test("the Safe screen says which phone and Ledger owners aren't checked", async () => {
     const preset = createElement('button', { classes: ['safe-preset'], dataset: { threshold: '1', owners: '2' } });
     const { renderDeviceAccountList } = stubWalletModules({
       'sidebar-create-safe': createElement('div', { classes: ['hidden'] }),
@@ -219,9 +231,13 @@ describe('the wallet list and the Safe screen', () => {
       '0x7099…79C8 · not checked on your phone yet',
       '0x8335…2913 · your phone answered from another account',
       '0x2096…287C',
+      '0x3C44…93BC · not checked on its Ledger yet',
+      '0x90F7…b906 · not on the Ledger last connected',
+      '0x15d3…6A65',
     ]);
-    // Only phone accounts carry the state.
-    expect(ownerSubLabel({ index: 2, address: PHONE.address, type: 'ledger', addressCheck: 'unchecked' }))
+    // Only phone and Ledger accounts carry the state.
+    expect(ownerSubLabel({ index: 2, address: PHONE.address, type: 'mnemonic', addressCheck: 'unchecked' }))
       .toBe('0x7099…79C8');
+    expect(ownerSubLabel({ index: 2, address: PHONE.address, addressCheck: 'mismatched' })).toBe('0x7099…79C8');
   });
 });

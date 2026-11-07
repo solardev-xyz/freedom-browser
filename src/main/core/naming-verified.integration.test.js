@@ -46,9 +46,8 @@ describeIfBinary('shell.verified with the real freedom-cored', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test('revert data without a byte form is a failure the core takes, not one that ends it', async () => {
-    const thrown = [];
-    client = new CoreClient({
+  function newClient() {
+    return new CoreClient({
       spawn,
       command: binary,
       args: [
@@ -63,6 +62,66 @@ describeIfBinary('shell.verified with the real freedom-cored', () => {
       log: quietLog,
       shellVersion: 'jest',
     });
+  }
+
+  // freedom-core #286 (main's #1076): from 0.12.0 the core has no Colibri
+  // naming operation, so an order that names Colibri, with a prover for it,
+  // skips it: main is asked no Colibri operation, and Myotis, next in the
+  // order, answers with its own label.
+  test('an order naming Colibri first asks main no Colibri operation: the next method answers', async () => {
+    client = newClient();
+    const asked = [];
+    const handle = client.handle.bind(client);
+    client.handle = (method, fn, ...rest) =>
+      handle(
+        method,
+        method === 'shell.verified'
+          ? (params, context) => {
+              asked.push(params);
+              return fn(params, context);
+            }
+          : fn,
+        ...rest
+      );
+    const config = new NamingConfig({
+      client,
+      sources: {
+        ...sources,
+        ens: { ...sources.ens, resolutionPolicy: () => ({ order: ['colibri', 'myotis'] }) },
+        registry: {
+          getNetwork: () => ({ zkProof: true }),
+          getEndpoints: (_chain, role) => (role === 'prover' ? ['https://prover.example'] : []),
+        },
+      },
+      log: quietLog,
+    });
+    registerNamingShell(client, config, {
+      hop: async () => ({ status: 500, headers: {}, body: Buffer.alloc(0) }),
+    });
+    const myotisRecord = jest.fn(async () => ({
+      verified: true,
+      blockNumber: 21_000_000,
+      status: 'ok',
+      dataHex: '0x',
+    }));
+    registerNamingVerified(client, config, { adapters: { myotisRecord } });
+    await client.start();
+    const gen = await config.whenServing();
+    const reply = await client
+      .requestTo(gen, 'naming.resolve_content', { name: 'vitalik.eth', private: false })
+      .catch((e) => e);
+    expect(reply.result).toMatchObject({
+      type: 'not_found',
+      reason: 'EMPTY_CONTENTHASH',
+      trust: { level: 'verified', method: 'myotis' },
+    });
+    expect(asked.filter((params) => 'colibri' in params)).toEqual([]);
+    expect(myotisRecord).toHaveBeenCalled();
+  });
+
+  test('revert data without a byte form is a failure the core takes, not one that ends it', async () => {
+    const thrown = [];
+    client = newClient();
     const config = new NamingConfig({ client, sources, log: quietLog });
     registerNamingShell(client, config, {
       hop: async () => ({ status: 500, headers: {}, body: Buffer.alloc(0) }),

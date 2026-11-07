@@ -75,7 +75,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   });
 
   test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
-    // From 0.11.0, the pinned core (freedom-core #265): only protocol 2.
+    // From 0.11.0 (freedom-core #265), so the pinned 0.12.0 too: only protocol 2.
     // CoreClient can't ask for 1, so this is a raw hello, as main's was.
     const child = spawn(
       binary,
