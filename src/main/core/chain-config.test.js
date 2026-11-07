@@ -11,6 +11,17 @@ const {
 } = require('./chain-config');
 
 const LOG_INDEX_URLS = { 100: 'https://gnosis.blockscout.com/api' };
+// The Safe E2E's provider-identity seam with its real gate, under the
+// launch facts a test sets (packaged and no variable unless it says).
+let mockE2eLaunch = { isPackaged: true, env: {} };
+jest.mock('../networks/e2e-provider-identities', () => {
+  const actual = jest.requireActual('../networks/e2e-provider-identities');
+  return {
+    ...actual,
+    activeProviderIdentityOverrides: () =>
+      actual.providerIdentityOverrides({ ...mockE2eLaunch, fromAsar: false }),
+  };
+});
 // Built at run time, so the text is the character itself.
 const LONE = String.fromCharCode(0xd800);
 const REPLACEMENT = String.fromCharCode(0xfffd);
@@ -228,10 +239,56 @@ describe('the snapshot', () => {
         { endpoint: ref('http://127.0.0.1:8545'), user_configured: false },
         { endpoint: ref('https://lb.drpc.live/gnosis/key'), user_configured: false },
         { endpoint: ref('https://gnosis-mainnet.g.alchemy.com/v2/one'), user_configured: false },
-        // Another loopback port is another process.
-        { endpoint: ref('http://127.0.0.1:8546'), user_configured: false },
+        // Another loopback port is the same provider (#1097 round 1).
         { endpoint: ref('https://b.example'), user_configured: false },
       ]);
+    });
+
+    test('every loopback endpoint is one reference, whatever its port or address', () => {
+      const { rpc, ref } = snapshotRpc([
+        'http://127.0.0.1:8545',
+        'http://127.0.0.1:18549',
+        'http://127.0.0.2:8545',
+        'http://[::1]:8546',
+        'https://b.example',
+      ]);
+      expect(rpc).toEqual([
+        { endpoint: ref('http://127.0.0.1:8545'), user_configured: false },
+        { endpoint: ref('https://b.example'), user_configured: false },
+      ]);
+    });
+
+    // The Safe E2E lists its anvil fork and a forwarder in front of it, two
+    // loopback URLs, and names them as two providers through a test-only
+    // seam (networks/e2e-provider-identities.js), so a Safe can activate on
+    // the core's verified quorum. chain-config honors it only for an
+    // unpackaged launch with the variable set.
+    describe('the Safe E2E seam (test-only)', () => {
+      const E2E = ['http://127.0.0.1:18847', 'http://127.0.0.1:18849'];
+      const env = {
+        FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify({
+          [E2E[0]]: 'e2e-anvil',
+          [E2E[1]]: 'e2e-anvil-forwarder',
+        }),
+      };
+      afterEach(() => {
+        mockE2eLaunch = { isPackaged: true, env: {} };
+      });
+
+      test('an unpackaged launch with the variable: two references', () => {
+        mockE2eLaunch = { isPackaged: false, env };
+        const { rpc, ref } = snapshotRpc(E2E);
+        expect(rpc).toEqual(E2E.map((url) => ({ endpoint: ref(url), user_configured: false })));
+      });
+
+      test.each([
+        ['a packaged build, with the variable', { isPackaged: true, env }],
+        ['an unpackaged launch without the variable', { isPackaged: false, env: {} }],
+      ])('%s: one reference', (_name, launch) => {
+        mockE2eLaunch = launch;
+        const { rpc, ref } = snapshotRpc(E2E);
+        expect(rpc).toEqual([{ endpoint: ref(E2E[0]), user_configured: false }]);
+      });
     });
 
     test('every URL collapsing to one provider leaves one endpoint', () => {

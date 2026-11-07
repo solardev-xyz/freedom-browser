@@ -122,10 +122,10 @@ function wireChains(registry) {
 
 /** A chain's RPC endpoints the snapshot may list: each provider once, by
  * the first URL listed for it (networks/endpoint-identity.js says when two
- * URLs are one provider: a trailing slash, another path or key, a keyed
- * provider's other host, `localhost` for `127.0.0.1`), then the first ones
- * in registry order. A user source sorts ahead of every builtin, so a
- * provider the user added keeps the user's URL and `user_configured`. Only
+ * URLs are one provider: a trailing slash, another path, port or key, a
+ * keyed provider's other host, any loopback endpoint for another), then the
+ * first ones in registry order. A user source sorts ahead of every builtin,
+ * so a provider the user added keeps the user's URL and `user_configured`. Only
  * these are checked for their chain (`rpcPairs`): a provider whose first
  * URL doesn't answer it is left out, whatever its other URLs answer. */
 const rpcUrls = (registry, chainId) =>

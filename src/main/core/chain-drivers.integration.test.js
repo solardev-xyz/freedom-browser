@@ -165,6 +165,10 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
     ['a trailing slash', ['https://a.example', 'https://a.example/']],
     ['two keys at one keyed provider', ['https://lb.drpc.live/ethereum/one', 'https://lb.drpc.live/ethereum/two']],
     ['127.0.0.1 and localhost', ['http://127.0.0.1:8545', 'http://localhost:8545']],
+    // Every loopback endpoint is one provider (#1097 round 1): a local node
+    // can listen on, or forward itself to, another port or address.
+    ['two loopback ports', ['http://127.0.0.1:8545', 'http://127.0.0.1:18549']],
+    ['127.0.0.1 and 127.0.0.2 on one port', ['http://127.0.0.1:8545', 'http://127.0.0.2:8545']],
   ])('one provider under two URLs (%s) gives no verified quorum', async (_name, urls) => {
     const x = await start({
       quorum: { k: 3, m: 2, timeoutMs: 5000 },
