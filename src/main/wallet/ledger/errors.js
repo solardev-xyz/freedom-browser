@@ -21,6 +21,10 @@ const LEDGER_ERROR_CODES = {
   // The device's signature doesn't recover to the account over what was
   // asked (a mis-encoded request, a confused device, a faulty transport).
   BAD_SIGNATURE: 'LEDGER_BAD_SIGNATURE',
+  // Adding an account: the device holds another address at that path.
+  ADDRESS_MISMATCH: 'LEDGER_ADDRESS_MISMATCH',
+  // An account no Ledger has yet shown to hold its address at its path.
+  ACCOUNT_UNCHECKED: 'LEDGER_ACCOUNT_UNCHECKED',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -37,6 +41,10 @@ const MESSAGES = {
     'Ledger cannot display this contract call. Enable "Blind signing" (called "Contract data" on older app versions) in the Ethereum app settings, then try again.',
   [LEDGER_ERROR_CODES.BAD_SIGNATURE]:
     "The Ledger returned a signature that doesn't match this request. Nothing was sent.",
+  [LEDGER_ERROR_CODES.ADDRESS_MISMATCH]:
+    "This Ledger holds a different address at that path. The account wasn't added.",
+  [LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED]:
+    "This Ledger account hasn't been checked on its Ledger yet. Connect that Ledger and open Connect Hardware Wallet, then try again.",
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 

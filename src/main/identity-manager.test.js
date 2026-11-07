@@ -69,6 +69,18 @@ function makeRestartIdentityMock() {
   };
 }
 
+/**
+ * A fake Ledger: addLedgerWallet reads the address at the path back from
+ * the device (#1065). `device.address` is what it holds there.
+ */
+function makeLedgerDevice(address) {
+  const device = {
+    address,
+    readAddresses: jest.fn(async (paths) => paths.map(() => device.address)),
+  };
+  return device;
+}
+
 describe('identity-manager profile paths', () => {
   let tempDirs = [];
   let envSnapshot;
@@ -279,6 +291,7 @@ describe('identity-manager ledger accounts', () => {
   let tmpDir;
   let envSnapshot;
   let identityManager;
+  let device;
 
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
   const LEDGER_PATH = "44'/60'/0'/0/0";
@@ -288,6 +301,7 @@ describe('identity-manager ledger accounts', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-ledger-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    device = makeLedgerDevice(LEDGER_ADDRESS);
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
@@ -295,6 +309,7 @@ describe('identity-manager ledger accounts', () => {
           getMnemonic: jest.fn(() => null), // vault locked — ledger ops must not need it
           isUnlocked: jest.fn(() => false),
         }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
       },
     }).mod;
   });
@@ -333,9 +348,106 @@ describe('identity-manager ledger accounts', () => {
       address: LEDGER_ADDRESS,
       type: 'ledger',
       path: LEDGER_PATH,
+      addressCheck: 'matched',
     });
     expect(readVaultMeta().derivedWallets).toHaveLength(2);
-    expect(readVaultMeta().derivedWallets[1]).toMatchObject({ type: 'ledger', path: LEDGER_PATH });
+    expect(readVaultMeta().derivedWallets[1]).toMatchObject({
+      type: 'ledger',
+      path: LEDGER_PATH,
+      addressCheck: 'matched',
+    });
+    // The address was read back from the device at that path.
+    expect(device.readAddresses).toHaveBeenCalledWith([LEDGER_PATH]);
+  });
+
+  test('addLedgerWallet refuses an address the device does not hold at that path (#1065)', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    device.address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+    await expect(identityManager.addLedgerWallet('Planted', LEDGER_ADDRESS, LEDGER_PATH))
+      .rejects.toMatchObject({
+        code: 'LEDGER_ADDRESS_MISMATCH',
+        message: expect.stringMatching(/different address at that path/),
+      });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('addLedgerWallet adds nothing when the device cannot be read', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    device.readAddresses.mockRejectedValueOnce(
+      Object.assign(new Error('No Ledger device found.'), { code: 'LEDGER_DEVICE_NOT_FOUND' })
+    );
+
+    await expect(identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH))
+      .rejects.toMatchObject({ code: 'LEDGER_DEVICE_NOT_FOUND' });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('the add IPC answers a mismatch with its code', async () => {
+    seedMainWallet();
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => ({
+          getMnemonic: jest.fn(() => null),
+          isUnlocked: jest.fn(() => false),
+        }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
+      },
+    });
+    mod.registerIdentityIpc();
+    device.address = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+
+    await expect(ipcMain.invoke('wallet:add-ledger-wallet', 'Planted', LEDGER_ADDRESS, LEDGER_PATH))
+      .resolves.toMatchObject({ success: false, code: 'LEDGER_ADDRESS_MISMATCH' });
+  });
+
+  test('a record added before the device check starts unchecked and is never deleted (#1065)', async () => {
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: HARDWARE_INDEX_BASE, name: 'Old', address: LEDGER_ADDRESS, type: 'ledger', path: LEDGER_PATH },
+        {
+          index: HARDWARE_INDEX_BASE + 1,
+          name: 'Checked',
+          address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          type: 'ledger',
+          path: "44'/60'/1'/0/0",
+          addressCheck: 'matched',
+        },
+      ],
+    });
+
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index))
+      .toEqual([HARDWARE_INDEX_BASE]);
+
+    // A device that doesn't hold it marks it mismatched, and keeps it.
+    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+    expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({
+      address: LEDGER_ADDRESS,
+      addressCheck: 'mismatched',
+    });
+    expect(identityManager.getLedgerRecordsToCheck().map((record) => record.index))
+      .toEqual([HARDWARE_INDEX_BASE]);
+
+    // One that does makes it matched.
+    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+    expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
+    expect(identityManager.getLedgerRecordsToCheck()).toEqual([]);
+
+    // A matched record stays matched: a later device that doesn't hold it
+    // is another Ledger.
+    expect(identityManager.recordLedgerAddressCheck(HARDWARE_INDEX_BASE + 1, false)).toBe('matched');
+    expect(readVaultMeta().derivedWallets[2]).toMatchObject({ addressCheck: 'matched' });
+
+    // Only Ledger records carry the state.
+    expect(identityManager.recordLedgerAddressCheck(0, true)).toBeNull();
+    expect(readVaultMeta().derivedWallets[0]).not.toHaveProperty('addressCheck');
   });
 
   test('addLedgerWallet auto-names and works with the vault locked', async () => {
@@ -454,6 +566,7 @@ describe('identity-manager safe accounts', () => {
   let envSnapshot;
   let identityManager;
   let ownerIndexes;
+  let device;
 
   const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
@@ -463,6 +576,7 @@ describe('identity-manager safe accounts', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-safe-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    device = makeLedgerDevice(LEDGER_ADDRESS);
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
@@ -470,6 +584,7 @@ describe('identity-manager safe accounts', () => {
           getMnemonic: jest.fn(() => null), // vault locked — safe ops must not need it
           isUnlocked: jest.fn(() => false),
         }),
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
       },
     }).mod;
   });
@@ -533,6 +648,36 @@ describe('identity-manager safe accounts', () => {
       threshold: 1,
       saltNonce: SALT,
     });
+  });
+
+  test('addSafeWallet refuses a Ledger owner no device has matched, until one does (#1065)', async () => {
+    // A Ledger record from before the device check: the chrome's word.
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: 1000000, name: 'Old Ledger', address: LEDGER_ADDRESS, type: 'ledger', path: "44'/60'/0'/0/0" },
+      ],
+      nextHardwareWalletIndex: 1000001,
+    });
+    ownerIndexes = [0, 1000000];
+
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'LEDGER_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/"Old Ledger" can't own a Safe until it has been checked/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    identityManager.recordLedgerAddressCheck(1000000, false);
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'LEDGER_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/the Ledger last connected doesn't hold it/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    identityManager.recordLedgerAddressCheck(1000000, true);
+    await expect(addSafe()).resolves.toMatchObject({ type: 'safe', owners: [0, 1000000] });
   });
 
   test('addSafeWallet auto-names and works with the vault locked', async () => {
@@ -675,6 +820,7 @@ describe('identity-manager wallet index allocation', () => {
   let tmpDir;
   let envSnapshot;
   let identityManager;
+  let device;
 
   const LEDGER_A = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
   const LEDGER_B = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
@@ -685,9 +831,11 @@ describe('identity-manager wallet index allocation', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-index-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    device = makeLedgerDevice(null);
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
+        [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => 'test mnemonic'),
           isUnlocked: jest.fn(() => true),
@@ -706,6 +854,12 @@ describe('identity-manager wallet index allocation', () => {
     restoreEnv(envSnapshot);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
+
+  /** The Ledger the user connects holds the address being added. */
+  function addLedger(name, address, ledgerPath) {
+    device.address = address;
+    return identityManager.addLedgerWallet(name, address, ledgerPath);
+  }
 
   function readVaultMeta() {
     return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
@@ -729,7 +883,7 @@ describe('identity-manager wallet index allocation', () => {
     expect(second.index).toBe(1);
 
     await identityManager.deleteDerivedWallet(1);
-    const ledger = await identityManager.addLedgerWallet('', LEDGER_A, LEDGER_PATH);
+    const ledger = await addLedger('', LEDGER_A, LEDGER_PATH);
 
     expect(ledger.index).toBe(HARDWARE_INDEX_BASE);
 
@@ -743,7 +897,7 @@ describe('identity-manager wallet index allocation', () => {
 
   test('mnemonic accounts keep allocating from the low range once a ledger exists', async () => {
     seedMainWallet();
-    await identityManager.addLedgerWallet('', LEDGER_A, LEDGER_PATH);
+    await addLedger('', LEDGER_A, LEDGER_PATH);
 
     const next = await identityManager.createDerivedWallet('Wallet 2');
 
@@ -754,10 +908,10 @@ describe('identity-manager wallet index allocation', () => {
 
   test('a deleted ledger does not hand its index to the next device account', async () => {
     seedMainWallet();
-    const first = await identityManager.addLedgerWallet('', LEDGER_A, LEDGER_PATH);
+    const first = await addLedger('', LEDGER_A, LEDGER_PATH);
     await identityManager.deleteDerivedWallet(first.index);
 
-    const second = await identityManager.addLedgerWallet('', LEDGER_B, LEDGER_PATH);
+    const second = await addLedger('', LEDGER_B, LEDGER_PATH);
 
     expect(second.index).toBe(HARDWARE_INDEX_BASE + 1);
     expect(readVaultMeta().nextHardwareWalletIndex).toBe(HARDWARE_INDEX_BASE + 2);
@@ -783,7 +937,7 @@ describe('identity-manager wallet index allocation', () => {
       'utf-8'
     );
 
-    const added = await identityManager.addLedgerWallet('', LEDGER_B, LEDGER_PATH);
+    const added = await addLedger('', LEDGER_B, LEDGER_PATH);
 
     expect(added.index).toBe(HARDWARE_INDEX_BASE + 5);
   });

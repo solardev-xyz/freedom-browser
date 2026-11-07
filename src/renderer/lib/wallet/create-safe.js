@@ -111,6 +111,20 @@ function eligibleOwners() {
   );
 }
 
+/**
+ * A Ledger account no device has matched can't own a Safe (#1065): main
+ * refuses it, and the list says why before the user tries.
+ */
+function ownerSubLabel(wallet) {
+  const address = truncateAddress(wallet.address);
+  if (wallet.type !== 'ledger' || !wallet.addressCheck || wallet.addressCheck === 'matched') {
+    return address;
+  }
+  return wallet.addressCheck === 'mismatched'
+    ? `${address} · not on the Ledger last connected`
+    : `${address} · not checked on its Ledger yet`;
+}
+
 function renderOwnerList() {
   const owners = eligibleOwners();
   const selectedAddresses = new Set(
@@ -124,7 +138,7 @@ function renderOwnerList() {
     owners.map((wallet) => ({
       address: wallet.address,
       label: wallet.name,
-      subLabel: truncateAddress(wallet.address),
+      subLabel: ownerSubLabel(wallet),
       index: wallet.index,
     })),
     {

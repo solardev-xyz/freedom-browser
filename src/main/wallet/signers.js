@@ -22,7 +22,12 @@
 const { Wallet, computeAddress } = require('ethers');
 
 const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
-const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
+const {
+  getWalletRecord,
+  isHardwareWalletIndex,
+  recordLedgerAddressCheck,
+  WALLET_TYPES,
+} = require('../identity-manager');
 const { createLedgerBackend } = require('./ledger/signer');
 const { createRemoteBackend } = require('./remote/signer');
 const { normalizeMessage, normalizeTypedData, withoutDomainType } = require('./signing-utils');
@@ -113,7 +118,11 @@ function getSigner(walletIndex) {
   }
   let backend;
   if (record && record.type === WALLET_TYPES.LEDGER) {
-    backend = createLedgerBackend(record);
+    backend = createLedgerBackend(record, {
+      // What the device said about a record no device has matched yet
+      // (#1065): kept on the record.
+      onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
+    });
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record);
   } else {

@@ -389,3 +389,44 @@ describe('createLedgerBackend / every signature is recovered against the account
     );
   });
 });
+
+/**
+ * #1065: a record added before main read addresses back from the device
+ * is checked by the first device that signs for it, and can't sign until
+ * one matches it.
+ */
+describe('createLedgerBackend / the device check is kept on the record', () => {
+  const UNCHECKED = { ...RECORD, addressCheck: 'unchecked' };
+
+  beforeEach(() => {
+    mockEth.signPersonalMessage.mockImplementation(async (_path, messageHex) =>
+      toDeviceSig(deviceWallet.signingKey.sign(hashMessage(Buffer.from(messageHex, 'hex')))));
+  });
+
+  test('a device that holds the address passes the check, and then signs', async () => {
+    const onAddressCheck = jest.fn();
+    const signature = await createLedgerBackend(UNCHECKED, { onAddressCheck }).signMessage('hi');
+    expect(verifyMessage('hi', signature)).toBe(deviceWallet.address);
+    expect(onAddressCheck).toHaveBeenCalledWith(true);
+    expect(onAddressCheck.mock.invocationCallOrder[0])
+      .toBeLessThan(mockEth.signPersonalMessage.mock.invocationCallOrder[0]);
+  });
+
+  test('a device that holds another address fails the check, and nothing is signed', async () => {
+    mockEth.getAddress.mockResolvedValue({ address: '0x0000000000000000000000000000000000000bad' });
+    const onAddressCheck = jest.fn();
+    await expect(createLedgerBackend(UNCHECKED, { onAddressCheck }).signMessage('hi'))
+      .rejects.toMatchObject({ code: 'LEDGER_WRONG_DEVICE' });
+    expect(onAddressCheck).toHaveBeenCalledWith(false);
+    expect(mockEth.signPersonalMessage).not.toHaveBeenCalled();
+  });
+
+  test('a failure to keep the check does not change the outcome', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const onAddressCheck = jest.fn(() => {
+      throw new Error('disk full');
+    });
+    const signature = await createLedgerBackend(UNCHECKED, { onAddressCheck }).signMessage('hi');
+    expect(verifyMessage('hi', signature)).toBe(deviceWallet.address);
+  });
+});

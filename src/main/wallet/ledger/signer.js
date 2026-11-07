@@ -83,18 +83,32 @@ function checkedSignature(record, sig, recover) {
 
 /**
  * @param {{address: string, path: string}} record - Ledger wallet record from vault-meta
+ * @param {{onAddressCheck?: (matched: boolean) => void}} [options]
+ *   `onAddressCheck` hears whether the device derived the record's address
+ *   at its path, so the record's check state (#1065) can be kept.
  * @returns {import('../signers').Signer}
  */
-function createLedgerBackend(record) {
+function createLedgerBackend(record, { onAddressCheck } = {}) {
   /**
    * Run a device task after verifying the attached Ledger derives this
    * account's address at the stored path — signing with a different
    * device/seed must fail, not silently produce a foreign signature.
+   * This is also the check of a record added before main read addresses
+   * back from the device: it can't sign until a device matches it.
    */
   const withVerifiedDevice = (task) =>
     withEthApp(async (eth) => {
       const { address } = await eth.getAddress(record.path, false);
-      if (address.toLowerCase() !== record.address.toLowerCase()) {
+      const matched = address.toLowerCase() === record.address.toLowerCase();
+      if (onAddressCheck) {
+        try {
+          onAddressCheck(matched);
+        } catch (err) {
+          // Keeping the state is best effort; the device answered either way.
+          console.warn('[LedgerSigner] Could not record the address check:', err.message);
+        }
+      }
+      if (!matched) {
         throw createLedgerError(LEDGER_ERROR_CODES.WRONG_DEVICE);
       }
       return task(eth);

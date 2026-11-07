@@ -75,8 +75,21 @@ const loadScreen = async () => {
 
   const mod = await import('./connect-ledger.js');
   mod.initConnectLedger();
+  const { showInlineError } = await import('./wallet-utils.js');
+  const { loadDerivedWallets } = await import('./wallet-selector.js');
 
-  return { mod, screen, statusEl, statusSpinner, statusText, detectView, accountsView, getAccounts };
+  return {
+    mod,
+    screen,
+    statusEl,
+    statusSpinner,
+    statusText,
+    detectView,
+    accountsView,
+    getAccounts,
+    showInlineError,
+    loadDerivedWallets,
+  };
 };
 
 describe('connect ledger — detect status rendering', () => {
@@ -175,5 +188,59 @@ describe('connect ledger — detect status rendering', () => {
     expect(statusEl.classList.contains('connect-ledger-status-failed')).toBe(false);
 
     await mod.closeConnectLedger();
+  });
+});
+
+describe('connect ledger — wallet accounts the device does not hold (#1065)', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test('the user is told which accounts, and the wallet list is reloaded', async () => {
+    const { mod, getAccounts, showInlineError, loadDerivedWallets } = await loadScreen();
+    getAccounts.mockResolvedValue({
+      success: true,
+      accounts: [{ address: '0xabc', path: "44'/60'/0'/0/0" }],
+      mismatched: [{ index: 1000001, name: 'Old Ledger', address: '0xdef', path: "44'/60'/1'/0/0" }],
+    });
+
+    await mod.openConnectLedger();
+    await flushMicrotasks();
+
+    expect(showInlineError).toHaveBeenCalledWith(
+      expect.anything(),
+      'This Ledger doesn\'t hold "Old Ledger" at its path. It stays in your wallet list, ' +
+        "but can't sign or own a Safe until you connect the Ledger that holds it."
+    );
+    expect(loadDerivedWallets).toHaveBeenCalled();
+    await mod.closeConnectLedger();
+  });
+
+  test('nothing is said when every account matches', async () => {
+    const { mod, getAccounts, showInlineError, loadDerivedWallets } = await loadScreen();
+    getAccounts.mockResolvedValue({ success: true, accounts: [], mismatched: [] });
+
+    await mod.openConnectLedger();
+    await flushMicrotasks();
+
+    expect(showInlineError).not.toHaveBeenCalled();
+    expect(loadDerivedWallets).not.toHaveBeenCalled();
+    await mod.closeConnectLedger();
+  });
+
+  test('several accounts are named together', () => {
+    return loadScreen().then(({ mod }) => {
+      expect(mod.mismatchNotice([{ name: 'A' }, { name: 'B' }])).toBe(
+        'This Ledger doesn\'t hold "A", "B" at their paths. They stay in your wallet list, ' +
+          "but can't sign or own a Safe until you connect the Ledger that holds them."
+      );
+    });
   });
 });
