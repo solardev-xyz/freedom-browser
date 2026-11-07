@@ -3243,7 +3243,10 @@
 
               <!-- Step 2: Pick account -->
               <div id="connect-phone-accounts-step" class="subscreen-content hidden">
-                <p class="create-wallet-message">Choose the account to add.</p>
+                <p class="create-wallet-message">
+                  Choose the account to add. To show it's yours, your phone then signs a short
+                  check: scan the new code that appears.
+                </p>
 
                 <div id="connect-phone-account-list" class="connect-ledger-account-list"></div>
 
@@ -3435,6 +3438,20 @@
                 <div class="wallet-settings-section">
                   <label class="wallet-settings-label">Address</label>
                   <code class="wallet-settings-address" id="wallet-settings-address"></code>
+                </div>
+
+                <!-- Phone check: a phone account its phone hasn't shown it holds (#1078) -->
+                <div class="wallet-settings-section hidden" id="wallet-settings-phone-check">
+                  <label class="wallet-settings-label">Phone Check</label>
+                  <p class="export-pk-unlock-text" id="wallet-settings-phone-check-text"></p>
+                  <button
+                    type="button"
+                    class="wallet-settings-export-btn"
+                    id="wallet-settings-phone-check-btn"
+                  >
+                    Check on Phone
+                  </button>
+                  <div class="export-pk-error hidden" id="wallet-settings-phone-check-error"></div>
                 </div>
 
                 <!-- Export Private Key Section -->
