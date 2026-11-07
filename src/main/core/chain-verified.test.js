@@ -9,6 +9,7 @@ const { registerNamingVerified, MAX_PER_VERIFIER } = require('./naming-verified'
 const { NOT_SENT } = require('./chain-shell');
 const { BroadcastRecords } = require('./chain-broadcasts');
 const { MAX_MESSAGE } = require('./frame');
+const { proverOutageError } = require('../../../test/helpers/colibri-prover-outage');
 
 const ADDRESS = '0x' + 'ab'.repeat(20);
 const RAW = '0xf86b80';
@@ -540,6 +541,20 @@ describe('Colibri', () => {
       ).toEqual({ revert: { data: '0x12' } });
     }
   });
+
+  // #1059: Colibri no longer proves a read itself when its prover is down,
+  // so the prover's error is its whole answer. It is a plain failure, with no
+  // fault bit to back Colibri off and no capacity bit, and the core moves on
+  // to its next source.
+  test('a failed remote proof is a plain failure', async () => {
+    const outage = proverOutageError();
+    expect(outage).toMatchObject({
+      code: 4900,
+      message: expect.stringContaining('remote proof failed (no local proving): HTTP error! Status: 503'),
+    });
+    expect(isColibriFault(outage)).toBe(false);
+    expect(await faulting(outage)).toEqual({ failure: 'error' });
+  }, 60_000);
 });
 
 describe('every operation', () => {
