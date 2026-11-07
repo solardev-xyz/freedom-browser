@@ -116,18 +116,28 @@ READ_METHODS.add('web3_sha3');
 //   a pending block has no beacon block, and the earliest predates the beacon
 //   chain): requestColibri refuses it before Colibri is asked
 //   (colibriRequestParams), and the next source answers.
+// Nor does it serve eth_call or eth_estimateGas. In privacy mode
+// (`privacy_mode: 'basic'`, which the worker always sets) Colibri runs both
+// locally (METHOD_LOCAL in eth_verify.c) on contract code it fetches from an
+// `eth_rpc` server, and never checks that code against the proven code hash
+// (call_ctx.c's call_account_get_code, eth_account.c). A call that reads no
+// storage and no block context fetches no proof at all, and its result is
+// accepted (verify_call.c's verify_call_result_and_finish). So a call's
+// answer can be one public RPC's code, run locally with no proof behind it:
+// both are `unsupported` below.
 // Nor does it answer a read whose proof isn't tied to the requested block
 // (#1060). Colibri proves such an answer from *some* authenticated block, so
 // a lying prover could answer from another one, and it would be labelled
 // verified. requestColibri refuses those too, and asks Colibri only for:
-// - an account read or a call (eth_getBalance, eth_getCode,
-//   eth_getTransactionCount, eth_getStorageAt, eth_call, eth_estimateGas) at
-//   `latest`, given or appended, whose proof must be at most a minute old;
+// - an account read (eth_getBalance, eth_getCode, eth_getTransactionCount,
+//   eth_getStorageAt) at `latest`, given or appended, whose proof must be at
+//   most a minute old;
 // - eth_getBlockByNumber at `latest`, a number or a hash, which Colibri
 //   compares with the proven block, or without a block (`latest`);
 // - eth_getBlockByHash at a 32-byte hash, compared the same way.
-// A block that isn't a string (an EIP-1898 object), `safe` and `finalized`
-// go elsewhere for every method: Colibri ties none of them to its proof.
+// A block that isn't a string (an EIP-1898 object), `safe`, `finalized` and
+// `justified` go elsewhere for every method: Colibri ties none of them to its
+// proof.
 const COST = Object.freeze({
   SERIALIZED: 'serialized',
   PROOF: 'proof',
@@ -147,7 +157,14 @@ const SOURCE_CAPABILITIES = Object.freeze({
     cost: COST.SERIALIZED,
   }),
   colibri: Object.freeze({
-    unsupported: new Set([...SINGLE_NODE_METHODS, 'eth_getLogs', 'eth_gasPrice', 'eth_feeHistory']),
+    unsupported: new Set([
+      ...SINGLE_NODE_METHODS,
+      'eth_getLogs',
+      'eth_gasPrice',
+      'eth_feeHistory',
+      'eth_call',
+      'eth_estimateGas',
+    ]),
     // Its upstream refuses more than 10,000 blocks per log query, then retries
     // another node (#496). Not consulted while eth_getLogs is unsupported.
     logSpan: 10_000,
@@ -188,70 +205,58 @@ const COLIBRI_BLOCK_PARAM = new Map([
   ['eth_getBalance', 1],
   ['eth_getCode', 1],
   ['eth_getTransactionCount', 1],
-  ['eth_call', 1],
-  ['eth_estimateGas', 1],
   ['eth_getStorageAt', 2],
   ['eth_getBlockByNumber', 0],
 ]);
-// The account reads and calls, which Colibri 3.0.3 ties to the requested
-// block only at `latest` (#1060). Its verifiers check no other block:
-// - verify_account_proof.c proves the account against the header in the
-//   proof, and compares no requested number or hash with that header;
-// - a call (privacy mode: verify_call.c's pap_verify_proof_response) proves
-//   the state header without comparing it with the request, and
-//   call_ctx.c's call_lazy_fetch_block_header compares a number only when
-//   the EVM reads the block context, and a hash never;
-// - `safe` and `finalized` pass unchecked everywhere (eth_verify.h: only
-//   `latest` is gated).
-// At `latest` each proof must be at most a minute old: Colibri's freshness
-// gate (eth_check_latest_freshness, with the worker's
-// max_latest_age_seconds), which the account verifier applies to its last
-// param and a call to params[1], both only when that is the string `latest`.
+// The account reads, which Colibri 3.0.3 ties to the requested block only at
+// `latest` (#1060). verify_account_proof.c proves the account against the
+// header in the proof and compares no requested number or hash with that
+// header. No tag but `latest` is gated (eth_verify.h), so `safe`,
+// `finalized` or `justified` would pass unchecked. At `latest` each proof
+// must be at most a minute old: Colibri's freshness gate
+// (eth_check_latest_freshness, with the worker's max_latest_age_seconds).
+// The verifier reads the block as the account read's last param
+// (account_block_tag) and gates it only when that is the string `latest`,
+// so the block must be last.
 const COLIBRI_LATEST_ONLY = new Set([
   'eth_getBalance',
   'eth_getCode',
   'eth_getTransactionCount',
   'eth_getStorageAt',
-  'eth_call',
-  'eth_estimateGas',
 ]);
-// The account reads: Colibri's account verifier reads the block as their
-// last param (verify_account_proof.c's account_block_tag), so the block
-// must be last.
-const COLIBRI_BLOCK_LAST = new Set([
-  'eth_getBalance',
-  'eth_getCode',
-  'eth_getTransactionCount',
-  'eth_getStorageAt',
-]);
-// The block tags Colibri ties no answer to, for any method: `pending` and
-// `earliest` it answers from a public RPC (`eth_json_is_unproofable_tag`),
-// `safe` and `finalized` it proves for some block without checking that it
-// is the safe or finalized one (verify_block.c's c4_eth_matches_blocknumber
-// passes every tag). Compared exactly, as Colibri compares the JSON string.
-const COLIBRI_UNBOUND_TAGS = new Set(['pending', 'earliest', 'safe', 'finalized']);
-// The only block hash Colibri compares with the proven block: 32 bytes
-// (c4_eth_matches_blocknumber reads any other string as a tag or a number).
+// The blocks eth_getBlockByNumber is Colibri's at: `latest`, which its
+// freshness gate holds to a minute; a block number, compared with the proven
+// block's; a 32-byte hash, compared with its hash (verify_block.c's
+// c4_eth_matches_blocknumber). Every other string goes elsewhere:
+// - `pending` and `earliest`, which Colibri answers from a public RPC
+//   (`eth_json_is_unproofable_tag`);
+// - `safe`, `finalized`, and any other string its validator lets through,
+//   which it matches with any proven block: it compares only a string that
+//   starts with `0x`, and its validator (json_validate.c's check_hex) also
+//   passes `0X10` or `1x10`;
+// - `justified`, a tag Colibri names but doesn't gate (eth_verify.h).
+// A number is `0x` and at most 16 hex digits without a leading zero,
+// which Colibri compares as a 64-bit number (json_as_uint64); a hash is `0x`
+// and 64 hex digits, which it compares as 32 bytes.
+const COLIBRI_BLOCK_NUMBER = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]{0,15})$/;
 const COLIBRI_BLOCK_HASH = /^0x[0-9a-fA-F]{64}$/;
 const COLIBRI_NOT_A_STRING = 'at a block that isn\'t a string';
 
 // The params Colibri is asked this read with (`{ params }`), or why it
 // can't prove it (`{ refusal }`, completing "Colibri cannot prove <method>").
 // Only a read whose answer Colibri ties to the requested block goes to it:
-// - an account read or a call at `latest`. Without its block parameter it
-//   is read at `latest` by every source, and Colibri is asked with `latest`
-//   appended: left out, Colibri would apply no freshness gate (the account
-//   verifier would read the address or storage slot as the block, a call
-//   would test the missing params[1]). Any other block, params too short to
-//   append it in its place, and an account read with params after its
-//   block, go elsewhere.
+// - an account read at `latest`. Without its block parameter it is read at
+//   `latest` by every source, and Colibri is asked with `latest` appended:
+//   left out, Colibri would apply no freshness gate (the verifier would read
+//   the address or storage slot as the block). Any other block, params too
+//   short to append it in its place, and params after the block, go
+//   elsewhere.
 // - eth_getBlockByNumber at `latest`, a number, a hash or no block at all
 //   (null params included), which verify_block.c compares with the proven
 //   block or holds to the freshness gate;
 // - eth_getBlockByHash at a 32-byte hash.
 // A block that isn't a string (an EIP-1898 object, null, a number) is never
-// Colibri's: in privacy mode its call path reads any non-string as `latest`
-// (call_ctx.c, verify_call.c's proof_call), and no verifier compares one.
+// Colibri's: no verifier compares one.
 function colibriRequestParams(method, params) {
   if (method === 'eth_getBlockByHash') {
     if (!Array.isArray(params) || params.length === 0) return { refusal: 'without a block hash' };
@@ -268,12 +273,13 @@ function colibriRequestParams(method, params) {
     if (index >= params.length) return { params };
     const block = params[index];
     if (typeof block !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
-    return COLIBRI_UNBOUND_TAGS.has(block) ? { refusal: `at block "${block}"` } : { params };
+    return block === 'latest' || COLIBRI_BLOCK_NUMBER.test(block) || COLIBRI_BLOCK_HASH.test(block)
+      ? { params }
+      : { refusal: `at block "${block}"` };
   }
   if (!Array.isArray(params)) return { refusal: 'with params that aren\'t an array' };
   if (params.length === index) return { params: [...params, 'latest'] };
-  if (params.length < index ||
-      (COLIBRI_BLOCK_LAST.has(method) && params.length > index + 1)) {
+  if (params.length < index || params.length > index + 1) {
     return { refusal: `with params of length ${params.length}` };
   }
   const block = params[index];
