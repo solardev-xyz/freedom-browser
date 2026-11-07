@@ -100,7 +100,7 @@
 
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
-const { isPrivateLogContext } = require('../private/private-log-context');
+const { isPrivateLogContext, privateContextSession } = require('../private/private-log-context');
 const {
   encodeBegin,
   encodeCredit,
@@ -571,10 +571,11 @@ class ServiceClient extends EventEmitter {
    * `StreamedReply` is an internal error.
    *
    * Every handler is called as `handler(params, { signal, charge, streams,
-   * generation, private })`: `generation` is the number of the process that
-   * asked, as `onSent` (requestTo) reports it for main's own requests.
-   * `private` is whether the request may serve a private window
-   * (`forPrivate`).
+   * generation, private, privateSession })`: `generation` is the number of
+   * the process that asked, as `onSent` (requestTo) reports it for main's own
+   * requests. `private` is whether the request may serve a private window,
+   * and `privateSession` the private session it would serve, or null when
+   * that can't be told (`forPrivate`).
    */
   handle(method, handler, { when = null, streams = false } = {}) {
     if (streams) this.streamHandlers.add(handler);
@@ -1179,9 +1180,10 @@ class ServiceClient extends EventEmitter {
       entry.stream = true;
       entry.signal = signal;
     }
-    // Sent for a private window, as its async context says
-    // (private/private-log-context.js): see `forPrivate`.
+    // Sent for a private window, as its async context says, and in which
+    // private session (private/private-log-context.js): see `forPrivate`.
     entry.private = isPrivateLogContext();
+    entry.privateSession = entry.private ? privateContextSession() : null;
     if (signal) this.cancellable(gen, id, entry, signal, untilResponse);
     if (watchdogMs !== null) {
       // The hang watchdog (design 0001): the process enforces the request's
@@ -1456,7 +1458,8 @@ class ServiceClient extends EventEmitter {
             charge: lease.charge,
             streams,
             generation: gen.number,
-            private: forPrivate,
+            private: forPrivate.private,
+            privateSession: forPrivate.session,
           });
         } catch (err) {
           return { error: shellErrorBody(err, controller.signal) };
@@ -1488,11 +1491,24 @@ class ServiceClient extends EventEmitter {
    * request main sent from a private window's async context waits for its
    * response. A request the process makes for a normal window while a
    * private one waits counts as private too, never the other way round.
-   * Used for Colibri's store (naming-verified.js `runVerified`).
+   *
+   * `session` is the private session those private requests were sent in,
+   * when they all share one; null when they don't, or were sent with no
+   * private window open. A private window's lookup can outlive its session
+   * (the last private window closes while it waits on Myotis): the core's
+   * request for it then names the ended session, and Colibri refuses it
+   * rather than start the next session's store. Used for Colibri's store
+   * (naming-verified.js `runVerified`).
+   * @returns {{ private: boolean, session: number|null }}
    */
   forPrivate(gen) {
-    for (const entry of gen.pending.values()) if (entry.private) return true;
-    return false;
+    const sessions = new Set();
+    for (const entry of gen.pending.values()) {
+      if (entry.private) sessions.add(entry.privateSession ?? null);
+    }
+    if (sessions.size === 0) return { private: false, session: null };
+    const [only] = sessions;
+    return { private: true, session: sessions.size === 1 ? only : null };
   }
 
   /** Whether `gen` still serves the process's requests. */

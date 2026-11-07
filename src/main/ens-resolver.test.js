@@ -324,6 +324,28 @@ describe('IPC handlers', () => {
     expect(loggedText()).toContain('public-site.eth');
   });
 
+  // Codex review of #1071, finding 1: only a sender main places in a known
+  // public window is normal, for the core's `private` and Colibri's store.
+  test.each([
+    ['no sender', {}],
+    ['a destroyed sender', { sender: { isPrivate: false, isDestroyed: () => true } }],
+    ['a sender main cannot place', { sender: {} }],
+  ])('%s fails closed to the private context', async (_label, event) => {
+    mockCoreDriver = {
+      ...coreDriver(),
+      resolveContent: jest.fn(async () => ({ private: isPrivateLogContext() })),
+      resolveAddress: jest.fn(async () => ({ private: isPrivateLogContext() })),
+      resolveReverse: jest.fn(async () => ({ private: isPrivateLogContext() })),
+    };
+    expect(await handlerFor(IPC.ENS_RESOLVE)(event, { name: 'a.eth' })).toEqual({ private: true });
+    expect(await handlerFor(IPC.ENS_RESOLVE_ADDRESS)(event, { name: 'a.eth' })).toEqual({
+      private: true,
+    });
+    expect(await handlerFor(IPC.ENS_RESOLVE_REVERSE)(event, { address: ADDRESS })).toEqual({
+      private: true,
+    });
+  });
+
   test('a private lookup does not mark a later normal one', async () => {
     mockCoreDriver = {
       ...coreDriver(),

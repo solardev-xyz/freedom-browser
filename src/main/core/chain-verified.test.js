@@ -722,6 +722,36 @@ describe('Colibri and private windows', () => {
     expect(seen).toEqual([true]);
   });
 
+  // Codex review of #1071, finding 2: see naming-verified.test.js.
+  test('a Colibri read carries the private session it was sent in', async () => {
+    const logContext = require('../private/private-log-context');
+    const live = [];
+    const routes = [];
+    registerChainVerified(
+      { hello: null, handle: (method, fn) => routes.push(fn) },
+      { generation: () => 4 },
+      {
+        adapters: {
+          colibriRequest: async () => {
+            live.push(logContext.privateSessionLive());
+            return '0x10';
+          },
+        },
+      }
+    );
+    const read = (extra) => routes[0](
+      { chain_id: 1, generation: 4, ...REQUEST },
+      { signal: new AbortController().signal, charge: () => true, ...extra }
+    );
+    logContext.openPrivateSession();
+    const session = logContext.runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    await read({ private: true, privateSession: session });
+    await read({ private: true });
+    logContext.endPrivateSession();
+    await read({ private: true, privateSession: session });
+    expect(live).toEqual([true, false, false]);
+  });
+
   test('a Myotis read is left as it was', async () => {
     const { seen, call } = setUpSeen();
     await call({ myotis: 'account', address: ADDRESS }, { private: true });

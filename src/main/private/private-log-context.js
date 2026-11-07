@@ -60,12 +60,23 @@ function runWithPrivateLogContext(isPrivate, fn) {
 
 /**
  * Run `fn` with the marker set to exactly `isPrivate`, either way: unlike
- * `runWithPrivateLogContext`, a false one also leaves a private context.
- * For code that learns the window some other way than its caller's async
- * context: the core's requests (core/naming-verified.js `runVerified`).
+ * `runWithPrivateLogContext`, a false one also leaves a private context. A
+ * private one belongs to `session`, the private session its work was
+ * entered in (`privateContextSession` where it was), or to none. For code
+ * that learns the window some other way than its caller's async context:
+ * the core's requests (core/naming-verified.js `runVerified`).
  */
-function runWithLogContext(isPrivate, fn) {
-  return store.run(isPrivate === true, fn);
+function runWithLogContext(isPrivate, fn, session = null) {
+  return store.run(isPrivate === true ? { session: session ?? null } : null, fn);
+}
+
+/**
+ * The private session the current private context was entered in, or null:
+ * for a normal context, and for a private one entered with no private
+ * window open. A request that leaves main carries it (core/service-client.js).
+ */
+function privateContextSession() {
+  return isPrivateLogContext() ? store.getStore().session : null;
 }
 
 /** True when the current async context serves a private window. */
@@ -171,6 +182,7 @@ module.exports = {
   runWithPrivateLogContext,
   runWithLogContext,
   isPrivateLogContext,
+  privateContextSession,
   privateSessionLive,
   openPrivateSession,
   endPrivateSession,

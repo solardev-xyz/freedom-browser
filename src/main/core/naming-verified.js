@@ -173,17 +173,20 @@ function operation(params, adapters) {
  * PRIVATE MODE GUARD (Colibri store, #1058): runs a verified operation, a
  * Colibri one in the async context of the window it may serve. Colibri
  * keeps a private window's reads in memory instead of <userData>/colibri
- * when that context is private (ens/colibri-resolver.js). The core's request
- * names no window, so the client tells, as `context.private`
+ * when that context is private (ens/colibri-resolver.js), and refuses one
+ * whose private session has ended. The core's request names no window, so
+ * the client tells, as `context.private` and `context.privateSession`
  * (service-client.js `forPrivate`): true while a request main sent for a
- * private window is pending. Without it, the operation counts as private.
- * The marker is set either way: the handler may run in a context that
- * says nothing about the request (the one the core process was started
- * from). Shared with chain data's executor.
+ * private window is pending, and the session it was sent in. Without
+ * `private`, the operation counts as private; without a session, it is
+ * refused. The marker is set either way: the handler may run in a context
+ * that says nothing about the request (the one the core process was
+ * started from). Shared with chain data's executor.
  */
 function runVerified(verifier, run, context) {
   if (verifier !== 'colibri') return run();
-  return runWithLogContext(context?.private !== false, run);
+  const isPrivate = context?.private !== false;
+  return runWithLogContext(isPrivate, run, isPrivate ? context?.privateSession : null);
 }
 
 /** The reply as it will be sent: one over the cap, or one JSON can't

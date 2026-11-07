@@ -408,6 +408,35 @@ describe('private windows', () => {
     expect(seen).toEqual([true]);
   });
 
+  // Codex review of #1071, finding 2: the read carries the private session
+  // the request was sent in, so Colibri can refuse an ended one.
+  test('a Colibri read carries the private session it was sent in', async () => {
+    const logContext = require('../private/private-log-context');
+    const live = [];
+    const handlers = new Map();
+    registerNamingVerified({ handle: (method, fn) => handlers.set(method, fn) },
+      { generations: { ens: 1, tezos: 1, lifecycle: 3 } }, {
+        adapters: {
+          colibriResolve: async () => {
+            live.push(logContext.privateSessionLive());
+            return { resolvedData: '0x02', resolverAddress: ADDRESS };
+          },
+          callResolver: () => 'ur',
+        },
+      });
+    const resolve = (extra) => handlers.get('shell.verified')(
+      { ...GEN, ...RESOLVE }, { signal: new AbortController().signal, ...extra }
+    );
+    logContext.openPrivateSession();
+    const session = logContext.runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    await resolve({ private: true, privateSession: session });
+    await resolve({ private: true, privateSession: null });
+    await resolve({ private: true });
+    logContext.endPrivateSession();
+    await resolve({ private: true, privateSession: session });
+    expect(live).toEqual([true, false, false, false]);
+  });
+
   test('a Myotis operation is left as it was', async () => {
     const { seen, call } = setUpSeen();
     await call({ myotis: 'record', method: 'contenthash', name: 'a.eth', coin_type: 60 }, {

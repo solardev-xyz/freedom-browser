@@ -300,16 +300,41 @@ describe("Colibri store through the cores' shell.verified (#1058)", () => {
       deadline_ms: 10_000,
     }, extra);
 
+  // The private session a request sent from a private window now names, as
+  // service-client.js records it.
+  const { privateContextSession } = require('../private/private-log-context');
+  const openSession = () => runWithPrivateLogContext(true, () => privateContextSession());
+
   test.each([
     ['a chain-data read', (extra) => chainRead(CONTRACT, extra)],
     ['an ENS lookup', ensLookup],
   ])('%s the core asks for a private window writes nothing under <userData>', async (_label, read) => {
     privateWindows.createPrivateWindow();
-    await read({ private: true });
-    // Unknown counts as private.
+    await read({ private: true, privateSession: openSession() });
+    // Unknown counts as private, and with no session it is refused.
     await read({});
     expect(filesUnder(mockUserData)).toEqual([]);
     expect(mockLanes.map((lane) => lane.storageDir)).toEqual([null]);
+  });
+
+  // Codex review of #1071, finding 2.
+  test.each([
+    ['a chain-data read', (extra) => chainRead(CONTRACT, extra)],
+    ['an ENS lookup', ensLookup],
+  ])('%s the core asks for a private session that has ended starts no worker', async (_label, read) => {
+    const win = privateWindows.createPrivateWindow();
+    const ended = openSession();
+    await read({ private: true, privateSession: ended });
+    win.emit('closed');
+    expect(mockLanes[0].worker.stopped).toBe(true);
+    // A new private window opens before the old lookup's verifier step.
+    privateWindows.createPrivateWindow();
+    await read({ private: true, privateSession: ended });
+    expect(mockLanes).toHaveLength(1);
+    expect(filesUnder(mockUserData)).toEqual([]);
+    // The new session's own read gets a fresh store, without the old one.
+    await read({ private: true, privateSession: openSession() });
+    expect(mockLanes.map((lane) => lane.storageDir)).toEqual([null, null]);
   });
 
   test('a normal window’s reads keep the disk store', async () => {
