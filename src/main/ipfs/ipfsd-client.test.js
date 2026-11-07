@@ -329,6 +329,59 @@ test('the confinement report: its public part, and what a log line carries', () 
   });
 });
 
+test("Windows's report from freedom-ipfsd 0.4.0: the job, its gap, and no mitigations in the public part", () => {
+  // Design 0010, step 1 (D4): a job that allows one process, with
+  // `parent_process` left open, and files and local IPC waiting for a
+  // restricted token. The mitigations, and a missing one's reason, stay
+  // out of the public part.
+  const later = 'needs a restricted token or AppContainer, a later step (design 0010, D4)';
+  const job = {
+    mechanism: 'job',
+    files: 'unavailable',
+    exec: 'partial',
+    ipc: 'unavailable',
+    network: 'none',
+    gaps: ['parent_process'],
+    reasons: { files: later, ipc: later, image_load: 'unknown policy' },
+    mitigations: { dynamic_code: 'set', extension_points: 'set', image_load: 'missing' },
+  };
+  const { mitigations, ...reported } = job;
+  expect(mitigations).toBeDefined();
+  expect(validConfinement(job)).toEqual({
+    ...reported,
+    reasons: { files: later, ipc: later },
+    resolution: null,
+  });
+  // In socks5 mode the service's gate enforces the policy.
+  const gate = 'no per-process network rule on Windows without AppContainer';
+  expect(
+    validConfinement({
+      ...job,
+      network: 'unavailable',
+      reasons: { ...job.reasons, network: gate },
+    })
+  ).toMatchObject({ network: 'unavailable', reasons: { network: gate } });
+  // A job refused from outside: no mechanism, and `exec` blocked.
+  expect(
+    validConfinement({
+      ...job,
+      mechanism: 'none',
+      exec: 'blocked',
+      gaps: [],
+      reasons: { ...job.reasons, exec: 'nesting refused' },
+    })
+  ).toMatchObject({ mechanism: 'none', exec: 'blocked', gaps: [] });
+  expect(confinementLog(validConfinement(job))).toEqual({
+    mechanism: 'job',
+    files: 'unavailable',
+    exec: 'partial',
+    ipc: 'unavailable',
+    network: 'none',
+    gaps: ['parent_process'],
+    resolution: null,
+  });
+});
+
 test("outside Electron (a script), `require('electron')` has no app: the dev path, and the override", () => {
   jest.isolateModules(() => {
     // What the electron package exports to plain Node: its binary's path.
