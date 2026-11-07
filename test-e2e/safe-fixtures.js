@@ -18,6 +18,8 @@ const fs = require('fs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
+const BUILTIN_TOKENS = require(path.join(repoRoot, 'src', 'shared', 'tokens.json'));
+const safeDeployments = require('@safe-global/safe-deployments');
 const { closeApp } = require('./close-app');
 const { startRpcForwarder } = require('./rpc-forwarder');
 
@@ -128,6 +130,75 @@ async function rpc(method, params = []) {
   const { result, error } = await res.json();
   if (error) throw new Error(`${method}: ${error.message}`);
   return result;
+}
+
+// The contracts the warm-up loads (warmFork): Gnosis's builtin tokens, whose
+// balances the wallet reads as it starts, and the Safe 1.4.1 contracts a
+// Safe's status quote and activation execute (safe-executor.js pins these).
+const GNOSIS_TOKENS = Object.values(BUILTIN_TOKENS)
+  .filter((token) => token.chainId === 100 && token.address)
+  .map((token) => token.address);
+const SAFE_CONTRACTS = [
+  'getSafeL2SingletonDeployment',
+  'getProxyFactoryDeployment',
+  'getCompatibilityFallbackHandlerDeployment',
+].flatMap((getter) => {
+  const deployment = safeDeployments[getter]({ version: '1.4.1', network: '100' });
+  const address = deployment?.networkAddresses?.['100'];
+  return address ? [address].flat() : [];
+});
+const ERC20_DECIMALS = '0x313ce567';
+// The fixtures run inside the test's 30 s timeout (setTimeout in the body
+// extends it only afterwards), with anvil's own start ahead of the warm-up:
+// past this, the app starts with whatever is warm by then.
+const WARM_UP_MS = 15_000;
+const erc20BalanceOf = (holder) => '0x70a08231' + holder.slice(2).toLowerCase().padStart(64, '0');
+
+/**
+ * Loads into the fork, before the app starts, the state the app reads first
+ * (#1101): the vault accounts, the builtin Gnosis tokens' balances for them,
+ * and the Safe contracts' code.
+ *
+ * A fresh fork holds no state: anvil fetches each account, its code and
+ * each storage slot from the public RPC the first time something reads it,
+ * one round trip at a time. On CI a cold token balance took 4–6 s. The app
+ * reads its wallet's balances as it starts, each read from both endpoints
+ * (the quorum), and Electron's network stack keeps at most six connections
+ * open to each endpoint. The Safe card's first eth_getCode then waited behind
+ * those reads on both endpoints until the core's 5 s timeout passed, and the
+ * card showed "All RPC endpoints failed" with nothing to retry it. Warm, those
+ * reads take milliseconds. What stays cold is what no fixture can know ahead:
+ * the new Safe's own address, one round trip.
+ *
+ * Bounded by WARM_UP_MS; a read that fails or is still running then only
+ * leaves its state cold.
+ */
+async function warmFork(holders, diagnostics) {
+  const started = Date.now();
+  const reads = [
+    ...holders.map((holder) => rpc('eth_getBalance', [holder, 'latest'])),
+    ...SAFE_CONTRACTS.map((address) => rpc('eth_getCode', [address, 'latest'])),
+    ...GNOSIS_TOKENS.flatMap((to) => [
+      rpc('eth_call', [{ to, data: ERC20_DECIMALS }, 'latest']),
+      ...holders.map((holder) => rpc('eth_call', [{ to, data: erc20BalanceOf(holder) }, 'latest'])),
+    ]),
+  ];
+  let timer;
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), WARM_UP_MS);
+  });
+  const settled = await Promise.race([Promise.allSettled(reads), bound]);
+  clearTimeout(timer);
+  if (!settled) {
+    diagnostics.add('fixture', `warm-up still running after ${WARM_UP_MS} ms: starting the app`);
+    return;
+  }
+  const failed = settled.filter((result) => result.status === 'rejected');
+  diagnostics.add(
+    'fixture',
+    `warmed the fork: ${reads.length} reads in ${Date.now() - started} ms, ${failed.length} failed` +
+      (failed.length ? ` (first: ${failed[0].reason?.message})` : '')
+  );
 }
 
 async function startAnvilFork(diagnostics) {
@@ -251,6 +322,7 @@ const test = base.extend({
     const mnemonic = await identity.createVault(identityDir, VAULT_PASSWORD);
     const keys = identity.deriveAllKeys(mnemonic);
     const second = identity.deriveUserWallet(mnemonic, 1);
+    await warmFork([keys.userWallet.address, second.address], diagnostics);
     fs.writeFileSync(
       path.join(identityDir, 'vault-meta.json'),
       JSON.stringify({
