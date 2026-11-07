@@ -233,16 +233,16 @@ describe('postage-stamp owner + publisher identity continuity (binary-free)', ()
       // The vault is untouched and still unlocks to the same mnemonic.
       expect(vault.vaultExists(identityDir)).toBe(true);
       await vault.unlockVault(identityDir, VAULT_PASSWORD, 0);
-      const mnemonic = vault.getMnemonic();
-      expect(mnemonic).toBe(TEST_MNEMONIC);
+      const secret = vault.getSeedSecret();
+      expect(secret.mnemonic).toBe(TEST_MNEMONIC);
 
       // Feed-signing publisher keys regenerate identically after the upgrade.
-      expect(derivePublisherKey(mnemonic, 0).address).toBe(publisher0Before);
-      expect(derivePublisherKey(mnemonic, 1).address).toBe(publisher1Before);
+      expect(derivePublisherKey(secret, 0).address).toBe(publisher0Before);
+      expect(derivePublisherKey(secret, 1).address).toBe(publisher1Before);
 
       // The vault-derived Bee wallet equals the address inside the migrated
       // keystore — the node overlay and the vault identity stay in lockstep.
-      const vaultBeeWallet = deriveAllKeys(mnemonic).beeWallet.address;
+      const vaultBeeWallet = deriveAllKeys(secret).beeWallet.address;
       const migratedKeystore = fs.readFileSync(
         path.join(userDataDir, 'ant-data', 'keys', 'swarm.key'),
         'utf-8'

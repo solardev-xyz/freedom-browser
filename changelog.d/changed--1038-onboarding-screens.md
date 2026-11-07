@@ -1,0 +1,3 @@
+- Wallet setup now shows one task per screen ([#1038](https://github.com/solardev-xyz/freedom-browser/issues/1038)):
+  - Screens slide in with a back button, and the main button stays at the bottom
+  - Advanced options show their current state and open on their own screen

@@ -741,8 +741,10 @@ contextBridge.exposeInMainWorld('identity', {
   generateMnemonic: (strength = 256) => ipcRenderer.invoke('identity:generate-mnemonic', strength),
   createVault: (password, strength = 256, userKnowsPassword = true) =>
     ipcRenderer.invoke('identity:create-vault', password, strength, userKnowsPassword),
-  importMnemonic: (password, mnemonic, userKnowsPassword = true) =>
-    ipcRenderer.invoke('identity:import-mnemonic', password, mnemonic, userKnowsPassword),
+  importMnemonic: (password, mnemonic, userKnowsPassword = true, options) =>
+    ipcRenderer.invoke('identity:import-mnemonic', password, mnemonic, userKnowsPassword, options),
+  previewImport: (mnemonic, options) =>
+    ipcRenderer.invoke('identity:preview-import', mnemonic, options),
   unlock: (password) => ipcRenderer.invoke('identity:unlock', password),
   lock: () => ipcRenderer.invoke('identity:lock'),
   injectAll: (radicleAlias = 'FreedomBrowser', force = false) =>

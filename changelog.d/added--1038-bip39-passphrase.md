@@ -1,0 +1,6 @@
+- BIP-39 passphrase ("25th word") for seeds ([#1038](https://github.com/solardev-xyz/freedom-browser/issues/1038)):
+  - Advanced section when creating a wallet or importing a recovery phrase
+  - Stored in the encrypted vault, so unlocking and Touch ID work as before
+  - The recovery phrase screen shows it with the words
+- Derivation path when importing a recovery phrase ([#1039](https://github.com/solardev-xyz/freedom-browser/issues/1039)):
+  - The address is shown before anything is saved, and the account is added next to the main wallet

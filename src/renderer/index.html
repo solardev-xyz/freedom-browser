@@ -3010,6 +3010,11 @@
                   </svg>
                   <span>Copy to Clipboard</span>
                 </button>
+                <div class="passphrase-card export-passphrase hidden" id="export-passphrase">
+                  <span class="passphrase-card-label">Passphrase (25th word)</span>
+                  <code class="passphrase-card-value" id="export-passphrase-value"></code>
+                  <p class="passphrase-card-note" id="export-passphrase-note"></p>
+                </div>
               </div>
             </div>
 
@@ -5541,229 +5546,298 @@
     <div id="menu-backdrop" class="menu-backdrop hidden"></div>
 
     <!-- Onboarding Modal -->
-    <dialog id="onboarding-modal" class="modal onboarding-modal">
-      <!-- Close button (positioned relative to dialog) -->
-      <button type="button" class="onboarding-close" id="onboarding-close" aria-label="Close">
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M18 6 6 18" />
-          <path d="M6 6 18 18" />
-        </svg>
-      </button>
-
-      <!-- Skip link (positioned at bottom of dialog, only visible on welcome) -->
-      <div class="onboarding-skip-footer" id="onboarding-skip-footer">
-        <a href="#" class="onboarding-skip-link" data-action="skip">Skip for now</a>
-      </div>
-
-      <div class="onboarding-panel">
-        <!-- Step 1: Welcome -->
-        <div class="onboarding-step welcome-step" data-step="welcome">
-          <div class="onboarding-header">
-            <h2>Welcome to Freedom</h2>
-            <p class="onboarding-subtitle">Your gateway to the decentralized web</p>
-          </div>
-          <div class="onboarding-body">
-            <p class="onboarding-description">
-              Freedom Browser uses a unified identity to connect you to decentralized networks. Your
-              identity is secured with a recovery phrase that only you control.
-            </p>
-          </div>
-          <!-- Quick Setup UI (shown when Touch ID available) -->
-          <div class="onboarding-actions welcome-actions hidden" id="welcome-quick-setup">
-            <button type="button" class="onboarding-btn primary" data-action="quick-setup">
+    <dialog
+      id="onboarding-modal"
+      class="modal onboarding-modal"
+      aria-label="Set up your Freedom identity"
+      tabindex="-1"
+    >
+      <header class="onboarding-nav" id="onboarding-nav">
+        <div class="onboarding-nav-content" id="onboarding-nav-content">
+          <div class="onboarding-nav-left">
+            <button type="button" class="onboarding-nav-btn hidden" id="onboarding-back">
               <svg
-                class="btn-icon"
-                viewBox="0 0 24 24"
+                viewBox="0 0 11 18"
                 fill="none"
                 stroke="currentColor"
-                stroke-width="1.5"
-                width="20"
-                height="20"
+                stroke-width="2.4"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
               >
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" />
-                <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6" />
-                <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4" />
-                <path d="M12 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2" />
+                <path d="M9 2 2 9l7 7" />
               </svg>
-              Quick Setup with Touch ID
+              <span id="onboarding-back-label"></span>
             </button>
-            <div class="onboarding-alt-links">
-              <a href="#" class="onboarding-link" data-action="create"
-                >Secure setup with password</a
+            <button type="button" class="onboarding-nav-btn hidden" id="onboarding-start-over">
+              Start Over
+            </button>
+          </div>
+          <div class="onboarding-nav-title" id="onboarding-nav-title"></div>
+          <div class="onboarding-nav-right">
+            <button type="button" class="onboarding-close" id="onboarding-close" aria-label="Close">
+              <svg
+                viewBox="0 0 11 11"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
               >
-              <span class="link-separator">or</span>
-              <a href="#" class="onboarding-link" data-action="import">Import recovery phrase</a>
+                <path d="m1 1 9 9M10 1l-9 9" />
+              </svg>
+            </button>
+            <button type="button" class="onboarding-nav-btn strong hidden" id="onboarding-done">
+              Done
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <div class="onboarding-panel">
+        <!-- Welcome -->
+        <div class="onboarding-step welcome-step" data-step="welcome">
+          <div class="onboarding-scroll">
+            <div class="onboarding-center">
+              <div class="onboarding-sections">
+                <div class="onboarding-hero">
+                  <div class="onboarding-wordmark" aria-label="freedom">
+                    freedom<span class="onboarding-colon" aria-hidden="true"><i></i><i></i></span>
+                  </div>
+                  <h2>Welcome to Freedom</h2>
+                  <p>
+                    One identity connects you to decentralized networks, secured by a recovery
+                    phrase only you control.
+                  </p>
+                </div>
+                <div class="onboarding-section">
+                  <div class="onboarding-group">
+                    <button
+                      type="button"
+                      class="onboarding-row hidden"
+                      id="welcome-create-row"
+                      data-action="create"
+                    >
+                      <span class="onboarding-row-title">Set up with a password</span>
+                      <svg
+                        class="onboarding-chevron"
+                        viewBox="0 0 8 14"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m1 1 6 6-6 6" />
+                      </svg>
+                    </button>
+                    <button type="button" class="onboarding-row" data-action="import">
+                      <span class="onboarding-row-title">Import a recovery phrase</span>
+                      <svg
+                        class="onboarding-chevron"
+                        viewBox="0 0 8 14"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m1 1 6 6-6 6" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <!-- Standard UI (shown when Touch ID not available) -->
-          <div class="onboarding-actions welcome-actions" id="welcome-standard">
-            <button type="button" class="onboarding-btn primary" data-action="create">
+          <div class="onboarding-actions">
+            <button
+              type="button"
+              class="onboarding-btn primary hidden"
+              id="welcome-quick-setup"
+              data-action="quick-setup"
+            >
+              Quick Setup with Touch ID
+            </button>
+            <button
+              type="button"
+              class="onboarding-btn primary"
+              id="welcome-standard"
+              data-action="create"
+            >
               Create New Identity
             </button>
-            <a href="#" class="onboarding-link" data-action="import"
-              >Import existing recovery phrase</a
-            >
+            <div id="onboarding-skip-footer">
+              <button type="button" class="onboarding-btn quiet" data-action="skip">
+                Skip for now
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- Step 2a: Create - Set Password -->
+        <!-- Create: password -->
         <div class="onboarding-step hidden" data-step="create-password">
-          <div class="onboarding-header">
-            <h2>Secure Your Identity</h2>
-            <p class="onboarding-subtitle">Create a password to protect your recovery phrase</p>
-          </div>
-          <div class="onboarding-body">
-            <form id="create-password-form" class="onboarding-form">
-              <div class="form-group">
-                <label for="create-password">Password</label>
-                <input
-                  type="password"
-                  id="create-password"
-                  class="form-input"
-                  required
-                  minlength="8"
-                  autocomplete="new-password"
-                />
+          <div class="onboarding-scroll">
+            <h2 class="onboarding-large-title">Create a Password</h2>
+            <form id="create-password-form" class="onboarding-sections">
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Password</div>
+                <div class="onboarding-group">
+                  <label class="onboarding-row" for="create-password">
+                    <span class="onboarding-row-label">Password</span>
+                    <input
+                      type="password"
+                      id="create-password"
+                      required
+                      minlength="8"
+                      autocomplete="new-password"
+                    />
+                  </label>
+                  <label class="onboarding-row" for="create-password-confirm">
+                    <span class="onboarding-row-label">Confirm</span>
+                    <input
+                      type="password"
+                      id="create-password-confirm"
+                      required
+                      minlength="8"
+                      autocomplete="new-password"
+                    />
+                  </label>
+                </div>
+                <div class="onboarding-meter"><span class="strength-fill"></span></div>
+                <div class="onboarding-group-footer" id="create-password-note"></div>
               </div>
-              <div class="form-group hidden" id="confirm-password-group">
-                <label for="create-password-confirm">Confirm Password</label>
-                <input
-                  type="password"
-                  id="create-password-confirm"
-                  class="form-input"
-                  required
-                  minlength="8"
-                  autocomplete="new-password"
-                />
-                <span class="form-error" id="password-match-error"></span>
-              </div>
-              <div class="password-strength hidden" id="password-strength">
-                <div class="strength-bar"><div class="strength-fill"></div></div>
-                <span class="strength-label"></span>
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Advanced</div>
+                <div class="onboarding-group">
+                  <button type="button" class="onboarding-row" data-action="open-passphrase">
+                    <span class="onboarding-row-title">Passphrase</span>
+                    <span class="onboarding-row-value passphrase-status"></span>
+                    <svg
+                      class="onboarding-chevron"
+                      viewBox="0 0 8 14"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1 1 6 6-6 6" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </form>
           </div>
           <div class="onboarding-actions">
-            <button type="button" class="onboarding-btn text" data-action="back">Back</button>
-            <button
-              type="button"
-              class="onboarding-btn primary"
-              data-action="create-vault"
-              disabled
-            >
+            <button type="button" class="onboarding-btn primary" data-action="create-vault" disabled>
               Continue
             </button>
           </div>
         </div>
 
-        <!-- Step 2c: Touch ID Setup (macOS only) -->
+        <!-- Touch ID (macOS only) -->
         <div class="onboarding-step hidden" data-step="touch-id">
-          <div class="onboarding-header">
-            <h2>Enable Touch ID</h2>
-            <p class="onboarding-subtitle">Unlock your vault with your fingerprint</p>
-          </div>
-          <div class="onboarding-body">
-            <div class="touch-id-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" />
-                <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6" />
-                <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4" />
-                <path d="M12 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2" />
-                <path d="M12 11v4" />
-              </svg>
+          <div class="onboarding-scroll">
+            <div class="onboarding-center">
+              <div class="onboarding-hero">
+                <div class="onboarding-hero-icon">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.7"
+                    stroke-linecap="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 11v3c0 2.5-.6 4.6-1.6 6.3" />
+                    <path d="M8.5 11a3.5 3.5 0 0 1 7 0v3c0 2-.3 3.9-1 5.5" />
+                    <path d="M5.2 15.5c.2-1.2.3-2.7.3-4.5a6.5 6.5 0 0 1 11-4.7" />
+                    <path d="M18.3 9.5c.2.5.2 1 .2 1.5v3c0 1.4-.1 2.6-.3 3.8" />
+                    <path d="M3.2 9.5A9 9 0 0 1 17.8 5" />
+                  </svg>
+                </div>
+                <h2>Unlock with Touch ID?</h2>
+                <p>
+                  Use your fingerprint instead of typing your password. It stays in the macOS
+                  Keychain, and your password still works.
+                </p>
+              </div>
             </div>
-            <p class="touch-id-description">
-              Use Touch ID to quickly unlock your vault without typing your password each time. Your
-              password is stored securely in the macOS Keychain.
-            </p>
-            <p class="touch-id-note">You can always use your password as a backup.</p>
           </div>
           <div class="onboarding-actions">
-            <button type="button" class="onboarding-btn text" data-action="skip-touch-id">
-              Skip
-            </button>
             <button type="button" class="onboarding-btn primary" data-action="enable-touch-id">
               Enable Touch ID
+            </button>
+            <button type="button" class="onboarding-btn plain" data-action="skip-touch-id">
+              Not Now
             </button>
           </div>
         </div>
 
-        <!-- Step 3: Backup Recovery Phrase -->
+        <!-- Create: back up the recovery phrase -->
         <div class="onboarding-step hidden" data-step="backup">
-          <div class="onboarding-header">
-            <h2>Backup Your Recovery Phrase</h2>
-            <p class="onboarding-subtitle">Write down these 24 words and store them safely</p>
-          </div>
-          <div class="onboarding-body">
-            <div class="warning-banner">
-              <svg
-                class="warning-icon"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path
-                  d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
-                />
-                <line x1="12" y1="9" x2="12" y2="13" />
-                <line x1="12" y1="17" x2="12.01" y2="17" />
-              </svg>
-              <span>Anyone with these words can access your identity. Never share them.</span>
-            </div>
-            <div class="mnemonic-display" id="mnemonic-display">
-              <!-- Words will be inserted here -->
-            </div>
-            <div class="mnemonic-actions">
-              <button type="button" class="mnemonic-action-btn" id="copy-mnemonic">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
-                </svg>
-                Copy
-              </button>
-              <button type="button" class="mnemonic-action-btn" id="toggle-mnemonic">
+          <div class="onboarding-scroll">
+            <h2 class="onboarding-large-title">Back Up Your Phrase</h2>
+            <div class="onboarding-sections">
+              <div class="onboarding-callout">
                 <svg
-                  class="icon-show"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
                   stroke-width="2"
-                >
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                  <circle cx="12" cy="12" r="3" />
-                </svg>
-                <svg
-                  class="icon-hide hidden"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
                 >
                   <path
-                    d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"
+                    d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"
                   />
-                  <line x1="1" y1="1" x2="23" y2="23" />
+                  <path d="M12 9v4M12 17h.01" />
                 </svg>
-                <span class="toggle-label">Show</span>
-              </button>
+                <span>Anyone with these words can access your identity. Never share them.</span>
+              </div>
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">24 Words</div>
+                <div class="onboarding-group">
+                  <div class="mnemonic-display" id="mnemonic-display">
+                    <!-- Words will be inserted here -->
+                  </div>
+                  <div class="onboarding-word-actions">
+                    <button type="button" id="toggle-mnemonic">Show</button>
+                    <button type="button" id="copy-mnemonic">Copy Words</button>
+                  </div>
+                </div>
+              </div>
+              <div class="onboarding-section hidden" id="backup-passphrase">
+                <div class="onboarding-group-header">Passphrase (25th Word)</div>
+                <div class="onboarding-group">
+                  <div class="onboarding-row">
+                    <code class="onboarding-passphrase-value" id="backup-passphrase-value"></code>
+                  </div>
+                </div>
+                <div class="onboarding-group-footer" id="backup-passphrase-note"></div>
+              </div>
+              <div class="onboarding-section">
+                <div class="onboarding-group">
+                  <label class="onboarding-row" for="backup-confirmed">
+                    <span class="onboarding-row-title" id="backup-confirmed-label"
+                      >I've saved my recovery phrase</span
+                    >
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      class="onboarding-switch"
+                      id="backup-confirmed"
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
-            <label class="checkbox-label">
-              <input type="checkbox" id="backup-confirmed" />
-              <span>I have saved my recovery phrase securely</span>
-            </label>
           </div>
           <div class="onboarding-actions">
-            <button type="button" class="onboarding-btn text" data-action="back-to-welcome">
-              Start Over
-            </button>
             <button
               type="button"
               class="onboarding-btn primary"
@@ -5775,100 +5849,391 @@
           </div>
         </div>
 
-        <!-- Step 2b: Import -->
+        <!-- Import -->
         <div class="onboarding-step hidden" data-step="import">
-          <div class="onboarding-header">
-            <h2>Import Recovery Phrase</h2>
-            <p class="onboarding-subtitle">Enter your 12 or 24 word recovery phrase</p>
-          </div>
-          <div class="onboarding-body">
-            <form id="import-form" class="onboarding-form">
-              <div class="form-group">
-                <label for="import-mnemonic">Recovery Phrase</label>
-                <textarea
-                  id="import-mnemonic"
-                  class="form-input mnemonic-input"
-                  rows="4"
-                  placeholder="Enter words separated by spaces…"
-                  spellcheck="false"
-                  autocomplete="off"
-                ></textarea>
-                <span class="form-hint" id="import-mnemonic-hint"></span>
-              </div>
-              <div class="form-group">
-                <label for="import-password">Password</label>
-                <input
-                  type="password"
-                  id="import-password"
-                  class="form-input"
-                  required
-                  minlength="8"
-                  autocomplete="new-password"
-                />
-                <div class="password-strength" id="import-password-strength">
-                  <div class="strength-bar"><div class="strength-fill"></div></div>
-                  <span class="strength-label"></span>
+          <div class="onboarding-scroll">
+            <h2 class="onboarding-large-title">Import Recovery Phrase</h2>
+            <form id="import-form" class="onboarding-sections">
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Recovery Phrase</div>
+                <div class="onboarding-group">
+                  <label class="onboarding-row" for="import-mnemonic">
+                    <textarea
+                      id="import-mnemonic"
+                      rows="3"
+                      placeholder="Enter your 12 or 24 words, separated by spaces"
+                      spellcheck="false"
+                      autocomplete="off"
+                      aria-label="Recovery phrase"
+                    ></textarea>
+                  </label>
                 </div>
+                <div class="onboarding-group-footer" id="import-mnemonic-hint"></div>
               </div>
-              <div class="form-group">
-                <label for="import-password-confirm">Confirm Password</label>
-                <input
-                  type="password"
-                  id="import-password-confirm"
-                  class="form-input"
-                  required
-                  minlength="8"
-                  autocomplete="new-password"
-                />
-                <span class="form-error" id="import-password-match-error"></span>
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Password</div>
+                <div class="onboarding-group">
+                  <label class="onboarding-row" for="import-password">
+                    <span class="onboarding-row-label">Password</span>
+                    <input
+                      type="password"
+                      id="import-password"
+                      required
+                      minlength="8"
+                      autocomplete="new-password"
+                    />
+                  </label>
+                  <label class="onboarding-row" for="import-password-confirm">
+                    <span class="onboarding-row-label">Confirm</span>
+                    <input
+                      type="password"
+                      id="import-password-confirm"
+                      required
+                      minlength="8"
+                      autocomplete="new-password"
+                    />
+                  </label>
+                </div>
+                <div class="onboarding-meter"><span class="strength-fill"></span></div>
+                <div class="onboarding-group-footer" id="import-password-note"></div>
+              </div>
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Advanced</div>
+                <div class="onboarding-group">
+                  <button type="button" class="onboarding-row" data-action="open-passphrase">
+                    <span class="onboarding-row-title">Passphrase</span>
+                    <span class="onboarding-row-value passphrase-status"></span>
+                    <svg
+                      class="onboarding-chevron"
+                      viewBox="0 0 8 14"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1 1 6 6-6 6" />
+                    </svg>
+                  </button>
+                  <button type="button" class="onboarding-row" data-action="open-path">
+                    <span class="onboarding-row-title">Derivation Path</span>
+                    <span class="onboarding-row-value" id="import-path-status"></span>
+                    <svg
+                      class="onboarding-chevron"
+                      viewBox="0 0 8 14"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1 1 6 6-6 6" />
+                    </svg>
+                  </button>
+                </div>
+                <div class="onboarding-group-footer bad" id="import-advanced-error"></div>
+              </div>
+              <div class="onboarding-section hidden" id="import-preview">
+                <div class="onboarding-group-header">Before You Import</div>
+                <div class="onboarding-group">
+                  <div class="onboarding-row onboarding-row-stacked">
+                    <span class="onboarding-caption"></span>
+                    <code class="onboarding-address"></code>
+                    <code class="onboarding-address small"></code>
+                  </div>
+                </div>
+                <div class="onboarding-group-footer">Check this is the address you expect.</div>
               </div>
             </form>
           </div>
           <div class="onboarding-actions">
-            <button type="button" class="onboarding-btn text" data-action="back">Back</button>
-            <button
-              type="button"
-              class="onboarding-btn primary"
-              data-action="import-vault"
-              disabled
-            >
+            <button type="button" class="onboarding-btn primary" data-action="import-vault" disabled>
               Import
             </button>
           </div>
         </div>
 
-        <!-- Step 5: Complete -->
-        <div class="onboarding-step hidden" data-step="complete">
-          <div class="onboarding-header">
-            <div class="success-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
+        <!-- Passphrase, pushed from Create or Import -->
+        <div class="onboarding-step hidden" data-step="passphrase">
+          <div class="onboarding-scroll">
+            <div class="onboarding-sections">
+              <div class="onboarding-section">
+                <div class="onboarding-group">
+                  <label class="onboarding-row" for="passphrase-enabled">
+                    <span class="onboarding-row-title">Use a Passphrase</span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      class="onboarding-switch"
+                      id="passphrase-enabled"
+                    />
+                  </label>
+                </div>
+                <div class="onboarding-group-footer" id="passphrase-explanation"></div>
+              </div>
+              <div class="onboarding-section hidden" id="passphrase-fields">
+                <div class="onboarding-group">
+                  <div class="onboarding-row">
+                    <label class="onboarding-row-label" for="passphrase-input">Passphrase</label>
+                    <input
+                      type="password"
+                      id="passphrase-input"
+                      placeholder="Required"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                    <button
+                      type="button"
+                      class="onboarding-icon-btn"
+                      id="passphrase-toggle"
+                      aria-label="Show passphrase"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        aria-hidden="true"
+                      >
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    </button>
+                  </div>
+                  <label class="onboarding-row" for="passphrase-confirm">
+                    <span class="onboarding-row-label">Confirm</span>
+                    <input
+                      type="password"
+                      id="passphrase-confirm"
+                      placeholder="Required"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                  </label>
+                </div>
+                <div class="onboarding-group-footer" id="passphrase-note"></div>
+              </div>
+              <div class="onboarding-section hidden" id="passphrase-preview">
+                <div class="onboarding-group-header">This Opens</div>
+                <div class="onboarding-group">
+                  <div class="onboarding-row onboarding-row-stacked">
+                    <span class="onboarding-caption"></span>
+                    <code class="onboarding-address"></code>
+                    <code class="onboarding-address small"></code>
+                  </div>
+                </div>
+                <div class="onboarding-group-footer">
+                  A different passphrase opens a different wallet, with no error. Check this is the
+                  address you expect.
+                </div>
+              </div>
             </div>
-            <h2>You're All Set!</h2>
-            <p class="onboarding-subtitle">Your identity is ready</p>
           </div>
-          <div class="onboarding-body">
-            <!-- Primary: User Wallet -->
-            <div class="identity-wallet-card">
-              <div class="identity-wallet-label">Your Ethereum Wallet</div>
-              <code class="identity-wallet-address" id="identity-wallet"></code>
-            </div>
+        </div>
 
-            <!-- Secondary: Node Identities -->
-            <div class="identity-nodes-label">Node Identities</div>
-            <div class="identity-summary">
-              <div class="identity-row">
-                <span class="identity-label">Swarm</span>
-                <code class="identity-value" id="identity-eth"></code>
+        <!-- Derivation path, pushed from Import -->
+        <div class="onboarding-step hidden" data-step="derivation-path">
+          <div class="onboarding-scroll">
+            <div class="onboarding-sections">
+              <div class="onboarding-section">
+                <div class="onboarding-group" role="radiogroup" aria-label="Derivation path">
+                  <label class="onboarding-row choice">
+                    <input type="radio" name="import-path-scheme" value="default" checked />
+                    <span class="onboarding-row-title"
+                      >Default<small>m/44'/60'/0'/0/0</small></span
+                    >
+                    <svg
+                      class="onboarding-check"
+                      viewBox="0 0 16 13"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1.5 7 4.5 4.5 8.5-10" />
+                    </svg>
+                  </label>
+                  <label class="onboarding-row choice">
+                    <input type="radio" name="import-path-scheme" value="live" data-label="Ledger Live" />
+                    <span class="onboarding-row-title"
+                      >Ledger Live<small>m/44'/60'/n'/0/0</small></span
+                    >
+                    <svg
+                      class="onboarding-check"
+                      viewBox="0 0 16 13"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1.5 7 4.5 4.5 8.5-10" />
+                    </svg>
+                  </label>
+                  <label class="onboarding-row choice">
+                    <input type="radio" name="import-path-scheme" value="metamask" data-label="MetaMask" />
+                    <span class="onboarding-row-title"
+                      >MetaMask<small>m/44'/60'/0'/0/n</small></span
+                    >
+                    <svg
+                      class="onboarding-check"
+                      viewBox="0 0 16 13"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1.5 7 4.5 4.5 8.5-10" />
+                    </svg>
+                  </label>
+                  <label class="onboarding-row choice">
+                    <input type="radio" name="import-path-scheme" value="legacy" data-label="Legacy" />
+                    <span class="onboarding-row-title"
+                      >Legacy (MEW / MyCrypto)<small>m/44'/60'/0'/n</small></span
+                    >
+                    <svg
+                      class="onboarding-check"
+                      viewBox="0 0 16 13"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1.5 7 4.5 4.5 8.5-10" />
+                    </svg>
+                  </label>
+                  <label class="onboarding-row choice">
+                    <input type="radio" name="import-path-scheme" value="custom" />
+                    <span class="onboarding-row-title"
+                      >Custom Path<small>Any path you choose</small></span
+                    >
+                    <svg
+                      class="onboarding-check"
+                      viewBox="0 0 16 13"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m1.5 7 4.5 4.5 8.5-10" />
+                    </svg>
+                  </label>
+                </div>
+                <div class="onboarding-group-footer">
+                  Your main wallet always uses the default path. Pick another to also add the
+                  account you use elsewhere.
+                </div>
               </div>
-              <div class="identity-row">
-                <span class="identity-label">IPFS</span>
-                <code class="identity-value" id="identity-ipfs"></code>
+              <div class="onboarding-section hidden" id="import-path-index-row">
+                <div class="onboarding-group">
+                  <div class="onboarding-row">
+                    <label class="onboarding-index-label" for="import-path-index">Account</label>
+                    <input
+                      type="number"
+                      class="onboarding-index"
+                      id="import-path-index"
+                      min="0"
+                      step="1"
+                      value="0"
+                    />
+                    <div class="onboarding-stepper">
+                      <button type="button" id="import-path-minus" aria-label="Previous account">
+                        −
+                      </button>
+                      <button type="button" id="import-path-plus" aria-label="Next account">+</button>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div class="identity-row">
-                <span class="identity-label">Radicle</span>
-                <code class="identity-value" id="identity-radicle"></code>
+              <div class="onboarding-section hidden" id="import-path-custom-row">
+                <div class="onboarding-group">
+                  <label class="onboarding-row" for="import-path-custom">
+                    <span class="onboarding-row-label">Path</span>
+                    <input
+                      type="text"
+                      id="import-path-custom"
+                      placeholder="m/44'/60'/0'/0/0"
+                      spellcheck="false"
+                      autocomplete="off"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div class="onboarding-group-footer bad" id="import-path-error"></div>
+              <div class="onboarding-section hidden" id="path-preview">
+                <div class="onboarding-group-header">This Opens</div>
+                <div class="onboarding-group">
+                  <div class="onboarding-row onboarding-row-stacked">
+                    <span class="onboarding-caption"></span>
+                    <code class="onboarding-address"></code>
+                    <code class="onboarding-address small"></code>
+                  </div>
+                </div>
+                <div class="onboarding-group-footer">
+                  Each path gives a different address from the same seed. Check this is the one you
+                  expect.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Complete -->
+        <div class="onboarding-step hidden" data-step="complete">
+          <div class="onboarding-scroll">
+            <div class="onboarding-sections">
+              <div class="onboarding-hero">
+                <div class="onboarding-hero-icon done">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="m5 12.5 4.5 4.5L19 7" />
+                  </svg>
+                </div>
+                <h2>You're All Set</h2>
+                <p>Your identity is ready.</p>
+              </div>
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Your Ethereum Wallet</div>
+                <div class="onboarding-group">
+                  <div class="onboarding-row">
+                    <code class="onboarding-address" id="identity-wallet"></code>
+                  </div>
+                </div>
+              </div>
+              <div class="onboarding-section">
+                <div class="onboarding-group-header">Node Identities</div>
+                <div class="onboarding-group">
+                  <div class="onboarding-row">
+                    <span class="onboarding-row-title">Swarm</span>
+                    <code class="onboarding-row-value onboarding-address small" id="identity-eth"></code>
+                  </div>
+                  <div class="onboarding-row">
+                    <span class="onboarding-row-title">IPFS</span>
+                    <code class="onboarding-row-value onboarding-address small" id="identity-ipfs"></code>
+                  </div>
+                  <div class="onboarding-row">
+                    <span class="onboarding-row-title">Radicle</span>
+                    <code class="onboarding-row-value onboarding-address small" id="identity-radicle"></code>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -5878,11 +6243,31 @@
             </button>
           </div>
         </div>
+      </div>
 
-        <!-- Loading overlay -->
-        <div class="onboarding-loading hidden" id="onboarding-loading">
-          <div class="loading-spinner"></div>
-          <span class="loading-text" id="loading-text">Setting up your identity…</span>
+      <!-- Loading overlay -->
+      <div class="onboarding-loading hidden" id="onboarding-loading">
+        <div class="loading-spinner"></div>
+        <span class="loading-text" id="loading-text">Setting up your identity…</span>
+      </div>
+
+      <!-- Start Over, an action sheet over the backup screen -->
+      <div
+        class="onboarding-action-sheet hidden"
+        id="onboarding-start-over-sheet"
+        role="alertdialog"
+        aria-label="Start over?"
+      >
+        <div class="onboarding-action-group">
+          <p>Start over? These words are thrown away and you'll get new ones.</p>
+          <button type="button" class="destructive" id="onboarding-start-over-confirm">
+            Start Over
+          </button>
+        </div>
+        <div class="onboarding-action-group">
+          <button type="button" class="cancel" id="onboarding-start-over-cancel">
+            Keep These Words
+          </button>
         </div>
       </div>
     </dialog>

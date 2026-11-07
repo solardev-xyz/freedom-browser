@@ -324,6 +324,7 @@ module.exports = {
   IDENTITY_CHANGE_PASSWORD: 'identity:change-password',
   IDENTITY_DELETE_VAULT: 'identity:delete-vault',
   IDENTITY_VALIDATE_MNEMONIC: 'identity:validate-mnemonic',
+  IDENTITY_PREVIEW_IMPORT: 'identity:preview-import',
 
   // Chains — served by the network registry
   NETWORKS_GET_CHAINS: 'networks:get-chains',

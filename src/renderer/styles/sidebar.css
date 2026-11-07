@@ -916,6 +916,10 @@
   margin-bottom: 16px;
 }
 
+.export-passphrase {
+  margin-top: 16px;
+}
+
 .mnemonic-word {
   display: flex;
   align-items: center;

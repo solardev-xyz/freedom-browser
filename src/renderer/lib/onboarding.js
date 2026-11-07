@@ -4,21 +4,41 @@
  * Guides first-time users through identity creation or import.
  */
 
+import { createOnboardingNav } from './onboarding-nav.js';
+import { passphraseBackupNote, setupPassphraseFields } from './wallet/passphrase-fields.js';
+import { presetWalletPath } from './wallet/wallet-path-presets.js';
+
 // State
 let currentMnemonic = null;
 let currentPassword = null;
+let currentPassphrase = '';
+let importedWalletAddress = null; // The account added at a chosen path, if any
 let touchIdAvailable = false;
 let isImportFlow = false; // Track if user is importing vs creating
+const formResets = [];
 
 const IPFS_EPHEMERAL_LABEL = 'Ephemeral';
 const IPFS_EPHEMERAL_TITLE =
   'freedom-ipfs uses ephemeral peer identities for read-only retrieval in this release.';
+
+// What the navigation bar shows on each screen.
+const STEP_CONFIG = {
+  welcome: { close: true },
+  createPassword: { title: 'Create a Password', large: true, back: 'Welcome' },
+  import: { title: 'Import Recovery Phrase', large: true, back: 'Welcome' },
+  passphrase: () => ({ title: 'Passphrase', back: isImportFlow ? 'Import' : 'Password', done: true }),
+  path: { title: 'Derivation Path', back: 'Import', done: true },
+  backup: { title: 'Back Up Your Phrase', large: true, startOver: true },
+};
 
 // DOM references
 let modal;
 let steps = {};
 let loading;
 let loadingText;
+let startOverSheet;
+let nav;
+let passphrase;
 
 /**
  * Initialize the onboarding module
@@ -27,6 +47,7 @@ export function initOnboarding() {
   modal = document.getElementById('onboarding-modal');
   loading = document.getElementById('onboarding-loading');
   loadingText = document.getElementById('loading-text');
+  startOverSheet = document.getElementById('onboarding-start-over-sheet');
 
   // Cache step references
   steps = {
@@ -35,17 +56,15 @@ export function initOnboarding() {
     touchId: modal.querySelector('[data-step="touch-id"]'),
     backup: modal.querySelector('[data-step="backup"]'),
     import: modal.querySelector('[data-step="import"]'),
+    passphrase: modal.querySelector('[data-step="passphrase"]'),
+    path: modal.querySelector('[data-step="derivation-path"]'),
     complete: modal.querySelector('[data-step="complete"]'),
   };
 
-  // Setup close button
-  const closeBtn = document.getElementById('onboarding-close');
-  closeBtn.addEventListener('click', skipOnboarding);
+  nav = createOnboardingNav({ dialog: modal, steps, stepConfig: STEP_CONFIG });
+  passphrase = setupPassphraseFields();
 
-  // Prevent closing dialog with Escape key (user must explicitly skip or complete)
-  modal.addEventListener('cancel', (e) => {
-    e.preventDefault();
-  });
+  setupNavigationBar();
 
   // Setup event listeners
   setupWelcomeStep();
@@ -55,8 +74,66 @@ export function initOnboarding() {
   setupImportStep();
   setupCompleteStep();
 
+  nav.reset('welcome');
+
   // Check Touch ID availability
   checkTouchIdAvailability();
+}
+
+function setupNavigationBar() {
+  document.getElementById('onboarding-close').addEventListener('click', skipOnboarding);
+  document.getElementById('onboarding-back').addEventListener('click', goBack);
+  document.getElementById('onboarding-done').addEventListener('click', goBack);
+
+  document.getElementById('onboarding-start-over').addEventListener('click', () => {
+    startOverSheet.classList.remove('hidden');
+  });
+  document.getElementById('onboarding-start-over-cancel').addEventListener('click', () => {
+    startOverSheet.classList.add('hidden');
+  });
+  document.getElementById('onboarding-start-over-confirm').addEventListener('click', () => {
+    startOverSheet.classList.add('hidden');
+    resetState();
+    nav.reset('welcome');
+  });
+
+  // Escape goes back a screen, but never closes the dialog: the user has to
+  // choose to skip or finish, and closing here would leave what they typed in
+  // the form. This is on keydown because Chromium stops letting `cancel` be
+  // prevented when Escape is pressed twice with nothing else in between, and on
+  // the document because focus can fall out of the dialog when a button hides.
+  modal.addEventListener('cancel', (e) => e.preventDefault());
+  document.addEventListener('keydown', (e) => {
+    // Another dialog can open over this one (Create Profile, from the app menu).
+    const isOurs = modal.contains(e.target) || e.target === document.body;
+    if (!modal.open || !isOurs) return;
+    const isBusy = !loading.classList.contains('hidden');
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (!startOverSheet.classList.contains('hidden')) {
+        startOverSheet.classList.add('hidden');
+      } else if (!isBusy && nav.canGoBack()) {
+        goBack();
+      }
+      return;
+    }
+
+    // Enter in a field does what the screen's main button does.
+    if (e.key === 'Enter' && e.target.matches('input:not([type="checkbox"], [type="radio"])')) {
+      e.preventDefault();
+      const primary = steps[nav.current()].querySelector('.onboarding-btn.primary');
+      if (!isBusy && primary && !primary.disabled) primary.click();
+    }
+  }, true);
+}
+
+/** One screen back. Back at the start, what was typed for that flow is dropped. */
+function goBack() {
+  nav.pop();
+  if (nav.depth() === 1) {
+    resetState();
+  }
 }
 
 /**
@@ -72,16 +149,9 @@ async function checkTouchIdAvailability() {
   }
 
   // Update welcome screen UI based on Touch ID availability
-  const quickSetupUI = document.getElementById('welcome-quick-setup');
-  const standardUI = document.getElementById('welcome-standard');
-
-  if (touchIdAvailable) {
-    quickSetupUI.classList.remove('hidden');
-    standardUI.classList.add('hidden');
-  } else {
-    quickSetupUI.classList.add('hidden');
-    standardUI.classList.remove('hidden');
-  }
+  document.getElementById('welcome-quick-setup').classList.toggle('hidden', !touchIdAvailable);
+  document.getElementById('welcome-standard').classList.toggle('hidden', touchIdAvailable);
+  document.getElementById('welcome-create-row').classList.toggle('hidden', !touchIdAvailable);
 }
 
 /**
@@ -90,8 +160,10 @@ async function checkTouchIdAvailability() {
  * forcing new users through identity setup before they can use the browser.
  */
 export function showOnboarding() {
-  showStep('welcome');
+  nav.reset('welcome');
   modal.showModal();
+  // Otherwise the close button takes focus, and shows a ring nobody asked for.
+  modal.focus({ preventScroll: true });
 }
 
 /**
@@ -100,6 +172,7 @@ export function showOnboarding() {
 export function hideOnboarding() {
   modal.close();
   resetState();
+  nav.reset('welcome');
 }
 
 /**
@@ -116,31 +189,12 @@ async function skipOnboarding() {
 }
 
 /**
- * Show a specific step
- */
-function showStep(stepName) {
-  Object.values(steps).forEach(step => step.classList.add('hidden'));
-  if (steps[stepName]) {
-    steps[stepName].classList.remove('hidden');
-  }
-
-  // Show skip footer only on welcome step
-  const skipFooter = document.getElementById('onboarding-skip-footer');
-  if (skipFooter) {
-    if (stepName === 'welcome') {
-      skipFooter.classList.remove('hidden');
-    } else {
-      skipFooter.classList.add('hidden');
-    }
-  }
-}
-
-/**
  * Show loading overlay
  */
 function showLoading(text = 'Setting up your identity…') {
   loadingText.textContent = text;
   loading.classList.remove('hidden');
+  setScreensInert(true);
 }
 
 /**
@@ -148,6 +202,13 @@ function showLoading(text = 'Setting up your identity…') {
  */
 function hideLoading() {
   loading.classList.add('hidden');
+  setScreensInert(false);
+}
+
+/** Nothing under the overlay can be activated, by mouse or by keyboard. */
+function setScreensInert(inert) {
+  modal.querySelector('.onboarding-nav').inert = inert;
+  modal.querySelector('.onboarding-panel').inert = inert;
 }
 
 /**
@@ -156,7 +217,13 @@ function hideLoading() {
 function resetState() {
   currentMnemonic = null;
   currentPassword = null;
+  currentPassphrase = '';
+  importedWalletAddress = null;
   isImportFlow = false;
+  displayBackupPassphrase('');
+  // The words, passwords and passphrase must not sit in a hidden form for the
+  // rest of the session.
+  formResets.forEach((reset) => reset());
 }
 
 // ============================================
@@ -171,25 +238,24 @@ function setupWelcomeStep() {
   const quickSetupBtn = steps.welcome.querySelector('[data-action="quick-setup"]');
 
   createBtns.forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      showStep('createPassword');
-      document.getElementById('create-password').focus();
+    btn.addEventListener('click', () => {
+      isImportFlow = false;
+      passphrase.setMode('create');
+      nav.push('createPassword');
+      document.getElementById('create-password').focus({ preventScroll: true });
     });
   });
 
   importLinks.forEach(link => {
-    link.addEventListener('click', (e) => {
-      e.preventDefault();
-      showStep('import');
-      document.getElementById('import-mnemonic').focus();
+    link.addEventListener('click', () => {
+      isImportFlow = true;
+      passphrase.setMode('import');
+      nav.push('import');
+      document.getElementById('import-mnemonic').focus({ preventScroll: true });
     });
   });
 
-  skipLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    skipOnboarding();
-  });
+  skipLink.addEventListener('click', skipOnboarding);
 
   // Quick Setup - one tap to create identity with Touch ID
   if (quickSetupBtn) {
@@ -272,7 +338,7 @@ async function performQuickSetup() {
     // Success!
     hideLoading();
     displayIdentitySummary(injectResult);
-    showStep('complete');
+    nav.push('complete');
 
   } catch (err) {
     hideLoading();
@@ -333,98 +399,43 @@ async function restartNodes(nodeNames) {
 function setupCreatePasswordStep() {
   const passwordInput = document.getElementById('create-password');
   const confirmInput = document.getElementById('create-password-confirm');
-  const confirmGroup = document.getElementById('confirm-password-group');
-  const strengthMeter = document.getElementById('password-strength');
   const strengthFill = steps.createPassword.querySelector('.strength-fill');
-  const strengthLabel = steps.createPassword.querySelector('.strength-label');
-  const matchError = document.getElementById('password-match-error');
-  const backBtn = steps.createPassword.querySelector('[data-action="back"]');
+  const note = document.getElementById('create-password-note');
   const continueBtn = steps.createPassword.querySelector('[data-action="create-vault"]');
-
-  let strengthAnimationTimeout = null;
-
-  const updateStrength = () => {
-    const password = passwordInput.value;
-    const strength = calculatePasswordStrength(password);
-
-    // Clear any pending animation
-    if (strengthAnimationTimeout) {
-      clearTimeout(strengthAnimationTimeout);
-      strengthAnimationTimeout = null;
-    }
-
-    // Show strength meter only when there's input
-    const wasHidden = strengthMeter.classList.contains('hidden');
-    if (password.length > 0) {
-      strengthMeter.classList.remove('hidden');
-
-      // If meter just became visible, delay the bar animation
-      if (wasHidden) {
-        strengthFill.className = 'strength-fill'; // Reset first
-        strengthAnimationTimeout = setTimeout(() => {
-          strengthFill.className = 'strength-fill ' + strength.level;
-        }, 50);
-      } else {
-        strengthFill.className = 'strength-fill ' + strength.level;
-      }
-    } else {
-      strengthMeter.classList.add('hidden');
-      strengthFill.className = 'strength-fill';
-    }
-
-    strengthLabel.textContent = strength.label;
-
-    // Show confirm field only when password is acceptable (not weak)
-    const isAcceptable = strength.level === 'medium' || strength.level === 'strong';
-    if (isAcceptable) {
-      confirmGroup.classList.remove('hidden');
-    } else {
-      confirmGroup.classList.add('hidden');
-      confirmInput.value = ''; // Clear confirm when hidden
-      matchError.textContent = '';
-    }
-
-    return strength;
-  };
 
   const validateForm = () => {
     const password = passwordInput.value;
     const confirm = confirmInput.value;
-    const strength = calculatePasswordStrength(password);
-    const isAcceptable = strength.level === 'medium' || strength.level === 'strong';
-    const isValid = isAcceptable && password === confirm;
+    const { level } = calculatePasswordStrength(password);
+    const isAcceptable = level === 'medium' || level === 'strong';
+    const isValid = isAcceptable && password === confirm && passphrase.isValid();
 
-    if (confirm && password !== confirm) {
-      matchError.textContent = 'Passwords do not match';
-    } else {
-      matchError.textContent = '';
-    }
-
+    renderPasswordNote(strengthFill, note, password, confirm);
     continueBtn.disabled = !isValid;
     return isValid;
   };
 
-  passwordInput.addEventListener('input', () => {
-    updateStrength();
+  formResets.push(() => {
+    passwordInput.value = '';
+    confirmInput.value = '';
     validateForm();
   });
 
+  passwordInput.addEventListener('input', validateForm);
   confirmInput.addEventListener('input', validateForm);
+  passphrase.onChange(validateForm);
 
-  backBtn.addEventListener('click', () => {
-    showStep('welcome');
-    passwordInput.value = '';
-    confirmInput.value = '';
-    confirmGroup.classList.add('hidden');
-    strengthMeter.classList.add('hidden');
-    strengthFill.className = 'strength-fill';
-    strengthLabel.textContent = '';
-  });
+  steps.createPassword
+    .querySelector('[data-action="open-passphrase"]')
+    .addEventListener('click', () => nav.push('passphrase'));
+
+  validateForm();
 
   continueBtn.addEventListener('click', async () => {
     if (!validateForm()) return;
 
     currentPassword = passwordInput.value;
+    currentPassphrase = passphrase.value();
     showLoading('Generating recovery phrase…');
 
     try {
@@ -435,11 +446,12 @@ function setupCreatePasswordStep() {
         hideLoading();
         // Prepare the backup display (will be shown later)
         displayMnemonic(currentMnemonic);
+        displayBackupPassphrase(currentPassphrase);
         // Go to Touch ID step if available, otherwise straight to backup
         if (touchIdAvailable) {
-          showStep('touchId');
+          nav.push('touchId');
         } else {
-          showStep('backup');
+          nav.push('backup');
         }
       } else {
         hideLoading();
@@ -450,6 +462,17 @@ function setupCreatePasswordStep() {
       alert('Failed to generate recovery phrase: ' + err.message);
     }
   });
+}
+
+/** The strength meter and the line under a password pair. */
+function renderPasswordNote(strengthFill, note, password, confirm) {
+  const { level, label } = calculatePasswordStrength(password);
+  const mismatch = Boolean(confirm) && password !== confirm;
+  strengthFill.className = `strength-fill ${level}`;
+  note.textContent = mismatch
+    ? "Passwords don't match."
+    : `${label ? `${label}. ` : ''}Unlocks your wallet on this computer.`;
+  note.classList.toggle('bad', mismatch);
 }
 
 // ============================================
@@ -466,7 +489,7 @@ function setupTouchIdStep() {
       finishOnboarding();
     } else {
       // Create flow: show backup screen next
-      showStep('backup');
+      nav.push('backup');
     }
   };
 
@@ -505,29 +528,17 @@ function setupTouchIdStep() {
 function setupBackupStep() {
   const confirmCheckbox = document.getElementById('backup-confirmed');
   const continueBtn = steps.backup.querySelector('[data-action="continue-to-verify"]');
-  const backBtn = steps.backup.querySelector('[data-action="back-to-welcome"]');
   const copyBtn = document.getElementById('copy-mnemonic');
   const toggleBtn = document.getElementById('toggle-mnemonic');
   const mnemonicDisplay = document.getElementById('mnemonic-display');
+  const backupPassphrase = document.getElementById('backup-passphrase');
 
   confirmCheckbox.addEventListener('change', () => {
     continueBtn.disabled = !confirmCheckbox.checked;
   });
 
-  backBtn.addEventListener('click', () => {
-    showStep('welcome');
-    resetState();
-    // Reset password form values
-    document.getElementById('create-password').value = '';
-    document.getElementById('create-password-confirm').value = '';
-    // Reset password form UI state
-    document.getElementById('confirm-password-group').classList.add('hidden');
-    document.getElementById('password-strength').classList.add('hidden');
-    const strengthFill = steps.createPassword.querySelector('.strength-fill');
-    const strengthLabel = steps.createPassword.querySelector('.strength-label');
-    strengthFill.className = 'strength-fill';
-    strengthLabel.textContent = '';
-    // Reset backup form
+  formResets.push(() => {
+    mnemonicDisplay.innerHTML = '';
     confirmCheckbox.checked = false;
     continueBtn.disabled = true;
   });
@@ -541,9 +552,9 @@ function setupBackupStep() {
       try {
         // Use Electron's clipboard API via preload
         await window.electronAPI.copyText(currentMnemonic);
-        copyBtn.querySelector('svg').style.stroke = '#4caf50';
+        copyBtn.textContent = 'Copied';
         setTimeout(() => {
-          copyBtn.querySelector('svg').style.stroke = '';
+          copyBtn.textContent = 'Copy Words';
         }, 1000);
       } catch (err) {
         console.error('Failed to copy:', err);
@@ -553,8 +564,8 @@ function setupBackupStep() {
 
   toggleBtn.addEventListener('click', () => {
     const isBlurred = mnemonicDisplay.classList.toggle('blurred');
-    toggleBtn.classList.toggle('showing', !isBlurred);
-    toggleBtn.querySelector('.toggle-label').textContent = isBlurred ? 'Show' : 'Hide';
+    backupPassphrase.classList.toggle('blurred', isBlurred);
+    toggleBtn.textContent = isBlurred ? 'Show' : 'Hide';
   });
 }
 
@@ -564,15 +575,28 @@ function displayMnemonic(mnemonic) {
 
   display.innerHTML = words.map((word, i) => `
     <div class="mnemonic-word">
-      <span class="mnemonic-word-num">${i + 1}.</span>
+      <span class="mnemonic-word-num">${i + 1}</span>
       <span class="mnemonic-word-text">${word}</span>
     </div>
   `).join('');
 
   // Start blurred
   display.classList.add('blurred');
-  document.getElementById('toggle-mnemonic').classList.remove('showing');
-  document.getElementById('toggle-mnemonic').querySelector('.toggle-label').textContent = 'Show';
+  document.getElementById('toggle-mnemonic').textContent = 'Show';
+}
+
+function displayBackupPassphrase(value) {
+  const section = document.getElementById('backup-passphrase');
+  // textContent: unlike the words, this is free text the user typed.
+  document.getElementById('backup-passphrase-value').textContent = value;
+  document.getElementById('backup-passphrase-note').textContent = value
+    ? passphraseBackupNote(value)
+    : '';
+  section.classList.toggle('hidden', !value);
+  section.classList.add('blurred');
+  document.getElementById('backup-confirmed-label').textContent = value
+    ? "I've saved my phrase and passphrase"
+    : "I've saved my recovery phrase";
 }
 
 // ============================================
@@ -585,46 +609,157 @@ function setupImportStep() {
   const confirmInput = document.getElementById('import-password-confirm');
   const hint = document.getElementById('import-mnemonic-hint');
   const strengthFill = steps.import.querySelector('.strength-fill');
-  const strengthLabel = steps.import.querySelector('.strength-label');
-  const matchError = document.getElementById('import-password-match-error');
-  const backBtn = steps.import.querySelector('[data-action="back"]');
+  const passwordNote = document.getElementById('import-password-note');
   const importBtn = steps.import.querySelector('[data-action="import-vault"]');
+  const schemeInputs = [...steps.path.querySelectorAll('input[name="import-path-scheme"]')];
+  const pathIndexRow = document.getElementById('import-path-index-row');
+  const pathIndex = document.getElementById('import-path-index');
+  const pathMinus = document.getElementById('import-path-minus');
+  const pathPlus = document.getElementById('import-path-plus');
+  const pathCustomRow = document.getElementById('import-path-custom-row');
+  const pathCustom = document.getElementById('import-path-custom');
+  const pathError = document.getElementById('import-path-error');
+  const pathStatus = document.getElementById('import-path-status');
+  const advancedError = document.getElementById('import-advanced-error');
+  const importPreview = document.getElementById('import-preview');
+  const passphrasePreview = document.getElementById('passphrase-preview');
+  const pathPreview = document.getElementById('path-preview');
 
   let isMnemonicValid = false;
+  // Besides the fields, Import waits for main: a path has to be checked, and a
+  // passphrase's only check is the address being on screen first. A slower
+  // answer must not overwrite the one for the latest input.
+  let isPreviewSettled = true;
+  let latestPreview = 0;
+  let latestValidation = 0;
 
-  const validateMnemonic = async () => {
-    const mnemonic = mnemonicInput.value.trim().toLowerCase().replace(/\s+/g, ' ');
-    const wordCount = mnemonic.split(' ').filter(w => w).length;
+  const typedMnemonic = () => mnemonicInput.value.trim().toLowerCase().replace(/\s+/g, ' ');
+  const selectedScheme = () => schemeInputs.find((input) => input.checked);
 
-    if (wordCount === 0) {
-      hint.textContent = '';
-      hint.className = 'form-hint';
-      isMnemonicValid = false;
-    } else if (wordCount !== 12 && wordCount !== 24) {
-      hint.textContent = `${wordCount} words entered. Need 12 or 24 words.`;
-      hint.className = 'form-hint invalid';
-      isMnemonicValid = false;
-    } else {
-      // Validate with backend
-      const result = await window.identity.validateMnemonic(mnemonic);
-      if (result.valid) {
-        hint.textContent = `Valid ${wordCount}-word phrase`;
-        hint.className = 'form-hint valid';
-        isMnemonicValid = true;
-      } else {
-        hint.textContent = 'Invalid recovery phrase';
-        hint.className = 'form-hint invalid';
-        isMnemonicValid = false;
-      }
+  /** The path the form asks for: null for none, '' while it isn't complete yet. */
+  const selectedPath = () => {
+    const { value } = selectedScheme();
+    if (value === 'default') return null;
+    if (value === 'custom') return pathCustom.value.trim();
+    return presetWalletPath(value, pathIndex.value);
+  };
+
+  const fillPreview = (section, caption, address = '', path = '') => {
+    section.querySelector('.onboarding-caption').textContent = caption;
+    const [addressEl, pathEl] = section.querySelectorAll('.onboarding-address');
+    addressEl.textContent = address;
+    pathEl.textContent = path;
+    section.classList.remove('hidden');
+  };
+
+  const setPathError = (message) => {
+    pathError.textContent = message;
+    advancedError.textContent = message;
+    pathStatus.classList.toggle('bad', Boolean(message));
+    if (message) {
+      pathStatus.textContent = 'Refused';
+      pathStatus.classList.remove('on');
+    }
+  };
+
+  const renderPathControls = () => {
+    const scheme = selectedScheme();
+    const isPreset = scheme.value !== 'default' && scheme.value !== 'custom';
+    pathIndexRow.classList.toggle('hidden', !isPreset);
+    pathCustomRow.classList.toggle('hidden', scheme.value !== 'custom');
+    pathMinus.disabled = !(Number(pathIndex.value) > 0);
+
+    if (scheme.value === 'default') pathStatus.textContent = 'Default';
+    else if (scheme.value === 'custom') pathStatus.textContent = 'Custom';
+    else pathStatus.textContent = `${scheme.dataset.label}, account ${pathIndex.value}`;
+    pathStatus.classList.toggle('on', scheme.value !== 'default');
+  };
+
+  const updateImportPreview = async () => {
+    const request = ++latestPreview;
+    const walletPath = selectedPath();
+    const typedPassphrase = passphrase.value();
+
+    renderPathControls();
+    setPathError('');
+    [importPreview, passphrasePreview, pathPreview].forEach((section) => {
+      section.classList.add('hidden');
+    });
+    isPreviewSettled = walletPath === null && typedPassphrase === '';
+    validateForm();
+
+    if (walletPath === '' || !passphrase.isValid()) return;
+
+    if (!isMnemonicValid) {
+      // Creating a wallet has no words yet, and so no address to wait for.
+      if (!isImportFlow) return;
+      const caption = 'Enter your recovery phrase to see this address.';
+      if (typedPassphrase) fillPreview(passphrasePreview, caption);
+      fillPreview(pathPreview, caption);
+      return;
     }
 
+    let result;
+    try {
+      result = await window.identity.previewImport(typedMnemonic(), {
+        passphrase: typedPassphrase,
+        path: walletPath,
+      });
+    } catch (err) {
+      result = { success: false, error: err.message };
+    }
+    if (request !== latestPreview) return;
+
+    if (!result.success) {
+      setPathError(result.error);
+      return;
+    }
+
+    const caption = result.isMainWallet
+      ? 'Your main wallet'
+      : 'Added next to your main wallet, and made active';
+    fillPreview(pathPreview, caption, result.address, result.path);
+    if (typedPassphrase) {
+      fillPreview(passphrasePreview, caption, result.address, result.path);
+    }
+    // The address only earns its space here once Advanced has changed it.
+    if (typedPassphrase || walletPath !== null) {
+      fillPreview(importPreview, caption, result.address, result.path);
+    }
+    isPreviewSettled = true;
     validateForm();
   };
 
-  const updateStrength = () => {
-    const strength = calculatePasswordStrength(passwordInput.value);
-    strengthFill.className = 'strength-fill ' + strength.level;
-    strengthLabel.textContent = strength.label;
+  const validateMnemonic = async () => {
+    const request = ++latestValidation;
+    const mnemonic = typedMnemonic();
+    const wordCount = mnemonic.split(' ').filter(w => w).length;
+
+    // Until main answers, anything on screen describes the previous words.
+    isMnemonicValid = false;
+    updateImportPreview();
+
+    if (wordCount === 0) {
+      hint.textContent = '';
+      hint.className = 'onboarding-group-footer';
+    } else if (wordCount !== 12 && wordCount !== 24) {
+      hint.textContent = `${wordCount} words entered. Need 12 or 24 words.`;
+      hint.className = 'onboarding-group-footer bad';
+    } else {
+      // Validate with backend
+      const result = await window.identity.validateMnemonic(mnemonic);
+      if (request !== latestValidation) return;
+      if (result.valid) {
+        hint.textContent = `Valid ${wordCount}-word phrase`;
+        hint.className = 'onboarding-group-footer good';
+        isMnemonicValid = true;
+      } else {
+        hint.textContent = 'Invalid recovery phrase';
+        hint.className = 'onboarding-group-footer bad';
+      }
+    }
+
+    updateImportPreview();
   };
 
   const validateForm = () => {
@@ -632,53 +767,80 @@ function setupImportStep() {
     const confirm = confirmInput.value;
     const passwordValid = password.length >= 8 && password === confirm;
 
-    if (confirm && password !== confirm) {
-      matchError.textContent = 'Passwords do not match';
-    } else {
-      matchError.textContent = '';
-    }
-
-    importBtn.disabled = !isMnemonicValid || !passwordValid;
+    renderPasswordNote(strengthFill, passwordNote, password, confirm);
+    importBtn.disabled =
+      !isMnemonicValid || !passwordValid || !passphrase.isValid() || !isPreviewSettled;
   };
 
-  mnemonicInput.addEventListener('input', validateMnemonic);
-  passwordInput.addEventListener('input', () => {
-    updateStrength();
-    validateForm();
-  });
-  confirmInput.addEventListener('input', validateForm);
-
-  backBtn.addEventListener('click', () => {
-    showStep('welcome');
+  const resetForm = () => {
     mnemonicInput.value = '';
     passwordInput.value = '';
     confirmInput.value = '';
     hint.textContent = '';
-    hint.className = 'form-hint';
-    strengthFill.className = 'strength-fill';
-    strengthLabel.textContent = '';
+    hint.className = 'onboarding-group-footer';
+    latestValidation += 1;
     isMnemonicValid = false;
-    importBtn.disabled = true;
+    passphrase.reset();
+    schemeInputs.forEach((input) => {
+      input.checked = input.value === 'default';
+    });
+    pathIndex.value = '0';
+    pathCustom.value = '';
+    updateImportPreview();
+  };
+  formResets.push(resetForm);
+
+  const stepAccount = (delta) => {
+    const index = Number(pathIndex.value);
+    pathIndex.value = String(Math.max(0, (Number.isFinite(index) ? index : 0) + delta));
+    updateImportPreview();
+  };
+
+  mnemonicInput.addEventListener('input', validateMnemonic);
+  passwordInput.addEventListener('input', validateForm);
+  confirmInput.addEventListener('input', validateForm);
+  passphrase.onChange(updateImportPreview);
+  schemeInputs.forEach((input) => {
+    input.addEventListener('change', () => {
+      updateImportPreview();
+      if (input.value === 'custom') pathCustom.focus({ preventScroll: true });
+    });
   });
+  pathIndex.addEventListener('input', updateImportPreview);
+  pathMinus.addEventListener('click', () => stepAccount(-1));
+  pathPlus.addEventListener('click', () => stepAccount(1));
+  pathCustom.addEventListener('input', updateImportPreview);
+
+  steps.import
+    .querySelector('[data-action="open-passphrase"]')
+    .addEventListener('click', () => nav.push('passphrase'));
+  steps.import
+    .querySelector('[data-action="open-path"]')
+    .addEventListener('click', () => nav.push('path'));
+
+  updateImportPreview();
 
   importBtn.addEventListener('click', async () => {
-    const mnemonic = mnemonicInput.value.trim().toLowerCase().replace(/\s+/g, ' ');
+    const mnemonic = typedMnemonic();
     const password = passwordInput.value;
 
     currentMnemonic = mnemonic;
     currentPassword = password;
-    isImportFlow = true;
 
     showLoading('Importing your identity…');
 
     try {
       // Import flow - user provides their own password, so they know it
-      const result = await window.identity.importMnemonic(password, mnemonic, true);
+      const result = await window.identity.importMnemonic(password, mnemonic, true, {
+        passphrase: passphrase.value(),
+        path: selectedPath(),
+      });
       if (result.success) {
+        importedWalletAddress = result.wallet?.address ?? null;
         hideLoading();
         // Offer Touch ID if available, otherwise finish directly
         if (touchIdAvailable) {
-          showStep('touchId');
+          nav.push('touchId');
         } else {
           finishOnboarding();
         }
@@ -715,7 +877,12 @@ async function finishOnboarding() {
     if (!isImportFlow) {
       showLoading('Saving your identity vault…');
       // Save the vault with the mnemonic (user knows this password)
-      const vaultResult = await window.identity.importMnemonic(currentPassword, currentMnemonic, true);
+      const vaultResult = await window.identity.importMnemonic(
+        currentPassword,
+        currentMnemonic,
+        true,
+        { passphrase: currentPassphrase }
+      );
       if (!vaultResult.success) {
         hideLoading();
         alert('Failed to save vault: ' + vaultResult.error);
@@ -739,7 +906,7 @@ async function finishOnboarding() {
       }
       hideLoading();
       displayIdentitySummary(result);
-      showStep('complete');
+      nav.push('complete');
     } else {
       hideLoading();
       alert('Failed to inject identity: ' + result.error);
@@ -756,10 +923,12 @@ function displayIdentitySummary(result) {
   const ipfsEl = document.getElementById('identity-ipfs');
   const radicleEl = document.getElementById('identity-radicle');
 
-  // User Wallet (shown in full - it's the primary identity)
-  if (result.userWallet?.address) {
-    walletEl.textContent = result.userWallet.address;
-    walletEl.title = result.userWallet.address;
+  // User Wallet (shown in full - it's the primary identity). An account the
+  // user imported at a chosen path is the one they recognise, and it's active.
+  const walletAddress = importedWalletAddress ?? result.userWallet?.address;
+  if (walletAddress) {
+    walletEl.textContent = walletAddress;
+    walletEl.title = walletAddress;
   }
 
   // Node identities (truncated)

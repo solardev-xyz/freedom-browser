@@ -86,7 +86,9 @@ function loadQuickUnlock({
 function makeIdentityManager() {
   return {
     unlockVault: jest.fn().mockResolvedValue(undefined),
-    exportMnemonic: jest.fn().mockResolvedValue('word '.repeat(23) + 'word'),
+    exportRecoveryPhrase: jest
+      .fn()
+      .mockResolvedValue({ mnemonic: 'word '.repeat(23) + 'word', passphrase: 'twenty-fifth' }),
     assertPrivateKeyExportable: jest.fn(),
     exportPrivateKeyForAccount: jest.fn().mockResolvedValue('0x' + '11'.repeat(32)),
   };
@@ -259,12 +261,16 @@ describe('quick-unlock', () => {
       expect(leaks(result)).toBe(false);
     });
 
-    test('quick-unlock:export-mnemonic returns the phrase, not the password', async () => {
+    test('quick-unlock:export-mnemonic returns the phrase and passphrase, not the password', async () => {
       const { ipcHandlers, identityManager } = await enabled();
 
       const result = await ipcHandlers.get('quick-unlock:export-mnemonic')({});
 
-      expect(result).toEqual({ success: true, mnemonic: 'word '.repeat(23) + 'word' });
+      expect(result).toEqual({
+        success: true,
+        mnemonic: 'word '.repeat(23) + 'word',
+        passphrase: 'twenty-fifth',
+      });
       expect(leaks(result)).toBe(false);
       expect(identityManager.unlockVault).toHaveBeenCalledWith('s3cret-vault-pw');
     });

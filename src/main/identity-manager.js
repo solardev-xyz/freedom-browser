@@ -173,23 +173,31 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
  * @param {string} password - User's password
  * @param {string} mnemonic - The mnemonic to import
  * @param {boolean} userKnowsPassword - Whether the user knows the password (false for Quick Setup)
- * @returns {Promise<void>}
+ * @param {Object} [options]
+ * @param {string} [options.passphrase] - BIP-39 passphrase, as typed ('' for none)
+ * @param {string|null} [options.path] - Also add the account at this path and make it active
+ * @returns {Promise<Object|null>} The account added at `path`, or null if none was needed
  */
-async function importExistingMnemonic(password, mnemonic, userKnowsPassword = true) {
+async function importExistingMnemonic(password, mnemonic, userKnowsPassword = true, options = {}) {
+  const { passphrase = '', path: walletPath = null } = options ?? {};
   const identity = await loadIdentityModule();
   const dataDir = getIdentityDataDir();
+
+  // Checked before anything is written: an import can't be repeated once the vault exists.
+  const pathWallet =
+    walletPath === null ? null : identity.deriveWalletAtPath({ mnemonic, passphrase }, walletPath);
 
   // Ensure directory exists
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  await identity.importVault(dataDir, password, mnemonic, false);
+  await identity.importVault(dataDir, password, mnemonic, false, passphrase);
   console.log('[IdentityManager] Mnemonic imported to vault');
 
   // Auto-unlock after import
   await identity.unlockVault(dataDir, password);
-  derivedKeys = identity.deriveAllKeys(mnemonic);
+  derivedKeys = identity.deriveAllKeys(identity.getSeedSecret());
 
   // Save vault metadata including public addresses (so we can display without unlock)
   saveVaultMeta({
@@ -200,6 +208,39 @@ async function importExistingMnemonic(password, mnemonic, userKnowsPassword = tr
       beeWallet: derivedKeys.beeWallet.address,
     },
   });
+
+  // The first account of most schemes is the main wallet, which already exists.
+  if (!pathWallet || pathWallet.address === derivedKeys.userWallet.address) {
+    return null;
+  }
+  const wallet = await addWalletAtPath('', pathWallet.path);
+  await setActiveWalletIndex(wallet.index);
+  return wallet;
+}
+
+/**
+ * The address an import would give, shown before anything is saved. It's the
+ * only check on a passphrase, because every string gives a valid wallet.
+ * Public data only; the key stays in the main process.
+ *
+ * @param {string} mnemonic
+ * @param {Object} [options]
+ * @param {string} [options.passphrase] - BIP-39 passphrase, as typed ('' for none)
+ * @param {string|null} [options.path] - Invalid or reserved paths throw
+ * @returns {Promise<{address: string, path: string, isMainWallet: boolean}>}
+ */
+async function previewImport(mnemonic, options = {}) {
+  const { passphrase = '', path: walletPath = null } = options ?? {};
+  const identity = await loadIdentityModule();
+  const secret = { mnemonic, passphrase };
+
+  const main = identity.deriveUserWallet(secret, 0);
+  const derived = walletPath === null ? main : identity.deriveWalletAtPath(secret, walletPath);
+  return {
+    address: derived.address,
+    path: derived.path,
+    isMainWallet: derived.address === main.address,
+  };
 }
 
 /**
@@ -213,12 +254,12 @@ async function unlockVault(password) {
 
   await identity.unlockVault(dataDir, password);
 
-  const mnemonic = identity.getMnemonic();
-  if (!mnemonic) {
+  const secret = identity.getSeedSecret();
+  if (!secret) {
     throw new Error('Failed to retrieve mnemonic after unlock');
   }
 
-  derivedKeys = identity.deriveAllKeys(mnemonic);
+  derivedKeys = identity.deriveAllKeys(secret);
   console.log('[IdentityManager] Vault unlocked, keys derived');
 
   // Migrate old vaults: save addresses to metadata if not present
@@ -262,13 +303,13 @@ function getDerivedKeys() {
  */
 async function getPublisherKey(originIndex) {
   const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
+  const secret = identity.getSeedSecret();
 
-  if (!mnemonic) {
+  if (!secret) {
     throw new Error('Vault must be unlocked to derive publisher keys');
   }
 
-  return identity.derivePublisherKey(mnemonic, originIndex);
+  return identity.derivePublisherKey(secret, originIndex);
 }
 
 /**
@@ -292,12 +333,12 @@ async function getUserWalletKey(walletIndex) {
   }
 
   const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
-  if (!mnemonic) {
+  const secret = identity.getSeedSecret();
+  if (!secret) {
     throw new Error('Vault must be unlocked to derive wallet keys');
   }
 
-  return deriveWalletForRecord(identity, mnemonic, record);
+  return deriveWalletForRecord(identity, secret, record);
 }
 
 /**
@@ -787,12 +828,12 @@ async function getIdentityStatus() {
 }
 
 /**
- * Export mnemonic for backup (vault must be unlocked)
- * @returns {Promise<string>}
+ * Export what's needed to restore this wallet, for backup (vault must be unlocked)
+ * @returns {Promise<{mnemonic: string, passphrase: string}>}
  */
-async function exportMnemonic() {
+async function exportRecoveryPhrase() {
   const identity = await loadIdentityModule();
-  return identity.exportMnemonic();
+  return identity.exportRecoveryPhrase();
 }
 
 /**
@@ -836,14 +877,14 @@ const WALLET_TYPES = {
  * one, otherwise at the path its index implies.
  *
  * @param {Object} identity - The identity module
- * @param {string} mnemonic
+ * @param {{mnemonic: string, passphrase: string}} secret - From identity.getSeedSecret()
  * @param {{index: number, path?: string}} record
  * @returns {{privateKey: string, publicKey: string, address: string, path: string}}
  */
-function deriveWalletForRecord(identity, mnemonic, record) {
+function deriveWalletForRecord(identity, secret, record) {
   return record.path
-    ? identity.deriveWalletAtPath(mnemonic, record.path)
-    : identity.deriveUserWallet(mnemonic, record.index);
+    ? identity.deriveWalletAtPath(secret, record.path)
+    : identity.deriveUserWallet(secret, record.index);
 }
 
 /** User-facing labels for non-mnemonic account types (auto-names, error text). */
@@ -1021,7 +1062,7 @@ async function getDerivedWallets() {
   }
 
   // If vault is unlocked, derive addresses; otherwise use stored addresses
-  const mnemonic = identity.getMnemonic();
+  const secret = identity.getSeedSecret();
   const wallets = [];
 
   for (const wallet of meta.derivedWallets) {
@@ -1032,18 +1073,18 @@ async function getDerivedWallets() {
       // Device accounts (Ledger, phone): the address was read from the
       // device when the account was added; nothing to derive locally.
       address = wallet.address || null;
-    } else if (mnemonic && wallet.path) {
+    } else if (secret && wallet.path) {
       // A path this build refuses (a hand-edited vault-meta) can't sign, but
       // must not take the rest of the wallet list down with it.
       try {
-        address = identity.deriveWalletAtPath(mnemonic, wallet.path).address;
+        address = identity.deriveWalletAtPath(secret, wallet.path).address;
       } catch (err) {
         console.warn(`[IdentityManager] Wallet ${wallet.index}: ${err.message}`);
         address = wallet.address || null;
       }
-    } else if (mnemonic) {
-      // Derive address from mnemonic
-      const derived = identity.deriveUserWallet(mnemonic, wallet.index);
+    } else if (secret) {
+      // Derive address from the seed
+      const derived = identity.deriveUserWallet(secret, wallet.index);
       address = derived.address;
     } else {
       // Use stored address from wallet object, or fallback to meta.addresses for index 0
@@ -1259,9 +1300,9 @@ async function setActiveWalletIndex(index) {
  */
 async function createDerivedWallet(name) {
   const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
+  const secret = identity.getSeedSecret();
 
-  if (!mnemonic) {
+  if (!secret) {
     throw new Error('Vault must be unlocked to create a new wallet');
   }
 
@@ -1286,12 +1327,12 @@ async function createDerivedWallet(name) {
   );
   // The address check covers an account already added at this same key by
   // its explicit path.
-  const takenAddresses = listedWalletAddresses(identity, mnemonic, wallets, meta);
+  const takenAddresses = listedWalletAddresses(identity, secret, wallets, meta);
   let newIndex = maxIndex + 1;
-  let derived = identity.deriveUserWallet(mnemonic, newIndex);
+  let derived = identity.deriveUserWallet(secret, newIndex);
   while (taken.has(newIndex) || takenAddresses.has(derived.address.toLowerCase())) {
     newIndex += 1;
-    derived = identity.deriveUserWallet(mnemonic, newIndex);
+    derived = identity.deriveUserWallet(secret, newIndex);
   }
 
   // Add to list (include address so it persists when vault is locked)
@@ -1321,17 +1362,17 @@ async function createDerivedWallet(name) {
  * index 0 to the main wallet address in vault-meta.
  *
  * @param {Object} identity - The identity module
- * @param {string} mnemonic
+ * @param {{mnemonic: string, passphrase: string}} secret - From identity.getSeedSecret()
  * @param {Array<Object>} wallets - Raw derivedWallets entries
  * @param {Object} meta - Parsed vault-meta
  * @returns {Map<string, Object>}
  */
-function listedWalletAddresses(identity, mnemonic, wallets, meta) {
+function listedWalletAddresses(identity, secret, wallets, meta) {
   const listed = new Map();
   for (const wallet of wallets) {
     let address = wallet.address || (wallet.index === 0 ? meta.addresses?.userWallet : null);
     if (!address && (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC) {
-      address = deriveWalletForRecord(identity, mnemonic, wallet).address;
+      address = deriveWalletForRecord(identity, secret, wallet).address;
     }
     if (address) {
       listed.set(address.toLowerCase(), wallet);
@@ -1350,8 +1391,8 @@ function listedWalletAddresses(identity, mnemonic, wallets, meta) {
  */
 async function addWalletAtPath(name, path) {
   const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
-  if (!mnemonic) {
+  const secret = identity.getSeedSecret();
+  if (!secret) {
     throw new Error('Vault must be unlocked to create a new wallet');
   }
 
@@ -1360,9 +1401,9 @@ async function addWalletAtPath(name, path) {
     throw new Error('No vault found');
   }
 
-  const derived = identity.deriveWalletAtPath(mnemonic, path);
+  const derived = identity.deriveWalletAtPath(secret, path);
   const wallets = getWalletList(meta);
-  const duplicate = listedWalletAddresses(identity, mnemonic, wallets, meta).get(
+  const duplicate = listedWalletAddresses(identity, secret, wallets, meta).get(
     derived.address.toLowerCase()
   );
   if (duplicate) {
@@ -1397,8 +1438,8 @@ async function addWalletAtPath(name, path) {
  */
 async function previewWalletAtPath(path) {
   const identity = await loadIdentityModule();
-  const mnemonic = identity.getMnemonic();
-  if (!mnemonic) {
+  const secret = identity.getSeedSecret();
+  if (!secret) {
     throw new Error('Vault must be unlocked to preview a wallet');
   }
 
@@ -1407,8 +1448,8 @@ async function previewWalletAtPath(path) {
     throw new Error('No vault found');
   }
 
-  const derived = identity.deriveWalletAtPath(mnemonic, path);
-  const existing = listedWalletAddresses(identity, mnemonic, getWalletList(meta), meta).get(
+  const derived = identity.deriveWalletAtPath(secret, path);
+  const existing = listedWalletAddresses(identity, secret, getWalletList(meta), meta).get(
     derived.address.toLowerCase()
   );
   return { path: derived.path, address: derived.address, existingName: existing?.name ?? null };
@@ -1551,10 +1592,10 @@ async function getActiveWalletAddress() {
     return record.address;
   }
 
-  const mnemonic = identity.getMnemonic();
+  const secret = identity.getSeedSecret();
 
-  if (mnemonic) {
-    const derived = deriveWalletForRecord(identity, mnemonic, record || { index: activeIndex });
+  if (secret) {
+    const derived = deriveWalletForRecord(identity, secret, record || { index: activeIndex });
     return derived.address;
   }
 
@@ -1636,15 +1677,24 @@ function registerIdentityIpc() {
   // Import mnemonic
   ipcMain.handle(
     IPC.IDENTITY_IMPORT_MNEMONIC,
-    async (_event, password, mnemonic, userKnowsPassword) => {
+    async (_event, password, mnemonic, userKnowsPassword, options) => {
       try {
-        await importExistingMnemonic(password, mnemonic, userKnowsPassword);
-        return { success: true };
+        const wallet = await importExistingMnemonic(password, mnemonic, userKnowsPassword, options);
+        return { success: true, wallet };
       } catch (err) {
         return { success: false, error: err.message };
       }
     }
   );
+
+  // The address an import would give, before anything is saved
+  ipcMain.handle(IPC.IDENTITY_PREVIEW_IMPORT, async (_event, mnemonic, options) => {
+    try {
+      return { success: true, ...(await previewImport(mnemonic, options)) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
 
   // Get vault metadata (setup type, etc.)
   ipcMain.handle('identity:get-vault-meta', () => {
@@ -1699,8 +1749,7 @@ function registerIdentityIpc() {
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
       await identity.verifyPassword(dataDir, password);
-      const mnemonic = await exportMnemonic();
-      return { success: true, mnemonic };
+      return { success: true, ...(await exportRecoveryPhrase()) };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -1880,9 +1929,10 @@ module.exports = {
   isVaultUnlocked,
   createNewVault,
   importExistingMnemonic,
+  previewImport,
   unlockVault,
   lockVault,
-  exportMnemonic,
+  exportRecoveryPhrase,
   assertPrivateKeyExportable,
   exportPrivateKeyForAccount,
   changeVaultPassword,

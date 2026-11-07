@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 258,
+  "total": 235,
   "files": {
     "pages/downloads.html": [
       "background: #388bfd33",
@@ -131,31 +131,8 @@
       "color: #fff"
     ],
     "styles/onboarding.css": [
-      "background: #4caf50",
-      "background: #ff9800",
       "background: rgba(0, 0, 0, 0.03)",
-      "background: rgba(0, 0, 0, 0.05)",
-      "background: rgba(0, 0, 0, 0.1)",
-      "background: rgba(0, 0, 0, 0.5)",
-      "background: rgba(139, 92, 246, 0.15)",
-      "background: rgba(255, 152, 0, 0.1)",
-      "background: rgba(255, 152, 0, 0.15)",
-      "background: rgba(255, 255, 255, 0.05)",
-      "background: rgba(255, 255, 255, 0.1)",
-      "background: rgba(255, 255, 255, 0.15)",
-      "background: rgba(76, 175, 80, 0.15)",
-      "background: rgba(99, 102, 241, 0.15)",
-      "border: rgba(255, 152, 0, 0.3)",
-      "border: rgba(99, 102, 241, 0.3)",
-      "box-shadow: rgba(0, 0, 0, 0.4)",
-      "color: #4caf50",
-      "color: #e65100",
-      "color: #ffb74d",
-      "color: #fff",
-      "stroke: #4caf50",
-      "stroke: #e65100",
-      "stroke: #ffb74d",
-      "stroke: rgba(139, 92, 246, 0.9)"
+      "background: rgba(255, 255, 255, 0.05)"
     ],
     "styles/sidebar.css": [
       "background-color: rgba(0, 0, 0, 0.03)",

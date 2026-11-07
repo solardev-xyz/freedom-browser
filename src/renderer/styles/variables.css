@@ -63,6 +63,27 @@
      a bare `monospace` renders in Times on macOS under Electron (#616). */
   --font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
 
+  /* Onboarding's inset grouped lists: a sheet with lighter rows on it. */
+  --onboarding-sheet: var(--modal-bg);
+  --onboarding-row: #2a2b2c;
+  --onboarding-row-hover: #353638;
+  --onboarding-title: #f1f3f4;
+  --onboarding-text: #e4e5e6;
+  --onboarding-secondary: #a3a8ad;
+  --onboarding-separator: rgba(255, 255, 255, 0.11);
+  --onboarding-fill: rgba(255, 255, 255, 0.12);
+  --onboarding-dim: rgba(0, 0, 0, 0.22);
+  --onboarding-on-accent: var(--agent-on-accent);
+  --onboarding-good: #81c995;
+  --onboarding-warn-bg: rgba(210, 153, 34, 0.14);
+  --onboarding-warn-fg: #e3b341;
+  --onboarding-switch-on: #4caf72;
+  --onboarding-switch-knob: #ffffff;
+  --onboarding-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  --onboarding-sheet-scrim: rgba(0, 0, 0, 0.32);
+  --onboarding-mark-a: #e3ad51;
+  --onboarding-mark-b: #5fc9b8;
+
   /* Stacking order for everything that floats over the whole chrome (#66).
      Each one is defined here, and the order is what makes things work, so
      change the scale here rather than bumping one number in a component
@@ -145,4 +166,20 @@
   --agent-message-sheen: linear-gradient(135deg, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.1) 40%, transparent 75%);
   --agent-message-border: rgba(15, 23, 42, 0.09);
   --agent-message-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 8px rgba(15, 23, 42, 0.09);
+  --onboarding-sheet: #f2f3f5;
+  --onboarding-row: #ffffff;
+  --onboarding-row-hover: #e8eaed;
+  --onboarding-title: #202124;
+  --onboarding-text: #202124;
+  --onboarding-secondary: #5f6368;
+  --onboarding-separator: rgba(60, 64, 67, 0.16);
+  --onboarding-fill: rgba(60, 64, 67, 0.1);
+  --onboarding-dim: rgba(0, 0, 0, 0.12);
+  --onboarding-good: #1e7e45;
+  --onboarding-warn-bg: rgba(255, 152, 0, 0.12);
+  --onboarding-warn-fg: #8a5300;
+  --onboarding-switch-on: #1e7e45;
+  --onboarding-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+  --onboarding-mark-a: #e3a008;
+  --onboarding-mark-b: #1f9d8a;
 }
