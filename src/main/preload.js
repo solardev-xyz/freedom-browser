@@ -926,8 +926,11 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   // { allowed }. Main marks an allowed payment possibly sent, so from then
   // on its lost answer means the outcome is unknown.
   requestSent: (jobId) => ipcRenderer.invoke('remote-signer:request-sent', { jobId }),
-  // Persist a phone account discovered via eth_requestAccounts.
+  // Persist a phone account discovered via eth_requestAccounts. Main has
+  // the phone sign a check as the account first (#1078).
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
+  // Check an existing phone account on the phone (#1078).
+  checkAccount: (index) => ipcRenderer.invoke('wallet:check-remote-wallet', index),
 });
 
 contextBridge.exposeInMainWorld('swarmNode', {

@@ -1,8 +1,8 @@
 /**
  * Main's executor for the naming core's verified operations (freedom-core
  * design 0004, Verified operations): `shell.verified` runs one whole
- * operation through today's Myotis or Colibri adapter and replies with its
- * outcome, as the reference receives it, without text:
+ * operation through today's Myotis adapter and replies with its outcome, as
+ * the reference receives it, without text:
  *
  * - a result, its keys in snake_case;
  * - `{ revert }`, the proven revert data an error carries;
@@ -10,10 +10,17 @@
  *
  * Main runs no epoch check of its own: the adapters guard themselves, and
  * the core's method checks after them as today's caller does.
+ *
+ * Colibri runs no naming operation (#1076): Colibri 3.0.3 runs a lookup's
+ * `eth_call` on contract code from one of its public RPCs, unchecked against
+ * the proven code hash, and proves nothing for a call that reads no storage.
+ * So `{ colibri: 'resolve' }` and `{ colibri: 'reverse' }` are refused, as
+ * anything malformed is, and a core that still asks gets no answer to label
+ * verified: its order moves on to the next method.
  */
 
-const { ethers } = require('ethers');
 const { ShellError } = require('./core-client');
+const { runWithLogContext } = require('../private/private-log-context');
 const { withDeadline, unlessAborted } = require('./naming-shell');
 const { MAX_PAYLOAD } = require('./frame');
 // `0x` and whole bytes, checked in constant stack: a large value can't
@@ -23,7 +30,7 @@ const { isHexData } = require('../ens/ccip-fetch');
 
 /** Operations running per verifier, counted until the adapter settles
  * (not when the core cancels): more are `unavailable` at once. Chain
- * data's operations share the count (design 0005). */
+ * data's operations share the count (design 0005), Colibri's among them. */
 const MAX_PER_VERIFIER = 8;
 /** A reply whose response can't fit one frame (1 MiB) is `too_large`
  * (deviation `verified-reply-size`): its envelope, with the largest ID,
@@ -79,22 +86,10 @@ function revertOf(err) {
 /** Today's adapters, loaded when first used (they load the resolvers). */
 function defaultAdapters() {
   const myotis = () => require('../myotis/myotis-manager');
-  const colibri = () => require('../ens/colibri-resolver');
-  const ens = () => require('../ens-resolver');
   return {
     myotisRecord: (params) => require('../ens/myotis-resolver').resolveRecord(params),
     myotisCall: (params) => myotis().ethCall(params),
     myotisStatus: () => myotis().getStatus(),
-    colibriResolve: (name, callData, callResolver) =>
-      colibri().resolveCallViaColibri(name, callData, callResolver),
-    colibriReverse: (addressBytes, coinType) =>
-      colibri().resolveReverseViaColibri(addressBytes, coinType),
-    callResolver: (resolver) =>
-      ({
-        ur: ens().universalResolverCall,
-        name_nft: ens().nameNftResolverCall,
-        name_nft_reverse: ens().nameNftReverseResolverCall,
-      })[resolver],
   };
 }
 
@@ -106,7 +101,8 @@ const coinType = (value) => {
 
 /**
  * The operation `params` names: its verifier, and how to run it with the
- * adapters. Anything malformed is refused.
+ * adapters. Anything malformed is refused, and so is any Colibri operation
+ * (#1076).
  */
 function operation(params, adapters) {
   if (params.myotis === 'record') {
@@ -145,27 +141,29 @@ function operation(params, adapters) {
       },
     };
   }
-  if (params.colibri === 'resolve') {
-    const { name, call_data: callData } = params;
-    if (typeof name !== 'string') throw refused();
-    if (!isHexData(callData)) throw refused();
-    if (!['ur', 'name_nft', 'name_nft_reverse'].includes(params.resolver)) throw refused();
-    const callResolver = adapters.callResolver(params.resolver);
-    return {
-      verifier: 'colibri',
-      run: async () => wire(await adapters.colibriResolve(name, callData, callResolver)),
-    };
-  }
-  if (params.colibri === 'reverse') {
-    const { address } = params;
-    if (typeof address !== 'string' || !ADDRESS.test(address)) throw refused();
-    const coin = coinType(params.coin_type);
-    return {
-      verifier: 'colibri',
-      run: async () => wire(await adapters.colibriReverse(ethers.getBytes(address), coin)),
-    };
-  }
   throw refused();
+}
+
+/**
+ * PRIVATE MODE GUARD (Colibri store, #1058): runs a verified operation, a
+ * Colibri one in the async context of the window it may serve. Colibri
+ * keeps a private window's reads in memory instead of <userData>/colibri
+ * when that context is private (ens/colibri-resolver.js), and refuses one
+ * whose private session has ended. The core's request names no window, so
+ * the client tells, as `context.private` and `context.privateSession`
+ * (service-client.js `forPrivate`): true while a request main sent for a
+ * private window is pending, and the session it was sent in. Without
+ * `private`, the operation counts as private; without a session, it is
+ * refused. The marker is set either way: the handler may run in a context
+ * that says nothing about the request (the one the core process was
+ * started from). Shared with chain data's executor, whose Colibri reads are
+ * the only ones left: naming runs no Colibri operation (#1076), so here it
+ * only ever runs a Myotis one as it is.
+ */
+function runVerified(verifier, run, context) {
+  if (verifier !== 'colibri') return run();
+  const isPrivate = context?.private !== false;
+  return runWithLogContext(isPrivate, run, isPrivate ? context?.privateSession : null);
 }
 
 /** The reply as it will be sent: one over the cap, or one JSON can't
@@ -196,7 +194,8 @@ function registerNamingVerified(client, config, deps = {}) {
   const adapters = deps.adapters || defaultAdapters();
   const running = deps.running || { myotis: 0, colibri: 0 };
 
-  client.handle('shell.verified', (params, { signal }) => {
+  client.handle('shell.verified', (params, context) => {
+    const { signal } = context;
     const generation = params.generations?.lifecycle;
     if (!Number.isSafeInteger(generation) || generation < config.generations.lifecycle) {
       throw new ShellError('stale_generation');
@@ -207,7 +206,7 @@ function registerNamingVerified(client, config, deps = {}) {
     // The whole operation, which never rejects: it runs on to its end
     // whoever waits for it.
     const done = Promise.resolve()
-      .then(run)
+      .then(() => runVerified(verifier, run, context))
       .then(bounded, (err) => {
         const revert = revertOf(err);
         return bounded(revert ? { revert } : { failure: failureClass(err) });
@@ -223,6 +222,7 @@ function registerNamingVerified(client, config, deps = {}) {
 
 module.exports = {
   registerNamingVerified,
+  runVerified,
   MAX_PER_VERIFIER,
   MAX_REPLY_BYTES,
   ENVELOPE_BYTES,

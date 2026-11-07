@@ -6,7 +6,7 @@ const IPC = require('../shared/ipc-channels');
 const registry = require('./networks/network-registry');
 const { UNAVAILABLE } = require('./core/naming-driver');
 const { runWithPrivateLogContext, redactForLog } = require('./private/private-log-context');
-const { isPrivateWebContents } = require('./private/private-windows');
+const { isPrivateSender } = require('./private/private-sender');
 
 // ENS, WNS and GNS names are resolved by the naming core (freedom-core
 // design 0004): the lookups below go to its driver, which returns the
@@ -36,47 +36,6 @@ const UR_ABI = [
   'function resolve(bytes name, bytes data) view returns (bytes result, address resolver)',
   'function reverse(bytes lookupAddress, uint256 coinType) view returns (string primary, address resolver, address reverseResolver)',
 ];
-
-// Contract-backed Ethereum name systems on mainnet. WNS and GNS store
-// resolver data directly on NameNFT-style ERC-721 contracts, using ENS-style
-// namehash token IDs and ENS-compatible resolver function signatures.
-const WNS_ADDRESS = '0x0000000000696760E15f265e828DB644A0c242EB';
-const GNS_ADDRESS = '0x9D51D507BC7264d4fE8Ad1cf7Fe191933A0a81d6';
-const NAME_NFT_ABI = [
-  'function contenthash(bytes32 node) view returns (bytes)',
-  'function addr(bytes32 node) view returns (address)',
-  'function reverseResolve(address addr) view returns (string)',
-];
-const NAME_NFT_INTERFACE = new ethers.Interface(NAME_NFT_ABI);
-
-const NAME_SYSTEMS = {
-  ens: { id: 'ens', label: 'ENS' },
-  wns: {
-    id: 'wns',
-    label: 'WNS',
-    suffix: '.wei',
-    contractAddress: WNS_ADDRESS,
-  },
-  gns: {
-    id: 'gns',
-    label: 'GNS',
-    suffix: '.gwei',
-    contractAddress: GNS_ADDRESS,
-  },
-};
-
-function nameSystemForName(name) {
-  const lower = String(name || '').toLowerCase();
-  for (const system of [NAME_SYSTEMS.wns, NAME_SYSTEMS.gns]) {
-    if (lower.endsWith(system.suffix)) return system;
-  }
-  return NAME_SYSTEMS.ens;
-}
-
-// bytes4(keccak256("contenthash(bytes32)"))
-const CONTENTHASH_SELECTOR = '0xbc1c58d1';
-// bytes4(keccak256("addr(bytes32)"))
-const ADDR_SELECTOR = '0x3b3b57de';
 
 // SLIP-0044 coin type for Ethereum mainnet, used by UR.reverse.
 const ETH_COIN_TYPE = 60n;
@@ -181,8 +140,8 @@ function isResolverNotFoundError(err) {
 //
 // CCIP-Read is opted into per-call here because ethers v6 doesn't enable it
 // by default — needed for .box domains resolved via 3DNS. The verified
-// adapters (Myotis, Colibri) call at "latest", where ethers follows an
-// OffchainLookup itself, through their providers' bounded ccipReadFetch.
+// adapter (Myotis) calls at "latest", where ethers follows an
+// OffchainLookup itself, through its provider's bounded ccipReadFetch.
 //
 // `overrides` are merged into the call's overrides object. Callers that
 // pass nothing get the default { enableCcipRead: true } shape.
@@ -200,50 +159,6 @@ async function universalResolverCall(provider, name, callData, overrides = {}) {
     overrides
   );
   return { resolvedData, resolverAddress };
-}
-
-function nodeFromResolverCallData(callData) {
-  const hex = typeof callData === 'string' ? callData : '';
-  if (!/^0x[0-9a-fA-F]{72,}$/.test(hex)) {
-    throw new Error('Invalid resolver call data');
-  }
-  return '0x' + hex.slice(10, 74);
-}
-
-// NameNFT-backed systems store ENS-compatible resolver records directly on
-// their registry contracts. This adapter returns the same raw `resolvedData`
-// shape as the Universal Resolver path, so the core decodes both alike.
-async function nameNftResolverCall(provider, name, callData, overrides = {}) {
-  const nameSystem = nameSystemForName(name);
-  if (!nameSystem.contractAddress) {
-    throw new Error(`No NameNFT contract configured for ${nameSystem.label}`);
-  }
-  const selector = String(callData || '')
-    .slice(0, 10)
-    .toLowerCase();
-  const node = nodeFromResolverCallData(callData);
-  const registryContract = new ethers.Contract(nameSystem.contractAddress, NAME_NFT_ABI, provider);
-
-  if (selector === CONTENTHASH_SELECTOR) {
-    const contenthash = await registryContract.contenthash(node, overrides);
-    return {
-      resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(['bytes'], [contenthash || '0x']),
-      resolverAddress: nameSystem.contractAddress,
-    };
-  }
-
-  if (selector === ADDR_SELECTOR) {
-    const address = await registryContract.addr(node, overrides);
-    return {
-      resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(
-        ['address'],
-        [address || ethers.ZeroAddress]
-      ),
-      resolverAddress: nameSystem.contractAddress,
-    };
-  }
-
-  throw new Error(`Unsupported ${nameSystem.label} resolver selector: ${selector}`);
 }
 
 // Reverse counterpart: call the UR's reverse(bytes, uint256). The UR
@@ -265,23 +180,6 @@ async function universalResolverReverse(
     overrides
   );
   return { name };
-}
-
-// NameNFT reverseResolve(address) adapter. `name` is a synthetic value with
-// the target system's suffix (`reverse.wei`, `reverse.gwei`), which selects
-// the contract to call.
-async function nameNftReverseResolverCall(provider, name, callData, overrides = {}) {
-  const nameSystem = nameSystemForName(name);
-  if (!nameSystem.contractAddress) {
-    throw new Error(`No NameNFT contract configured for ${nameSystem.label}`);
-  }
-  const [address] = NAME_NFT_INTERFACE.decodeFunctionData('reverseResolve', callData);
-  const registryContract = new ethers.Contract(nameSystem.contractAddress, NAME_NFT_ABI, provider);
-  const claimedName = await registryContract.reverseResolve(address, overrides);
-  return {
-    resolvedData: ethers.AbiCoder.defaultAbiCoder().encode(['string'], [claimedName || '']),
-    resolverAddress: nameSystem.contractAddress,
-  };
 }
 
 function hostOf(url) {
@@ -309,7 +207,15 @@ function getDirectRpcCandidate(chainId) {
   };
 }
 
-const RESOLUTION_METHOD_IDS = new Set(['myotis', 'colibri', 'quorum', 'direct']);
+// Colibri isn't a name-resolution method (#1076). Colibri 3.0.3 runs a
+// Universal Resolver or NameNFT `eth_call` on contract code it takes from
+// one of its public `eth_rpc` servers without checking it against the
+// proven code hash, and a call that reads no storage gets no proof at all.
+// So one of those servers could answer any address, name or revert, and it
+// would pass as verified. An order that names Colibri skips it, and the
+// next method answers with its own label. Colibri can come back once a
+// release binds the code it runs, and the whole call, to proven state.
+const RESOLUTION_METHOD_IDS = new Set(['myotis', 'quorum', 'direct']);
 
 function resolutionPolicy(network) {
   const verification = network?.verification || {};
@@ -327,12 +233,12 @@ function resolutionPolicy(network) {
 
   // Legacy network-config.json files only have `primary`. Preserve their old
   // behavior until the user saves the new policy: Myotis first when enabled,
-  // the selected remote strategy next, and quorum as Colibri/direct fallback.
-  const primary = ['colibri', 'quorum', 'direct'].includes(verification.primary)
-    ? verification.primary
-    : 'colibri';
+  // the selected remote strategy next, and quorum as the direct fallback.
+  // A Colibri primary, the old default, keeps Myotis and the quorum (#1076),
+  // and so does an order that named no method but Colibri.
+  const primary = verification.primary === 'direct' ? 'direct' : 'quorum';
   return {
-    order: [...new Set(['myotis', primary, ...(primary === 'quorum' ? [] : ['quorum'])])],
+    order: [...new Set(['myotis', primary, 'quorum'])],
     preferVerified: false,
   };
 }
@@ -387,8 +293,16 @@ async function resolveEnsReverse(address, chainId = 1) {
 // point where the sender's private-ness is still known. Marking the async
 // subtree redacts every downstream log site, and the driver tells the core
 // with each lookup. The resolution itself is unchanged.
+//
+// The same mark makes the core's requests private while the lookup waits
+// (#1058, core/service-client.js `forPrivate`), which keeps a Colibri read
+// the core makes meanwhile off the disk store (names themselves read nothing
+// through Colibri, #1076). So it fails closed: only a sender main places in
+// a known public window is public. One it can't place (none, destroyed,
+// mid-teardown, or a lookup that throws) counts as private
+// (private/private-sender.js).
 function privateResolveContext(event) {
-  return isPrivateWebContents(event?.sender);
+  return isPrivateSender(event);
 }
 
 function registerEnsIpc() {
@@ -482,14 +396,11 @@ module.exports = {
   resolveEnsReverse,
   invalidateCachedProvider,
   invalidateEnsContent,
-  // The verified adapters' contract calls (myotis-resolver, colibri-resolver,
-  // naming-verified).
+  // The verified adapter's contract calls (myotis-resolver).
   universalResolverCall,
   universalResolverReverse,
   // The naming core's driver names a subject as the core's errors do.
   fastNormalize,
-  nameNftResolverCall,
-  nameNftReverseResolverCall,
   isResolverNotFoundError,
   clearEnsResolutionCaches,
   hostOf,
