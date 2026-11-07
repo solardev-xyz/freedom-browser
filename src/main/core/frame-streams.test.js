@@ -380,7 +380,7 @@ describe('abort codes by connection and direction (design 0009)', () => {
 });
 
 describe("the core's connection at protocol 2", () => {
-  test('its kinds are all four stream frames both ways, with fragments; protocol 1 takes none', () => {
+  test('its kinds are all four stream frames both ways, with fragments; before the hello, none', () => {
     expect(CORE_STREAM_KINDS).toEqual({ fragments: true, streams: 'both' });
     const frames = [encodeData(7, Buffer.from([1])), encodeEnd(7), encodeAbort(7, 'busy', 'm')];
     frames.push(encodeStreamCredit(7, 5));

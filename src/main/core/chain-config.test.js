@@ -234,7 +234,7 @@ describe('ChainConfig', () => {
     client.start = () => {
       number += 1;
       client.current = { number, ended: false };
-      client.hello = { protocol: 1 };
+      client.hello = { protocol: 2 };
       client.emit('ready', client.hello);
     };
     client.end = () => {

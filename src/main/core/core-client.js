@@ -4,22 +4,22 @@
  * configured for the core.
  *
  * - **The handshake** is `core.hello`: the protocol, the shell's version,
- *   the vault's auto-lock and `frames: ["fragment"]` (main takes fragmented
- *   responses, so the handshake grants the core main's bulk credit). A
- *   valid result has the protocol main asked for, and names the core's
- *   version, its capabilities and any node identity write its startup
+ *   the vault's auto-lock and `frames: ["fragment", "stream"]` (`fragment`:
+ *   main takes fragmented responses, so the handshake grants the core main's
+ *   bulk credit; `stream`: see Streams below). A
+ *   valid result has protocol 2, and names the core's version, its
+ *   capabilities (with `streams`) and any node identity write its startup
  *   recovery couldn't finish.
- * - **The protocol** is 1 unless the client is made with `protocol: 2`.
- *   Main and the core ship pinned together (0001), so main asks for the
- *   one its pinned core speaks, and a core that answers another is a
- *   mismatch: main fails, and doesn't restart it. The pinned core (0.10.0)
- *   speaks protocol 2, and the app's client (core-process.js) asks for it.
- *   0.10.0 still takes protocol 1, without streams, until 0009's follow-up
- *   removes it (design 0009, Streams in the core: the transitional note);
- *   only tests and scripts still ask for 1.
- * - **Protocol 2** (design 0009) adds streams in both directions: main's
- *   hello offers `frames: ["fragment", "stream"]`, the core's capabilities
- *   must say `streams`, and from the hello on the connection reads all
+ * - **The protocol** is 2 (design 0009), the only one the client speaks.
+ *   Main and the core ship pinned together (0001), and the pinned core
+ *   (0.11.0) speaks only 2: it answers a hello at any other protocol,
+ *   1 included, with `protocol_mismatch` and exits 76. A core that answers
+ *   another protocol is a mismatch too: main fails, and doesn't restart it.
+ *   Protocol 1 is gone (design 0009, Streams in the core), and a client
+ *   made with `protocol: 1` throws.
+ * - **Streams** go in both directions: main's hello offers
+ *   `frames: ["fragment", "stream"]`, the core's capabilities must say
+ *   `streams`, and from the hello on the connection reads all
  *   four stream frames (`CORE_STREAM_KINDS`) into one `StreamDuplex`. The
  *   bodies the core sends main end only with its verified bodies' abort
  *   codes; those main sends the core (`StreamedReply`, from a handler
@@ -29,8 +29,8 @@
  *   core isn't running are `core_unavailable`.
  *
  * Everything else (generations, restarts, cancels, the pool, the frames:
- * design 0005's, and at protocol 2 design 0007's stream frames as 0009
- * adopts them) is the shared client's.
+ * design 0005's, and design 0007's stream frames as 0009 adopts them) is
+ * the shared client's.
  */
 
 const {
@@ -52,17 +52,18 @@ const {
   POOL_EXEMPT_BYTES,
 } = require('./service-client');
 
-// Protocol 1 (design 0001), and protocol 2, which adds streams in both
-// directions (design 0009) and is the one main speaks to the pinned core.
-const PROTOCOL_VERSION = 1;
-const PROTOCOL_VERSION_STREAMS = 2;
-const PROTOCOL_VERSIONS = new Set([PROTOCOL_VERSION, PROTOCOL_VERSION_STREAMS]);
+// Protocol 2, streams in both directions (design 0009): the only one the
+// core speaks from 0.11.0, which refuses protocol 1 (design 0001's). Both
+// names are the same number; `PROTOCOL_VERSION_STREAMS` is kept for the
+// modules that check a client speaks streams.
+const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION_STREAMS = PROTOCOL_VERSION;
 const CORE_VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 
-/** The public part of a valid hello result at `protocol`, or null. At
- * protocol 2 the core's capabilities must say `streams`. */
-function validHello(result, protocol = PROTOCOL_VERSION) {
-  if (!isObject(result) || result.protocol !== protocol) return null;
+/** The public part of a valid hello result, or null: protocol 2, and the
+ * core's capabilities say `streams`. */
+function validHello(result) {
+  if (!isObject(result) || result.protocol !== PROTOCOL_VERSION) return null;
   if (typeof result.core_version !== 'string' || !CORE_VERSION.test(result.core_version)) {
     return null;
   }
@@ -74,11 +75,11 @@ function validHello(result, protocol = PROTOCOL_VERSION) {
   ) {
     return null;
   }
-  if (protocol === PROTOCOL_VERSION_STREAMS && !capabilities.includes('streams')) return null;
+  if (!capabilities.includes('streams')) return null;
   const nodeRecovery = validNodeRecovery(result.node_recovery);
   if (nodeRecovery === undefined) return null;
   return {
-    protocol,
+    protocol: PROTOCOL_VERSION,
     core_version: result.core_version,
     capabilities,
     node_recovery: nodeRecovery,
@@ -108,49 +109,42 @@ function validNodeRecovery(value) {
   return out;
 }
 
-/** freedom-cored at `protocol`, as the shared client supervises it. */
-function coreService(protocol) {
-  const streams = protocol === PROTOCOL_VERSION_STREAMS;
-  return Object.freeze({
-    label: '[Core]',
-    noun: 'core',
-    unavailableCode: 'core_unavailable',
-    protocol,
-    helloMethod: 'core.hello',
-    helloParams: (client) => ({
-      protocol,
-      shell_version: client.shellVersion,
-      auto_lock_ms: client.autoLockMs,
-      // Main takes fragmented responses: the handshake grants the core
-      // main's bulk credit. At protocol 2 it takes stream frames too.
-      frames: streams ? ['fragment', 'stream'] : ['fragment'],
-    }),
-    validHello: (result) => validHello(result, protocol),
-    shutdownMethod: 'core.shutdown',
-    fragments: (hello) => hello.capabilities.includes('fragments'),
-    // Streams both ways only once a protocol-2 hello is valid, which says
-    // `streams` (validHello).
-    duplex: () => streams,
-  });
-}
-
-const CORE_SERVICES = new Map(
-  [...PROTOCOL_VERSIONS].map((protocol) => [protocol, coreService(protocol)])
-);
+/** freedom-cored, as the shared client supervises it. */
+const CORE_SERVICE = Object.freeze({
+  label: '[Core]',
+  noun: 'core',
+  unavailableCode: 'core_unavailable',
+  protocol: PROTOCOL_VERSION,
+  helloMethod: 'core.hello',
+  helloParams: (client) => ({
+    protocol: PROTOCOL_VERSION,
+    shell_version: client.shellVersion,
+    auto_lock_ms: client.autoLockMs,
+    // Main takes fragmented responses (the handshake grants the core
+    // main's bulk credit) and stream frames, which the core requires.
+    frames: ['fragment', 'stream'],
+  }),
+  validHello,
+  shutdownMethod: 'core.shutdown',
+  fragments: (hello) => hello.capabilities.includes('fragments'),
+  // Streams both ways once the hello is valid, which says `streams`
+  // (validHello).
+  duplex: () => true,
+});
 
 class CoreClient extends ServiceClient {
   /**
    * @param {object} options - ServiceClient's, without `service`, and:
    * @param {number} [options.autoLockMs] - the vault's auto-lock, sent in
    *   the handshake (15 minutes)
-   * @param {number} [options.protocol] - the protocol main asks for: 1
-   *   (the default), or 2 for a core with streams (design 0009), as the
-   *   app's client does
+   * @param {number} [options.protocol] - the protocol main asks for: only
+   *   2 (the default), so a caller still asking for 1 fails here rather
+   *   than at the core's `protocol_mismatch`
    */
   constructor(options) {
     const protocol = options.protocol ?? PROTOCOL_VERSION;
-    if (!PROTOCOL_VERSIONS.has(protocol)) throw new TypeError(`unknown core protocol ${protocol}`);
-    super({ ...options, service: CORE_SERVICES.get(protocol) });
+    if (protocol !== PROTOCOL_VERSION) throw new TypeError(`unknown core protocol ${protocol}`);
+    super({ ...options, service: CORE_SERVICE });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
   }
 

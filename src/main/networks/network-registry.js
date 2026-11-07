@@ -500,6 +500,24 @@ function getEndpoints(chainId, role) {
   return out;
 }
 
+// Shorter strings are no real provider's key, and cutting them out would
+// garble the text. URLs are redacted regardless (wallet/rpc-errors.js).
+const MIN_REDACTED_KEY_LENGTH = 8;
+
+// `text` with every stored API key cut out, enabled or not: the secrets
+// getEndpoints substitutes into keyed URLs (#1040). For error text that
+// may leave main, whatever form the key is quoted in.
+function withoutApiKeys(text) {
+  let out = String(text);
+  for (const entry of Object.values(load().apiKeys || {})) {
+    const key = entry?.apiKey;
+    if (typeof key === 'string' && key.length >= MIN_REDACTED_KEY_LENGTH) {
+      out = out.split(key).join('[key redacted]');
+    }
+  }
+  return out;
+}
+
 // Every endpoint source (builtin + user, including removed ones) flattened
 // for the settings UI. Each entry is tagged builtin/removed so the config
 // view can render disabled builtins and editable user sources.
@@ -732,6 +750,7 @@ module.exports = {
   isChainAvailable,
   getAvailableChains,
   getEndpoints,
+  withoutApiKeys,
   getEndpointSources,
   getEndpointSourceList,
   getKeyedSources,

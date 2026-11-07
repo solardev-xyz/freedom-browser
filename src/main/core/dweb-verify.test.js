@@ -2,7 +2,7 @@
  * Main's side of `dweb.verify` and `dweb.forget` (freedom-core design
  * 0009): the request goes to the process that made the plan, its pieces'
  * context opens under the ID `onSent` reports, and a private partition's
- * close sends `dweb.forget`, only at protocol 2.
+ * close sends `dweb.forget`.
  */
 const { DwebVerifier, attachDwebVerify, detachDwebVerify, dwebVerifier } = require('./dweb-verify');
 const { createFetchAdmission } = require('../dweb/fetch-admission');
@@ -10,14 +10,13 @@ const { CoreError } = require('./core-client');
 
 const quietLog = () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() });
 
-/** A client at `protocol` whose process `serving` serves; its requests
+/** A client whose process `serving` serves; its requests
  * answer `reply(method, params)`, and `requestStreamTo` reports `onSent`
  * as the real client does, once the frame is written. */
-function fakeClient({ protocol = 2, serving = true, reply = async () => ({}) } = {}) {
+function fakeClient({ serving = true, reply = async () => ({}) } = {}) {
   const gen = { number: 3 };
   let nextId = 41;
   return {
-    protocol,
     current: gen,
     serves: jest.fn((g) => serving && g === gen),
     requestTo: jest.fn(async (_gen, method, params) => reply(method, params)),
@@ -133,10 +132,9 @@ describe('forget', () => {
 });
 
 describe('attachDwebVerify', () => {
-  test('only at protocol 2, and only with the dweb shell', () => {
+  test('only with the dweb shell', () => {
     const admission = createFetchAdmission();
     const deps = { log: quietLog(), onSessionClosed: admission.onSessionClosed };
-    expect(attachDwebVerify(fakeClient({ protocol: 1 }), fakeShell(), deps)).toBeNull();
     expect(attachDwebVerify(fakeClient(), null, deps)).toBeNull();
     expect(dwebVerifier()).toBeNull();
     const verifier = attachDwebVerify(fakeClient(), fakeShell(), deps);

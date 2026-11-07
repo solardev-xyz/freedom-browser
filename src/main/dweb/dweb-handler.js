@@ -26,14 +26,14 @@
  * **The error page** (0009, decision 4): with the verifier attached, a
  * navigation-like request (a GET whose first `Accept` token is `text/html`)
  * gets a page in plain words wherever main would answer `{ code, message }`
- * (`error-page.js`). Every other request keeps the JSON body, and against a
- * protocol-1 core every request does.
+ * (`error-page.js`). Every other request keeps the JSON body, and without
+ * the verifier attached every request does.
  *
  * **The content label** (0009, Labels): `onTrust` gets the trust of the
  * content the request answers with, a verified head's or a fetch plan's,
  * and the protocol handlers label the response for the trust panel
- * (`content-trust.js`). Against a protocol-1 core every plan is a fetch, so
- * the label is the plan's: `node_asserted` or `unverified`.
+ * (`content-trust.js`). Without the verifier attached every plan is a
+ * fetch, so the label is the plan's: `node_asserted` or `unverified`.
  *
  * **One lifetime per request.** At entry the request is fenced to its
  * session, before anything is planned: its scope is the page's abort and its
@@ -264,8 +264,8 @@ async function handle(request, { backend, partition = null, tag, onTrust }, rele
   // driver's final judgment and it.
   const use = (reply, gen = null) => {
     const plan = reply?.plan;
-    // A verify plan needs the core's verifier: without it (a protocol-1
-    // core), it is an unknown variant, as before 0009.
+    // A verify plan needs the core's verifier: without it (none attached),
+    // it is an unknown variant, as before 0009.
     const verifier = plan?.verify ? dwebVerifier() : null;
     const refusal = plan?.verify && !verifier ? 'shape' : validatePlan(plan, admitted);
     if (refusal) {

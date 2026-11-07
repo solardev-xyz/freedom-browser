@@ -1268,9 +1268,9 @@ async function requestExternalGateway(
  * from external nodes" is on, the gateway's verification on, off or
  * unsupported (`dweb/strict-mode.js`). Each is absent when off, so the
  * native node, and a gateway whose verification and strict mode are off,
- * keep the two-key reference. A core without the verifier (protocol 1)
- * can't serve a verify plan or know strict mode, so against it the
- * reference keeps that form too.
+ * keep the two-key reference. Without the verifier attached the core
+ * can't serve a verify plan or know strict mode, so the reference keeps
+ * that form too.
  *
  * @param {{partition?: string|null}} [options] - the request's partition
  * @returns {{ref: {ipfs: 'native'|'gateway', up: boolean, verify?: true,
