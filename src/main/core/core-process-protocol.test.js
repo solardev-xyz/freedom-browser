@@ -1,6 +1,6 @@
 /**
  * The app's core client speaks protocol 2 (freedom-core design 0009, step
- * 6), the only one the pinned core (0.12.0) takes, so `shell.dweb_get` is
+ * 6), the only one the pinned core (0.12.1) takes, so `shell.dweb_get` is
  * registered and the `dweb.verify` verifier attaches.
  * Every 0009 feature in main waits for that verifier: the captured
  * backends' `verify`, `unsupported` and `strict`, the error page, and
@@ -27,7 +27,7 @@ const core = require('./core-process');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
-  core_version: '0.12.0',
+  core_version: '0.12.1',
   capabilities: ['streams', 'fragments'],
   node_recovery: null,
 };
