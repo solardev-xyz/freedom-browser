@@ -15,7 +15,9 @@
  *   A failed read is its error's message: `{ error }`.
  * - `handlers`: whole answers (status, headers, body) of the `rad:` and
  *   `radapi:` handlers and of the manager's `getConnections`, including the
- *   node endpoints' contracts when a read fails.
+ *   node endpoints' contracts when a read fails. A `rad:` error's body is
+ *   main's fixed text for its category, never the add-on's message, which
+ *   can name the local storage path (#1050); `radapi:` keeps the message.
  *
  * `fx` is the fixture: its repository ID, commits and issues.
  */

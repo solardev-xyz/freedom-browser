@@ -26,11 +26,27 @@
  * Name resolution itself runs in the naming core (freedom-core design
  * 0004), which logs no names; the driver still tells it, with each lookup,
  * whether the lookup is private.
+ *
+ * The same marker picks Colibri's store (src/main/ens/colibri-resolver.js,
+ * #1058): a read in a private context runs on the chain's private worker,
+ * whose verifier store is in memory only, instead of the one on disk under
+ * <userData>/colibri. Colibri's reads come from the cores' `shell.verified`
+ * requests, which name no window: core/service-client.js `forPrivate` tells
+ * whether one may serve a private window, and core/naming-verified.js
+ * `runVerified` sets the marker from it.
  */
 
 const { AsyncLocalStorage } = require('async_hooks');
 
 const store = new AsyncLocalStorage();
+
+// The private session (#1058): from the first private window opening to the
+// last one closing (private-windows.js). A private context remembers the
+// session it was entered in, or none when no private window was open then,
+// so work that outlives its session can tell (`privateSessionLive`):
+// Colibri's private store must not take a read from a session that ended.
+let session = 0;
+let sessionOpen = false;
 
 /**
  * Run `fn` with the private-logging context set when `isPrivate`, so every
@@ -39,12 +55,57 @@ const store = new AsyncLocalStorage();
  */
 function runWithPrivateLogContext(isPrivate, fn) {
   if (!isPrivate) return fn();
-  return store.run(true, fn);
+  return store.run({ session: sessionOpen ? session : null }, fn);
+}
+
+/**
+ * Run `fn` with the marker set to exactly `isPrivate`, either way: unlike
+ * `runWithPrivateLogContext`, a false one also leaves a private context. A
+ * private one belongs to `session`, the private session its work was
+ * entered in (`privateContextSession` where it was), or to none. For code
+ * that learns the window some other way than its caller's async context:
+ * the core's requests (core/naming-verified.js `runVerified`).
+ */
+function runWithLogContext(isPrivate, fn, session = null) {
+  return store.run(isPrivate === true ? { session: session ?? null } : null, fn);
+}
+
+/**
+ * The private session the current private context was entered in, or null:
+ * for a normal context, and for a private one entered with no private
+ * window open. A request that leaves main carries it (core/service-client.js).
+ */
+function privateContextSession() {
+  return isPrivateLogContext() ? store.getStore().session : null;
 }
 
 /** True when the current async context serves a private window. */
 function isPrivateLogContext() {
-  return store.getStore() === true;
+  const context = store.getStore();
+  return typeof context === 'object' && context !== null;
+}
+
+/**
+ * True when the current async context is private and was entered in the
+ * private session that is still open. False for a normal context, and for
+ * a private one whose session has ended (or that began with none open).
+ */
+function privateSessionLive() {
+  if (!isPrivateLogContext()) return false;
+  const entered = store.getStore().session;
+  return sessionOpen && entered !== null && entered === session;
+}
+
+/** A private window opened: the private session is open (idempotent). */
+function openPrivateSession() {
+  sessionOpen = true;
+}
+
+/** The last private window closed: its session has ended. */
+function endPrivateSession() {
+  if (!sessionOpen) return;
+  sessionOpen = false;
+  session += 1;
 }
 
 /**
@@ -119,7 +180,12 @@ function errorCodeForLog(err) {
 
 module.exports = {
   runWithPrivateLogContext,
+  runWithLogContext,
   isPrivateLogContext,
+  privateContextSession,
+  privateSessionLive,
+  openPrivateSession,
+  endPrivateSession,
   redactForLog,
   redactUrlForLog,
   redactedFailure,

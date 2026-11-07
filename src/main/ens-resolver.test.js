@@ -22,6 +22,13 @@ jest.mock('./core/naming', () => ({
 // real BrowserWindow, so stub the one predicate ens-resolver uses.
 jest.mock('./private/private-windows', () => ({
   isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+  // The strict classifier's three answers: a sender it can't place (none,
+  // destroyed, or without `isPrivate`) is unknown.
+  classifyWebContents: (webContents) => {
+    if (!webContents || webContents.isDestroyed?.()) return 'unknown';
+    if (webContents.isPrivate === true) return 'private';
+    return webContents.isPrivate === false ? 'public' : 'unknown';
+  },
 }));
 
 // The network registry, as the configuration sources read it.
@@ -315,6 +322,28 @@ describe('IPC handlers', () => {
     };
     await handlerFor(IPC.ENS_RESOLVE)(normalEvent, { name: 'public-site.eth' });
     expect(loggedText()).toContain('public-site.eth');
+  });
+
+  // Codex review of #1071, finding 1: only a sender main places in a known
+  // public window is normal, for the core's `private` and Colibri's store.
+  test.each([
+    ['no sender', {}],
+    ['a destroyed sender', { sender: { isPrivate: false, isDestroyed: () => true } }],
+    ['a sender main cannot place', { sender: {} }],
+  ])('%s fails closed to the private context', async (_label, event) => {
+    mockCoreDriver = {
+      ...coreDriver(),
+      resolveContent: jest.fn(async () => ({ private: isPrivateLogContext() })),
+      resolveAddress: jest.fn(async () => ({ private: isPrivateLogContext() })),
+      resolveReverse: jest.fn(async () => ({ private: isPrivateLogContext() })),
+    };
+    expect(await handlerFor(IPC.ENS_RESOLVE)(event, { name: 'a.eth' })).toEqual({ private: true });
+    expect(await handlerFor(IPC.ENS_RESOLVE_ADDRESS)(event, { name: 'a.eth' })).toEqual({
+      private: true,
+    });
+    expect(await handlerFor(IPC.ENS_RESOLVE_REVERSE)(event, { address: ADDRESS })).toEqual({
+      private: true,
+    });
   });
 
   test('a private lookup does not mark a later normal one', async () => {

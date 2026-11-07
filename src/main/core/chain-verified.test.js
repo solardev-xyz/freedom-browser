@@ -687,3 +687,89 @@ describe('every operation', () => {
     expect(await failure(reply)).toBe('network');
   });
 });
+
+// PRIVATE MODE GUARD (Colibri store, #1058): see naming-verified.test.js.
+describe('Colibri and private windows', () => {
+  const {
+    isPrivateLogContext,
+    runWithPrivateLogContext,
+  } = require('../private/private-log-context');
+
+  function setUpSeen() {
+    const seen = [];
+    const routes = [];
+    const client = { hello: null, handle: (method, fn, options) => routes.push({ method, fn, options }) };
+    const config = { generation: () => 4 };
+    const observe = (answer) => jest.fn(async () => {
+      seen.push(isPrivateLogContext());
+      return answer;
+    });
+    registerChainVerified(client, config, {
+      adapters: {
+        myotisStatus: jest.fn(() => ({ optimisticBlockNumber: 1 })),
+        myotisAccount: observe({ verifyMethod: 'proof', balanceWei: '5', nonce: 1 }),
+        colibriRequest: observe('0x10'),
+      },
+    });
+    const route = routes.find((r) => r.method === 'shell.verified');
+    const call = (params, extra) =>
+      Promise.resolve().then(() =>
+        route.fn(
+          { chain_id: 1, generation: 4, ...params },
+          { signal: new AbortController().signal, charge: () => true, ...extra }
+        )
+      );
+    return { seen, call };
+  }
+  const REQUEST = { colibri: 'request', method: 'eth_getBalance', params: [ADDRESS, 'latest'], deadline_ms: 1000 };
+
+  test('a Colibri request runs in the context the request may serve', async () => {
+    const { seen, call } = setUpSeen();
+    expect(await call(REQUEST, { private: true })).toEqual({ result: '0x10' });
+    await call(REQUEST, { private: false });
+    await runWithPrivateLogContext(true, () => call(REQUEST, { private: false }));
+    expect(seen).toEqual([true, false, false]);
+  });
+
+  test('a request whose private-ness is unknown counts as private', async () => {
+    const { seen, call } = setUpSeen();
+    await call(REQUEST, {});
+    expect(seen).toEqual([true]);
+  });
+
+  // Codex review of #1071, finding 2: see naming-verified.test.js.
+  test('a Colibri read carries the private session it was sent in', async () => {
+    const logContext = require('../private/private-log-context');
+    const live = [];
+    const routes = [];
+    registerChainVerified(
+      { hello: null, handle: (method, fn) => routes.push(fn) },
+      { generation: () => 4 },
+      {
+        adapters: {
+          colibriRequest: async () => {
+            live.push(logContext.privateSessionLive());
+            return '0x10';
+          },
+        },
+      }
+    );
+    const read = (extra) => routes[0](
+      { chain_id: 1, generation: 4, ...REQUEST },
+      { signal: new AbortController().signal, charge: () => true, ...extra }
+    );
+    logContext.openPrivateSession();
+    const session = logContext.runWithPrivateLogContext(true, () => logContext.privateContextSession());
+    await read({ private: true, privateSession: session });
+    await read({ private: true });
+    logContext.endPrivateSession();
+    await read({ private: true, privateSession: session });
+    expect(live).toEqual([true, false, false]);
+  });
+
+  test('a Myotis read is left as it was', async () => {
+    const { seen, call } = setUpSeen();
+    await call({ myotis: 'account', address: ADDRESS }, { private: true });
+    expect(seen).toEqual([false]);
+  });
+});
