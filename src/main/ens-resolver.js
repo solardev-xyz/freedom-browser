@@ -290,10 +290,10 @@ async function resolveEnsReverse(address, chainId = 1) {
 // subtree redacts every downstream log site, and the driver tells the core
 // with each lookup. The resolution itself is unchanged.
 //
-// The same mark makes the core's requests private while the lookup waits
-// (#1058, core/service-client.js `forPrivate`), which keeps a Colibri read
-// the core makes meanwhile off the disk store (names themselves read nothing
-// through Colibri, #1076). So it fails closed: only a sender main places in
+// The same mark makes the core's requests for the lookup private (#1058:
+// each names the lookups it serves, core/service-client.js `privacyOf`),
+// which keeps a Colibri read the core makes for it off the disk store (names
+// themselves read nothing through Colibri, #1076). So it fails closed: only a sender main places in
 // a known public window is public. One it can't place (none, destroyed,
 // mid-teardown, or a lookup that throws) counts as private
 // (private/private-sender.js).

@@ -149,16 +149,18 @@ function operation(params, adapters) {
  * Colibri one in the async context of the window it may serve. Colibri
  * keeps a private window's reads in memory instead of <userData>/colibri
  * when that context is private (ens/colibri-resolver.js), and refuses one
- * whose private session has ended. The core's request names no window, so
- * the client tells, as `context.private` and `context.privateSession`
- * (service-client.js `forPrivate`): true while a request main sent for a
- * private window is pending, and the session it was sent in. Without
- * `private`, the operation counts as private; without a session, it is
- * refused. The marker is set either way: the handler may run in a context
- * that says nothing about the request (the one the core process was
- * started from). Shared with chain data's executor, whose Colibri reads are
- * the only ones left: naming runs no Colibri operation (#1076), so here it
- * only ever runs a Myotis one as it is.
+ * whose private session has ended. The core's request names the requests
+ * of main's it serves (`serves`, freedom-core #285), and the client tells
+ * from them, as `context.private` and `context.privateSession`
+ * (service-client.js `privacyOf`): true when one of them was sent for a
+ * private window, or when it names none main knows, and the session they
+ * were sent in. Without `private`, the operation counts as private;
+ * without a session, it is refused. The marker is set either way: the
+ * handler may run in a context that says nothing about the request (the
+ * one the core process was started from). Shared with chain data's
+ * executor, whose Colibri reads are the only ones left: naming runs no
+ * Colibri operation (#1076), so here it only ever runs a Myotis one as it
+ * is.
  */
 function runVerified(verifier, run, context) {
   if (verifier !== 'colibri') return run();

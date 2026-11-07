@@ -258,9 +258,10 @@ describe('Colibri store for private windows (#1058)', () => {
 
 // On this branch every Colibri read is one of chain data's `shell.verified`
 // operations, run by main's executor with its real adapters. The core's
-// request names no window; the client's `private` (service-client.js
-// forPrivate) does, and the executor runs the read in that context. Naming's
-// executor runs no Colibri read at all (#1076).
+// request names the requests of main's it serves; the client's `private`
+// (service-client.js privacyOf) tells from those, and the executor runs the
+// read in that context. Naming's executor runs no Colibri read at all
+// (#1076).
 describe("Colibri store through the cores' shell.verified (#1058)", () => {
   const { registerChainVerified } = require('../core/chain-verified');
   const { registerNamingVerified } = require('../core/naming-verified');
