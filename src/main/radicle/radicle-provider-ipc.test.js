@@ -91,7 +91,18 @@ jest.mock('./radicle-permissions', () => ({
   revokePermission: jest.fn(() => true),
 }));
 
-const { executeRadicleMethod, registerRadicleProviderIpc } = require('./radicle-provider-ipc');
+jest.mock('../private/private-windows', () => ({
+  isPrivateWebContents: jest.fn(() => false),
+}));
+
+const {
+  executeRadicleMethod,
+  registerRadicleProviderIpc,
+  PUBLIC_PROVIDER_ERRORS,
+} = require('./radicle-provider-ipc');
+const embedded = require('../radicle-embedded');
+const log = require('../logger');
+const { isPrivateWebContents } = require('../private/private-windows');
 const manager = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
@@ -521,5 +532,235 @@ describe('signing tier', () => {
     const withoutGrant = await executeRadicleMethod('radicle_getNodeStatus', {}, ORIGIN);
     expect(withoutGrant.nid).toBeUndefined();
     expect(withoutGrant.alias).toBe('me');
+  });
+});
+
+describe('add-on error texts (#1073)', () => {
+  const UNIX_PATH = /(?:^|[\s'"(=:,])\/(?!\/)[^\s'"/]/;
+  const DRIVE_PATH = /\b[A-Za-z]:[\\/]/;
+  const UNC_PATH = /(?:^|[\s'"(=:,])\\\\[^\\?\s]/;
+  const VERBATIM_PATH = /\\\\\?\\/;
+  const ABSOLUTE_PATHS = [UNIX_PATH, DRIVE_PATH, UNC_PATH, VERBATIM_PATH];
+
+  const HOMES = [
+    ['a Unix home', '/home/alice/.config/Freedom/profiles/default/radicle', '/', UNIX_PATH],
+    [
+      'a Windows drive',
+      'C:\\Users\\alice\\AppData\\Roaming\\Freedom\\profiles\\default\\radicle',
+      '\\',
+      DRIVE_PATH,
+    ],
+    [
+      'a UNC share',
+      '\\\\fileserver\\homes\\alice\\Freedom\\profiles\\default\\radicle',
+      '\\',
+      UNC_PATH,
+    ],
+    [
+      'a \\\\?\\ path',
+      '\\\\?\\C:\\Users\\alice\\AppData\\Roaming\\Freedom\\profiles\\default\\radicle',
+      '\\',
+      VERBATIM_PATH,
+    ],
+  ];
+
+  const ROWS = [
+    {
+      label: 'a missing repository/object',
+      category: 'missing',
+      expectedText: 'not found',
+      message: (home, sep) =>
+        `failed to open '${[home, 'storage', RID.slice(4)].join(sep)}': ` +
+        'No such file or directory; class=Os (2); code=NotFound (-3)',
+    },
+    {
+      label: 'a storage failure',
+      category: 'failed',
+      expectedText: 'the operation failed',
+      message: (home, sep) =>
+        `failed to open '${[home, 'storage', RID.slice(4), 'objects', 'pack'].join(sep)}': ` +
+        'Permission denied; class=Os (2)',
+    },
+    {
+      label: 'a git reference corruption',
+      category: 'failed',
+      expectedText: 'the operation failed',
+      message: (home, sep) =>
+        'corrupted loose reference file: ' +
+        `${[home, 'storage', RID.slice(4), 'refs', 'heads', 'main'].join(sep)}; class=Reference (4)`,
+    },
+  ];
+
+  const CASES = HOMES.flatMap(([homeLabel, home, sep, detector]) =>
+    ROWS.map((row) => ({
+      ...row,
+      homeLabel,
+      home,
+      detector,
+      text: row.message(home, sep),
+    }))
+  );
+
+  beforeEach(() => {
+    permissions.hasSigningGrant.mockReturnValue(true);
+    isPrivateWebContents.mockReturnValue(false);
+  });
+
+  test.each(CASES)(
+    'the synthetic add-on text for $label contains $homeLabel',
+    ({ text, home, detector }) => {
+      expect(text).toContain(home);
+      expect(detector.test(text)).toBe(true);
+    }
+  );
+
+  test.each(CASES)(
+    'listSeededRepos: answers $label under $homeLabel with no path',
+    async ({ text, home, expectedText }) => {
+      embedded.listSeededRepos.mockRejectedValueOnce(new Error(text));
+      const err = await expectProviderError(
+        executeRadicleMethod('radicle_listSeededRepos', {}, ORIGIN),
+        -32603
+      );
+      expect(err.message).toBe(expectedText);
+      const raw = JSON.stringify(err);
+      expect(raw).not.toContain(home);
+      expect(raw).not.toContain(JSON.stringify(home).slice(1, -1));
+      for (const absolute of ABSOLUTE_PATHS) {
+        expect(absolute.test(raw)).toBe(false);
+      }
+    }
+  );
+
+  test.each(CASES)(
+    'wrapCobError (createIssue): answers $label under $homeLabel with no path',
+    async ({ text, home, expectedText }) => {
+      cob.createIssue.mockRejectedValueOnce(new Error(text));
+      const err = await expectProviderError(
+        executeRadicleMethod(
+          'radicle_createIssue',
+          { rid: RID, title: 'Bug', description: 'desc' },
+          ORIGIN
+        ),
+        -32603
+      );
+      expect(err.message).toBe(expectedText);
+      const raw = JSON.stringify(err);
+      expect(raw).not.toContain(home);
+      expect(raw).not.toContain(JSON.stringify(home).slice(1, -1));
+      for (const absolute of ABSOLUTE_PATHS) {
+        expect(absolute.test(raw)).toBe(false);
+      }
+    }
+  );
+
+  test.each([
+    [
+      "libradicle's size bound",
+      '41943040 bytes is over the limit of 33554432',
+      'repository data too large to serve here',
+    ],
+    [
+      "libradicle's depth bound",
+      'the tree is nested deeper than 64 levels',
+      'repository data too large to serve here',
+    ],
+    ['a cancelled read/operation', 'cancelled', 'request cancelled'],
+    ["an older add-on's cancel", 'clone cancelled', 'request cancelled'],
+  ])('listSeededRepos and COB write map %s to %s', async (_label, text, expected) => {
+    embedded.listSeededRepos.mockRejectedValueOnce(new Error(text));
+    const listErr = await expectProviderError(
+      executeRadicleMethod('radicle_listSeededRepos', {}, ORIGIN),
+      -32603
+    );
+    expect(listErr.message).toBe(expected);
+
+    cob.createIssue.mockRejectedValueOnce(new Error(text));
+    const cobErr = await expectProviderError(
+      executeRadicleMethod(
+        'radicle_createIssue',
+        { rid: RID, title: 'T', description: 'D' },
+        ORIGIN
+      ),
+      -32603
+    );
+    expect(cobErr.message).toBe(expected);
+  });
+
+  test('dispatcher catch-all strips paths and categorizes unexpected errors', async () => {
+    registerRadicleProviderIpc();
+    const executeHandler = mockIpcHandle.mock.calls.find(
+      ([channel]) => channel === 'radicle:provider-execute'
+    )[1];
+
+    const HOME = '/home/alice/.config/Freedom/profiles/default/radicle';
+    const detail = `failed to access '${HOME}/storage': I/O error`;
+
+    jest.spyOn(permissions, 'getPermission').mockImplementationOnce(() => {
+      throw new Error(detail);
+    });
+
+    const response = await executeHandler(
+      { sender: {} },
+      {
+        method: 'radicle_listSeededRepos',
+        params: {},
+        origin: ORIGIN,
+      }
+    );
+
+    expect(response.error).toBeDefined();
+    expect(response.error.code).toBe(-32603);
+    expect(response.error.message).toBe('the operation failed');
+    const raw = JSON.stringify(response.error);
+    expect(raw).not.toContain(HOME);
+    for (const absolute of ABSOLUTE_PATHS) {
+      expect(absolute.test(raw)).toBe(false);
+    }
+  });
+
+  test('private mode context redacts log lines for failed operations', async () => {
+    registerRadicleProviderIpc();
+    const executeHandler = mockIpcHandle.mock.calls.find(
+      ([channel]) => channel === 'radicle:provider-execute'
+    )[1];
+
+    const HOME = '/home/alice/.config/Freedom/profiles/default/radicle';
+    const detail = `failed to open '${HOME}/storage': Permission denied`;
+
+    // 1. Normal window
+    isPrivateWebContents.mockReturnValue(false);
+    embedded.listSeededRepos.mockRejectedValueOnce(new Error(detail));
+    await executeHandler(
+      { sender: {} },
+      {
+        method: 'radicle_listSeededRepos',
+        params: {},
+        origin: ORIGIN,
+      }
+    );
+    expect(log.warn).toHaveBeenCalledWith(
+      '[radicle-provider] repository listing failed:',
+      detail
+    );
+
+    log.warn.mockClear();
+
+    // 2. Private window
+    isPrivateWebContents.mockReturnValue(true);
+    embedded.listSeededRepos.mockRejectedValueOnce(new Error(detail));
+    await executeHandler(
+      { sender: {} },
+      {
+        method: 'radicle_listSeededRepos',
+        params: {},
+        origin: ORIGIN,
+      }
+    );
+    expect(log.warn).toHaveBeenCalledWith(
+      '[radicle-provider] repository listing failed:',
+      '<private>'
+    );
+    expect(JSON.stringify(log.warn.mock.calls)).not.toContain(HOME);
   });
 });
