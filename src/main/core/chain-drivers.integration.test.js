@@ -49,6 +49,7 @@ const testIfExclusions = servesChainExclusions(binary) ? test : test.skip;
 const RAW =
   '0xf85f8001825208941111111111111111111111111111111111111111018026a045df4733a45ed06c5628f22221a73e0b2faa3959f649cc47e6c2a15c9792ae07a00ea422e4923de6e5b4c52d7fbd39046e96acf73b2037a5f11918ec6c2a64b40a';
 const HASH = '0xdff97f6d2d938656e056527357e2ee12f38c03923ab1d11bc556fb5cc123e578';
+const ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
 const TO = '0x1111111111111111111111111111111111111111';
 
 describeIfChain("chain data's drivers with the real freedom-cored", () => {
@@ -66,22 +67,26 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
 
   /**
    * A ready core configured with chain 1, read and broadcast through Direct
-   * at `world.url` (switched by a test); its RPC answers by endpoint (a
-   * says 0xa, b 0xb) unless `world.answer` does. `wire` records every
-   * request main writes to the core, with the controls in flight as it
-   * went.
+   * at `world.url` (switched by a test), or read in `readOrder` from `urls`;
+   * its RPC answers by endpoint (a says 0xa, b 0xb) unless `world.answer`
+   * does. `wire` records every request main writes to the core, with the
+   * controls in flight as it went.
    */
-  async function start({ quorum = { k: 1, m: 1, timeoutMs: 5000 } } = {}) {
+  async function start({
+    quorum = { k: 1, m: 1, timeoutMs: 5000 },
+    readOrder = ['direct'],
+    urls = null,
+  } = {}) {
     const world = { url: 'https://a.example', answer: null, now: () => performance.now() };
     const registry = {
       getAllNetworks: () => ({
         1: {
           name: 'Ethereum',
-          access: { readOrder: ['direct'], broadcastOrder: ['direct'] },
+          access: { readOrder, broadcastOrder: ['direct'] },
           quorum,
         },
       }),
-      getEndpoints: (_chainId, role) => (role === 'rpc' ? [world.url] : []),
+      getEndpoints: (_chainId, role) => (role === 'rpc' ? (urls ?? [world.url]) : []),
       getEndpointSources: () => [],
       getEndpointSourceList: () => [],
     };
@@ -151,6 +156,49 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
     chain.chainDriver.mockReturnValue(driver);
     return { world, config, driver, broadcasts, exchanges, wire, gen };
   }
+
+  // #1094: the core merges only equal references, so main gives it one per
+  // provider. One provider under two URLs is then one quorum member, and
+  // its word isn't verified; two providers that agree still are. A Safe's
+  // deployed mark reads eth_getCode through this label (#1066).
+  test.each([
+    ['a trailing slash', ['https://a.example', 'https://a.example/']],
+    ['two keys at one keyed provider', ['https://lb.drpc.live/ethereum/one', 'https://lb.drpc.live/ethereum/two']],
+    ['127.0.0.1 and localhost', ['http://127.0.0.1:8545', 'http://localhost:8545']],
+    // Every loopback endpoint is one provider (#1097 round 1): a local node
+    // can listen on, or forward itself to, another port or address.
+    ['two loopback ports', ['http://127.0.0.1:8545', 'http://127.0.0.1:18549']],
+    ['127.0.0.1 and 127.0.0.2 on one port', ['http://127.0.0.1:8545', 'http://127.0.0.2:8545']],
+  ])('one provider under two URLs (%s) gives no verified quorum', async (_name, urls) => {
+    const x = await start({
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      readOrder: ['quorum', 'direct'],
+      urls,
+    });
+    x.world.answer = () => ({ result: '0x60806040' });
+    expect(await chainData.request(1, 'eth_getCode', [ADDRESS, 'latest'])).toEqual({
+      result: '0x60806040',
+      source: 'direct',
+      verified: false,
+    });
+    expect(x.exchanges.map(({ url }) => url)).toEqual([urls[0]]);
+  });
+
+  test('two providers that agree are still a verified quorum', async () => {
+    const urls = ['https://a.example', 'http://127.0.0.1:8545'];
+    const x = await start({
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+      readOrder: ['quorum', 'direct'],
+      urls,
+    });
+    x.world.answer = () => ({ result: '0x60806040' });
+    expect(await chainData.request(1, 'eth_getCode', [ADDRESS, 'latest'])).toEqual({
+      result: '0x60806040',
+      source: 'quorum',
+      verified: true,
+    });
+    expect(x.exchanges.map(({ url }) => url).sort()).toEqual([...urls].sort());
+  });
 
   /** A settings change: chain 1's endpoint becomes b, sent to the core. */
   const toB = ({ world, config }) => {

@@ -5,11 +5,23 @@ const {
   buildChainSnapshot,
   wireQuorum,
   isUserConfiguredRpc,
+  rpcPairs,
   MAX_RPC_ENDPOINTS,
   CONTROL_WATCHDOG_MS,
 } = require('./chain-config');
 
 const LOG_INDEX_URLS = { 100: 'https://gnosis.blockscout.com/api' };
+// The Safe E2E's provider-identity seam with its real gate, under the
+// launch facts a test sets (packaged and no variable unless it says).
+let mockE2eLaunch = { isPackaged: true, env: {} };
+jest.mock('../networks/e2e-provider-identities', () => {
+  const actual = jest.requireActual('../networks/e2e-provider-identities');
+  return {
+    ...actual,
+    activeProviderIdentityOverrides: () =>
+      actual.providerIdentityOverrides({ ...mockE2eLaunch, fromAsar: false }),
+  };
+});
 // Built at run time, so the text is the character itself.
 const LONE = String.fromCharCode(0xd800);
 const REPLACEMENT = String.fromCharCode(0xfffd);
@@ -186,6 +198,125 @@ describe('the snapshot', () => {
     expect(chain.prover).toBeNull();
     expect(chain.display_name).toBe('5');
     expect(chain).not.toHaveProperty('quorum');
+  });
+
+  describe('each provider once (#1094)', () => {
+    // One Gnosis chain whose RPC list is `urls`, with `mine` a user source.
+    const gnosis = (urls) =>
+      registry({
+        getAllNetworks: () => ({ 100: { name: 'Gnosis Chain', access: {} } }),
+        getEndpoints: (_chainId, role) => (role === 'rpc' ? urls : []),
+        getEndpointSources: () => [
+          { id: 'mine', keyed: false, coverage: { 100: 'https://mine.example/rpc' } },
+        ],
+      });
+    const snapshotRpc = (urls, options) => {
+      const refs = new ChainReferences();
+      const [chain] = buildChainSnapshot(refs, sources({ registry: gnosis(urls) }), options).chains;
+      return { rpc: chain.rpc, ref: (url) => refs.endpointRef(100, url) };
+    };
+
+    test('two URLs that reach one provider are one reference, the first URL', () => {
+      const { rpc, ref } = snapshotRpc([
+        'https://mine.example/rpc',
+        'https://a.example',
+        'https://a.example/',
+        'https://mine.example/other-key',
+        'http://127.0.0.1:8545',
+        'http://localhost:8545/',
+        'http://[::1]:8545',
+        'https://lb.drpc.live/gnosis/key',
+        'https://gnosis.drpc.org',
+        'https://gnosis-mainnet.g.alchemy.com/v2/one',
+        'https://gnosis-mainnet.g.alchemy.com/v2/two',
+        'http://127.0.0.1:8546',
+        'https://b.example',
+      ]);
+      expect(rpc).toEqual([
+        // The user's provider keeps the user's URL and its trust.
+        { endpoint: ref('https://mine.example/rpc'), user_configured: true },
+        { endpoint: ref('https://a.example'), user_configured: false },
+        { endpoint: ref('http://127.0.0.1:8545'), user_configured: false },
+        { endpoint: ref('https://lb.drpc.live/gnosis/key'), user_configured: false },
+        { endpoint: ref('https://gnosis-mainnet.g.alchemy.com/v2/one'), user_configured: false },
+        // Another loopback port is the same provider (#1097 round 1).
+        { endpoint: ref('https://b.example'), user_configured: false },
+      ]);
+    });
+
+    test('every loopback endpoint is one reference, whatever its port or address', () => {
+      const { rpc, ref } = snapshotRpc([
+        'http://127.0.0.1:8545',
+        'http://127.0.0.1:18549',
+        'http://127.0.0.2:8545',
+        'http://[::1]:8546',
+        'https://b.example',
+      ]);
+      expect(rpc).toEqual([
+        { endpoint: ref('http://127.0.0.1:8545'), user_configured: false },
+        { endpoint: ref('https://b.example'), user_configured: false },
+      ]);
+    });
+
+    // The Safe E2E lists its anvil fork and a forwarder in front of it, two
+    // loopback URLs, and names them as two providers through a test-only
+    // seam (networks/e2e-provider-identities.js), so a Safe can activate on
+    // the core's verified quorum. chain-config honors it only for an
+    // unpackaged launch with the variable set.
+    describe('the Safe E2E seam (test-only)', () => {
+      const E2E = ['http://127.0.0.1:18847', 'http://127.0.0.1:18849'];
+      const env = {
+        FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify({
+          [E2E[0]]: 'e2e-anvil',
+          [E2E[1]]: 'e2e-anvil-forwarder',
+        }),
+      };
+      afterEach(() => {
+        mockE2eLaunch = { isPackaged: true, env: {} };
+      });
+
+      test('an unpackaged launch with the variable: two references', () => {
+        mockE2eLaunch = { isPackaged: false, env };
+        const { rpc, ref } = snapshotRpc(E2E);
+        expect(rpc).toEqual(E2E.map((url) => ({ endpoint: ref(url), user_configured: false })));
+      });
+
+      test.each([
+        ['a packaged build, with the variable', { isPackaged: true, env }],
+        ['an unpackaged launch without the variable', { isPackaged: false, env: {} }],
+      ])('%s: one reference', (_name, launch) => {
+        mockE2eLaunch = launch;
+        const { rpc, ref } = snapshotRpc(E2E);
+        expect(rpc).toEqual([{ endpoint: ref(E2E[0]), user_configured: false }]);
+      });
+    });
+
+    test('every URL collapsing to one provider leaves one endpoint', () => {
+      const { rpc, ref } = snapshotRpc(['http://127.0.0.1:8545', 'http://localhost:8545']);
+      expect(rpc).toEqual([{ endpoint: ref('http://127.0.0.1:8545'), user_configured: false }]);
+    });
+
+    test('the 64 are distinct providers, counted after the repeats', () => {
+      const urls = Array.from({ length: MAX_RPC_ENDPOINTS + 3 }, (_, i) => [
+        `https://n${i}.example`,
+        `https://n${i}.example/again`,
+      ]).flat();
+      const { rpc, ref } = snapshotRpc(urls);
+      expect(rpc).toHaveLength(MAX_RPC_ENDPOINTS);
+      expect(rpc.map((entry) => entry.endpoint)).toEqual(
+        Array.from({ length: MAX_RPC_ENDPOINTS }, (_, i) => ref(`https://n${i}.example`))
+      );
+    });
+
+    test("only a provider's first URL is checked for its chain, and stands for it", () => {
+      const urls = ['https://a.example', 'https://a.example/', 'https://b.example'];
+      expect(rpcPairs(gnosis(urls))).toEqual([
+        { chainId: 100, url: 'https://a.example' },
+        { chainId: 100, url: 'https://b.example' },
+      ]);
+      const { rpc, ref } = snapshotRpc(urls, { allows: (_chainId, url) => url !== 'https://a.example' });
+      expect(rpc).toEqual([{ endpoint: ref('https://b.example'), user_configured: false }]);
+    });
   });
 
   test("the quorum's raw values for k, m and timeoutMs, own ones only", () => {
