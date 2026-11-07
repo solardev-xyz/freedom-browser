@@ -299,3 +299,39 @@ describe('makeGatewayOfferHandler', () => {
     expect(seen).toBe(false);
   });
 });
+
+// Codex review of #1070, finding 1: the registered handler classifies its
+// sender strictly, so only a known public window's lookup is normal, and
+// with it Colibri's disk store.
+describe('registerGatewayOfferIpc', () => {
+  test('a sender main cannot place as public resolves in the private context', async () => {
+    let handler;
+    let logContext;
+    const seen = [];
+    jest.isolateModules(() => {
+      jest.doMock('electron', () => ({ ipcMain: { handle: (_channel, fn) => { handler = fn; } } }));
+      jest.doMock('./ens-resolver', () => ({
+        resolveEnsContent: async () => {
+          seen.push(logContext.isPrivateLogContext());
+          return null;
+        },
+      }));
+      jest.doMock('./private/private-windows', () => ({
+        classifyWebContents: (contents) => contents?.kind ?? 'unknown',
+      }));
+      logContext = require('./private/private-log-context');
+      require('./gateway-offer').registerGatewayOfferIpc();
+    });
+    const url = { url: 'https://vitalik.eth.limo/' };
+    for (const event of [
+      { sender: { kind: 'public' } },
+      { sender: { kind: 'private' } },
+      { sender: { kind: 'unknown' } },
+      { sender: null },
+      {},
+    ]) {
+      await handler(event, url);
+    }
+    expect(seen).toEqual([false, true, true, true, true]);
+  });
+});

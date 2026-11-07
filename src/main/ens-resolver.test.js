@@ -12,6 +12,13 @@ jest.mock('./logger', () => mockLog);
 // real BrowserWindow, so stub the one predicate ens-resolver uses.
 jest.mock('./private/private-windows', () => ({
   isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+  // The strict classifier's three answers: a sender it can't place (none,
+  // destroyed, or without `isPrivate`) is unknown.
+  classifyWebContents: (webContents) => {
+    if (!webContents || webContents.isDestroyed?.()) return 'unknown';
+    if (webContents.isPrivate === true) return 'private';
+    return webContents.isPrivate === false ? 'public' : 'unknown';
+  },
 }));
 
 // Mock ens-prefetch so tests can assert when it fires and when it aborts,
@@ -3577,6 +3584,30 @@ describe('ens-resolver private-window logging', () => {
     expect(fromPrivate).not.toContain(false);
     expect(seen.length).toBeGreaterThan(0);
     expect(seen).not.toContain(true);
+  });
+
+  // Codex review of #1070, finding 1: only a sender main places in a known
+  // public window may use Colibri's disk store.
+  test.each([
+    ['no sender', {}],
+    ['a destroyed sender', { sender: { isPrivate: false, isDestroyed: () => true } }],
+    ['a sender main cannot place', { sender: {} }],
+  ])('%s fails closed to the private context', async (_label, event) => {
+    const { isPrivateLogContext } = jest.requireActual('./private/private-log-context');
+    mockLoadSettings.mockReturnValue({
+      ...mockLoadSettings(),
+      ensResolutionMethod: 'colibri',
+      ensResolutionOrder: ['colibri'],
+    });
+    const seen = [];
+    mockResolveViaColibri.mockImplementation(async () => {
+      seen.push(isPrivateLogContext());
+      throw new Error('prover unavailable');
+    });
+    await handlerFor(IPC.ENS_RESOLVE)(event, { name: SECRET });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain(false);
+    expect(loggedText()).not.toContain(SECRET);
   });
 
   test('a normal ENS_RESOLVE keeps the full diagnostic line', async () => {
