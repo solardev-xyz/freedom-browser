@@ -1969,12 +1969,33 @@ describe('swarm-provider-ipc', () => {
       mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
       mockPreFlightOk();
       mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
-      mockWriteFeedPayload.mockRejectedValue(new Error('chunk too large'));
+      // feed-service's own refusal of the page's payload, marked by reason.
+      mockWriteFeedPayload.mockRejectedValue(
+        Object.assign(new Error('A feed entry needs at least 1 byte of data'), { reason: 'payload_too_large' })
+      );
 
-      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'x'.repeat(10000) }, 'myapp.eth');
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: '' }, 'myapp.eth');
 
       expect(result.error.code).toBe(-32602);
-      expect(result.error.data.reason).toBe('payload_too_large');
+      expect(result.error.message).toBe('Payload exceeds maximum SOC size');
+      expect(result.error.data).toEqual({ reason: 'payload_too_large' });
+    });
+
+    test.each([
+      // bee-js's text for a node's malformed (4,202-byte) chunk.
+      ['payload size 4097 exceeds maximum chunk payload size 4096'],
+      ['chunk too large'],
+    ])('a node error that reads "%s" stays a retryable -32603 (#1054)', async (message) => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      mockWriteFeedPayload.mockRejectedValue(new Error(message));
+
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 0 }, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32603);
+      expect(result.error.message).toBe(message);
     });
 
     test('accepts binary data', async () => {

@@ -565,10 +565,13 @@ Writes an arbitrary payload as a feed entry. Without `index`, it is written at
 the next free index; with an explicit `index`, an existing entry is never
 overwritten (`index_already_exists`). Only the node's 404 for that entry
 means the index is free: any other answer (a 500, a timeout, a chunk that is
-not the entry) refuses the write with `-32603`, and it can be retried. The feed must exist (`feed_not_found`:
+not the entry, whatever its error text) refuses the write with `-32603`, and
+it can be retried. The feed must exist (`feed_not_found`:
 call `swarm_createFeed` first). Payloads larger than one chunk are uploaded and
-wrapped by the node; one too large for that is `payload_too_large`. Writes to
-one feed are serialized, so concurrent writes get distinct indexes.
+wrapped by the node; if the node refuses the upload, that is the node's error
+(`-32603`). An empty `data` is `payload_too_large`: an entry carries at least
+one byte. Writes to one feed are serialized, so concurrent writes get distinct
+indexes.
 
 #### `swarm_readFeedEntry { name | topic, owner?, index? }` → `{ data, encoding: 'base64', index, nextIndex }` (public)
 

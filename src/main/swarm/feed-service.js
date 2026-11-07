@@ -529,6 +529,19 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
 }
 
 /**
+ * The page's payload can't be written. An SOC carries 1 to 4096 bytes and a
+ * larger payload goes up through /bytes, so the one payload refused here is
+ * an empty one, at the point where bee-js would refuse it as it builds the
+ * chunk. `reason` marks it as the page's, so the provider tells it apart from
+ * a node's failure whatever either one's message says (#1054).
+ */
+function unwritablePayloadError() {
+  const err = new Error('A feed entry needs at least 1 byte of data');
+  err.reason = 'payload_too_large';
+  return err;
+}
+
+/**
  * Write arbitrary payload data to a feed index as a Single Owner Chunk.
  * Wrapped in the per-topic write lock.
  *
@@ -576,6 +589,7 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
       writeIndex = await resolveNextIndex(writer, bee, privateKey.publicKey().address(), topic);
     }
 
+    if (dataSize === 0) throw unwritablePayloadError();
     await writer.uploadPayload(resolvedBatchId, data, { index: writeIndex });
     return { index: writeIndex };
   });

@@ -625,6 +625,19 @@ describe('feed-service', () => {
       expect(writer.uploadPayload).not.toHaveBeenCalled();
     });
 
+    test('an empty payload is refused as the page\'s, by reason, before any upload', async () => {
+      const writer = createMockWriter();
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+
+      for (const data of ['', Buffer.alloc(0)]) {
+        await expect(writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/blog', data)).rejects.toMatchObject({
+          reason: 'payload_too_large',
+        });
+      }
+      expect(writer.uploadPayload).not.toHaveBeenCalled();
+    });
+
     describe('only a 404 frees an explicit index (#1054)', () => {
       test('a 404 for the update chunk writes at the index', async () => {
         const writer = createMockWriter();
