@@ -245,9 +245,9 @@ const COLIBRI_NOT_A_STRING = 'at a block that isn\'t a string';
 //   would test the missing params[1]). Any other block, params too short to
 //   append it in its place, and an account read with params after its
 //   block, go elsewhere.
-// - eth_getBlockByNumber at `latest`, a number, a hash or no block at all,
-//   which verify_block.c compares with the proven block or holds to the
-//   freshness gate;
+// - eth_getBlockByNumber at `latest`, a number, a hash or no block at all
+//   (null params included), which verify_block.c compares with the proven
+//   block or holds to the freshness gate;
 // - eth_getBlockByHash at a 32-byte hash.
 // A block that isn't a string (an EIP-1898 object, null, a number) is never
 // Colibri's: in privacy mode its call path reads any non-string as `latest`
@@ -261,7 +261,11 @@ function colibriRequestParams(method, params) {
   const index = COLIBRI_BLOCK_PARAM.get(method);
   if (index === undefined) return { params };
   if (!COLIBRI_LATEST_ONLY.has(method)) {
-    if (!Array.isArray(params) || index >= params.length) return { params };
+    // Colibri reads params that aren't an array as `[params]`, null as `[]`.
+    if (!Array.isArray(params)) {
+      return params == null ? { params } : { refusal: 'with params that aren\'t an array' };
+    }
+    if (index >= params.length) return { params };
     const block = params[index];
     if (typeof block !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
     return COLIBRI_UNBOUND_TAGS.has(block) ? { refusal: `at block "${block}"` } : { params };

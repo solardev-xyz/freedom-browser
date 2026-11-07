@@ -2668,16 +2668,16 @@ describe('Ant bridge cancellation', () => {
 
     // Colibri reads eth_getBlockByNumber without a block as `latest`, and
     // gates it: asked as sent.
-    test('eth_getBlockByNumber without its block parameter is asked of Colibri as sent, verified', async () => {
+    test.each([[[]], [null]])('eth_getBlockByNumber without its block parameter (%j) is asked of Colibri as sent, verified', async (params) => {
       readOrder(['colibri', 'direct']);
       rpcAnswers();
       mockRequestViaColibri.mockResolvedValue('colibri:proven');
 
-      await expect(request(1, 'eth_getBlockByNumber', [])).resolves.toMatchObject({
+      await expect(request(1, 'eth_getBlockByNumber', params)).resolves.toMatchObject({
         source: 'colibri',
         verified: true,
       });
-      colibriAsked('eth_getBlockByNumber', []);
+      colibriAsked('eth_getBlockByNumber', params);
     });
 
     // State overrides after a call's block: Colibri reads the block at
@@ -2706,6 +2706,8 @@ describe('Ant bridge cancellation', () => {
       ['eth_getStorageAt', ['0xabc', '0x0', 'latest', '0x1'], 'with params of length 4'],
       ['eth_getBalance', { address: '0xabc' }, "with params that aren't an array"],
       ['eth_call', CALL, "with params that aren't an array"],
+      // Colibri would read it as `['safe']`.
+      ['eth_getBlockByNumber', 'safe', "with params that aren't an array"],
     ])('%s with params %j skips Colibri', async (method, params, refusal) => {
       readOrder(['colibri', 'direct']);
       rpcAnswers();
