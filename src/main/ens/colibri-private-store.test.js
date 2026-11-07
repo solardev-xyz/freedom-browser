@@ -235,6 +235,33 @@ describe('Colibri store for private windows (#1058)', () => {
     await expect(balance(OTHER)).resolves.toBe(HIT);
     expect(filesUnder(mockUserData)).toEqual([path.join('colibri', callKey(OTHER))]);
   });
+
+  // Codex review of #1070, finding 2: ENS asks Myotis before Colibri, so a
+  // private lookup can still be waiting when its last window closes.
+  test('a private read still waiting when the last private window closes starts no worker', async () => {
+    const win = privateWindows.createPrivateWindow();
+    await inPrivate(() => balance(OTHER));
+    let releaseMyotis;
+    const myotis = new Promise((resolve) => { releaseMyotis = resolve; });
+    const pending = inPrivate(async () => {
+      await myotis;
+      return balance(CONTRACT);
+    });
+    pending.catch(() => {});
+
+    win.emit('closed');
+    expect(mockLanes[0].worker.stopped).toBe(true);
+    // The next private window opens before the old lookup resumes.
+    privateWindows.createPrivateWindow();
+    releaseMyotis();
+
+    await expect(pending).rejects.toMatchObject({ message: 'Colibri private session ended' });
+    expect(mockLanes).toHaveLength(1);
+    expect(filesUnder(mockUserData)).toEqual([]);
+    // The new window's first read gets a fresh store, without the old read.
+    await expect(inPrivate(() => balance(CONTRACT))).resolves.toBe(MISS);
+    expect(mockLanes.map((lane) => lane.storageDir)).toEqual([null, null]);
+  });
 });
 
 

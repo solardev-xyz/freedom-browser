@@ -22,6 +22,13 @@ jest.mock('./core/naming', () => ({
 // real BrowserWindow, so stub the one predicate ens-resolver uses.
 jest.mock('./private/private-windows', () => ({
   isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+  // The strict classifier's three answers: a sender it can't place (none,
+  // destroyed, or without `isPrivate`) is unknown.
+  classifyWebContents: (webContents) => {
+    if (!webContents || webContents.isDestroyed?.()) return 'unknown';
+    if (webContents.isPrivate === true) return 'private';
+    return webContents.isPrivate === false ? 'public' : 'unknown';
+  },
 }));
 
 // The network registry, as the configuration sources read it.
