@@ -7,7 +7,7 @@
  *
  * - **Protocol 2.** `registerDwebShell` registers the handler, with
  *   `streams: true`, on the core client, which speaks only protocol 2 (the
- *   pinned core, 0.11.0, refuses 1), so it serves once a hello has settled
+ *   pinned core, 0.12.0, refuses 1), so it serves once a hello has settled
  *   it (any other answer is a mismatch). A request that comes without the
  *   duplex is `unknown_method`.
  * - **`for`** is the envelope ID of main's `dweb.verify`, in the generation
