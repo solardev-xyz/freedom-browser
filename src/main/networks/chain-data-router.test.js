@@ -141,14 +141,19 @@ describe('chain-data-router', () => {
     });
   });
 
+  // Colibri ties an account read to no block but `latest` (#1060), so a
+  // read at another block comes from an RPC, and is labelled as one.
   test.each([
     ['eth_getCode', ['0xabc', 'finalized']],
     ['eth_getStorageAt', ['0xabc', '0x0', '0x10']],
   ])('sends %s at a non-latest block to a source that honours the tag', async (method, params) => {
     mockRequestViaColibri.mockResolvedValue('0x');
-    await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri' });
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x' }) }));
+    await expect(request(1, method, params)).resolves.toEqual({ result: '0x', source: 'direct', verified: false });
     expect(mockMyotis.getCode).not.toHaveBeenCalled();
     expect(mockMyotis.getStorageAt).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({ method, params });
   });
 
   test.each(['eth_call', 'eth_estimateGas'])('preserves verified %s revert data without another source', async (method) => {
@@ -219,35 +224,43 @@ describe('chain-data-router', () => {
     });
   });
 
+  // Nor does Colibri tie a read at a block number to that block (#1060).
   test('sends historical balance reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, balanceWei: '42' });
     mockRequestViaColibri.mockResolvedValue('0x1');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x2' }) }));
 
-    await expect(request(100, 'eth_getBalance', ['0xabc', '0x1234'])).resolves.toMatchObject({
-      result: '0x1',
-      source: 'colibri',
+    await expect(request(100, 'eth_getBalance', ['0xabc', '0x1234'])).resolves.toEqual({
+      result: '0x2',
+      source: 'direct',
+      verified: false,
     });
     expect(mockMyotis.getAccount).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends non-latest gas estimates to a source that honours the block tag', async () => {
     mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     mockRequestViaColibri.mockResolvedValue('0x5208');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x5209' }) }));
 
     await expect(
       request(100, 'eth_estimateGas', [{ to: '0xabc' }, '0x10d4f00'])
-    ).resolves.toMatchObject({ source: 'colibri' });
+    ).resolves.toEqual({ result: '0x5209', source: 'direct', verified: false });
     expect(mockMyotis.estimateGas).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends historical eth_call to a source that honours the block tag', async () => {
     mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0xhead' });
-    mockRequestViaColibri.mockResolvedValue('0xhistoric');
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0xhistoric' }) }));
 
     await expect(
       request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231' }, '0x10d4f00'])
-    ).resolves.toEqual({ result: '0xhistoric', source: 'colibri', verified: true });
+    ).resolves.toEqual({ result: '0xhistoric', source: 'direct', verified: false });
     expect(mockMyotis.ethCallTx).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends eth_call state overrides to a source that can apply them', async () => {
@@ -2478,32 +2491,46 @@ describe('Ant bridge cancellation', () => {
   // `pending` or `earliest` block from one of its default public RPC hosts,
   // unproven, as a success (#1046). It is never asked them, and the answer
   // is labelled as the source that gave it.
-  describe("Colibri's unproven answers (#1046)", () => {
+  describe("Colibri's unproven and unbound answers (#1046, #1060)", () => {
     const CALL = { to: '0xabc', data: '0x70a08231' };
-    // Each read method with a block parameter Colibri reads, and its params
-    // with `tag` in that place.
+    const HASH = '0x' + '22'.repeat(32);
+    // Each read method with a block parameter Colibri reads, its params with
+    // `block` in that place, and its params without it.
     const TAGGED = [
-      ['eth_getBalance', (tag) => ['0xabc', tag]],
-      ['eth_getCode', (tag) => ['0xabc', tag]],
-      ['eth_getTransactionCount', (tag) => ['0xabc', tag]],
-      ['eth_call', (tag) => [CALL, tag]],
-      ['eth_estimateGas', (tag) => [CALL, tag]],
-      ['eth_getStorageAt', (tag) => ['0xabc', '0x0', tag]],
-      ['eth_getBlockByNumber', (tag) => [tag, false]],
+      ['eth_getBalance', (block) => ['0xabc', block], ['0xabc']],
+      ['eth_getCode', (block) => ['0xabc', block], ['0xabc']],
+      ['eth_getTransactionCount', (block) => ['0xabc', block], ['0xabc']],
+      ['eth_call', (block) => [CALL, block], [CALL]],
+      ['eth_estimateGas', (block) => [CALL, block], [CALL]],
+      ['eth_getStorageAt', (block) => ['0xabc', '0x0', block], ['0xabc', '0x0']],
+      ['eth_getBlockByNumber', (block) => [block, false], []],
     ];
-    // The blocks Colibri can't prove a read at, and how its refusal names
-    // each: the two tags, and EIP-1898's two block objects, which it binds
-    // to no block.
-    const NOT_A_STRING = "a block that isn't a string";
+    // The account reads and calls, which Colibri ties to `latest` only.
+    const LATEST_ONLY = TAGGED.filter(([method]) => method !== 'eth_getBlockByNumber');
+    const NOT_A_STRING = "at a block that isn't a string";
+    // Each form of block, and whether Colibri ties eth_getBlockByNumber's
+    // answer to it: it compares a number or a hash with the proven block,
+    // and holds `latest` to its freshness gate.
     const BLOCKS = [
-      ['"pending"', 'pending', 'block "pending"'],
-      ['"earliest"', 'earliest', 'block "earliest"'],
-      ['an EIP-1898 block hash', { blockHash: '0x' + '11'.repeat(32), requireCanonical: true }, NOT_A_STRING],
-      ['an EIP-1898 block number', { blockNumber: '0x10d4f00' }, NOT_A_STRING],
+      ['a block number', '0x10d4f00', true],
+      ['a block hash', HASH, true],
+      ['"latest"', 'latest', true],
+      ['"safe"', 'safe', false],
+      ['"finalized"', 'finalized', false],
+      ['"pending"', 'pending', false],
+      ['"earliest"', 'earliest', false],
+      ['an EIP-1898 block hash', { blockHash: '0x' + '11'.repeat(32), requireCanonical: true }, false],
+      ['an EIP-1898 block number', { blockNumber: '0x10d4f00' }, false],
     ];
-    const UNPROVABLE = TAGGED.flatMap(([method, params]) =>
-      BLOCKS.map(([label, block, refusal]) => [method, label, params(block), refusal])
-    );
+    const refusalAt = (block) => (typeof block === 'string' ? `at block "${block}"` : NOT_A_STRING);
+    // Every method at every block, with how Colibri's refusal names it, or
+    // null where Colibri is asked.
+    const CASES = TAGGED.flatMap(([method, params]) => BLOCKS.map(([label, block, byNumber]) => {
+      const served = method === 'eth_getBlockByNumber' ? byNumber : block === 'latest';
+      return [method, label, params(block), served ? null : refusalAt(block)];
+    }));
+    const SERVED = CASES.filter((c) => c[3] === null).map(([method, label, params]) => [method, label, params]);
+    const REFUSED = CASES.filter((c) => c[3] !== null);
 
     function readOrder(order) {
       mockRegistry.getNetwork.mockReturnValue({
@@ -2525,11 +2552,27 @@ describe('Ant bridge cancellation', () => {
       });
     }
     const asked = () => global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+    const colibriAsked = (method, params) =>
+      expect(mockRequestViaColibri.mock.calls).toEqual([[1, method, params, { deadlineMs: expect.any(Number) }]]);
 
-    test.each(UNPROVABLE)('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
+    test.each(SERVED)('%s at %s is asked of Colibri as sent, verified', async (method, _label, params) => {
       readOrder(['colibri', 'direct']);
       rpcAnswers();
-      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: 'colibri:proven',
+        source: 'colibri',
+        verified: true,
+      });
+      colibriAsked(method, params);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each(REFUSED)('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
 
       await expect(request(1, method, params)).resolves.toEqual({
         result: `rpc:${method}`,
@@ -2540,10 +2583,10 @@ describe('Ant bridge cancellation', () => {
       expect(asked()).toEqual([expect.objectContaining({ method, params })]);
     });
 
-    test.each(UNPROVABLE)('%s at %s skips Colibri for the quorum, which labels it', async (method, _label, params) => {
+    test.each(REFUSED)('%s at %s skips Colibri for the quorum, which labels it', async (method, _label, params) => {
       readOrder(['myotis', 'colibri', 'quorum', 'direct']);
       rpcAnswers();
-      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
 
       await expect(request(1, method, params)).resolves.toEqual({
         result: `rpc:${method}`,
@@ -2553,13 +2596,13 @@ describe('Ant bridge cancellation', () => {
       expect(mockRequestViaColibri).not.toHaveBeenCalled();
     });
 
-    test.each(UNPROVABLE)('%s at %s is refused by a Colibri-only read order', async (method, _label, params, refusal) => {
+    test.each(REFUSED)('%s at %s is refused by a Colibri-only read order', async (method, _label, params, refusal) => {
       readOrder(['colibri']);
       global.fetch = jest.fn();
 
       await expect(request(1, method, params)).rejects.toThrow(
         `All chain sources failed for ${method} ` +
-          `(colibri: Colibri cannot prove ${method} at ${refusal})`
+          `(colibri: Colibri cannot prove ${method} ${refusal})`
       );
       expect(mockRequestViaColibri).not.toHaveBeenCalled();
       expect(global.fetch).not.toHaveBeenCalled();
@@ -2573,7 +2616,7 @@ describe('Ant bridge cancellation', () => {
     ))('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
       readOrder(['colibri', 'direct']);
       rpcAnswers();
-      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
 
       await expect(request(1, method, params)).resolves.toEqual({
         result: `rpc:${method}`,
@@ -2583,17 +2626,11 @@ describe('Ant bridge cancellation', () => {
       expect(mockRequestViaColibri).not.toHaveBeenCalled();
     });
 
-    // No block parameter at all asks for `latest`, which Colibri proves.
-    test.each([
-      ['eth_getBalance', ['0xabc']],
-      ['eth_getCode', ['0xabc']],
-      ['eth_getTransactionCount', ['0xabc']],
-      ['eth_call', [CALL]],
-      ['eth_estimateGas', [CALL]],
-      ['eth_getStorageAt', ['0xabc', '0x0']],
-      ['eth_getBlockByNumber', []],
-    ])(
-      '%s without its block parameter %j is still Colibri\'s, verified',
+    // Without its block parameter an account read or a call is read at
+    // `latest`, and Colibri is asked with `latest` appended: left out,
+    // Colibri would hold the proof to no freshness gate.
+    test.each(LATEST_ONLY.map(([method, , bare]) => [method, bare]))(
+      '%s without its block parameter %j is asked of Colibri at "latest", verified',
       async (method, params) => {
         readOrder(['colibri', 'direct']);
         rpcAnswers();
@@ -2604,40 +2641,136 @@ describe('Ant bridge cancellation', () => {
           source: 'colibri',
           verified: true,
         });
+        colibriAsked(method, [...params, 'latest']);
         expect(global.fetch).not.toHaveBeenCalled();
       }
     );
 
-    // Every other block Colibri proves at: a named tag, a number, a hash.
-    test.each(TAGGED.flatMap(([method, params]) =>
-      ['latest', 'safe', 'finalized', '0x10d4f00'].map((tag) => [method, tag, params(tag)])
-    ))('%s at "%s" is still Colibri\'s, verified', async (method, _tag, params) => {
+    // The appended `latest` is Colibri's alone.
+    test.each(LATEST_ONLY.map(([method, , bare]) => [method, bare]))(
+      '%s without its block parameter goes to Direct as sent when Colibri fails',
+      async (method, params) => {
+        readOrder(['colibri', 'direct']);
+        rpcAnswers();
+        mockRequestViaColibri.mockRejectedValue(new Error('prover down'));
+        const sent = [...params];
+
+        await expect(request(1, method, params)).resolves.toEqual({
+          result: `rpc:${method}`,
+          source: 'direct',
+          verified: false,
+        });
+        colibriAsked(method, [...params, 'latest']);
+        expect(asked()).toEqual([expect.objectContaining({ method, params: sent })]);
+        expect(params).toEqual(sent);
+      }
+    );
+
+    // Colibri reads eth_getBlockByNumber without a block as `latest`, and
+    // gates it: asked as sent.
+    test('eth_getBlockByNumber without its block parameter is asked of Colibri as sent, verified', async () => {
       readOrder(['colibri', 'direct']);
       rpcAnswers();
       mockRequestViaColibri.mockResolvedValue('colibri:proven');
 
-      await expect(request(1, method, params)).resolves.toEqual({
-        result: 'colibri:proven',
+      await expect(request(1, 'eth_getBlockByNumber', [])).resolves.toMatchObject({
         source: 'colibri',
         verified: true,
       });
-      expect(mockRequestViaColibri).toHaveBeenCalledWith(1, method, params, { deadlineMs: expect.any(Number) });
-      expect(global.fetch).not.toHaveBeenCalled();
+      colibriAsked('eth_getBlockByNumber', []);
     });
 
-    // The tag is read where the method takes its block, nowhere else.
+    // State overrides after a call's block: Colibri reads the block at
+    // params[1] all the same.
+    test.each(['eth_call', 'eth_estimateGas'])('%s at "latest" with state overrides is asked of Colibri as sent', async (method) => {
+      readOrder(['colibri', 'direct']);
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+      const params = [CALL, 'latest', { '0xabc': { balance: '0x1' } }];
+
+      await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri', verified: true });
+      colibriAsked(method, params);
+    });
+
+    // Params Colibri can't take a block from: too short for `latest` to be
+    // appended in its place, an account read with params after its block
+    // (Colibri would read the last one as the block), params that aren't an
+    // array.
     test.each([
-      ['eth_getStorageAt', ['0xabc', 'pending', 'latest']],
-      ['eth_getBalance', ['pending']],
-      ['eth_getBlockByNumber', ['latest', 'pending']],
-      ['eth_getBlockByHash', ['0x' + '11'.repeat(32), 'pending']],
-      ['eth_getTransactionReceipt', ['pending']],
-      ['eth_blockNumber', ['earliest']],
-    ])('%s with a tag outside its block parameter %j is still asked of Colibri', async (method, params) => {
+      ['eth_getBalance', [], 'with params of length 0'],
+      ['eth_getStorageAt', ['0xabc'], 'with params of length 1'],
+      ['eth_call', [], 'with params of length 0'],
+      ['eth_estimateGas', [], 'with params of length 0'],
+      ['eth_getBalance', ['0xabc', 'latest', '0x1'], 'with params of length 3'],
+      ['eth_getCode', ['0xabc', 'latest', 'latest'], 'with params of length 3'],
+      ['eth_getTransactionCount', ['0xabc', 'latest', null], 'with params of length 3'],
+      ['eth_getStorageAt', ['0xabc', '0x0', 'latest', '0x1'], 'with params of length 4'],
+      ['eth_getBalance', { address: '0xabc' }, "with params that aren't an array"],
+      ['eth_call', CALL, "with params that aren't an array"],
+    ])('%s with params %j skips Colibri', async (method, params, refusal) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
+
+      await expect(request(1, method, params)).resolves.toMatchObject({ source: 'direct', verified: false });
+      readOrder(['colibri']);
+      await expect(request(1, method, params)).rejects.toThrow(
+        `(colibri: Colibri cannot prove ${method} ${refusal})`
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // eth_getBlockByHash is Colibri's at a 32-byte hash, which it compares
+    // with the proven block. Any other string it would read as a tag or a
+    // number, and no params as `latest`.
+    test.each([
+      ['a 32-byte hash', [HASH, false], null],
+      ['an upper-case 32-byte hash', ['0x' + 'AB'.repeat(32), true], null],
+      ['a 31-byte hash', ['0x' + '22'.repeat(31), false], `at block "0x${'22'.repeat(31)}"`],
+      ['a block number', ['0x10d4f00', false], 'at block "0x10d4f00"'],
+      ['"latest"', ['latest', false], 'at block "latest"'],
+      ['"safe"', ['safe', false], 'at block "safe"'],
+      ['"finalized"', ['finalized', false], 'at block "finalized"'],
+      ['an EIP-1898 object', [{ blockHash: HASH }, false], NOT_A_STRING],
+      ['no params', [], 'without a block hash'],
+    ])('eth_getBlockByHash at %s', async (_label, params, refusal) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      if (refusal === null) {
+        await expect(request(1, 'eth_getBlockByHash', params)).resolves.toMatchObject({
+          source: 'colibri',
+          verified: true,
+        });
+        colibriAsked('eth_getBlockByHash', params);
+        return;
+      }
+      await expect(request(1, 'eth_getBlockByHash', params)).resolves.toEqual({
+        result: 'rpc:eth_getBlockByHash',
+        source: 'direct',
+        verified: false,
+      });
+      readOrder(['colibri']);
+      await expect(request(1, 'eth_getBlockByHash', params)).rejects.toThrow(
+        `(colibri: Colibri cannot prove eth_getBlockByHash ${refusal})`
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // The block is read where the method takes it, nowhere else.
+    test.each([
+      ['eth_getStorageAt', ['0xabc', 'pending', 'latest'], ['0xabc', 'pending', 'latest']],
+      ['eth_getBalance', ['pending'], ['pending', 'latest']],
+      ['eth_getBlockByNumber', ['latest', 'pending'], ['latest', 'pending']],
+      ['eth_getBlockByHash', [HASH, 'pending'], [HASH, 'pending']],
+      ['eth_getTransactionReceipt', ['pending'], ['pending']],
+      ['eth_blockNumber', ['earliest'], ['earliest']],
+    ])('%s with a tag outside its block parameter %j is still asked of Colibri', async (method, params, sent) => {
       readOrder(['colibri']);
       mockRequestViaColibri.mockResolvedValue('colibri:proven');
 
       await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri', verified: true });
+      colibriAsked(method, sent);
     });
 
     test.each(['eth_gasPrice', 'eth_feeHistory'])('%s is never asked of Colibri', async (method) => {

@@ -115,9 +115,19 @@ READ_METHODS.add('web3_sha3');
 // - a read at a `pending` or `earliest` block (`eth_has_unproofable_block_tag`:
 //   a pending block has no beacon block, and the earliest predates the beacon
 //   chain): requestColibri refuses it before Colibri is asked
-//   (colibriUnprovableBlock), and the next source answers.
-// It refuses a block that isn't a string too, such as an EIP-1898 object:
-// Colibri would answer it as success, but for another block, or fail it.
+//   (colibriRequestParams), and the next source answers.
+// Nor does it answer a read whose proof isn't tied to the requested block
+// (#1060). Colibri proves such an answer from *some* authenticated block, so
+// a lying prover could answer from another one, and it would be labelled
+// verified. requestColibri refuses those too, and asks Colibri only for:
+// - an account read or a call (eth_getBalance, eth_getCode,
+//   eth_getTransactionCount, eth_getStorageAt, eth_call, eth_estimateGas) at
+//   `latest`, given or appended, whose proof must be at most a minute old;
+// - eth_getBlockByNumber at `latest`, a number or a hash, which Colibri
+//   compares with the proven block, or without a block (`latest`);
+// - eth_getBlockByHash at a 32-byte hash, compared the same way.
+// A block that isn't a string (an EIP-1898 object), `safe` and `finalized`
+// go elsewhere for every method: Colibri ties none of them to its proof.
 const COST = Object.freeze({
   SERIALIZED: 'serialized',
   PROOF: 'proof',
@@ -183,28 +193,88 @@ const COLIBRI_BLOCK_PARAM = new Map([
   ['eth_getStorageAt', 2],
   ['eth_getBlockByNumber', 0],
 ]);
-// The block tags Colibri can't prove a read at. It compares the JSON string
-// exactly (`eth_json_is_unproofable_tag`), so does this.
-const COLIBRI_UNPROVABLE_TAGS = new Set(['pending', 'earliest']);
+// The account reads and calls, which Colibri 3.0.3 ties to the requested
+// block only at `latest` (#1060). Its verifiers check no other block:
+// - verify_account_proof.c proves the account against the header in the
+//   proof, and compares no requested number or hash with that header;
+// - a call (privacy mode: verify_call.c's pap_verify_proof_response) proves
+//   the state header without comparing it with the request, and
+//   call_ctx.c's call_lazy_fetch_block_header compares a number only when
+//   the EVM reads the block context, and a hash never;
+// - `safe` and `finalized` pass unchecked everywhere (eth_verify.h: only
+//   `latest` is gated).
+// At `latest` each proof must be at most a minute old: Colibri's freshness
+// gate (eth_check_latest_freshness, with the worker's
+// max_latest_age_seconds), which the account verifier applies to its last
+// param and a call to params[1], both only when that is the string `latest`.
+const COLIBRI_LATEST_ONLY = new Set([
+  'eth_getBalance',
+  'eth_getCode',
+  'eth_getTransactionCount',
+  'eth_getStorageAt',
+  'eth_call',
+  'eth_estimateGas',
+]);
+// The account reads: Colibri's account verifier reads the block as their
+// last param (verify_account_proof.c's account_block_tag), so the block
+// must be last.
+const COLIBRI_BLOCK_LAST = new Set([
+  'eth_getBalance',
+  'eth_getCode',
+  'eth_getTransactionCount',
+  'eth_getStorageAt',
+]);
+// The block tags Colibri ties no answer to, for any method: `pending` and
+// `earliest` it answers from a public RPC (`eth_json_is_unproofable_tag`),
+// `safe` and `finalized` it proves for some block without checking that it
+// is the safe or finalized one (verify_block.c's c4_eth_matches_blocknumber
+// passes every tag). Compared exactly, as Colibri compares the JSON string.
+const COLIBRI_UNBOUND_TAGS = new Set(['pending', 'earliest', 'safe', 'finalized']);
+// The only block hash Colibri compares with the proven block: 32 bytes
+// (c4_eth_matches_blocknumber reads any other string as a tag or a number).
+const COLIBRI_BLOCK_HASH = /^0x[0-9a-fA-F]{64}$/;
+const COLIBRI_NOT_A_STRING = 'at a block that isn\'t a string';
 
-// The block that makes this read one Colibri can't prove, as its refusal
-// names it, or null. That is the value where the method takes its block
-// parameter, when it is:
-// - `pending` or `earliest`, which Colibri answers from a public RPC;
-// - anything but a string: an EIP-1898 object (`{ blockHash,
-//   requireCanonical }` or `{ blockNumber }`), null, a number. Colibri 3.0.3
-//   binds no such block. In privacy mode its call path reads any non-string
-//   as `latest` (call_ctx.c's call_lazy_fetch_block_header, verify_call.c's
-//   proof_call), and its account verifier compares no requested block with
-//   the proven one (verify_account_proof.c).
-// A params array too short to hold the parameter asks for `latest`, as
-// every source reads it, and stays Colibri's.
-function colibriUnprovableBlock(method, params) {
+// The params Colibri is asked this read with (`{ params }`), or why it
+// can't prove it (`{ refusal }`, completing "Colibri cannot prove <method>").
+// Only a read whose answer Colibri ties to the requested block goes to it:
+// - an account read or a call at `latest`. Without its block parameter it
+//   is read at `latest` by every source, and Colibri is asked with `latest`
+//   appended: left out, Colibri would apply no freshness gate (the account
+//   verifier would read the address or storage slot as the block, a call
+//   would test the missing params[1]). Any other block, params too short to
+//   append it in its place, and an account read with params after its
+//   block, go elsewhere.
+// - eth_getBlockByNumber at `latest`, a number, a hash or no block at all,
+//   which verify_block.c compares with the proven block or holds to the
+//   freshness gate;
+// - eth_getBlockByHash at a 32-byte hash.
+// A block that isn't a string (an EIP-1898 object, null, a number) is never
+// Colibri's: in privacy mode its call path reads any non-string as `latest`
+// (call_ctx.c, verify_call.c's proof_call), and no verifier compares one.
+function colibriRequestParams(method, params) {
+  if (method === 'eth_getBlockByHash') {
+    if (!Array.isArray(params) || params.length === 0) return { refusal: 'without a block hash' };
+    if (typeof params[0] !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
+    return COLIBRI_BLOCK_HASH.test(params[0]) ? { params } : { refusal: `at block "${params[0]}"` };
+  }
   const index = COLIBRI_BLOCK_PARAM.get(method);
-  if (index === undefined || !Array.isArray(params) || index >= params.length) return null;
+  if (index === undefined) return { params };
+  if (!COLIBRI_LATEST_ONLY.has(method)) {
+    if (!Array.isArray(params) || index >= params.length) return { params };
+    const block = params[index];
+    if (typeof block !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
+    return COLIBRI_UNBOUND_TAGS.has(block) ? { refusal: `at block "${block}"` } : { params };
+  }
+  if (!Array.isArray(params)) return { refusal: 'with params that aren\'t an array' };
+  if (params.length === index) return { params: [...params, 'latest'] };
+  if (params.length < index ||
+      (COLIBRI_BLOCK_LAST.has(method) && params.length > index + 1)) {
+    return { refusal: `with params of length ${params.length}` };
+  }
   const block = params[index];
-  if (typeof block !== 'string') return 'a block that isn\'t a string';
-  return COLIBRI_UNPROVABLE_TAGS.has(block) ? `block "${block}"` : null;
+  if (typeof block !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
+  return block === 'latest' ? { params } : { refusal: `at block "${block}"` };
 }
 
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
@@ -1249,9 +1319,9 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   if (!sourceServesMethod('colibri', method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
   }
-  const unprovable = colibriUnprovableBlock(method, params);
-  if (unprovable !== null) {
-    throw new SourceUnavailableError(`Colibri cannot prove ${method} at ${unprovable}`);
+  const asked = colibriRequestParams(method, params);
+  if (asked.refusal) {
+    throw new SourceUnavailableError(`Colibri cannot prove ${method} ${asked.refusal}`);
   }
   if (colibriBackedOff(chainId, method)) {
     throw new SourceUnavailableError(
@@ -1278,7 +1348,7 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   // still has to settle inside the chain's configured timeout.
   const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
   const requestPromise = Promise.resolve()
-    .then(() => requestViaColibri(chainId, method, params, { deadlineMs: budgetMs }))
+    .then(() => requestViaColibri(chainId, method, asked.params, { deadlineMs: budgetMs }))
     .then(
       (result) => {
         noteColibriAnswer(chainId, method);

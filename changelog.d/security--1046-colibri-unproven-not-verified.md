@@ -1,4 +1,6 @@
-- An Ethereum gas price, fee history, or a balance, nonce or contract call at the pending or earliest block is no longer marked verified when nothing proved it ([#1046](https://github.com/solardev-xyz/freedom-browser/issues/1046))
-  - Colibri can't prove these. It answered them from one of its own built-in public RPC servers, which you never chose, and Freedom labelled that answer verified
-  - A read that names its block as an object (EIP-1898, by hash or number) goes the same way: Colibri doesn't tie its proof to that block
-  - They now go to the network's RPC servers, as a quorum or a single server, and are labelled as those answers are
+- An Ethereum gas price, fee history, balance, nonce, code, storage read or contract call is no longer marked verified when Colibri didn't prove it for the block it was asked about ([#1046](https://github.com/solardev-xyz/freedom-browser/issues/1046), [#1060](https://github.com/solardev-xyz/freedom-browser/issues/1060))
+  - Colibri can't prove a gas price, a fee history, or a read at the pending or earliest block. It answered them from one of its own built-in public RPC servers, which you never chose, and Freedom labelled that answer verified
+  - For a balance, nonce, code, storage read or contract call at a past block, by number or hash, Colibri proves the answer from a real block but doesn't check that it is the one asked for. The same goes for the safe and finalized blocks, and for a block named as an object (EIP-1898)
+  - Colibri now answers these reads only at the latest block, whose proof it checks is at most a minute old. A read that names no block is asked at the latest one
+  - A block looked up by number or hash is still Colibri's, as it checks that block, but not the safe or finalized block
+  - The other reads go to the network's RPC servers, as a quorum or a single server, and are labelled as those answers are
