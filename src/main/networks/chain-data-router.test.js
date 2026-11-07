@@ -2225,6 +2225,130 @@ describe('chain-data-router', () => {
       expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
     });
   });
+
+  // #1094: the quorum counts providers, not URL strings. Each pair below is
+  // one provider under two URLs; with m = 2 its two identical answers used
+  // to be a verified quorum. The Safe's deployed mark reads eth_getCode and
+  // the deployment's receipt through this label (#1066).
+  describe('one provider under two URLs (#1094)', () => {
+    const ALIASES = [
+      ['a trailing slash', ['https://a.example', 'https://a.example/']],
+      ['one host on two paths', ['https://a.example/one', 'https://a.example/two']],
+      ["a host's case and trailing dot", ['https://A.example.', 'https://a.example']],
+      ['one host on two ports', ['https://a.example', 'https://a.example:8443']],
+      [
+        'two keys at one keyed provider',
+        [
+          'https://eth-mainnet.g.alchemy.com/v2/key-one',
+          'https://eth-mainnet.g.alchemy.com/v2/key-two',
+        ],
+      ],
+      ["a keyed provider's keyed and public hosts", ['https://lb.drpc.live/ethereum/key', 'https://eth.drpc.org']],
+      ['localhost and 127.0.0.1', ['http://127.0.0.1:8545', 'http://localhost:8545']],
+      ['127.0.0.1 and ::1', ['http://127.0.0.1:8545', 'http://[::1]:8545/']],
+    ];
+    const READS = [
+      ['eth_getCode', ['0x41aD4887971f90BB3fE4d83eCa65177281283261', 'latest'], '0x60806040'],
+      ['eth_getTransactionReceipt', ['0x' + 'ab'.repeat(32)], { status: '0x1', blockNumber: '0x10' }],
+    ];
+
+    function useEndpoints(urls, readOrder, quorum = { k: 3, m: 2, timeoutMs: 1000 }) {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder }, quorum });
+      mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+        role === 'prover' ? ['https://prover.example'] : urls
+      );
+    }
+
+    // Every endpoint gives the same answer, as one provider would.
+    function answerEverywhere(result) {
+      global.fetch = jest.fn().mockImplementation(async (url) => ({
+        ok: true,
+        url,
+        json: async () => ({ result }),
+      }));
+    }
+
+    const fetchedUrls = () => global.fetch.mock.calls.map(([url]) => url);
+
+    describe.each(ALIASES)('%s', (_name, urls) => {
+      test.each(READS)('a quorum of them gives no verified %s', async (method, params, result) => {
+        useEndpoints(urls, ['quorum']);
+        answerEverywhere(result);
+        await expect(request(100, method, params)).rejects.toThrow('RPC quorum needs 2 endpoints');
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+
+      test.each(READS)(
+        'their %s is the first URL\'s, unverified, through Direct',
+        async (method, params, result) => {
+          useEndpoints(urls, ['quorum', 'direct']);
+          answerEverywhere(result);
+          await expect(request(100, method, params, { includeTrust: true })).resolves.toMatchObject({
+            result,
+            source: 'direct',
+            verified: false,
+            trust: { level: 'unverified', method: 'direct' },
+          });
+          expect(fetchedUrls()).toEqual([urls[0]]);
+        }
+      );
+
+      test("a fee quote over them is Direct's, unverified", async () => {
+        useEndpoints(urls, ['quorum', 'direct']);
+        global.fetch = jest.fn().mockImplementation(async (url, options) => {
+          const { method } = JSON.parse(options.body);
+          const answers = { eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x2faf080' };
+          return { ok: true, url, json: async () => ({ result: answers[method] }) };
+        });
+        await expect(getFeeQuote(100)).resolves.toMatchObject({ source: 'direct', verified: false });
+        expect(new Set(fetchedUrls())).toEqual(new Set([urls[0]]));
+      });
+    });
+
+    test('a third, distinct provider makes the quorum: the repeat is not asked', async () => {
+      useEndpoints(
+        ['https://a.example', 'https://a.example/', 'http://127.0.0.1:8545', 'http://localhost:8545'],
+        ['quorum']
+      );
+      answerEverywhere('0x60806040');
+      await expect(
+        request(100, 'eth_getCode', ['0x41aD4887971f90BB3fE4d83eCa65177281283261', 'latest'], {
+          includeTrust: true,
+        })
+      ).resolves.toMatchObject({
+        source: 'quorum',
+        verified: true,
+        trust: { level: 'verified', agreed: ['a.example', '127.0.0.1:8545'] },
+      });
+      expect(fetchedUrls().sort()).toEqual(['http://127.0.0.1:8545', 'https://a.example']);
+    });
+
+    test.each([
+      ['two hosts', ['https://a.example', 'https://b.example']],
+      ['two loopback ports', ['http://127.0.0.1:8545', 'http://localhost:8546']],
+      ['two keyed providers', ['https://lb.drpc.live/ethereum/key', 'https://mainnet.infura.io/v3/key']],
+    ])('%s that agree are still a verified quorum', async (_name, urls) => {
+      useEndpoints(urls, ['quorum']);
+      answerEverywhere('0x60806040');
+      await expect(
+        request(100, 'eth_getCode', ['0x41aD4887971f90BB3fE4d83eCa65177281283261', 'latest'])
+      ).resolves.toEqual({ result: '0x60806040', source: 'quorum', verified: true });
+      expect(fetchedUrls().sort()).toEqual([...urls].sort());
+    });
+
+    test('Direct walks providers: a failed URL\'s repeat is skipped for the next provider', async () => {
+      useEndpoints(['https://a.example', 'https://a.example/v2', 'https://b.example'], ['direct']);
+      global.fetch = jest.fn().mockImplementation(async (url) => {
+        if (url.startsWith('https://a.example')) throw new TypeError('fetch failed');
+        return { ok: true, url, json: async () => ({ result: '0x42' }) };
+      });
+      await expect(request(100, 'eth_blockNumber', [])).resolves.toMatchObject({
+        result: '0x42',
+        source: 'direct',
+      });
+      expect(fetchedUrls()).toEqual(['https://a.example', 'https://b.example']);
+    });
+  });
 });
 
 

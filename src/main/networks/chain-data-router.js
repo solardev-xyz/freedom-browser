@@ -2,6 +2,7 @@ const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
 const blockscoutLogs = require('./blockscout-logs');
+const { distinctEndpoints } = require('./endpoint-identity');
 
 const READ_METHODS = new Set([
   'eth_blockNumber',
@@ -431,6 +432,41 @@ function recordAdaptiveFailure(routeKey, error, now = Date.now()) {
 function configuredSourceTimeoutMs(chainId) {
   const network = registry.getNetwork(chainId) || {};
   return Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+}
+
+// The quorum asks `k` endpoints and settles on `m` that agree.
+function quorumSize(chainId) {
+  const network = registry.getNetwork(chainId) || {};
+  const k = Math.max(1, Number(network.quorum?.k) || 3);
+  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
+  return { k, m };
+}
+
+// Blockscout's answer is verified only as its quorum's is (#1094): its
+// newest blocks come from the RPC quorum, so with m = 1 they are one
+// endpoint's word. With fewer distinct endpoints than m it isn't asked at
+// all (requestLogIndex).
+function blockscoutVerifies(chainId) {
+  return quorumSize(chainId).m > 1;
+}
+
+// Whether an answer from `source` on `chainId` is labelled verified.
+function sourceVerifies(source, chainId) {
+  if (source === 'blockscout') return blockscoutVerifies(chainId);
+  return source === 'myotis' || source === 'colibri' || source === 'quorum';
+}
+
+// The chain's RPC endpoints, each provider once, at its first place in
+// registry order (#1094; endpoint-identity.js says when two URLs are one
+// provider). Every endpoint is a quorum member of its own, so one provider
+// listed twice (with a trailing slash, on two paths, with two API keys, or
+// as `localhost` and `127.0.0.1`) agreed with itself and reached m = 2
+// alone. The quorum, Blockscout's pair, Direct and Direct's fee quote all
+// take this list, as freedom-core's router takes main's references. A user
+// source sorts ahead of every builtin, so a provider the user added keeps
+// the user's URL and its `user-configured` trust.
+function rpcEndpoints(chainId) {
+  return distinctEndpoints(registry.getEndpoints(chainId, 'rpc'));
 }
 
 // The two-second budget is a *fall-through* allowance, not a global ceiling.
@@ -1540,10 +1576,8 @@ function requestQuorumRound(
 }
 
 async function requestQuorum(chainId, method, params, options = {}) {
-  const network = registry.getNetwork(chainId) || {};
-  const k = Math.max(1, Number(network.quorum?.k) || 3);
-  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
-  const endpoints = registry.getEndpoints(chainId, 'rpc');
+  const { k, m } = quorumSize(chainId);
+  const endpoints = rpcEndpoints(chainId);
   const { logRange = null, keeper = createErrorKeeper(null) } = options;
   const askQuorum = (urls) =>
     requestQuorumRound(chainId, method, params, { ...options, keeper, urls });
@@ -1631,10 +1665,8 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   if ((logIndexCoolUntil.get(chainId) || 0) > now) {
     throw new SourceUnavailableError('Blockscout is left alone for a while after its last failure');
   }
-  const network = registry.getNetwork(chainId) || {};
-  const k = Math.max(1, Number(network.quorum?.k) || 3);
-  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
-  const endpoints = registry.getEndpoints(chainId, 'rpc');
+  const { m } = quorumSize(chainId);
+  const endpoints = rpcEndpoints(chainId);
   if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
   const quorumSpan = quorumLogSpan(chainId, endpoints, m, now);
   if (quorumSpan >= logRange.span) {
@@ -1778,7 +1810,7 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   return {
     result,
     trust: {
-      level: 'verified',
+      level: blockscoutVerifies(chainId) ? 'verified' : 'unverified',
       method: 'blockscout',
       block: null,
       agreed,
@@ -1843,7 +1875,7 @@ async function requestDirect(
 ) {
   const configuredTimeoutMs = configuredDirectTimeoutMs(chainId);
   const timeoutMs = directUrlTimeoutMs(chainId, requestedTimeoutMs);
-  const urls = registry.getEndpoints(chainId, 'rpc');
+  const urls = rpcEndpoints(chainId);
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   if (directFallback && urls.includes(directFallback.url) &&
       Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
@@ -1888,7 +1920,7 @@ async function requestDirect(
 async function requestDirectFeeQuote(chainId) {
   const network = registry.getNetwork(chainId) || {};
   const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
-  const urls = registry.getEndpoints(chainId, 'rpc');
+  const urls = rpcEndpoints(chainId);
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   let lastError;
   let legacyFallback = null;
@@ -2225,7 +2257,7 @@ async function request(
         txLookup.unverified = {
           result,
           source,
-          verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+          verified: sourceVerifies(source, Number(chainId)),
           ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
         };
         sourceIndex = order.length - 2;
@@ -2250,7 +2282,7 @@ async function request(
       return {
         result,
         source,
-        verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+        verified: sourceVerifies(source, Number(chainId)),
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {

@@ -2636,6 +2636,54 @@ describe('ens-resolver', () => {
       expect(result.trust.quorum.achieved).toBe(false);
     });
 
+    // #1094: the pool counts providers, not URL strings. One provider listed
+    // under three URLs plus one other is two providers, so K<3 as above.
+    test('one provider under several URLs counts once in the quorum pool', async () => {
+      const settings = {
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+      };
+      mockLoadSettings.mockReturnValue({
+        ...settings,
+        ensPublicRpcProviders: [
+          TEST_PROVIDERS[0],
+          `${TEST_PROVIDERS[0]}/`,
+          'https://TEST-A.example.com/second-key',
+          TEST_PROVIDERS[1],
+        ],
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const collapsed = await resolveEnsContent('one-provider-many-urls.eth');
+      expect(collapsed.type).toBe('ok');
+      expect(collapsed.trust.level).toBe('unverified');
+      expect(collapsed.trust.quorum.achieved).toBe(false);
+
+      // A third provider makes the quorum, and the repeats are not asked.
+      mockLoadSettings.mockReturnValue({
+        ...settings,
+        ensPublicRpcProviders: [
+          TEST_PROVIDERS[0],
+          `${TEST_PROVIDERS[0]}/`,
+          TEST_PROVIDERS[1],
+          TEST_PROVIDERS[2],
+        ],
+      });
+      const verified = await resolveEnsContent('three-providers-four-urls.eth');
+      expect(verified.trust.level).toBe('verified');
+      expect([...verified.trust.queried].sort()).toEqual([
+        'test-a.example.com',
+        'test-b.example.com',
+        'test-c.example.com',
+      ]);
+    });
+
     // Even when K=2 providers would naturally agree on current-head
     // state, an attacker claiming a head within the safety-depth window
     // should not force a "verified" stale answer. Structural downgrade
