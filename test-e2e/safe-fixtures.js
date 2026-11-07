@@ -125,8 +125,17 @@ const test = base.extend({
     fs.writeFileSync(
       path.join(userDataDir, 'network-config.json'),
       JSON.stringify({
+        // Two endpoints, both the fork: 127.0.0.1 and localhost are distinct
+        // endpoints to the RPC quorum. A Safe counts as activated only on a
+        // verified answer (#1066), and a quorum of two endpoints that agree
+        // is one; the fork is the chain here.
         endpointSources: {
           'e2e-anvil-gnosis': { role: 'rpc', keyed: false, coverage: { 100: anvil.url } },
+          'e2e-anvil-gnosis-localhost': {
+            role: 'rpc',
+            keyed: false,
+            coverage: { 100: anvil.url.replace('127.0.0.1', 'localhost') },
+          },
         },
         removedSources: BUILTIN_GNOSIS_SOURCES,
         // Read Gnosis from the fork only. Myotis and Colibri verify against
@@ -138,7 +147,10 @@ const test = base.extend({
         // a Colibri receipt lookup trapping in WASM) is fixed in
         // colibri-runtime.js and pinned by colibri-runtime.test.js under
         // Electron's full main process.
-        networks: { 100: { access: { readOrder: ['direct'] } } },
+        //
+        // The quorum is asked first. Direct answers when the two disagree,
+        // e.g. one read lands just after a new block.
+        networks: { 100: { access: { readOrder: ['quorum', 'direct'] } } },
       }),
       'utf-8'
     );
