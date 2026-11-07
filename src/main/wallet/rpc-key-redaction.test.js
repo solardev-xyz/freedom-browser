@@ -38,7 +38,10 @@ const readShared = (name) => JSON.parse(fs.readFileSync(path.join(SHARED, name),
 const KEY = ['rpc', 'key', 'sentinel', process.pid.toString(36), 'x7q'].join('-');
 
 const OWNER = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
-const SAFE = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+// The address the records' init params give (owner OWNER, 1 of 1, salt
+// 7508) from the pinned proxy code: the Safe modules refuse a record whose
+// address isn't its own (#1066), before any read.
+const SAFE = '0x428472BbDf38789079B9F4bB5b424AbFD739aE2F';
 const RECORDS = {
   0: { index: 0, name: 'Main Wallet', address: OWNER, type: 'mnemonic' },
   5: {
@@ -195,11 +198,11 @@ const POOLS = [
 const SAFE_TX = { to: '0x' + '22'.repeat(20), value: '1', data: '0x' };
 
 // Each renderer-facing handler whose service reads the chain through main's
-// providers, with the arguments that reach that read.
+// providers, with the arguments that reach that read. Creating a Safe reads
+// no chain (#1066), so it isn't one of them.
 const HANDLERS = [
   ['wallet:get-safe-status', (ipc) => ipc.invoke('wallet:get-safe-status', 5)],
   ['wallet:activate-safe', (ipc) => ipc.invoke('wallet:activate-safe', 5, {})],
-  ['wallet:create-safe', (ipc) => ipc.invoke('wallet:create-safe', 'New', [0], 1)],
   [
     'wallet:safe-send',
     async (ipc) => {
@@ -234,10 +237,29 @@ const HANDLERS = [
   ],
 ];
 
+// The reads the core serves (networks/chain-data.js): no code at the Safe,
+// verified, a gas estimate and a fee quote. So a Safe's status and
+// activation reach main's providers for the executor's balance (#1066 moved
+// the Safe's code read to the core).
+const coreChainData = () => ({
+  ...jest.requireActual('../networks/chain-data'),
+  request: jest.fn(async (_chainId, method) => {
+    if (method === 'eth_getCode') return { result: '0x', source: 'colibri', verified: true };
+    if (method === 'eth_estimateGas') return { result: '0x30d40', source: 'quorum', verified: true };
+    throw new Error(`unexpected core read ${method}`);
+  }),
+  getFeeQuote: jest.fn(async () => ({
+    type: 'eip1559',
+    maxFeePerGas: '2000000000',
+    maxPriorityFeePerGas: '1000000000',
+    source: 'quorum',
+  })),
+});
+
 describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
   test.each(HANDLERS)('%s answers without the key or the URL', async (_channel, call) => {
     await writePool(shape);
-    const ipc = loadWalletIpc();
+    const ipc = loadWalletIpc({ [require.resolve('../networks/chain-data')]: coreChainData });
 
     const answer = await call(ipc);
 
@@ -246,6 +268,16 @@ describe.each(POOLS)('wallet handlers on %s', (_pool, shape) => {
     // The failure is the endpoints': each was asked.
     for (const { hits } of endpoints) expect(hits.length).toBeGreaterThan(0);
     expect(String(answer.error)).toMatch(/No RPC endpoint for Gnosis Chain answered/);
+  });
+
+  test('wallet:create-safe asks no endpoint: the address is the pinned one (#1066)', async () => {
+    await writePool(shape);
+    const ipc = loadWalletIpc();
+
+    const answer = await ipc.invoke('wallet:create-safe', 'New', [0], 1);
+
+    expect(answer).toMatchObject({ success: true, wallet: { threshold: 1, owners: [0] } });
+    for (const { hits } of endpoints) expect(hits).toEqual([]);
   });
 
   test('wallet:test-provider answers without the key or the URL', async () => {
