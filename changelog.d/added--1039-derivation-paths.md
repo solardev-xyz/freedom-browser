@@ -1,0 +1,4 @@
+- Custom derivation paths for wallet accounts ([#1039](https://github.com/solardev-xyz/freedom-browser/issues/1039)):
+  - Advanced section when creating a wallet: Ledger Live, MetaMask and Legacy presets or a custom path
+  - Address shown before the account is added
+  - Paths holding Freedom's node and publishing keys are refused, including MetaMask's second account

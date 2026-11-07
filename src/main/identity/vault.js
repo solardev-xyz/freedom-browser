@@ -10,7 +10,12 @@
 const { encrypt, decrypt } = require('@metamask/browser-passworder');
 const fs = require('fs');
 const path = require('path');
-const { isValidMnemonic, createMnemonic, deriveUserWallet } = require('./derivation');
+const {
+  isValidMnemonic,
+  createMnemonic,
+  deriveUserWallet,
+  deriveWalletAtPath,
+} = require('./derivation');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 
 // Vault state
@@ -267,13 +272,16 @@ function exportMnemonic() {
  * Export private key for a specific wallet account
  * Vault must be unlocked
  * @param {number} accountIndex - Account index (0, 1, 2, ...)
+ * @param {string} [path] - The account's stored derivation path, when it has one
  * @returns {string} The private key (0x-prefixed hex)
  */
-function exportPrivateKey(accountIndex = 0) {
+function exportPrivateKey(accountIndex = 0, path) {
   if (!unlockedMnemonic) {
     throw new Error(VAULT_LOCKED_MESSAGE);
   }
-  const wallet = deriveUserWallet(unlockedMnemonic, accountIndex);
+  const wallet = path
+    ? deriveWalletAtPath(unlockedMnemonic, path)
+    : deriveUserWallet(unlockedMnemonic, accountIndex);
   return wallet.privateKey;
 }
 
