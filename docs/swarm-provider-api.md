@@ -161,7 +161,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
 | `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
 | `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
-| `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`                                                                                                         |
+| `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`, `swarm_readFeedEntry` (`actual` only when the node declared the size)                                  |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
 | `invalid_reference`, `invalid_span`, `invalid_identifier`, `invalid_owner`                                      | Chunk methods, `swarm_readData`, `swarm_updateFeed`, feed reads                                                          |
@@ -176,7 +176,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 `gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s).
 Bee 5xx responses and network errors are `-32603`, with two exceptions where
 the node reports a missing entry as a 500: feed reads (and the next-index
-lookup behind feed writes) treat any Bee 500 like a 404, so a node-internal
+lookup behind feed writes without an `index`) treat any Bee 500 like a 404, so a node-internal
 500 surfaces as `-32602 feed_empty` / `entry_not_found`; chunk reads map a
 500 whose body is exactly `read chunk failed` to `-32602 chunk_not_found`.
 So a `-32602` "not found" on a feed read means "not found, or the node
@@ -384,6 +384,13 @@ Not reported there:
   in flight at once, but never starts more than one window's worth per
   window. A blob larger than
   the whole byte budget is `data_too_large` instead (see the method).
+  `swarm_readFeedEntry` is one request too, and its bytes are paid for
+  before they are held, in the same way: the entry's single-owner chunk is
+  charged once read, and a larger entry's size, from the span of the chunk
+  it wraps, is reserved before the node joins it; the latest entry is
+  reserved from the length the node declares, or piece by piece as it
+  streams. An entry that does not fit is refused there and the rest of it is
+  never downloaded.
 - **New GSOC topics**: 16 per origin per 60 s (only topics that have to be
   mined count; cached topics are free). Exceeding it is `-32602 rate_limited`
   with `retryAfterMs`.
@@ -556,10 +563,15 @@ the identity that created the feed. Errors: `invalid_reference`,
 
 Writes an arbitrary payload as a feed entry. Without `index`, it is written at
 the next free index; with an explicit `index`, an existing entry is never
-overwritten (`index_already_exists`). The feed must exist (`feed_not_found`:
+overwritten (`index_already_exists`). Only the node's 404 for that entry
+means the index is free: any other answer (a 500, a timeout, a chunk that is
+not the entry, whatever its error text) refuses the write with `-32603`, and
+it can be retried. The feed must exist (`feed_not_found`:
 call `swarm_createFeed` first). Payloads larger than one chunk are uploaded and
-wrapped by the node; one too large for that is `payload_too_large`. Writes to
-one feed are serialized, so concurrent writes get distinct indexes.
+wrapped by the node; if the node refuses the upload, that is the node's error
+(`-32603`). An empty `data` is `payload_too_large`: an entry carries at least
+one byte. Writes to one feed are serialized, so concurrent writes get distinct
+indexes.
 
 #### `swarm_readFeedEntry { name | topic, owner?, index? }` → `{ data, encoding: 'base64', index, nextIndex }` (public)
 
@@ -575,9 +587,13 @@ next write would use as reported by the node, or `null` if the node did not
 report one. With `index`, `nextIndex` is always `index + 1`, whether or not
 that slot is taken; it is **not** the next free index (reading index 0 of a
 ten-entry feed returns `nextIndex: 1`). To append, use `swarm_writeFeedEntry`
-without `index`, or read without `index` first. Errors: `feed_empty` (no entries),
+without `index`, or read without `index` first. The read is charged to the
+permission-free read budget before the entry is downloaded
+([Limits](#limits)): an entry larger than the origin's byte budget is
+`data_too_large`, and one that does not fit what is left of the window is
+`rate_limited`. Errors: `feed_empty` (no entries),
 `entry_not_found` (no entry at `index`), `invalid_topic`, `invalid_owner`,
-`invalid_feed_name`, `rate_limited`.
+`invalid_feed_name`, `data_too_large`, `rate_limited`.
 
 #### `swarm_listFeeds` → `[{ name, topic, owner, manifestReference, bzzUrl, createdAt, lastUpdated, lastReference }]` (public)
 
