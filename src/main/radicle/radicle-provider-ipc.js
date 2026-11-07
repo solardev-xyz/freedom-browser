@@ -49,6 +49,8 @@ const {
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
+const { runWithPrivateLogContext, redactForLog } = require('../private/private-log-context');
+const { isPrivateWebContents } = require('../private/private-windows');
 
 const SPEC_VERSION = '0.2';
 
@@ -60,6 +62,30 @@ const ERRORS = {
   INVALID_PARAMS: { code: -32602, message: 'Invalid params' },
   INTERNAL: { code: -32603, message: 'Internal error' },
 };
+
+// Add-on error categories (#1073, matching #1050 / #1061 for rad:).
+// libradicle's errors can contain local storage paths
+// (<radicle home>/storage/<rid>) under the user's profile directory.
+// Provider replies give these fixed texts per category, never the add-on's own.
+const MISSING_RE = /not found|does not exist|NotFound/i;
+const TOO_LARGE_RE =
+  /^(?:\d+ bytes is over the limit of \d+|the tree is nested deeper than \d+ levels)$/;
+const CANCELLED_RE = /^(?:clone )?cancelled$/;
+
+const PUBLIC_PROVIDER_ERRORS = Object.freeze({
+  missing: 'not found',
+  tooLarge: 'repository data too large to serve here',
+  cancelled: 'request cancelled',
+  failed: 'the operation failed',
+});
+
+function publicErrorMessage(message, defaultFailed = PUBLIC_PROVIDER_ERRORS.failed) {
+  if (!message || typeof message !== 'string') return defaultFailed;
+  if (MISSING_RE.test(message)) return PUBLIC_PROVIDER_ERRORS.missing;
+  if (TOO_LARGE_RE.test(message)) return PUBLIC_PROVIDER_ERRORS.tooLarge;
+  if (CANCELLED_RE.test(message)) return PUBLIC_PROVIDER_ERRORS.cancelled;
+  return defaultFailed;
+}
 
 function providerError(base, message, data) {
   const err = { code: base.code, message: message || base.message };
@@ -169,7 +195,7 @@ async function handleGetNodeStatus(origin) {
       result.alias = identity.alias;
       if (permissions.hasSigningGrant(origin)) result.nid = identity.nid;
     } catch (err) {
-      log.warn(`[radicle-provider] getNodeStatus identity lookup failed: ${err.message}`);
+      log.warn('[radicle-provider] getNodeStatus identity lookup failed:', redactForLog(err.message));
     }
   }
   return result;
@@ -179,7 +205,12 @@ async function handleListSeededRepos() {
   try {
     return await embedded.listSeededRepos();
   } catch (err) {
-    throw providerError(ERRORS.INTERNAL, err.message || 'repo listing failed');
+    const isMissing = MISSING_RE.test(err?.message);
+    if (!isMissing) {
+      log.warn('[radicle-provider] repository listing failed:', redactForLog(err?.message));
+    }
+    const message = isMissing ? PUBLIC_PROVIDER_ERRORS.missing : publicErrorMessage(err?.message);
+    throw providerError(ERRORS.INTERNAL, message);
   }
 }
 
@@ -259,7 +290,12 @@ function wrapCobError(err) {
   if (err instanceof cob.CobValidationError) {
     return providerError(ERRORS.INVALID_PARAMS, err.message, { reason: err.reason });
   }
-  return providerError(ERRORS.INTERNAL, err.message, err.reason ? { reason: err.reason } : null);
+  const isMissing = err.reason === 'repo_not_found' || MISSING_RE.test(err.message);
+  if (!isMissing) {
+    log.warn('[radicle-provider] cob write failed:', redactForLog(err.message));
+  }
+  const message = isMissing ? PUBLIC_PROVIDER_ERRORS.missing : publicErrorMessage(err.message);
+  return providerError(ERRORS.INTERNAL, message, err.reason ? { reason: err.reason } : null);
 }
 
 async function handleCobWrite(fn, params) {
@@ -410,23 +446,26 @@ function registerRadicleProviderIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (event, { method, params, origin, meta } = {}) => {
-    const refusal = agentCustodyRefusal(event?.sender, method, meta);
-    if (refusal) return { error: refusal };
-    const hadBroadcaster = seedStatusBroadcasters.has(origin);
-    const onSeedStatus = PUSH_METHODS.has(method)
-      ? getSeedStatusBroadcaster(origin)
-      : undefined;
-    try {
-      const result = await executeRadicleMethod(method, params, origin, { onSeedStatus });
-      return { result };
-    } catch (err) {
-      if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
-      if (err && typeof err.code === 'number') {
-        return { error: err };
+    return runWithPrivateLogContext(isPrivateWebContents(event?.sender), async () => {
+      const refusal = agentCustodyRefusal(event?.sender, method, meta);
+      if (refusal) return { error: refusal };
+      const hadBroadcaster = seedStatusBroadcasters.has(origin);
+      const onSeedStatus = PUSH_METHODS.has(method)
+        ? getSeedStatusBroadcaster(origin)
+        : undefined;
+      try {
+        const result = await executeRadicleMethod(method, params, origin, { onSeedStatus });
+        return { result };
+      } catch (err) {
+        if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
+        if (err && typeof err.code === 'number') {
+          return { error: err };
+        }
+        log.error(`[radicle-provider] ${method} failed:`, redactForLog(err?.message || err));
+        const message = publicErrorMessage(err?.message);
+        return { error: { ...ERRORS.INTERNAL, message } };
       }
-      log.error(`[radicle-provider] ${method} failed: ${err?.message || err}`);
-      return { error: { ...ERRORS.INTERNAL, message: err?.message || 'Internal error' } };
-    }
+    });
   });
   log.info('[radicle-provider] IPC handler registered');
 }
@@ -434,4 +473,5 @@ function registerRadicleProviderIpc() {
 module.exports = {
   executeRadicleMethod,
   registerRadicleProviderIpc,
+  PUBLIC_PROVIDER_ERRORS,
 };

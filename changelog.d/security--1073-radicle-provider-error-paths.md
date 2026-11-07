@@ -1,0 +1,1 @@
+- window.radicle provider errors no longer carry add-on error details naming local profile storage paths ([#1073](https://github.com/solardev-xyz/freedom-browser/issues/1073))
