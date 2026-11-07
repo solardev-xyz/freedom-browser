@@ -980,13 +980,17 @@ async function signAndSendTransaction(
  *   nonceTakenByAnotherTransaction). A sweep re-polls those rows on every
  *   send and every confirm timer, so it reads receipts without Colibri;
  *   quorum still verifies the answer.
- * @returns {Promise<Object>} Transaction status
+ * @returns {Promise<Object>} Transaction status. A receipt's status carries
+ *   `verified`: true only when the core's chain data labelled the receipt
+ *   verified (design 0005: Colibri or the RPC quorum). A caller that
+ *   writes something for good on a receipt, like a Safe's deployed mark
+ *   (#1066), must require it.
  */
 async function getTransactionStatus(txHash, chainId, { from, nonce, sweep = false } = {}) {
   try {
     // The sweep reads without Colibri: chain.request's `exclude_sources`
     // (design 0005, Methods main calls), on a core that offers it.
-    const { result: receipt } = await chainData.request(
+    const { result: receipt, verified } = await chainData.request(
       chainId,
       'eth_getTransactionReceipt',
       [txHash],
@@ -1006,6 +1010,7 @@ async function getTransactionStatus(txHash, chainId, { from, nonce, sweep = fals
     return {
       status: BigInt(receipt.status || 0) === 1n ? 'confirmed' : 'failed',
       hash: txHash,
+      verified: verified === true,
       blockNumber: receipt.blockNumber ? Number(BigInt(receipt.blockNumber)) : null,
       gasUsed: receipt.gasUsed ? BigInt(receipt.gasUsed).toString() : null,
       effectiveGasPrice: receipt.effectiveGasPrice

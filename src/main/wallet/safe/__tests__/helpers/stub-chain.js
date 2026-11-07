@@ -7,13 +7,15 @@
  * (recorded once from the real SafeProxyFactory 1.4.1 on Gnosis at
  * 0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67 — it is identical on every
  * chain, that's the point of the canonical deployment). Optional
- * `deployedSafes` simulate already-deployed Safes with a live nonce.
+ * `deployedSafes` simulate already-deployed Safes with a live nonce, and
+ * `proxyCreationCode` replaces that answer's bytes, as a lying endpoint
+ * would.
  *
  * Unstubbed methods/calls throw so a protocol-kit upgrade that starts
  * reading something new fails loudly instead of silently mis-testing.
  */
 
-const { Interface, getAddress } = require('ethers');
+const { AbiCoder, Interface, getAddress } = require('ethers');
 const deployments = require('@safe-global/safe-deployments');
 
 const SAFE_VERSION = '1.4.1';
@@ -50,9 +52,11 @@ function canonicalAddresses() {
  * @param {number} opts.chainId
  * @param {Object.<string, {nonce?: number, threshold?: number, owners?: string[]}>}
  *   [opts.deployedSafes] - Safes that read as deployed, keyed by address
+ * @param {string} [opts.proxyCreationCode] - Bytes `proxyCreationCode()`
+ *   answers instead of the recorded code
  * @returns {{request: Function}} EIP-1193 provider
  */
-function createStubChain({ chainId, deployedSafes = {} }) {
+function createStubChain({ chainId, deployedSafes = {}, proxyCreationCode = null }) {
   const codeAddresses = new Set(canonicalAddresses().map((a) => a.toLowerCase()));
   const safes = Object.fromEntries(
     Object.entries(deployedSafes).map(([address, safe]) => [address.toLowerCase(), safe])
@@ -65,7 +69,9 @@ function createStubChain({ chainId, deployedSafes = {} }) {
     const safe = safes[(to || '').toLowerCase()];
     switch (selector) {
       case SAFE_INTERFACE.getFunction('proxyCreationCode').selector:
-        return PROXY_CREATION_CODE_RESPONSE;
+        return proxyCreationCode === null
+          ? PROXY_CREATION_CODE_RESPONSE
+          : AbiCoder.defaultAbiCoder().encode(['bytes'], [proxyCreationCode]);
       case SAFE_INTERFACE.getFunction('nonce').selector:
         return encodeResult('nonce', [safe?.nonce ?? 0]);
       case SAFE_INTERFACE.getFunction('VERSION').selector:
@@ -102,4 +108,4 @@ function createStubChain({ chainId, deployedSafes = {} }) {
   };
 }
 
-module.exports = { createStubChain, canonicalAddresses };
+module.exports = { createStubChain, canonicalAddresses, PROXY_CREATION_CODE_RESPONSE };
