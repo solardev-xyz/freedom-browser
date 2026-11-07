@@ -18,9 +18,11 @@ jest.mock('../logger', () => ({
 // in the factory (the factory runs before top-level `const` initializers).
 const mockCreateClient = jest.fn();
 const mockEnsureWorker = jest.fn(() => Promise.resolve());
+const mockEndPrivateSession = jest.fn();
 const mockClientInstances = [];
 jest.mock('./colibri-worker-host', () => ({
   ensureWorker: (...args) => mockEnsureWorker(...args),
+  endPrivateSession: (...args) => mockEndPrivateSession(...args),
   createClient: (config) => {
     mockCreateClient(config);
     const client = {
@@ -63,10 +65,14 @@ jest.mock('../ens-resolver', () => ({
 
 const {
   resolveViaColibri,
+  resolveCallViaColibri,
   resolveReverseViaColibri,
   requestViaColibri,
+  endPrivateColibriSession,
+  registerColibriPrivateCleanup,
   clearColibriClientForTest,
 } = require('./colibri-resolver');
+const { runWithPrivateLogContext } = require('../private/private-log-context');
 
 const DEFAULTS = {
   ensColibriProverUrl: '',
@@ -431,5 +437,125 @@ describe('requestViaColibri', () => {
     expect(firstClient.destroy).toHaveBeenCalledTimes(1);
     expect(mockCreateClient).toHaveBeenCalledTimes(2);
     expect(mockClientInstances[1].request).toHaveBeenCalledTimes(1);
+  });
+});
+
+// PRIVATE MODE GUARD (Colibri store, #1058): a read in a private window's
+// async context runs on the chain's private worker, whose store is in memory
+// only; every other read keeps the normal, disk-backed lane.
+describe('private windows', () => {
+  const inPrivate = (fn) => runWithPrivateLogContext(true, fn);
+  const NORMAL = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
+  const PRIVATE = { ...NORMAL, private: true };
+  const lanes = () => mockCreateClient.mock.calls.map(([config]) => config);
+
+  test.each([
+    ['an ENS forward lookup', () => resolveCallViaColibri('secret.eth', '0x')],
+    ['an ENS reverse lookup', () => resolveReverseViaColibri(new Uint8Array(20))],
+    ['a chain-data read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+  ])('%s from a private window runs on the private worker', async (_label, read) => {
+    await inPrivate(read);
+    expect(lanes()).toEqual([PRIVATE]);
+    expect(mockEnsureWorker).toHaveBeenCalledWith(1, { private: true });
+    expect(mockEnsureWorker).not.toHaveBeenCalledWith(1);
+  });
+
+  test.each([
+    ['an ENS forward lookup', () => resolveCallViaColibri('public.eth', '0x')],
+    ['an ENS reverse lookup', () => resolveReverseViaColibri(new Uint8Array(20))],
+    ['a chain-data read', () => requestViaColibri(1, 'eth_getBalance', ['0xabc', 'latest'])],
+  ])('%s from a normal window keeps the normal worker, as before', async (_label, read) => {
+    await read();
+    expect(lanes()).toEqual([NORMAL]);
+    expect(mockEnsureWorker.mock.calls).toEqual([[1]]);
+  });
+
+  test('the two lanes keep separate clients side by side', async () => {
+    await requestViaColibri(1, 'eth_blockNumber');
+    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    await requestViaColibri(1, 'eth_blockNumber');
+    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    expect(lanes()).toEqual([NORMAL, PRIVATE]);
+    const [normal, priv] = mockClientInstances;
+    expect(normal.request).toHaveBeenCalledTimes(2);
+    expect(priv.request).toHaveBeenCalledTimes(2);
+    expect(normal.destroy).not.toHaveBeenCalled();
+    expect(priv.destroy).not.toHaveBeenCalled();
+  });
+
+  test('a retry after a transient failure stays on the private lane', async () => {
+    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    mockClientInstances[0].request.mockRejectedValueOnce(new Error('fetch failed'));
+    await expect(inPrivate(() => requestViaColibri(1, 'eth_blockNumber'))).resolves.toBe('0x2a');
+    expect(lanes()).toEqual([PRIVATE, PRIVATE]);
+  });
+
+  test('ending the private session drops the private clients only', async () => {
+    await requestViaColibri(1, 'eth_blockNumber');
+    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    await inPrivate(() => requestViaColibri(100, 'eth_blockNumber'));
+    const [normal, priv, privGnosis] = mockClientInstances;
+
+    endPrivateColibriSession();
+
+    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
+    expect(priv.destroy).toHaveBeenCalledTimes(1);
+    expect(privGnosis.destroy).toHaveBeenCalledTimes(1);
+    expect(normal.destroy).not.toHaveBeenCalled();
+
+    // The normal lane keeps its client; the next private read builds anew.
+    await requestViaColibri(1, 'eth_blockNumber');
+    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    expect(mockClientInstances).toHaveLength(4);
+    expect(mockCreateClient.mock.calls[3][0]).toEqual(PRIVATE);
+    expect(normal.request).toHaveBeenCalledTimes(2);
+  });
+
+  test('a private client still in use when the session ends is destroyed once released', async () => {
+    let release;
+    await inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    const [priv] = mockClientInstances;
+    priv.request.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const pending = inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    endPrivateColibriSession();
+    expect(priv.destroy).not.toHaveBeenCalled();
+    release('0x1');
+    await expect(pending).resolves.toBe('0x1');
+    expect(priv.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('a private build in flight when the session ends is discarded', async () => {
+    let releaseWorker;
+    mockEnsureWorker.mockImplementationOnce(() => new Promise((resolve) => { releaseWorker = resolve; }));
+    const pending = inPrivate(() => requestViaColibri(1, 'eth_blockNumber'));
+    await Promise.resolve();
+
+    endPrivateColibriSession();
+    releaseWorker();
+    await pending;
+
+    // The first private client was built for the ended session: it is
+    // destroyed at once and the request continues on a fresh one.
+    expect(lanes()).toEqual([PRIVATE, PRIVATE]);
+    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockClientInstances[1].destroy).not.toHaveBeenCalled();
+  });
+
+  test('the cleanup hook ends the session only once the last private window has closed', () => {
+    let hook;
+    let open = 2;
+    registerColibriPrivateCleanup({
+      registerPrivateCleanup: (fn) => { hook = fn; },
+      getPrivateWindowCount: () => open,
+    });
+    open = 1;
+    hook('private-a');
+    expect(mockEndPrivateSession).not.toHaveBeenCalled();
+    open = 0;
+    hook('private-b');
+    expect(mockEndPrivateSession).toHaveBeenCalledTimes(1);
   });
 });

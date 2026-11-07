@@ -509,4 +509,129 @@ describe('colibri worker host', () => {
     });
     await expect(client.request({ method: 'eth_chainId' })).rejects.toThrow(/destroyed/);
   });
+
+  // #1058: Colibri's store names each contract called (`call_<chain>_<address>`),
+  // so private windows' reads run on a worker of their own with no storage dir.
+  describe('private windows', () => {
+    const PRIVATE = { ...CONFIG, private: true };
+    const workerData = (worker) => Worker.mock.calls[spawned.indexOf(worker)][1].workerData;
+
+    // Like startRequest, for a request on a worker that is not the last one
+    // spawned (the other lane's may be).
+    async function startOn(client, args, worker, opts) {
+      const promise = client.request(args, opts);
+      promise.catch(() => {});
+      await flush();
+      return { promise, worker, id: sentRequests(worker).at(-1).id };
+    }
+
+    test('a private client runs on its own worker, which gets no storage dir', async () => {
+      const normal = await startRequest(host.createClient(CONFIG), { method: 'eth_blockNumber' });
+      const priv = await startRequest(host.createClient(PRIVATE), { method: 'eth_blockNumber' });
+
+      expect(Worker).toHaveBeenCalledTimes(2);
+      expect(priv.worker).not.toBe(normal.worker);
+      expect(workerData(normal.worker)).toEqual({ storageDir: STORAGE_DIR });
+      expect(workerData(priv.worker)).toEqual({ storageDir: null });
+      // The worker sees the same client config: privacy is the worker's, not
+      // the client's.
+      expect(sentRequests(priv.worker)[0].config).toEqual(CONFIG);
+
+      // Every private client on the chain shares the one private worker, and
+      // a normal one keeps the normal worker.
+      const again = await startOn(host.createClient(PRIVATE), { method: 'eth_chainId' }, priv.worker);
+      const normalAgain = await startOn(host.createClient(CONFIG), { method: 'eth_chainId' }, normal.worker);
+      expect(Worker).toHaveBeenCalledTimes(2);
+      priv.worker.emit('message', { type: 'result', id: again.id, ok: true, result: '0x1' });
+      normal.worker.emit('message', { type: 'result', id: normalAgain.id, ok: true, result: '0x1' });
+      await expect(again.promise).resolves.toBe('0x1');
+      await expect(normalAgain.promise).resolves.toBe('0x1');
+    });
+
+    test('ensureWorker readies the private worker only when asked for it', async () => {
+      const ready = host.ensureWorker(1, { private: true });
+      await flush();
+      expect(Worker).toHaveBeenCalledTimes(1);
+      expect(workerData(lastWorker())).toEqual({ storageDir: null });
+      lastWorker().emit('message', { type: 'ready' });
+      await expect(ready).resolves.toBeUndefined();
+
+      host.ensureWorker(1);
+      await flush();
+      expect(Worker).toHaveBeenCalledTimes(2);
+      expect(workerData(lastWorker())).toEqual({ storageDir: STORAGE_DIR });
+    });
+
+    test('the end of the private session terminates the private worker only', async () => {
+      const normalClient = host.createClient(CONFIG);
+      const privateClient = host.createClient(PRIVATE);
+      const normal = await startRequest(normalClient, { method: 'eth_getBalance' });
+      const priv = await startRequest(privateClient, { method: 'eth_getBalance' });
+
+      host.endPrivateSession();
+
+      expect(priv.worker.terminate).toHaveBeenCalledTimes(1);
+      expect(normal.worker.terminate).not.toHaveBeenCalled();
+      // What was still pending on it failed as a bystander: the router's
+      // fault backoff must not count it against the method.
+      await expect(priv.promise).rejects.toMatchObject({
+        name: 'ColibriWorkerError',
+        colibriBystander: true,
+      });
+      expect(mockLogWarn).toHaveBeenCalledWith(
+        '[colibri] chain 1 (private) worker replaced (private session ended); 1 request(s) failed'
+      );
+      normal.worker.emit('message', { type: 'result', id: normal.id, ok: true, result: '0x2' });
+      await expect(normal.promise).resolves.toBe('0x2');
+
+      // A client of the ended session is refused, without starting a worker:
+      // a late read from a closed window never seeds the next session's store.
+      await expect(privateClient.request({ method: 'eth_chainId' })).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+        colibriBystander: true,
+      });
+      expect(Worker).toHaveBeenCalledTimes(2);
+
+      // The next private window's first read starts a fresh private worker.
+      const next = await startRequest(host.createClient(PRIVATE), { method: 'eth_chainId' });
+      expect(Worker).toHaveBeenCalledTimes(3);
+      expect(next.worker).not.toBe(priv.worker);
+      expect(workerData(next.worker)).toEqual({ storageDir: null });
+      // Normal clients are not part of it.
+      const later = await startOn(normalClient, { method: 'eth_chainId' }, normal.worker);
+      normal.worker.emit('message', { type: 'result', id: later.id, ok: true, result: '0x1' });
+      await expect(later.promise).resolves.toBe('0x1');
+    });
+
+    test('a private worker still starting when the session ends fails its waiter as a bystander', async () => {
+      const promise = host.createClient(PRIVATE).request({ method: 'eth_chainId' });
+      promise.catch(() => {});
+      await flush();
+      host.endPrivateSession();
+      await expect(promise).rejects.toMatchObject({
+        message: 'Colibri private session ended',
+        colibriBystander: true,
+      });
+      expect(lastWorker().terminate).toHaveBeenCalledTimes(1);
+    });
+
+    test('the end of the session reaches a private worker still draining after a trap', async () => {
+      const client = host.createClient(PRIVATE);
+      const a = await startRequest(client, { method: 'eth_getTransactionReceipt' });
+      a.worker.emit('message', { type: 'trap', message: 'memory access out of bounds' });
+      expect(mockLogWarn).toHaveBeenCalledWith(
+        '[colibri] chain 1 (private) WASM verifier trapped (memory access out of bounds); replacing the worker'
+      );
+      const b = await startRequest(client, { method: 'eth_chainId' });
+      expect(b.worker).not.toBe(a.worker);
+      expect(a.worker.terminate).not.toHaveBeenCalled();
+
+      host.endPrivateSession();
+
+      expect(a.worker.terminate).toHaveBeenCalledTimes(1);
+      expect(b.worker.terminate).toHaveBeenCalledTimes(1);
+      await expect(a.promise).rejects.toMatchObject({ colibriBystander: true });
+      await expect(b.promise).rejects.toMatchObject({ colibriBystander: true });
+    });
+  });
 });

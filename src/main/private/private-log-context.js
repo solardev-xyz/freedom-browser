@@ -26,6 +26,11 @@
  * Name resolution itself runs in the naming core (freedom-core design
  * 0004), which logs no names; the driver still tells it, with each lookup,
  * whether the lookup is private.
+ *
+ * The same marker picks Colibri's store (src/main/ens/colibri-resolver.js,
+ * #1058): a read in a private context runs on the chain's private worker,
+ * whose verifier store is in memory only, instead of the one on disk under
+ * <userData>/colibri.
  */
 
 const { AsyncLocalStorage } = require('async_hooks');
