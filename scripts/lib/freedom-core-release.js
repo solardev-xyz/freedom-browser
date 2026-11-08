@@ -2,8 +2,9 @@
 
 /**
  * Fetches and verifies one of the binaries solardev-xyz/freedom-core
- * releases: `freedom-cored` (scripts/fetch-freedom-cored.js) and
- * `freedom-ipfsd` (scripts/fetch-freedom-ipfsd.js). Each is released on tags
+ * releases: `freedom-cored` (scripts/fetch-freedom-cored.js),
+ * `freedom-ipfsd` (scripts/fetch-freedom-ipfsd.js) and `freedom-radicled`
+ * (scripts/fetch-freedom-radicled.js). Each is released on tags
  * of its own by the same kind of workflow, which publishes one archive per
  * platform, named with the same os/arch keywords as Ant's, plus SHA256SUMS.
  * Each archive holds the executable and the notices of the third-party code

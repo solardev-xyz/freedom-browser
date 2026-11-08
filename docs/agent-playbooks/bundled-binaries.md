@@ -351,8 +351,9 @@ All the downloaders share one retry/timeout/redirect policy,
 `scripts/lib/fetch-with-retry.js`; `release-process.md` § Bundled binaries has
 the full policy and the per-binary authoritative-source table.
 
-**freedom-cored and freedom-ipfsd** (solardev-xyz/freedom-core's releases,
-`scripts/fetch-freedom-cored.js` and `scripts/fetch-freedom-ipfsd.js`) pin the
+**freedom-cored, freedom-ipfsd and freedom-radicled** (solardev-xyz/freedom-core's
+releases, `scripts/fetch-freedom-cored.js`, `scripts/fetch-freedom-ipfsd.js` and
+`scripts/fetch-freedom-radicled.js`) pin the
 release's `SHA256SUMS` digest as Ant does, and in CI the fetch also verifies
 their build provenance (`scripts/lib/freedom-core-release.js`). With
 `GITHUB_ACTIONS=true`, `SHA256SUMS` (once its digest is checked) and each
@@ -364,9 +365,9 @@ missing `GH_TOKEN`/`GITHUB_TOKEN` or a failed check fails the fetch, and
 nothing turns the check off in CI, so it holds however a workflow runs the
 download: a step, a composite action or a helper script. So a bump must name
 a release with build provenance: `cored-v0.6.0` and later, and every
-`ipfsd-v*`. Check a new release before pinning it with
+`ipfsd-v*` and `radicled-v*`. Check a new release before pinning it with
 `GH_TOKEN=$(gh auth token) node scripts/ci/verify-core-provenance.js cored`
-(or `ipfsd`), which runs the same fetch, with verification on, into a
+(or `ipfsd`, or `radicled`), which runs the same fetch, with verification on, into a
 temporary directory. Locally the SHA-256 pins stay the check; the download
 scripts take no Sigstore dependency.
 
@@ -374,6 +375,11 @@ A freedom-ipfsd bump also changes `PINNED_IPFSD_VERSION` in
 `src/main/ipfs/ipfsd-pin.js`, in the same commit: main refuses a service
 whose `ipfs.hello` reports another `service_version` (freedom-core design
 0010). `src/main/ipfs/ipfsd-pin.test.js` fails while the two differ.
+A freedom-radicled bump likewise changes `PINNED_RADICLED_VERSION` in
+`src/main/radicle/radicled-pin.js` (`radicled-pin.test.js`), and the
+`colored` entry of `licenses-audit.test.js`'s `MPL_CRATES`, with `NOTICES`'
+libgit2 and LibXDiff source pointers, once the new release's
+`THIRD-PARTY-NOTICES` has been re-read.
 
 ## Prebuilt natives (Arti, whisper.cpp, Windows sandbox)
 

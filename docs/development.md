@@ -139,6 +139,7 @@ Protocol and privileged logic belongs in the main process. The renderer talks to
 | `npm run ant:download`           | Download the pinned Ant binary                                                     |
 | `npm run ipfsd:download`         | Download the pinned freedom-ipfsd binary, the IPFS node                            |
 | `npm run ipfs:download`          | Download the pinned freedom-ipfs native addon, the rollback (see above)            |
+| `npm run radicled:download`      | Download the pinned freedom-radicled binary (bundled, not yet run)                 |
 | `npm run myotis:download`        | Download the pinned Myotis native addon                                            |
 | `npm run radicle:download`       | Download the embedded libradicle addon for the current platform                    |
 | `npm run radicle:build-addon`    | Build the libradicle addon from a sibling checkout                                 |

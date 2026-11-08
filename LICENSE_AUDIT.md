@@ -11,6 +11,8 @@
 >
 > **integration/rust-core, on merging 0.8.8 (2026-11-05):** on this branch the vault and identity run in freedom-cored, so `@metamask/browser-passworder`, `@scure/bip39` and `micro-key-producer` are dev dependencies (only the legacy identity tests use them). With the transitive packages only they reached, among them the MPL-2.0 `@ethereumjs/{rlp,tx,util}`, they leave the production walk: 28 `name@version` entries, from 388 to 360 (MIT 21, ISC 2, MPL-2.0 3, Apache-2.0 1, 0BSD 1). freedom-cored and freedom-ipfsd join the shipped binaries (_freedom-cored_ and _freedom-ipfsd_ below).
 >
+> **integration/rust-core, freedom-radicled (2026-11-08):** freedom-radicled `radicled-v0.1.0`, the Radicle service, joins the shipped binaries, though nothing runs it yet (_freedom-radicled_ below). Its license is freedom-core's, still to be chosen. It is the first shipped binary whose notices name an LGPL library without a linking exception: libgit2 1.9.6 bundles LibXDiff (LGPL-2.1-or-later). libgit2 itself is GPL-2.0 under libgit2's linking exception. It also links one MPL-2.0 crate, `colored` 2.2.0. `NOTICES` names the exact source of each, and freedom-radicled's complete source for relinking.
+>
 > **2026-10-25 update (v0.1.18):** Myotis is now pinned to v0.1.18. `LICENSE` and `NOTICE` are byte-identical to v0.1.16 (`git diff v0.1.16 v0.1.18 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.16 to 0.1.18) and gives `myotis-engine` a direct dependency on `libc`, already in the lock; no crate is added or removed.
 >
 > **2026-10-16 update (v0.1.16):** Myotis is now pinned to v0.1.16. `LICENSE` and `NOTICE` are byte-identical to v0.1.15 (`git diff v0.1.15 v0.1.16 -- LICENSE NOTICE` is empty; `NOTICE` sha256 still `ee84afd3…`), so the existing attribution still applies. The addon's Rust lockfile changes only upstream's own crate versions (0.1.15 to 0.1.16); no crate is added or removed.
@@ -38,19 +40,22 @@ Whisper Base model (MIT), with the same notices. No npm dependency was added.
 
 ### Key Findings
 
-| Category                                                    | Count       | Status                                                                                                        |
-| ----------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| Production npm packages (unique name@version)               | 360         | See distribution below                                                                                        |
-| Dev npm dependencies                                        | not bundled | Do not affect the distributed product                                                                         |
-| External binaries / native addons shipped in `resources/`   | 9           | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored, freedom-ipfsd, Codex Windows sandbox, whisper.cpp |
-| Vendored renderer bundles in `src/renderer/vendor/`         | 4           | OpenLV, highlight.js, marked, DOMPurify                                                                       |
-| Strong copyleft (GPL/AGPL)                                  | 0           | Two found and removed — see below and #962                                                                    |
-| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`) | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410)                                            |
-| Weak copyleft (MPL-2.0)                                     | 10 packages | Compatible; MPL-2.0 is our own license                                                                        |
-| Weak copyleft (MPL-2.0) in the freedom-ipfsd binary         | 1 crate     | Source pointer in `NOTICES`, as §3.2(a) requires — see below                                                  |
-| LGPL-2.1+ glibc startup objects in freedom-ipfsd (Linux)    | 1 set       | glibc's linking exception: notice only — see below                                                            |
-| Weak copyleft (LGPL-3.0)                                    | 5 packages  | Compatible via the isolated OpenLV bundle                                                                     |
-| Weak copyleft (LGPL-2.1) in the Linux AppImage runtime      | 1 library   | Separate program, upstream source — **decided** (see below)                                                   |
+| Category                                                                      | Count       | Status                                                                                                                          |
+| ----------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Production npm packages (unique name@version)                                 | 360         | See distribution below                                                                                                          |
+| Dev npm dependencies                                                          | not bundled | Do not affect the distributed product                                                                                           |
+| External binaries / native addons shipped in `resources/`                     | 10          | Ant, freedom-ipfs, libradicle, Myotis, Arti, freedom-cored, freedom-ipfsd, freedom-radicled, Codex Windows sandbox, whisper.cpp |
+| Vendored renderer bundles in `src/renderer/vendor/`                           | 4           | OpenLV, highlight.js, marked, DOMPurify                                                                                         |
+| Strong copyleft (GPL/AGPL)                                                    | 0           | Two found and removed — see below and #962                                                                                      |
+| GPL-3.0 ad-blocking data and scriptlets (`assets/adblock/`)                   | 2 files     | Shipped alongside, not combined — **decided** (Brave parity, #410)                                                              |
+| Weak copyleft (MPL-2.0)                                                       | 10 packages | Compatible; MPL-2.0 is our own license                                                                                          |
+| Weak copyleft (MPL-2.0) in the freedom-ipfsd binary                           | 1 crate     | Source pointer in `NOTICES`, as §3.2(a) requires — see below                                                                    |
+| Weak copyleft (MPL-2.0) in the freedom-radicled binary                        | 1 crate     | Source pointer in `NOTICES`, as §3.2(a) requires — see below                                                                    |
+| LGPL-2.1+ glibc startup objects in freedom-ipfsd and freedom-radicled (Linux) | 2 sets      | glibc's linking exception: notice only — see below                                                                              |
+| GPL-2.0 libgit2 in freedom-radicled                                           | 1 library   | libgit2's linking exception: notice only — see below                                                                            |
+| Weak copyleft (LGPL-2.1+) LibXDiff in freedom-radicled's libgit2              | 1 library   | Source and relinking pointers in `NOTICES`; §6's terms wait on freedom-core's license — see below                               |
+| Weak copyleft (LGPL-3.0)                                                      | 5 packages  | Compatible via the isolated OpenLV bundle                                                                                       |
+| Weak copyleft (LGPL-2.1) in the Linux AppImage runtime                        | 1 library   | Separate program, upstream source — **decided** (see below)                                                                     |
 
 ### Resolved during this audit: a GPL-3.0 library was shipping
 
@@ -80,6 +85,7 @@ Freedom Browser is distributed as:
   - Ant (`antd`, Swarm node)
   - `freedom-cored` (Rust identity core) — its license is pending; see below
   - `freedom-ipfsd` (IPFS service) — packaged builds' IPFS node; its license is pending; see below
+  - `freedom-radicled` (Radicle service) — shipped, not yet run; its license is pending; see below
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -119,6 +125,23 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, freedom-ipfs's among them, plus the Rust toolchain runtime: the standard library's crates, compiler-builtins and, on Linux, glibc's startup objects and LLVM's libunwind) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). The notices are the same file in every archive. `scripts/fetch-freedom-ipfsd.js` installs both next to the binary, `package.json` ships them in `resources/freedom-ipfsd/`, and `scripts/check-binaries.js` requires them.
 - **Copyleft — MPL-2.0 `attohttpc` 0.30.1:** the one weak-copyleft crate in `ipfsd-v0.4.0`'s `THIRD-PARTY-NOTICES` on every platform, as in `ipfsd-v0.3.0`'s, `ipfsd-v0.2.1`'s, `ipfsd-v0.2.0`'s, `ipfsd-v0.1.1`'s and `ipfsd-v0.1.0`'s (no GPL or LGPL crate is listed), statically linked and unmodified. MPL-2.0 is file-level copyleft, so it reaches no other code. But Freedom distributes it in executable form, so §3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. The "unmodified, no obligation beyond notice" reading below does not cover this binary. **Fulfilled by `NOTICES`**, which names the exact source: the crates.io archive <https://static.crates.io/crates/attohttpc/attohttpc-0.30.1.crate> (sha256 `16e2cdb6d5ed835199484bb92bb8b3edd526effe995c61732580439c1a67e2e9`, the `checksum` freedom-ipfsd's `Cargo.lock` records at `ipfsd-v0.1.0`, `ipfsd-v0.1.1`, `ipfsd-v0.2.0`, `ipfsd-v0.2.1`, `ipfsd-v0.3.0` and `ipfsd-v0.4.0` alike) and the repository <https://github.com/sbstp/attohttpc>. Since `ipfsd-v0.1.1` the release's own `THIRD-PARTY-NOTICES` names the same source too (freedom-core #145), so the obligation is met twice over; `NOTICES` keeps its pointer all the same, as Freedom's own attribution file and the one `licenses-audit.test.js` checks for every pin. On every pin bump, re-read the release's crate list for MPL-2.0 crates and keep the pointer on the versions it links.
 - **Copyleft — LGPL-2.1-or-later glibc startup objects (Linux):** `Scrt1.o` (`sysdeps/x86_64/start.S`, `sysdeps/aarch64/start.S`), `__libc_csu_init` and `__libc_csu_fini` (`csu/elf-init-2.33.c`), `stat64`, `fstat64` and `lstat64` (`io/*stat64-2.32.c`), and on aarch64 `__pthread_atfork` (`sysdeps/pthread/pthread_atfork.c`), statically linked and unmodified. Each file carries the GNU C Library's exception to the LGPL, which gives "unlimited permission to link the compiled version of this file with other programs, and to distribute those programs without any restriction coming from the use of this file". So linking them into freedom-ipfsd, and distributing the result, puts no LGPL obligation on the binary: no relinking requirement (§6) and no source offer for them, unlike the AppImage runtime's libfuse below. The LGPL still applies to the files themselves (modified, or distributed unlinked), and Freedom does neither. What remains is attribution, which the release's `THIRD-PARTY-NOTICES` carries with the license text and the exception, and `NOTICES` names. The libunwind copy is Apache-2.0 WITH LLVM-exception, permissive.
+- **Source:** <https://github.com/solardev-xyz/freedom-core>.
+
+### freedom-radicled (Radicle Service) — license pending
+
+- **Pin:** `radicled-v0.1.0` (an immutable release) in `scripts/fetch-freedom-radicled.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
+- **Integration:** a separate binary under `resources/freedom-radicled/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Nothing runs it yet: Radicle still runs on the libradicle add-on until main moves onto the service (freedom-core design 0008, step 6 on).
+- **License:** freedom-core's, which is not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
+- **Linking (Linux):** the Linux binaries (x86_64 and aarch64) are dynamically linked against the system's GNU C Library, needing at most `GLIBC_2.17` (`libc`, `libm`, `libpthread`, `libdl` and the dynamic loader), and built with cargo-zigbuild, as freedom-ipfsd's are. glibc itself is the user's system library and is not distributed.
+- **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, libradicle's and Radicle Heartwood's among them; the C libraries they bundle, libgit2 1.9.6, zlib 1.3.2 and SQLite 3.49.1; and the Rust toolchain runtime, with glibc's startup objects and LLVM's libunwind on Linux) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). The notices are the same file in every archive. `scripts/fetch-freedom-radicled.js` installs both next to the binary, `package.json` ships them in `resources/freedom-radicled/`, and `scripts/check-binaries.js` requires them.
+- **libgit2 1.9.6 — GPL-2.0 with libgit2's linking exception:** statically linked and unmodified, built from `libgit2-sys` 0.18.7+1.9.6's copy. The exception gives "unlimited permission to link the compiled version of this library into combinations with other programs, and to distribute those combinations without any restriction coming from the use of this file", so libgit2's GPL puts no obligation on freedom-radicled. What remains is attribution: the release's `THIRD-PARTY-NOTICES` carries libgit2's `COPYING`, and `NOTICES` names it.
+- **Copyleft — LGPL-2.1-or-later LibXDiff (in libgit2):** libgit2 bundles LibXDiff (`deps/xdiff`), which carries no linking exception, statically linked and unmodified. So LGPL-2.1 §6 applies to the executable, as it does to the AppImage runtime's libfuse below: a recipient must be able to get the library's source and relink the program against a modified copy, and the program's terms must permit "modification of the work for the customer's own use and reverse engineering for debugging such modifications".
+  - **The source:** `NOTICES`, like the release's own `THIRD-PARTY-NOTICES`, names the exact crates.io archive the binary was built from, <https://static.crates.io/crates/libgit2-sys/libgit2-sys-0.18.7+1.9.6.crate> (sha256 `23c7391e4b9f4ffab1a624223cc1d7385ff9a678f490768add717de7ea2f4d89`, the `checksum` freedom-radicled's `Cargo.lock` records at `radicled-v0.1.0`), and freedom-radicled's complete source for relinking, freedom-core at the tag `radicled-v0.1.0`.
+  - **The terms:** freedom-radicled has no license yet, so nothing grants the modification and reverse engineering §6 asks for. That half waits on freedom-core's license, which the maintainer has deferred; the license chosen must allow it, or LibXDiff must leave the build.
+  - libgit2's `COPYING` also lists LGPL-2.1 winhttp definition files, which only its Windows HTTPS transport uses. freedom-radicled builds `git2` without default features, and its Windows binary imports no `winhttp.dll`.
+- **Copyleft — MPL-2.0 `colored` 2.2.0:** the one weak-copyleft crate in `radicled-v0.1.0`'s `THIRD-PARTY-NOTICES`, statically linked and unmodified. As with freedom-ipfsd's `attohttpc`, §3.2(a) applies to the executable form: **fulfilled by `NOTICES`**, which names the exact source, the crates.io archive <https://static.crates.io/crates/colored/colored-2.2.0.crate> (sha256 `117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c`, the `checksum` freedom-radicled's `Cargo.lock` records at `radicled-v0.1.0`) and the repository <https://github.com/mackwic/colored>. The release's own `THIRD-PARTY-NOTICES` names the same source.
+- **Copyleft — LGPL-2.1-or-later glibc startup objects (Linux):** `Scrt1.o`, `__libc_csu_init` and `__libc_csu_fini`, `stat`, `fstat` and `lstat` with their 64-bit forms, and `fstatat64`, statically linked and unmodified, each under the GNU C Library's exception, as in freedom-ipfsd (above): attribution only. The libunwind copy is Apache-2.0 WITH LLVM-exception, permissive.
+- **Permissive C libraries:** zlib 1.3.2 (Zlib) and SQLite 3.49.1 (public domain, with SQLite's blessing in place of a license).
 - **Source:** <https://github.com/solardev-xyz/freedom-core>.
 
 ### Ant (antd, Swarm Node)
@@ -362,7 +385,7 @@ Notable: **caniuse-lite** is CC-BY-4.0 (attribution required if distributed — 
 16. **pdfjs-dist** — Apache-2.0, plus its bundled JBIG2, OpenJPEG, qcms, QuickJS, CMaps and ICC profiles (see _pdfjs-dist_)
 17. **PDF standard fonts** in `src/renderer/assets/pdf-fonts/` — Liberation Sans 2.1.5 under OFL-1.1 with its Reserved Font Name, and the two Foxit fonts under BSD-3-Clause
 
-freedom-core's own license, which covers freedom-cored and freedom-ipfsd, is still to be chosen; it must be settled before shipping. `NOTICES` must also keep the source pointer for freedom-ipfsd's MPL-2.0 crate, `attohttpc` 0.30.1 (§3.2(a); see _freedom-ipfsd_).
+freedom-core's own license, which covers freedom-cored, freedom-ipfsd and freedom-radicled, is still to be chosen; it must be settled before shipping, and for freedom-radicled it must permit what LGPL-2.1 §6 asks (see _freedom-radicled_). `NOTICES` must also keep the source pointers for freedom-ipfsd's MPL-2.0 crate, `attohttpc` 0.30.1, and freedom-radicled's, `colored` 2.2.0 (§3.2(a)), and freedom-radicled's libgit2 and LibXDiff source and relinking pointers (§6; see _freedom-ipfsd_ and _freedom-radicled_).
 
 `licenses-audit.test.js` checks 2–13 against what `package.json`'s `build` config and the `src/**/*` files pattern actually ship, and fails on anything new that has not been classified.
 
@@ -380,7 +403,7 @@ freedom-core's own license, which covers freedom-cored and freedom-ipfsd, is sti
 
 ### Strong copyleft (GPL/AGPL): NONE — two found and removed
 
-`pdfjs-dist`'s `standard_fonts/` carried Liberation Sans 1.x (GPL-2.0 with a font exception) and is now left out of the package; see _pdfjs-dist_ above and [#962](https://github.com/solardev-xyz/freedom-browser/issues/962). `src/renderer/vendor/qrious.min.js` (GPL-3.0) was shipping unreferenced; see _Resolved during this audit_ above. Nothing else in the production tree or the vendor directory is GPL or AGPL.
+`pdfjs-dist`'s `standard_fonts/` carried Liberation Sans 1.x (GPL-2.0 with a font exception) and is now left out of the package; see _pdfjs-dist_ above and [#962](https://github.com/solardev-xyz/freedom-browser/issues/962). `src/renderer/vendor/qrious.min.js` (GPL-3.0) was shipping unreferenced; see _Resolved during this audit_ above. Nothing else in the production tree or the vendor directory is GPL or AGPL. The freedom-radicled binary links libgit2, which is GPL-2.0 with libgit2's linking exception: linked into a program, it puts no GPL obligation on that program (see _freedom-radicled_).
 
 The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"; Freedom redistributes them under CC BY-SA, so no GPL obligation attaches. The uBlock Origin filters and scriptlets in `assets/adblock/` are GPL-only, shipped alongside Freedom as separate files rather than combined with it — see _The GPL question_ under _Assets_ for the position and the maintainer's decision.
 
@@ -388,7 +411,9 @@ The EasyList-family filter lists are offered under "GPLv3+ **or** CC BY-SA 3.0+"
 
 - **MPL-2.0** (10 packages) — file-level copyleft, same license as Freedom itself, all consumed unmodified. No obligation beyond notice.
 - **MPL-2.0 in the freedom-ipfsd binary** (1 crate, `attohttpc` 0.30.1, statically linked, unmodified) — distributed in executable form, so the line above does not apply: §3.2(a) needs its source available and recipients told where, and `NOTICES` names the exact crates.io source archive. See _freedom-ipfsd_ above.
-- **LGPL-2.1-or-later glibc startup objects in freedom-ipfsd's Linux binaries** — statically linked under the GNU C Library's linking exception, so no LGPL obligation reaches the binary; attribution only. See _freedom-ipfsd_ above.
+- **LGPL-2.1-or-later glibc startup objects in freedom-ipfsd's Linux binaries** — statically linked under the GNU C Library's linking exception, so no LGPL obligation reaches the binary; attribution only. See _freedom-ipfsd_ above. freedom-radicled's Linux binaries carry the same kind of objects; see _freedom-radicled_ above.
+- **MPL-2.0 in the freedom-radicled binary** (1 crate, `colored` 2.2.0, statically linked, unmodified) — as for freedom-ipfsd, `NOTICES` names the exact crates.io source archive (§3.2(a)). See _freedom-radicled_ above.
+- **LGPL-2.1-or-later LibXDiff, bundled by libgit2 in the freedom-radicled binary** — statically linked, unmodified, with no linking exception, so §6 applies. `NOTICES` names the library's exact source and freedom-radicled's complete source for relinking; §6's other condition, terms that permit modification and reverse engineering, waits on freedom-core's license. See _freedom-radicled_ above.
 - **LGPL-3.0** (5 packages: `@openlv/{core,session,signaling,transport}`, `websocket-mqtt`) — shipped as one isolated, regenerable bundle so §4 relinking is possible. See _The LGPL question_ above.
 - **LGPL-2.1** (libfuse, statically linked into the Linux AppImage runtime) — a separate upstream program, attributed in `NOTICES`, whose published upstream source meets §6 (maintainer decision, 2026-10-07). See _AppImage runtime_ above.
 
@@ -440,9 +465,9 @@ under `src/main/agent/workspace-execution/native/windows/` are first-party MPL-2
 
 Freedom Browser can be released under MPL-2.0, with these conditions:
 
-- **Zero GPL/AGPL code ships** — true only after removing `qrious.min.js`
-- **Weak copyleft (MPL-2.0, LGPL-3.0) is present and handled**, not absent; **LGPL-2.1 in the Linux AppImage runtime** is attributed, and §6 is met by upstream's published source (decided); **glibc's LGPL-2.1+ startup objects in freedom-ipfsd's Linux binaries** are under glibc's linking exception, attribution only
-- **All runtime binaries and native addons in `resources/` are permissively licensed** (the AppImage runtime is the exception above)
+- **Zero GPL/AGPL code ships** — true only after removing `qrious.min.js`; the one GPL-licensed library left, libgit2 in freedom-radicled, ships under libgit2's linking exception
+- **Weak copyleft (MPL-2.0, LGPL-3.0) is present and handled**, not absent; **LGPL-2.1 in the Linux AppImage runtime** is attributed, and §6 is met by upstream's published source (decided); **glibc's LGPL-2.1+ startup objects in freedom-ipfsd's and freedom-radicled's Linux binaries** are under glibc's linking exception, attribution only; **LGPL-2.1+ LibXDiff in freedom-radicled** has its source and relinking pointers in `NOTICES`, and the rest of §6 waits on freedom-core's license
+- **All runtime binaries and native addons in `resources/` are permissively licensed** (the AppImage runtime and freedom-radicled's libgit2 and LibXDiff are the exceptions above; freedom-core's own binaries have no license yet)
 - **Myotis requires its upstream `NOTICE` reproduced**, per Apache-2.0 §4(d)
 - **Assets are original works**, except the CC BY-SA filter-list data and the third-party chain/token marks
 
@@ -454,7 +479,8 @@ Freedom Browser can be released under MPL-2.0, with these conditions:
 - [x] Myotis's upstream `NOTICE` reproduced verbatim
 - [x] LGPL relinking instructions present in `NOTICES`
 - [x] Maintainer decision recorded for the AppImage runtime's LGPL-2.1 libfuse
-- [x] No GPL/AGPL code in the packaged artifact
+- [x] No GPL/AGPL code in the packaged artifact, but for libgit2 under its linking exception (freedom-radicled)
+- [ ] freedom-core's license chosen (freedom-cored, freedom-ipfsd, freedom-radicled), and for freedom-radicled one that permits what LGPL-2.1 §6 asks
 - [ ] Add MPL-2.0 header comments to source files (optional but recommended)
 - [x] Electron's `LICENSES.chromium.html` ships in every artifact, macOS included
 

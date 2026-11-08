@@ -89,6 +89,48 @@
       ]
     },
     {
+      "name": "freedom-radicled",
+      "version": "radicled-v0.1.0",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/solardev-xyz/freedom-core"
+      },
+      "license": {
+        "spdx": [],
+        "raw": "Not selected yet",
+        "license_files": [],
+        "notice_required": true
+      },
+      "version_pin": "scripts/fetch-freedom-radicled.js PINNED_RELEASE_TAG",
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "red",
+      "issues": [
+        {
+          "kind": "missing-license",
+          "details": "freedom-radicled is released from freedom-core, which has no license yet (the maintainer's decision). Every build ships it, but none runs it yet: Radicle still runs on the libradicle add-on until main moves onto the service (freedom-core design 0008, step 6 on). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
+        },
+        {
+          "kind": "copyleft",
+          "details": "Statically links libgit2 1.9.6, unmodified, built from libgit2-sys 0.18.7+1.9.6's copy. libgit2 is GPL-2.0-only with libgit2's linking exception, which gives unlimited permission to link its compiled form into combinations with other programs and to distribute them without any restriction coming from the use of the file, so libgit2's GPL puts no obligation on freedom-radicled. libgit2 bundles LibXDiff (deps/xdiff), which is LGPL-2.1-or-later with no such exception, so LGPL-2.1 section 6 applies to the statically linked executable: recipients must be able to obtain the library's source and relink the program against a modified copy, and the program's terms must permit modification for the customer's own use and reverse engineering for debugging such modifications. The source half is met: radicled-v0.1.0's THIRD-PARTY-NOTICES and NOTICES name the libgit2-sys crate (https://static.crates.io/crates/libgit2-sys/libgit2-sys-0.18.7+1.9.6.crate, sha256 23c7391e4b9f4ffab1a624223cc1d7385ff9a678f490768add717de7ea2f4d89, the checksum freedom-radicled's Cargo.lock records at radicled-v0.1.0) and freedom-radicled's complete source at the tag (https://github.com/solardev-xyz/freedom-core, services/freedom-radicled with its Cargo.lock). The terms half waits on freedom-core's license, which the maintainer has deferred. libgit2's COPYING also lists LGPL-2.1 winhttp definition files, which only its Windows HTTPS transport uses: freedom-radicled builds git2 without default features, and its Windows binary imports no winhttp.dll.",
+          "recommended_fix": "When freedom-core's license is chosen, make sure it permits what LGPL-2.1 section 6 asks of freedom-radicled (modification for the customer's own use, reverse engineering to debug it), or keep LibXDiff out of the build. Keep NOTICES' source and relinking pointers on the release that ships, and re-read libgit2's bundled code on every radicled pin bump."
+        },
+        {
+          "kind": "copyleft",
+          "details": "Statically links colored 2.2.0 (MPL-2.0), unmodified: the one MPL-2.0 crate in radicled-v0.1.0's THIRD-PARTY-NOTICES, the same file on every platform. Distributed in executable form, so section 3.2(a) applies although it is unmodified: its source must be available and recipients told how to obtain it. Fulfilled by NOTICES, which names the exact source, the crates.io archive https://static.crates.io/crates/colored/colored-2.2.0.crate (sha256 117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c, the checksum freedom-radicled's Cargo.lock records at radicled-v0.1.0), and the repository https://github.com/mackwic/colored. The release's own THIRD-PARTY-NOTICES names the same source.",
+          "recommended_fix": "Keep the NOTICES source pointer. On every radicled pin bump, re-read the release's crate list for MPL-2.0 crates and point NOTICES at the exact versions it links."
+        },
+        {
+          "kind": "copyleft",
+          "details": "The Linux binaries (x86_64, aarch64) are dynamically linked against the system's glibc (GLIBC_2.17 at most; libc, libm, libpthread, libdl, ld-linux), built with cargo-zigbuild, and statically carry glibc's startup and libc_nonshared objects as Zig 0.15.2 builds them for glibc 2.17 (Scrt1.o, __libc_csu_init/__libc_csu_fini, stat/fstat/lstat and their 64-bit forms, fstatat64; LGPL-2.1-or-later), and LLVM libunwind (Zig's copy; Apache-2.0 WITH LLVM-exception). Each glibc file carries the GNU C Library's exception, which gives unlimited permission to link its compiled form with other programs and to distribute those programs without any restriction coming from the use of the file: the LGPL puts no relinking or source obligation on freedom-radicled. glibc itself is the user's system library and is not distributed.",
+          "recommended_fix": "Attribution only: the release's THIRD-PARTY-NOTICES carries the license text and the exception, and NOTICES names the objects. Re-check on a pin bump that the Linux build still links only the startup objects under the exception."
+        }
+      ]
+    },
+    {
       "name": "whisper.cpp",
       "version": "1.9.5",
       "type": "native-binary",
@@ -1108,7 +1150,7 @@
   ],
   "verdict": {
     "status": "OK_TO_SHIP",
-    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code ships: the unreferenced qrious bundle was removed in 0.8.5, and pdfjs-dist's GPL-2.0 Liberation Sans 1.x fonts are left out of the package in favour of OFL-licensed Liberation Sans 2.1.5 (#962). The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the one MPL-2.0 crate the freedom-ipfsd binary links (attohttpc) ships in executable form, so NOTICES names its exact source (section 3.2(a)); the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
+    "message": "Compatible with distributing Freedom under MPL-2.0, provided NOTICES stays as written. No GPL/AGPL code ships: the unreferenced qrious bundle was removed in 0.8.5, and pdfjs-dist's GPL-2.0 Liberation Sans 1.x fonts are left out of the package in favour of OFL-licensed Liberation Sans 2.1.5 (#962). The weak copyleft that does ship is handled: MPL-2.0 packages are consumed unmodified and MPL-2.0 is Freedom's own license; the one MPL-2.0 crate the freedom-ipfsd binary links (attohttpc) ships in executable form, so NOTICES names its exact source (section 3.2(a)), as it does for the freedom-radicled binary's (colored); freedom-radicled links libgit2 (GPL-2.0 under libgit2's linking exception, so no GPL obligation reaches the binary) and the LGPL-2.1 LibXDiff it bundles, whose source and relinking pointers NOTICES carries (section 6's terms wait on freedom-core's license, as the binary's own license does); the LGPL-3.0 OpenLV stack ships as one standalone, regenerable vendor bundle containing no Freedom code, which is what makes LGPL section 4 relinking possible."
   },
   "required_actions": [
     {
@@ -1135,6 +1177,11 @@
       "priority": "required",
       "action": "Keep freedom-ipfsd's MPL-2.0 source pointer current",
       "details": "MPL-2.0 section 3.2(a): the freedom-ipfsd binary statically links attohttpc 0.30.1, so NOTICES names its exact crates.io source archive and repository. Re-read the release's THIRD-PARTY-NOTICES crate list on every ipfsd pin bump and move the pointer to the MPL-2.0 versions it links; licenses-audit.test.js fails if the pointer leaves NOTICES."
+    },
+    {
+      "priority": "required",
+      "action": "Keep freedom-radicled's MPL-2.0 and LGPL-2.1 source pointers current",
+      "details": "The freedom-radicled binary statically links colored 2.2.0 (MPL-2.0 section 3.2(a)) and libgit2 1.9.6 with its bundled LibXDiff (LGPL-2.1 section 6), so NOTICES names the exact crates.io source archives and freedom-radicled's complete source at the pinned tag. Re-read the release's THIRD-PARTY-NOTICES on every radicled pin bump and move the pointers to what it links; licenses-audit.test.js fails if the colored pointer leaves NOTICES."
     },
     {
       "priority": "required",
