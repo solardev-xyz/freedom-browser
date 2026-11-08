@@ -1,0 +1,5 @@
+- Export and import the wallet's account list, under Accounts in the wallet sidebar's Settings tab ([#1037](https://github.com/solardev-xyz/freedom-browser/issues/1037))
+  - The file holds each account's name and address, never keys, the recovery phrase or its passphrase
+  - Importing shows what will change first, renames accounts already in the list and deletes nothing
+  - A recovery-phrase account is added only when the unlocked vault derives its address, and a Safe only when its owners are there and its address follows from them
+  - Ledger and phone accounts are added from the device as usual; importing the same file again then restores their names

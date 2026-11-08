@@ -545,6 +545,38 @@ function registerWalletIpc() {
     }
   });
 
+  // The account list file (#1037): names and addresses out, verified back
+  // in. Main shows the save and open dialogs and reads the file itself; the
+  // renderer only holds a token for an opened file.
+  const accountListHandler =
+    (fn) =>
+    async (event, ...args) => {
+      try {
+        return {
+          success: true,
+          ...(await fn(event?.sender?.getOwnerBrowserWindow?.() ?? null, ...args)),
+        };
+      } catch (err) {
+        return { success: false, error: err.message, code: err.code };
+      }
+    };
+  ipcMain.handle(
+    'wallet:export-account-list',
+    accountListHandler((win) => require('./account-list').exportAccountList(win))
+  );
+  ipcMain.handle(
+    'wallet:open-account-list',
+    accountListHandler((win) => require('./account-list').openAccountList(win))
+  );
+  ipcMain.handle(
+    'wallet:preview-account-list-import',
+    accountListHandler((_win, token) => require('./account-list').previewImport(token))
+  );
+  ipcMain.handle(
+    'wallet:import-account-list',
+    accountListHandler((_win, token) => require('./account-list').importAccountList(token))
+  );
+
   // Safe sends — the signing board's granular API: build (+ silent free
   // signatures), sign one owner per user action, execute as its own
   // idempotent step, render from state. Half-signed transactions are

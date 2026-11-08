@@ -6706,3 +6706,279 @@
 [data-theme="light"] .safe-pending-row:hover {
   background: rgba(0, 0, 0, 0.06);
 }
+
+/* ============================================
+   Account list export and import (#1037)
+   ============================================ */
+
+.account-list-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-list-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.account-list-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.account-list-content .account-list-hint {
+  margin: 0;
+}
+
+.account-list-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.account-list-groups,
+.account-list-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.account-list-groups {
+  gap: 18px;
+}
+
+.account-list-section {
+  gap: 8px;
+}
+
+.account-list-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.account-list-count {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.account-list-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--border);
+}
+
+.account-list-dot.ok {
+  background: var(--secure-fg);
+}
+
+.account-list-dot.no {
+  background: var(--warning-fg);
+}
+
+/* flex: none: overflow: hidden (for the rounded corners) would otherwise let
+   the screen's flex column squeeze the box below its rows in a short window,
+   clipping them instead of scrolling the screen. */
+.account-list-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.account-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.account-list-row + .account-list-row {
+  border-top: 1px solid var(--border);
+}
+
+.account-list-row-name {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-list-row-from {
+  color: var(--muted);
+}
+
+.account-list-row-type {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.account-list-row-address {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.account-list-row-note {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+/* The blue "i" kind of callout (see .swarm-connect-note): what the file holds. */
+.account-list-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: 8px;
+}
+
+.account-list-note svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.account-list-unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.account-list-unlock p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.account-list-unlock .password-input {
+  min-width: 0;
+}
+
+.account-list-unlock .unlock-error {
+  margin-top: 0;
+}
+
+.account-list-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 16px;
+  text-align: center;
+}
+
+.account-list-done .create-wallet-success-title {
+  margin-bottom: 8px;
+}
+
+.account-list-done-text {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.account-list-done-file {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.account-list-done .account-list-hint {
+  max-width: 260px;
+  margin-top: 8px;
+}
+
+.account-list-footer {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.account-list-footer-row {
+  display: flex;
+  gap: 12px;
+}
+
+.account-list-summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.account-list-primary,
+.account-list-secondary {
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    opacity 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.account-list-primary {
+  flex: 2;
+  width: 100%;
+  /* theme-literal: the fixed white-on-accent pair every sidebar primary button uses */
+  color: #fff;
+  background: var(--accent);
+  border: none;
+}
+
+.account-list-primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.account-list-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.account-list-secondary {
+  flex: 1;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.account-list-secondary:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}

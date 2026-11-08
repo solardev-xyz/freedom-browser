@@ -2928,6 +2928,30 @@
                   </button>
                 </div>
 
+                <!-- Accounts — the account list file (#1037) -->
+                <div class="sidebar-section">
+                  <div class="sidebar-section-header">
+                    <span class="sidebar-section-title">Accounts</span>
+                  </div>
+                  <div class="account-list-actions">
+                    <button type="button" class="sidebar-nav-btn" id="sidebar-export-accounts-btn">
+                      <span>Export Account List</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                    <button type="button" class="sidebar-nav-btn" id="sidebar-import-accounts-btn">
+                      <span>Import Account List</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+                  <p class="account-list-hint">
+                    Names and addresses only, for another computer or after a reinstall.
+                  </p>
+                </div>
+
                 <!-- RPC Providers — deep-links to the RPC Providers settings page -->
                 <div class="sidebar-section">
                   <div class="sidebar-section-header">
@@ -3014,6 +3038,182 @@
                   <span class="passphrase-card-label">Passphrase (25th word)</span>
                   <code class="passphrase-card-value" id="export-passphrase-value"></code>
                   <p class="passphrase-card-note" id="export-passphrase-note"></p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Export Account List sub-screen (#1037) -->
+            <div id="sidebar-export-accounts" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="export-accounts-back"
+                data-title="Export Account List"
+              ></div>
+
+              <div id="export-accounts-list" class="subscreen-content account-list-content">
+                <p class="account-list-intro" id="export-accounts-intro"></p>
+                <div class="account-list-group" id="export-accounts-rows"></div>
+                <p class="account-list-hint">
+                  The file doesn't contain your recovery phrase, passphrase or keys, so it can't
+                  restore funds on its own.
+                </p>
+                <div class="account-list-note">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="16" x2="12" y2="12" />
+                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                  </svg>
+                  <span>
+                    Anyone who opens the file can see your addresses and the names you gave them.
+                  </span>
+                </div>
+                <div id="export-accounts-error" class="unlock-error hidden"></div>
+              </div>
+
+              <div id="export-accounts-done" class="subscreen-content account-list-content hidden">
+                <div class="account-list-done">
+                  <div class="create-wallet-success-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <circle cx="12" cy="12" r="10" />
+                      <polyline points="8 12 11 15 16 9" />
+                    </svg>
+                  </div>
+                  <h4 class="create-wallet-success-title">Account list saved</h4>
+                  <p class="account-list-done-text" id="export-accounts-done-count"></p>
+                  <code class="account-list-done-file" id="export-accounts-done-file"></code>
+                </div>
+              </div>
+
+              <div class="account-list-footer">
+                <button type="button" class="account-list-primary" id="export-accounts-save">
+                  Save to File…
+                </button>
+                <button
+                  type="button"
+                  class="account-list-primary hidden"
+                  id="export-accounts-finish"
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+
+            <!-- Import Account List sub-screen (#1037) -->
+            <div id="sidebar-import-accounts" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="import-accounts-back"
+                data-title="Import Account List"
+              ></div>
+
+              <div id="import-accounts-loading" class="subscreen-content hidden">
+                <p class="unlock-message">Checking the accounts in this file…</p>
+              </div>
+
+              <div id="import-accounts-invalid" class="subscreen-content hidden">
+                <div class="account-list-note">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="16" x2="12" y2="12" />
+                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                  </svg>
+                  <span id="import-accounts-invalid-text"></span>
+                </div>
+              </div>
+
+              <div
+                id="import-accounts-preview"
+                class="subscreen-content account-list-content hidden"
+              >
+                <p class="account-list-hint" id="import-accounts-file"></p>
+                <div class="account-list-unlock hidden" id="import-accounts-unlock">
+                  <p id="import-accounts-unlock-text"></p>
+                  <button
+                    type="button"
+                    class="unlock-touchid-btn hidden"
+                    id="import-accounts-touchid-btn"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4" />
+                      <path d="M8 15s-2-2.9-2-4c0-2.2 1.8-4 4-4" />
+                      <path d="M12 3c4.4 0 8 3.6 8 8 0 1.4-.4 2.8-1 4" />
+                      <path d="M3 11c0-1.4.4-2.8 1-4" />
+                      <path d="M12 21c-4.4 0-8-3.6-8-8" />
+                      <path d="M21 12c0 4.4-3.6 8-8 8" />
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+                  <div class="password-input-group hidden" id="import-accounts-password-section">
+                    <input
+                      type="password"
+                      id="import-accounts-password"
+                      class="password-input"
+                      placeholder="Password"
+                      aria-label="Password"
+                      autocomplete="off"
+                    />
+                    <button
+                      type="button"
+                      class="password-submit-btn"
+                      id="import-accounts-password-submit"
+                      aria-label="Unlock"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div id="import-accounts-unlock-error" class="unlock-error hidden"></div>
+                </div>
+                <div class="account-list-groups" id="import-accounts-groups"></div>
+                <div id="import-accounts-error" class="unlock-error hidden"></div>
+              </div>
+
+              <div id="import-accounts-done" class="subscreen-content account-list-content hidden">
+                <div class="account-list-done">
+                  <div class="create-wallet-success-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <circle cx="12" cy="12" r="10" />
+                      <polyline points="8 12 11 15 16 9" />
+                    </svg>
+                  </div>
+                  <h4 class="create-wallet-success-title">Account list imported</h4>
+                  <p class="account-list-done-text" id="import-accounts-done-text"></p>
+                  <p class="account-list-hint hidden" id="import-accounts-done-left"></p>
+                </div>
+              </div>
+
+              <div class="account-list-footer hidden" id="import-accounts-footer">
+                <p class="account-list-summary hidden" id="import-accounts-summary"></p>
+                <div class="account-list-footer-row">
+                  <button
+                    type="button"
+                    class="account-list-secondary hidden"
+                    id="import-accounts-cancel"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    class="account-list-primary hidden"
+                    id="import-accounts-submit"
+                  >
+                    Import
+                  </button>
+                  <button
+                    type="button"
+                    class="account-list-primary hidden"
+                    id="import-accounts-choose"
+                  >
+                    Choose Another File…
+                  </button>
+                  <button
+                    type="button"
+                    class="account-list-primary hidden"
+                    id="import-accounts-finish"
+                  >
+                    Done
+                  </button>
                 </div>
               </div>
             </div>

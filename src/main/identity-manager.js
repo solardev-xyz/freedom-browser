@@ -1328,10 +1328,16 @@ async function createDerivedWallet(name) {
   // The address check covers an account already added at this same key by
   // its explicit path.
   const takenAddresses = listedWalletAddresses(identity, secret, wallets, meta);
-  let newIndex = maxIndex + 1;
+  // An imported account list can bring back an account just below the
+  // hardware range; the next one must not cross into it, where an index with
+  // no path has no vault key. Start again from the lowest free index instead.
+  let newIndex = isHardwareWalletIndex(maxIndex + 1) ? 0 : maxIndex + 1;
   let derived = identity.deriveUserWallet(secret, newIndex);
   while (taken.has(newIndex) || takenAddresses.has(derived.address.toLowerCase())) {
     newIndex += 1;
+    if (isHardwareWalletIndex(newIndex)) {
+      throw new Error('No free account index is left for a new wallet');
+    }
     derived = identity.deriveUserWallet(secret, newIndex);
   }
 
@@ -1362,7 +1368,8 @@ async function createDerivedWallet(name) {
  * index 0 to the main wallet address in vault-meta.
  *
  * @param {Object} identity - The identity module
- * @param {{mnemonic: string, passphrase: string}} secret - From identity.getSeedSecret()
+ * @param {{mnemonic: string, passphrase: string}|null} secret - From identity.getSeedSecret();
+ *   null while the vault is locked, when a record with no stored address is left out
  * @param {Array<Object>} wallets - Raw derivedWallets entries
  * @param {Object} meta - Parsed vault-meta
  * @returns {Map<string, Object>}
@@ -1371,7 +1378,7 @@ function listedWalletAddresses(identity, secret, wallets, meta) {
   const listed = new Map();
   for (const wallet of wallets) {
     let address = wallet.address || (wallet.index === 0 ? meta.addresses?.userWallet : null);
-    if (!address && (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC) {
+    if (!address && secret && (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC) {
       address = deriveWalletForRecord(identity, secret, wallet).address;
     }
     if (address) {
@@ -1479,6 +1486,218 @@ async function renameDerivedWallet(index, newName) {
     ...meta,
     derivedWallets: wallets,
   });
+}
+
+/** Freedom's own scheme, where a recovery-phrase account's index is its BIP-44 account. */
+const DEFAULT_SCHEME_PATH = /^m\/44'\/60'\/(\d+)'\/0\/0$/;
+
+/**
+ * Merge an account list (wallet/account-list.js) into the wallet list, on
+ * copies: nothing is saved here.
+ *
+ * Accounts are matched by address. One already listed takes the file's name.
+ * One that isn't is added only when this computer can show the address is
+ * really that account, because the list is shown and used as the user's own:
+ *  - a recovery-phrase account when the unlocked vault derives that address
+ *    at the file's path;
+ *  - a Safe when every owner is listed (or added by this same import) and its
+ *    address follows from them, which the caller works out (`safeChecks`)
+ *    because that needs the chain.
+ * Ledger and phone accounts are never added from a file: only the device can
+ * show the address is its own. Nothing is ever removed.
+ *
+ * @param {Object} identity - The identity module
+ * @param {Object} meta - Parsed vault-meta
+ * @param {Array<Object>} accounts - Entries from parseAccountList
+ * @param {Map<string, boolean>} safeChecks - Lowercased Safe address → whether it
+ *   follows from its owners; a Safe missing here couldn't be checked
+ * @returns {{rows: Array<Object>, wallets: Array<Object>, nextIndex: number, changed: boolean}}
+ */
+function planAccountListImport(identity, meta, accounts, safeChecks) {
+  const secret = identity.getSeedSecret();
+  const wallets = getWalletList(meta).map((wallet) => ({ ...wallet }));
+  const listed = listedWalletAddresses(identity, secret, wallets, meta);
+  const takenIndexes = new Set(wallets.map((wallet) => wallet.index));
+  let nextIndex = nextHardwareWalletIndex(meta, wallets);
+  const inFile = new Map(accounts.map((account) => [account.address.toLowerCase(), account]));
+  const rows = new Array(accounts.length);
+
+  const row = (kind, account, extra = {}) => ({
+    kind,
+    name: account.name,
+    address: account.address,
+    type: account.type,
+    ...(account.type === WALLET_TYPES.SAFE
+      ? { threshold: account.threshold, ownerCount: account.owners.length }
+      : {}),
+    ...extra,
+  });
+  const skip = (account, reason, extra) => row('skip', account, { reason, ...extra });
+  const add = (account, record, extra) => {
+    wallets.push(record);
+    listed.set(account.address.toLowerCase(), record);
+    takenIndexes.add(record.index);
+    return row('add', account, extra);
+  };
+
+  const addRecoveryPhraseAccount = (account) => {
+    if (!secret) return skip(account, 'locked');
+    let derived;
+    try {
+      derived = identity.deriveWalletAtPath(secret, account.path);
+    } catch {
+      derived = null;
+    }
+    if (derived?.address.toLowerCase() !== account.address.toLowerCase()) {
+      return skip(account, 'not-from-seed');
+    }
+    // On Freedom's own scheme the record goes back to its own index, as
+    // createDerivedWallet would have made it; anything else, or an index
+    // already in use here, is an account at a path in the high range.
+    const scheme = DEFAULT_SCHEME_PATH.exec(derived.path);
+    const accountIndex = scheme ? Number(scheme[1]) : null;
+    if (
+      accountIndex !== null &&
+      !isHardwareWalletIndex(accountIndex) &&
+      !takenIndexes.has(accountIndex)
+    ) {
+      return add(account, { index: accountIndex, name: account.name, address: derived.address });
+    }
+    return add(account, {
+      index: nextIndex++,
+      name: account.name,
+      address: derived.address,
+      type: WALLET_TYPES.MNEMONIC,
+      path: derived.path,
+    });
+  };
+
+  const addSafe = (account) => {
+    const owners = account.owners.map((owner) => listed.get(owner.toLowerCase()) || null);
+    if (owners.some((owner) => owner && owner.type === WALLET_TYPES.SAFE)) {
+      return skip(account, 'owner-is-safe');
+    }
+    const missing = account.owners.filter((_owner, i) => !owners[i]);
+    if (missing.length > 0) {
+      const missingOwners = missing.map((owner) => ({
+        name: inFile.get(owner.toLowerCase())?.name ?? null,
+        address: owner,
+      }));
+      // Owners that only wait for the vault are added once it is unlocked.
+      const waitsForUnlock =
+        !secret &&
+        missing.every((owner) => inFile.get(owner.toLowerCase())?.type === WALLET_TYPES.MNEMONIC);
+      return skip(account, waitsForUnlock ? 'owners-locked' : 'owners', { missingOwners });
+    }
+    const check = safeChecks.get(account.address.toLowerCase());
+    if (check === false) return skip(account, 'safe-mismatch');
+    if (check !== true) return skip(account, 'safe-unchecked');
+    // A record from before addresses were stored was matched by deriving its
+    // address; the Safe looks its owners' addresses up in the record, so
+    // that address is saved with it.
+    owners.forEach((owner, i) => {
+      if (!owner.address) owner.address = account.owners[i];
+    });
+    return add(
+      account,
+      {
+        index: nextIndex++,
+        name: account.name,
+        address: account.address,
+        type: WALLET_TYPES.SAFE,
+        owners: owners.map((owner) => owner.index),
+        threshold: account.threshold,
+        saltNonce: account.saltNonce,
+        deployed: {},
+      },
+      { ownerNames: owners.map((owner) => owner.name) }
+    );
+  };
+
+  // Safes last, so an owner added by this same import counts.
+  const order = accounts
+    .map((_account, position) => position)
+    .sort(
+      (a, b) => (accounts[a].type === WALLET_TYPES.SAFE) - (accounts[b].type === WALLET_TYPES.SAFE)
+    );
+
+  for (const position of order) {
+    const account = accounts[position];
+    const record = listed.get(account.address.toLowerCase());
+    if (record) {
+      const local = {
+        ...account,
+        type: record.type || WALLET_TYPES.MNEMONIC,
+        threshold: record.threshold,
+        owners: record.owners,
+      };
+      if (record.name === account.name) {
+        rows[position] = row('same', local);
+      } else {
+        rows[position] = row('rename', local, { from: record.name });
+        record.name = account.name;
+      }
+      continue;
+    }
+    switch (account.type) {
+      case WALLET_TYPES.MNEMONIC:
+        rows[position] = addRecoveryPhraseAccount(account);
+        break;
+      case WALLET_TYPES.SAFE:
+        rows[position] = addSafe(account);
+        break;
+      default:
+        // Ledger and phone: only the device can add its account.
+        rows[position] = skip(account, account.type);
+    }
+  }
+
+  const changed = rows.some((entry) => entry.kind === 'rename' || entry.kind === 'add');
+  return { rows, wallets, nextIndex, changed };
+}
+
+/**
+ * What importing an account list would do, one row per account in the file:
+ * `same`, `rename` (with `from`), `add`, or `skip` with a `reason`.
+ *
+ * @param {Array<Object>} accounts - Entries from parseAccountList
+ * @param {{safeChecks?: Map<string, boolean>}} [options]
+ * @returns {Promise<Array<Object>>}
+ */
+async function previewAccountListImport(accounts, { safeChecks = new Map() } = {}) {
+  const identity = await loadIdentityModule();
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+  return planAccountListImport(identity, meta, accounts, safeChecks).rows;
+}
+
+/**
+ * Import an account list: plan it against the wallet list as it is now and
+ * save the renames and additions in one write.
+ *
+ * @param {Array<Object>} accounts - Entries from parseAccountList
+ * @param {{safeChecks?: Map<string, boolean>}} [options]
+ * @returns {Promise<Array<Object>>} The rows of what was done
+ */
+async function applyAccountListImport(accounts, { safeChecks = new Map() } = {}) {
+  const identity = await loadIdentityModule();
+  // Read and write with nothing awaited in between, so no other change to
+  // the wallet list can land in the middle.
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+  const plan = planAccountListImport(identity, meta, accounts, safeChecks);
+  if (plan.changed) {
+    saveVaultMeta({
+      ...meta,
+      derivedWallets: plan.wallets,
+      nextHardwareWalletIndex: plan.nextIndex,
+    });
+  }
+  return plan.rows;
 }
 
 function getSwarmPublisherIdentityReferences(walletIndex) {
@@ -1962,6 +2181,8 @@ module.exports = {
   renameDerivedWallet,
   deleteDerivedWallet,
   getActiveWalletAddress,
+  previewAccountListImport,
+  applyAccountListImport,
 
   // Identity injection
   setBeeLifecycle,

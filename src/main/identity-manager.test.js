@@ -1505,3 +1505,371 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
   });
 });
+
+describe('identity-manager account list import (#1037)', () => {
+  // Hardhat's default seed; the real derivation, so a wrong path or seed shows.
+  const MNEMONIC = 'test test test test test test test test test test test junk';
+  const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
+  const PHONE_ADDRESS = '0xBcd4042DE499D14e55001CcbB24a551F3b954096';
+  const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+  const OTHER_SAFE_ADDRESS = '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359';
+  const STRANGER = '0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f';
+  const HARDWARE_INDEX_BASE = 1000000;
+
+  let tmpDir;
+  let envSnapshot;
+  let identityManager;
+  let derivation;
+  let secret;
+
+  const at = (index) => derivation.deriveUserWallet(MNEMONIC, index).address;
+  const atPath = (walletPath) => derivation.deriveWalletAtPath(MNEMONIC, walletPath).address;
+  const defaultPath = (index) => `m/44'/60'/${index}'/0/0`;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-account-list-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    secret = MNEMONIC;
+    derivation = jest.requireActual('./identity/derivation');
+    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => ({
+          ...derivation,
+          getSeedSecret: jest.fn(() => secret),
+          isUnlocked: jest.fn(() => secret !== null),
+        }),
+      },
+    }).mod;
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    restoreEnv(envSnapshot);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    jest.restoreAllMocks();
+  });
+
+  function writeVaultMeta(meta) {
+    fs.writeFileSync(path.join(tmpDir, 'vault-meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
+  }
+
+  function readVaultMeta() {
+    return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
+  }
+
+  // After a reinstall: the seed is back, and one Ledger was added again.
+  function seedLocalWallets(extra = []) {
+    writeVaultMeta({
+      activeWalletIndex: 1,
+      addresses: { userWallet: at(0) },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: at(0) },
+        { index: 1, name: 'Wallet 2', address: at(1) },
+        {
+          index: HARDWARE_INDEX_BASE,
+          name: 'Ledger 1',
+          address: LEDGER_ADDRESS,
+          type: 'ledger',
+          path: "44'/60'/0'/0/0",
+        },
+        ...extra,
+      ],
+      nextHardwareWalletIndex: HARDWARE_INDEX_BASE + 1,
+    });
+  }
+
+  const mnemonic = (name, address, walletPath) => ({
+    type: 'mnemonic',
+    name,
+    address,
+    path: walletPath,
+  });
+  const safe = (name, address, owners, threshold = 1) => ({
+    type: 'safe',
+    name,
+    address,
+    owners,
+    threshold,
+    saltNonce: '42',
+  });
+  const byName = (rows) => Object.fromEntries(rows.map((row) => [row.name, row]));
+
+  test('renames listed accounts, adds ones the seed proves and leaves the rest', async () => {
+    seedLocalWallets();
+    const accounts = [
+      mnemonic('Main Wallet', at(0), defaultPath(0)),
+      mnemonic('Savings', at(1), defaultPath(1)),
+      { type: 'ledger', name: 'Cold storage', address: LEDGER_ADDRESS },
+      mnemonic('Trading', at(4), defaultPath(4)),
+      mnemonic('From MetaMask', atPath("m/44'/60'/0'/0/2"), "m/44'/60'/0'/0/2"),
+      mnemonic('Old account', STRANGER, defaultPath(7)),
+      { type: 'ledger', name: 'Nano X', address: '0xa0Ee7A142d267C1f36714E4a8F75612F20a79720' },
+      { type: 'remote', name: 'Pixel', address: PHONE_ADDRESS },
+    ];
+
+    const before = fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8');
+    const preview = await identityManager.previewAccountListImport(accounts);
+    expect(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8')).toBe(before);
+
+    const rows = byName(preview);
+    expect(rows['Main Wallet']).toMatchObject({ kind: 'same', type: 'mnemonic' });
+    expect(rows.Savings).toMatchObject({ kind: 'rename', from: 'Wallet 2' });
+    expect(rows['Cold storage']).toMatchObject({
+      kind: 'rename',
+      from: 'Ledger 1',
+      type: 'ledger',
+    });
+    expect(rows.Trading).toMatchObject({ kind: 'add', type: 'mnemonic' });
+    expect(rows['From MetaMask']).toMatchObject({ kind: 'add' });
+    expect(rows['Old account']).toMatchObject({ kind: 'skip', reason: 'not-from-seed' });
+    expect(rows['Nano X']).toMatchObject({ kind: 'skip', reason: 'ledger' });
+    expect(rows.Pixel).toMatchObject({ kind: 'skip', reason: 'remote' });
+    // One row per account, in the file's order.
+    expect(preview.map((row) => row.name)).toEqual(accounts.map((account) => account.name));
+
+    const applied = await identityManager.applyAccountListImport(accounts);
+    expect(applied).toEqual(preview);
+
+    const meta = readVaultMeta();
+    expect(meta.activeWalletIndex).toBe(1);
+    expect(meta.derivedWallets).toEqual([
+      { index: 0, name: 'Main Wallet', address: at(0) },
+      { index: 1, name: 'Savings', address: at(1) },
+      {
+        index: HARDWARE_INDEX_BASE,
+        name: 'Cold storage',
+        address: LEDGER_ADDRESS,
+        type: 'ledger',
+        path: "44'/60'/0'/0/0",
+      },
+      // Back on its own BIP-44 index, as Create New Wallet would have made it.
+      { index: 4, name: 'Trading', address: at(4) },
+      // Off Freedom's scheme: an account at a path, in the never-reused range.
+      {
+        index: HARDWARE_INDEX_BASE + 1,
+        name: 'From MetaMask',
+        address: atPath("m/44'/60'/0'/0/2"),
+        type: 'mnemonic',
+        path: "m/44'/60'/0'/0/2",
+      },
+    ]);
+    expect(meta.nextHardwareWalletIndex).toBe(HARDWARE_INDEX_BASE + 2);
+  });
+
+  test('importing the same file again changes nothing', async () => {
+    seedLocalWallets();
+    const accounts = [
+      mnemonic('Savings', at(1), defaultPath(1)),
+      mnemonic('Trading', at(4), defaultPath(4)),
+    ];
+    await identityManager.applyAccountListImport(accounts);
+    const after = fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8');
+
+    const again = await identityManager.applyAccountListImport(accounts);
+    expect(again.map((row) => row.kind)).toEqual(['same', 'same']);
+    expect(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8')).toBe(after);
+  });
+
+  test('locked: renames still apply, recovery-phrase accounts wait for the vault', async () => {
+    seedLocalWallets();
+    secret = null;
+    const accounts = [
+      { type: 'ledger', name: 'Cold storage', address: LEDGER_ADDRESS },
+      mnemonic('Trading', at(4), defaultPath(4)),
+      mnemonic('Old account', STRANGER, defaultPath(7)),
+    ];
+
+    const rows = await identityManager.applyAccountListImport(accounts);
+    expect(rows.map((row) => [row.kind, row.reason])).toEqual([
+      ['rename', undefined],
+      ['skip', 'locked'],
+      ['skip', 'locked'],
+    ]);
+    const names = readVaultMeta().derivedWallets.map((wallet) => wallet.name);
+    expect(names).toEqual(['Main Wallet', 'Wallet 2', 'Cold storage']);
+  });
+
+  test("an index that's taken here puts the account at its path instead", async () => {
+    // vault-meta from before the hardware range: a Ledger sitting on index 3.
+    seedLocalWallets([{ index: 3, name: 'Old Ledger', address: PHONE_ADDRESS, type: 'ledger' }]);
+
+    await identityManager.applyAccountListImport([mnemonic('Third', at(3), defaultPath(3))]);
+
+    const added = readVaultMeta().derivedWallets.find((wallet) => wallet.name === 'Third');
+    expect(added).toEqual({
+      index: HARDWARE_INDEX_BASE + 1,
+      name: 'Third',
+      address: at(3),
+      type: 'mnemonic',
+      path: defaultPath(3),
+    });
+  });
+
+  test("a reserved path isn't added, even when the file names its address", async () => {
+    seedLocalWallets();
+    const nodeWallet = "m/44'/60'/0'/0/1";
+    const rows = await identityManager.applyAccountListImport([
+      mnemonic('Node', derivation.deriveEthereumKey(MNEMONIC, nodeWallet).address, nodeWallet),
+    ]);
+    expect(rows[0]).toMatchObject({ kind: 'skip', reason: 'not-from-seed' });
+  });
+
+  test('an account brought back just below the hardware range leaves the next wallet usable', async () => {
+    seedLocalWallets();
+    const top = HARDWARE_INDEX_BASE - 1;
+    await identityManager.applyAccountListImport([mnemonic('Top', at(top), defaultPath(top))]);
+    expect(readVaultMeta().derivedWallets.find((wallet) => wallet.name === 'Top').index).toBe(top);
+
+    // Before, this became index 1,000,000 with no path: listed, but with no
+    // vault key to sign or export with.
+    const next = await identityManager.createDerivedWallet('Next');
+    expect(next).toEqual({ index: 2, name: 'Next', address: at(2) });
+    expect(
+      identityManager.hasVaultKey(next.index, identityManager.getWalletRecord(next.index))
+    ).toBe(true);
+  });
+
+  describe('Safes', () => {
+    test('added when its owners are here, or added by the same import, and its address checks out', async () => {
+      seedLocalWallets();
+      const accounts = [
+        // The Safe comes first in the file; its second owner only after it.
+        safe('Family Safe', SAFE_ADDRESS, [at(0), at(4)]),
+        mnemonic('Trading', at(4), defaultPath(4)),
+      ];
+      const safeChecks = new Map([[SAFE_ADDRESS.toLowerCase(), true]]);
+
+      const rows = await identityManager.applyAccountListImport(accounts, { safeChecks });
+      expect(rows[0]).toMatchObject({
+        kind: 'add',
+        type: 'safe',
+        threshold: 1,
+        ownerCount: 2,
+        ownerNames: ['Main Wallet', 'Trading'],
+      });
+
+      const record = readVaultMeta().derivedWallets.find((wallet) => wallet.name === 'Family Safe');
+      expect(record).toEqual({
+        index: HARDWARE_INDEX_BASE + 1,
+        name: 'Family Safe',
+        address: SAFE_ADDRESS,
+        type: 'safe',
+        // Owners in the file's order, as this computer's indexes.
+        owners: [0, 4],
+        threshold: 1,
+        saltNonce: '42',
+        deployed: {},
+      });
+    });
+
+    test('not added when its address does not follow from its owners, or could not be checked', async () => {
+      seedLocalWallets();
+      const accounts = [
+        safe('Mismatch', SAFE_ADDRESS, [at(0), at(1)]),
+        safe('Unchecked', OTHER_SAFE_ADDRESS, [at(0), at(1)]),
+      ];
+      const safeChecks = new Map([[SAFE_ADDRESS.toLowerCase(), false]]);
+
+      const rows = await identityManager.applyAccountListImport(accounts, { safeChecks });
+      expect(rows.map((row) => row.reason)).toEqual(['safe-mismatch', 'safe-unchecked']);
+      expect(readVaultMeta().derivedWallets).toHaveLength(3);
+    });
+
+    test("saves an owner's address when only the vault knew it", async () => {
+      // A record from before addresses were stored.
+      seedLocalWallets([{ index: 3, name: 'Legacy owner' }]);
+      const safeChecks = new Map([[SAFE_ADDRESS.toLowerCase(), true]]);
+
+      const rows = await identityManager.applyAccountListImport(
+        [safe('Family Safe', SAFE_ADDRESS, [at(0), at(3)])],
+        { safeChecks }
+      );
+      expect(rows[0]).toMatchObject({ kind: 'add', ownerNames: ['Main Wallet', 'Legacy owner'] });
+
+      // What Safe operations read the owners' addresses from.
+      secret = null;
+      expect(identityManager.getWalletRecord(3).address).toBe(at(3));
+    });
+
+    test('names the owners it still needs', async () => {
+      seedLocalWallets();
+      const accounts = [
+        safe('Team Safe', SAFE_ADDRESS, [at(0), PHONE_ADDRESS, STRANGER], 2),
+        { type: 'remote', name: 'Pixel', address: PHONE_ADDRESS },
+      ];
+      const safeChecks = new Map([[SAFE_ADDRESS.toLowerCase(), true]]);
+
+      const rows = await identityManager.previewAccountListImport(accounts, { safeChecks });
+      expect(rows[0]).toMatchObject({
+        kind: 'skip',
+        reason: 'owners',
+        missingOwners: [
+          { name: 'Pixel', address: PHONE_ADDRESS },
+          { name: null, address: STRANGER },
+        ],
+      });
+    });
+
+    test('waits for the vault when its missing owners are recovery-phrase accounts in the file', async () => {
+      seedLocalWallets();
+      secret = null;
+      const accounts = [
+        safe('Family Safe', SAFE_ADDRESS, [at(0), at(4)]),
+        mnemonic('Trading', at(4), defaultPath(4)),
+      ];
+
+      const rows = await identityManager.previewAccountListImport(accounts);
+      expect(rows[0]).toMatchObject({ kind: 'skip', reason: 'owners-locked' });
+    });
+
+    test("isn't added with another Safe as an owner", async () => {
+      seedLocalWallets([
+        {
+          index: HARDWARE_INDEX_BASE + 1,
+          name: 'Joint',
+          address: OTHER_SAFE_ADDRESS,
+          type: 'safe',
+          owners: [0, 1],
+          threshold: 1,
+          saltNonce: '7',
+          deployed: {},
+        },
+      ]);
+      const safeChecks = new Map([[SAFE_ADDRESS.toLowerCase(), true]]);
+      const rows = await identityManager.previewAccountListImport(
+        [safe('Nested', SAFE_ADDRESS, [at(0), OTHER_SAFE_ADDRESS])],
+        { safeChecks }
+      );
+      expect(rows[0]).toMatchObject({ kind: 'skip', reason: 'owner-is-safe' });
+    });
+
+    test('a listed Safe is only renamed, with its own threshold and owners', async () => {
+      seedLocalWallets([
+        {
+          index: HARDWARE_INDEX_BASE + 1,
+          name: 'Joint',
+          address: SAFE_ADDRESS,
+          type: 'safe',
+          owners: [0, 1, HARDWARE_INDEX_BASE],
+          threshold: 2,
+          saltNonce: '7',
+          deployed: { 100: true },
+        },
+      ]);
+      const rows = await identityManager.applyAccountListImport([
+        safe('Family Safe', SAFE_ADDRESS, [at(0), at(1)]),
+      ]);
+      expect(rows[0]).toMatchObject({ kind: 'rename', from: 'Joint', threshold: 2, ownerCount: 3 });
+      const record = readVaultMeta().derivedWallets.find(
+        (wallet) => wallet.address === SAFE_ADDRESS
+      );
+      expect(record).toMatchObject({
+        name: 'Family Safe',
+        owners: [0, 1, HARDWARE_INDEX_BASE],
+        saltNonce: '7',
+      });
+    });
+  });
+});
