@@ -23,6 +23,11 @@ import { initDappX402, updateX402ConnectionBanner } from './wallet/dapp-x402.js'
 import { initRecentPayments, refreshRecentPayments } from './wallet/recent-payments.js';
 import { initSend, openSend, closeSend } from './wallet/send.js';
 import { initExportMnemonic, closeExportMnemonic } from './wallet/export-mnemonic.js';
+import {
+  initAccountList,
+  closeExportAccounts,
+  closeImportAccounts,
+} from './wallet/account-list.js';
 import { initWalletSelector, loadDerivedWallets } from './wallet/wallet-selector.js';
 import { initChainSwitcher, updateChainSwitcherDisplay, getSelectedChainId, setSelectedChainId } from './wallet/chain-switcher.js';
 import { initReceive, closeReceive } from './wallet/receive.js';
@@ -99,6 +104,7 @@ export function initWalletUi() {
   initDappSign();
   initSend();
   initExportMnemonic(switchTab);
+  initAccountList(switchTab);
   initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone, openCreateSafe);
   initChainSwitcher();
   initReceive();
@@ -530,6 +536,8 @@ function closeAllSubscreens() {
   }
 
   closeExportMnemonic();
+  closeExportAccounts();
+  closeImportAccounts();
   closeCreateWallet();
   closeConnectLedger();
   closeConnectPhone();

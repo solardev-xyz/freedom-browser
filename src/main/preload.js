@@ -793,6 +793,13 @@ contextBridge.exposeInMainWorld('wallet', {
   deleteWallet: (index) => ipcRenderer.invoke('wallet:delete-wallet', index),
   getActiveAddress: () => ipcRenderer.invoke('wallet:get-active-address'),
 
+  // Account list file (#1037)
+  exportAccountList: () => ipcRenderer.invoke('wallet:export-account-list'),
+  openAccountList: () => ipcRenderer.invoke('wallet:open-account-list'),
+  previewAccountListImport: (token) =>
+    ipcRenderer.invoke('wallet:preview-account-list-import', token),
+  importAccountList: (token) => ipcRenderer.invoke('wallet:import-account-list', token),
+
   // QR code generation
   generateQR: (text, options) => ipcRenderer.invoke('wallet:generate-qr', text, options),
 
