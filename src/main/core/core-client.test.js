@@ -2395,169 +2395,177 @@ describe('CoreClient', () => {
   });
 });
 
-// PRIVATE MODE GUARD (Colibri store, #1058): the core's requests name no
-// window, so a handler learns whether one may serve a private window from
-// main's own requests still pending (`forPrivate`).
+// PRIVATE MODE GUARD (Colibri store, #1058): the core's `shell.verified`
+// names the requests of main's it serves (`serves`, freedom-core #285), so a
+// handler learns from exactly those whether it serves a private window, and
+// in which private session (`privacyOf`).
 describe("the core's requests and private windows", () => {
-  const { runWithPrivateLogContext } = require('../private/private-log-context');
+  const {
+    runWithPrivateLogContext,
+    openPrivateSession,
+    endPrivateSession,
+    privateContextSession,
+  } = require('../private/private-log-context');
 
   async function setUp() {
     const asked = [];
     const made = makeClient([helloHandler((message) => asked.push(message))]);
     const seen = [];
     made.client.handle('shell.verified', (_params, context) => {
-      seen.push(context.private);
+      seen.push([context.private, context.privateSession]);
       return {};
     });
     await made.client.start();
     const core = made.children[0];
     let nextId = 1;
-    const ask = () =>
+    // The core's request, naming `serves` (left out when undefined).
+    const ask = (serves) =>
       core.reply({
         type: 'request',
         id: nextId++,
         method: 'shell.verified',
-        params: {},
+        params: serves === undefined ? {} : { serves },
         context: { caller: 'shell' },
       });
     const answer = (message) => core.reply({ type: 'response', id: message.id, result: {} });
     const settle = async () => {
       for (let i = 0; i < 4; i++) await tick();
     };
-    return { ...made, core, asked, seen, ask, answer, settle };
+    const lookups = () => asked.filter((m) => m.method === 'naming.resolve');
+    return { ...made, core, asked, seen, ask, answer, settle, lookups };
   }
 
-  test('says private while a request sent from a private window waits for its response', async () => {
-    const { client, asked, seen, ask, answer, settle } = await setUp();
-    ask();
-    await settle();
+  test('is private exactly when a request it serves was sent from a private window', async () => {
+    const { client, seen, ask, answer, settle, lookups } = await setUp();
+    openPrivateSession();
+    try {
+      const session = runWithPrivateLogContext(true, () => privateContextSession());
+      const normal = client.request('naming.resolve', { name: 'public.eth' });
+      const priv = runWithPrivateLogContext(true, () =>
+        client.request('naming.resolve', { name: 'secret.eth' })
+      );
+      await settle();
+      const [normalAsk, privateAsk] = lookups();
+      // The normal lookup's own operation is normal while the private one
+      // waits: the heuristic it replaces refused it (Codex review of #1071,
+      // round 2).
+      ask([normalAsk.id]);
+      ask([privateAsk.id]);
+      // A naming session both lookups wait on serves a private window.
+      ask([normalAsk.id, privateAsk.id]);
+      await settle();
+      answer(privateAsk);
+      await priv;
+      answer(normalAsk);
+      await normal;
+      expect(seen).toEqual([
+        [false, null],
+        [true, session],
+        [true, session],
+      ]);
+    } finally {
+      endPrivateSession();
+    }
+  });
 
+  test('fails closed when it names no request main knows', async () => {
+    const { client, seen, ask, answer, settle, lookups } = await setUp();
     const normal = client.request('naming.resolve', { name: 'public.eth' });
-    const priv = runWithPrivateLogContext(true, () =>
-      client.request('naming.resolve', { name: 'secret.eth' })
-    );
     await settle();
-    const [normalAsk, privateAsk] = asked.filter((m) => m.method === 'naming.resolve');
-    ask();
-    await settle();
-
-    answer(privateAsk);
-    await priv;
-    ask();
+    const [normalAsk] = lookups();
+    // No `serves` (an older core), an empty one (a naming session no lookup
+    // waits for any more), an ID that isn't pending (or is the core's own),
+    // and anything but IDs: private, in no session.
+    ask(undefined);
+    ask([]);
+    ask([normalAsk.id + 1]);
+    ask([normalAsk.id, normalAsk.id + 1]);
+    ask(normalAsk.id);
+    ask([String(normalAsk.id)]);
+    ask([normalAsk.id + 0.5]);
+    ask(null);
     await settle();
     answer(normalAsk);
     await normal;
-    ask();
-    await settle();
-
-    // Nothing pending; a normal and a private one; the normal one alone;
-    // nothing.
-    expect(seen).toEqual([false, true, false, false]);
+    expect(seen).toEqual(Array(8).fill([true, null]));
   });
 
   test('takes the answer as the request arrives, not when its handler runs', async () => {
-    const { client, asked, seen, ask, answer, settle } = await setUp();
-    const priv = runWithPrivateLogContext(true, () => client.request('naming.resolve', {}));
+    const { client, seen, ask, answer, settle, lookups } = await setUp();
+    const normal = client.request('naming.resolve', {});
     await settle();
-    const [privateAsk] = asked.filter((m) => m.method === 'naming.resolve');
+    const [normalAsk] = lookups();
     // The core's request, then the response, in one read: the request came
-    // while the private one was still pending.
-    ask();
-    answer(privateAsk);
-    await priv;
+    // while the lookup it serves was still pending.
+    ask([normalAsk.id]);
+    answer(normalAsk);
+    await normal;
     await settle();
-    expect(seen).toEqual([true]);
+    expect(seen).toEqual([[false, null]]);
   });
 
   // Codex review of #1071, finding 2: a private lookup can outlive its
-  // private session; the core's request for it names that session.
-  test('names the private session the pending private requests were sent in', async () => {
-    const {
-      openPrivateSession,
-      endPrivateSession,
-      privateContextSession,
-    } = require('../private/private-log-context');
-    const sessions = [];
-    const asked = [];
-    const made = makeClient([helloHandler((message) => asked.push(message))]);
-    made.client.handle('shell.verified', (_params, context) => {
-      sessions.push([context.private, context.privateSession]);
-      return {};
-    });
-    await made.client.start();
-    const core = made.children[0];
-    let nextId = 1;
-    const ask = () =>
-      core.reply({
-        type: 'request',
-        id: nextId++,
-        method: 'shell.verified',
-        params: {},
-        context: { caller: 'shell' },
-      });
-    const settle = async () => {
-      for (let i = 0; i < 4; i++) await tick();
-    };
-    const lookups = () => asked.filter((m) => m.method === 'naming.resolve');
-
+  // private session; the core's request for it names that session. Two
+  // sessions overlapping no longer blur together (round 2).
+  test('names the private session the requests it serves were sent in', async () => {
+    const { client, seen, ask, settle, answer, lookups } = await setUp();
     openPrivateSession();
     const first = runWithPrivateLogContext(true, () => privateContextSession());
-    const old = runWithPrivateLogContext(true, () => made.client.request('naming.resolve', {}));
-    await settle();
-    ask();
+    const old = runWithPrivateLogContext(true, () => client.request('naming.resolve', {}));
     await settle();
     // The last private window closes while the lookup is still pending, and
     // a new one opens and sends its own.
     endPrivateSession();
     openPrivateSession();
     const second = runWithPrivateLogContext(true, () => privateContextSession());
-    const fresh = runWithPrivateLogContext(true, () => made.client.request('naming.resolve', {}));
+    const fresh = runWithPrivateLogContext(true, () => client.request('naming.resolve', {}));
     await settle();
-    ask();
-    await settle();
-    core.reply({ type: 'response', id: lookups()[1].id, result: {} });
-    await fresh;
-    ask();
-    await settle();
-    core.reply({ type: 'response', id: lookups()[0].id, result: {} });
-    await old;
     // One sent with no private window open names no session.
     endPrivateSession();
-    const none = runWithPrivateLogContext(true, () => made.client.request('naming.resolve', {}));
+    const none = runWithPrivateLogContext(true, () => client.request('naming.resolve', {}));
     await settle();
-    ask();
+    const [oldAsk, freshAsk, noneAsk] = lookups();
+    ask([oldAsk.id]);
+    ask([freshAsk.id]);
+    ask([oldAsk.id, freshAsk.id]);
+    ask([noneAsk.id]);
     await settle();
-    core.reply({ type: 'response', id: lookups()[2].id, result: {} });
-    await none;
+    for (const message of [oldAsk, freshAsk, noneAsk]) answer(message);
+    await Promise.all([old, fresh, none]);
 
     expect(second).not.toBe(first);
-    expect(sessions).toEqual([
+    expect(seen).toEqual([
+      // The old lookup: its ended session, which Colibri refuses.
       [true, first],
-      // Two sessions pending: which one the core serves can't be told.
+      [true, second],
+      // Requests of two sessions: which one it serves can't be told.
       [true, null],
-      // The old lookup alone: its ended session, which Colibri refuses.
-      [true, first],
       [true, null],
     ]);
   });
 
-  test('a cancelled private request counts until the core has answered it', async () => {
-    const { client, asked, seen, ask, answer, settle } = await setUp();
+  test('a cancelled request counts until the core has answered it', async () => {
+    const { client, seen, ask, answer, settle, lookups } = await setUp();
     const life = new AbortController();
     const priv = runWithPrivateLogContext(true, () =>
       client.requestTo(client.current, 'naming.resolve', {}, undefined, { signal: life.signal })
     );
     priv.catch(() => {});
+    const normal = client.request('naming.resolve', {});
     await settle();
-    const [privateAsk] = asked.filter((m) => m.method === 'naming.resolve');
+    const [privateAsk, normalAsk] = lookups();
     life.abort();
     await expect(priv).rejects.toMatchObject({ code: 'cancelled' });
-    ask();
+    ask([privateAsk.id]);
     await settle();
     answer(privateAsk);
     await settle();
-    ask();
+    // Answered, it is no longer one of main's: naming it fails closed.
+    ask([privateAsk.id]);
+    ask([normalAsk.id]);
     await settle();
-    expect(seen).toEqual([true, false]);
+    answer(normalAsk);
+    await normal;
+    expect(seen.map(([isPrivate]) => isPrivate)).toEqual([true, true, false]);
   });
 });

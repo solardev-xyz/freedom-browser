@@ -575,7 +575,7 @@ class ServiceClient extends EventEmitter {
    * the process that asked, as `onSent` (requestTo) reports it for main's own
    * requests. `private` is whether the request may serve a private window,
    * and `privateSession` the private session it would serve, or null when
-   * that can't be told (`forPrivate`).
+   * that can't be told (`privacyOf`, from the requests of main's it names).
    */
   handle(method, handler, { when = null, streams = false } = {}) {
     if (streams) this.streamHandlers.add(handler);
@@ -1181,7 +1181,7 @@ class ServiceClient extends EventEmitter {
       entry.signal = signal;
     }
     // Sent for a private window, as its async context says, and in which
-    // private session (private/private-log-context.js): see `forPrivate`.
+    // private session (private/private-log-context.js): see `privacyOf`.
     entry.private = isPrivateLogContext();
     entry.privateSession = entry.private ? privateContextSession() : null;
     if (signal) this.cancellable(gen, id, entry, signal, untilResponse);
@@ -1408,8 +1408,8 @@ class ServiceClient extends EventEmitter {
   onCoreRequest(gen, message) {
     const { id, method, params } = message;
     // Taken as the request arrives: a response read in the same chunk can
-    // settle one of main's requests before the handler starts.
-    const forPrivate = this.forPrivate(gen);
+    // settle one of the requests it names before the handler starts.
+    const forPrivate = this.privacyOf(gen, isObject(params) ? params.serves : undefined);
     if (!Number.isSafeInteger(id) || id < 1) return this.protocolFault(gen, 'bad_id');
     if (id <= gen.lastIncomingId) return this.protocolFault(gen, 'reused_id');
     if (typeof method !== 'string' || !METHOD_NAME.test(method)) {
@@ -1482,28 +1482,37 @@ class ServiceClient extends EventEmitter {
   }
 
   /**
-   * PRIVATE MODE GUARD (#1058): whether a request the process makes now may
-   * serve a private window. Its requests name no window, and one of them
-   * can be on behalf of any of main's requests to it still pending: those
-   * stay pending until the process's one response (a stream's head), even
-   * once cancelled, and the process makes the requests a lookup needs
-   * before that response, on the same pipe. So it is true while any
-   * request main sent from a private window's async context waits for its
-   * response. A request the process makes for a normal window while a
-   * private one waits counts as private too, never the other way round.
+   * PRIVATE MODE GUARD (#1058): whether a request the process makes may
+   * serve a private window, and in which private session. The core's
+   * `shell.verified` names the requests of main's it serves, by their IDs
+   * in this generation (`serves`, freedom-core #285): the chain request
+   * that made it, or the lookups waiting on the naming session that made
+   * it. Each is still pending when the request arrives, as the core sends
+   * it before their responses, and a request stays pending until its
+   * response (a stream's head), even once cancelled.
    *
-   * `session` is the private session those private requests were sent in,
-   * when they all share one; null when they don't, or were sent with no
-   * private window open. A private window's lookup can outlive its session
-   * (the last private window closes while it waits on Myotis): the core's
-   * request for it then names the ended session, and Colibri refuses it
-   * rather than start the next session's store. Used for Colibri's store
+   * So the request is private exactly when one of those was sent from a
+   * private window's async context. It fails closed: without `serves` (a
+   * request that names none, or an older core), with none in it (a naming
+   * session no lookup waits for any more), with an ID that isn't pending,
+   * or with anything but IDs, it counts as private, in no session.
+   *
+   * `session` is the private session the private requests it names were
+   * sent in, when they all share one; null when they don't, or were sent
+   * with no private window open. A private window's lookup can outlive its
+   * session (the last private window closes while it waits on Myotis): the
+   * core's request for it then names the ended session, and Colibri refuses
+   * it rather than start the next session's store. Used for Colibri's store
    * (naming-verified.js `runVerified`).
    * @returns {{ private: boolean, session: number|null }}
    */
-  forPrivate(gen) {
+  privacyOf(gen, serves) {
+    const unknown = { private: true, session: null };
+    if (!Array.isArray(serves) || serves.length === 0) return unknown;
     const sessions = new Set();
-    for (const entry of gen.pending.values()) {
+    for (const id of serves) {
+      const entry = Number.isSafeInteger(id) ? gen.pending.get(id) : undefined;
+      if (!entry) return unknown;
       if (entry.private) sessions.add(entry.privateSession ?? null);
     }
     if (sessions.size === 0) return { private: false, session: null };
