@@ -1669,6 +1669,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # The same keep-the-retried-attempt step as `e2e-settings-wallet`'s
+      # (#1101): a test that passes on a Playwright retry leaves a green job,
+      # and its failed attempt's trace, error context and screenshots went
+      # with the runner. #1102's wallet-approval flake was only diagnosable
+      # from the attempts that failed all three tries. The rendering profile
+      # a passing agent-review-layout test attaches is uploaded above, so it
+      # stays out and a run with no retried test still uploads nothing.
+      - name: Upload retried tests' traces
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-agent-retried
+          path: |
+            test-results/**/trace.zip
+            test-results/**/error-context.md
+            test-results/**/attachments/
+            !test-results/**/attachments/software-video-scroll-profile-*
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Native Agent qualification uses macOS's real workspace sandbox. The
   # macOS-only security suites (formerly the `agent-macos-jest` job) share this
   # runner: they need the same built supervisor, and a macOS runner of their
