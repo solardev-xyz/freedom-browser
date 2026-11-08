@@ -669,6 +669,12 @@ async function handleCompletion(request, response) {
   }
 
   if (hasUserMarker(messages, 'PRODUCT_AGENT_WALLET_APPROVE')) {
+    // A click's provider request and its result reach the page through the
+    // host renderer, after the click itself has returned. Wait for each
+    // result on the page before the next click, as the transaction task
+    // does: on a slow runner the personal_sign click otherwise ran before the
+    // page had its account, so main refused the request (-32603) without a
+    // card and the typed-data card came first (#1102).
     switch (toolResults.length) {
       case 0:
         emitToolCall(response, 1, 'browser_snapshot', {});
@@ -687,23 +693,38 @@ async function handleCompletion(request, response) {
         });
         break;
       case 4:
-        emitToolCall(response, 5, 'browser_snapshot', {});
+        emitToolCall(response, 5, 'browser_wait', { condition: 'text', text: 'Connected 0x' });
         break;
       case 5:
-        emitToolCall(response, 6, 'browser_click', {
+        emitToolCall(response, 6, 'browser_snapshot', {});
+        break;
+      case 6:
+        emitToolCall(response, 7, 'browser_click', {
           ref: requireRef(elements, 'Sign personal message'),
         });
         break;
-      case 6:
-        emitToolCall(response, 7, 'browser_snapshot', {});
-        break;
       case 7:
-        emitToolCall(response, 8, 'browser_click', {
-          ref: requireRef(elements, 'Sign typed data'),
+        emitToolCall(response, 8, 'browser_wait', {
+          condition: 'text',
+          text: 'Personal signature 0x',
         });
         break;
       case 8:
         emitToolCall(response, 9, 'browser_snapshot', {});
+        break;
+      case 9:
+        emitToolCall(response, 10, 'browser_click', {
+          ref: requireRef(elements, 'Sign typed data'),
+        });
+        break;
+      case 10:
+        emitToolCall(response, 11, 'browser_wait', {
+          condition: 'text',
+          text: 'Typed signature 0x',
+        });
+        break;
+      case 11:
+        emitToolCall(response, 12, 'browser_snapshot', {});
         break;
       default:
         emitFinal(
@@ -1772,23 +1793,23 @@ test('privileged capability: wallet connect and signatures use Agent-native appr
   await expect(window.locator('#agent-approval-approve')).toHaveText('Connect once');
   await window.locator('#agent-approval-approve').click();
 
+  // Each signature card is approved by the exact request it shows, never by
+  // its place in the sequence (#1102).
+  const summary = window.locator('#agent-wallet-approval-summary');
+  await expect(summary).toContainText('Freedom Agent exact personal message', {
+    timeout: 10_000,
+  });
+  await expect(summary).toContainText('Personal message');
   await expect(window.locator('#agent-approval-action')).toHaveText(
-    'Approve this wallet signature?',
-    { timeout: 10_000 }
-  );
-  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
-    'Freedom Agent exact personal message'
+    'Approve this wallet signature?'
   );
   await expect(window.locator('#agent-approval-approve')).toHaveText('Sign once');
   await window.locator('#agent-approval-approve').click();
 
-  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
-    'Approve typed Freedom action',
-    { timeout: 10_000 }
-  );
-  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
-    'Freedom Agent Fixture'
-  );
+  await expect(summary).toContainText('Approve typed Freedom action', { timeout: 10_000 });
+  await expect(summary).toContainText('EIP-712 typed data');
+  await expect(summary).toContainText('Freedom Agent Fixture');
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Sign once');
   await window.locator('#agent-approval-approve').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
@@ -1826,10 +1847,13 @@ test('privileged capability: wallet connect and signatures use Agent-native appr
     'browser_click',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
     'browser_click',
+    'browser_wait',
     'browser_snapshot',
   ]);
 });
