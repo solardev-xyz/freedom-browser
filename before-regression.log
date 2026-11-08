@@ -1,0 +1,136 @@
+
+> freedom-browser@0.8.9-dev test:e2e
+> playwright test --project=harness test-e2e/agent-product-qualification.spec.js --grep multi-tab comparison
+
+
+Running 1 test using 1 worker
+
+(node:74477) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[Agent product qualification] {"taskId":"multi-tab-comparison","classification":"pass","runStatus":"Complete","assistantOutput":"Alpha scores 41; Beta scores 47. Beta is 6 points higher. Both task tabs remain open for inspection.","modelRequests":9,"toolCalls":8,"operations":["Checked 1 Agent tab","Opened Alpha dashboardagent-product.test","Read Alpha dashboardagent-product.test","Opened Beta dashboardagent-product.test","Read Beta dashboardagent-product.test","Checked 3 Agent tabs","Switched to Alpha dashboardagent-product.test","Read Alpha dashboardagent-product.test"],"toolStates":["✓","✓","✓","✓","✓","✓","✓","✓"],"advertisedTools":["app_diagnostics","attachment_list","attachment_read","bash","browser_call_page_tool","browser_click","browser_close_tab","browser_create_tab","browser_download","browser_focus_tab","browser_get_dialog","browser_get_tab","browser_handle_dialog","browser_list_downloads","browser_list_frames","browser_list_page_tools","browser_list_tabs","browser_navigate","browser_press","browser_read_frame","browser_recall_evidence","browser_scroll","browser_select","browser_snapshot","browser_stop_loading","browser_type","browser_upload","browser_wait","codemode","delegate_task","domain_execute","domain_inspect","domain_operation_status","domain_prepare","edit","find","grep","helper_reports","helper_task","ls","mcp_discover","mcp_request","node_diagnostics","node_lifecycle","node_operation_status","node_request","node_status","read","request_permissions","swarm_publication_status","swarm_publish","wallet_transfer","workspace_history","workspace_preview","workspace_server","write","write_stdin"],"browserTabCount":3,"taskTabCount":3}
+  ✘  1 [harness] › test-e2e/agent-product-qualification.spec.js:1556:1 › baseline: multi-tab comparison passes inside a task-owned visible workspace (8.5s)
+
+
+  1) [harness] › test-e2e/agent-product-qualification.spec.js:1556:1 › baseline: multi-tab comparison passes inside a task-owned visible workspace 
+
+    Error: expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  1
+    + Received  + 87
+
+    - Array []
+    + Array [
+    +   2030.199999988079,
+    +   2037.3999999761581,
+    +   2043.699999988079,
+    +   2051.699999988079,
+    +   2084.899999976158,
+    +   2126.0999999940395,
+    +   2135,
+    +   2143.0999999940395,
+    +   2151.5,
+    +   2159.7999999821186,
+    +   2168.199999988079,
+    +   2176.5,
+    +   2184.399999976158,
+    +   2198.2999999821186,
+    +   2209.399999976158,
+    +   2211.899999976158,
+    +   2218.699999988079,
+    +   2226.699999988079,
+    +   2259.899999976158,
+    +   2293.199999988079,
+    +   2301.5999999940395,
+    +   2309.7999999821186,
+    +   2318.0999999940395,
+    +   2326.5,
+    +   2334.7999999821186,
+    +   2343.199999988079,
+    +   2350.5,
+    +   2362.699999988079,
+    +   2376.399999976158,
+    +   2379.5999999940395,
+    +   2389.5999999940395,
+    +   2393.0999999940395,
+    +   2404.699999988079,
+    +   2410.2999999821186,
+    +   2418.2999999821186,
+    +   2426.5,
+    +   2434.7999999821186,
+    +   2443.0999999940395,
+    +   2451.399999976158,
+    +   2459.199999988079,
+    +   2468.0999999940395,
+    +   2476.399999976158,
+    +   2484.699999988079,
+    +   2493.0999999940395,
+    +   2501.5999999940395,
+    +   2509.899999976158,
+    +   2518.0999999940395,
+    +   2526.5999999940395,
+    +   2534.5,
+    +   2542.5999999940395,
+    +   2551.5999999940395,
+    +   2559.7999999821186,
+    +   2568.199999988079,
+    +   2576.5,
+    +   2584.7999999821186,
+    +   2593.0999999940395,
+    +   2601,
+    +   2609.7999999821186,
+    +   2618.199999988079,
+    +   2626.5,
+    +   2634.7999999821186,
+    +   2643.0999999940395,
+    +   2651.5,
+    +   2659.7999999821186,
+    +   2668.199999988079,
+    +   2676.5,
+    +   2684.7999999821186,
+    +   2693.199999988079,
+    +   2701.5,
+    +   2709.399999976158,
+    +   2718.199999988079,
+    +   2726.5999999940395,
+    +   2734.899999976158,
+    +   2743.199999988079,
+    +   2751,
+    +   2759.899999976158,
+    +   2768.199999988079,
+    +   2776.5999999940395,
+    +   2784.399999976158,
+    +   2793.2999999821186,
+    +   2801.399999976158,
+    +   2809.7999999821186,
+    +   2818.199999988079,
+    +   2826.5,
+    +   2835,
+    + ]
+
+      1616 |     return window.fullViewDrops;
+      1617 |   });
+    > 1618 |   expect(drops).toEqual([]);
+           |                 ^
+      1619 |   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+      1620 |
+      1621 |   // Keep an unrelated browser tab behind the projected task strip. Closing
+        at /private/tmp/freedom-ui-pr-before/test-e2e/agent-product-qualification.spec.js:1618:17
+
+    attachment #2: electronApp-window-1 (image/png) ────────────────────────────────────────────────
+    test-results/agent-product-qualificatio-9eaa3-ask-owned-visible-workspace-harness/attachments/electronApp-window-1-e5086e381074a7172716e5b7f95c294e8adf27cd.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results/agent-product-qualificatio-9eaa3-ask-owned-visible-workspace-harness/error-context.md
+
+    Error Context: test-results/agent-product-qualificatio-9eaa3-ask-owned-visible-workspace-harness/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/agent-product-qualificatio-9eaa3-ask-owned-visible-workspace-harness/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/agent-product-qualificatio-9eaa3-ask-owned-visible-workspace-harness/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [harness] › test-e2e/agent-product-qualification.spec.js:1556:1 › baseline: multi-tab comparison passes inside a task-owned visible workspace 

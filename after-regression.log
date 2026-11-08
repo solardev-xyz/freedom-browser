@@ -1,0 +1,13 @@
+
+> freedom-browser@0.8.9-dev test:e2e
+> playwright test --project=harness test-e2e/agent-product-qualification.spec.js --grep multi-tab comparison
+
+
+Running 1 test using 1 worker
+
+(node:92855) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[Agent product qualification] {"taskId":"multi-tab-comparison","classification":"pass","runStatus":"Complete","assistantOutput":"Alpha scores 41; Beta scores 47. Beta is 6 points higher. Both task tabs remain open for inspection.","modelRequests":9,"toolCalls":8,"operations":["Checked 1 Agent tab","Opened Alpha dashboardagent-product.test","Read Alpha dashboardagent-product.test","Opened Beta dashboardagent-product.test","Read Beta dashboardagent-product.test","Checked 3 Agent tabs","Switched to Alpha dashboardagent-product.test","Read Alpha dashboardagent-product.test"],"toolStates":["✓","✓","✓","✓","✓","✓","✓","✓"],"advertisedTools":["app_diagnostics","attachment_list","attachment_read","bash","browser_call_page_tool","browser_click","browser_close_tab","browser_create_tab","browser_download","browser_focus_tab","browser_get_dialog","browser_get_tab","browser_handle_dialog","browser_list_downloads","browser_list_frames","browser_list_page_tools","browser_list_tabs","browser_navigate","browser_press","browser_read_frame","browser_recall_evidence","browser_scroll","browser_select","browser_snapshot","browser_stop_loading","browser_type","browser_upload","browser_wait","codemode","delegate_task","domain_execute","domain_inspect","domain_operation_status","domain_prepare","edit","find","grep","helper_reports","helper_task","ls","mcp_discover","mcp_request","node_diagnostics","node_lifecycle","node_operation_status","node_request","node_status","read","request_permissions","swarm_publication_status","swarm_publish","wallet_transfer","workspace_history","workspace_preview","workspace_server","write","write_stdin"],"browserTabCount":3,"taskTabCount":3}
+  ✓  1 [harness] › test-e2e/agent-product-qualification.spec.js:1556:1 › baseline: multi-tab comparison passes inside a task-owned visible workspace (7.2s)
+
+  1 passed (7.5s)
