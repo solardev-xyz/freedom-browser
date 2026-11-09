@@ -19,6 +19,7 @@
 const { webContents } = require('electron');
 const log = require('../logger');
 const { createX402Client } = require('./client');
+const { hasUserPageCustodyVersion } = require('../wallet/agent-tab-custody');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const {
@@ -118,7 +119,16 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   catch { throw new Error('Refusing to pay: unparseable URL'); }
   if (!origin) throw new Error('Refusing to pay: unnormalisable origin');
 
-  const client = await createX402Client(getActiveWalletIndex());
+  const assertCustody = () => {
+    if (opts.authorizedBy === AUTHORIZED_BY.CAP && !hasUserPageCustodyVersion(webContentsId, detected.custodyVersion)) {
+      const error = new Error('Tab control changed. This payment needs a fresh approval.');
+      error.code = 'X402_CUSTODY_CHANGED';
+      throw error;
+    }
+  };
+  assertCustody();
+  const client = await createX402Client(getActiveWalletIndex(), { beforeSign: assertCustody });
+  assertCustody();
   // Pre-filter `accepts[]` down to the chosen entry so the SDK's default
   // first-of-filtered selector signs the right one. Avoids registering a
   // custom paymentRequirementsSelector for what is effectively a one-
@@ -159,6 +169,7 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
     );
   }
 
+  assertCustody();
   const headerValue = Buffer.from(JSON.stringify(payload)).toString('base64');
   const headerName = outgoingHeaderForVersion(detected.requirements.x402Version);
   const tuple = tupleFromAccept(selectedAccept);
@@ -177,6 +188,7 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
       payTo,
       fromAddress: client.address,
       authorizedBy: opts.authorizedBy ?? AUTHORIZED_BY.MANUAL,
+      custodyVersion: detected.custodyVersion,
     },
     detected.requestShape,
   );

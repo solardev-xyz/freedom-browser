@@ -34,6 +34,7 @@ const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const { getToken, getTokenKey } = require('../token-registry');
 const {
+  requestManualApprovalForAutoPay,
   getDetectedPayment,
   clearDetectedPayment,
   consumePendingUnlockResume,
@@ -364,8 +365,9 @@ function registerX402Ipc() {
       settlePendingUnlockWait(id);
       return { success: true };
     }
+    let resume;
     try {
-      const resume = consumePendingUnlockResume(id);
+      resume = consumePendingUnlockResume(id);
       if (!resume) {
         return { success: false, error: 'No pending unlock-resume for this tab' };
       }
@@ -375,6 +377,7 @@ function registerX402Ipc() {
       });
       return { success: true };
     } catch (err) {
+      if (err.code === 'X402_CUSTODY_CHANGED' && resume) requestManualApprovalForAutoPay(id, resume.detection);
       return { success: false, error: err.message };
     }
   });

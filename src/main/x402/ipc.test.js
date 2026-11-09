@@ -94,6 +94,7 @@ jest.mock('./permissions', () => ({
 }));
 
 const { webContents } = require('electron');
+const { userPageCustodyVersion, setAgentPageCustody } = require('../wallet/agent-tab-custody');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const intercept = require('./intercept');
 const { outgoingHeaderForVersion } = require('./intercept');
@@ -147,6 +148,13 @@ const v2Detected = (overrides = {}) => ({
   detectedAt: Date.now(),
   ...overrides,
 });
+
+let nextRequestId = 1000;
+function detectPagePayment(details) {
+  const request = { ...details, id: details.id ?? ++nextRequestId };
+  intercept.captureRequestContextHandler(request);
+  return intercept.detectPaymentRequiredHandler(request);
+}
 
 const senderEvent = (id) => ({ sender: { id } });
 
@@ -485,6 +493,7 @@ describe('x402:approve', () => {
       payload: { authorization: {}, signature: '0xabc' },
     });
 
+    snapshot.custodyVersion = userPageCustodyVersion(42);
     const { signAndQueueRetry } = require('./sign-flow');
     await signAndQueueRetry(42, { detection: snapshot, authorizedBy: 'cap' });
 
@@ -508,6 +517,7 @@ describe('x402:approve', () => {
     Object.assign(intercept.getDetectedPayment(42), { authorizedBy: 'cap' });
 
     webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    intercept.getDetectedPayment(42).custodyVersion = userPageCustodyVersion(42);
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -550,7 +560,7 @@ describe('x402:approve', () => {
     // A cap answers only for a live user tab main can attribute the 402 to.
     webContents.fromId.mockReturnValue({ hostWebContents: { send: jest.fn() } });
 
-    intercept.detectPaymentRequiredHandler({
+    detectPagePayment({
       webContentsId: 42,
       url: urlA,
       statusLine: 'HTTP/1.1 402 Payment Required',
@@ -561,7 +571,7 @@ describe('x402:approve', () => {
     await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
 
     // (2) B — replaces detectedPayments[42].
-    intercept.detectPaymentRequiredHandler({
+    detectPagePayment({
       webContentsId: 42,
       url: urlB,
       statusLine: 'HTTP/1.1 402 Payment Required',
@@ -572,7 +582,7 @@ describe('x402:approve', () => {
 
     // (3) User unlocks. Renderer fires the dedicated resume IPC.
     mockCreateClient.mockResolvedValueOnce(mockClient);
-    webContents.fromId.mockReturnValue({ loadURL: jest.fn().mockResolvedValue() });
+    Object.assign(webContents.fromId(42), { loadURL: jest.fn().mockResolvedValue() });
     mockClient.createPaymentPayload.mockResolvedValue({
       x402Version: 2,
       payload: { authorization: {}, signature: '0xabc' },
@@ -618,7 +628,7 @@ describe('x402:approve', () => {
     mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
     // A cap answers only for a live user tab main can attribute the 402 to.
     webContents.fromId.mockReturnValue({ hostWebContents: { send: jest.fn() } });
-    intercept.detectPaymentRequiredHandler({
+    detectPagePayment({
       webContentsId: 42, url: urlA,
       statusLine: 'HTTP/1.1 402 Payment Required',
       resourceType: 'mainFrame',
@@ -627,7 +637,7 @@ describe('x402:approve', () => {
     await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
 
     // (2) B → not cap-covered → approval card path → map has B.
-    intercept.detectPaymentRequiredHandler({
+    detectPagePayment({
       webContentsId: 42, url: urlB,
       statusLine: 'HTTP/1.1 402 Payment Required',
       resourceType: 'mainFrame',
@@ -1005,7 +1015,7 @@ describe('x402:approve with detectionId — strict identity (P1)', () => {
     // A's card was shown for detectionId-A. B's 402 already replaced
     // detectedPayments[id] with detectionId-B. A stale click now arrives.
     // The IPC must refuse — falling through would sign B as if A.
-    intercept.detectPaymentRequiredHandler({
+    detectPagePayment({
       id: 9200,
       webContentsId: 42,
       url: 'https://api.example/segment/B',
@@ -1030,7 +1040,7 @@ describe('x402:approve with detectionId — strict identity (P1)', () => {
     // Seed a mainFrame detection — detectedPayments[42].detectionId
     // will be 'req-9300'. The sidebar's Approve click for that same
     // detectionId should sign via the existing mainFrame flow.
-    intercept.detectPaymentRequiredHandler({
+    detectPagePayment({
       id: 9300,
       webContentsId: 42,
       url: 'https://api.example/article',
@@ -1207,4 +1217,72 @@ describe('x402:refresh-balances', () => {
     expect(result.error).toMatch(/RPC down/);
     expect(sidebarSend).not.toHaveBeenCalled();
   });
+});
+
+test.each(['mainFrame', 'xhr'])('unlock after Agent takes custody requires approval for %s, with no automatic signature or cap charge', async resourceType => {
+  const send = jest.fn();
+  const guest = { getURL: () => v2Detected().url, hostWebContents: { send }, loadURL: jest.fn().mockResolvedValue() };
+  webContents.fromId.mockReturnValue(guest);
+  mockGetPermission.mockReturnValue({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });
+  mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+  const pending = detectPagePayment({ webContentsId: 42, url: v2Detected().url,
+    statusLine: 'HTTP/1.1 402 Payment Required', resourceType,
+    responseHeaders: { 'PAYMENT-REQUIRED': [Buffer.from(JSON.stringify(v2Detected().requirements)).toString('base64')] } });
+  await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+  setAgentPageCustody(guest, true);
+  const result = await ipcHandlers['x402:resume-unlock'](senderEvent(42));
+  await new Promise(resolve => setImmediate(resolve));
+  expect(mockCreateClient).toHaveBeenCalledTimes(1); // Only the original locked-vault attempt.
+  expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+  expect(mockTryConsume).not.toHaveBeenCalled();
+  expect(send).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({ url: v2Detected().url, resourceType }));
+  if (resourceType === 'xhr') {
+    const approval = send.mock.calls.find(([type]) => type === 'x402:approval-needed')[1];
+    intercept.settlePendingApproval(approval.detectionId, { approved: false });
+    await expect(pending).resolves.toBeNull();
+    expect(result.success).toBe(true); // IPC woke the held detector; it requested approval.
+  } else {
+    await pending;
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('fresh approval') });
+    expect(intercept.getDetectedPayment(42).authorizedBy).toBe('manual');
+  }
+});
+
+test.each(['navigated', 'newer charge'])('an unlock custody fallback does not disturb a tab with %s', async changed => {
+  const send = jest.fn();
+  let url = v2Detected().url;
+  const guest = { getURL: () => url, hostWebContents: { send }, loadURL: jest.fn() };
+  webContents.fromId.mockReturnValue(guest);
+  mockGetPermission.mockReturnValueOnce({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });
+  mockCreateClient.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+  const details = { webContentsId: 42, url, statusLine: 'HTTP/1.1 402 Payment Required', resourceType: 'mainFrame',
+    responseHeaders: { 'PAYMENT-REQUIRED': [Buffer.from(JSON.stringify(v2Detected().requirements)).toString('base64')] } };
+  await detectPagePayment(details);
+  await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+  setAgentPageCustody(guest, true);
+  url = 'https://another.example/';
+  if (changed === 'newer charge') await detectPagePayment({ ...details, url });
+  send.mockClear();
+  await ipcHandlers['x402:resume-unlock'](senderEvent(42));
+  expect(mockCreateClient).toHaveBeenCalledTimes(1);
+  expect(send).not.toHaveBeenCalledWith('x402:approval-needed', expect.any(Object));
+  expect(guest.loadURL).not.toHaveBeenCalled();
+  expect(intercept.getDetectedPayment(42)?.url ?? null).toBe(changed === 'newer charge' ? url : null);
+});
+
+test('a subresource custody change during unlocked signing falls back to exact approval instead of redirecting or charging', async () => {
+  const send = jest.fn();
+  const guest = { hostWebContents: { send } };
+  webContents.fromId.mockReturnValue(guest);
+  mockGetPermission.mockReturnValue({ capAmount: '20000', spentAmount: '0', createdAt: 1, expiresAt: 9999999999 });
+  mockClient.createPaymentPayload.mockImplementationOnce(async () => { setAgentPageCustody(guest, true); return { payload: { signature: 'fixture' } }; });
+  const pending = detectPagePayment({ webContentsId: 42, url: v2Detected().url, resourceType: 'xhr', statusLine: 'HTTP/1.1 402 Payment Required',
+    responseHeaders: { 'PAYMENT-REQUIRED': [Buffer.from(JSON.stringify(v2Detected().requirements)).toString('base64')] } });
+  await new Promise(resolve => setImmediate(resolve));
+  const approval = send.mock.calls.find(([type]) => type === 'x402:approval-needed')?.[1];
+  expect(approval).toMatchObject({ url: v2Detected().url, resourceType: 'xhr' });
+  expect(mockTryConsume).not.toHaveBeenCalled();
+  expect(intercept.injectPaymentSignatureHandler({ webContentsId: 42, url: v2Detected().url, requestHeaders: {} })).toBeNull();
+  intercept.settlePendingApproval(approval.detectionId, { approved: false });
+  await expect(pending).resolves.toBeNull();
 });
