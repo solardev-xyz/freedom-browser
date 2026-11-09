@@ -1083,6 +1083,11 @@ function normalizeDomainPresentation(value) {
   });
 }
 
+function agentHeldWalletRefusal() {
+  return { handled: true, error: { code: 4001,
+    message: 'Agent still controls this tab. Continue the task or take control of the tab before using its wallet.' } };
+}
+
 class FreedomAgentService {
   constructor(options = {}) {
     if (!options.controller || typeof options.controller.execute !== 'function') {
@@ -1700,6 +1705,8 @@ class FreedomAgentService {
 
   async handleWalletRequest(tabId, payload) {
     const run = this.activeRun;
+    const held = this.agentTabs.get(tabId)?.custody === 'agent' || this.controller.isPageAgentCustody?.(tabId) === true;
+    const unavailable = () => held ? agentHeldWalletRefusal() : { handled: false };
     if (
       !this.walletController ||
       !run ||
@@ -1711,10 +1718,10 @@ class FreedomAgentService {
       (run.scopedController?.getTabController?.(tabId) || run.scopedController)?.getActiveTabId?.() !== tabId ||
       !this.#conversationHasTab(this.conversation, tabId)
     ) {
-      return { handled: false };
+      return unavailable();
     }
     const pageState = this.controller.getPageState?.(tabId);
-    if (!pageState?.url) return { handled: false };
+    if (!pageState?.url) return unavailable();
 
     const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload,
       run.scopedController?.getTabController?.(tabId)?.delegationSignal);
@@ -3723,6 +3730,7 @@ class FreedomAgentService {
 }
 
 module.exports = {
+  agentHeldWalletRefusal,
   AGENT_ERROR_CODES,
   AGENT_EVENT_VERSION,
   MAX_AGENT_PROMPT_LENGTH,

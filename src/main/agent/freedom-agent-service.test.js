@@ -1842,7 +1842,9 @@ describe('FreedomAgentService', () => {
     // Finishing the turn and deleting the conversation keep custody...
     fake.prompt.resolve();
     await service.waitForIdle();
+    await expect(service.handleWalletRequest('tab_assigned', { method: 'personal_sign' })).resolves.toMatchObject({ handled: true, error: { code: 4001 } });
     await expect(service.deleteConversation('conversation_test')).resolves.toBe(true);
+    await expect(service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })).resolves.toMatchObject({ handled: true, error: { code: 4001 } });
     expect(service.listAgentTabs()).toEqual([
       expect.objectContaining({ tabId: 'tab_assigned', custody: 'agent', conversationId: null }),
     ]);
@@ -1851,6 +1853,7 @@ describe('FreedomAgentService', () => {
     await expect(service.claimTab('tab_assigned')).resolves.toBe(true);
     expect(controller.setPageAgentCustody).toHaveBeenLastCalledWith('tab_assigned', false);
     expect(service.listAgentTabs()).toEqual([]);
+    await expect(service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })).resolves.toEqual({ handled: false });
   });
 
   test('a popup from an Agent-held page opens as an Agent-held tab of the same conversation', async () => {
@@ -2992,7 +2995,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('leaves wallet requests from inactive or unrelated tabs to the human wallet flow', async () => {
+  test('only non-Agent tabs fall back to the human wallet flow when no active task can handle the request', async () => {
     const fake = createFakeSession();
     const walletController = { handleRequest: jest.fn() };
     const { service } = createService(fake, { walletController });
@@ -3003,7 +3006,7 @@ describe('FreedomAgentService', () => {
     await service.start(startOptions());
     await expect(
       service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })
-    ).resolves.toEqual({ handled: false });
+    ).resolves.toMatchObject({ handled: true, error: { code: 4001 } });
     expect(walletController.handleRequest).not.toHaveBeenCalled();
 
     fake.prompt.resolve();

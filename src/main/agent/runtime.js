@@ -78,7 +78,8 @@ function createFreedomAgentRuntime(options = {}) {
     for (const store of [workspaceStore, nodeOperationStore, historyStore]) {
       try { store?.close(); } catch { log.warn('[Agent] Could not close an unavailable store'); }
     }
-    const unregisterIpc = registerUnavailableAgentIpc({ ...options, isProviderSettingsSender, isAgentLauncherSender });
+    const unregisterIpc = registerUnavailableAgentIpc({ ...options, isProviderSettingsSender, isAgentLauncherSender,
+      isAgentHeldTab: tabId => options.controller.isPageAgentCustody?.(tabId) === true });
     return { unavailable: true, dispose: async () => unregisterIpc() };
   }
   // Finish removing workspaces whose cleanup timed out before the last exit.
@@ -175,6 +176,7 @@ function createFreedomAgentRuntime(options = {}) {
     resolveModel: selection => providerResolver.resolveModel(selection),
     previewPageTools: (tabId) => options.controller.previewPageTools(tabId),
     automationTabIdForRenderer: options.automationTabIdForRenderer,
+    isAgentHeldTab: tabId => options.controller.isPageAgentCustody?.(tabId) === true,
     createAutomationPageForHost: options.createAutomationPageForHost,
     desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
     isTrustedSender: options.isTrustedSender,

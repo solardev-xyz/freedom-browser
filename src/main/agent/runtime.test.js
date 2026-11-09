@@ -261,6 +261,7 @@ describe('Freedom agent runtime', () => {
       resolveModel: expect.any(Function),
       previewPageTools: expect.any(Function),
       automationTabIdForRenderer: options.automationTabIdForRenderer,
+      isAgentHeldTab: expect.any(Function),
       desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
       createAutomationPageForHost: options.createAutomationPageForHost,
       isTrustedSender: options.isTrustedSender,
