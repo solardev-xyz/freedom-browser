@@ -29,6 +29,7 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.CLOSE_TAB,
   OPERATIONS.NAVIGATE,
   OPERATIONS.SNAPSHOT,
+  OPERATIONS.READ_MARKDOWN,
   OPERATIONS.LIST_FRAMES,
   OPERATIONS.READ_FRAME,
   OPERATIONS.TARGET_POINT,
@@ -200,6 +201,12 @@ function validateOperationInput(operation, rawInput) {
 
   if (operation === OPERATIONS.NAVIGATE) {
     normalized.url = validateNavigationUrl(input.url);
+  }
+
+  if (operation === OPERATIONS.READ_MARKDOWN) {
+    if (input.source !== undefined && !['page', 'site-index'].includes(input.source))
+      throw invalidArgument('source must be page or site-index');
+    normalized.source = input.source || 'page';
   }
 
   if (operation === OPERATIONS.TARGET_POINT) {

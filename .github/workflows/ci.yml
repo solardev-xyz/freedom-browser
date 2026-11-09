@@ -1341,6 +1341,7 @@ jobs:
             test-e2e/automation-kernel.spec.js \
             test-e2e/automation-native-dialog.spec.js \
             test-e2e/automation-observation.spec.js \
+            test-e2e/automation-markdown.spec.js \
             test-e2e/automation-page-tools.spec.js \
             test-e2e/automation-recovery.spec.js \
             test-e2e/automation-runtime.spec.js \
@@ -1429,6 +1430,7 @@ jobs:
             test-e2e/automation-kernel.spec.js \
             test-e2e/automation-native-dialog.spec.js \
             test-e2e/automation-observation.spec.js \
+            test-e2e/automation-markdown.spec.js \
             test-e2e/automation-page-tools.spec.js \
             test-e2e/automation-recovery.spec.js \
             test-e2e/automation-runtime.spec.js \

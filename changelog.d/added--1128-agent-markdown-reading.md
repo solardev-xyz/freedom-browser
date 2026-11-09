@@ -1,0 +1,1 @@
+- Optional site-provided Markdown and llms.txt reads for Agent, with rendered-page fallback and native decentralized content transport ([#1128](https://github.com/solardev-xyz/freedom-browser/issues/1128))

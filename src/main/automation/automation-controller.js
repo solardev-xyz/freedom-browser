@@ -410,6 +410,8 @@ class AutomationController {
           },
           execution.authorizeFrame
         );
+      case OPERATIONS.READ_MARKDOWN:
+        return entry.adapter.readMarkdown({ source: input.source, signal: execution.signal });
       case OPERATIONS.SNAPSHOT:
         return entry.adapter.snapshot({
           query: input.query,
