@@ -58,6 +58,36 @@ async function main() {
   for (const [name, target] of [['outside-write', outside], ['git-write', gitSentinel]]) {
     await check(name, `try { require('fs').writeFileSync(${JSON.stringify(target)}, 'tampered'); process.exitCode=2; } catch(e) { console.log(e.code); }`, r => r.state === 'completed' && /EPERM|EACCES/.test(r.stdout) && fs.readFileSync(target, 'utf8') === 'untouched');
   }
+  // A whole-run lock would deadlock this barrier. Only startup state may be
+  // serialised: all four workloads must be able to execute at the same time.
+  const caps = () => JSON.parse(fs.readFileSync(path.join(executor.home, 'cap_sid'), 'utf8'));
+  for (let round = 0; round < 8; round++) {
+    const before = caps();
+    const markers = Array.from({ length: 4 }, (_, index) => `parallel-${round}-${index}.ready`);
+    const batch = await Promise.all(markers.map(marker => execute(`
+      const fs = require('fs');
+      fs.writeFileSync(require('path').join(process.env.TEMP, 'owned-temp-proof.txt'), 'private');
+      fs.writeFileSync(${JSON.stringify(marker)}, 'ready');
+      const peers = ${JSON.stringify(markers)};
+      const deadline = Date.now() + 15000;
+      const wait = () => {
+        if (peers.every(peer => fs.existsSync(peer))) { console.log('parallel-ready'); return; }
+        if (Date.now() >= deadline) { console.error('parallel barrier timed out'); process.exitCode = 2; return; }
+        setTimeout(wait, 20);
+      };
+      wait();
+    `)));
+    const after = caps();
+    const stable = ['workspace', 'readonly'].every(key => before[key] === after[key]) &&
+      ['workspace_by_cwd', 'writable_root_by_path'].every(key => Object.entries(before[key] || {})
+        .every(([root, sid]) => after[key]?.[root] === sid));
+    const added = Object.keys(after.writable_root_by_path || {}).length - Object.keys(before.writable_root_by_path || {}).length;
+    const passed = stable && added >= markers.length && batch.every(result => result.state === 'completed' && result.exitCode === 0 && result.stdout.trim() === 'parallel-ready');
+    record(`parallel-startup-state-${round}`, passed, { stable, successful: batch.filter(result => result.state === 'completed').length,
+      addedWriteRoots: added, entriesBefore: Object.keys(before.writable_root_by_path || {}).length, entriesAfter: Object.keys(after.writable_root_by_path || {}).length,
+      timings: batch.map(result => ({ startupWaitMs: result.startupWaitMs, startupMs: result.startupMs })),
+      failures: batch.filter(result => result.state !== 'completed').map(result => ({ state: result.state, exitCode: result.exitCode, error: result.error })) });
+  }
   const readPolicy = await createWorkspaceFileReadPolicy({ workspaceRoot: workspace });
   const readOnly = await executor.execute(readPolicy, { command: process.execPath, args: ['-e', "try { require('fs').writeFileSync('hello.txt','tampered'); process.exitCode=2; } catch(e) { console.log(e.code); }"] });
   record('offline-write-not-launched', readOnly.state === 'sandbox_denied' && readOnly.sideEffects === 'none' && fs.readFileSync(path.join(workspace, 'hello.txt'), 'utf8') === 'hello', readOnly);
