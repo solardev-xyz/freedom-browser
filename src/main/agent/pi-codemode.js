@@ -27,17 +27,24 @@ function createFreedomCodemode(sdk, sessionManager, getSession) {
       if (parts.length) content.push({ type: 'text', text: parts.join('\n') });
       parts = [];
     };
-    const diagnostic = result.isError && result.content.at(-1)?.type === 'text'
-      ? result.content.at(-1).text.slice(0, 2048) : '';
+    // Pi joins printed output and its final error into one text block. Preserve
+    // the actual diagnostic after that output, not the start of a large print.
+    const last = result.content.at(-1);
+    const errorAt = result.isError && last?.type === 'text' ? last.text.lastIndexOf('Script error:\n') : -1;
+    const diagnostic = result.isError && last?.type === 'text'
+      ? last.text.slice(errorAt < 0 ? 0 : errorAt, (errorAt < 0 ? 0 : errorAt) + 2048) : '';
     remaining = Math.max(0, remaining - diagnostic.length);
-    for (const item of result.content) {
+    for (let item of result.content) {
+      if (item === last && diagnostic) {
+        if (errorAt < 0) continue;
+        item = { ...item, text: item.text.slice(0, errorAt) };
+      }
       if (item.type !== 'text') {
         flush();
         if (content.length < 128) content.push(item);
         else shortened = true;
         continue;
       }
-      if (diagnostic && item === result.content.at(-1)) continue;
       const separator = parts.length && remaining > 0 ? 1 : 0;
       const text = item.text.slice(0, Math.max(0, remaining - separator));
       shortened ||= text.length !== item.text.length;

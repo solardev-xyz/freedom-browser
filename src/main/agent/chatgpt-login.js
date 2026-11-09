@@ -1,6 +1,6 @@
 'use strict';
 
-// Freedom owns the browser-facing login UI. The protocol follows Pi 1.0.2's
+// Freedom owns the browser-facing login UI. The protocol follows Pi 1.5.0's
 // openai-chatgpt flow; Pi still owns credential storage, refresh and requests.
 const { createHash, randomBytes } = require('node:crypto');
 const { createServer } = require('node:http');
