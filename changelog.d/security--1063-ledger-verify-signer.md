@@ -1,0 +1,2 @@
+- Ledger signatures are verified against the account's address before returning ([#1063](https://github.com/solardev-xyz/freedom-browser/issues/1063))
+  - In `signTransaction`, `signMessage`, and `signTypedData`, signatures returned by the hardware wallet are checked to recover to the expected account address, refusing with `LEDGER_WRONG_DEVICE` if mismatched or corrupt.

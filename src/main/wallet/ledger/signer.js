@@ -25,7 +25,7 @@
  * later — that decision belongs to the user, not this module.
  */
 
-const { Transaction, Signature, TypedDataEncoder } = require('ethers');
+const { Transaction, Signature, TypedDataEncoder, verifyMessage, verifyTypedData } = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
@@ -59,6 +59,22 @@ function createLedgerBackend(record) {
       return task(eth);
     });
 
+  /**
+   * Refuse signatures that do not recover to this account's address,
+   * guarding against confused device firmware, mis-encoded payloads, or corrupted APDUs.
+   */
+  const assertExpectedSigner = (recoverFn) => {
+    let recovered;
+    try {
+      recovered = recoverFn();
+    } catch {
+      throw createLedgerError(LEDGER_ERROR_CODES.WRONG_DEVICE);
+    }
+    if (!recovered || recovered.toLowerCase() !== record.address.toLowerCase()) {
+      throw createLedgerError(LEDGER_ERROR_CODES.WRONG_DEVICE);
+    }
+  };
+
   return {
     getAddress: async () => record.address,
 
@@ -71,22 +87,26 @@ function createLedgerBackend(record) {
       return withVerifiedDevice(async (eth) => {
         const sig = await eth.signTransaction(record.path, rawHex, null);
         unsigned.signature = toEthersSignature(sig);
+        assertExpectedSigner(() => unsigned.from);
         return unsigned.serialized;
       });
     },
 
     signMessage: async (message) => {
-      const messageHex = messageToBytes(message).toString('hex');
+      const bytes = messageToBytes(message);
+      const messageHex = bytes.toString('hex');
 
       return withVerifiedDevice(async (eth) => {
         const sig = await eth.signPersonalMessage(record.path, messageHex);
-        return toEthersSignature(sig).serialized;
+        const serialized = toEthersSignature(sig).serialized;
+        assertExpectedSigner(() => verifyMessage(bytes, serialized));
+        return serialized;
       });
     },
 
     signTypedData: async (typedData) => {
       // The device wants the full EIP-712 wire payload.
-      const { strippedTypes, payload } = getEip712WirePayload(typedData);
+      const { domain, strippedTypes, payload } = getEip712WirePayload(typedData);
 
       return withVerifiedDevice(async (eth) => {
         let sig;
@@ -100,7 +120,9 @@ function createLedgerBackend(record) {
           const structHash = TypedDataEncoder.from(strippedTypes).hash(typedData.message);
           sig = await eth.signEIP712HashedMessage(record.path, domainSeparator.slice(2), structHash.slice(2));
         }
-        return toEthersSignature(sig).serialized;
+        const serialized = toEthersSignature(sig).serialized;
+        assertExpectedSigner(() => verifyTypedData(domain, strippedTypes, typedData.message, serialized));
+        return serialized;
       });
     },
   };

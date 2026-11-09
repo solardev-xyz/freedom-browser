@@ -109,6 +109,17 @@ describe('createLedgerBackend / signTransaction', () => {
     // status code is preserved for that mapping.
     await expect(backend.signTransaction(TX)).rejects.toMatchObject({ statusCode: 0x6985 });
   });
+
+  test('refuses to return a transaction signed by a different key', async () => {
+    const wrongWallet = Wallet.createRandom();
+    mockEth.signTransaction.mockImplementation(async () => {
+      const signed = Transaction.from(await wrongWallet.signTransaction(TX));
+      return toDeviceSig(signed.signature, { vAsHexString: true });
+    });
+
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signTransaction(TX)).rejects.toMatchObject({ code: 'LEDGER_WRONG_DEVICE' });
+  });
 });
 
 describe('createLedgerBackend / signMessage', () => {
@@ -132,6 +143,18 @@ describe('createLedgerBackend / signMessage', () => {
     const bytes = Buffer.from('fffefd00010203deadbeef', 'hex');
     const signature = await backend.signMessage(bytes);
     expect(verifyMessage(bytes, signature)).toBe(deviceWallet.address);
+  });
+
+  test('refuses to return a message signed by a different key', async () => {
+    const wrongWallet = Wallet.createRandom();
+    mockEth.signPersonalMessage.mockImplementation(async (path, messageHex) => {
+      const bytes = Buffer.from(messageHex, 'hex');
+      const sig = wrongWallet.signingKey.sign(hashMessage(bytes));
+      return toDeviceSig(sig);
+    });
+
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signMessage('hello freedom')).rejects.toMatchObject({ code: 'LEDGER_WRONG_DEVICE' });
   });
 });
 
@@ -204,5 +227,31 @@ describe('createLedgerBackend / signTypedData', () => {
     const backend = createLedgerBackend(RECORD);
     await expect(backend.signTypedData({ domain, types, message })).rejects.toMatchObject({ statusCode: 0x6985 });
     expect(mockEth.signEIP712HashedMessage).not.toHaveBeenCalled();
+  });
+
+  test('refuses to return typed data signed by a different key', async () => {
+    const wrongWallet = Wallet.createRandom();
+    mockEth.signEIP712Message.mockImplementation(async () => {
+      const sig = wrongWallet.signingKey.sign(TypedDataEncoder.hash(domain, types, message));
+      return toDeviceSig(sig);
+    });
+
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signTypedData({ domain, types, message })).rejects.toMatchObject({ code: 'LEDGER_WRONG_DEVICE' });
+  });
+
+  test('refuses to return hashed typed data signed by a different key on fallback', async () => {
+    const wrongWallet = Wallet.createRandom();
+    const noFullSupport = new Error('INS not supported');
+    noFullSupport.statusCode = 0x6d00;
+    mockEth.signEIP712Message.mockRejectedValue(noFullSupport);
+    mockEth.signEIP712HashedMessage.mockImplementation(async () => {
+      const sig = wrongWallet.signingKey.sign(TypedDataEncoder.hash(domain, types, message));
+      return toDeviceSig(sig);
+    });
+
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signTypedData({ domain, types, primaryType: 'TransferWithAuthorization', message }))
+      .rejects.toMatchObject({ code: 'LEDGER_WRONG_DEVICE' });
   });
 });
