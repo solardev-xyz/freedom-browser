@@ -73,10 +73,15 @@ export const updateTabFavicon = async (tabId, pageUrl) => {
     return;
   }
 
-  // Try to get cached favicon
+  // Try to get cached favicon. The tab may go on to another site while the
+  // lookup is out; its strip belongs to that site then, so the answer is
+  // dropped. A page with no site of its own (an error page standing in for
+  // one) has to still be the very same page.
+  const startedOn = tab.url;
   try {
     const favicon = await electronAPI?.getCachedFavicon?.(pageUrl);
-    if (favicon) {
+    const stillThere = tab.url === startedOn || isSameFaviconSite(startedOn, tab.url);
+    if (favicon && stillThere) {
       tab.favicon = favicon;
       renderTabs();
     }
@@ -860,7 +865,19 @@ const createWebview = (tabId, initialUrl) => {
         // `freedom://settings`, a reload): Chromium does not report an icon
         // list again that is identical to the one it just reported, so the
         // cleared slot stayed on the globe for the rest of the visit (#606).
-        if (isInternalPageUrl(event.url) && !isSameInternalDocument(previousUrl, webviewUrl)) {
+        if (isInternalPageUrl(event.url)) {
+          if (!isSameInternalDocument(previousUrl, webviewUrl)) {
+            tab.favicon = null;
+            renderTabs();
+          }
+        } else if (tab.favicon && !isSameFaviconSite(previousUrl, webviewUrl)) {
+          // A page on another site starts from the globe as well. The strip
+          // only ever repaints with a site's cached icon, or with the one main
+          // fetches after the page reports it, and a site with no icon of its
+          // own (no <link rel="icon"> and a 404 at /favicon.ico) produces
+          // neither, so it kept the previous site's icon for the whole visit.
+          // Another page of the same site keeps its icon: the cache is per
+          // site, so it would paint the same one back.
           tab.favicon = null;
           renderTabs();
         }
@@ -1238,6 +1255,29 @@ const isSameInternalDocument = (previousUrl, nextUrl) => {
   if (!isInternalPageUrl(previousUrl) || !isInternalPageUrl(nextUrl)) return false;
   const documentOf = (url) => url.split(/[?#]/)[0];
   return documentOf(previousUrl) === documentOf(nextUrl);
+};
+
+// The site a page's icon is cached under, keyed the way main keys its
+// favicon cache (favicons.js#extractDomain): an http(s) URL's host, any other
+// scheme's `scheme://host`, and '' for a URL with no host (file:, about:blank,
+// view-source:, the bundled pages).
+const faviconSiteOf = (url) => {
+  const value = String(url || '');
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    try {
+      return new URL(value).host;
+    } catch {
+      return '';
+    }
+  }
+  return /^([a-z]+:\/\/[^/]+)/.exec(value)?.[1] || '';
+};
+
+// Two pages share an icon only on one real site: two URLs with no site at all
+// (Settings, then about:blank) are not the same one.
+export const isSameFaviconSite = (a, b) => {
+  const site = faviconSiteOf(a);
+  return site !== '' && site === faviconSiteOf(b);
 };
 
 // Loading spinner (same style as address bar)

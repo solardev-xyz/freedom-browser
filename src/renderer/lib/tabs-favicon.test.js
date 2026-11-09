@@ -291,4 +291,93 @@ describe('tabs page-favicon-updated handling (#75)', () => {
       expect(ctx.tabs.getActiveTab().favicon).toBeNull();
     });
   });
+  // A tab kept the previous site's icon on a site with no icon of its own
+  // (no <link rel="icon">, a 404 at /favicon.ico): the strip only repaints
+  // with a cached or fetched icon, and such a site produces neither.
+  describe('an external page committing over another', () => {
+    const ICON = 'data:image/png;base64,SHOP';
+    const commit = (ctx, url) => {
+      ctx.webview.src = url;
+      ctx.webview.dispatch('did-navigate', { url });
+    };
+    // A tab showing `url`, its strip painted with that site's cached icon.
+    const showing = async (url) => {
+      const ctx = await loadTabs();
+      commit(ctx, url);
+      ctx.tabs.getActiveTab().favicon = ICON;
+      return ctx;
+    };
+
+    test.each([
+      ['another host', 'https://shop.example/items/42', 'https://dave.writersweb.org/index.md'],
+      ['another port', 'http://localhost:3000/', 'http://localhost:4000/'],
+      ['another Swarm hash', 'bzz://aaa/index.html', 'bzz://bbb/index.html'],
+      ['a local file', 'https://shop.example/items/42', 'file:///Users/me/notes.md'],
+      ['view-source', 'https://shop.example/items/42', 'view-source:https://shop.example/items/42'],
+      ['a site after a bundled page', 'file:///app/pages/settings.html', 'https://shop.example/'],
+      // Neither has a site, and they are still not one.
+      ['about:blank after a bundled page', 'file:///app/pages/settings.html', 'about:blank'],
+    ])('%s starts from the globe', async (_label, from, to) => {
+      const ctx = await showing(from);
+      commit(ctx, to);
+      expect(ctx.tabs.getActiveTab().favicon).toBeNull();
+    });
+
+    test.each([
+      ['another page of the site', 'https://shop.example/items/42', 'https://shop.example/cart'],
+      ['a reload', 'https://shop.example/items/42', 'https://shop.example/items/42'],
+      ['another page under the Swarm hash', 'bzz://aaa/index.html', 'bzz://aaa/about.html'],
+    ])('%s keeps the icon', async (_label, from, to) => {
+      const ctx = await showing(from);
+      commit(ctx, to);
+      expect(ctx.tabs.getActiveTab().favicon).toBe(ICON);
+    });
+
+    // The cache lookup is a round trip to main: the tab can commit another
+    // page before it answers.
+    const lookUpWhileCommitting = async (to) => {
+      const ctx = await loadTabs();
+      commit(ctx, 'https://shop.example/items/42');
+      let answer;
+      global.window.electronAPI.getCachedFavicon.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+      );
+      const lookup = ctx.tabs.updateTabFavicon(
+        ctx.tabs.getActiveTab().id,
+        'https://shop.example/items/42'
+      );
+      commit(ctx, to);
+      answer(ICON);
+      await lookup;
+      return ctx.tabs.getActiveTab().favicon;
+    };
+
+    test("a cached icon that answers after the tab left the site isn't painted", async () => {
+      expect(await lookUpWhileCommitting('https://dave.writersweb.org/index.md')).toBeFalsy();
+    });
+
+    test('a cached icon that answers on another page of the site is painted', async () => {
+      expect(await lookUpWhileCommitting('https://shop.example/cart')).toBe(ICON);
+    });
+
+    // An error page has no site of its own, but switching to its tab looks
+    // up the icon of the site it stands in for.
+    test("a cached icon that answers after an error page's tab moved on isn't painted", async () => {
+      const ctx = await loadTabs();
+      commit(ctx, 'file:///app/pages/error.html?url=https%3A%2F%2Fshop.example%2F');
+      let answer;
+      global.window.electronAPI.getCachedFavicon.mockReturnValueOnce(
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+      );
+      const lookup = ctx.tabs.updateTabFavicon(ctx.tabs.getActiveTab().id, 'https://shop.example/');
+      commit(ctx, 'about:blank');
+      answer(ICON);
+      await lookup;
+      expect(ctx.tabs.getActiveTab().favicon).toBeFalsy();
+    });
+  });
 });
