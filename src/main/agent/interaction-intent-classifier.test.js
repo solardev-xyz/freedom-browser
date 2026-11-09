@@ -59,17 +59,27 @@ describe('InteractionIntentClassifier', () => {
     });
 
     test.each(['stop', 'timeout'])('a %s during session creation disposes a late session without prompting it', async kind => {
-      const abort = new AbortController();
-      let created;
-      const session = createFakeSession('');
-      const classifier = new Classifier({ createSession: () => new Promise(resolve => { created = resolve; }), timeoutMs: kind === 'timeout' ? 1 : 60000 });
-      const pending = classifier.classify({}, { model: {}, modelRuntime: {}, signal: abort.signal });
-      if (kind === 'stop') abort.abort();
-      await expect(pending).resolves.toMatchObject({ uncertainties: [kind === 'stop' ? 'classifier_cancelled' : 'classifier_timeout'] });
-      created({ session });
-      await Promise.resolve(); await Promise.resolve();
-      expect(session.prompt).not.toHaveBeenCalled();
-      expect(session.dispose).toHaveBeenCalledTimes(1);
+      jest.useFakeTimers();
+      try {
+        const abort = new AbortController();
+        let created;
+        const session = createFakeSession('');
+        const createSession = jest.fn(() => new Promise(resolve => { created = resolve; }));
+        const classifier = new Classifier({ createSession, timeoutMs: 1000 });
+        const pending = classifier.classify({}, { model: {}, modelRuntime: {}, signal: abort.signal });
+        // Reach the state being tested before advancing the deadline. Real
+        // 1 ms timers could expire during synchronous runtime/schema setup.
+        expect(createSession).toHaveBeenCalledTimes(1);
+        if (kind === 'stop') abort.abort();
+        else await jest.advanceTimersByTimeAsync(1000);
+        await expect(pending).resolves.toMatchObject({ uncertainties: [kind === 'stop' ? 'classifier_cancelled' : 'classifier_timeout'] });
+        created({ session });
+        await Promise.resolve(); await Promise.resolve();
+        expect(session.prompt).not.toHaveBeenCalled();
+        expect(session.abort).toHaveBeenCalledTimes(1);
+        expect(session.dispose).toHaveBeenCalledTimes(1);
+        expect(jest.getTimerCount()).toBe(0);
+      } finally { jest.useRealTimers(); }
     });
   });
 
