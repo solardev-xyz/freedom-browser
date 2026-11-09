@@ -15,6 +15,7 @@ const PROVIDER_NAMES = Object.freeze({
   ollama: 'Ollama',
 });
 const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434/v1';
+const claudeNeedsReconnect = connection => connection?.providerId === 'anthropic-claude' && connection.organizationPolicyAcknowledged !== true;
 
 // A model server on this device: localhost, 127.0.0.0/8 or ::1.
 function isLoopbackUrl(value) {
@@ -321,6 +322,7 @@ export function createAgentProviderUi(options = {}) {
     const isMeta = ['meta', 'meta-subscription'].includes(providerId);
     const isClaude = ['anthropic', 'anthropic-claude'].includes(providerId);
     const canUpgradeChatgpt = providerId === 'openai-codex' && isConnectedSubscription;
+    const reconnectClaude = isConnectedSubscription && claudeNeedsReconnect(connection);
     const descriptor = state.providerCatalog.find((item) => item.providerId === providerId);
     elements.customFields.hidden = !isCustom;
     elements.customSettings.hidden = !isCustom || !connection;
@@ -347,8 +349,8 @@ export function createAgentProviderUi(options = {}) {
       ? `Sends up to three small synthetic requests to check streaming, tool calling and tool results. No files or pages are shared.${charges}`
       : `Sends only “Reply with OK.” to this model.${charges}`;
     elements.providerHeading.textContent = providerName(providerId);
-    elements.providerStatus.textContent = connection ? 'Connected' : 'Not connected';
-    elements.providerStatus.classList.toggle('active', Boolean(connection));
+    elements.providerStatus.textContent = reconnectClaude ? 'Reconnect required' : connection ? 'Connected' : 'Not connected';
+    elements.providerStatus.classList.toggle('active', Boolean(connection) && !reconnectClaude);
     elements.providerPrivacy.textContent = providerPrivacyMessage(providerId);
     elements.hostedFields.classList.toggle('hidden', isOllama || !connection);
     elements.ollamaFields.classList.toggle('hidden', !isOllama);
@@ -357,24 +359,24 @@ export function createAgentProviderUi(options = {}) {
     if (isCustom && !connection) elements.connectionFields.prepend(elements.customFields);
     elements.subscriptionFields.classList.toggle(
       'hidden',
-      !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt && !providerLoginPending)
+      !isSubscription || (isConnectedSubscription && !isClaude && !canUpgradeChatgpt && !providerLoginPending)
     );
     renderSaveVisibility();
     elements.authCode.hidden = !providerLoginPending || !elements.authUserCode.textContent;
-    elements.subscriptionNote.hidden = Boolean(connection) && !canUpgradeChatgpt;
+    elements.subscriptionNote.hidden = Boolean(connection) && !isClaude && !canUpgradeChatgpt;
     elements.subscriptionNote.textContent = canUpgradeChatgpt
       ? 'This connection uses the older Codex login. Sign in with ChatGPT to use the new connection. Your current connection stays available.'
       : isClaude
-        ? 'Install Claude Code and sign in with claude auth login in your terminal, then connect here. Uses a personal Pro or Max subscription; managed installations are not supported. Freedom never copies your login credentials.'
+        ? `${connection ? 'Uses your installed Claude Code login. Freedom never copies your login credentials.' : 'Install Claude Code and sign in with claude auth login in your terminal, then connect here. Supports Pro, Max, Team and Enterprise.'} Your organization’s Claude policies and automation also apply. Organization scripts may run outside Freedom’s approval controls and receive your messages and the content Agent reads.`
         : isMeta
           ? 'Connect with your Meta account.'
           : 'Connect with your ChatGPT subscription.';
     elements.loginProvider.hidden =
-      !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt) || providerLoginPending;
+      !isSubscription || (isConnectedSubscription && !canUpgradeChatgpt && !reconnectClaude) || providerLoginPending;
     elements.loginProvider.textContent = canUpgradeChatgpt
       ? 'Upgrade ChatGPT sign-in'
       : isClaude
-        ? 'Connect installed Claude'
+        ? reconnectClaude ? 'Reconnect installed Claude' : 'Connect installed Claude'
         : isMeta
           ? 'Sign in with Meta'
           : 'Continue with ChatGPT';
@@ -453,19 +455,20 @@ export function createAgentProviderUi(options = {}) {
     // The whole row is the button, so an unconnected method shows the provider
     // list's chevron rather than a "Connect" label; a connected one keeps its
     // "Connected" status (#855).
-    renderMethodState(elements.chatgptConnectionState, subscriptionConnected);
+    const subscriptionReconnect = isClaude && claudeNeedsReconnect(providerConnection('anthropic-claude'));
+    renderMethodState(elements.chatgptConnectionState, subscriptionConnected, subscriptionReconnect);
     renderMethodState(elements.apiConnectionState, apiConnected);
     if (choosingProviderMethod) {
       elements.providerHeading.textContent = providerPageTitle(providerId);
       elements.providerStatus.textContent =
-        subscriptionConnected || apiConnected ? 'Connected' : 'Not connected';
-      elements.providerStatus.classList.toggle('active', subscriptionConnected || apiConnected);
+        subscriptionReconnect && !apiConnected ? 'Reconnect required' : subscriptionConnected || apiConnected ? 'Connected' : 'Not connected';
+      elements.providerStatus.classList.toggle('active', subscriptionConnected && !subscriptionReconnect || apiConnected);
     }
   }
 
-  function renderMethodState(element, connected) {
-    element.textContent = connected ? 'Connected' : '›';
-    element.classList.toggle('active', connected);
+  function renderMethodState(element, connected, reconnect = false) {
+    element.textContent = reconnect ? 'Reconnect required' : connected ? 'Connected' : '›';
+    element.classList.toggle('active', connected && !reconnect);
     if (connected) element.removeAttribute('aria-hidden');
     else element.setAttribute('aria-hidden', 'true');
   }
@@ -758,9 +761,10 @@ export function createAgentProviderUi(options = {}) {
       );
       const indicator = document.createElement('span');
       indicator.className = 'agent-provider-indicator';
-      indicator.textContent = connected ? '✓' : '›';
-      indicator.title = connected ? 'Connected' : 'Connect provider';
-      indicator.classList.toggle('active', connected);
+      const reconnect = definition.providerId === 'anthropic' && !providerConnection('anthropic') && claudeNeedsReconnect(providerConnection('anthropic-claude'));
+      indicator.textContent = reconnect ? '›' : connected ? '✓' : '›';
+      indicator.title = reconnect ? 'Reconnect required' : connected ? 'Connected' : 'Connect provider';
+      indicator.classList.toggle('active', connected && !reconnect);
       button.appendChild(avatar);
       button.appendChild(copy);
       button.appendChild(indicator);
@@ -1087,6 +1091,7 @@ export function createAgentProviderUi(options = {}) {
         count && count > 1
           ? `${count} local models`
           : modelName(connection.providerId, connection.modelId);
+      if (claudeNeedsReconnect(connection)) model.textContent = `Reconnect required · ${model.textContent}`;
       copy.appendChild(name);
       copy.appendChild(model);
       row.appendChild(createProviderLogo(connection.providerId));

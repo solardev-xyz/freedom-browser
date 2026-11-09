@@ -1,16 +1,17 @@
 # Claude subscription connection
 
-Experimental branch: `experiment/agent-claude-subscription`.
+The Claude subscription transport uses the installed native Claude Code CLI.
 
 In **Settings → AI → Add provider → Anthropic**, choose **Claude subscription**,
 then **Connect installed Claude**. Freedom checks the native Claude Code installation
 and its existing login. It never reads, copies or stores the CLI's OAuth credentials.
 Disconnecting in Freedom removes its connection metadata; it does not log the CLI out.
 
-Requirements: Claude Code **2.1.290 or newer**, signed in with a personal **Pro or Max**
+Requirements: Claude Code **2.1.290 or newer**, signed in with a **Pro, Max, Team or Enterprise**
 account using `claude auth login`. Freedom discovers model choices and versioned names
 through the CLI's SDK initialization protocol, without sending an inference prompt.
-The catalogue is cached for five minutes and can be refreshed in provider settings.
+Before connecting, Freedom shows CLI-default aliases without launching Claude.
+Connecting discovers versioned models; the catalogue is cached for five minutes and can be refreshed in provider settings.
 Alias IDs stay stable so existing selections and favourites survive CLI updates.
 If discovery is unavailable, the three original aliases are labelled “CLI default”
 rather than showing guessed versions. Additional models are selectable when the CLI
@@ -42,12 +43,31 @@ No shell is used to start it. Native installation discovery excludes script shim
 and disabled hooks/memory/Chrome/slash commands suppress ordinary local customization.
 Unexpected tool inventories or API-key authentication stop the connection.
 
-Managed policies can install hooks that command-line settings cannot disable. This
-version therefore refuses known managed files, managed preferences/registry settings,
-cached remote policies, and Team/Enterprise accounts. It does not override organization
-policy. This is a compatibility boundary, not an OS sandbox around the installed CLI;
-users still trust their locally installed Claude executable. Policies or installations
-changed externally during a running session remain outside Freedom's control.
+Team and Enterprise subscriptions are supported without overriding organization policy.
+The connection screen discloses, before connecting and in connected-provider settings:
+“Your organization’s Claude policies and automation also apply. Organization scripts
+may run outside Freedom’s approval controls and receive your messages and the content
+Agent reads.” This also covers personal subscriptions
+used with a managed CLI installation; the plan name does not establish whether hooks
+are configured.
+
+Freedom disables ordinary user/project hooks, but organization-managed hooks and
+force-enabled automation can still run inside the CLI, including during initialization.
+They are trusted organization automation, outside Freedom’s scoped tool approvals and
+workspace sandbox. Their filesystem/network access and retention follow the CLI and
+organization policy; Freedom does not claim to mediate them or to override those policies.
+Users trust both the installed Claude executable and its organization-managed automation.
+Existing connections require a one-time reconnect to review this disclosure. The saved
+acknowledgment applies to organization policy, including later account or policy changes.
+Before that reconnect, catalogue listing, refresh, model selection and chat do not start Claude.
+
+Freedom still requires first-party subscription authentication, disables built-in model
+tools, and checks that the initialized tool inventory matches the session’s Freedom
+bridge. Model discovery also checks the CLI’s MCP connection status without inference,
+so a blocked Freedom bridge is detected when connecting. Additional tools, missing
+required tools, or API authentication produce a
+configuration-conflict error. Managed files or policy refreshes alone no longer revoke
+connections. No organization policies are edited, hidden or bypassed.
 
 ## Conversation lifecycle
 
@@ -87,15 +107,18 @@ both themes, two chat turns, privacy reporting, approved and declined browser cl
 Stop at approval, helper delegation, and creating/checkpointing/previewing a static
 workspace through codemode. Deterministic tests cover schema errors, scoped nested
 calls, guidance, interruption, restart context, image serialization, authentication
-refusal and managed-policy refusal.
+refusal and incompatible tool-inventory refusal.
 
 Native Windows/Linux Claude login and packaged-app qualification remain outstanding.
 The user confirmed the macOS smoke test passed. Versioned catalogue discovery and
 the connection/chat UI were subsequently checked live in both themes; this does not
-constitute cross-platform release qualification. Optional future work: managed-account support
-with a qualified policy boundary and richer CLI failure/usage diagnostics.
+constitute cross-platform release qualification. Team/Enterprise plan acceptance, disclosure migration, bridge compatibility and scoped
+tool dispatch are covered by deterministic fixtures. A real Team/Enterprise account
+and organization-managed hook smoke test remains required. Optional future
+work: richer CLI failure/usage diagnostics.
 
-Run live checks only with a locally authenticated personal account:
+Run live checks only with a locally authenticated account whose Claude installation
+and organization automation you trust:
 
 ```sh
 FREEDOM_CLAUDE_LIVE=1 npx playwright test test-e2e/claude-subscription.spec.js --project=harness --workers=1

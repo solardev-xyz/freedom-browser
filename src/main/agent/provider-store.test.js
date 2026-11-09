@@ -475,7 +475,11 @@ test('installed Claude connection persists only metadata and needs no copied cre
   store.saveSubscription({ providerId: 'anthropic-claude', modelId: 'sonnet' });
   expect(safeStorage.encryptString).not.toHaveBeenCalled();
   const reopened = createStore({ dataDir, safeStorage }).store;
-  expect(reopened.getSelection()).toEqual({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'sonnet' });
+  expect(reopened.getSelection()).toEqual({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'sonnet', organizationPolicyAcknowledged: true });
+  reopened.savePreferences('anthropic-claude', { favoriteModelIds: ['opus'], privacyPolicy: 'standard' });
+  reopened.saveSubscription({ providerId: 'anthropic-claude', modelId: 'sonnet' });
+  expect(reopened.getSelection()).toMatchObject({ favoriteModelIds: ['opus'], privacyPolicy: 'standard', organizationPolicyAcknowledged: true });
+  expect(reopened.getPublicStatus().connections[0].organizationPolicyAcknowledged).toBe(true);
   reopened.select('anthropic-claude', 'opus');
   expect(reopened.getSelection().modelId).toBe('opus');
   reopened.remove('anthropic-claude');
