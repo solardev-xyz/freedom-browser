@@ -7,6 +7,7 @@
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
+const { webFrame } = require('electron');
 
 // CSP connect-src does not cover WebRTC/TURN. Apply this in the main world
 // before page scripts, including inherited blank/srcdoc preview frames.
@@ -847,6 +848,152 @@ function installInternalPageTheme() {
 if (isInternalPage()) {
   installInternalPageTheme();
 }
+
+// ============================================
+// Markdown documents (#1035)
+// ============================================
+//
+// Chromium shows a `text/markdown` file as plain text: the whole file in one
+// <pre>, black on white. Freedom renders it as a page instead, in place and
+// from any scheme a tab loads (https, file, bzz, ipfs/ipns …), and the
+// address bar's Markdown button (markdown-view-ui.js) flips between that page
+// and the file's source. `text/x-markdown` counts too, and so does
+// `text/plain` at a path ending in .md or .markdown: that is how GitHub's raw
+// files and most static servers send Markdown. Swarm and IPFS files that
+// arrive with no usable type are relabelled in main (gateway-response-headers.js).
+//
+// The view itself — front matter, marked, DOMPurify, the reading style — is
+// webview-preload-markdown.js, which main serves with the vendored marked and
+// DOMPurify (markdown-view.js) only once a document turns out to be Markdown.
+// All three run here, in this isolated world: the page's main world never
+// sees them, and the rendered page is no more able to run code than the text
+// it came from. Rendering in the tab rather than in main also means a huge
+// or hostile file can only stall its own tab.
+const MARKDOWN_TYPES = new Set(['text/markdown', 'text/x-markdown']);
+const MARKDOWN_PATH = /\.(?:md|markdown)$/i;
+// A bigger file stays Chromium's plain-text page: parsing it would hold the
+// tab for seconds.
+const MARKDOWN_MAX_LENGTH = 2 * 1024 * 1024;
+// The raw text is hidden until the page is ready, so it doesn't flash up
+// first. If main hasn't answered by then, the text shows anyway.
+const MARKDOWN_REVEAL_TIMEOUT_MS = 3000;
+const MARKDOWN_HIDE_CSS =
+  'html { visibility: hidden !important; } ' +
+  '@media (prefers-color-scheme: dark) { html { background: #202122 !important; } }';
+
+const isMarkdownDocument = () => {
+  if (IS_ISOLATED_PREVIEW || isInternalPage()) return false;
+  const type = String(document.contentType || '').toLowerCase();
+  if (MARKDOWN_TYPES.has(type)) return true;
+  return type === 'text/plain' && MARKDOWN_PATH.test(globalThis.location?.pathname || '');
+};
+
+// marked and DOMPurify are UMD bundles and the view a CommonJS module: given
+// `exports` and `module`, each hands its API back without writing to this
+// world's globals. Built with `new Function` here in the isolated world,
+// where the page's CSP doesn't apply (as buildScriptletBundle above).
+function evaluateMarkdownModule(source) {
+  const module = { exports: {} };
+  new Function('exports', 'module', 'define', source)(module.exports, module, undefined);
+  return module.exports;
+}
+
+// Listen for this document's lifetime only (see activeSubscriptions).
+function subscribeForPage(channel, handler) {
+  ipcRenderer.on(channel, handler);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener(channel, handler);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+}
+
+function renderMarkdownDocument(sources) {
+  // Each way out leaves the text as Chromium shows it, and says why.
+  if (!sources) {
+    console.warn('[markdown] no renderer from the main process; showing the text');
+    return;
+  }
+  const pre = document.body?.querySelector(':scope > pre');
+  if (!pre) {
+    console.warn('[markdown] no text to render:', document.body?.innerHTML.slice(0, 120));
+    return;
+  }
+  if (pre.textContent.length > MARKDOWN_MAX_LENGTH) {
+    console.info('[markdown] file too large to render; showing the text');
+    return;
+  }
+
+  const { createMarkdownView } = evaluateMarkdownModule(sources.view);
+  const markdown = createMarkdownView({
+    marked: evaluateMarkdownModule(sources.marked),
+    DOMPurify: evaluateMarkdownModule(sources.purify),
+  });
+  const page = markdown.mount({
+    document,
+    location: globalThis.location,
+    pre,
+    insertCSS: (css) => webFrame.insertCSS(css),
+  });
+
+  // The page follows Settings > Appearance live, like internal pages.
+  let configuredTheme = sources.theme || 'system';
+  const applyTheme = () => page.setTheme(resolveTheme(configuredTheme));
+  applyTheme();
+  subscribeForPage('settings:updated', (_event, settings) => {
+    configuredTheme = settings?.theme || 'system';
+    applyTheme();
+  });
+  prefersDarkQuery?.addEventListener('change', applyTheme);
+
+  // The address bar shows its Markdown button for as long as this page
+  // reports in, and asks it to switch views.
+  const report = () => ipcRenderer.sendToHost('markdown:state', { view: page.view });
+  subscribeForPage('markdown:toggle', () => {
+    page.setView(page.view === 'formatted' ? 'source' : 'formatted');
+    report();
+  });
+  report();
+}
+
+(function setupMarkdownDocument() {
+  if (!isMarkdownDocument()) return;
+  let hideKey = null;
+  try {
+    hideKey = webFrame.insertCSS(MARKDOWN_HIDE_CSS);
+  } catch {
+    // Not hidden: the text may show for a moment before the page.
+  }
+  let revealed = false;
+  const reveal = () => {
+    if (revealed) return;
+    revealed = true;
+    if (hideKey) webFrame.removeInsertedCSS(hideKey);
+  };
+  const revealTimer = setTimeout(() => {
+    console.info('[markdown] not rendered yet; showing the text meanwhile');
+    reveal();
+  }, MARKDOWN_REVEAL_TIMEOUT_MS);
+
+  const sources = ipcRenderer.invoke('markdown:get-view').catch((err) => {
+    console.warn('[markdown] the main process did not answer:', err?.message || err);
+    return null;
+  });
+  const parsed = new Promise((resolve) => {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', resolve, { once: true });
+    } else {
+      resolve();
+    }
+  });
+  Promise.all([sources, parsed])
+    .then(([view]) => renderMarkdownDocument(view))
+    .catch((err) => console.warn('[markdown] could not render this document:', err?.message || err))
+    .finally(() => {
+      clearTimeout(revealTimer);
+      reveal();
+    });
+})();
 
 const guardInternalSubscription = (name, channel) => (callback) => {
   if (!isInternalPage()) {
