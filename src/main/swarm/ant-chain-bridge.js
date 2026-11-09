@@ -325,9 +325,20 @@ async function startAntChainBridge({
     wait.inFlight += 1;
     return wait;
   }
+  // Every answer closes its connection, so Ant never reuses one. Ant's HTTP
+  // client keeps idle connections for 90 s and sends on them again; a request
+  // it sends just as the server drops the idle connection is reset, and Ant
+  // fails the whole funding step it was waiting on, after the step's
+  // transaction was sent (#992). Its receipt poll after a 2 s sleep met the
+  // 1 s keep-alive timeout plus Node's 1 s buffer on about one poll in six.
+  // A new loopback connection per request costs next to nothing.
   function send(res, status, body) {
     if (res.destroyed || res.writableEnded) return;
-    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      Connection: 'close',
+    });
     res.end(JSON.stringify(body));
   }
   const server = http.createServer(async (req, res) => {
@@ -528,7 +539,6 @@ async function startAntChainBridge({
   });
   server.requestTimeout = timeoutMs;
   server.headersTimeout = Math.min(10000, timeoutMs);
-  server.keepAliveTimeout = 1000;
   server.maxConnections = 16;
   await new Promise((resolve, reject) => {
     server.once('error', reject);

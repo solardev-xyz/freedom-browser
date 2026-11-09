@@ -376,10 +376,19 @@ direct HTTP requests are cancelled. Already-running native/Colibri operations
 may settle later under their own bounds; a submitted transaction cannot be
 recalled by closing the connection.
 
+Every answer closes its connection (`Connection: close`), so Ant opens a new
+loopback connection per request. Ant's HTTP client keeps idle connections for
+90 s and reuses them. Under the 1 s keep-alive the bridge used before, a
+request Ant sent just as the bridge dropped the idle connection was reset.
+Ant then gave up the funding step it was waiting on, after the step's
+transaction had been sent (#992, freedom-hq/ant#253).
+
 The URL is excluded from the manager's startup log. Child output is buffered by
 line before capability redaction (a line over 64 KiB is redacted, then cut with a `[truncated N chars]` marker
 rather than dropped), including when
-a token is split between chunks. URLs, request params and signed transactions
+a token is split between chunks. antd's own error answers quote the URL a
+chain request failed on, so `ant-storage-api.js` redacts the capability from
+them before they reach the setup screen or main's log. URLs, request params and signed transactions
 are never logged by the bridge. A process with access to the user's process
 arguments can still obtain the capability; it is a boundary against websites
 and accidental local access, not hostile software running as the same user.
