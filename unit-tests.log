@@ -1,0 +1,17 @@
+
+> freedom-browser@0.8.9-dev test
+> npm run test:unit -- --runInBand src/main/agent/claude-cli.test.js src/main/agent/claude-session.test.js src/main/agent/provider-resolver.test.js src/main/agent/provider-store.test.js src/main/agent/provider-catalog.test.js src/main/agent/ipc.test.js src/renderer/lib/agent-ui.test.js src/renderer/lib/agent-privacy.test.js src/renderer/renderer-styles.test.js scripts/assemble-changelog.test.js
+
+
+> freedom-browser@0.8.9-dev test:unit
+> jest --runInBand src/main/agent/claude-cli.test.js src/main/agent/claude-session.test.js src/main/agent/provider-resolver.test.js src/main/agent/provider-store.test.js src/main/agent/provider-catalog.test.js src/main/agent/ipc.test.js src/renderer/lib/agent-ui.test.js src/renderer/lib/agent-privacy.test.js src/renderer/renderer-styles.test.js scripts/assemble-changelog.test.js
+
+
+Test Suites: 10 passed, 10 total
+Tests:       461 passed, 461 total
+Snapshots:   0 total
+Time:        5.613 s, estimated 6 s
+Ran all test suites matching src/main/agent/claude-cli.test.js|src/main/agent/claude-session.test.js|src/main/agent/provider-resolver.test.js|src/main/agent/provider-store.test.js|src/main/agent/provider-catalog.test.js|src/main/agent/ipc.test.js|src/renderer/lib/agent-ui.test.js|src/renderer/lib/agent-privacy.test.js|src/renderer/renderer-styles.test.js|scripts/assemble-changelog.test.js.
+Jest did not exit one second after the test run has completed.
+
+'This usually means that there are asynchronous operations that weren't stopped in your tests. Consider running Jest with `--detectOpenHandles` to troubleshoot this issue.

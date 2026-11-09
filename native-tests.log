@@ -1,0 +1,14 @@
+
+> freedom-browser@0.8.9-dev test:e2e
+> playwright test --project=harness test-e2e/claude-subscription.spec.js
+
+
+Running 3 tests using 1 worker
+
+(node:30413) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 [harness] › test-e2e/claude-subscription.spec.js:8:1 › connect installed Claude, chat, remember context, and show privacy in the normal UI (9.7s)
+  ✓  2 [harness] › test-e2e/claude-subscription.spec.js:58:1 › Claude browser actions retain real UI approval, decline and Stop; helpers return reports (39.9s)
+  ✓  3 [harness] › test-e2e/claude-subscription.spec.js:105:1 › Claude builds a managed workspace through Freedom tools and opens its preview (15.3s)
+
+  3 passed (1.1m)
