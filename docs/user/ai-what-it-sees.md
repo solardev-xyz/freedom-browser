@@ -61,7 +61,9 @@ to your chat provider when you send the prompt.
 
 Your permission mode controls when Agent asks before website interactions and
 project changes. Reading a shared page or navigating does not normally ask each
-time. In **Fewer interruptions**, website clicks and form submissions can proceed
+time. With optional Markdown reading (#1128), Agent can also request a site’s
+Markdown version separately: up to two same-site requests without cookies.
+In **Fewer interruptions**, website clicks and form submissions can proceed
 without asking, including sending a message or placing an order while signed in.
 In **Ask when needed**, standard HTML form submissions ask. An AI classifier can
 approve other clicks and typing, which on some sites includes buttons that send
