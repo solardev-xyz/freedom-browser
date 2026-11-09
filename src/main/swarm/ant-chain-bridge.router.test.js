@@ -1,8 +1,9 @@
 // The real chain-data router behind the real Ant bridge, over loopback
 // sockets with real timers. Only the registry, Myotis, Colibri and fetch are
-// stubbed. Ant's log scans are answered by the RPC quorum alone (#484): the
-// provider's range-limit wording still reaches Ant (R2-F1 on PR #419), and no
-// single RPC's answer settles a scan.
+// stubbed. Ant's log scans are verified by the RPC quorum where it can (#484),
+// and the provider's range-limit wording still reaches Ant (R2-F1 on PR #419).
+// A single RPC's answer settles a scan only through the Direct tier, when the
+// read order has one (#596).
 const http = require('node:http');
 
 const mockRegistry = {
@@ -91,13 +92,23 @@ test('quorum members slower than the configured timeout still agree on a log sca
   expect(global.fetch.mock.calls.map(([url]) => url)).toEqual(RPCS);
 });
 
-test('a single answering RPC does not settle a log scan', async () => {
+test('a single answering RPC settles a log scan only through Direct (#596)', async () => {
   mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
     role === 'prover' ? ['https://prover.example'] : [...RPCS, 'https://d.example']
   );
   global.fetch = jest.fn(async (url) => {
     if (url === 'https://a.example') return { ok: true, json: async () => ({ result: ['ok'] }) };
     throw new TypeError('fetch failed');
+  });
+  // Direct reuses the quorum member's answer: a.example is asked once.
+  expect((await post(bridge.url, getLogs)).result).toEqual(['ok']);
+  expect(global.fetch.mock.calls.filter(([url]) => url === 'https://a.example')).toHaveLength(1);
+
+  // A read order without Direct takes no single endpoint's word.
+  router.clearAdaptiveRoutingForTest();
+  mockRegistry.getNetwork.mockReturnValue({
+    access: { readOrder: ['myotis', 'colibri', 'quorum'] },
+    quorum: { k: 3, m: 2, timeoutMs: 500 },
   });
   const response = await post(bridge.url, getLogs);
   expect(response.result).toBeUndefined();
@@ -117,11 +128,8 @@ test('with two quorum members down, a fourth RPC joins the scan', async () => {
   const range = [{ fromBlock: '0x1', toBlock: '0x2710' }];
   const response = await post(bridge.url, { ...getLogs, params: range });
   expect(response.result).toEqual(['ok']);
-  expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([
-    ...RPCS,
-    'https://c.example',
-    'https://d.example',
-  ]);
+  // c's answer from the first round is kept as a vote: only d is asked next.
+  expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([...RPCS, 'https://d.example']);
 });
 
 test('an endpoint-specific error does not stop two agreeing answers', async () => {

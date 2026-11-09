@@ -110,6 +110,12 @@ const DRPC_FREE_PLAN = {
 
 const originalFetch = global.fetch;
 
+// The quorum tier on its own: a Gnosis read order without Direct, which keeps
+// Ant's log scans verified (sections 1 and 2). DEFAULT_ORDER is Freedom's
+// default, where a span no quorum can verify goes on to Direct (section 3).
+const QUORUM_ONLY = ['myotis', 'colibri', 'quorum'];
+const DEFAULT_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
+
 function rpcReply(body) {
   return Promise.resolve({ ok: true, status: 200, json: async () => body });
 }
@@ -192,10 +198,10 @@ let start = 0;
 // per-call behaviours (the last repeats), each a behaviour or a function of
 // the requested span. Myotis is ready and Colibri answers, so a case shows
 // that neither is asked.
-function useEndpoints(rpcs) {
+function useEndpoints(rpcs, readOrder = QUORUM_ONLY) {
   const urls = Object.keys(rpcs).map((name) => `https://${name}.example`);
   mockRegistry.getNetwork.mockReturnValue({
-    access: { readOrder: ['myotis', 'colibri', 'quorum', 'direct'] },
+    access: { readOrder },
     quorum: { k: 3, m: 2, timeoutMs: QUORUM_MS },
   });
   mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
@@ -257,15 +263,15 @@ async function scanOnce(params = [{}]) {
   return { ...outcome, fetches: [...fetches] };
 }
 
-async function scan(rpcs, params) {
-  useEndpoints(rpcs);
+async function scan(rpcs, params, readOrder) {
+  useEndpoints(rpcs, readOrder);
   return scanOnce(params);
 }
 
 // Ant's scan_logs: start at its 50M-block window (here the full history),
 // halve on a range limit or timeout, until an answer or another failure.
-async function antScan(rpcs) {
-  useEndpoints(rpcs);
+async function antScan(rpcs, readOrder) {
+  useEndpoints(rpcs, readOrder);
   const steps = [];
   for (let span = FULL_HISTORY; span >= 1; span = Math.floor(span / 2)) {
     const got = await scanOnce(logsOver(span));
@@ -565,12 +571,26 @@ describe('range caps (#484)', () => {
 
   test('a fourth endpoint joins the quorum in place of capped ones', async () => {
     useEndpoints({ a: FULL, b: PUBLICNODE, c: DRPC, d: FULL });
-    // b and c refuse the span, so a second round asks a and d straight away.
+    // b and c refuse the span, so a second round asks d straight away, and
+    // d agrees with the answer a gave the first round (#596: a is not asked
+    // again).
     const first = await scanOnce(logsOver(FULL_HISTORY));
     expect(first).toMatchObject({ ...gotLogs, at: 0 });
-    expect(first.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c', 'a', 'd']);
+    expect(first.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c', 'd']);
     const second = await scanOnce(logsOver(FULL_HISTORY));
     expect(second.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'd']);
+  });
+
+  test('an endpoint that answered is not asked again in the same scan', async () => {
+    // b's possible cap is neither learned nor cooled down, yet asking it
+    // again in the next round would only repeat it; a's answer is kept as
+    // a vote that d's agrees with.
+    const got = await scan(
+      { a: 'success', b: 'limitExceeded', c: 'down', d: 'success' },
+      logsOver(5000)
+    );
+    expect(got).toMatchObject({ ...gotLogs, at: 0 });
+    expect(got.fetches.map((entry) => entry.split('@')[0])).toEqual(['a', 'b', 'c', 'd']);
   });
 
   test('two members down: a second round asks the endpoints left', async () => {
@@ -627,10 +647,11 @@ describe('range caps (#484)', () => {
     useEndpoints({ a: FULL, b: 'hang', c: PUBLICNODE });
     const first = await scanOnce(logsOver(FULL_HISTORY));
     // c refuses, b hangs: the quorum waits out its budget, then Ant narrows
-    // until a and c verify the span together.
+    // until a and c verify the span together. c's refusal taught its cap, so
+    // the router itself names the widest span a quorum can verify (#596).
     expect(first).toMatchObject({
-      code: PUBLICNODE_CAP.code,
-      message: `Chain request failed: ${PUBLICNODE_CAP.message}`,
+      code: -32005,
+      message: 'Chain request failed: query exceeds max block range 50000',
       shrinks: true,
       at: SCAN_QUORUM_MS,
     });
@@ -728,11 +749,11 @@ describe('range caps (#484)', () => {
 // backend words its 10k cap differently, and dRPC's free plan refuses
 // anything over about 100 blocks with HTTP 400 (its body still says "ranges
 // over 10000 blocks").
-describe('range caps as measured on 2026-11-09 (#596)', () => {
-  const PUBLICNODE_NOW = (span) =>
-    span > 50_000 ? 'publicnodeCap' : span > 10_000 ? 'nethermindNoIndex' : 'success';
-  const DRPC_NOW = (span) => (span > 100 ? 'drpcFreePlan' : 'success');
+const PUBLICNODE_NOW = (span) =>
+  span > 50_000 ? 'publicnodeCap' : span > 10_000 ? 'nethermindNoIndex' : 'success';
+const DRPC_NOW = (span) => (span > 100 ? 'drpcFreePlan' : 'success');
 
+describe('range caps as measured on 2026-11-09 (#596)', () => {
   // Ant's scan_logs_with from the token's deploy block: halve on a range
   // limit, double the next window after an answer.
   async function antScanWindows(rpcs, answers) {
@@ -853,5 +874,150 @@ describe('silent truncation (#496)', () => {
     const got = await scan({ a: recent, b: recent, c: recent }, logsOver(FULL_HISTORY));
     expect(got).toMatchObject({ result: [log(HEAD - 120)], source: 'quorum' });
     expect(got.fetches).toHaveLength(6);
+  });
+});
+
+// 3. Freedom's default read order, where Direct follows the quorum: a span no
+// quorum can verify (a wallet's first scan, a catch-up after a long time
+// offline) goes on to Direct, which asks only an endpoint whose cap covers it
+// and reuses a quorum member's answer (#596). Endpoints as measured on
+// 2026-11-09.
+describe('the default read order: a span no quorum can verify goes to Direct (#596)', () => {
+  const MEASURED = { a: FULL, b: PUBLICNODE_NOW, c: DRPC_NOW };
+  const asked = (step) => step.fetches.map((entry) => entry.split('@')[0]);
+
+  test("a wallet's first scan is one unverified answer from the endpoint that serves it", async () => {
+    const steps = await antScan(MEASURED, DEFAULT_ORDER);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ span: FULL_HISTORY, result: LOGS, source: 'direct', at: 0 });
+    // One quorum round, and Direct reuses a's answer rather than asking again.
+    expect(asked(steps[0])).toEqual(['a', 'b', 'c']);
+  });
+
+  test('once the caps are known, a wide span goes straight to Direct', async () => {
+    useEndpoints(MEASURED, DEFAULT_ORDER);
+    await scanOnce(logsOver(FULL_HISTORY));
+    const again = await scanOnce(logsOver(FULL_HISTORY));
+    expect(again).toMatchObject({ result: LOGS, source: 'direct', at: 0 });
+    expect(asked(again)).toEqual(['a']);
+  });
+
+  // Six endpoints, two of them full-history behind four capped ones: rounds
+  // go on with endpoints not asked yet until f agrees with a's answer from
+  // the first, rather than handing a span two endpoints can verify to Direct.
+  test.each([
+    ['the default order', DEFAULT_ORDER],
+    ['a quorum-only order', QUORUM_ONLY],
+  ])('every quorum that could verify a span is tried first (%s)', async (_name, order) => {
+    const capped = { b: PUBLICNODE_NOW, c: PUBLICNODE_NOW, d: PUBLICNODE_NOW, e: PUBLICNODE_NOW };
+    const got = await scan({ a: FULL, ...capped, f: FULL }, logsOver(FULL_HISTORY), order);
+    expect(got).toMatchObject({ ...gotLogs, at: 0 });
+    expect(asked(got)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+  });
+
+  // The first three disagree; d agrees with b. A later round asks only d,
+  // and b's answer from the first round counts as d's second vote.
+  test.each([
+    ['the default order', DEFAULT_ORDER],
+    ['a quorum-only order', QUORUM_ONLY],
+  ])('an endpoint asked later can agree with an earlier answer (%s)', async (_name, order) => {
+    const answer = (logs) => ({ kind: 'logs', logs });
+    const got = await scan(
+      {
+        a: answer(['A']),
+        b: answer(['B']),
+        c: answer(['C']),
+        d: answer(['B']),
+      },
+      logsOver(5000),
+      order
+    );
+    expect(got).toMatchObject({ result: ['B'], source: 'quorum', at: 0 });
+    expect(asked(got)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  test('the evidence of a quorum reached across rounds names every endpoint asked', async () => {
+    const answer = (logs) => ({ kind: 'logs', logs });
+    useEndpoints(
+      { a: answer(['A']), b: answer(['B']), c: answer(['C']), d: answer(['B']) },
+      DEFAULT_ORDER
+    );
+    const got = await router.request(100, 'eth_getLogs', logsOver(5000), {
+      background: true,
+      includeTrust: true,
+      ...LOG_SCAN_ROUTER_OPTIONS,
+    });
+    expect(got).toMatchObject({ result: ['B'], source: 'quorum', verified: true });
+    expect(got.trust).toMatchObject({
+      level: 'verified',
+      method: 'quorum',
+      agreed: ['b.example', 'd.example'],
+      dissented: ['a.example', 'c.example'],
+      queried: ['a.example', 'b.example', 'c.example', 'd.example'],
+      quorum: { k: 4, m: 2, achieved: true },
+    });
+  });
+
+  test('a hand-off to Direct after several rounds names every endpoint asked', async () => {
+    useEndpoints(
+      { a: FULL, b: PUBLICNODE_NOW, c: PUBLICNODE_NOW, d: PUBLICNODE_NOW },
+      DEFAULT_ORDER
+    );
+    const got = await router.request(100, 'eth_getLogs', logsOver(FULL_HISTORY), {
+      background: true,
+      includeTrust: true,
+      ...LOG_SCAN_ROUTER_OPTIONS,
+    });
+    expect(got).toMatchObject({ result: LOGS, source: 'direct', verified: false });
+    expect(got.trust).toMatchObject({
+      level: 'unverified',
+      method: 'direct',
+      agreed: ['a.example'],
+      queried: ['a.example', 'b.example', 'c.example', 'd.example'],
+      quorum: { k: 4, m: 2, achieved: false },
+    });
+  });
+
+  test('a span the quorum can verify is still verified', async () => {
+    const got = await scan(MEASURED, logsOver(5000), DEFAULT_ORDER);
+    expect(got).toMatchObject({ ...gotLogs, at: 0 });
+    expect(asked(got)).toEqual(['a', 'b', 'c']);
+  });
+
+  test('the full-history endpoint down: Ant narrows to what one endpoint serves', async () => {
+    const steps = await antScan({ a: 'down', b: PUBLICNODE_NOW, c: DRPC_NOW }, DEFAULT_ORDER);
+    const last = steps[steps.length - 1];
+    expect(last).toMatchObject({ result: LOGS, source: 'direct' });
+    expect(last.span).toBeLessThanOrEqual(10_000);
+    expect(steps.slice(0, -1).every((step) => step.shrinks)).toBe(true);
+    expect(steps.reduce((sum, step) => sum + step.at, 0)).toBe(0);
+  });
+
+  test('every endpoint down: Ant gets no range wording and stops the scan', async () => {
+    const steps = await antScan({ a: 'down', b: 'down', c: 'down' }, DEFAULT_ORDER);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ shrinks: false, at: 0 });
+  });
+
+  test('a cut answer from Direct is caught, and Ant narrows until it is complete (#496)', async () => {
+    const hex = (n) => `0x${n.toString(16)}`;
+    const log = (block) => ({ blockNumber: hex(block) });
+    // Over 400k blocks the endpoint returns only its last ~474 blocks' logs.
+    const dense = (span, { toBlock }) => {
+      const to = Number(toBlock);
+      return span > 400_000
+        ? { kind: 'logs', logs: [log(to - 473), log(to - 2)] }
+        : { kind: 'logs', logs: [log(to - span + 1), log(to)] };
+    };
+    const steps = await antScan({ a: dense, b: PUBLICNODE_NOW, c: DRPC_NOW }, DEFAULT_ORDER);
+    const last = steps.pop();
+    expect(last).toMatchObject({ source: 'direct' });
+    expect(last.span).toBeLessThanOrEqual(400_000);
+    expect(last.result).toEqual([log(HEAD - last.span + 1), log(HEAD)]);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) {
+      expect(step).toMatchObject({ code: -32005, shrinks: true });
+      expect(step.message).toMatch(/^Chain request failed: query matched too many logs/);
+    }
   });
 });
