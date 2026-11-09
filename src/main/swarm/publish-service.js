@@ -15,8 +15,6 @@ const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError, isNoUsableBatchError } = require('./batch-errors');
 const { addEntry, updateEntry } = require('./publish-history');
 const { isPrivateWebContents } = require('../private/private-windows');
-const { createProfileTempDir } = require('../profile-paths');
-const fsOffload = require('../fs-offload');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { createPickTokenStore } = require('./publish-pick-tokens');
@@ -200,7 +198,7 @@ async function publishCollection(files, options = {}) {
   const batchId = options.batchId || (await selectBestBatch(totalSize, { requireCapacity: true }));
 
   if (!batchId) {
-    throw new Error('No usable postage batch available. Purchase stamps first.');
+    throw noUsableBatchError();
   }
 
   const indexDocument =
@@ -226,36 +224,15 @@ async function publishCollection(files, options = {}) {
 
 /**
  * Publish a collection of in-memory files as a Swarm directory manifest.
- * Writes files to a temp directory, delegates to publishDirectory, cleans up.
  *
- * Note: per-file contentType is accepted in the file objects but not currently
- * applied — bee-js collection.uploadFromDirectory infers MIME types from
- * extensions.
- * Files with non-standard names should use appropriate extensions.
+ * Uploads via publishCollection to preserve forward-slash POSIX paths on all
+ * platforms without staging files to a temporary directory (#1052).
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
  * @param {{ indexDocument?: string }} options
  */
 async function publishFilesFromContent(files, options = {}) {
-  const tempDir = createProfileTempDir('swarm-publish');
-
-  try {
-    for (const file of files) {
-      const filePath = path.join(tempDir, file.path);
-      await fsp.mkdir(path.dirname(filePath), { recursive: true });
-      await fsp.writeFile(filePath, file.bytes);
-    }
-
-    return await publishDirectory(tempDir, {
-      indexDocument: options.indexDocument,
-    });
-  } finally {
-    try {
-      await fsOffload.removePath(tempDir, { recursive: true, force: true });
-    } catch (err) {
-      log.error('[PublishService] Failed to clean up temp dir:', err.message);
-    }
-  }
+  return publishCollection(files, options);
 }
 
 /**

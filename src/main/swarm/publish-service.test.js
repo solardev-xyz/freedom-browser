@@ -76,6 +76,7 @@ const {
   normalizeUploadResult,
   normalizeTag,
   publishCollection,
+  publishFilesFromContent,
   registerPublishIpc,
   USER_ORIGIN,
 } = require('./publish-service');
@@ -223,6 +224,68 @@ describe('publish-service', () => {
       await expect(uploaded[1].file.arrayBuffer()).resolves.toEqual(
         Uint8Array.from(files[1].bytes).buffer
       );
+    });
+  });
+
+  describe('publishFilesFromContent (#1052)', () => {
+    beforeEach(() => {
+      jest.clearAllMocks();
+    });
+
+    test('delegates to publishCollection preserving nested POSIX paths and indexDocument without staging to disk', async () => {
+      const { createProfileTempDir } = require('../profile-paths');
+      mockGetPostageBatches.mockResolvedValue([makeBatch('batch-nested', 1000000000, 86400)]);
+      mockUploadCollection.mockResolvedValue({
+        reference: makeRef('nestedref'),
+        tagUid: 45,
+      });
+
+      const files = [
+        { path: 'assets/app.js', bytes: Buffer.from('console.log(1);'), contentType: 'application/javascript' },
+        { path: 'nested/dir/index.html', bytes: Buffer.from('<html>Doc</html>'), contentType: 'text/html' },
+      ];
+
+      const result = await publishFilesFromContent(files, { indexDocument: 'nested/dir/index.html' });
+
+      expect(result).toEqual({
+        reference: 'nestedref',
+        bzzUrl: 'bzz://nestedref',
+        tagUid: 45,
+        batchIdUsed: 'batch-nested',
+        bytesSize: Buffer.byteLength('console.log(1);<html>Doc</html>'),
+      });
+
+      // Validates that bee-js collection upload receives exact POSIX paths with /
+      expect(mockUploadCollection).toHaveBeenCalledWith(
+        'batch-nested',
+        [
+          expect.objectContaining({ path: 'assets/app.js', size: 15 }),
+          expect.objectContaining({ path: 'nested/dir/index.html', size: 16 }),
+        ],
+        expect.objectContaining({
+          pin: true,
+          deferred: true,
+          indexDocument: 'nested/dir/index.html',
+        })
+      );
+
+      // Does not create a temporary directory or touch disk
+      expect(createProfileTempDir).not.toHaveBeenCalled();
+    });
+
+    test('throws when no usable batch is available', async () => {
+      const { isNoUsableBatchError } = require('./batch-errors');
+      mockGetPostageBatches.mockResolvedValue([]);
+      const files = [{ path: 'app.js', bytes: Buffer.from('code') }];
+
+      await expect(publishFilesFromContent(files)).rejects.toThrow('No usable postage batch');
+      let caught;
+      try {
+        await publishFilesFromContent(files);
+      } catch (err) {
+        caught = err;
+      }
+      expect(isNoUsableBatchError(caught)).toBe(true);
     });
   });
 

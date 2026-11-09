@@ -1,0 +1,2 @@
+- Fixed `window.swarm.publishFiles` on Windows so nested files retain forward-slash (`/`) paths instead of backslashes ([#1052](https://github.com/solardev-xyz/freedom-browser/issues/1052))
+  - Delegates directly to `publishCollection` rather than writing files to a temporary directory on disk, preventing Windows `\` path separators in tar manifest headers and matching nested `indexDocument` paths correctly
