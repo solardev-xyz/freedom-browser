@@ -122,20 +122,23 @@ test('alternates the subdirectory between a real directory and a link to the out
 });
 
 test('stops by itself once the cleanup has removed the target', async () => {
-  const report = await raceCleanup({
-    target: path.join(fixture, 'work'),
-    outside: path.join(fixture, 'outside'),
-    names: racerNames(8),
-    linkType,
-    cleanup: renameAwayCleanup,
-  });
-  expect(report).toMatchObject({
-    overlapped: true,
-    preserved: true,
-    removed: true,
-    firstError: null,
-    final: { reason: 'target-removed' },
-  });
+  // Automatic exit does not depend on a swap overlapping cleanup's startup.
+  // Real overlap remains required by the gated race/qualification tests below.
+  const target = path.join(fixture, 'work');
+  const outside = path.join(fixture, 'outside');
+  const names = racerNames(8);
+  await fs.promises.mkdir(target);
+  await fs.promises.mkdir(outside);
+  for (const name of names) await fs.promises.writeFile(path.join(outside, name), 'preserved');
+  const racer = await startCleanupRacer({ target, outside, names, linkType, maxMs: 5000 });
+  try {
+    const quarantine = `${target}.removing`;
+    await fs.promises.rename(target, quarantine);
+    await fs.promises.rm(quarantine, { recursive: true, force: true });
+    expect(await racer.exited).toMatchObject({ reason: 'target-removed' });
+    expect(fs.existsSync(target)).toBe(false);
+    for (const name of names) expect(await fs.promises.readFile(path.join(outside, name), 'utf8')).toBe('preserved');
+  } finally { await racer.stop(); }
 });
 
 test('retries a cleanup that failed between two swaps until one attempt races a swap', async () => {
