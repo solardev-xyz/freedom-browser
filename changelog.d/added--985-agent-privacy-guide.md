@@ -1,0 +1,1 @@
+- “What can AI see?” guide, linked from AI Settings and every start-page Agent setup step ([#985](https://github.com/solardev-xyz/freedom-browser/issues/985))
