@@ -1164,6 +1164,9 @@ function validateExecutionRequest(request = {}) {
   if (request.onOutput !== undefined && typeof request.onOutput !== 'function') {
     throw new ExecutionPolicyError('INVALID_REQUEST', 'onOutput must be a function');
   }
+  if (request.onReady !== undefined && typeof request.onReady !== 'function') {
+    throw new ExecutionPolicyError('INVALID_REQUEST', 'onReady must be a function');
+  }
   if (request.onStdin !== undefined && typeof request.onStdin !== 'function') {
     throw new ExecutionPolicyError('INVALID_REQUEST', 'onStdin must be a function');
   }
@@ -1173,6 +1176,7 @@ function validateExecutionRequest(request = {}) {
     signal: request.signal,
     onOutput: request.onOutput,
     onStdin: request.onStdin,
+    onReady: request.onReady,
   });
 }
 

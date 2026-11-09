@@ -59,13 +59,15 @@ describe('Windows sandbox policy boundary', () => {
       expect(request.writableRoots).not.toContain(workspace);
       expect(request.command).toEqual([executable, '-e', WINDOWS_FILE_HELPER_BOOTSTRAP]);
       const chunks = [];
+      options.onReady();
       options.onStdin({ write: chunk => chunks.push(chunk) });
       expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({ script: WORKSPACE_FILE_HELPER, args: ['write', 'a.txt', 'eA==', '', ''] });
       return { ready: true, terminal: { type: 'exit', exitCode: 0 } };
     });
-    const request = { args: ['write', 'a.txt', 'eA==', '', ''], command: 'malicious.exe', onStdin: jest.fn() };
+    const request = { args: ['write', 'a.txt', 'eA==', '', ''], command: 'malicious.exe', onStdin: jest.fn(), onReady: jest.fn() };
     expect((await executor.executeTrustedFileHelper(policy, request)).state).toBe('completed');
     expect(request.onStdin).not.toHaveBeenCalled();
+    expect(request.onReady).toHaveBeenCalledTimes(1);
     run.mockClear();
     for (const args of [['bash', '.', '', '', ''], ['read'], ['read', '.', {}, '', '']]) {
       expect((await executor.executeTrustedFileHelper(policy, { args })).state).toBe('sandbox_denied');

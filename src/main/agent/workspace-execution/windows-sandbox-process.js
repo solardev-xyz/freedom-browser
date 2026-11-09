@@ -13,6 +13,9 @@ function runWindowsSandbox(runtime, payload, options = {}) {
     const truncated = { stdout: false, stderr: false };
     let pending = '';
     let ready = false;
+    const startedAt = Date.now();
+    let startupMs;
+    let startupWaitMs;
     let terminal = null;
     let cancellation = null;
     let failure = null;
@@ -31,7 +34,7 @@ function runWindowsSandbox(runtime, payload, options = {}) {
       killTimer.unref?.();
     };
     const abort = () => stop('cancelled');
-    const timer = setTimeout(() => stop('timed_out'), options.timeoutMs || 15000);
+    let timer = setTimeout(() => stop('timed_out'), options.startupTimeoutMs || options.timeoutMs || 15000);
     timer.unref?.();
     const finish = () => {
       if (settled) return;
@@ -39,7 +42,7 @@ function runWindowsSandbox(runtime, payload, options = {}) {
       clearTimeout(timer);
       clearTimeout(killTimer);
       options.signal?.removeEventListener('abort', abort);
-      resolve({ ready, terminal, cancellation, failure,
+      resolve({ ready, terminal, cancellation, failure, startupMs, startupWaitMs,
         stdout: Buffer.concat(output.stdout).toString('utf8'), stderr: Buffer.concat(output.stderr).toString('utf8'),
         stdoutTruncated: truncated.stdout, stderrTruncated: truncated.stderr });
     };
@@ -54,6 +57,18 @@ function runWindowsSandbox(runtime, payload, options = {}) {
         if (kept.length < bytes.length) truncated[stream] = true;
       } else if (frame.type === 'ready' && !ready && !terminal) {
         ready = true;
+        startupMs = Date.now() - startedAt;
+        startupWaitMs = Number.isSafeInteger(frame.startupWaitMs) && frame.startupWaitMs >= 0 && frame.startupWaitMs <= 60000
+          ? frame.startupWaitMs : undefined;
+        // A late handshake must not deliver the fixed file-helper script after
+        // Stop or a deadline already withdrew this execution.
+        if (cancellation) return;
+        if (options.startupTimeoutMs) {
+          clearTimeout(timer);
+          timer = setTimeout(() => stop('timed_out'), options.timeoutMs || 15000);
+          timer.unref?.();
+        }
+        try { options.onReady?.(); } catch { /* Observers cannot change execution. */ }
         try { options.onStdin?.({ write(value) {
           const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value || '');
           if (bytes.length > 128 * 1024) return false;

@@ -169,6 +169,36 @@ fn validate_execution_network(operation: &str, network: bool) -> Result<()> {
     }
 }
 
+mod startup_lock;
+
+// Codex refreshes cap_sid and then loads it again while building the token.
+// Serialise that entire startup transaction across adapters sharing this home.
+// Workloads run concurrently after the ready handshake; no permissions change.
+async fn lock_startup(home: &std::path::Path, controls: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    user: Option<&str>, timeout_ms: u64, eof_cancels: bool)
+    -> Result<startup_lock::StartupLock> {
+    let mut lock = startup_lock::StartupLock::open(home, user)?;
+    let mut controls_open = true;
+    let deadline = tokio::time::sleep(Duration::from_millis(timeout_ms));
+    tokio::pin!(deadline);
+    loop {
+        match controls.try_recv() {
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {},
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) if !eof_cancels => controls_open = false,
+            _ => bail!("Windows sandbox startup cancelled before execution"),
+        }
+        if lock.try_acquire()? { return Ok(lock); }
+        tokio::select! {
+            control = controls.recv(), if controls_open => {
+                if control.is_none() && !eof_cancels { controls_open = false; }
+                else { bail!("Windows sandbox startup cancelled before execution"); }
+            },
+            _ = &mut deadline => bail!("WINDOWS_SANDBOX_STARTUP_BUSY: startup wait timed out before execution"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+        }
+    }
+}
+
 async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>>) -> Result<()> {
     if request.version != 1 || request.backend != "elevated" || !request.home.is_absolute() {
         bail!("Unsupported sandbox request");
@@ -205,6 +235,8 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
             "setupComplete":codex_windows_sandbox::sandbox_setup_is_complete(&request.home)})),
         "setup" => {
             if request.user.is_empty() { bail!("Setup requires the standard user's identity"); }
+            std::fs::create_dir_all(&request.home)?;
+            let _startup_lock = lock_startup(&request.home, &mut controls, Some(&request.user), 60_000, false).await?;
             codex_windows_sandbox::run_elevated_provisioning_setup(&request.home, &request.user,
                 WindowsSandboxProvisioningSettings::default())?;
             return emit(json!({"type":"setup", "complete":true}));
@@ -212,6 +244,7 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
         "setup-interactive" => {
             let _runtime_locks = lock_runtime(&request.binary_hashes)?;
             std::fs::create_dir_all(&request.home)?;
+            let _startup_lock = lock_startup(&request.home, &mut controls, None, 60_000, false).await?;
             let permissions = codex_windows_sandbox::ResolvedWindowsSandboxPermissions::try_from_permission_profile(&PermissionProfile::read_only())?;
             codex_windows_sandbox::run_elevated_setup(codex_windows_sandbox::SandboxSetupRequest {
                 permissions: &permissions, command_cwd: &request.home, env_map: &HashMap::new(),
@@ -222,12 +255,19 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
         "execute" | "execute-file-helper" => validate_execution_network(&request.operation, request.network)?,
         _ => bail!("Unsupported operation"),
     }
-    // Provisioning is a separate explicit action, never an execution side effect.
+    // Provisioning is separate and explicit. Check before opening state and
+    // again under the lock, so a concurrent setup/uninstall cannot race this.
     if !codex_windows_sandbox::sandbox_setup_is_complete(&request.home) {
         bail!("WINDOWS_SANDBOX_SETUP_REQUIRED");
     }
     if request.command.is_empty() || request.timeout_ms == 0 || request.timeout_ms > 1_800_000 {
         bail!("Invalid execution request");
+    }
+    let startup_started = std::time::Instant::now();
+    let startup_lock = lock_startup(&request.home, &mut controls, None, 60_000, true).await?;
+    let startup_wait_ms = startup_started.elapsed().as_millis() as u64;
+    if !codex_windows_sandbox::sandbox_setup_is_complete(&request.home) {
+        bail!("WINDOWS_SANDBOX_SETUP_REQUIRED");
     }
     let workspace = AbsolutePathBuf::try_from(request.workspace)?;
     let roots = vec![workspace];
@@ -266,7 +306,8 @@ async fn run(request: Request, mut controls: tokio::sync::mpsc::Receiver<Vec<u8>
         tty: false,
         stdin_open: true,
     }).await?;
-    emit(json!({"type":"ready"}))?;
+    drop(startup_lock);
+    emit(json!({"type":"ready", "startupWaitMs":startup_wait_ms}))?;
     let deadline = tokio::time::sleep(Duration::from_millis(request.timeout_ms));
     tokio::pin!(deadline);
     let mut stdout_open = true;
@@ -341,7 +382,9 @@ fn main() {
         tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run(request, rx))
     })();
     if let Err(error) = result {
-        let _ = emit(json!({"type":"error", "message":format!("{error:#}")}));
+        let message = format!("{error:#}");
+        let code = message.starts_with("WINDOWS_SANDBOX_STARTUP_BUSY:").then_some("WINDOWS_SANDBOX_STARTUP_BUSY");
+        let _ = emit(json!({"type":"error", "code":code, "message":message}));
         std::process::exit(1);
     }
 }
@@ -363,6 +406,44 @@ mod tests {
     fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain([0]).collect() }
     fn system32() -> PathBuf {
         PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into())).join("System32")
+    }
+
+    #[test]
+    fn startup_setup_accepts_piped_eof_but_execution_does_not() -> Result<()> {
+        let home = std::env::temp_dir().join(format!("freedom-lock-eof-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
+        std::fs::create_dir(&home)?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let (tx, mut controls) = tokio::sync::mpsc::channel(1);
+        drop(tx);
+        let guard = runtime.block_on(lock_startup(&home, &mut controls, None, 1000, false))?;
+        drop(guard);
+        let error = runtime.block_on(lock_startup(&home, &mut controls, None, 1000, true)).err()
+            .context("Closed execution input was accepted")?;
+        assert!(error.to_string().contains("cancelled"));
+        std::fs::remove_dir_all(home)?;
+        Ok(())
+    }
+
+    #[test]
+    fn contended_startup_is_bounded_and_can_be_cancelled() -> Result<()> {
+        let home = std::env::temp_dir().join(format!("freedom-lock-bound-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
+        std::fs::create_dir(&home)?;
+        let mut holder = startup_lock::StartupLock::open(&home, None)?;
+        assert!(holder.try_acquire()?);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+        let (tx, mut controls) = tokio::sync::mpsc::channel(1);
+        let error = runtime.block_on(lock_startup(&home, &mut controls, None, 20, true)).err()
+            .context("Contended startup did not time out")?;
+        assert!(error.to_string().starts_with("WINDOWS_SANDBOX_STARTUP_BUSY:"));
+        tx.blocking_send(b"{\"type\":\"cancel\"}".to_vec())?;
+        let error = runtime.block_on(lock_startup(&home, &mut controls, None, 1000, false)).err()
+            .context("Cancelled setup kept waiting")?;
+        assert!(error.to_string().contains("cancelled"));
+        drop(holder);
+        std::fs::remove_dir_all(home)?;
+        Ok(())
     }
 
     #[test]

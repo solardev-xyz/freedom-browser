@@ -1521,3 +1521,47 @@ test('changed project evidence invalidates a reviewed command before shell execu
   expect(controller.commandReviewEvidence.has('conversation_one')).toBe(false);
   jest.restoreAllMocks();
 });
+
+test('Windows file reads keep their execution budget after waiting for startup', async () => {
+  jest.useFakeTimers();
+  try {
+    const { controller, dependencies } = createController();
+    dependencies.executor.detectCapabilities.mockResolvedValue({ available: true, backend: 'windows-elevated', enforcement: {} });
+    let entered, finish;
+    const started = new Promise(resolve => { entered = resolve; });
+    dependencies.executor.executeTrustedFileHelper = jest.fn((_policy, options) => new Promise(resolve => {
+      finish = resolve; entered(options);
+    }));
+    const pending = controller.readFile('conversation_one', 'README.md');
+    const options = await started;
+    await jest.advanceTimersByTimeAsync(10001);
+    expect(options.signal.aborted).toBe(false);
+    options.onReady();
+    await jest.advanceTimersByTimeAsync(9999);
+    expect(options.signal.aborted).toBe(false);
+    finish(completedExecution('contents'));
+    await expect(pending).resolves.toEqual(Buffer.from('contents'));
+    expect(jest.getTimerCount()).toBe(0);
+  } finally { jest.useRealTimers(); }
+});
+
+test.each(['startup', 'operation'])('Windows %s deadline is not reported as a user cancellation', async phase => {
+  jest.useFakeTimers();
+  try {
+    const { controller, dependencies } = createController();
+    dependencies.executor.detectCapabilities.mockResolvedValue({ available: true, backend: 'windows-elevated', enforcement: {} });
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    dependencies.executor.executeTrustedFileHelper = jest.fn((_policy, options) => new Promise(resolve => {
+      options.signal.addEventListener('abort', () => resolve({ ...completedExecution(''), state: 'cancelled', exitCode: null, ready: phase === 'operation' }));
+      entered(options);
+    }));
+    const pending = controller.readFile('conversation_one', 'README.md');
+    const rejection = expect(pending).rejects.toMatchObject({ code: phase === 'startup' ? 'WORKSPACE_STARTUP_TIMEOUT' : 'WORKSPACE_FILE_OPERATION_TIMEOUT' });
+    const options = await started;
+    if (phase === 'operation') options.onReady();
+    await jest.advanceTimersByTimeAsync(phase === 'startup' ? 75000 : 10000);
+    await rejection;
+    expect(jest.getTimerCount()).toBe(0);
+  } finally { jest.useRealTimers(); }
+});
