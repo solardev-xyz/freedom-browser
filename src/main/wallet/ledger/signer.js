@@ -29,6 +29,7 @@ const { Transaction, Signature, TypedDataEncoder } = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
+const { validateLedgerEip712 } = require('./eip712-bounds');
 const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
 
 /** hw-app-eth returns r/s as bare hex and v as hex string or number. */
@@ -85,6 +86,8 @@ function createLedgerBackend(record) {
     },
 
     signTypedData: async (typedData) => {
+      validateLedgerEip712(typedData);
+
       // The device wants the full EIP-712 wire payload.
       const { strippedTypes, payload } = getEip712WirePayload(typedData);
 

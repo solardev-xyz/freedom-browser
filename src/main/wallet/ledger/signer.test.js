@@ -205,4 +205,45 @@ describe('createLedgerBackend / signTypedData', () => {
     await expect(backend.signTypedData({ domain, types, message })).rejects.toMatchObject({ statusCode: 0x6985 });
     expect(mockEth.signEIP712HashedMessage).not.toHaveBeenCalled();
   });
+
+  test('refuses typed data with non-ASCII field names before device call', async () => {
+    const badTypes = {
+      TransferWithAuthorization: [
+        { name: 'from', type: 'address' },
+        { name: 'valeur_en_euro_é', type: 'uint256' },
+      ],
+    };
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signTypedData({ domain, types: badTypes, message })).rejects.toMatchObject({
+      code: 'LEDGER_UNSUPPORTED_TYPED_DATA',
+    });
+    expect(mockEth.getAddress).not.toHaveBeenCalled();
+    expect(mockEth.signEIP712Message).not.toHaveBeenCalled();
+  });
+
+  test('refuses typed data with oversized arrays before device call', async () => {
+    const arrayTypes = {
+      Batch: [{ name: 'items', type: 'string[]' }],
+    };
+    const arrayMessage = { items: new Array(256).fill('x') };
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signTypedData({ domain, types: arrayTypes, message: arrayMessage })).rejects.toMatchObject({
+      code: 'LEDGER_UNSUPPORTED_TYPED_DATA',
+    });
+    expect(mockEth.getAddress).not.toHaveBeenCalled();
+    expect(mockEth.signEIP712Message).not.toHaveBeenCalled();
+  });
+
+  test('refuses typed data with chunk-boundary loss values before device call', async () => {
+    const strTypes = {
+      Note: [{ name: 'contents', type: 'string' }],
+    };
+    const strMessage = { contents: 'x'.repeat(254) };
+    const backend = createLedgerBackend(RECORD);
+    await expect(backend.signTypedData({ domain, types: strTypes, message: strMessage })).rejects.toMatchObject({
+      code: 'LEDGER_UNSUPPORTED_TYPED_DATA',
+    });
+    expect(mockEth.getAddress).not.toHaveBeenCalled();
+    expect(mockEth.signEIP712Message).not.toHaveBeenCalled();
+  });
 });

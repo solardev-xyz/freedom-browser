@@ -1,0 +1,2 @@
+- Ledger `signTypedData` requests violating `@ledgerhq/hw-app-eth` encoding boundaries are now refused before device dispatch ([#1064](https://github.com/solardev-xyz/freedom-browser/issues/1064))
+  - Rejects type or field names exceeding 255 bytes or containing non-ASCII characters, arrays with more than 255 entries, and values exceeding chunk capacities before calling the device

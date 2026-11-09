@@ -84,6 +84,13 @@ describe('createLedgerError', () => {
     // Round-trips through mapLedgerError unchanged (LEDGER_ prefix pass-through)
     expect(mapLedgerError(err)).toBe(err);
   });
+
+  test('mints UNSUPPORTED_TYPED_DATA error', () => {
+    const err = createLedgerError(LEDGER_ERROR_CODES.UNSUPPORTED_TYPED_DATA);
+    expect(err.code).toBe('LEDGER_UNSUPPORTED_TYPED_DATA');
+    expect(err.message).toMatch(/cannot safely display/i);
+    expect(mapLedgerError(err)).toBe(err);
+  });
 });
 
 describe('isLedgerUserRejection', () => {
