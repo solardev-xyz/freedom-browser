@@ -80,6 +80,7 @@ import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi, closePermissionPopover } from './lib/site-permissions-ui.js';
 import { initPopupBlockerUi, closePopupBlockedPopover } from './lib/popup-blocker-ui.js';
 import { initGatewayOfferUi, closeGatewayOfferPopover } from './lib/gateway-offer-ui.js';
+import { initMarkdownViewUi } from './lib/markdown-view-ui.js';
 import { initFindBar } from './lib/find-bar.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import {
@@ -913,6 +914,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     navigate: (url, webview, { auto }) =>
       loadTarget(url, null, webview, auto ? { pageInitiated: true } : {}),
   });
+  // Markdown button (#1035). Before initTabs too, for the first tab.
+  initMarkdownViewUi();
   initLinkStatus();
   initFindBar({
     getActiveWebview,
