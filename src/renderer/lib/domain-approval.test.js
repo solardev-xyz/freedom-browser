@@ -80,3 +80,10 @@ test('the source line says Freedom prepared it', () => {
   expect(DOMAIN_APPROVAL_SOURCE).toMatch(/^Prepared by Freedom/);
   expect(DOMAIN_APPROVAL_SOURCE).not.toMatch(/page Agent is controlling/);
 });
+
+
+test.each([['approve_payment', 'Approve token payment for example.eth?'], ['setup_resolver', 'Set up ENS records for example.eth?']])(
+  'ENS setup action %s has a distinct approval heading', (action, expected) => {
+    expect(domainApprovalHeading({ action, name: 'example.eth', durationSeconds: 31536000 })).toBe(expected);
+  }
+);

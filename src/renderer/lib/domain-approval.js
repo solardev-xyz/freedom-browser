@@ -7,6 +7,8 @@ const FORMAT = 'freedom-domain-approval/1';
 const YEAR = 31536000;
 const ACTIONS = new Set([
   'register_commit',
+  'approve_payment',
+  'setup_resolver',
   'register',
   'renew',
   'set_website',
@@ -78,6 +80,10 @@ export function domainApprovalHeading(domain) {
   const term = domainTermText(domain.durationSeconds);
   const forTerm = term ? ` for ${term}` : '';
   switch (domain.action) {
+    case 'approve_payment':
+      return `Approve token payment for ${name}?`;
+    case 'setup_resolver':
+      return `Set up ENS records for ${name}?`;
     case 'register_commit':
       return `Start registering ${name}${forTerm}?`;
     case 'register':

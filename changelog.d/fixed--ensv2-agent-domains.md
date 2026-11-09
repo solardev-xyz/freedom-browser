@@ -1,0 +1,2 @@
+- Fixed Agent registration and renewal of `.eth` names after ENSv2 activation, with USDC/DAI payments, separate bounded token approvals and support for connecting newly registered names to Swarm websites ([#1005](https://github.com/solardev-xyz/freedom-browser/issues/1005))
+  - Saved unsent ENSv1 registration and renewal plans explain the migration and require a fresh ENSv2 plan; uncertain transactions remain protected against repeat purchases

@@ -2,8 +2,9 @@
 
 const crypto = require('crypto');
 const { getAddress, keccak256, toUtf8Bytes, formatEther } = require('ethers');
-const { ADDRESSES, CONTRACT_NAMES, ABI, DomainError, refuse, parseName, swarmContenthash, registrationTuple, commitmentFor, ZeroAddress } = require('./contracts');
+const { ADDRESSES, CONTRACT_NAMES, ABI, DomainError, refuse, parseName, swarmContenthash, commitmentFor, ZeroAddress } = require('./contracts');
 const { DomainChain, sameAddress } = require('./chain');
+const ensV2 = require('./ens-v2');
 const { DomainTransactions } = require('../wallet/domain-transactions');
 const YEAR = 31536000;
 const INTENTS = ['set_website', 'clear_website', 'set_address', 'set_text', 'register', 'renew'];
@@ -11,11 +12,10 @@ const WAITING = new Set(['pending', 'waiting_commitment']);
 const TERMINAL = new Set(['completed', 'failed', 'declined', 'expired', 'dispatch_unknown', 'verification_needed', 'stale']);
 const digest = value => keccak256(toUtf8Bytes(JSON.stringify(value)));
 // Registration and renewal send the quote plus a small disclosed buffer, as the
-// ENS manager app does (2%, ens-app-v2 CURRENCY_FLUCTUATION_BUFFER_PERCENTAGE),
+// legacy ENS manager app did (2%, CURRENCY_FLUCTUATION_BUFFER_PERCENTAGE),
 // so a price update between signing and mining does not revert the payment.
-// Every supported controller refunds msg.value above the price to the sender
-// in the same transaction: ENS ETHRegistrarController and the wrapped renewal
-// controller (register/renew), and WNS/GNS NameNFT (reveal/renew).
+// This path now applies only to WNS/GNS NameNFT, which refunds excess ETH.
+// ENSv2 uses a bounded ERC20 allowance and no ETH payment buffer.
 const PRICE_BUFFER_PERCENT = 2n;
 const withBuffer = wei => (BigInt(wei) * (100n + PRICE_BUFFER_PERCENT) / 100n).toString();
 const pause = (ms, signal) => new Promise((resolve, reject) => {
@@ -102,6 +102,7 @@ function publicOperation(operation) {
     ...(operation.record && { record: operation.record }),
     ...(operation.before && { previous: operation.before }),
     ...(operation.quotedWei && { priceWei: operation.quotedWei }),
+    ...(operation.payment && { payment: { ...operation.payment, quotedAmount: operation.quotedAmount, quoteDisplay: ensV2.amountText(operation) } }),
     ...(operation.transactionHash && { transactionHash: operation.transactionHash }),
     ...(operation.transactions?.length && { transactions: operation.transactions }),
     ...(operation.readyAt && { readyAt: operation.readyAt, expiresAt: operation.expiresAt }),
@@ -132,21 +133,36 @@ class DomainService {
   }
   async inspect(input) {
     const parsed = parseName(input.name);
+    if (parsed.namespace !== 'eth' && input.paymentToken !== undefined) refuse('.wei and .gwei payments use ETH; a token selection only applies to .eth.', 'DOMAIN_UNSUPPORTED');
     const keys = input.textKeys || [];
     if (!Array.isArray(keys) || keys.length > 8 || keys.some(key => typeof key !== 'string' || !key || key.length > 128 || /[\p{Cc}\p{Cf}]/u.test(key))) refuse('Request at most eight bounded text-record keys.', 'DOMAIN_INVALID');
     const state = await this.chain.inspect(parsed, keys);
     let quote;
+    let quoteUnavailable;
     if (parsed.topLevel) {
       const duration = input.durationSeconds ?? YEAR;
       if (!Number.isSafeInteger(duration) || duration <= 0 || duration > 10 * YEAR ||
           (parsed.namespace !== 'eth' && duration !== YEAR)) refuse('Use a supported term: .wei/.gwei require one 365-day year per transaction.', 'DOMAIN_INVALID');
-      const role = parsed.namespace === 'eth' ? state.wrapped ? 'wrappedController' : 'controller' : parsed.namespace;
-      quote = { purpose: state.available ? 'registration' : 'renewal', durationSeconds: duration,
-        priceWei: await this.#price({ ...parsed, duration }, role, state.snapshot, state.available),
-        currency: 'ETH', networkFeesExtra: true };
+      const role = parsed.namespace;
+      if (role === 'eth') {
+        const operation = { ...parsed, duration, intent: state.available ? 'register' : 'renew', paymentToken: input.paymentToken || 'USDC' };
+        try {
+          const payment = await ensV2.price(this.chain, operation, state);
+          quote = { purpose: state.available ? 'registration' : 'renewal', durationSeconds: duration,
+            amount: payment.amount, currency: payment.token.symbol, decimals: payment.token.decimals,
+            token: (this.chain.addresses || ADDRESSES)[payment.token.role], networkFeeCurrency: 'ETH', networkFeesExtra: true };
+        } catch (error) {
+          if (error.code === 'DOMAIN_INVALID') throw error;
+          quoteUnavailable = 'A current ENS payment quote is unavailable for this term or deployment. Ownership and records are shown. Choose a supported term or retry later; transaction preparation still checks the payment route.';
+        }
+      } else {
+        quote = { purpose: state.available ? 'registration' : 'renewal', durationSeconds: duration,
+          priceWei: await this.#price({ ...parsed, duration }, role, state.snapshot, state.available),
+          currency: 'ETH', networkFeesExtra: true };
+      }
     }
     return { ...state, network: 'Ethereum mainnet',
-      ...(quote && { quote }),
+      ...(quote && { quote }), ...(quoteUnavailable && { quoteUnavailable }),
       supportedActions: [...(state.active && state.supportedResolver ? ['set_website', 'clear_website', 'set_address', 'set_text'] : []),
         ...(parsed.topLevel && state.available ? ['register'] : parsed.topLevel && state.expiry && state.expiry !== '0' ? ['renew'] : [])],
       note: state.supportedResolver ? 'Contract calls still require an authorized wallet and exact transaction approval.' : 'This resolver is not supported for direct writes; use its management app. No resolver replacement is automatic.' };
@@ -163,14 +179,16 @@ class DomainService {
     if (this.closed) refuse('Domain operations are shutting down.');
     if (!INTENTS.includes(input.intent)) refuse('Choose a supported domain operation.', 'DOMAIN_INVALID');
     const parsed = parseName(input.name);
+    if (parsed.namespace !== 'eth' && input.paymentToken !== undefined) refuse('.wei and .gwei payments use ETH; a token selection only applies to .eth.', 'DOMAIN_UNSUPPORTED');
     if (['register', 'renew'].includes(input.intent) && !parsed.topLevel) refuse('Only top-level registrations and renewals are supported.', 'DOMAIN_UNSUPPORTED');
     const account = await this.wallet.account(input.walletIndex);
+    for (const saved of this.store.list().filter(item => item.name === parsed.name)) this.#retireLegacyEnsPlan(saved);
     const existing = this.store.list().find(item => item.name === parsed.name && item.account.address === account.address && !TERMINAL.has(item.state));
     // An ambiguous prior dispatch blocks a new plan too, even after restart.
     const uncertain = this.store.list().find(item => item.name === parsed.name && ['dispatching', 'dispatch_unknown', 'verification_needed'].includes(item.state));
     if (uncertain) return publicOperation(uncertain);
     if (existing) return publicOperation(existing);
-    const declinedReveal = this.store.list().find(item => item.name === parsed.name && item.account.address === account.address && item.state === 'declined' && item.step === 'reveal');
+    const declinedReveal = this.store.list().find(item => item.name === parsed.name && item.account.address === account.address && item.state === 'declined' && item.intent === 'register' && (item.step === 'reveal' || item.transactions.some(tx => tx.step === 'commit')));
     if (declinedReveal) return publicOperation(declinedReveal);
     const operation = { ...parsed, id: `domain_${crypto.randomBytes(12).toString('hex')}`, version: 1,
       intent: input.intent, account, sourceConversationId: context.conversationId || null,
@@ -202,6 +220,7 @@ class DomainService {
           typeof input.value !== 'string' || input.value.length > 2048 || /[\p{Cc}\p{Cf}]/u.test(input.value)) refuse('Use a bounded text-record key and value without control characters.', 'DOMAIN_INVALID');
       operation.record = { kind: 'text', key: input.key, value: input.value };
     }
+    if (parsed.namespace === 'eth' && ['register', 'renew'].includes(input.intent)) await ensV2.prepare(this.chain, operation, input);
     if (input.intent === 'register') {
       const secret = `0x${crypto.randomBytes(32).toString('hex')}`;
       operation.encryptedSecret = this.store.protectSecret(secret);
@@ -213,7 +232,14 @@ class DomainService {
     this.store.save(operation);
     return publicOperation(operation);
   }
-  async #build(operation, preparing = false) {
+  #retireLegacyEnsPlan(operation) {
+    if (operation.namespace !== 'eth' || operation.protocol === 'ensv2' || !['register', 'renew'].includes(operation.intent) ||
+        !['ready', 'waiting_commitment', 'declined'].includes(operation.state) || operation.transactionHash) return;
+    operation.state = 'stale';
+    operation.message = 'ENS registration and renewal moved to ENSv2. This saved v1 plan cannot continue, and any v1 commitment cannot be reused. No further transaction was sent. Inspect earlier receipts before preparing an ENSv2 operation.';
+    this.#observe(operation);
+  }
+  async #build(operation, preparing = false, rephase = false) {
     const parsed = parseName(operation.name);
     if (operation.version !== 1 || !INTENTS.includes(operation.intent) ||
         ['name', 'namespace', 'label', 'node', 'tokenId', 'topLevel'].some(key => parsed[key] !== operation[key])) refuse('Unsupported or inconsistent saved domain plan.', 'DOMAIN_UNSUPPORTED');
@@ -225,16 +251,31 @@ class DomainService {
         (operation.intent === 'set_address' && (record?.kind !== 'address' || !/^0x[a-fA-F0-9]{40}$/.test(record.value) || record.value === ZeroAddress)) ||
         (operation.intent === 'set_text' && (record?.kind !== 'text' || typeof record.key !== 'string' || !record.key || record.key.length > 128 ||
           typeof record.value !== 'string' || record.value.length > 2048 || /[\p{Cc}\p{Cf}]/u.test(record.key + record.value)))) refuse('The saved record does not match its typed domain intent.', 'DOMAIN_UNSUPPORTED');
-    const commitReceipt = operation.intent === 'register' && operation.step === 'reveal'
+    const commitReceipt = operation.intent === 'register' && operation.step !== 'commit'
       ? await this.#registrationReceipt(operation) : undefined;
     if (commitReceipt === null) refuse(operation.message, 'DOMAIN_STALE');
-    const state = await this.chain.inspect(parsed, operation.record?.kind === 'text' ? [operation.record.key] : [], commitReceipt);
+    const setup = await this.#priorEnsSetup(operation);
+    if (!setup.ok) refuse(operation.message, 'DOMAIN_STALE');
+    const floor = setup.receipt && (!commitReceipt || BigInt(setup.receipt.blockNumber) > BigInt(commitReceipt.blockNumber)) ? setup.receipt : commitReceipt;
+    const state = await this.chain.inspect(parsed, operation.record?.kind === 'text' ? [operation.record.key] : [], floor);
     const snapshot = state.snapshot;
     const authority = { owner: state.owner, manager: state.manager, resolver: state.resolver,
-      epoch: state.epoch, parentEpoch: state.parentEpoch, fuses: state.fuses, wrapped: state.wrapped };
+      epoch: state.epoch, parentEpoch: state.parentEpoch, fuses: state.fuses, wrapped: state.wrapped,
+      ensVersion: state.ensVersion, registryResource: state.registryResource };
     if (preparing) operation.authority = authority;
     else if (operation.intent !== 'register' && digest(authority) !== digest(operation.authority)) refuse('Domain ownership, resolver or record generation changed. Prepare a fresh operation.', 'DOMAIN_STALE');
     const eth = parsed.namespace === 'eth';
+    if (eth && ['register', 'renew'].includes(operation.intent)) {
+      if (operation.protocol !== 'ensv2') refuse('ENS moved to v2. This saved v1 registration or renewal cannot be sent; reconcile any pending transaction, then prepare a new ENSv2 operation.', 'DOMAIN_UNSUPPORTED');
+      return this.#buildEnsV2(operation, parsed, state, preparing, rephase);
+    }
+    if (eth && ['ensResolverImpl', 'ensPublicResolver'].includes(state.resolverRole)) {
+      if (!state.active || !state.supportedResolver) refuse('An active name with a supported ENS resolver is required.', 'DOMAIN_UNSUPPORTED');
+      const tx = await ensV2.recordPlan(this.chain, operation, state);
+      const previous = operation.record.kind === 'contenthash' ? state.records.contenthash
+        : operation.record.kind === 'address' ? state.records.address : state.records.text[operation.record.key];
+      return this.#finishV2(operation, parsed, tx, previous, preparing, state.resolverRole, state.snapshot);
+    }
     const role = eth ? 'controller' : parsed.namespace;
     await this.chain.checkCode(eth ? 'base' : role, snapshot);
     if (eth) {
@@ -253,15 +294,7 @@ class DomainService {
     let label;
     if (operation.intent === 'register') {
       if (!state.available) refuse('That name is no longer available.', 'DOMAIN_STALE');
-      if (eth) {
-        await this.chain.checkCode('controller', snapshot);
-        await this.chain.checkCode('resolver', snapshot);
-        if (!(await this.chain.call('base', 'controllers', [ADDRESSES.controller], snapshot))[0]) refuse('The ENS controller is no longer authorized.', 'DOMAIN_UNSUPPORTED');
-        const [minimum] = await this.chain.call('controller', 'MIN_REGISTRATION_DURATION', [], snapshot);
-        if (BigInt(operation.duration) < minimum || !(await this.chain.call('controller', 'valid', [parsed.label], snapshot))[0]) refuse('The name or registration duration is not accepted by ENS.', 'DOMAIN_INVALID');
-      } else {
-        if ((await this.chain.call(role, 'normalize', [parsed.label], snapshot))[0] !== parsed.label) refuse('The registered spelling would differ.', 'DOMAIN_UNSUPPORTED');
-      }
+      if ((await this.chain.call(role, 'normalize', [parsed.label], snapshot))[0] !== parsed.label) refuse('The registered spelling would differ.', 'DOMAIN_UNSUPPORTED');
       const secret = this.store.revealSecret(operation);
       const expected = commitmentFor(operation, secret);
       if (expected !== operation.commitment) refuse('The saved commitment does not match its private registration plan.', 'DOMAIN_STALE');
@@ -281,26 +314,13 @@ class DomainService {
       } else {
         await this.#commitmentWindow(operation, snapshot);
         if (operation.state !== 'ready') refuse('The registration commitment is not ready for reveal.', 'DOMAIN_STALE');
-        method = eth ? 'register' : 'reveal';
-        args = eth ? [registrationTuple(operation, secret)] : [parsed.label, secret];
+        method = 'reveal'; args = [parsed.label, secret];
         value = withBuffer(operation.quotedWei);
         label = `Register ${parsed.name}`;
       }
     } else if (operation.intent === 'renew') {
       if (state.available || !state.expiry || state.expiry === '0') refuse('This name cannot be renewed in its current state.', 'DOMAIN_STALE');
-      if (eth) {
-        target = state.wrapped ? 'wrappedController' : 'controller';
-        if (state.wrapped) {
-          await this.chain.checkCode('wrapper', snapshot);
-          await this.chain.checkCode('wrappedController', snapshot);
-          if (!(await this.chain.call('wrapper', 'controllers', [ADDRESSES.wrappedController], snapshot))[0] ||
-              !(await this.chain.call('base', 'controllers', [ADDRESSES.wrapper], snapshot))[0]) refuse('The ENS wrapped renewal controller changed.', 'DOMAIN_UNSUPPORTED');
-        } else {
-          await this.chain.checkCode('controller', snapshot);
-          if (!(await this.chain.call('base', 'controllers', [ADDRESSES.controller], snapshot))[0]) refuse('The ENS renewal controller changed.', 'DOMAIN_UNSUPPORTED');
-        }
-        method = 'renew'; args = state.wrapped ? [parsed.label, operation.duration] : [parsed.label, operation.duration, `0x${'00'.repeat(32)}`];
-      } else { method = 'renew'; args = [parsed.tokenId]; }
+      method = 'renew'; args = [parsed.tokenId];
       const price = await this.#price(operation, target, snapshot, false);
       previous = { expiry: state.expiry, owner: state.owner, manager: state.manager, wrapped: state.wrapped || false, wrapperExpiry: state.wrapperExpiry };
       if (preparing) operation.quotedWei = price;
@@ -347,11 +367,38 @@ class DomainService {
     tx.digest = digest({ to: tx.to, data: tx.data, value: tx.value, account: tx.account.address, previous });
     return tx;
   }
-  async #price(operation, role, snapshot, registering) {
-    if (operation.namespace === 'eth') {
-      const [price] = await this.chain.call(role, 'rentPrice', [operation.label, operation.duration], snapshot);
-      return (price.base + (registering ? price.premium : 0n)).toString();
+  async #buildEnsV2(operation, parsed, state, preparing, rephase) {
+    if (operation.intent === 'register' && !state.available) refuse('That name is no longer available.', 'DOMAIN_STALE');
+    if (operation.intent === 'renew' && (state.available || !state.expiry || state.expiry === '0')) refuse('This name cannot be renewed in its current state.', 'DOMAIN_STALE');
+    let secret;
+    if (operation.intent === 'register') {
+      secret = this.store.revealSecret(operation);
+      if (commitmentFor(operation, secret) !== operation.commitment) refuse('The saved ENSv2 commitment changed.', 'DOMAIN_STALE');
+      if (operation.step !== 'commit') {
+        await this.#commitmentWindow(operation, state.snapshot);
+        if (operation.state !== 'ready') refuse('The ENS commitment is not ready.', 'DOMAIN_STALE');
+      }
     }
+    const tx = await ensV2.build(this.chain, operation, state, preparing || rephase, secret);
+    const previous = operation.intent === 'renew' ? { expiry: state.expiry, owner: state.owner, manager: state.manager,
+      wrapped: state.wrapped || false, wrapperExpiry: state.wrapperExpiry } : undefined;
+    return this.#finishV2(operation, parsed, tx, previous, preparing, undefined, state.snapshot);
+  }
+  async #finishV2(operation, parsed, tx, previous, preparing, resolverRole, snapshot) {
+    if (preparing) operation.before = previous;
+    else if (operation.intent !== 'register' && digest(previous ?? null) !== digest(operation.before ?? null)) refuse('Ownership, expiry or the record changed after preparation.', 'DOMAIN_STALE');
+    Object.assign(tx, { id: operation.id, name: parsed.name, step: operation.step, account: operation.account, from: operation.account.address });
+    if (!tx.presentation) {
+      const ownWallet = operation.record?.kind === 'address' ? await this.wallet.ownWallet(operation.record.value) : undefined;
+      tx.presentation = presentPlan({ operation, parsed, target: resolverRole, previous, ownWallet });
+      tx.presentation.contract = { address: tx.to, name: CONTRACT_NAMES[resolverRole] };
+    }
+    tx.summary = tx.presentation.items.map(item => `${item.label}: ${item.value}`).join('\n');
+    await this.chain.simulate(tx, snapshot);
+    tx.digest = digest({ to: tx.to, data: tx.data, value: tx.value, account: tx.account.address, previous });
+    return tx;
+  }
+  async #price(operation, role, snapshot, registering) {
     const [fee] = await this.chain.call(role, 'getFee', [Buffer.byteLength(operation.label)], snapshot);
     const premium = registering ? (await this.chain.call(role, 'getPremium', [operation.tokenId], snapshot))[0] : 0n;
     return (fee + premium).toString();
@@ -361,6 +408,7 @@ class DomainService {
     this.locks.add(id);
     try {
       const operation = this.#get(id);
+      this.#retireLegacyEnsPlan(operation);
       if (operation.state === 'declined' && context.resume === true) {
         const replacement = this.store.list().find(item => item.id !== id && item.name === operation.name && item.account.address === operation.account.address && !TERMINAL.has(item.state));
         if (replacement) return publicOperation(replacement);
@@ -372,7 +420,9 @@ class DomainService {
       try {
         // Requote the reveal before presenting its separate approval, without
         // throwing away an already paid commitment or changing its tuple.
-        plan = await this.#build(operation, operation.intent === 'register' && operation.step === 'reveal');
+        const rephase = operation.protocol === 'ensv2' && (operation.step === 'reveal' || operation.needsNextPlan === true);
+        plan = await this.#build(operation, operation.intent === 'register' && operation.step === 'reveal', rephase);
+        if (rephase) { operation.planDigest = plan.digest; operation.needsNextPlan = false; }
         // A renewal prepared before payments carried the price buffer has a
         // plan digest over the unbuffered value. Everything else in it is
         // unchanged, and the wallet approval shows the buffered value sent,
@@ -428,7 +478,9 @@ class DomainService {
           if (error.code === 'DOMAIN_DECLINED') {
             operation.state = 'declined'; operation.message = error.message;
           } else if (error.code === 'DOMAIN_QUOTE_CHANGED') {
-            operation.state = 'ready'; operation.message = 'The registration quote changed during approval. No reveal was sent. The same commitment can be requoted for a fresh approval.';
+            operation.state = 'ready';
+            if (operation.protocol === 'ensv2') operation.needsNextPlan = true;
+            operation.message = 'The domain quote or setup changed during approval. No transaction was sent. The same operation can be requoted for a fresh approval.';
           } else if (error.code === 'DOMAIN_STALE') {
             if (!['expired', 'verification_needed', 'waiting_commitment'].includes(operation.state)) {
               operation.state = 'stale'; operation.message = error.message;
@@ -466,11 +518,11 @@ class DomainService {
     return operation;
   }
   async #commitmentWindow(operation, snapshot) {
-    const role = operation.namespace === 'eth' ? 'controller' : operation.namespace;
-    const [committedAt] = await this.chain.call(role, 'commitments', [operation.commitment], snapshot);
+    const role = operation.namespace === 'eth' ? operation.protocol === 'ensv2' ? 'ensRegistrar' : 'controller' : operation.namespace;
+    const [committedAt] = await this.chain.call(role, operation.protocol === 'ensv2' ? 'commitmentAt' : 'commitments', [operation.commitment], snapshot);
     const eth = operation.namespace === 'eth';
-    const min = eth ? (await this.chain.call(role, 'minCommitmentAge', [], snapshot))[0] : 60n;
-    const max = eth ? (await this.chain.call(role, 'maxCommitmentAge', [], snapshot))[0] : 86400n;
+    const min = eth ? (await this.chain.call(role, operation.protocol === 'ensv2' ? 'MIN_COMMITMENT_AGE' : 'minCommitmentAge', [], snapshot))[0] : 60n;
+    const max = eth ? (await this.chain.call(role, operation.protocol === 'ensv2' ? 'MAX_COMMITMENT_AGE' : 'maxCommitmentAge', [], snapshot))[0] : 86400n;
     if (committedAt === 0n) { operation.state = 'verification_needed'; operation.message = 'The confirmed commitment is missing from the current chain. Inspect before continuing.'; return; }
     operation.readyAt = Number(committedAt + min);
     operation.expiresAt = Number(committedAt + max);
@@ -480,14 +532,32 @@ class DomainService {
     operation.message = operation.state === 'ready' ? 'Commitment ready. Reveal needs a new exact wallet approval.'
       : operation.state === 'expired' ? 'The commitment expired. A new commitment would cost gas and is not automatic.' : 'Waiting for the on-chain commitment age.';
   }
+  async #priorEnsSetup(operation) {
+    let latest;
+    if (operation.protocol !== 'ensv2') return { ok: true };
+    for (const prior of operation.transactions.filter(tx => ['approve_payment', 'deploy_resolver'].includes(tx.step) && !tx.reverted)) {
+      const receipt = await this.chain.receipt(prior.hash);
+      const tx = receipt && await this.chain.request('eth_getTransactionByHash', [prior.hash]);
+      if (!receipt || BigInt(receipt.status) !== 1n || !tx || !prior.digest ||
+          this.#transactionDigest(tx) !== prior.digest || !this.#atOrAbove(tx, prior.nonceFloor) ||
+          !ensV2.verifySetup(this.chain, { ...operation, step: prior.step }, receipt, tx)) {
+        operation.state = 'verification_needed';
+        operation.message = 'An earlier ENS setup transaction is no longer verified in the canonical chain. Check the same operation; do not repeat its approval or setup transaction.';
+        return { ok: false };
+      }
+      prior.blockHash = receipt.blockHash;
+      if (!latest || BigInt(receipt.blockNumber) > BigInt(latest.blockNumber)) latest = receipt;
+    }
+    return { ok: true, receipt: latest };
+  }
   async #registrationReceipt(operation) {
     const commit = operation.transactions.find(transaction => transaction.step === 'commit');
     const receipt = commit && await this.chain.receipt(commit.hash);
     const tx = receipt && await this.chain.request('eth_getTransactionByHash', [commit.hash]);
-    const role = parseName(operation.name).namespace === 'eth' ? 'controller' : operation.namespace;
+    const role = parseName(operation.name).namespace === 'eth' ? operation.protocol === 'ensv2' ? 'ensRegistrar' : 'controller' : operation.namespace;
     // dispatchDigest belongs to the most recent signing attempt, which may be
     // a provably unsent reveal. Reconstruct the earlier public commit instead.
-    const expected = this.#transactionDigest({ from: operation.account.address, to: ADDRESSES[role], value: '0',
+    const expected = this.#transactionDigest({ from: operation.account.address, to: (this.chain.addresses || ADDRESSES)[role], value: '0',
       input: (ABI[role] || ABI.nft).encodeFunctionData('commit', [operation.commitment]) });
     if (!receipt || BigInt(receipt.status) !== 1n || receipt.blockHash !== commit.blockHash ||
         !tx || this.#transactionDigest(tx) !== expected) {
@@ -505,6 +575,7 @@ class DomainService {
     if (input.waitMs !== undefined && (!Number.isSafeInteger(input.waitMs) || input.waitMs < 0 || input.waitMs > 30000)) refuse('Wait must be between zero and 30,000 milliseconds.', 'DOMAIN_INVALID');
     const deadline = Date.now() + (input.waitMs || 0);
     let operation = this.#get(input.operationId);
+    this.#retireLegacyEnsPlan(operation);
     if (input.transactionHash) {
       if (!/^0x[a-fA-F0-9]{64}$/.test(input.transactionHash) || operation.state !== 'dispatch_unknown') refuse('A recovery hash is only accepted for an uncertain domain dispatch.', 'DOMAIN_INVALID');
       const tx = await this.chain.request('eth_getTransactionByHash', [input.transactionHash]);
@@ -512,7 +583,8 @@ class DomainService {
       // A register commit/reveal embeds the per-operation secret, so a
       // matching digest is already unique to this operation; the 'pending'
       // floor would only refuse a genuine hash that replaced a stuck tx.
-      const recoveryFloor = operation.intent === 'register' ? operation.dispatchMinedNonce : operation.dispatchNonceFloor;
+      const uniqueRegistration = operation.intent === 'register' && ['commit', 'reveal'].includes(operation.step);
+      const recoveryFloor = uniqueRegistration ? operation.dispatchMinedNonce : operation.dispatchNonceFloor;
       if (!this.#atOrAbove(tx, recoveryFloor)) refuse('That transaction was sent before this domain operation was dispatched.', 'DOMAIN_INVALID');
       operation.transactionHash = input.transactionHash;
       operation.state = 'pending';
@@ -526,13 +598,28 @@ class DomainService {
         operation.message = 'The previously confirmed transaction is no longer in the canonical chain. Reconcile before any further send.';
         saved = this.#observe(operation);
       }
-      if (saved && operation.state === 'pending') saved = await this.#confirm(operation);
-      else if (saved && operation.intent === 'register' && operation.step === 'reveal' && !operation.transactionHash &&
+      if (saved && (operation.state === 'pending' || (operation.state === 'verification_needed' && operation.transactionHash && operation.protocol === 'ensv2' && ['approve_payment', 'deploy_resolver'].includes(operation.step)))) saved = await this.#confirm(operation);
+      else if (saved && operation.intent === 'register' && (operation.step === 'reveal' || (operation.protocol === 'ensv2' && operation.step !== 'commit')) && !operation.transactionHash &&
           ['waiting_commitment', 'verification_needed'].includes(operation.state)) {
         // Also reconciles journals saved by older versions after a stale-block
         // read. Only a verified existing commit may recover; never resend it.
         const receipt = await this.#registrationReceipt(operation);
-        if (receipt) await this.#commitmentWindow(operation, await this.chain.snapshot(receipt));
+        if (receipt) {
+          const setup = await this.#priorEnsSetup(operation);
+          const floor = setup.receipt && BigInt(setup.receipt.blockNumber) > BigInt(receipt.blockNumber) ? setup.receipt : receipt;
+          if (setup.ok) {
+            await this.#commitmentWindow(operation, await this.chain.snapshot(floor));
+            if (operation.protocol === 'ensv2') operation.needsNextPlan = true;
+          }
+        }
+        saved = this.#observe(operation);
+      }
+      else if (saved && operation.protocol === 'ensv2' && operation.intent === 'renew' && !operation.transactionHash && operation.state === 'verification_needed') {
+        const setup = await this.#priorEnsSetup(operation);
+        if (setup.ok) {
+          operation.state = 'ready'; operation.needsNextPlan = true;
+          operation.message = 'Earlier ENS setup receipts are verified. The next step needs a fresh exact wallet approval.';
+        }
         saved = this.#observe(operation);
       }
       if (!saved) operation = this.#get(input.operationId);
@@ -550,7 +637,8 @@ class DomainService {
       operation.state = 'verification_needed'; operation.message = 'The returned transaction does not match the prepared domain operation.';
       return this.#observe(operation);
     }
-    operation.transactions.push({ step: operation.step, hash: operation.transactionHash, blockHash: receipt.blockHash, ...(BigInt(receipt.status) !== 1n && { reverted: true }) });
+    if (!operation.transactions.some(prior => prior.hash === operation.transactionHash && prior.step === operation.step)) operation.transactions.push({ step: operation.step, hash: operation.transactionHash, blockHash: receipt.blockHash,
+      ...(operation.protocol === 'ensv2' && { digest: operation.dispatchDigest, nonceFloor: operation.dispatchMinedNonce }), ...(BigInt(receipt.status) !== 1n && { reverted: true }) });
     if (BigInt(receipt.status) !== 1n && operation.intent === 'register' && operation.step === 'reveal') {
       // A reverted reveal (for example after a price move) rolls back with it
       // the commitment's consumption and the payment. Keep the paid commitment
@@ -559,8 +647,22 @@ class DomainService {
       delete operation.transactionHash;
       await this.#commitmentWindow(operation, await this.chain.snapshot(receipt));
       if (operation.state === 'ready') operation.message = 'The registration transaction reverted: its network fee was spent, the name was not bought and no price was paid. The commitment is still valid; domain_execute requotes it for a fresh wallet approval.';
+    } else if (BigInt(receipt.status) !== 1n && operation.protocol === 'ensv2' && ['approve_payment', 'deploy_resolver'].includes(operation.step)) {
+      operation.state = 'declined'; operation.needsNextPlan = true;
+      delete operation.transactionHash;
+      operation.message = 'The ENS setup transaction reverted and spent network fees. No domain was bought or renewed. Resume this same operation only on the user’s request, with a fresh wallet approval; any paid commitment is retained.';
     } else if (BigInt(receipt.status) !== 1n) {
       operation.state = 'failed'; operation.message = 'The domain transaction reverted. Gas may have been spent; inspect current state before preparing another operation.';
+    } else if (operation.protocol === 'ensv2' && ['approve_payment', 'deploy_resolver'].includes(operation.step)) {
+      const verified = ensV2.verifySetup(this.chain, operation, receipt, tx);
+      if (verified) {
+        operation.step = operation.intent === 'register' ? 'reveal' : 'renew';
+        operation.state = 'ready'; operation.needsNextPlan = true;
+        delete operation.transactionHash;
+        operation.message = 'ENS setup step confirmed. The next transaction requires a separate exact wallet approval.';
+      } else {
+        operation.state = 'verification_needed'; operation.message = 'The setup transaction succeeded but its expected state was not verified. Do not resend it.';
+      }
     } else if (operation.step === 'commit') {
       operation.step = 'reveal';
       delete operation.transactionHash; // The commit hash is in transactions, not a reveal receipt.
@@ -568,9 +670,12 @@ class DomainService {
     } else {
       const state = await this.chain.inspect(parseName(operation.name), operation.record?.kind === 'text' ? [operation.record.key] : [], receipt);
       let verified;
-      if (operation.intent === 'register') verified = state.active && sameAddress(state.owner, operation.account.address);
+      if (operation.intent === 'register') verified = state.active && sameAddress(state.owner, operation.account.address) &&
+        (operation.protocol !== 'ensv2' || sameAddress(state.resolver, operation.ensResolver));
       else if (operation.intent === 'renew') verified = (operation.before.owner === ZeroAddress || sameAddress(state.owner, operation.before.owner)) && sameAddress(state.manager, operation.before.manager) && BigInt(state.expiry) === BigInt(operation.before.expiry) + BigInt(operation.duration) &&
-        (!operation.before.wrapped || BigInt(state.wrapperExpiry) === BigInt(operation.before.wrapperExpiry) + BigInt(operation.duration));
+        (!operation.before.wrapped || BigInt(state.wrapperExpiry) === (operation.protocol === 'ensv2'
+          ? BigInt(state.expiry) + ensV2.LEGACY_WRAPPER_GRACE
+          : BigInt(operation.before.wrapperExpiry) + BigInt(operation.duration)));
       else {
         const record = operation.record;
         const actual = record.kind === 'contenthash' ? state.records.contenthash : record.kind === 'address' ? state.records.address : state.records.text[record.key];
