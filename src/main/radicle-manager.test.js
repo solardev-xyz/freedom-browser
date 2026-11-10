@@ -508,6 +508,30 @@ describe('re-key critical section (R-8)', () => {
     fs.rmSync(ctx.dataDir, { recursive: true, force: true });
   });
 
+  // Round-1 review (R1-M1): a node in ERROR with no native node (a failed
+  // start, a missing add-on) has nothing to stop; the re-key must not
+  // replace the visible error with a clean STOPPED.
+  test('a node in error with no native node keeps its error through a re-key', async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    ctx.embedded.start.mockImplementationOnce(async () => {
+      throw new Error('libradicle addon is not installed');
+    });
+    await ctx.mod.startRadicle();
+    const before = ctx.mod.getCurrentStatus();
+    expect(before).toEqual({ status: 'error', error: 'libradicle addon is not installed' });
+    ctx.registry.clearService.mockClear();
+
+    const work = jest.fn(async () => 'did');
+    await expect(ctx.mod.createRadicleLifecycle().withStopped(work)).resolves.toBe('did');
+    expect(work).toHaveBeenCalledTimes(1);
+    expect(ctx.embedded.shutdown).not.toHaveBeenCalled();
+    expect(ctx.registry.clearService).not.toHaveBeenCalled();
+    expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
+    expect(ctx.mod.getCurrentStatus()).toEqual(before);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
   test('a work that fails still restarts the node, and its error reaches the caller', async () => {
     const ctx = loadManager();
     modelNode(ctx);

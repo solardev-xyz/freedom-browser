@@ -516,7 +516,7 @@ function setNodeAlias(alias) {
  * other re-key queues behind it. Inside it, once the earlier operations
  * have run:
  *  - it notes whether the node is running,
- *  - stops it and requires the add-on's proof that it stopped (a stop
+ *  - if so, stops it and requires the add-on's proof that it stopped (a stop
  *    without that proof throws, and `work` never runs),
  *  - awaits `work`,
  *  - and in `finally` starts the node again if it was running: as the new
@@ -528,10 +528,16 @@ function setNodeAlias(alias) {
 function withRadicleStopped(work) {
   return enqueueLifecycle(async () => {
     const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
-    try {
-      await stopNode();
-    } catch (err) {
-      throw notStoppedError(err.message);
+    // No node to stop: the add-on's shutdown would be a no-op, and
+    // stopNode would still clear the service and overwrite a visible ERROR
+    // (a missing add-on, a failed start) with STOPPED. Leave the status as
+    // it is; the isStarted check below still holds.
+    if (wasRunning) {
+      try {
+        await stopNode();
+      } catch (err) {
+        throw notStoppedError(err.message);
+      }
     }
     if (embedded.isStarted()) {
       throw notStoppedError('The Radicle node did not stop, so its data was not reset');
