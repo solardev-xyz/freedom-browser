@@ -83,7 +83,7 @@ const IPC = require('../../shared/ipc-channels');
 const manager = require('../radicle-manager');
 const cob = require('./cob-service');
 const privateWindows = require('../private/private-windows');
-const { registerRadicleProviderIpc } = require('./radicle-provider-ipc');
+const { registerRadicleProviderIpc, executeRadicleMethod } = require('./radicle-provider-ipc');
 const { registerRadiclePermissionsIpc } = require('./radicle-permissions');
 
 registerRadicleProviderIpc();
@@ -263,6 +263,38 @@ test('a private seed-status read subscribes nothing and leaves no broadcaster', 
   expect(listeners.size).toBe(1);
   manager.getSeedFetchStatus.mockImplementation(() => ({ success: true, status: mockStatus }));
   manager.unsubscribeSeedStatus.mockImplementation(() => {});
+});
+
+// R-9 review 3, second guard: executeRadicleMethod itself drops a callback a
+// caller passes alongside privateSender, so a handler that one day hands one
+// over for a private sender still cannot subscribe the window to a fetch.
+test('executeRadicleMethod drops a seed-status callback for a private sender', async () => {
+  const listeners = new Set();
+  manager.getSeedFetchStatus.mockImplementation((_rid, onStatus) => {
+    if (onStatus) listeners.add(onStatus);
+    return { success: true, status: mockStatus };
+  });
+  const onSeedStatus = jest.fn();
+  try {
+    await expect(
+      executeRadicleMethod('radicle_getSeedStatus', { rid: RID }, WATCHED, {
+        onSeedStatus,
+        privateSender: true,
+      })
+    ).resolves.toEqual(mockStatus);
+    expect(manager.getSeedFetchStatus.mock.calls).toEqual([[RID]]);
+    expect(listeners.size).toBe(0);
+
+    // Control: the same call for a public sender hands the callback over.
+    await executeRadicleMethod('radicle_getSeedStatus', { rid: RID }, WATCHED, {
+      onSeedStatus,
+      privateSender: false,
+    });
+    expect(manager.getSeedFetchStatus.mock.calls[1]).toEqual([RID, onSeedStatus]);
+    expect(listeners.has(onSeedStatus)).toBe(true);
+  } finally {
+    manager.getSeedFetchStatus.mockImplementation(() => ({ success: true, status: mockStatus }));
+  }
 });
 
 // Last: these write the store.

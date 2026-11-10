@@ -14,6 +14,7 @@ const {
 const embedded = require('./radicle-embedded');
 const { createProfileTempDir, prepareRadicleDataDir } = require('./profile-paths');
 const fsOffload = require('./fs-offload');
+const { isPrivateSender } = require('./private/private-sender');
 
 const execFileAsync = promisify(execFile);
 
@@ -554,6 +555,12 @@ function registerGithubBridgeIpc() {
   const ensureRadicleEnabled = () => !isDisabledForProfile();
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_IMPORT, async (event, url) => {
+    // An import creates a Radicle repository and seeds it, which outlives a
+    // private window (R-9). isPrivateSender fails closed: a sender main
+    // cannot classify as a known public window is refused too.
+    if (isPrivateSender(event)) {
+      return failure('RADICLE_PRIVATE_WINDOW', 'Importing is not available in private windows');
+    }
     if (!ensureRadicleEnabled()) {
       return radicleDisabledFailure();
     }
