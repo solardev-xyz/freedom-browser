@@ -10,6 +10,7 @@ use super::startup_lock::StartupLock;
 
 const PREFIX: &str = "freedom-win-workspace-";
 const CLEANUP_TRIGGER: usize = 32;
+const MAX_MISSING_ROOT_CHECKS: usize = 1024;
 
 fn temporary_name(name: &str) -> bool {
     name.strip_prefix(PREFIX).is_some_and(|suffix|
@@ -83,10 +84,15 @@ fn prune_locked(home: &Path, current_temp: &Path, minimum_entries: usize,
         entry.map(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase())).collect();
     let children = match children { Ok(value) => value, Err(_) => return Ok(0) };
     let before = entries.len();
+    let mut missing_checks = 0;
     entries.retain(|key, _| {
         if !eligible(key) { return true; }
         let name = &key[prefix.len()..];
         if children.contains(name) { return true; }
+        // A large pre-upgrade backlog must not monopolise the startup lock.
+        // Remaining candidates are handled by later starts.
+        if missing_checks == MAX_MISSING_ROOT_CHECKS { return true; }
+        missing_checks += 1;
         // Only a definite absence is disposable. Access/IO errors retain it.
         !matches!(fs::symlink_metadata(key), Err(error) if error.kind() == ErrorKind::NotFound)
     });
@@ -223,10 +229,11 @@ mod tests {
     #[test]
     fn removes_an_accumulated_backlog_without_touching_other_fields() -> Result<()> {
         let fixture = Fixture::new()?;
-        let entries: serde_json::Map<String, Value> = (0..1000).map(|i|
+        let entries: serde_json::Map<String, Value> = (0..1500).map(|i|
             (fixture.key(&format!("freedom-win-workspace-z{i:05}")), json!(format!("expired-{i}")))).collect();
         let before = fixture.save(Value::Object(entries))?;
-        assert_eq!(super::prune(&fixture.home, &fixture.temp, fixture.guard.as_ref().unwrap())?, 1000);
+        assert_eq!(super::prune(&fixture.home, &fixture.temp, fixture.guard.as_ref().unwrap())?, MAX_MISSING_ROOT_CHECKS);
+        assert_eq!(super::prune(&fixture.home, &fixture.temp, fixture.guard.as_ref().unwrap())?, 1500 - MAX_MISSING_ROOT_CHECKS);
         let after: Value = serde_json::from_slice(&fs::read(fixture.home.join("cap_sid"))?)?;
         assert_eq!(after["workspace_by_cwd"], before["workspace_by_cwd"]);
         assert_eq!(after["future_field"], before["future_field"]);
