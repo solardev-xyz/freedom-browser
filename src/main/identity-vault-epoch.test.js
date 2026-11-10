@@ -194,12 +194,17 @@ describe('vault authority epoch (K-1)', () => {
 
   test('a Bee injection paused in keystore generation writes no key after a delete', async () => {
     const generating = deferred();
+    // Resolved once the injection has really reached keystore generation,
+    // past every earlier epoch check, so the delete below lands while it is
+    // there and only the check right before the write can refuse it.
+    const entered = deferred();
     const ctx = load({
       [require.resolve('./identity/formats')]: () => {
         const actual = jest.requireActual('./identity/formats');
         return {
           ...actual,
           createBeeKeystore: async (...args) => {
+            entered.resolve();
             await generating.promise;
             return actual.createBeeKeystore(...args);
           },
@@ -210,7 +215,7 @@ describe('vault authority epoch (K-1)', () => {
 
     const injecting = ctx.manager.injectBeeIdentity();
     injecting.catch(() => {});
-    await settle();
+    await entered.promise;
     await ctx.manager.deleteVaultData(PASSWORD);
 
     generating.resolve();
@@ -294,7 +299,7 @@ describe('vault authority epoch (K-1)', () => {
       'the auto-lock': () => jest.advanceTimersByTime(AUTO_LOCK_MS + 1),
       'the explicit lock': (manager) => manager.lockVault(),
       'a vault delete': (manager) => manager.deleteVaultData(PASSWORD),
-      'quit': (manager) => manager.closeVaultAuthority(),
+      quit: (manager) => manager.closeVaultAuthority(),
     };
 
     test.each(Object.keys(revokers))('on %s', async (name) => {
