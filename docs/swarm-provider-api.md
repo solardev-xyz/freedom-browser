@@ -78,7 +78,8 @@ The shim rejects a request that has had no answer with
 
 - **300 s** for `swarm_publish*`, `swarm_send*`, `swarm_createFeed`,
   `swarm_updateFeed`, `swarm_writeFeedEntry`, `swarm_writeSingleOwnerChunk`,
-  `swarm_getSigningIdentity`, `swarm_getMessagingIdentity` and
+  `swarm_getSigningIdentity`, `swarm_getEncryptionKey`,
+  `swarm_deriveSharedSecrets`, `swarm_getMessagingIdentity` and
   `swarm_subscribe` (these may wait on a consent prompt or a node write),
   and `swarm_readData` (a blob of several MiB fetched from the network);
 - **60 s** for everything else, including `swarm_requestAccess` and any
