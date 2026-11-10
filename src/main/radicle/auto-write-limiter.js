@@ -5,9 +5,10 @@
  * Per origin: a burst of BURST writes, then one more per REFILL_MS, and at
  * most DAILY_MAX in any rolling DAY_MS. A write the limit refuses is not
  * lost: the provider falls back to the per-write prompt, and a write the
- * user approves there is not counted. An admitted write that then fails
- * before anything was signed (bad params, unknown repo) gives its token and
- * daily slot back through the refund admit() returns.
+ * user approves there is not counted. An admitted write refused for
+ * invalid params (nothing signed) gives its token and daily slot back
+ * through the refund admit() returns; every other failure, an unknown repo
+ * included, keeps its charge, so a site can't retry one forever for free.
  *
  * In memory: the counts start again when the browser restarts.
  */

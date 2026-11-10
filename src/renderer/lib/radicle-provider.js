@@ -193,12 +193,14 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
   const agentHeld = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
   const ruleOn =
     !agentHeld && Boolean(await window.radiclePermissions.getAutoApprove(permissionKey, 'signing'));
+  let limited = false;
   if (ruleOn) {
     assertSameDocument();
     try {
       return await forwardToMain(method, params, permissionKey, { ...meta, approval: 'auto' });
     } catch (error) {
       if (error?.data?.reason !== 'auto_write_limit') throw error;
+      limited = true;
     }
   }
   // Either await above (the rule lookup, a rule-answered write main sent
@@ -210,6 +212,7 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
     answer = await showRadicleSignedWriteApproval(permissionKey, method, params, webview, {
       agentHeld,
       alwaysAllow: ruleOn,
+      limited,
     });
   } catch (error) {
     // Unchecking the rule and rejecting turns the rule off without

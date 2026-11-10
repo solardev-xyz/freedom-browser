@@ -294,6 +294,10 @@ function describeSignedWrite(method, params = {}) {
   }
 }
 
+// Mirrors LIMITS in src/main/radicle/auto-write-limiter.js (main-only).
+const AUTO_WRITE_LIMIT_NOTICE =
+  'This site has reached its limit of automatic writes (5 in a row, then one every 30 seconds, at most 50 a day), so this one needs your approval.';
+
 const SIGNED_WRITE_WARNING =
   'This is signed with your Radicle identity and published to the Radicle network. It is public and permanent: it cannot be edited away or unpublished.';
 
@@ -302,22 +306,24 @@ const SIGNED_WRITE_WARNING =
  * is signed (R-6). Outside Agent custody it also offers the site's "always
  * allow writes" rule, checked when the rule is already on (the prompt then
  * shows because main's rate limit stopped an automatic write), and resolves
- * to `{ alwaysAllow }`.
+ * to `{ alwaysAllow }`. With `limited` (that rate-limit fallback) the
+ * warning says so, so a user whose rule is on knows why they are asked.
  */
 export function showRadicleSignedWriteApproval(
   permissionKey,
   method,
   params,
   owner,
-  { agentHeld = false, alwaysAllow = false } = {}
+  { agentHeld = false, alwaysAllow = false, limited = false } = {}
 ) {
+  let warning = SIGNED_WRITE_WARNING;
+  if (limited && !agentHeld) warning = `${AUTO_WRITE_LIMIT_NOTICE} ${warning}`;
+  if (agentHeld) warning = `Freedom Agent is using this tab. ${warning}`;
   return prompt({
     owner,
     origin: permissionKey,
     ...describeSignedWrite(method, params),
-    warning: agentHeld
-      ? `Freedom Agent is using this tab. ${SIGNED_WRITE_WARNING}`
-      : SIGNED_WRITE_WARNING,
+    warning,
     always: agentHeld
       ? null
       : {

@@ -214,6 +214,50 @@ describe('radicle-consent owner binding', () => {
     });
   });
 
+  test('the rate-limit fallback prompt says the site hit its automatic-write limit', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+    const warning = () => elementsById['radicle-consent-warning'].textContent;
+
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true, limited: true }
+    );
+    expect(warning()).toContain('reached its limit of automatic writes');
+    expect(warning()).toContain('public and permanent');
+    expect(elementsById['radicle-consent-always'].checked).toBe(true);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await promptPromise;
+
+    // An ordinary per-write prompt says nothing about a limit.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner
+    );
+    expect(warning()).not.toContain('limit');
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await promptPromise;
+  });
+
+  test('the limit notice quotes the numbers main enforces', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const { LIMITS } = require('../../main/radicle/auto-write-limiter.js');
+    const source = fs.readFileSync(path.join(__dirname, 'radicle-consent.js'), 'utf8');
+    const notice = source.match(/AUTO_WRITE_LIMIT_NOTICE =\s*'([^']*)'/)[1];
+    expect(notice).toContain(`${LIMITS.BURST} in a row`);
+    expect(notice).toContain(`one every ${LIMITS.REFILL_MS / 1000} seconds`);
+    expect(notice).toContain(`at most ${LIMITS.DAILY_MAX} a day`);
+    expect(LIMITS.DAY_MS).toBe(24 * 60 * 60 * 1000);
+    expect(source).toContain(`at most ${LIMITS.DAILY_MAX} writes a day`);
+  });
+
   test('on a tab in Agent custody the per-write prompt offers no rule', async () => {
     const { mod, elementsById } = await loadConsent();
     const owner = createElement('webview');

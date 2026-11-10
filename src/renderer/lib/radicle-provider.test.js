@@ -70,8 +70,7 @@ const loadProvider = async (options = {}) => {
   let providerEventHandler = null;
 
   global.window = {
-    electronAPI: {
-    },
+    electronAPI: {},
     addEventListener: jest.fn(),
     radiclePermissions: permissions,
     radicleProvider: {
@@ -182,7 +181,7 @@ describe('radicle-provider', () => {
         'radicle_createIssue',
         { title: 'hi' },
         webview,
-        { agentHeld: false, alwaysAllow: false }
+        { agentHeld: false, alwaysAllow: false, limited: false }
       );
       expect(execute).toHaveBeenCalledWith(
         'radicle_createIssue',
@@ -215,7 +214,7 @@ describe('radicle-provider', () => {
         'radicle_commentIssue',
         { body: 'Again' },
         webview,
-        { agentHeld: false, alwaysAllow: false }
+        { agentHeld: false, alwaysAllow: false, limited: false }
       );
       expect(execute.mock.calls.map((call) => call[3])).toEqual([
         { webContentsId: 41, approval: 'user' },
@@ -276,7 +275,7 @@ describe('radicle-provider', () => {
       );
     });
 
-    test('past main\'s limit a rule-answered write falls back to the prompt', async () => {
+    test("past main's limit a rule-answered write falls back to the prompt", async () => {
       const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
         permission: { origin: 'https://app.example' },
         signingGrant: true,
@@ -296,7 +295,7 @@ describe('radicle-provider', () => {
         'radicle_commentIssue',
         { body: 'Hi' },
         webview,
-        { agentHeld: false, alwaysAllow: true }
+        { agentHeld: false, alwaysAllow: true, limited: true }
       );
       expect(execute.mock.calls.map((call) => call[3])).toEqual([
         { webContentsId: 41, approval: 'auto' },
@@ -435,29 +434,32 @@ describe('radicle-provider', () => {
       ['radicle_commentIssue', { rid: 'rad:zExample', issueId: 'a1b2c3', body: 'Same here' }],
       ['radicle_editIssueState', { rid: 'rad:zExample', issueId: 'a1b2c3', state: 'closed' }],
       ['radicle_commentPatch', { rid: 'rad:zExample', patchId: 'd4e5f6', body: 'LGTM' }],
-    ])('%s from a tab in Agent custody needs a per-write prompt despite the grant', async (method, params) => {
-      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
-        permission: { origin: 'https://app.example' },
-        signingGrant: true,
-        agentOwnedTabId: 3,
-      });
+    ])(
+      '%s from a tab in Agent custody needs a per-write prompt despite the grant',
+      async (method, params) => {
+        const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+          permission: { origin: 'https://app.example' },
+          signingGrant: true,
+          agentOwnedTabId: 3,
+        });
 
-      sendRequest({ id: 12, method, params });
-      await flushMicrotasks();
+        sendRequest({ id: 12, method, params });
+        await flushMicrotasks();
 
-      expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
-      expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
-        'https://app.example',
-        method,
-        params,
-        webview,
-        { agentHeld: true, alwaysAllow: false }
-      );
-      expect(execute).toHaveBeenCalledWith(method, params, 'https://app.example', {
-        webContentsId: 41,
-        approval: 'user',
-      });
-    });
+        expect(consentMocks.showRadicleSigningApproval).not.toHaveBeenCalled();
+        expect(consentMocks.showRadicleSignedWriteApproval).toHaveBeenCalledWith(
+          'https://app.example',
+          method,
+          params,
+          webview,
+          { agentHeld: true, alwaysAllow: false, limited: false }
+        );
+        expect(execute).toHaveBeenCalledWith(method, params, 'https://app.example', {
+          webContentsId: 41,
+          approval: 'user',
+        });
+      }
+    );
 
     test('a rejected per-write prompt on an Agent-held tab signs nothing', async () => {
       const { webview, sendRequest, consentMocks, execute } = await loadProvider({
@@ -497,7 +499,7 @@ describe('radicle-provider', () => {
         'radicle_createIssue',
         { title: 'Bug' },
         webview,
-        { agentHeld: true, alwaysAllow: false }
+        { agentHeld: true, alwaysAllow: false, limited: false }
       );
       expect(execute).toHaveBeenCalledTimes(1);
       expect(execute.mock.calls[0][3]).toEqual({ webContentsId: 41, approval: 'user' });
@@ -785,7 +787,11 @@ describe('radicle-provider', () => {
       expect(responsesSentTo(webview)).toEqual([
         [
           'radicle:provider-response',
-          { id: 21, result: null, error: { code: 4001, message: 'User rejected the request', data: undefined } },
+          {
+            id: 21,
+            result: null,
+            error: { code: 4001, message: 'User rejected the request', data: undefined },
+          },
         ],
       ]);
     });
