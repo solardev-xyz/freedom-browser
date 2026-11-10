@@ -160,7 +160,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | Reason                                                                                                          | Methods                                                                                                                  |
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
-| `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
+| `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`; `swarm_subscribe` with `history: true` (`option: 'history'`)     |
 | `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
 | `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`                                                                                                         |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
@@ -169,7 +169,6 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | `chunk_not_found`, `chunk_type_mismatch`                                                                        | Chunk reads, `swarm_readData`                                                                                            |
 | `invalid_feed_name`, `invalid_topic`, `feed_not_found`, `feed_empty`, `entry_not_found`, `index_already_exists` | Feed methods                                                                                                             |
 | `invalid_topic`, `invalid_recipient`, `invalid_target`, `invalid_payload`, `invalid_address`, `invalid_kind`    | Messaging methods                                                                                                        |
-| `subscription_not_found`                                                                                        | `swarm_unsubscribe`                                                                                                      |
 | `too_many_subscriptions` (+ `limit`)                                                                            | `swarm_subscribe`                                                                                                        |
 | `rate_limited`                                                                                                  | Permission-free reads (+ `windowMs`, `maxRequests`, `maxBytes`), new GSOC topics (+ `limit`, `windowMs`, `retryAfterMs`) |
 
@@ -636,13 +635,18 @@ the signing key is mined from the topic, so the topic is required. The first
 use of a topic mines its key (typically well under a second, up to 15 s);
 see the new-topic limit under [Limits](#limits).
 
-#### `swarm_subscribe { kind, topic | address, options? }` → `{ subscriptionId, kind, key }` (messaging tier)
+#### `swarm_subscribe { kind, topic | address, history?, options? }` → `{ subscriptionId, kind, key }` (messaging tier)
 
 Opens a long-lived subscription; messages arrive as `message` events.
 
 - `kind: 'gsoc'` with either `topic` or a 64-hex `address` (not both).
 - `kind: 'pss'` with `topic` (`address` is refused); receives PSS messages
   addressed to this node.
+- `history`: the SWIP's optional PSS mailbox, which would deliver messages
+  sent before the subscription. Freedom doesn't have it yet, so
+  `history: true` on a PSS subscription is refused with `unsupported_option`
+  (`data.option: 'history'`) rather than ignored. `false` is accepted, and
+  GSOC ignores the field, since a GSOC address has no backlog.
 
 `key` is the GSOC address or the PSS topic hash. Several subscriptions to the
 same `kind`/`key`, from any origins, share one node connection. Resolves
@@ -655,8 +659,11 @@ their own.
 
 #### `swarm_unsubscribe { subscriptionId }` → `{ unsubscribed: true }` (connection tier, never prompts)
 
-Closes one of the caller's subscriptions. `subscription_not_found` if the id
-is unknown or not the caller's.
+Closes one of the caller's subscriptions. It is idempotent: an id that is
+already closed, never existed or belongs to another origin also resolves
+`{ unsubscribed: true }`, so a page can always unsubscribe while tearing down,
+and the answer tells it nothing about other origins' ids. A missing or empty
+id is `invalid_params`.
 
 ## Events
 

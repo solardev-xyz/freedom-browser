@@ -131,6 +131,19 @@ function announceConnect(webview, navigationKey, origin) {
   sendSwarmEvent(webview, 'connect', { origin });
 }
 
+// Freedom has no PSS mailbox yet (#1157), so a PSS subscription asking for
+// `history` is refused, as main refuses it.
+function unsupportedBeforePrompt(method, params) {
+  if (method === 'swarm_subscribe' && params?.kind === 'pss' && params?.history === true) {
+    return {
+      code: -32602,
+      message: 'history is not supported: only messages sent while subscribed are delivered',
+      data: { reason: 'unsupported_option', option: 'history' },
+    };
+  }
+  return null;
+}
+
 /**
  * Setup Swarm provider request listener for a webview.
  * Called from tabs.js when creating a webview.
@@ -168,6 +181,14 @@ async function handleSwarmRequest(webview, request) {
   // Gate: reject if feature disabled
   if (!identityWalletEnabled) {
     sendSwarmResponse(webview, id, null, ERRORS.DISCONNECTED);
+    return;
+  }
+
+  // Refused before any prompt: a request main would refuse anyway must not
+  // first ask the user for (and leave behind) a grant. Main checks it too.
+  const unsupported = unsupportedBeforePrompt(method, params);
+  if (unsupported) {
+    sendSwarmResponse(webview, id, null, unsupported);
     return;
   }
 

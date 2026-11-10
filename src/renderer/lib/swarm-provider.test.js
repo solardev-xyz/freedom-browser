@@ -694,3 +694,36 @@ describe('connect and disconnect events (#1158)', () => {
     expect(require('./wallet-ui.js').updateSwarmConnectionBanner).toHaveBeenCalledWith('app.eth');
   });
 });
+
+describe('requests refused before any prompt (#1157)', () => {
+  let setupSwarmProvider;
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test('a PSS subscription asking for history is refused without a sheet, prompt or main call', async () => {
+    const { showSwarmMessagingApproval } = require('./wallet-ui.js');
+    const webview = setUp(setupSwarmProvider);
+    sendRequest(webview, { id: 1, method: 'swarm_subscribe', params: { kind: 'pss', topic: 'dm:alice', history: true } });
+    await flush();
+    await flush();
+
+    expect(window.swarmManifest.check).not.toHaveBeenCalled();
+    expect(showSwarmMessagingApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview)).toEqual([[
+      'swarm:provider-response',
+      {
+        id: 1,
+        result: null,
+        error: expect.objectContaining({ code: -32602, data: { reason: 'unsupported_option', option: 'history' } }),
+      },
+    ]]);
+  });
+});

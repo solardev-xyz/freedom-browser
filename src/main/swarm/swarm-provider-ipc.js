@@ -1997,6 +1997,21 @@ async function handleSubscribe(params, origin, meta) {
     return invalidParams('kind must be "gsoc" or "pss"', 'invalid_kind');
   }
 
+  // The PSS mailbox (`history`) is optional in the messaging SWIP, and Freedom
+  // doesn't have it yet. Refuse it rather than ignore it, so a page can tell it
+  // won't get messages sent while it wasn't listening (#1157). GSOC has no
+  // backlog, so the SWIP ignores `history` there.
+  if (params.history !== undefined && typeof params.history !== 'boolean') {
+    return invalidParams('history must be a boolean', 'invalid_params');
+  }
+  if (kind === 'pss' && params.history === true) {
+    return invalidParams(
+      'history is not supported: only messages sent while subscribed are delivered',
+      'unsupported_option',
+      { option: 'history' }
+    );
+  }
+
   const hasTopic = params.topic !== undefined && params.topic !== null;
   const hasAddress = params.address !== undefined && params.address !== null;
 
@@ -2153,12 +2168,16 @@ function handleUnsubscribe(params, origin) {
     return invalidParams('subscriptionId is required', 'invalid_params');
   }
 
+  // Idempotent (#1157): an id that is already closed, never existed or is
+  // another origin's gets the same answer as a live one, so a page tearing
+  // down needn't track what the provider already closed, and no origin can
+  // probe for another's subscription ids.
   try {
     subscriptionRegistry.unsubscribe(origin, subscriptionId);
     return { result: { unsubscribed: true } };
   } catch (err) {
     if (err.reason === 'subscription_not_found') {
-      return invalidParams(err.message, 'subscription_not_found');
+      return { result: { unsubscribed: true } };
     }
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
