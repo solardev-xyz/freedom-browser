@@ -1,2 +1,0 @@
-- Ad blocking no longer keeps using older downloaded filter lists after a Freedom update bundles newer ones ([#643](https://github.com/solardev-xyz/freedom-browser/pull/643))
-  - A filter-list check that fails is retried after 30 minutes, not 6 hours

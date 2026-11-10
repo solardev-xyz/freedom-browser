@@ -622,7 +622,7 @@ describe('preload', () => {
       ],
       [exposures.electronAPI, 'onProfileUpdated', IPC.PROFILE_UPDATED, [{ id: 'work', displayName: 'Work' }], [{ id: 'work', displayName: 'Work' }]],
       [exposures.electronAPI, 'onExternalNodeCandidates', IPC.PROFILE_EXTERNAL_CANDIDATES, [{ requestId: 'req-1' }], [{ requestId: 'req-1' }]],
-      [exposures.electronAPI, 'onNavigateToUrl', 'navigate-to-url', ['bzz://hash'], ['bzz://hash']],
+      [exposures.electronAPI, 'onNavigateToUrl', 'navigate-to-url', ['bzz://hash', 42], ['bzz://hash', 42]],
       [
         exposures.electronAPI,
         'onLoadUrl',
