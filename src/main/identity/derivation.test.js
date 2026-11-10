@@ -11,6 +11,8 @@ const {
   derivePublisherKey,
   siteEncryptionKeyPath,
   deriveSiteEncryptionKey,
+  sitePublisherKeyPath,
+  deriveSitePublisherKey,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -251,6 +253,47 @@ describe('derivation', () => {
     test('PATHS.SWARM_PUBLISHER is the expected base path', () => {
       expect(PATHS.SWARM_PUBLISHER).toBe("m/44'/73406'");
       expect(PATHS.SWARM_ENCRYPTION).toBe("m/44'/73407'");
+    });
+  });
+
+  describe('deriveSitePublisherKey (#1155)', () => {
+    // Pinned, and the Swarm provider SWIP's test vectors: a site's publisher
+    // key owns its feeds, so it must never change. If this fails, the
+    // derivation changed.
+    test('derives the pinned keys for a site', () => {
+      const first = deriveSitePublisherKey(TEST_MNEMONIC, 'myapp.eth', 0);
+      expect(first.path).toBe("m/44'/73406'/407696474'/1227618452'/2121415264'/0'");
+      expect(first.address).toBe('0x503f3954CD2F37dc3d30C870BB0bfCAcEbe280e1');
+      const second = deriveSitePublisherKey(TEST_MNEMONIC, 'myapp.eth', 1);
+      expect(second.path).toBe("m/44'/73406'/407696474'/1227618452'/2121415264'/1'");
+      expect(second.address).toBe('0x2aF0A2C773114575eDd623248B01dc3392faB4F1');
+    });
+
+    test('differs by site and number, and from the counter-numbered and encryption keys', () => {
+      const key = deriveSitePublisherKey(TEST_MNEMONIC, 'myapp.eth', 0);
+      const others = [
+        deriveSitePublisherKey(TEST_MNEMONIC, 'other.eth', 0),
+        deriveSitePublisherKey(TEST_MNEMONIC, 'myapp.eth', 1),
+        derivePublisherKey(TEST_MNEMONIC, 0),
+        deriveSiteEncryptionKey(TEST_MNEMONIC, 'myapp.eth'),
+      ];
+      for (const other of others) {
+        expect(key.privateKey).not.toBe(other.privateKey);
+      }
+    });
+
+    test('a site\'s path is under the publisher namespace, six levels, all hardened', () => {
+      expect(sitePublisherKeyPath('https://app.example.com', 7)).toMatch(
+        /^m\/44'\/73406'\/\d+'\/\d+'\/\d+'\/7'$/
+      );
+    });
+
+    test('throws on an invalid mnemonic, site or number', () => {
+      expect(() => deriveSitePublisherKey('invalid', 'myapp.eth', 0)).toThrow('Invalid mnemonic');
+      expect(() => sitePublisherKeyPath('', 0)).toThrow('non-empty string');
+      for (const index of [-1, 1.5, 2 ** 31, '0', null]) {
+        expect(() => sitePublisherKeyPath('myapp.eth', index)).toThrow('Site key index');
+      }
     });
   });
 
