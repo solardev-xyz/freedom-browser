@@ -49,6 +49,17 @@ const getNavigationGeneration = (webview) => navigationGenerations.get(webview) 
 // Current active webview reference (set by tabs.js)
 let activeWebview = null;
 
+// Every webview with a provider, so a change of the wallet's chain reaches
+// background tabs too, not just the active one.
+const providerWebviews = new Set();
+
+// The chain (hex) each document was last told: an eth_chainId / net_version
+// answer or a chainChanged event. The wallet's chain is global, but a page
+// builds its transactions for the chain it was told, so sending and signing
+// use this record rather than the selection as it stands when the request
+// lands. Cleared on navigation: a new document has been told nothing.
+const toldChains = new WeakMap();
+
 // Callback for showing connection approval UI (legacy, kept for compatibility
 // with external callers of the exported onConnectionApproval setter).
 let _showConnectionApproval = null;
@@ -103,11 +114,11 @@ const AGENT_WALLET_METHODS = new Set([
   'eth_signTypedData_v4',
 ]);
 
-async function offerAgentWalletRequest(webview, method, params, displayUrl, permissionKey) {
+async function offerAgentWalletRequest(webview, method, params, displayUrl, permissionKey, told) {
   if (!AGENT_WALLET_METHODS.has(method)) return { handled: false };
   const rendererTabId = Number(webview?.dataset?.tabId);
   if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return { handled: false };
-  const chainId = parseInt(await getCurrentChainId(webview), 16);
+  const chainId = pageChainId(webview, told);
   const response = await window.electronAPI?.handleAgentWalletRequest?.(rendererTabId, {
     method,
     params,
@@ -192,6 +203,20 @@ const SITE_METHODS = new Set([
   'eth_signTypedData_v4',
 ]);
 
+/**
+ * The wallet's selected chain as a page sees it: "All Chains" (no
+ * selection) answers Gnosis.
+ */
+function selectedChainHex() {
+  try {
+    const chainId = getSelectedChainId();
+    if (chainId) return '0x' + chainId.toString(16);
+  } catch {
+    // fall through to the default
+  }
+  return '0x64';
+}
+
 async function getCurrentChainId(webview = null) {
   try {
     // A contract-hosted app is part of a particular chain. Pinning provider
@@ -199,16 +224,43 @@ async function getCurrentChainId(webview = null) {
     // same-address deployment on another chain from changing its meaning.
     const app = getOnchainApp(webview);
     if (app) return '0x' + app.chainId.toString(16);
-    // Get from wallet UI's selected chain
-    const chainId = getSelectedChainId();
-    if (chainId) {
-      return '0x' + chainId.toString(16);
-    }
-    // Default to Gnosis Chain
-    return '0x64';
   } catch {
-    return '0x64';
+    // fall through to the wallet's chain
   }
+  return selectedChainHex();
+}
+
+/**
+ * The chain a page's transaction or signature is for: an onchain app's own
+ * chain, else the chain the document was last told (`told`, read when the
+ * request arrived), else the wallet's chain. Never the chain saved with the
+ * grant, and never a selection change the page hasn't been told about.
+ */
+function pageChainId(webview, told) {
+  const app = getOnchainApp(webview);
+  if (app) return app.chainId;
+  return parseInt(told ?? selectedChainHex(), 16);
+}
+
+/** Tell one page the chain, unless that is what it was last told. */
+function tellChain(webview, chainIdHex) {
+  if (!webview || getOnchainApp(webview)) return;
+  if (toldChains.get(webview) === chainIdHex) return;
+  toldChains.set(webview, chainIdHex);
+  sendProviderEvent(webview, 'chainChanged', chainIdHex);
+}
+
+/**
+ * The wallet's chain changed (the chain selector, "All Chains", a removed
+ * chain's fallback, a page's wallet_switchEthereumChain, an onchain app's
+ * connect): tell every page whose last-told chain differs, active or not.
+ * An onchain app is pinned to its own chain and is never told.
+ */
+export function syncPagesToSelectedChain() {
+  const chainIdHex = selectedChainHex();
+  const targets = new Set(providerWebviews);
+  if (activeWebview) targets.add(activeWebview);
+  for (const webview of targets) tellChain(webview, chainIdHex);
 }
 
 /**
@@ -237,9 +289,16 @@ async function handleProviderRequest(webview, request) {
   // may be delivered — the reply would land in a replacement document that
   // never made this request.
   const generation = getNavigationGeneration(webview);
+  // What this document had been told when it sent the request, read before
+  // any await, so a chain change landing while this request is in flight
+  // can't move a transaction the page built for the old chain.
+  const told = toldChains.get(webview);
 
   try {
     let result;
+    // Set when the answer itself tells the page a chain (eth_chainId,
+    // net_version); recorded only if it is actually delivered.
+    let answeredChainHex = null;
 
     if (!permissionKey && SITE_METHODS.has(method)) {
       throw { ...ERRORS.UNAUTHORIZED, message: 'This page has no address to connect from yet' };
@@ -250,7 +309,8 @@ async function handleProviderRequest(webview, request) {
       method,
       params,
       displayUrl,
-      permissionKey
+      permissionKey,
+      told
     );
     if (getNavigationGeneration(webview) !== generation) return;
     if (agentWallet.handled) {
@@ -263,8 +323,10 @@ async function handleProviderRequest(webview, request) {
     // Handle different method categories
     if (method === 'eth_chainId') {
       result = await getCurrentChainId(webview);
+      answeredChainHex = result;
     } else if (method === 'net_version') {
       const chainId = await getCurrentChainId(webview);
+      answeredChainHex = chainId;
       result = String(parseInt(chainId, 16));
     } else if (method === 'eth_accounts') {
       // Return connected accounts (empty if not connected)
@@ -314,12 +376,12 @@ async function handleProviderRequest(webview, request) {
         throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
       }
 
-      // The chain this page sees: what eth_chainId answers it
-      // (getCurrentChainId, pinned to an onchain app's own chain), never
-      // the chain saved with the grant, which the wallet's chain selector
-      // doesn't update. The page built this transaction for it, and the
-      // Safe check, the auto-approve rule, the quote and the send all use it.
-      const chainId = parseInt(await getCurrentChainId(webview), 16);
+      // The chain this page sees (pageChainId): an onchain app's own
+      // chain, else the chain the document was last told, never the chain
+      // saved with the grant, which the wallet's chain selector doesn't
+      // update. The page built this transaction for it, and the Safe check,
+      // the auto-approve rule, the quote and the send all use it.
+      const chainId = pageChainId(webview, told);
 
       assertSafeOnGnosis(permission, chainId, 'transact');
 
@@ -345,7 +407,7 @@ async function handleProviderRequest(webview, request) {
 
       // The chain this page sees, as for a transaction: a Safe signs only
       // when that is Gnosis.
-      const chainId = parseInt(await getCurrentChainId(webview), 16);
+      const chainId = pageChainId(webview, told);
       assertSafeOnGnosis(permission, chainId, 'sign');
 
       if (!isTabAgentOwned?.(Number(webview.dataset?.tabId)) && permission.autoApprove?.signing) {
@@ -367,6 +429,7 @@ async function handleProviderRequest(webview, request) {
 
     // Send success response — unless the requesting document is gone
     if (getNavigationGeneration(webview) !== generation) return;
+    if (answeredChainHex && !getOnchainApp(webview)) toldChains.set(webview, answeredChainHex);
     sendProviderResponse(webview, id, result, null);
   } catch (error) {
     // Never deliver a stale response (success or error) into a replacement
@@ -622,15 +685,13 @@ async function handleSwitchChain(params, permissionKey, webview) {
     await window.dappPermissions.updateLastUsed(permissionKey, requestedChainId);
   }
 
-  // Update wallet UI's selected chain to match
+  // Update wallet UI's selected chain to match; a change tells every page
+  // (syncPagesToSelectedChain), this one included
   setSelectedChainId(requestedChainId);
 
-  // Emit chainChanged event to the dApp
-  const chainIdHex = '0x' + requestedChainId.toString(16);
-  if (webview && !app) {
-    sendProviderEvent(webview, 'chainChanged', chainIdHex);
-    console.log('[DappProvider] Emitted chainChanged:', chainIdHex);
-  }
+  // ...and when the wallet was already on that chain, still tell this page
+  // if it was last told another one
+  tellChain(webview, '0x' + requestedChainId.toString(16));
 
   return null;
 }
@@ -663,6 +724,7 @@ export function setupWebviewProvider(webview) {
   if (!webview) return;
 
   trackGuestMainFrame(webview);
+  providerWebviews.add(webview);
   webview.addEventListener('ipc-message', (event) => {
     if (event.channel === 'dapp:provider-request') {
       // Only the top frame gets window.ethereum; a request from any other
@@ -679,10 +741,14 @@ export function setupWebviewProvider(webview) {
   // the board is owner-scoped, so a successor document's board survives).
   const invalidateDocument = () => {
     navigationGenerations.set(webview, getNavigationGeneration(webview) + 1);
+    toldChains.delete(webview);
     abandonSafeMessageBoard(webview);
   };
   webview.addEventListener('did-navigate', invalidateDocument);
-  webview.addEventListener('destroyed', invalidateDocument);
+  webview.addEventListener('destroyed', () => {
+    invalidateDocument();
+    providerWebviews.delete(webview);
+  });
 
   // Initialize provider state for this webview
   getProviderState(webview);
@@ -732,6 +798,7 @@ export function emitChainChanged(webview, chainId) {
   // provider identity is fixed by its URL. Selecting another wallet chain
   // must not emit a contradictory event into that document.
   if (getOnchainApp(webview)) return;
+  toldChains.set(webview, chainId);
   sendProviderEvent(webview, 'chainChanged', chainId);
 }
 

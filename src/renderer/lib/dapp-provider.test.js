@@ -821,14 +821,12 @@ describe('dapp-provider signing authorization', () => {
   });
 });
 
-// #764: a request is attributed to the webview that sent it — its own
-// committed page — never to the site in the address bar, which shows the
-// visible tab. A background tab must not borrow the visible site's
-// connection, its auto-approve rules, or its name on the prompt.
 // A grant saves the chain it was made on, and only the page's own
 // wallet_switchEthereumChain updates it; the wallet's chain selector moves the
 // chain the page sees (eth_chainId) without it. A transaction or signature
-// follows the page's chain, never the grant's.
+// follows the page's chain, never the grant's: the chain the document was
+// last told (an eth_chainId answer or a chainChanged event), and only a page
+// that was told nothing gets the wallet's chain as it stands.
 describe('dapp-provider uses the chain the page sees', () => {
   const TX_DATA = '0x095ea7b3' + '00'.repeat(64);
 
@@ -888,8 +886,153 @@ describe('dapp-provider uses the chain the page sees', () => {
     await flushMicrotasks();
     expect(onEthereumGrant.walletMocks.safeMessageStart).toHaveBeenCalled();
   });
+
+  const chainEventsSentTo = (wv) =>
+    wv.send.mock.calls.filter(([channel, msg]) =>
+      channel === 'dapp:provider-event' && msg.event === 'chainChanged');
+
+  // The wallet's chain as the real chain switcher moves it: the selection
+  // changes and every page is told (syncPagesToSelectedChain).
+  const moveWalletChain = (ctx, chainId) => {
+    ctx.walletUi.getSelectedChainId.mockReturnValue(chainId);
+    ctx.mod.syncPagesToSelectedChain();
+  };
+
+  test("a background tab's transaction stays on the chain it was told when another tab switches", async () => {
+    const ctx = await loadProvider({
+      permissionsByKey: {
+        'https://app.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+        'https://other.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+      },
+    });
+    const tabA = ctx.webview;
+    const tabB = ctx.addWebview({ url: 'https://other.example', webContentsId: 77 });
+    ctx.commitMainFrameOf(tabB, MAIN_FRAME);
+    ctx.mod.setActiveWebview(tabB);
+    // Only the selection moves (setSelectedChainId is a bare mock here), so
+    // nothing tells tab A: the record alone must keep its transaction put.
+    ctx.walletUi.setSelectedChainId.mockImplementation((chainId) =>
+      ctx.walletUi.getSelectedChainId.mockReturnValue(chainId));
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+
+    ctx.sendRequestFrom(tabA, { id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    ctx.sendRequestFrom(tabB, { id: 1, method: 'wallet_switchEthereumChain', params: [{ chainId: '0x1' }] });
+    await flushMicrotasks();
+    expect(chainEventsSentTo(tabB)).toEqual([
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x1' }],
+    ]);
+    expect(chainEventsSentTo(tabA)).toEqual([]);
+
+    ctx.sendRequestFrom(tabA, { id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenCalledWith(tabA, 'https://app.example', tx, 100);
+  });
+
+  test('a change of the wallet chain tells every page, and its transactions follow', async () => {
+    const ctx = await loadProvider({
+      permissionsByKey: {
+        'https://app.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+        'https://other.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+      },
+    });
+    const tabA = ctx.webview;
+    const tabB = ctx.addWebview({ url: 'https://other.example', webContentsId: 77 });
+    ctx.commitMainFrameOf(tabB, MAIN_FRAME);
+    ctx.mod.setActiveWebview(tabB);
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+
+    ctx.sendRequestFrom(tabA, { id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    moveWalletChain(ctx, 1);
+
+    // The background tab is told too, not just the active one.
+    expect(chainEventsSentTo(tabA)).toEqual([
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x1' }],
+    ]);
+    ctx.sendRequestFrom(tabA, { id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenCalledWith(tabA, 'https://app.example', tx, 1);
+  });
+
+  test('"All Chains" tells the page Gnosis; untold, its transaction keeps the chain it saw', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    ctx.walletUi.getSelectedChainId.mockReturnValue(1);
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    ctx.sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    expect(responsesSentTo(ctx.webview)[0][1]).toEqual({ id: 1, result: '0x1', error: null });
+
+    // "All Chains" selected, not yet announced: still chain 1
+    ctx.walletUi.getSelectedChainId.mockReturnValue(null);
+    ctx.sendRequest({ id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenLastCalledWith(
+      ctx.webview, 'https://app.example', tx, 1);
+
+    // announced: the page hears Gnosis, and its next transaction is on it
+    ctx.mod.syncPagesToSelectedChain();
+    expect(chainEventsSentTo(ctx.webview)).toEqual([
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x64' }],
+    ]);
+    ctx.sendRequest({ id: 3, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenLastCalledWith(
+      ctx.webview, 'https://app.example', tx, 100);
+  });
+
+  test('an auto-approved transaction is sent on the chain the page was told', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+      txAutoApproved: true,
+    });
+    ctx.sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    ctx.walletUi.getSelectedChainId.mockReturnValue(1);
+
+    ctx.sendRequest({ id: 2, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data: TX_DATA }] });
+    await flushMicrotasks();
+
+    expect(ctx.dappPermissions.isTransactionAutoApproved).toHaveBeenCalledWith(
+      'https://app.example', '0xc0ffee', '0x095ea7b3', 100);
+    expect(ctx.walletMocks.dappSendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ chainId: 100 }), 0, undefined, expect.anything());
+  });
+
+  test('a navigation forgets what the previous document was told', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    ctx.sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    ctx.walletUi.getSelectedChainId.mockReturnValue(1);
+
+    ctx.webview.dispatch('did-navigate', {});
+    ctx.sendRequest({ id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenCalledWith(ctx.webview, 'https://app.example', tx, 1);
+  });
+
+  test("a Safe signs on the chain the page was told, not the wallet's later selection", async () => {
+    const ctx = await loadProvider({ permission: safePermission() });
+    ctx.sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    ctx.walletUi.getSelectedChainId.mockReturnValue(1);
+
+    ctx.sendRequest({ id: 2, method: 'personal_sign', params: ['0xdead', '0xsafe'] });
+    await flushMicrotasks();
+    expect(ctx.walletMocks.safeMessageStart).toHaveBeenCalled();
+  });
 });
 
+// #764: a request is attributed to the webview that sent it — its own
+// committed page — never to the site in the address bar, which shows the
+// visible tab. A background tab must not borrow the visible site's
+// connection, its auto-approve rules, or its name on the prompt.
 describe('dapp-provider attributes requests to the requesting webview', () => {
   const VISIBLE = 'https://trusted-dapp.example';
   const BACKGROUND = 'https://attacker.example';

@@ -169,12 +169,14 @@ function setupDappTxScreen() {
  * device is done.
  *
  * `requestChainId` is the chain the provider already resolved for this
- * request — for a contract-hosted app that is the chain its origin is pinned
- * to, which outranks both the stored grant and the wallet's current
- * selection. Re-deriving it here would let a chain switch between the connect
- * prompt and this approval quote, sign, broadcast and record the transaction
- * on a chain the app never asked for (and file its auto-approve rule under a
- * chain the next request never checks).
+ * request: the chain the page sees (dapp-provider.js, pageChainId), which is
+ * a contract-hosted app's pinned chain, else the chain the document was last
+ * told, never the stored grant's. It is not the wallet's selection as it
+ * stands now: re-deriving it here would let a chain switch the page hasn't
+ * been told about, or one landing while this prompt is open, quote, sign,
+ * broadcast and record the transaction on a chain the app never asked for
+ * (and file its auto-approve rule under a chain the next request never
+ * checks). The fallbacks below only serve a caller that passes none.
  */
 export async function showDappTxApproval(webview, permissionKey, txParams, requestChainId = null) {
   assertNoSignatureInFlight();
@@ -185,8 +187,8 @@ export async function showDappTxApproval(webview, permissionKey, txParams, reque
     throw Object.assign(new Error('Unauthorized - not connected'), { code: 4100 });
   }
 
-  // Never the grant's saved chain: the page sees the wallet's (see
-  // dapp-provider.js, eth_sendTransaction).
+  // Never the grant's saved chain, which the wallet's chain selector
+  // doesn't update (see dapp-provider.js, pageChainId).
   const chainId = requestChainId
     || pinnedOnchainAppChainId(webview)
     || walletState.selectedChainId;
