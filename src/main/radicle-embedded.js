@@ -3,9 +3,11 @@
  * seeding, identity and COB writes all run in-process.
  *
  * The addon is `libradicle.node`, built from the libradicle repo
- * (rad:z2SzCC9zYnP17QRPZUhrP2RTEwZHj). Load order:
+ * (rad:z2SzCC9zYnP17QRPZUhrP2RTEwZHj). A packaged build loads only the one
+ * it ships, resources/radicle-bin/libradicle.node (R-7). A development
+ * build tries, in order:
  *   1. FREEDOM_RADICLE_ADDON env override (absolute path)
- *   2. resources/radicle-bin/libradicle.node (packaged app)
+ *   2. resources/radicle-bin/libradicle.node
  *   3. radicle-bin/<platform>/libradicle.node (development prebuilt)
  *   4. ../libradicle/target/{release,debug}/libradicle.node (dev sibling)
  *
@@ -36,7 +38,24 @@ function platformKey() {
   return `linux-${arch}`;
 }
 
+// Under Jest `require('electron')` is the binary's path, not the API: no
+// `app`, so a development build.
+function isPackagedBuild() {
+  try {
+    return require('electron').app?.isPackaged === true;
+  } catch {
+    return false;
+  }
+}
+
 function candidatePaths() {
+  // R-7: anything else would let an environment variable, or a file beside
+  // the app, load native code into the main process of a shipped build.
+  if (isPackagedBuild()) {
+    return process.resourcesPath
+      ? [path.join(process.resourcesPath, 'radicle-bin', 'libradicle.node')]
+      : [];
+  }
   const candidates = [];
   if (process.env.FREEDOM_RADICLE_ADDON) {
     candidates.push(process.env.FREEDOM_RADICLE_ADDON);

@@ -466,7 +466,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('sidebar:open-publish-setup', handler);
   },
   onNavigateToUrl: (callback) => {
-    const handler = (_event, url) => callback(url);
+    const handler = (_event, url, guestId) => callback(url, guestId);
     ipcRenderer.on('navigate-to-url', handler);
     return () => ipcRenderer.removeListener('navigate-to-url', handler);
   },
