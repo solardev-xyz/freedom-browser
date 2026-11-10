@@ -353,6 +353,13 @@
   line-height: 1.5;
 }
 
+/* Why the identity folder couldn't be read (one that is a symbolic link,
+   K-3): the whole message, in the panel, not only in a later alert. */
+.setup-cta-error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
 .setup-cta-btn {
   padding: 10px 24px;
   font-size: 14px;
@@ -367,6 +374,12 @@
 
 .setup-cta-btn:hover {
   opacity: 0.9;
+}
+
+/* Disabled while the identity folder is refused (the reason is shown above). */
+.setup-cta-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ============================================
