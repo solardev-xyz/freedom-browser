@@ -174,4 +174,75 @@ describe('rad: read admission (R-3)', () => {
     await expect(slowRead).rejects.toMatchObject({ status: 504 });
     expect(seen[1].aborted).toBe(true);
   });
+  test('free slots go to requesters in turn, not to whoever queued first', async () => {
+    const admission = createRadReadAdmission();
+    const holds = [];
+    const started = [];
+    const read = (label) => () => {
+      started.push(label);
+      const d = deferred();
+      holds.push(d);
+      return d.promise;
+    };
+    // 'a' fills both slots and queues three more before 'b' and 'c' arrive.
+    for (let i = 0; i < 5; i += 1) admission.run('a', undefined, read(`a${i}`)).catch(() => {});
+    admission.run('b', undefined, read('b0')).catch(() => {});
+    admission.run('b', undefined, read('b1')).catch(() => {});
+    admission.run('c', undefined, read('c0')).catch(() => {});
+    await flush();
+    expect(started).toEqual(['a0', 'a1']);
+
+    // Finish one running read at a time and watch who gets the slot.
+    for (let i = 0; i < 6; i += 1) {
+      holds[i].resolve();
+      await flush();
+    }
+    expect(started).toEqual(['a0', 'a1', 'a2', 'b0', 'c0', 'a3', 'b1', 'a4']);
+    expect(admission.stats()).toEqual({ running: 2, waiting: 0 });
+  });
+
+  test('a tab that keeps its queue full of slow reads cannot push another tab past WAIT_MS', async () => {
+    // The R1-M1 repro: 'greedy' keeps 2 running + PER_REQUESTER waiting
+    // reads of 4 s each, topping its queue up whenever one finishes. Under
+    // one global FIFO a quick read from 'other' waited behind the whole
+    // backlog and was refused 503 at WAIT_MS; round-robin serves it at the
+    // next free slot.
+    const admission = createRadReadAdmission();
+    const READ_MS = 4000;
+    let stop = false;
+    const slow = () => new Promise((resolve) => setTimeout(resolve, READ_MS));
+    const refill = () => {
+      if (stop) return;
+      admission
+        .run('greedy', undefined, slow)
+        .catch(() => {})
+        .finally(refill);
+    };
+    for (let i = 0; i < LIMITS.IN_FLIGHT + LIMITS.PER_REQUESTER; i += 1) refill();
+    await flush();
+    expect(admission.stats()).toEqual({
+      running: LIMITS.IN_FLIGHT,
+      waiting: LIMITS.PER_REQUESTER,
+    });
+
+    // Let the greedy tab churn for a while first, so its queue is steady.
+    for (let t = 0; t < 3; t += 1) {
+      jest.advanceTimersByTime(READ_MS);
+      await flush();
+    }
+
+    let outcome = null;
+    admission
+      .run('other', undefined, () => 'quick')
+      .then(
+        (value) => (outcome = value),
+        (err) => (outcome = err)
+      );
+    for (let t = 0; t < 2 && outcome === null; t += 1) {
+      jest.advanceTimersByTime(READ_MS);
+      await flush();
+    }
+    expect(outcome).toBe('quick');
+    stop = true;
+  });
 });

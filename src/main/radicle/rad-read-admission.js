@@ -13,6 +13,11 @@
  *  - each requester (the requesting tab, in its session) may have at most
  *    PER_REQUESTER waiting, and no more than QUEUE_MAX wait in all; past
  *    that a read is refused at once (503);
+ *  - each requester waits in its own FIFO, and a free slot goes to the
+ *    requesters in turn (round-robin), not to whoever queued first: a tab
+ *    keeping its queue full of slow reads gets one slot per turn, so another
+ *    tab's read waits behind at most one read per requester ahead of it,
+ *    not behind that tab's whole backlog;
  *  - a read that waits longer than WAIT_MS for a slot is refused (503);
  *  - a read that runs longer than RUN_MS is answered 504. Native work cannot
  *    be cancelled, so its slot stays taken until the add-on returns: the
@@ -49,31 +54,50 @@ class RadReadAborted extends Error {
   }
 }
 
-function createRadReadAdmission({ limits = LIMITS, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+function createRadReadAdmission({
+  limits = LIMITS,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
   let running = 0;
-  const waiting = []; // { key, start, reject, cleanup }
-  const waitingPerKey = new Map();
+  let waitingTotal = 0;
+  // key -> FIFO of { key, start, reject, cleanup }. Map order is the
+  // rotation: the key at the front is served next, then goes to the back
+  // if it still has reads waiting.
+  const queues = new Map();
 
-  const countFor = (key) => waitingPerKey.get(key) || 0;
-  const adjust = (key, delta) => {
-    const next = countFor(key) + delta;
-    if (next > 0) waitingPerKey.set(key, next);
-    else waitingPerKey.delete(key);
-  };
+  const countFor = (key) => queues.get(key)?.length || 0;
+
+  function enqueue(entry) {
+    const queue = queues.get(entry.key);
+    if (queue) queue.push(entry);
+    else queues.set(entry.key, [entry]);
+    waitingTotal += 1;
+  }
 
   function dequeue(entry) {
-    const index = waiting.indexOf(entry);
+    const queue = queues.get(entry.key);
+    const index = queue ? queue.indexOf(entry) : -1;
     if (index === -1) return false;
-    waiting.splice(index, 1);
-    adjust(entry.key, -1);
+    queue.splice(index, 1);
+    if (queue.length === 0) queues.delete(entry.key);
+    waitingTotal -= 1;
     entry.cleanup();
     return true;
   }
 
+  function takeNext() {
+    const [key, queue] = queues.entries().next().value;
+    const entry = queue.shift();
+    queues.delete(key);
+    if (queue.length) queues.set(key, queue); // back of the rotation
+    waitingTotal -= 1;
+    return entry;
+  }
+
   function pump() {
-    while (running < limits.IN_FLIGHT && waiting.length) {
-      const entry = waiting.shift();
-      adjust(entry.key, -1);
+    while (running < limits.IN_FLIGHT && waitingTotal > 0) {
+      const entry = takeNext();
       entry.cleanup();
       entry.start();
     }
@@ -134,11 +158,11 @@ function createRadReadAdmission({ limits = LIMITS, setTimer = setTimeout, clearT
           });
       };
 
-      if (running < limits.IN_FLIGHT && waiting.length === 0) {
+      if (running < limits.IN_FLIGHT && waitingTotal === 0) {
         start();
         return;
       }
-      if (countFor(key) >= limits.PER_REQUESTER || waiting.length >= limits.QUEUE_MAX) {
+      if (countFor(key) >= limits.PER_REQUESTER || waitingTotal >= limits.QUEUE_MAX) {
         finish(reject, new RadReadRefused(503, 'Too many Radicle reads waiting; try again'));
         return;
       }
@@ -164,14 +188,13 @@ function createRadReadAdmission({ limits = LIMITS, setTimer = setTimeout, clearT
         }
       }, limits.WAIT_MS);
       signal?.addEventListener?.('abort', onAbort, { once: true });
-      waiting.push(entry);
-      adjust(key, 1);
+      enqueue(entry);
     });
   }
 
   return {
     run,
-    stats: () => ({ running, waiting: waiting.length }),
+    stats: () => ({ running, waiting: waitingTotal }),
   };
 }
 
