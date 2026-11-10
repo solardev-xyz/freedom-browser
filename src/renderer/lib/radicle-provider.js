@@ -161,14 +161,15 @@ async function handleRadicleRequest(webview, request) {
       assertSameDocument();
       result = await forwardToMain(method, params, permissionKey);
       if (method === 'radicle_disconnect') {
-        // Symmetric with the 'connect' event above. The chrome's own
-        // Disconnect (lib/wallet/radicle-connection.js) goes through
-        // disconnectRadicleSite() below, which tells every open page of the
-        // site in this window; this path tells the page that asked. Main
-        // tells every other window (radicle-provider-ipc.js).
+        // Symmetric with the 'connect' event above, and the same as the
+        // chrome's own Disconnect (disconnectRadicleSite() below): main has
+        // dropped the whole site, so every open page of it in this window
+        // is told, the asking page and its sibling tabs alike. Main tells
+        // every other window (radicle-provider-ipc.js) but not this one,
+        // the sender. Told before the same-document check: a sibling must
+        // learn even if the asking page has navigated away meanwhile.
+        tellSitePagesDisconnected(permissionKey);
         assertSameDocument();
-        sendRadicleEvent(webview, 'disconnect', { origin: permissionKey });
-        notifyRadiclePermissionsChanged(permissionKey);
       }
     }
 
@@ -326,6 +327,16 @@ function notifyRadiclePermissionsChanged(origin) {
 export async function disconnectRadicleSite(origin) {
   if (!origin) return;
   await forwardToMain('radicle_disconnect', {}, origin);
+  tellSitePagesDisconnected(origin);
+}
+
+/**
+ * Main has disconnected `origin`: send `disconnect` to every open page of
+ * that site in this window and repaint this window's Radicle banner. Both
+ * the page-initiated and the chrome-initiated paths end here; main's
+ * broadcast covers every other window.
+ */
+function tellSitePagesDisconnected(origin) {
   for (const webview of providerWebviews) {
     if (getPermissionKey(getDisplayUrlForWebview(webview)) === origin) {
       sendRadicleEvent(webview, 'disconnect', { origin });

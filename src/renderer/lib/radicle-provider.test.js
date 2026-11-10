@@ -219,6 +219,54 @@ describe('radicle-provider', () => {
       }
     });
 
+    test('a page\'s own radicle_disconnect tells every page of the site in this window, siblings too', async () => {
+      const { mod, webview, sendRequest, execute, state } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+      // A second tab of the same site, and a tab of another site, in this window.
+      const sibling = createElement('webview');
+      sibling.send = jest.fn();
+      mod.setupRadicleProvider(sibling);
+      const otherSite = createElement('webview');
+      otherSite.send = jest.fn();
+      mod.setupRadicleProvider(otherSite);
+      const getDisplayUrl = (await import('./tabs.js')).getDisplayUrlForWebview;
+      getDisplayUrl.mockImplementation((w) => (w === otherSite ? 'https://other.example' : state.displayUrl));
+
+      global.document = { dispatchEvent: jest.fn() };
+      global.CustomEvent = class {
+        constructor(type, init) {
+          this.type = type;
+          this.detail = init?.detail;
+        }
+      };
+      try {
+        sendRequest({ id: 9, method: 'radicle_disconnect', params: {} });
+        await flushMicrotasks();
+
+        expect(execute).toHaveBeenCalledWith('radicle_disconnect', {}, 'https://app.example');
+        const disconnectEvent = [
+          'radicle:provider-event',
+          { event: 'disconnect', data: { origin: 'https://app.example' } },
+        ];
+        expect(webview.send).toHaveBeenCalledWith(...disconnectEvent);
+        expect(sibling.send).toHaveBeenCalledWith(...disconnectEvent);
+        expect(otherSite.send).not.toHaveBeenCalled();
+        expect(responsesSentTo(webview)).toEqual([
+          ['radicle:provider-response', { id: 9, result: 'ok', error: null }],
+        ]);
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'radicle-permissions-changed',
+            detail: { origin: 'https://app.example' },
+          })
+        );
+      } finally {
+        delete global.document;
+        delete global.CustomEvent;
+      }
+    });
+
     test('a refused disconnect throws and tells no page', async () => {
       const { mod, webview, execute } = await loadProvider();
       execute.mockResolvedValueOnce({ error: { code: 4100, message: 'Origin not authorized' } });
