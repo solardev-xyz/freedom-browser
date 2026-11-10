@@ -32,7 +32,7 @@ describe('vault password back-off over IPC (K-4)', () => {
     fs.mkdirSync(path.join(tempRoot, 'user-data'));
     jest.spyOn(console, 'log').mockImplementation(() => {});
     now = 1_000_000;
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest.spyOn(performance, 'now').mockImplementation(() => now);
     mockDecrypts.count = 0;
   });
   afterEach(() => {

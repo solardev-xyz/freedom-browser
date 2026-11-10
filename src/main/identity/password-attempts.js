@@ -3,9 +3,12 @@
  *
  * Every vault password check in main (unlock, mnemonic and private-key
  * export, password change, vault delete, quick-unlock enrolment) goes
- * through withPasswordAttempt. The first FREE_FAILURES wrong passwords in a
- * row cost nothing extra; after that each one locks password checks out for
- * BASE_DELAY_MS, doubling up to MAX_DELAY_MS. A right password resets the
+ * through withPasswordAttempt. Touch ID quick unlock doesn't: its password
+ * comes from secure storage behind a biometric prompt, not from a guess.
+ *
+ * The first FREE_FAILURES wrong passwords in a row cost nothing extra;
+ * after that each one locks password checks out for BASE_DELAY_MS,
+ * doubling up to MAX_DELAY_MS. A right password resets the
  * count. Checks run one at a time, so a burst of parallel guesses is the
  * same as guessing in sequence.
  *
@@ -33,7 +36,14 @@ function isWrongPassword(err) {
   return err?.message === 'Incorrect password';
 }
 
-function createPasswordAttempts({ now = () => Date.now(), limits = LIMITS } = {}) {
+// Monotonic: a wall-clock step (NTP, the user setting the clock back)
+// must not stretch or cut short a lock-out. Read at call time so tests can
+// spy on it.
+function monotonicNow() {
+  return performance.now();
+}
+
+function createPasswordAttempts({ now = monotonicNow, limits = LIMITS } = {}) {
   let failures = 0;
   let blockedUntil = 0;
   let tail = Promise.resolve();

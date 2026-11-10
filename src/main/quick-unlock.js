@@ -108,9 +108,18 @@ function writeCredential(password) {
   }
 }
 
-// Under the shared wrong-password back-off, like every vault password check (K-4).
-async function verifyCredentialPassword(password) {
+// Enrolment: the user typed this password, so it goes under the shared
+// wrong-password back-off like every other typed password check (K-4).
+async function verifyTypedPassword(password) {
   await withPasswordAttempt(() => vault.verifyPassword(getIdentityDataDir(), password));
+}
+
+// Touch ID: the password comes from secure storage after a biometric
+// prompt, not from a guess, so it stays outside the back-off. A lock-out
+// from wrong typed passwords doesn't block Touch ID, and a stale stored
+// credential (vault password changed elsewhere) doesn't add to the count.
+async function verifyStoredPassword(password) {
+  await vault.verifyPassword(getIdentityDataDir(), password);
 }
 
 /**
@@ -173,7 +182,7 @@ async function enableQuickUnlock(password) {
   }
 
   try {
-    await verifyCredentialPassword(password);
+    await verifyTypedPassword(password);
 
     // Prompt Touch ID to authorize storing the credential
     await systemPreferences.promptTouchID('enable Touch ID unlock for Freedom Browser');
@@ -217,7 +226,7 @@ async function retrievePasswordWithTouchId() {
   await systemPreferences.promptTouchID('unlock Freedom Browser');
 
   const password = safeStorage.decryptString(credential.encrypted);
-  await verifyCredentialPassword(password);
+  await verifyStoredPassword(password);
 
   if (credential.type === 'legacy') {
     writeCredential(password);

@@ -56,4 +56,22 @@ describe('wrong-password back-off (K-4)', () => {
     // Three were checked; the rest met the lock-out without running.
     expect(results.filter((r) => r.reason instanceof PasswordAttemptsThrottled)).toHaveLength(7);
   });
+
+  test('the default clock is monotonic: a wall-clock step back does not stretch a lock-out', async () => {
+    const attempts = createPasswordAttempts({
+      limits: { FREE_FAILURES: 3, BASE_DELAY_MS: 50, MAX_DELAY_MS: 50 },
+    });
+    for (let i = 0; i < 3; i += 1) await attempts.withPasswordAttempt(wrong).catch(() => {});
+    await expect(attempts.withPasswordAttempt(right)).rejects.toBeInstanceOf(PasswordAttemptsThrottled);
+
+    // The system clock is set back an hour during the lock-out.
+    const realDateNow = Date.now;
+    jest.spyOn(Date, 'now').mockImplementation(() => realDateNow() - 60 * 60 * 1000);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await expect(attempts.withPasswordAttempt(right)).resolves.toBe('ok');
+    } finally {
+      jest.restoreAllMocks();
+    }
+  });
 });
