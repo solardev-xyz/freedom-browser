@@ -45,17 +45,25 @@ const newSession = () => ({});
 let nextId = 1;
 // A request as onBeforeSendHeaders tags it: its webRequest id, and the
 // headers the protocol handler's Request then carries.
-function sent(webSession, url, webContentsId, { id = nextId++, headers = {} } = {}) {
+function sent(
+  webSession,
+  url,
+  webContentsId,
+  { id = nextId++, headers = {}, initiatorOrigin } = {}
+) {
   const { requestHeaders } = tagRadRequest(
-    { id, url, webContentsId, requestHeaders: headers },
+    { id, url, webContentsId, initiatorOrigin, requestHeaders: headers },
     { session: webSession }
   );
   return { id, url, headers: new Headers(requestHeaders) };
 }
 const fromTab = (webSession, tagged, extra = {}) =>
-  handleRadRequest({ url: tagged.url, method: 'GET', headers: tagged.headers, ...extra }, {
-    webSession,
-  });
+  handleRadRequest(
+    { url: tagged.url, method: 'GET', headers: tagged.headers, ...extra },
+    {
+      webSession,
+    }
+  );
 const settle = async () => {
   for (let i = 0; i < 10; i += 1) await Promise.resolve();
 };
@@ -124,6 +132,56 @@ describe('handleRadRequest', () => {
       await Promise.resolve();
     }
     await Promise.all([...greedy, other]);
+  });
+
+  test('a tagged read without a tab is counted against its initiator origin (R3-M1)', async () => {
+    const pending = [];
+    serveRepoApi.mockImplementation(
+      () => new Promise((resolve) => pending.push(() => resolve(new Response('{}'))))
+    );
+    const web = newSession();
+    const url = `rad://${RID}/tree/main`;
+    const untabbed = (initiatorOrigin, extra) =>
+      fromTab(web, sent(web, url, undefined, { initiatorOrigin }), extra);
+    const greedy = [];
+    for (let i = 0; i < LIMITS.IN_FLIGHT + LIMITS.PER_REQUESTER; i += 1) {
+      greedy.push(untabbed('bzz://greedy'));
+    }
+    // Its own origin is full; a referrer can't move it to another bucket.
+    expect((await untabbed('bzz://greedy', { referrer: 'https://other.example/' })).status).toBe(
+      503
+    );
+    // Another origin, or no origin at all (the session bucket), still queues.
+    const queued = [untabbed('bzz://other'), untabbed(undefined), untabbed('null')];
+    expect(serveRepoApi).toHaveBeenCalledTimes(LIMITS.IN_FLIGHT);
+
+    for (let i = 0; i < 40 && serveRepoApi.mock.calls.length < greedy.length + 3; i += 1) {
+      while (pending.length) pending.shift()();
+      await settle();
+    }
+    while (pending.length) pending.shift()();
+    const statuses = (await Promise.all([...greedy, ...queued])).map((r) => r.status);
+    expect(statuses.every((status) => status === 200)).toBe(true);
+  });
+
+  test('an opaque or absent initiator origin shares the session bucket (R3-M1)', async () => {
+    const pending = [];
+    serveRepoApi.mockImplementation(
+      () => new Promise((resolve) => pending.push(() => resolve(new Response('{}'))))
+    );
+    const web = newSession();
+    const url = `rad://${RID}/tree/main`;
+    const greedy = [];
+    for (let i = 0; i < LIMITS.IN_FLIGHT + LIMITS.PER_REQUESTER; i += 1) {
+      greedy.push(fromTab(web, sent(web, url, undefined, { initiatorOrigin: 'null' })));
+    }
+    expect((await fromTab(web, sent(web, url, undefined))).status).toBe(503);
+    while (pending.length) pending.shift()();
+    for (let i = 0; i < 40 && serveRepoApi.mock.calls.length < greedy.length; i += 1) {
+      await settle();
+      while (pending.length) pending.shift()();
+    }
+    await Promise.all(greedy);
   });
 
   test('bounds the reads one page can queue (R-3)', async () => {
@@ -204,7 +262,7 @@ describe('the handoff from webRequest (R-3, #948 round 1)', () => {
     return pending;
   };
 
-  test("same-URL reads from two tabs keep their own tab, whatever order the handler sees", async () => {
+  test('same-URL reads from two tabs keep their own tab, whatever order the handler sees', async () => {
     const pending = held();
     const web = newSession();
     const url = `rad://${RID}/tree/${'d'.repeat(40)}`;
@@ -223,7 +281,7 @@ describe('the handoff from webRequest (R-3, #948 round 1)', () => {
     expect((await secondRead).status).toBe(200);
   });
 
-  test('a request id in one session never cancels another session\'s read', async () => {
+  test("a request id in one session never cancels another session's read", async () => {
     const pending = held();
     const web = newSession();
     const privateWeb = newSession();
@@ -289,7 +347,7 @@ describe('the handoff from webRequest (R-3, #948 round 1)', () => {
     endRadRequest({ id: served.id, url, error: 'net::ERR_FAILED' }, { session: web });
   });
 
-  test('the tag replaces a page\'s own header, and a request that comes again is tagged again', () => {
+  test("the tag replaces a page's own header, and a request that comes again is tagged again", () => {
     const web = newSession();
     const url = `rad://${RID}`;
     const tagged = sent(web, url, 93, {

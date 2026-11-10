@@ -55,8 +55,9 @@ const admission = createRadReadAdmission();
 
 // Each request's webRequest id and tab, handed to the protocol handler.
 //
-// The handler gets neither: Electron passes it no request id, and Chromium
-// sends no referrer to a non-standard scheme. URL order can't stand in for
+// The handler gets neither: Electron passes it no request id or tab, and
+// the referrer is at most the page's origin (empty from a dweb page). URL
+// order can't stand in for
 // them, since requests for the same URL reach the handler in a different
 // order from their webRequest events (#948 round 1: 70 wrong tabs in 600
 // reads across two tabs). So onBeforeSendHeaders gives every `rad:` request
@@ -107,6 +108,7 @@ function tagRadRequest(details, { session: webSession } = {}) {
   table.byToken.set(token, {
     id: details.id,
     webContentsId: details.webContentsId ?? null,
+    initiatorOrigin: details.initiatorOrigin ?? null,
     controller: new AbortController(),
   });
   table.byId.set(details.id, token);
@@ -138,7 +140,12 @@ function endRadRequest(details, { session: webSession } = {}) {
 function claimRead(request, webSession) {
   const token = request.headers?.get?.(HANDOFF_HEADER);
   if (!token || !webSession) {
-    return { signal: request.signal, webContentsId: null, release: () => {} };
+    return {
+      signal: request.signal,
+      webContentsId: null,
+      initiatorOrigin: null,
+      release: () => {},
+    };
   }
   const table = handoffs.get(webSession);
   const entry = table?.byToken.get(token);
@@ -146,16 +153,33 @@ function claimRead(request, webSession) {
   return {
     signal: entry.controller.signal,
     webContentsId: entry.webContentsId,
+    initiatorOrigin: entry.initiatorOrigin,
     // The read is over: an abort can no longer matter.
     release: () => forget(table, token),
   };
 }
 
 // Who a read is counted against: its tab, within its session (each private
-// window has its own session). Without a tab (a request webRequest did not
-// attribute), the referrer's origin, else one bucket for the session.
-function requesterKey(request, session, webContentsId) {
-  if (webContentsId !== null && webContentsId !== undefined) return `${session}|tab:${webContentsId}`;
+// window has its own session). Without a tab, its origin; failing that, one
+// bucket for the session (fails closed: a full bucket refuses, never admits).
+//
+// What a read without a tab carries (Electron 45, probed for #948 R3 with a
+// page, a dedicated worker, a shared worker and a service worker):
+// - a tagged read: webRequest's `initiatorOrigin`, which Chromium sets and a
+//   page can't choose. A page's own fetch always has its tab, so this only
+//   covers a request webRequest saw without one.
+// - an untagged read: a dedicated or shared worker's fetch reaches the
+//   handler without passing webRequest at all (no token, no tab, no
+//   origin), so only its Request's referrer is left. That is the page's
+//   origin for an http(s) page, which can blank it (`no-referrer`) but not
+//   name another origin; it is empty for a dweb page (bzz:, ipfs:, ...), so
+//   workers on dweb pages share the session bucket. Nothing else in the
+//   Request tells them apart (headers are Accept and User-Agent only).
+// - a service worker's `rad:` fetch fails before the handler.
+function requesterKey(request, session, { webContentsId, initiatorOrigin } = {}) {
+  if (webContentsId !== null && webContentsId !== undefined)
+    return `${session}|tab:${webContentsId}`;
+  if (initiatorOrigin && initiatorOrigin !== 'null') return `${session}|origin:${initiatorOrigin}`;
   let origin = '';
   try {
     const referrer = new URL(request.referrer);
@@ -163,7 +187,7 @@ function requesterKey(request, session, webContentsId) {
   } catch {
     // No referrer
   }
-  return `${session}|${origin}`;
+  return origin ? `${session}|origin:${origin}` : `${session}|`;
 }
 
 // Same RID shape the request-rewriter enforces: z + base58btc.
@@ -257,17 +281,20 @@ async function handleRadRequest(request, { session = 'default', webSession = nul
 
   const claim = claimRead(request, webSession);
   if (claim.ended) return jsonErrorResponse(503, 'request cancelled');
-  const { signal, webContentsId, release } = claim;
+  const { signal, webContentsId, initiatorOrigin, release } = claim;
   try {
     // `work` ends when the page goes away or the run deadline passes: the
     // serving pipeline then starts no further native call (R-3).
-    return await admission.run(requesterKey(request, session, webContentsId), signal, (work) =>
-      serveRepoApi(built.rid, built.path, {
-        method,
-        search: built.search,
-        maxResponseChars: MAX_RESPONSE_CHARS,
-        signal: work,
-      })
+    return await admission.run(
+      requesterKey(request, session, { webContentsId, initiatorOrigin }),
+      signal,
+      (work) =>
+        serveRepoApi(built.rid, built.path, {
+          method,
+          search: built.search,
+          maxResponseChars: MAX_RESPONSE_CHARS,
+          signal: work,
+        })
     );
   } catch (err) {
     if (err instanceof RadReadRefused) return jsonErrorResponse(err.status, err.message);
