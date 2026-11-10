@@ -4,7 +4,7 @@ const { findSiweChallenge, bindChallenge } = require('../src/main/siwe-auth/chal
 const { buildSiweMessage, authorizationValue } = require('../src/main/siwe-auth/message');
 
 // Hardhat account #0: a public test key.
-const signer = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcaec478ef4ca2b0ef');
+const signer = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
 
 let server;
 let base;

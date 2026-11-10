@@ -26,7 +26,7 @@ jest.mock('../wallet/agent-tab-custody', () => ({
 }));
 
 // Hardhat accounts #0 and #2: public test keys.
-const signer = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcaec478ef4ca2b0ef');
+const signer = new Wallet('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
 const otherSigner = new Wallet(
   '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a'
 );
