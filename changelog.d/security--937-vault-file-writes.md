@@ -1,2 +1,4 @@
 - The identity vault file is replaced safely and readable only by your own account ([#937](https://github.com/solardev-xyz/freedom-browser/issues/937))
   - A crash or full disk during a password change keeps the old vault and password
+  - Copies left by a crashed save are removed, and deleting the vault removes them too
+  - A vault file that is a symbolic link is refused: replace the link with the file it points to
