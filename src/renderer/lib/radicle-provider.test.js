@@ -137,6 +137,55 @@ describe('radicle-provider', () => {
     jest.restoreAllMocks();
   });
 
+  describe('chrome disconnect (the sidebar\'s Radicle banner and permissions screen)', () => {
+    test('runs main\'s radicle_disconnect and tells the site\'s open pages only', async () => {
+      const { mod, webview, execute, state } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        writeRule: true,
+      });
+      const otherSite = createElement('webview');
+      otherSite.send = jest.fn();
+      mod.setupRadicleProvider(otherSite);
+      const getDisplayUrl = (await import('./tabs.js')).getDisplayUrlForWebview;
+      getDisplayUrl.mockImplementation((w) => (w === otherSite ? 'https://other.example' : state.displayUrl));
+
+      global.document = { dispatchEvent: jest.fn() };
+      global.CustomEvent = class {
+        constructor(type, init) {
+          this.type = type;
+          this.detail = init?.detail;
+        }
+      };
+      try {
+        await mod.disconnectRadicleSite('https://app.example');
+        expect(execute).toHaveBeenCalledWith('radicle_disconnect', {}, 'https://app.example');
+        expect(webview.send).toHaveBeenCalledWith('radicle:provider-event', {
+          event: 'disconnect',
+          data: { origin: 'https://app.example' },
+        });
+        expect(otherSite.send).not.toHaveBeenCalled();
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'radicle-permissions-changed',
+            detail: { origin: 'https://app.example' },
+          })
+        );
+      } finally {
+        delete global.document;
+        delete global.CustomEvent;
+      }
+    });
+
+    test('a refused disconnect throws and tells no page', async () => {
+      const { mod, webview, execute } = await loadProvider();
+      execute.mockResolvedValueOnce({ error: { code: 4100, message: 'Origin not authorized' } });
+      await expect(mod.disconnectRadicleSite('https://app.example')).rejects.toMatchObject({
+        code: 4100,
+      });
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+  });
+
   describe('happy paths (same document throughout)', () => {
     test('routes pushed seed status only to the matching current origin', async () => {
       const { webview, state, emitProviderEvent } = await loadProvider();

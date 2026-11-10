@@ -38,6 +38,7 @@ import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, openStampManager, closeStampManager } from './wallet/stamp-manager.js';
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
+import { initRadicleConnection } from './wallet/radicle-connection.js';
 import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval } from './wallet/swarm-connect.js';
 import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
 import { initPermissionManage, showDappPermissions, showSwarmPermissions, showX402Permissions, closeDappPerms, closeSwarmPerms, closeX402Perms } from './wallet/permission-manage.js';
@@ -93,6 +94,7 @@ export function initWalletUi() {
   initPermissionManifest();
   initVaultUnlock();
   initPermissionManage();
+  initRadicleConnection();
   initDappTx();
   initDappX402();
   initRecentPayments();

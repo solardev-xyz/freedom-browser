@@ -157,12 +157,13 @@ async function handleRadicleRequest(webview, request) {
       assertSameDocument();
       result = await forwardToMain(method, params, permissionKey);
       if (method === 'radicle_disconnect') {
-        // Symmetric with the 'connect' event above. NOTE: if a chrome-side
-        // revocation surface (permission-management UI) ever appears, the
-        // event should move to main — the authority — so every revocation
-        // path emits it, not just this request path.
+        // Symmetric with the 'connect' event above. The chrome's own
+        // Disconnect (lib/wallet/radicle-connection.js) goes through
+        // disconnectRadicleSite() below, which tells every open page of the
+        // site; this path tells the page that asked.
         assertSameDocument();
         sendRadicleEvent(webview, 'disconnect', { origin: permissionKey });
+        notifyRadiclePermissionsChanged(permissionKey);
       }
     }
 
@@ -216,8 +217,9 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
     });
   } catch (error) {
     // Unchecking the rule and rejecting turns the rule off without
-    // publishing this write — the one place the user can revoke it (there
-    // is no Radicle site-permissions screen). Saved even if the document
+    // publishing this write. (The sidebar's Radicle Permissions screen,
+    // lib/wallet/radicle-connection.js, turns it off at any time; this is
+    // the same switch where the user already is.) Saved even if the document
     // has since navigated away: the rule belongs to the site, not the page.
     // Checking the box and then rejecting does not turn it on. A failure
     // to save is logged, not thrown: the page still gets the user's 4001,
@@ -226,6 +228,7 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
     if (!agentHeld && ruleOn && error?.alwaysAllow === false) {
       try {
         await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', false);
+        notifyRadiclePermissionsChanged(permissionKey);
       } catch (revokeError) {
         console.error(
           `[RadicleProvider] Could not turn off "always allow writes" for ${permissionKey}`,
@@ -238,6 +241,7 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
   assertSameDocument();
   if (!agentHeld && typeof answer?.alwaysAllow === 'boolean' && answer.alwaysAllow !== ruleOn) {
     await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', answer.alwaysAllow);
+    notifyRadiclePermissionsChanged(permissionKey);
     assertSameDocument();
   }
   return forwardToMain(method, params, permissionKey, { ...meta, approval: 'user' });
@@ -249,6 +253,7 @@ async function handleRequestAccess(webview, permissionKey, assertSameDocument) {
     await showRadicleConnect(permissionKey, webview);
     assertSameDocument();
     await window.radiclePermissions.grantPermission(permissionKey);
+    notifyRadiclePermissionsChanged(permissionKey);
     assertSameDocument();
     sendRadicleEvent(webview, 'connect', { origin: permissionKey });
   }
@@ -292,4 +297,32 @@ export function sendRadicleEvent(webview, event, data) {
   if (webview && webview.send) {
     webview.send('radicle:provider-event', { event, data });
   }
+}
+
+/**
+ * A site's Radicle permission record changed (connected, rule switched,
+ * disconnected). The sidebar's Radicle banner listens for this so it never
+ * shows a stale "auto" badge after the consent prompt changes the rule.
+ */
+function notifyRadiclePermissionsChanged(origin) {
+  if (typeof document === 'undefined' || typeof CustomEvent !== 'function') return;
+  document.dispatchEvent(new CustomEvent('radicle-permissions-changed', { detail: { origin } }));
+}
+
+/**
+ * Chrome-initiated disconnect (the sidebar's Radicle banner and its
+ * permissions screen). Runs main's own radicle_disconnect, so the record,
+ * the "always allow writes" rule, the auto-write limiter's counts and the
+ * seed-status broadcaster all go together, exactly as when the site asks,
+ * then tells every open page of that site it was disconnected.
+ */
+export async function disconnectRadicleSite(origin) {
+  if (!origin) return;
+  await forwardToMain('radicle_disconnect', {}, origin);
+  for (const webview of providerWebviews) {
+    if (getPermissionKey(getDisplayUrlForWebview(webview)) === origin) {
+      sendRadicleEvent(webview, 'disconnect', { origin });
+    }
+  }
+  notifyRadiclePermissionsChanged(origin);
 }

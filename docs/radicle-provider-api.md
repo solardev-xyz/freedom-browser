@@ -101,16 +101,22 @@ shows the per-write prompt itself) or `agent_custody`.
    24 hours. A rule-answered write refused for invalid params (checked
    before anything is signed) is not counted; any other failure, including
    `repo_not_found`, is. Past the limit a
-   write falls back to the prompt, where the user can turn the rule off
-   by unchecking it, whether they then approve or reject that write. The
-   counts are held in memory.
+   write falls back to the prompt, which says why it appeared; the user
+   can turn the rule off there by unchecking it, whether they then approve
+   or reject that write. The counts are held in memory.
    On a tab Freedom Agent holds, the rule does not apply: each write
    prompts, and main refuses one the renderer reports as automatic
    (`4100`, reason `agent_custody`).
 
 Auto-approve is stored per origin and per tier as `{ node, signing }`,
-mirroring the Swarm provider's `{ publish, feeds, signing }` model, and
-ends when the site disconnects.
+mirroring the Swarm provider's `{ publish, feeds, signing }` model, and is
+revocable at any time from the browser chrome, not only from a fallback
+prompt. While the visible tab's site is connected, the sidebar shows a
+Radicle banner (in the set-up view too, since Radicle needs no wallet).
+Clicking it opens **Radicle Permissions**, whose "Always allow writes as
+you" switch turns `autoApprove.signing` off; the site's next write prompts
+again. Disconnect there, or the banner's ×, runs `radicle_disconnect` for
+the site. Every rule also ends when the site disconnects.
 
 ## Methods
 
@@ -124,7 +130,9 @@ Prompt (once) for connection. Repeat calls return existing state. Emits
 The inverse of `requestAccess`: the origin relinquishes its own grant
 (connection AND signing, plus auto-approvals). No consent prompt — an
 origin may always drop its own access. Works while the node is stopped.
-Emits the `disconnect` provider event.
+Emits the `disconnect` provider event. The chrome's Disconnect (the
+sidebar's Radicle banner and Radicle Permissions screen) runs this same
+method for the site and sends `disconnect` to each of its open pages.
 
 ### `radicle_getCapabilities` → capability object (no permission)
 

@@ -574,6 +574,26 @@ describe('signed write approval (R-6)', () => {
     expect(cob.commentIssue).toHaveBeenCalledTimes(1);
   });
 
+  test('a slow writer under the limit stops the moment the rule is switched off', async () => {
+    // One write every few minutes never meets the limiter, so no fallback
+    // prompt ever appears: switching the rule off in the chrome (the
+    // sidebar's Radicle Permissions screen) is what has to stop it.
+    let ruleOn = true;
+    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing' && ruleOn);
+    for (let i = 0; i < 3; i += 1) {
+      await write('auto');
+      now += 5 * 60 * 1000;
+    }
+    expect(cob.commentIssue).toHaveBeenCalledTimes(3);
+
+    ruleOn = false;
+    await expectProviderError(write('auto'), 4100, 'approval_required');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(3);
+    // The site can still ask; the user answers each write.
+    await write('user');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(4);
+  });
+
   test('rule-answered writes: a burst of 5, then 1 per 30 s', async () => {
     permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
     for (let i = 0; i < 5; i += 1) await write('auto');
