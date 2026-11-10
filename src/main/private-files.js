@@ -91,11 +91,29 @@ const NO_LINKS = DARWIN ? NOFOLLOW_ANY : NOFOLLOW;
 let fdBinding = LINUX;
 
 class UnsafePrivatePathError extends Error {
-  constructor(target, why) {
-    super(`Refusing ${target}: ${why}`);
+  constructor(target, why, { link = false, message } = {}) {
+    super(message || `Refusing ${target}: ${why}`);
     this.name = 'UnsafePrivatePathError';
     this.code = 'UNSAFE_PRIVATE_PATH';
+    this.target = target;
+    // The refusal is for a symbolic link (at the name, or on macOS anywhere
+    // in the path), not for the wrong kind of object or owner.
+    this.link = link;
   }
+}
+
+// A managed data directory (identity/, ant-data/, the Radicle home) that is
+// itself a link is refused, never followed (K-3). That stops the node or the
+// vault, so the message is the one the user sees: which folder, why, and
+// what to do about it.
+function linkedDirRefusal(dir) {
+  return new UnsafePrivatePathError(dir, 'it is a symbolic link', {
+    link: true,
+    message:
+      `Freedom will not use ${dir} because it is a symbolic link. ` +
+      'This folder holds your keys, so it must be a real folder, not a link to one. ' +
+      `Move the folder the link points to back to ${dir} in place of the link, then try again.`,
+  });
 }
 
 const sameObject = (a, b) => a.dev === b.dev && a.ino === b.ino;
@@ -211,7 +229,7 @@ class PrivateDir {
     // below refuses one swapped in after it.
     const seen = fs.lstatSync(entry, { bigint: true, throwIfNoEntry: false });
     if (!seen) return null;
-    if (seen.isSymbolicLink()) throw new UnsafePrivatePathError(target, 'it is a symbolic link');
+    if (seen.isSymbolicLink()) throw new UnsafePrivatePathError(target, 'it is a symbolic link', { link: true });
     let fd;
     try {
       fd = fs.openSync(entry, O_RDONLY | NO_LINKS | NO_WAIT);
@@ -373,7 +391,8 @@ class PrivateDir {
 function linkRefusal(target) {
   return new UnsafePrivatePathError(
     target,
-    DARWIN ? 'a symbolic link is in its path' : 'it is a symbolic link'
+    DARWIN ? 'a symbolic link is in its path' : 'it is a symbolic link',
+    { link: true }
   );
 }
 
@@ -397,7 +416,9 @@ function openDirectory(
       if (err.code === 'ENOENT' && missingOk) return null;
       throw err;
     }
-    if (stat.isSymbolicLink()) throw new UnsafePrivatePathError(dirPath, 'it is a symbolic link');
+    if (stat.isSymbolicLink()) {
+      throw new UnsafePrivatePathError(dirPath, 'it is a symbolic link', { link: true });
+    }
     if (!stat.isDirectory()) throw new UnsafePrivatePathError(dirPath, 'not a directory');
     const dir = new PrivateDir({ dirPath, ioPath, stat, parent, trusted });
     parent?.verify();
@@ -417,7 +438,9 @@ function openDirectory(
     if (err.code === 'ENOTDIR') {
       // Linux reports a link opened with O_DIRECTORY | O_NOFOLLOW this way.
       const link = fs.lstatSync(entryPath, { throwIfNoEntry: false })?.isSymbolicLink();
-      throw new UnsafePrivatePathError(dirPath, link ? 'it is a symbolic link' : 'not a directory');
+      throw new UnsafePrivatePathError(dirPath, link ? 'it is a symbolic link' : 'not a directory', {
+        link,
+      });
     }
     throw err;
   }
@@ -471,7 +494,16 @@ function openPrivateDir(dir, { create = true, trusted = false } = {}) {
       throw err;
     }
   }
-  return openDirectory(ioPath, dir, { ioPath, trusted, missingOk: !create });
+  try {
+    return openDirectory(ioPath, dir, { ioPath, trusted, missingOk: !create });
+  } catch (err) {
+    // Only a managed root's own link gets the move-it-back advice; a linked
+    // keys/ or key file inside it keeps the plain refusal.
+    if (!trusted && err instanceof UnsafePrivatePathError && err.link) {
+      throw linkedDirRefusal(dir);
+    }
+    throw err;
+  }
 }
 
 /**

@@ -1445,7 +1445,8 @@ async function deleteVaultData(password) {
  * Startup repair (K-3): the vault and the quick-unlock credential an older
  * build wrote with the umask's mode (usually 0644) become owner-only,
  * through a no-follow descriptor, so a link planted at either name is left
- * alone. Writes of the vault go through its own atomic writer (vault.js);
+ * alone. This only repairs the vault's mode: vault.js still writes it with
+ * a plain writeFileSync here (an atomic owner-only vault write is #939's).
  * quick-unlock.js reads and writes the credential through the same
  * directory handle as here.
  */
@@ -1524,7 +1525,14 @@ function registerIdentityIpc() {
 
   // Get vault metadata (setup type, etc.)
   ipcMain.handle('identity:get-vault-meta', () => {
-    return getVaultMeta();
+    try {
+      return getVaultMeta();
+    } catch (err) {
+      // An identity folder that is a symbolic link is refused (K-3); no
+      // metadata, said in the log rather than an unhandled IPC error.
+      console.warn('[IdentityManager] Vault metadata unavailable:', err.message);
+      return null;
+    }
   });
 
   // Unlock vault

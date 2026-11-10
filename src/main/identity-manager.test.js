@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const IPC = require('../shared/ipc-channels');
 const {
   createTempUserDataDir,
   loadMainModule,
@@ -1102,5 +1103,29 @@ describe('identity file repair at startup (K-3)', () => {
     expect(fs.statSync(vaultPath).mode & 0o777).toBe(0o600);
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
     expect(fs.statSync(outside).mode & 0o777).toBe(0o644);
+  });
+  posixTest('an identity folder that is a link: the IPC handlers answer with the refusal, not a throw', async () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    const real = path.join(root, 'moved-identity');
+    fs.renameSync(dir, real);
+    fs.symlinkSync(real, dir);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    expect(() => mod.registerIdentityIpc()).not.toThrow();
+
+    const explained = `Freedom will not use ${dir} because it is a symbolic link.`;
+    await expect(ipcMain.invoke('identity:get-vault-meta')).resolves.toBeNull();
+    await expect(ipcMain.invoke(IPC.IDENTITY_HAS_VAULT)).resolves.toEqual({
+      hasVault: false,
+      error: expect.stringContaining(explained),
+    });
+    await expect(ipcMain.invoke(IPC.IDENTITY_GET_STATUS)).resolves.toEqual({
+      error: expect.stringContaining(explained),
+    });
+    // Followed nowhere: the folder behind the link is left as it was.
+    expect(fs.lstatSync(dir).isSymbolicLink()).toBe(true);
   });
 });

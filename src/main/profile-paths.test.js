@@ -148,7 +148,14 @@ describe('profile paths', () => {
       fs.symlinkSync(elsewhere, path.join(userDataDir, 'ant-data'));
 
       const paths = loadPaths(userDataDir);
+      const antData = path.join(userDataDir, 'ant-data');
       expect(() => paths.getAntDataDir()).toThrow('symbolic link');
+      // The message the node's error state shows: which folder, and what to do.
+      expect(() => paths.getAntDataDir()).toThrow(
+        `Freedom will not use ${antData} because it is a symbolic link. ` +
+          'This folder holds your keys, so it must be a real folder, not a link to one. ' +
+          `Move the folder the link points to back to ${antData} in place of the link, then try again.`
+      );
       expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o755);
     }
   );
