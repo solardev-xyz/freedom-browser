@@ -777,7 +777,8 @@ describe('ens-resolver', () => {
       for (const label of ['x503'.repeat(64), 'timeout'.repeat(37)]) {
         expect(() => actualEthers.dnsEncode(`${label}.eth`, 255)).toThrow(label);
         const failing = await resolveEnsContent(`${label}.eth`);
-        expect(failing.type).not.toBe('ok');
+        expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+        expect(failing.trust.level).toBe('verified');
       }
 
       const healthy = await resolveEnsContent('healthy-after-echoed-name.box');
@@ -843,6 +844,15 @@ describe('ens-resolver', () => {
       ['a socket reset', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
       ['a refused connection behind happy eyeballs', () => Object.assign(new AggregateError([Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })]), {})],
       ['an answer without a response for the request', () => actualEthers.makeError('missing response for request', 'BAD_DATA', { value: [], info: { payload: { id: 1 } } })],
+      ['an HTTP 200 whose body is an HTML page', () => {
+        const page = new actualEthers.FetchResponse(200, 'OK', { 'content-type': 'text/html' }, actualEthers.toUtf8Bytes('<html>captive portal</html>'), null);
+        try { return page.bodyJson; } catch (err) { return err; }
+      }],
+      ['an expired TLS certificate', () => Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' })],
+      ['a TLS host name mismatch', () => Object.assign(new Error("Hostname/IP does not match certificate's altnames"), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' })],
+      ['a TLS protocol error', () => Object.assign(new Error('write EPROTO'), { code: 'EPROTO' })],
+      ['a network that is down', () => Object.assign(new Error('connect ENETDOWN'), { code: 'ENETDOWN' })],
+      ['a local address not available', () => Object.assign(new Error('connect EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })],
     ])('%s quarantines the endpoint', async (label, makeFailure) => {
       const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
       routeByProvider(new Map([

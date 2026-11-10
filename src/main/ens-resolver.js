@@ -524,10 +524,15 @@ const EXECUTION_CODES = new Set([3, -32015]);
 // (SERVER_ERROR). freedom-core design 0004, classification rule 7.
 const NODE_UNANSWERED_MESSAGE = /no response|timeout/i;
 
-// Socket-level failures below ethers carry Node's own error code.
+// Socket- and TLS-level failures below ethers carry Node's own error code
+// (ethers' Node fetch rejects with the request's own error, unwrapped).
 const SOCKET_ERROR_CODES = new Set([
   'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN',
-  'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+  'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN',
+  'EADDRNOTAVAIL', 'EPROTO',
+  'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
 ]);
 
 // Revert evidence: return data as even-length hex, or a legacy
@@ -573,6 +578,10 @@ function isProviderError(err) {
   // The JSON-RPC answer held no response for the request: a protocol
   // failure (ethers' own message), unlike an ABI decoding BAD_DATA.
   if (code === 'BAD_DATA' && err.shortMessage === 'missing response for request') return true;
+  // An HTTP 200 whose body isn't JSON (a captive portal, a CDN challenge
+  // page): ethers' FetchResponse.bodyJson names itself in the structured
+  // `operation` field, so no message text is read.
+  if (code === 'UNSUPPORTED_OPERATION' && err.operation === 'bodyJson') return true;
 
   // CALL_EXCEPTION can mean contract reverted OR RPC provider failed:
   // ethers turns every JSON-RPC error of an eth_call into one.
