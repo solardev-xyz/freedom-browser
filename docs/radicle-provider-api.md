@@ -80,7 +80,9 @@ provider:
 `payload_too_large`. A signed write main refuses carries `4100` with
 `approval_required` (no per-write approval and no "always allow writes"
 rule), `auto_write_limit` (the rule's rate limit is used up; Freedom then
-shows the per-write prompt itself) or `agent_custody`.
+shows the per-write prompt itself), `agent_custody`, or `private_window`
+(the write came from a private window, or from a sender main cannot place
+in a known window; see [Provider object](#provider-object)).
 
 ## Permission tiers
 

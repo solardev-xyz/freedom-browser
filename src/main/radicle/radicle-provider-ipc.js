@@ -325,7 +325,13 @@ async function handleSignedWrite(fn, params, refundAutoWrite) {
  * @param {string} method
  * @param {object} params
  * @param {string} origin - display-URL-derived origin from the renderer
- * @param {{onSeedStatus?: Function, privateSender?: boolean}} [options]
+ * @param {{onSeedStatus?: Function, approval?: 'user'|'auto', privateSender?: boolean}} [options]
+ *   approval: how the renderer answered a signed write (`meta.approval`).
+ *   Only 'user' (the per-write prompt was shown and accepted) lets a COB
+ *   write through unconditionally; anything else, including leaving it
+ *   out, is rule-gated: refused with `approval_required` unless the
+ *   site's "always allow writes" rule exists, then charged against
+ *   autoWriteLimiter (`auto_write_limit` once used up) (R-6).
  *   privateSender: the request came from a private (or unclassifiable)
  *   window. Lasting changes are refused, and use is not recorded (R-9).
  */
