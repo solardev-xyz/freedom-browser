@@ -30,6 +30,9 @@ const loadConsent = async () => {
     'radicle-consent-wants': createElement('div'),
     'radicle-consent-allows': createElement('ul'),
     'radicle-consent-warning': createElement('p'),
+    'radicle-consent-always-row': createElement('label', { classes: ['hidden'] }),
+    'radicle-consent-always': createElement('input'),
+    'radicle-consent-always-label': createElement('span'),
     'radicle-consent-approve': createElement('button'),
     'radicle-consent-reject': createElement('button'),
     'radicle-consent-back': createElement('button'),
@@ -118,10 +121,170 @@ describe('radicle-consent owner binding', () => {
       'Title: <b>Bug</b>',
       'Description: Steps to reproduce',
     ]);
-    expect(elementsById['radicle-consent-warning'].textContent).toContain('Freedom Agent');
+    const warning = elementsById['radicle-consent-warning'].textContent;
+    expect(warning).toContain('signed with your Radicle identity');
+    expect(warning).toContain('public and permanent');
+    expect(warning).not.toContain('Freedom Agent');
     expect(elementsById['radicle-consent-approve'].textContent).toBe('Open issue');
     expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
+    // The site's "always allow writes" rule is offered, off.
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(false);
+    expect(elementsById['radicle-consent-always-label'].textContent).toContain('Always allow');
+    expect(elementsById['radicle-consent-always'].checked).toBe(false);
 
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toEqual({ alwaysAllow: false });
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+  });
+
+  test('the per-write prompt reports the "always allow" checkbox as approved', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+
+    // Shown because main's limit stopped an automatic write: the box is checked.
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    expect(elementsById['radicle-consent-always'].checked).toBe(true);
+    elementsById['radicle-consent-always'].checked = false;
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toEqual({ alwaysAllow: false });
+
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner
+    );
+    elementsById['radicle-consent-always'].checked = true;
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toEqual({ alwaysAllow: true });
+  });
+
+  test('a rejected per-write prompt reports the "always allow" checkbox too', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+
+    // Unchecked, then Reject: the rejection says the rule should be off.
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    elementsById['radicle-consent-always'].checked = false;
+    elementsById['radicle-consent-reject'].dispatch('click');
+    await expect(promptPromise).rejects.toEqual({
+      code: 4001,
+      message: 'User rejected the request',
+      alwaysAllow: false,
+    });
+
+    // Back and a dismissal carry it the same way.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    elementsById['radicle-consent-always'].checked = false;
+    mod.dismissRadicleConsent(owner);
+    await expect(promptPromise).rejects.toMatchObject({ code: 4001, alwaysAllow: false });
+
+    // A prompt that offered no rule rejects without the field.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { agentHeld: true }
+    );
+    elementsById['radicle-consent-reject'].dispatch('click');
+    await expect(promptPromise).rejects.toEqual({
+      code: 4001,
+      message: 'User rejected the request',
+    });
+  });
+
+  test('the rate-limit fallback prompt says the site hit its automatic-write limit', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+    const warning = () => elementsById['radicle-consent-warning'].textContent;
+
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true, limited: true }
+    );
+    expect(warning()).toContain('reached its limit of automatic writes');
+    expect(warning()).toContain('public and permanent');
+    expect(elementsById['radicle-consent-always'].checked).toBe(true);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await promptPromise;
+
+    // An ordinary per-write prompt says nothing about a limit.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner
+    );
+    expect(warning()).not.toContain('limit');
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await promptPromise;
+  });
+
+  test('the limit notice quotes the numbers main enforces', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const { LIMITS } = require('../../main/radicle/auto-write-limiter.js');
+    const source = fs.readFileSync(path.join(__dirname, 'radicle-consent.js'), 'utf8');
+    const notice = source.match(/AUTO_WRITE_LIMIT_NOTICE =\s*'([^']*)'/)[1];
+    expect(notice).toContain(`${LIMITS.BURST} in a row`);
+    expect(notice).toContain(`one every ${LIMITS.REFILL_MS / 1000} seconds`);
+    expect(notice).toContain(`at most ${LIMITS.DAILY_MAX} a day`);
+    expect(LIMITS.DAY_MS).toBe(24 * 60 * 60 * 1000);
+    expect(source).toContain(`at most ${LIMITS.DAILY_MAX} writes a day`);
+  });
+
+  test('on a tab in Agent custody the per-write prompt offers no rule', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_createIssue',
+      { rid: 'rad:zExample', title: 'Bug', description: 'Steps' },
+      owner,
+      { agentHeld: true }
+    );
+
+    const warning = elementsById['radicle-consent-warning'].textContent;
+    expect(warning).toContain('Freedom Agent');
+    expect(warning).toContain('public and permanent');
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+
+    elementsById['radicle-consent-approve'].dispatch('click');
+    await expect(promptPromise).resolves.toBeUndefined();
+  });
+
+  test('other prompts never show the "always allow" checkbox', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+
+    const promptPromise = mod.showRadicleSigningApproval('https://app.example', owner);
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
     elementsById['radicle-consent-approve'].dispatch('click');
     await expect(promptPromise).resolves.toBeUndefined();
   });

@@ -212,6 +212,35 @@ test('grants and use records from a private window are refused', async () => {
   expect(storeBytes()).toBe(before);
 });
 
+// #940 + R-9: the "always allow writes" rule (autoApprove.signing) is a
+// lasting rule. Neither its sidebar toggle nor the per-write prompt's
+// checkbox (both reach main through RADICLE_SET_AUTO_APPROVE) may turn it on
+// from a private window, and no write from one is answered by the rule.
+test('a private window cannot turn the "always allow writes" rule on', async () => {
+  const before = storeBytes();
+  const setRule = mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE);
+  const getRule = mockHandlers.get(IPC.RADICLE_GET_AUTO_APPROVE);
+  const privateChrome = mockFixture.privateSender(privateWindows);
+
+  expect(setRule({ sender: privateChrome }, ORIGIN, 'signing', true)).toBe(false);
+  // An unclassifiable sender counts as private.
+  expect(setRule({}, ORIGIN, 'signing', true)).toBe(false);
+  expect(getRule({ sender: privateChrome }, ORIGIN, 'signing')).toBe(false);
+
+  // A write the renderer reports as rule-answered is refused too, before the
+  // limiter or the backend.
+  await expect(
+    execute(privateChrome, {
+      method: 'radicle_createIssue',
+      params: MUTATORS.radicle_createIssue,
+      origin: ORIGIN,
+      meta: { webContentsId: 9, approval: 'auto' },
+    })
+  ).resolves.toEqual(REFUSED);
+  expect(backendCalls()).toBe(0);
+  expect(storeBytes()).toBe(before);
+});
+
 // R-9 review 3: a private seed-status read during an active fetch is a
 // snapshot. The manager would keep a callback it was given for as long as
 // the fetch runs, and the handler a broadcaster for the origin, and the
@@ -323,4 +352,28 @@ test('the same calls from a known public window still run and record their use',
     'https://other.example'
   );
   expect(granted).toMatchObject({ origin: 'https://other.example' });
+});
+
+// After the store-writing test above: a rule a public window turned on
+// still answers nothing a private window asks, and the private window
+// cannot switch it either way.
+test('a rule set from a public window does not answer a private window', async () => {
+  const setRule = mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE);
+  const publicChrome = mockFixture.publicSender();
+  const privateChrome = mockFixture.privateSender(privateWindows);
+  expect(setRule({ sender: publicChrome }, ORIGIN, 'signing', true)).toBe(true);
+  const before = storeBytes();
+
+  await expect(
+    execute(privateChrome, {
+      method: 'radicle_commentIssue',
+      params: MUTATORS.radicle_commentIssue,
+      origin: ORIGIN,
+      meta: { webContentsId: 9, approval: 'auto' },
+    })
+  ).resolves.toEqual(REFUSED);
+  expect(setRule({ sender: privateChrome }, ORIGIN, 'signing', false)).toBe(false);
+  expect(backendCalls()).toBe(0);
+  expect(storeBytes()).toBe(before);
+  expect(JSON.parse(storeBytes())[ORIGIN].autoApprove.signing).toBe(true);
 });

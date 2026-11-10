@@ -2294,6 +2294,40 @@
             </button>
           </div>
           <div class="sidebar-content">
+            <!-- Radicle Connection Banner (shown when the current tab's site is
+                 connected to window.radicle). It sits outside #sidebar-identity
+                 on purpose: Radicle needs no wallet, so a site's "always allow
+                 writes" rule must be reachable from the set-up view too. See
+                 lib/wallet/radicle-connection.js. -->
+            <div class="radicle-connection-banner hidden" id="radicle-connection-banner">
+              <div
+                class="radicle-connection-info"
+                id="radicle-connection-manage"
+                title="Manage permissions"
+              >
+                <span class="radicle-connection-indicator"></span>
+                <span class="radicle-connection-text">
+                  <span class="radicle-connection-label">Using your Radicle node</span>
+                  <span class="radicle-connection-site" id="radicle-connection-site"
+                    >site.eth</span
+                  >
+                </span>
+                <span class="auto-approve-badge hidden" id="radicle-auto-approve-badge"
+                  >auto</span
+                >
+              </div>
+              <button
+                type="button"
+                class="radicle-connection-disconnect"
+                id="radicle-connection-disconnect"
+                title="Disconnect"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
             <!-- Private windows: the identity & wallet are deliberately out of
                  reach here (no providers injected, nothing persisted), so the
                  panel says so instead of offering identity setup. -->
@@ -4988,6 +5022,11 @@
                   <span id="radicle-consent-warning"></span>
                 </div>
 
+                <label class="auto-approve-checkbox hidden" id="radicle-consent-always-row">
+                  <input type="checkbox" id="radicle-consent-always" />
+                  <span id="radicle-consent-always-label"></span>
+                </label>
+
                 <div class="swarm-connect-actions">
                   <button
                     type="button"
@@ -5173,6 +5212,38 @@
                 </div>
                 <div class="perms-actions">
                   <button type="button" class="perms-disconnect-btn" id="swarm-perms-disconnect">
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Radicle Permission Management sub-screen -->
+            <div id="sidebar-radicle-permissions" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="radicle-perms-back"
+                data-title="Radicle Permissions"
+              ></div>
+              <div class="subscreen-content">
+                <div class="perms-site" id="radicle-perms-site">site.eth</div>
+                <div class="perms-section">
+                  <div class="perms-toggle-row">
+                    <span class="perms-label"
+                      >Always allow writes as you (at most 50 writes a day)</span
+                    >
+                    <label class="toggle-switch">
+                      <input type="checkbox" id="radicle-perms-writes-toggle" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                  <div class="perms-empty" id="radicle-perms-writes-note">
+                    Off: every issue, comment or state change this site publishes as you asks
+                    first.
+                  </div>
+                </div>
+                <div class="perms-actions">
+                  <button type="button" class="perms-disconnect-btn" id="radicle-perms-disconnect">
                     Disconnect
                   </button>
                 </div>
