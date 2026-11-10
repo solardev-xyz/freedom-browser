@@ -538,8 +538,78 @@ describe('radapi protocol', () => {
   test('does not expose private repositories through the public repo API', async () => {
     embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private' } });
     const response = await serveRepoApi(RID, '/issues');
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(embedded.issues).not.toHaveBeenCalled();
+  });
+
+  // R-2: 403 for a stored private RID beside 404 for an absent one told any
+  // page which private repositories this node holds.
+  test.each(['', '/issues', `/tree/${REVISION}`, `/commits/${REVISION}`])(
+    'a private repository and an absent one answer alike for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private', allow: [] } });
+      const privateRepo = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absentRepo = await serveRepoApi(RID, apiPath);
+
+      const shape = async (response) => ({
+        status: response.status,
+        headers: [...response.headers.entries()].sort(),
+        body: await response.text(),
+      });
+      const privateShape = await shape(privateRepo);
+      expect(privateShape).toEqual(await shape(absentRepo));
+      expect(privateShape.status).toBe(404);
+      expect(JSON.parse(privateShape.body)).toEqual({ error: 'repository not found' });
+      expect(privateShape.body).not.toContain(RID);
+    }
+  );
+
+  // R1-M2: any other repoInfo failure (a stored private repo with a corrupt
+  // identity doc, locked storage) must not become a 500 carrying the add-on
+  // text beside an absent RID's 404.
+  test.each(['', '/issues'])(
+    'other repoInfo failures answer like an absent repository for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockRejectedValueOnce(
+        new Error(`identity document of ${RID} is corrupt: storage is locked`)
+      );
+      const failed = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absent = await serveRepoApi(RID, apiPath);
+      const shape = async (r) => ({
+        status: r.status,
+        headers: [...r.headers.entries()].sort(),
+        body: await r.text(),
+      });
+      const failedShape = await shape(failed);
+      expect(failedShape).toEqual(await shape(absent));
+      expect(failedShape.status).toBe(404);
+      expect(failedShape.body).not.toContain('corrupt');
+      expect(embedded.issues).not.toHaveBeenCalled();
+    }
+  );
+
+  test('logs a non-"not found" repoInfo failure, redacted in a private window', async () => {
+    const log = require('./logger');
+    const { runWithPrivateLogContext } = require('./private/private-log-context');
+    embedded.repoInfo.mockRejectedValue(new Error(`identity of ${RID} unreadable`));
+
+    await serveRepoApi(RID, '/issues');
+    await runWithPrivateLogContext(true, () => serveRepoApi(RID, '/issues'));
+
+    const warnings = log.warn.mock.calls.filter((call) => call[0] === '[rad]');
+    expect(warnings).toEqual([
+      ['[rad]', RID, '/issues', '→', `identity of ${RID} unreadable`],
+      ['[rad]', '<private>', '<private>', '→', '<private>'],
+    ]);
+  });
+
+  test('radapi: still serves private repos', async () => {
+
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
+    embedded.buildRepoMeta.mockResolvedValueOnce({ rid: RID });
+    expect((await serveRepoApi(RID, '', { allowPrivate: true })).status).toBe(200);
   });
 
   test.each([
