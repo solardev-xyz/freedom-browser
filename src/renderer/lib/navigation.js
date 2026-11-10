@@ -1074,8 +1074,11 @@ export const setAgentWorkspaceNavigationProjection = (container = null) => {
   setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 };
 
-const ensureWebContentsId = () => {
-  const navState = getNavState();
+// Resolve (and cache on that tab's nav state) the guest webContents id of a
+// specific webview. Defaults to the active tab, but a background tab's own
+// navigation passes its webview and nav state so the id belongs to *that*
+// guest, not whichever tab happens to be in front (#969).
+const ensureWebContentsId = (navState = getNavState(), targetWebview = null) => {
   if (navState.cachedWebContentsId) {
     return Promise.resolve(navState.cachedWebContentsId);
   }
@@ -1084,7 +1087,7 @@ const ensureWebContentsId = () => {
   }
   navState.resolvingWebContentsId = new Promise((resolve) => {
     const attempt = () => {
-      const webview = getActiveWebview();
+      const webview = targetWebview || getActiveWebview();
       if (webview && typeof webview.getWebContentsId === 'function') {
         const value = webview.getWebContentsId();
         if (typeof value === 'number' && value > 0) {
@@ -1100,8 +1103,13 @@ const ensureWebContentsId = () => {
   return navState.resolvingWebContentsId;
 };
 
-const syncBzzBase = (nextBase) => {
-  const navState = getNavState();
+// The main process keeps one Swarm base per guest webContents (the request
+// rewriter's `activeBzzBases`). `loadTarget` passes the webview and nav state
+// it is navigating, so a background tab's own dweb navigation records its
+// base on that tab and that guest rather than the active one (#969). Every
+// other caller acts on the active tab and takes the defaults.
+const syncBzzBase = (nextBase, targetWebview = null, targetNavState = null) => {
+  const navState = targetNavState || getNavState();
   if (!electronAPI || (!electronAPI.setBzzBase && !electronAPI.clearBzzBase)) {
     return;
   }
@@ -1109,7 +1117,7 @@ const syncBzzBase = (nextBase) => {
     return;
   }
   navState.currentBzzBase = nextBase || null;
-  ensureWebContentsId()
+  ensureWebContentsId(navState, targetWebview)
     .then((id) => {
       if (!id) return;
       if (navState.currentBzzBase) {
@@ -1487,6 +1495,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     pushDebug('No active webview to load target');
     return;
   }
+  // Swarm base bookkeeping follows the navigated tab too: a background page's
+  // own `bzz://` navigation must record its base on that tab and its guest,
+  // not on the tab the user is looking at (#969).
+  const syncTargetBzzBase = (nextBase) => syncBzzBase(nextBase, webview, navState);
 
   // An internal-page open can be answered by a *different* tab (Chrome's
   // singleton rule — see the freedom:// branch below for the full story), in
@@ -1812,7 +1824,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(onchainAppUrl);
     pushDebug(`[Onchain App] Loading ${onchainAppUrl}`);
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
     return;
   }
   if (looksLikeOnchainAppInput(value)) {
@@ -2055,7 +2067,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       navState.pendingNavigationUrl = disabledUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
       webview.loadURL(disabledUrl);
-      syncBzzBase(null);
+      syncTargetBzzBase(null);
       return;
     }
     const radicleTarget = formatRadicleUrl(value, state.radicleBase);
@@ -2076,7 +2088,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       }
       pushDebug(`Loading ${radicleTarget.displayValue} via ${radicleTarget.targetUrl}`);
       // rad-browser.html handles its own API calls, no base sync needed
-      syncBzzBase(null);
+      syncTargetBzzBase(null);
       return;
     }
     // Invalid Radicle ID — show error page
@@ -2092,7 +2104,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = errorUrl.toString();
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl.toString());
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
     return;
   }
 
@@ -2148,7 +2160,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       navState.pendingNavigationUrl = errorUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
       webview.loadURL(errorUrl);
-      syncBzzBase(null);
+      syncTargetBzzBase(null);
       return;
     }
     const cidMatch = ipfsTarget.displayValue.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
@@ -2169,7 +2181,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     pushDebug(`[AddressBar] Loading IPFS target, set to: ${ipfsDisplayValue}`);
     webview.loadURL(ipfsLoadUrl);
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsLoadUrl}`);
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
     return;
   }
 
@@ -2202,7 +2214,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = errorUrl;
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl);
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
     return;
   }
 
@@ -2215,7 +2227,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = errorUrl;
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl);
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
   };
 
   // Try Swarm/bzz
@@ -2248,7 +2260,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       hashKeys: [hashMatch?.[1]?.toLowerCase()],
     });
     pushDebug(`[AddressBar] Loading target, set to: ${displayValue}`);
-    syncBzzBase(target.baseUrl || null);
+    syncTargetBzzBase(target.baseUrl || null);
 
     // Augment with optional ENS-transport overrides. `swarmHash` lets the
     // probe target the resolved Swarm reference; `bzzLoadUrl` is what
@@ -2275,7 +2287,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = value;
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(value);
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
     return;
   }
 
@@ -2289,7 +2301,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(value);
     pushDebug(`Loading ${value}`);
-    syncBzzBase(null);
+    syncTargetBzzBase(null);
     return;
   }
 

@@ -24,6 +24,7 @@ const {
 const { getActiveProfile } = require('./profile-resolver');
 const { withPrivateDir } = require('./private-files');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
+const { withPasswordAttempt } = require('./identity/password-attempts');
 
 // Identity module - loaded lazily
 let identityModule = null;
@@ -1520,8 +1521,9 @@ async function deleteVaultData(password) {
  * Startup repair (K-3): the vault and the quick-unlock credential an older
  * build wrote with the umask's mode (usually 0644) become owner-only,
  * through a no-follow descriptor, so a link planted at either name is left
- * alone. This only repairs the vault's mode: vault.js still writes it with
- * a plain writeFileSync here (an atomic owner-only vault write is #939's).
+ * alone. For the vault this only narrows its mode before anything reads it:
+ * vault.js owns the vault's own reads and writes (#939: it narrows on read
+ * and replaces the file atomically through an owner-only temp file).
  * quick-unlock.js reads and writes the credential through the same
  * directory handle as here.
  */
@@ -1611,9 +1613,11 @@ function registerIdentityIpc() {
   });
 
   // Unlock vault
+  // Every handler that checks the vault password goes through the shared
+  // wrong-password back-off (K-4).
   ipcMain.handle(IPC.IDENTITY_UNLOCK, async (_event, password) => {
     try {
-      await unlockVault(password);
+      await withPasswordAttempt(() => unlockVault(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1657,7 +1661,7 @@ function registerIdentityIpc() {
       }
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const mnemonic = await exportMnemonic();
       return { success: true, mnemonic };
     } catch (err) {
@@ -1674,7 +1678,7 @@ function registerIdentityIpc() {
       assertPrivateKeyExportable(accountIndex);
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const privateKey = await exportPrivateKeyForAccount(accountIndex);
       return { success: true, privateKey };
     } catch (err) {
@@ -1685,7 +1689,7 @@ function registerIdentityIpc() {
   // Change password
   ipcMain.handle(IPC.IDENTITY_CHANGE_PASSWORD, async (_event, currentPassword, newPassword) => {
     try {
-      await changeVaultPassword(currentPassword, newPassword);
+      await withPasswordAttempt(() => changeVaultPassword(currentPassword, newPassword));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1695,7 +1699,7 @@ function registerIdentityIpc() {
   // Delete vault
   ipcMain.handle(IPC.IDENTITY_DELETE_VAULT, async (_event, password) => {
     try {
-      await deleteVaultData(password);
+      await withPasswordAttempt(() => deleteVaultData(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };

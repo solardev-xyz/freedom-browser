@@ -13,6 +13,11 @@ jest.mock('electron', () => ({
   },
 }));
 
+// The private-window guard is covered through the real classifier and
+// permission store in radicle-provider-private.test.js; here every sender
+// counts as a known public window.
+jest.mock('../private/private-sender', () => ({ isPrivateSender: () => false }));
+
 jest.mock('../logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
@@ -117,7 +122,7 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
     return { success: true, status: mockSeedFetchStatus };
   });
 
-  await executeHandler({}, {
+  await executeHandler({ sender: { id: 1 } }, {
     method: 'radicle_seed',
     params: { rid: RID },
     origin: ORIGIN,

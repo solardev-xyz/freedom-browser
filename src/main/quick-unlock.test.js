@@ -312,6 +312,89 @@ describe('quick-unlock', () => {
     });
   });
 
+  // K-4: the wrong-password back-off covers the typed enrolment password,
+  // not the password Touch ID reads back from secure storage.
+  describe('wrong-password back-off', () => {
+    function setup(verifyPassword) {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      fs.writeFileSync(path.join(identityDir, 'quick-unlock.dat'), Buffer.from('encrypted:right'));
+      return loadQuickUnlock({
+        activeProfile: makeProfile('default', userDataDir),
+        userDataDir,
+        verifyPasswordImpl: verifyPassword,
+      });
+    }
+
+    const byPassword = () =>
+      jest.fn(async (_dir, password) => {
+        if (password !== 'right') throw new Error('Incorrect password');
+      });
+
+    test('a lock-out from wrong typed passwords refuses enrolment but not Touch ID', async () => {
+      const verifyPassword = byPassword();
+      const { mod, systemPreferences } = setup(verifyPassword);
+      for (let i = 0; i < 3; i += 1) {
+        await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+          success: false,
+          error: 'Incorrect password',
+        });
+      }
+      expect(verifyPassword).toHaveBeenCalledTimes(3);
+
+      // Enrolment is locked out: no check, no Touch ID prompt.
+      const enrol = await mod.enableQuickUnlock('right');
+      expect(enrol.success).toBe(false);
+      expect(enrol.error).toMatch(/Too many wrong passwords/);
+      expect(verifyPassword).toHaveBeenCalledTimes(3);
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+
+      // Touch ID still unlocks, checking the stored password.
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(verifyPassword).toHaveBeenCalledTimes(4);
+      expect(verifyPassword).toHaveBeenLastCalledWith(expect.any(String), 'right');
+    });
+
+    test('a stale stored credential does not count toward the lock-out', async () => {
+      const verifyPassword = byPassword();
+      const { mod } = setup(verifyPassword);
+      for (let i = 0; i < 2; i += 1) await mod.enableQuickUnlock('wrong');
+
+      // The vault password changed since enrolment: Touch ID's check fails.
+      verifyPassword.mockRejectedValueOnce(new Error('Incorrect password'));
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Incorrect password',
+      });
+
+      // Still the third typed failure, so still checked, not locked out.
+      await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+        success: false,
+        error: 'Incorrect password',
+      });
+    });
+
+    test('a Touch ID unlock resets the count like a right typed password', async () => {
+      const verifyPassword = byPassword();
+      const { mod } = setup(verifyPassword);
+      for (let i = 0; i < 3; i += 1) await mod.enableQuickUnlock('wrong');
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+
+      // Count and lock-out are cleared: three wrong typed passwords are
+      // free again (each is checked, none refused) before any lock-out.
+      for (let i = 0; i < 3; i += 1) {
+        await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+          success: false,
+          error: 'Incorrect password',
+        });
+      }
+      expect(verifyPassword).toHaveBeenCalledTimes(7);
+      const locked = await mod.enableQuickUnlock('right');
+      expect(locked.error).toMatch(/Too many wrong passwords/);
+    });
+  });
+
   // Security audit O-8: after Touch ID, main finishes the job itself and
   // the stored vault password never crosses IPC to any renderer.
   describe('never returns the vault password', () => {
