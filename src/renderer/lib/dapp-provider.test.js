@@ -955,6 +955,77 @@ describe('dapp-provider uses the chain the page sees', () => {
     expect(ctx.walletUi.showDappTxApproval).toHaveBeenCalledWith(tabA, 'https://app.example', tx, 1);
   });
 
+  test('a webview that throws on send is skipped, keeps its chain, and blocks no other page', async () => {
+    const ctx = await loadProvider({
+      permissionsByKey: {
+        'https://app.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+        'https://detached.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+        'https://other.example': { walletIndex: 0, chainId: 100, autoApprove: {} },
+      },
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const detached = ctx.addWebview({ url: 'https://detached.example', webContentsId: 77 });
+    ctx.commitMainFrameOf(detached, MAIN_FRAME);
+    const other = ctx.addWebview({ url: 'https://other.example', webContentsId: 78 });
+    ctx.commitMainFrameOf(other, MAIN_FRAME);
+    for (const wv of [ctx.webview, detached, other]) {
+      ctx.sendRequestFrom(wv, { id: 1, method: 'eth_chainId', params: [] });
+    }
+    await flushMicrotasks();
+    const send = detached.send;
+    detached.send = jest.fn((channel, ...rest) => {
+      if (channel === 'dapp:provider-event') throw new Error('The WebView must be attached');
+      return send(channel, ...rest);
+    });
+
+    expect(() => moveWalletChain(ctx, 1)).not.toThrow();
+    for (const wv of [ctx.webview, other]) {
+      expect(chainEventsSentTo(wv)).toEqual([
+        ['dapp:provider-event', { event: 'chainChanged', data: '0x1' }],
+      ]);
+    }
+
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    ctx.sendRequestFrom(detached, { id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenCalledWith(detached, 'https://detached.example', tx, 100);
+  });
+
+  test("a closed tab's webview, gone from the DOM, is dropped and never sent to", async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    const closed = ctx.addWebview({ url: 'https://other.example', webContentsId: 77 });
+    ctx.commitMainFrameOf(closed, MAIN_FRAME);
+    closed.isConnected = false;
+
+    moveWalletChain(ctx, 1);
+    closed.isConnected = true; // were it still tracked, this one would be told
+    moveWalletChain(ctx, 5);
+
+    expect(chainEventsSentTo(closed)).toEqual([]);
+    expect(chainEventsSentTo(ctx.webview)).toEqual([
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x1' }],
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x5' }],
+    ]);
+  });
+
+  test('the Agent wallet handoff gets the chain the page was told', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    ctx.webview.dataset.tabId = '7';
+    window.electronAPI.handleAgentWalletRequest = jest.fn(async () => ({ handled: true, result: '0xagent' }));
+    ctx.sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    ctx.walletUi.getSelectedChainId.mockReturnValue(1);
+
+    ctx.sendRequest({ id: 2, method: 'eth_sendTransaction', params: [{ to: '0xc0ffee', data: TX_DATA }] });
+    await flushMicrotasks();
+    expect(window.electronAPI.handleAgentWalletRequest).toHaveBeenCalledWith(
+      7, expect.objectContaining({ method: 'eth_sendTransaction', chainId: 100 }));
+  });
+
   test('"All Chains" tells the page Gnosis; untold, its transaction keeps the chain it saw', async () => {
     const ctx = await loadProvider({
       permission: { walletIndex: 0, chainId: 100, autoApprove: {} },

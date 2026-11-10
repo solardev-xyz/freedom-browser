@@ -242,12 +242,21 @@ function pageChainId(webview, told) {
   return parseInt(told ?? selectedChainHex(), 16);
 }
 
-/** Tell one page the chain, unless that is what it was last told. */
+/**
+ * Tell one page the chain, unless that is what it was last told. A webview
+ * whose guest isn't attached (yet, or any more) throws on send: it keeps the
+ * chain it was last told, and the other pages are still told.
+ */
 function tellChain(webview, chainIdHex) {
-  if (!webview || getOnchainApp(webview)) return;
+  if (!webview?.send || getOnchainApp(webview)) return;
   if (toldChains.get(webview) === chainIdHex) return;
+  try {
+    webview.send('dapp:provider-event', { event: 'chainChanged', data: chainIdHex });
+  } catch (err) {
+    console.warn('[DappProvider] Could not send chainChanged:', err?.message || err);
+    return;
+  }
   toldChains.set(webview, chainIdHex);
-  sendProviderEvent(webview, 'chainChanged', chainIdHex);
 }
 
 /**
@@ -260,7 +269,16 @@ export function syncPagesToSelectedChain() {
   const chainIdHex = selectedChainHex();
   const targets = new Set(providerWebviews);
   if (activeWebview) targets.add(activeWebview);
-  for (const webview of targets) tellChain(webview, chainIdHex);
+  for (const webview of targets) {
+    // A closed tab's webview is removed from the DOM without a `destroyed`
+    // event reaching us first: drop it rather than keep it (and a failing
+    // send) for the rest of the session.
+    if (webview.isConnected === false) {
+      providerWebviews.delete(webview);
+      continue;
+    }
+    tellChain(webview, chainIdHex);
+  }
 }
 
 /**
