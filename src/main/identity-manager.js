@@ -894,7 +894,7 @@ function radicleInjectionError(err, bee) {
       'identity; Radicle keeps its old one. Run identity setup again to re-key Radicle.';
   } else {
     message = `Radicle was not given the new identity: ${reason}. ` +
-      'Run identity setup again to retry.';
+      "Ant's identity was not changed either. Run identity setup again to retry.";
   }
   const wrapped = new Error(message);
   wrapped.code = err?.code;

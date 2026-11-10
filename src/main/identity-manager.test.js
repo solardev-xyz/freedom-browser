@@ -1052,20 +1052,39 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
   test('a Radicle failure after Ant was re-keyed names which node has which identity (R-8)', async () => {
     seedBeeInjected();
     seedRadicleInjected();
-    const mgr = loadIdentityManager(dataDirs);
-    await mgr.createNewVault('password-123');
-    mgr.setBeeLifecycle({ stop: async () => false });
-    mgr.setRadicleLifecycle({
-      withStopped: async (work) => {
-        // Ant's re-key runs inside; then Radicle's own step fails.
-        await work();
-        throw new Error('disk full');
-      },
-    });
-    const err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
-    expect(err.message).toMatch(/Radicle was not given the new identity: disk full/);
+    const radicleStorage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(radicleStorage, { recursive: true });
+    fs.mkdirSync(path.join(dataDirs.bee, 'statestore'), { recursive: true });
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    // Ant's wipe works; Radicle's own wipe, inside its section, fails.
+    const actual = jest.requireActual('./fs-offload');
+    let err;
+    try {
+      const mgr = loadIdentityManager(dataDirs, {
+        removePath: async (target, opts) => {
+          if (target.startsWith(dataDirs.radicle)) {
+            throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+          }
+          return actual.removePath(target, opts);
+        },
+      });
+      await mgr.createNewVault('password-123');
+      const beeStop = jest.fn(async () => false);
+      mgr.setBeeLifecycle({ stop: beeStop });
+      mgr.setRadicleLifecycle({ withStopped: async (work) => work() });
+      err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+      expect(beeStop).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Radicle was not given the new identity: permission denied/);
     expect(err.message).toMatch(/Ant already uses the new identity; Radicle keeps its old one/);
     expect(err.message).toMatch(/Run identity setup again/);
+    // Ant's state was reset for its new key; Radicle's key and data were not.
+    expect(fs.existsSync(path.join(dataDirs.bee, 'statestore'))).toBe(false);
+    expect(fs.readFileSync(keyPath, 'utf8')).toBe('key');
+    expect(fs.existsSync(radicleStorage)).toBe(true);
   });
 
   test('an Ant failure inside Radicle\'s section is reported as it is (R-8)', async () => {
@@ -1089,8 +1108,12 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
         return work();
       },
     });
-    const err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
-    jest.dontMock(require.resolve('./fs-offload'));
+    let err;
+    try {
+      err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe('permission denied');
     // Radicle's own wipe never ran.

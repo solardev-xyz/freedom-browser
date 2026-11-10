@@ -214,12 +214,24 @@ async function start(home, alias) {
 // The node counts as stopped only on the add-on's proof: its shutdown
 // resolves after the node's thread has joined. A rejection proves nothing
 // (the thread may still hold the home's files), so the node still counts as
-// started, and a re-key refuses to wipe under it (R-8).
-async function shutdown() {
-  if (!started) return { ok: true };
-  const result = await call('shutdown');
-  started = false;
-  return result;
+// started, and a re-key refuses to wipe under it (R-8). A shutdown asked for
+// while one is still in flight (the manager stops waiting after a timeout,
+// and the user can stop again) waits on that one: the add-on is never asked
+// to shut down twice at once.
+let shuttingDown = null;
+function shutdown() {
+  if (!started) return Promise.resolve({ ok: true });
+  if (!shuttingDown) {
+    shuttingDown = call('shutdown')
+      .then((result) => {
+        started = false;
+        return result;
+      })
+      .finally(() => {
+        shuttingDown = null;
+      });
+  }
+  return shuttingDown;
 }
 
 function isStarted() {
