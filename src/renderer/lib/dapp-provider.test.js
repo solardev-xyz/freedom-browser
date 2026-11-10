@@ -1142,6 +1142,42 @@ describe('dapp-provider uses the chain the page sees', () => {
       ctx.webview, 'https://app.example', tx, 100);
   });
 
+  test('an eth_chainId answer that fails to send records nothing', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    const send = ctx.webview.send;
+    ctx.webview.send = jest.fn(() => {
+      throw new Error('The WebView must be attached');
+    });
+    ctx.walletUi.getSelectedChainId.mockReturnValue(1);
+    ctx.sendRequest({ id: 1, method: 'eth_chainId', params: [] });
+    await flushMicrotasks();
+    expect(ctx.webview.send).toHaveBeenCalledWith('dapp:provider-response', expect.objectContaining({ id: 1 }));
+
+    // Reattached; the selection moved on without a sync. The page never
+    // heard 0x1, so its transaction is for the wallet's chain.
+    ctx.webview.send = send;
+    ctx.walletUi.getSelectedChainId.mockReturnValue(100);
+    ctx.sendRequest({ id: 2, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenLastCalledWith(
+      ctx.webview, 'https://app.example', tx, 100);
+  });
+
+  test('a connect with no chain ("All Chains", no pin) tells the chain eth_chainId answers', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: null, autoApprove: {} },
+    });
+    ctx.walletUi.getSelectedChainId.mockReturnValue(null);
+    expect(() => ctx.mod.emitConnect(ctx.webview, null)).not.toThrow();
+    expect(ctx.webview.send).toHaveBeenCalledWith('dapp:provider-event', {
+      event: 'connect', data: { chainId: '0x64' },
+    });
+  });
+
   test('emitChainChanged records the chain it told the page', async () => {
     const ctx = await loadProvider({
       permission: { walletIndex: 0, chainId: 100, autoApprove: {} },

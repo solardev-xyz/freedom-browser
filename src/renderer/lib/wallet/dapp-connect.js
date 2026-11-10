@@ -352,7 +352,9 @@ async function approveDappConnect() {
       });
       // Through the provider, so the chain this tells the page is recorded
       // as the one its transactions and signatures go to.
-      emitConnect(webview, '0x' + grantedChainId.toString(16));
+      // "All Chains" with no pin grants no chain: the provider then tells
+      // the page the chain eth_chainId would answer.
+      emitConnect(webview, grantedChainId ? '0x' + grantedChainId.toString(16) : null);
     }
 
     console.log('[WalletUI] dApp connected:', permissionKey, '→', wallet.address);

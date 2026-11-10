@@ -384,6 +384,23 @@ describe('dapp-connect prompt', () => {
       'dapp:provider-event', expect.objectContaining({ event: 'connect' }));
   });
 
+  // "All Chains" with no onchain pin grants no chain: connect must still
+  // reach the page (the provider resolves the chain) and the banner update.
+  test('approval under "All Chains" still tells the page and finishes', async () => {
+    const { elements, openConnect, emitConnect, grantPermission } = await loadDappConnectPrompt();
+    require('./wallet-state.js').walletState.selectedChainId = null;
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const first = openConnect('https://app.example');
+
+    elements['dapp-connect-approve'].dispatch('click');
+    await flush();
+    expect(first.state).toBe('resolved');
+    expect(grantPermission).toHaveBeenCalledWith('https://app.example', expect.anything(), null);
+    expect(emitConnect).toHaveBeenCalledWith(first.webview, null);
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   test("an earlier request's favicon never lands on a later one", async () => {
     const { elements, openConnect } = await loadDappConnectPrompt();
     let faviconA;

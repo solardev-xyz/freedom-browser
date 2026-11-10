@@ -447,8 +447,10 @@ async function handleProviderRequest(webview, request) {
 
     // Send success response — unless the requesting document is gone
     if (getNavigationGeneration(webview) !== generation) return;
-    if (answeredChainHex && !getOnchainApp(webview)) toldChains.set(webview, answeredChainHex);
-    sendProviderResponse(webview, id, result, null);
+    const delivered = sendProviderResponse(webview, id, result, null);
+    if (delivered && answeredChainHex && !getOnchainApp(webview)) {
+      toldChains.set(webview, answeredChainHex);
+    }
   } catch (error) {
     // Never deliver a stale response (success or error) into a replacement
     // document — request ids can be reused across navigations.
@@ -719,11 +721,19 @@ async function handleSwitchChain(params, permissionKey, webview) {
  */
 function sendProviderResponse(webview, id, result, error) {
   console.log('[DappProvider] sendProviderResponse:', { id, result, error, hasWebview: !!webview, hasSend: !!(webview && webview.send) });
-  if (webview && webview.send) {
-    webview.send('dapp:provider-response', { id, result, error });
-  } else {
+  if (!webview || !webview.send) {
     console.error('[DappProvider] Cannot send response - webview or send missing');
+    return false;
   }
+  // A guest that detached since the request arrived throws on send: nothing
+  // was delivered, so the caller records nothing (see tellChain).
+  try {
+    webview.send('dapp:provider-response', { id, result, error });
+  } catch (err) {
+    console.warn('[DappProvider] Could not send response:', err?.message || err);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -819,10 +829,14 @@ export function emitChainChanged(webview, chainId) {
 /**
  * Emit connect to a webview, which tells the page a chain just as
  * chainChanged does: record it, once delivered, so the page's transactions
- * and signatures go to the chain it was told here.
+ * and signatures go to the chain it was told here. A missing chainId means
+ * the wallet's selection, as eth_chainId answers it.
  */
 export function emitConnect(webview, chainId) {
   if (!webview?.send) return;
+  // No chain (a grant made under "All Chains", no pin): the chain the page
+  // would be answered for eth_chainId.
+  if (!chainId) chainId = selectedChainHex();
   try {
     webview.send('dapp:provider-event', { event: 'connect', data: { chainId } });
   } catch (err) {
