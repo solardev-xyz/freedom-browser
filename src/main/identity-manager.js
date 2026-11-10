@@ -69,6 +69,26 @@ function setBeeLifecycle(hooks = {}) {
   };
 }
 
+// Optional Radicle node lifecycle hook, wired by the main process (see
+// index.js). The embedded node writes node/, cobs/ and storage/ while it
+// runs, so a re-key must stop it, with proof that it stopped, before wiping
+// them (R-8). `withStopped(work)` runs `work` as one operation of the node's
+// lifecycle queue (radicle-manager withRadicleStopped): it stops the node
+// (throwing, without running `work`, when the stop is not proven), awaits
+// `work`, and restarts a node that was running. Starts, alias changes and
+// other re-keys queue behind it.
+let radicleLifecycle = { withStopped: null };
+
+/**
+ * Register the Radicle node lifecycle hook used around identity (re)injection.
+ * @param {{withStopped?: <T>(work: () => Promise<T>) => Promise<T>}} hooks
+ */
+function setRadicleLifecycle(hooks = {}) {
+  radicleLifecycle = {
+    withStopped: typeof hooks.withStopped === 'function' ? hooks.withStopped : null,
+  };
+}
+
 // Cached derived keys. Valid only while the vault is unlocked: every lock
 // path clears them (an explicit lock, the vault's inactivity auto-lock, a
 // vault delete), and every reader goes through getDerivedKeys(), which also
@@ -926,7 +946,11 @@ async function injectIpfsIdentity(epoch = currentVaultEpoch()) {
  * @param {string} alias - Node alias
  * @returns {Promise<{did: string}>}
  */
-async function injectRadicleIdentity(alias = 'FreedomBrowser', epoch = currentVaultEpoch()) {
+async function injectRadicleIdentity(
+  alias = 'FreedomBrowser',
+  epoch = currentVaultEpoch(),
+  { beforeRekey = null } = {}
+) {
   // Bound to the vault epoch, like injectBeeIdentity (K-1).
   keysForEpoch(epoch);
 
@@ -939,28 +963,47 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser', epoch = currentVa
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // A keys/ Freedom refuses ends here, before node/cobs/storage are wiped.
+  // A keys/ Freedom refuses ends here, before the node is stopped and
+  // node/cobs/storage are wiped (K-3).
   assertNodeKeysDirUsable(dataDir);
 
-  // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
-  // routing db, etc.) becomes invalid. Remove stale state directories.
-  const staleDirs = ['node', 'cobs', 'storage'];
-  for (const dir of staleDirs) {
-    if (await removePathWithRetry(path.join(dataDir, dir))) {
-      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+  // The wipe and the key write, with the node stopped (R-8). They run inside
+  // one operation of the node's lifecycle queue: the node is stopped, with
+  // the add-on's proof, before the first removal, and nothing starts it
+  // again until the key is written (or the injection fails); then it
+  // restarts if it was running. A stop without proof throws before any of
+  // this, and the data is left alone. `beforeRekey` runs first inside the
+  // section, once the stop is proved: injectAllIdentities re-keys Ant there,
+  // so no node changes identity unless Radicle can change it too.
+  const rekey = async () => {
+    if (beforeRekey) await beforeRekey();
+    keysForEpoch(epoch);
+    assertNodeKeysDirUsable(dataDir);
+
+    // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
+    // routing db, etc.) becomes invalid. Remove stale state directories.
+    const staleDirs = ['node', 'cobs', 'storage'];
+    for (const dir of staleDirs) {
+      if (await removePathWithRetry(path.join(dataDir, dir))) {
+        console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+      }
     }
-  }
 
-  // Read from the cache only now, after every await.
-  const { radicleKey } = keysForEpoch(epoch);
-  const did = identity.injectRadicleKey(
-    dataDir,
-    radicleKey.privateKey,
-    radicleKey.publicKey,
-    alias
-  );
+    // Read from the cache only now, after every await.
+    const { radicleKey } = keysForEpoch(epoch);
+    const injected = identity.injectRadicleKey(
+      dataDir,
+      radicleKey.privateKey,
+      radicleKey.publicKey,
+      alias
+    );
 
-  injectedNodes.radicle = true;
+    injectedNodes.radicle = true;
+    return injected;
+  };
+  const did = radicleLifecycle.withStopped
+    ? await radicleLifecycle.withStopped(rekey)
+    : await rekey();
 
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
   return { did };
@@ -979,6 +1022,33 @@ async function injectNodeUnlessRefused(label, inject) {
     console.warn(`[IdentityManager] ${label} identity not injected:`, err.message);
     return { refused: true, error: err.message };
   }
+}
+
+/**
+ * The error a failed Radicle injection reaches onboarding with, saying which
+ * node has which identity and how to retry (R-8). `bee` is Ant's result when
+ * Ant was already re-keyed in the same run, else null.
+ */
+function radicleInjectionError(err, bee) {
+  const reason = err?.message || String(err);
+  let message;
+  if (err?.code === 'RADICLE_NOT_STOPPED') {
+    message =
+      `Radicle node could not be stopped, so no node was given the new identity: ${reason}. ` +
+      'Ant and Radicle keep their current identities. Stop Radicle (or restart Freedom) ' +
+      'and run identity setup again.';
+  } else if (bee && !bee.refused && !bee.alreadyInjected) {
+    message =
+      `Radicle was not given the new identity: ${reason}. Ant already uses the new ` +
+      'identity; Radicle keeps its old one. Run identity setup again to re-key Radicle.';
+  } else {
+    message = `Radicle was not given the new identity: ${reason}. ` +
+      "Ant's identity was not changed either. Run identity setup again to retry.";
+  }
+  const wrapped = new Error(message);
+  wrapped.code = err?.code;
+  wrapped.cause = err;
+  return wrapped;
 }
 
 /**
@@ -1005,21 +1075,29 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
 
   // Inject Bee (only if not already injected OR force)
   // Bee generates its own random keystore password internally
-  results.bee = await injectNodeUnlessRefused('Ant', async () => {
-    if (!force && isBeeIdentityInjected()) {
-      return { address: keysForEpoch(epoch).beeWallet.address, alreadyInjected: true };
-    }
-    const wasInjected = isBeeIdentityInjected();
-    const bee = await injectBeeIdentity(epoch);
-    if (wasInjected && force) {
-      // Bee's restart is owned by injectBeeIdentity (via the lifecycle hook),
-      // which stops the lock-holding node before the wipe and starts it again
-      // with the new key. Deliberately NOT added to needsRestart so the
-      // renderer doesn't restart Bee a second time (issue #90).
-      bee.reinjected = true;
-    }
-    return bee;
-  });
+  let beeDone = false;
+  let beeError = null;
+  const injectBee = async () => {
+    results.bee = await injectNodeUnlessRefused('Ant', async () => {
+      if (!force && isBeeIdentityInjected()) {
+        return { address: keysForEpoch(epoch).beeWallet.address, alreadyInjected: true };
+      }
+      const wasInjected = isBeeIdentityInjected();
+      const bee = await injectBeeIdentity(epoch);
+      if (wasInjected && force) {
+        // Bee's restart is owned by injectBeeIdentity (via the lifecycle hook),
+        // which stops the lock-holding node before the wipe and starts it again
+        // with the new key. Deliberately NOT added to needsRestart so the
+        // renderer doesn't restart Bee a second time (issue #90).
+        bee.reinjected = true;
+      }
+      return bee;
+    }).catch((err) => {
+      beeError = err;
+      throw err;
+    });
+    beeDone = true;
+  };
 
   // Native freedom-ipfs uses ephemeral libp2p identities for read-only
   // retrieval today. Keep this in the result so onboarding can show IPFS as an
@@ -1030,26 +1108,44 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
   // carry-over of an older profile's Radicle home first: judged against a
   // short home still being migrated, the identity would read as missing and
   // re-injection would wipe the node/cobs/storage that are on their way in.
-  results.radicle = await injectNodeUnlessRefused('Radicle', async () => {
-    await prepareRadicleDataDir();
-    if (force || !isRadicleIdentityInjected()) {
-      const wasInjected = isRadicleIdentityInjected();
-      const radicle = await injectRadicleIdentity(radicleAlias, epoch);
-      if (wasInjected && force) {
-        radicle.reinjected = true;
-        results.needsRestart.push('radicle');
+  //
+  // When Radicle is re-keyed, Ant is re-keyed inside Radicle's stopped
+  // section (R-8): only once Radicle's node is proved stopped. A Radicle stop
+  // that fails then changes no node's keys; a later Radicle failure says
+  // that Ant already has the new identity and Radicle does not.
+  try {
+    results.radicle = await injectNodeUnlessRefused('Radicle', async () => {
+      await prepareRadicleDataDir();
+      if (force || !isRadicleIdentityInjected()) {
+        const wasInjected = isRadicleIdentityInjected();
+        const radicle = await injectRadicleIdentity(radicleAlias, epoch, {
+          beforeRekey: beeDone ? null : injectBee,
+        });
+        if (wasInjected && force) {
+          // Radicle's restart is owned by injectRadicleIdentity (the lifecycle
+          // hook stops the node before the wipe and restarts it after), so it
+          // is not in needsRestart: the renderer would restart it a second time.
+          radicle.reinjected = true;
+        }
+        return radicle;
       }
-      return radicle;
-    }
-    const identity = await loadIdentityModule();
-    const { radicleKey } = keysForEpoch(epoch);
-    const radicleIdentity = identity.createRadicleIdentity(
-      radicleKey.privateKey,
-      radicleKey.publicKey,
-      radicleAlias
-    );
-    return { did: radicleIdentity.did, alreadyInjected: true };
-  });
+      const identity = await loadIdentityModule();
+      const { radicleKey } = keysForEpoch(epoch);
+      const radicleIdentity = identity.createRadicleIdentity(
+        radicleKey.privateKey,
+        radicleKey.publicKey,
+        radicleAlias
+      );
+      return { did: radicleIdentity.did, alreadyInjected: true };
+    });
+  } catch (err) {
+    // Ant's own failure, inside Radicle's section, is reported as it is.
+    if (err === beeError) throw err;
+    throw radicleInjectionError(err, beeDone ? results.bee : null);
+  }
+
+  // Radicle needed no re-key, or its home was refused before the section.
+  if (!beeDone) await injectBee();
 
   console.log('[IdentityManager] All identities injected/verified');
   return results;
@@ -2139,6 +2235,7 @@ module.exports = {
 
   // Identity injection
   setBeeLifecycle,
+  setRadicleLifecycle,
   reencryptBeeKeystore,
   closeVaultAuthority,
   repairIdentityFiles,
