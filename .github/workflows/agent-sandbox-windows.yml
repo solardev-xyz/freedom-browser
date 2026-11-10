@@ -1,98 +1,52 @@
-name: Agent Windows sandbox
-
+name: Windows junction fixture diagnostic
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'src/main/agent/**'
-      - 'scripts/*windows*'
-      - 'test-e2e/agent-sidebar.spec.js'
-      - '.github/workflows/agent-sandbox-windows.yml'
-      - 'package*.json'
-  push:
-    branches: [experiment/agent-windows-mxc]
-    paths:
-      - '.github/workflows/agent-sandbox-windows.yml'
-
 permissions:
   contents: read
-
 jobs:
-  sandbox:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2022, windows-2025]
-    runs-on: ${{ matrix.os }}
-    concurrency:
-      group: agent-windows-native-${{ github.ref }}-${{ matrix.os }}
-      cancel-in-progress: true
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: pwsh
+  fixture:
+    runs-on: windows-2022
+    timeout-minutes: 8
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-      - uses: ./.github/actions/install-node-deps
-      - name: Build the pinned native sandbox with installed MSVC
+      - name: Probe owned junction fixtures with the pinned Rust toolchain
+        shell: pwsh
         run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (!$vs) { throw 'Installed x64 MSVC tools are required' }
-          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           rustup toolchain install 1.95.0 --profile minimal
-          if ($LASTEXITCODE) { throw 'Rust toolchain setup failed' }
-          node scripts/build-windows-workspace.js
-          if ($LASTEXITCODE) { throw 'Sandbox build failed' }
-      # Provision only the disposable hosted runner. Real standard-user setup
-      # and UAC are additionally qualified on a Windows desktop, not inferred
-      # from this administrator-run CI job.
-      - name: Provision disposable runner sandbox accounts
-        run: |
-          $request = @{version=1;operation='setup';backend='elevated';home="$env:LOCALAPPDATA\FreedomBrowser\Sandbox";user=(& whoami).Trim()} | ConvertTo-Json -Compress
-          $request | & .\out\windows-workspace\x64\freedom-windows-workspace.exe
-          if ($LASTEXITCODE) { throw 'Sandbox provisioning failed' }
-          New-Item -ItemType Directory -Force C:\freedom-agent-tests | Out-Null
-      - name: Qualify native execution and the real Electron controller
-        env:
-          NODE_ENV: test
-        run: |
-          node scripts/qualify-windows-workspace.js --root C:\freedom-agent-tests
-          if ($LASTEXITCODE) { throw 'Native workspace qualification failed' }
-          $env:ELECTRON_RUN_AS_NODE = '1'
-          node -e "const r=require('child_process').spawnSync(require('electron'),['scripts/qualify-windows-controller.js','--root','C:/freedom-agent-tests'],{stdio:'inherit',timeout:300000});if(r.error)console.error(r.error);process.exitCode=r.status??1"
-          if ($LASTEXITCODE) { throw 'Controller qualification failed' }
-      - name: Qualify offline DNS through the shared Windows resolver
-        run: |
-          node scripts/qualify-windows-dns.js
-          if ($LASTEXITCODE) { throw 'Offline DNS qualification failed' }
-      - name: Qualify app startup and delegated project edits
-        env:
-          TEMP: C:\freedom-agent-tests
-          TMP: C:\freedom-agent-tests
-        run: |
-          node node_modules/@playwright/test/cli.js test test-e2e/agent-sidebar.spec.js --project=harness --timeout=90000 --grep 'Agent stays hidden throughout startup|scoped helper edits|parallel helper and parent edits'
-          if ($LASTEXITCODE) { throw 'App qualification failed' }
-      - name: Retain qualification evidence and native distribution
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: agent-windows-sandbox-${{ matrix.os }}
-          path: |
-            out/windows-workspace/x64/
-            test-results/
-          retention-days: 14
-      - name: Retain qualification receipts from the test drive
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: agent-windows-receipts-${{ matrix.os }}
-          path: C:/freedom-agent-tests/**/results.jsonl
-          retention-days: 14
+          if ($LASTEXITCODE) { throw 'Pinned Rust setup failed' }
+          $source = @'
+          use std::{env, fs, path::{Path,PathBuf}, process::Command};
+          use std::os::windows::process::CommandExt;
+          fn normal(p:&Path)->PathBuf {
+              let text=p.to_string_lossy();
+              PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+          }
+          fn probe(label:&str,cmd:&Path,link:&Path,target:&Path,raw:bool) {
+              let mut child=Command::new(cmd);
+              if raw { child.raw_arg(format!(r#"/d /c mklink /J "{}" "{}""#,link.display(),target.display())); }
+              else { child.args(["/d","/c","mklink","/J"]).arg(link).arg(target); }
+              let output=child.output().unwrap();
+              println!("{label}: cmd={cmd:?} link={link:?} target={target:?} status={:?} stdout={:?} stderr={:?}",
+                  output.status.code(),String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+          }
+          fn main() {
+              let home=env::temp_dir().join(format!("freedom-junction-probe-{}",std::process::id()));
+              fs::create_dir(&home).unwrap();
+              let target=home.join("target"); fs::create_dir(&target).unwrap();
+              println!("TEMP={:?} home={home:?} canonical={:?}",env::var_os("TEMP"),fs::canonicalize(&home));
+              let root=PathBuf::from(env::var_os("SystemRoot").unwrap());
+              let cmd=root.join("System32/cmd.exe");
+              probe("args",&cmd,&home.join("link-args"),&target,false);
+              probe("args-dangling",&cmd,&home.join("link-dangling"),&home.join("absent"),false);
+              probe("raw",&cmd,&home.join("link-raw"),&target,true);
+              let home=normal(&fs::canonicalize(&home).unwrap());
+              probe("normalized-args",&root.join("System32").join("cmd.exe"),&home.join("link-normal"),&home.join("target"),false);
+              println!("std-symlink={:?}",std::os::windows::fs::symlink_dir(home.join("target"),home.join("link-std")));
+          }
+          '@
+          $probeSource = Join-Path $env:RUNNER_TEMP fixture-probe.rs
+          $probeExe = Join-Path $env:RUNNER_TEMP fixture-probe.exe
+          Set-Content -Path $probeSource -Value $source -Encoding utf8
+          rustup run 1.95.0 rustc --edition=2024 $probeSource -o $probeExe
+          if ($LASTEXITCODE) { throw 'Fixture probe compilation failed' }
+          & $probeExe
+          if ($LASTEXITCODE) { throw 'Fixture probe failed' }
