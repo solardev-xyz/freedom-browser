@@ -159,7 +159,10 @@ function setAutoApprove(origin, type, enabled) {
   if (!permissions[key].autoApprove) {
     permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
   }
-  permissions[key].autoApprove[type] = enabled;
+  // Only a literal `true` turns a rule on: these are written over IPC, and a
+  // truthy non-boolean must not leave a rule on that the chrome's toggle
+  // (lib/wallet/radicle-connection.js) and the provider read differently.
+  permissions[key].autoApprove[type] = enabled === true;
   permissionsCache = permissions;
   savePermissions();
 
