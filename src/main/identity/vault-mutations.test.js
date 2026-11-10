@@ -147,11 +147,33 @@ describe('vault mutations (K-2 review)', () => {
       const elsewhere = path.join(dir, 'elsewhere.json');
       fs.writeFileSync(elsewhere, '{}');
       fs.symlinkSync(elsewhere, vault.getVaultPath(dir));
-      await expect(vault.unlockVault(dir, 'oldpassword', 0)).rejects.toMatchObject({
-        code: 'ELOOP',
-      });
+      // vaultExists follows the link, so every reader reaches the refusal
+      // and has to explain it rather than surface a bare ELOOP (R1-M3).
+      expect(vault.vaultExists(dir)).toBe(true);
+      const symlinked = { code: 'ELOOP', message: expect.stringMatching(/is a symbolic link/) };
+      await expect(vault.unlockVault(dir, 'oldpassword', 0)).rejects.toMatchObject(symlinked);
+      await expect(vault.verifyPassword(dir, 'oldpassword')).rejects.toMatchObject(symlinked);
+      await expect(vault.changePassword(dir, 'oldpassword', 'newpassword')).rejects.toMatchObject(
+        symlinked
+      );
+      expect(fs.readFileSync(elsewhere, 'utf8')).toBe('{}');
     }
   );
+
+  test('temp files left by a crashed write are swept by the next mutation and by delete (R1-M1)', async () => {
+    await vault.importVault(dir, 'oldpassword', MNEMONIC_A);
+    const leftover = (n) => path.join(dir, `identity-vault.json.${4242 + n}.${'ab12cd34ef56'}.tmp`);
+    const unrelated = path.join(dir, 'identity-vault.json.notes.tmp');
+    fs.writeFileSync(leftover(0), fs.readFileSync(vault.getVaultPath(dir)));
+    fs.writeFileSync(unrelated, 'keep');
+
+    await vault.changePassword(dir, 'oldpassword', 'changedpassword');
+    expect(fs.existsSync(leftover(0))).toBe(false);
+
+    fs.writeFileSync(leftover(1), fs.readFileSync(vault.getVaultPath(dir)));
+    await vault.deleteVault(dir, 'changedpassword');
+    expect(fs.readdirSync(dir).sort()).toEqual([path.basename(unrelated)]);
+  });
 
   (process.platform === 'win32' ? test.skip : test)(
     'the temp file is fsynced, then renamed into place, then the directory fsynced',

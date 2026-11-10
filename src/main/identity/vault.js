@@ -55,7 +55,12 @@ function digestOf(bytes) {
  * @returns {{ bytes: Buffer, digest: string }}
  */
 function readVaultBytes(vaultPath) {
-  const fd = fs.openSync(vaultPath, READ_FLAGS);
+  let fd;
+  try {
+    fd = fs.openSync(vaultPath, READ_FLAGS);
+  } catch (err) {
+    throw symlinkedVaultError(vaultPath, err) || err;
+  }
   try {
     if (POSIX) {
       try {
@@ -69,6 +74,27 @@ function readVaultBytes(vaultPath) {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/**
+ * O_NOFOLLOW refuses a symbolic link at the vault's name with a bare ELOOP
+ * (EMLINK on some BSDs). Say what is actually wrong instead.
+ * @returns {Error|null}
+ */
+function symlinkedVaultError(vaultPath, err) {
+  if (!POSIX || (err.code !== 'ELOOP' && err.code !== 'EMLINK')) return null;
+  try {
+    if (!fs.lstatSync(vaultPath).isSymbolicLink()) return null;
+  } catch {
+    return null;
+  }
+  const error = new Error(
+    `The vault file ${vaultPath} is a symbolic link. Freedom only opens the vault ` +
+      'as a regular file: replace the link with the file it points to.',
+    { cause: err }
+  );
+  error.code = err.code;
+  return error;
 }
 
 /**
@@ -104,9 +130,38 @@ function readVaultFile(dataDir) {
 // creates must not both hand out a recovery phrase (K-2).
 const mutationChains = new Map();
 
+// Temp files writeVaultFile creates next to the vault (see tempPath there).
+const VAULT_TEMP_RE = /^identity-vault\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+
+/**
+ * Remove temp files a write left behind when its process died between
+ * creating the temp file and the rename (a hard crash skips the catch that
+ * would remove it). Each is a full encrypted copy of a recovery phrase, so
+ * one surviving a deleteVault would keep the deleted phrase on disk.
+ *
+ * Runs at the start of every vault mutation: mutations are serialized per
+ * data directory (withVaultMutation) and a profile's data directory belongs
+ * to a single running instance, so no live write owns a temp file then.
+ */
+function sweepVaultTempFiles(dataDir) {
+  let names;
+  try {
+    names = fs.readdirSync(dataDir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const name of names) {
+    if (VAULT_TEMP_RE.test(name)) fs.rmSync(path.join(dataDir, name), { force: true });
+  }
+}
+
 function withVaultMutation(dataDir, fn) {
   const key = path.resolve(dataDir);
-  const run = (mutationChains.get(key) || Promise.resolve()).then(() => fn());
+  const run = (mutationChains.get(key) || Promise.resolve()).then(() => {
+    sweepVaultTempFiles(dataDir);
+    return fn();
+  });
   const tail = run.catch(() => {});
   mutationChains.set(key, tail);
   tail.then(() => {
@@ -131,6 +186,34 @@ async function decryptVaultMnemonic(vaultData, password) {
       throw new Error('Incorrect password', { cause: err });
     }
     throw err;
+  }
+}
+
+// On Windows, renaming over a file another process holds open (antivirus,
+// the search indexer) fails for a moment with EPERM/EACCES/EBUSY, where the
+// in-place write this replaced never did; graceful-fs retries the same codes.
+// On POSIX these codes are permanent, so they are rethrown at once.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_DELAYS_MS = [10, 25, 50, 100, 200, 400, 800];
+
+/**
+ * Rename the temp file over the vault, but only while the vault is still the
+ * one the operation started from (checked again before every attempt).
+ */
+async function renameOverVault(tempPath, vaultPath, expectedDigest) {
+  for (let attempt = 0; ; attempt += 1) {
+    if (liveVaultDigest(vaultPath) !== expectedDigest) {
+      throw new Error('The vault changed while it was being saved; nothing was replaced');
+    }
+    try {
+      fs.renameSync(tempPath, vaultPath);
+      return;
+    } catch (err) {
+      const delay = RENAME_RETRY_DELAYS_MS[attempt];
+      if (POSIX || !RENAME_RETRY_CODES.has(err.code) || delay === undefined) throw err;
+      writeObserver?.('rename-retry', err.code);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
 }
 
@@ -175,10 +258,7 @@ async function writeVaultFile(vaultPath, vaultData, password, mnemonic, expected
       throw new Error('The new vault did not decrypt to the same recovery phrase');
     }
 
-    if (liveVaultDigest(vaultPath) !== expectedDigest) {
-      throw new Error('The vault changed while it was being saved; nothing was replaced');
-    }
-    fs.renameSync(tempPath, vaultPath);
+    await renameOverVault(tempPath, vaultPath, expectedDigest);
     writeObserver?.('renamed', vaultPath);
   } catch (err) {
     fs.rmSync(tempPath, { force: true });
@@ -383,6 +463,10 @@ function deleteVault(dataDir, password) {
     if (fs.existsSync(vaultPath)) {
       fs.unlinkSync(vaultPath);
     }
+    // withVaultMutation swept leftover temp copies before the password check;
+    // nothing can have written one since, but sweep again so the phrase is
+    // gone from the directory however this ran.
+    sweepVaultTempFiles(dataDir);
   });
 }
 

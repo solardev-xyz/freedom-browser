@@ -74,6 +74,18 @@ describe('vault writes survive a crash (K-2 review)', () => {
     await expect(opensWith(dir, 'oldpassword')).rejects.toThrow('Incorrect password');
   }, 60000);
 
+  test('a temp copy left by a crash does not outlive deleteVault (R1-M1)', async () => {
+    const child = crashDuringChange(dir, 'file-synced');
+    expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 42, stderr: '' });
+    const temps = () => fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'));
+    expect(temps()).toHaveLength(1);
+
+    await vault.deleteVault(dir, 'oldpassword');
+    expect(fs.readdirSync(dir)).toEqual([]);
+    await vault.createVault(dir, 'anotherpassword');
+    expect(temps()).toEqual([]);
+  }, 60000);
+
   test('a write that runs to the end reports every step', async () => {
     const child = crashDuringChange(dir, 'never');
     expect({ status: child.status, stderr: child.stderr }).toEqual({ status: 0, stderr: '' });
