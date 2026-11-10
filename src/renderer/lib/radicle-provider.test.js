@@ -176,6 +176,49 @@ describe('radicle-provider', () => {
       }
     });
 
+    test('a disconnect from another window reaches this window\'s pages of the site and its banner', async () => {
+      const { mod, webview, state, emitProviderEvent } = await loadProvider();
+      const otherSite = createElement('webview');
+      otherSite.send = jest.fn();
+      mod.setupRadicleProvider(otherSite);
+      const getDisplayUrl = (await import('./tabs.js')).getDisplayUrlForWebview;
+      getDisplayUrl.mockImplementation((w) => (w === otherSite ? 'https://other.example' : state.displayUrl));
+
+      global.document = { dispatchEvent: jest.fn() };
+      global.CustomEvent = class {
+        constructor(type, init) {
+          this.type = type;
+          this.detail = init?.detail;
+        }
+      };
+      try {
+        emitProviderEvent({
+          event: 'disconnect',
+          origin: 'https://app.example',
+          data: { origin: 'https://app.example' },
+        });
+        expect(webview.send).toHaveBeenCalledWith('radicle:provider-event', {
+          event: 'disconnect',
+          data: { origin: 'https://app.example' },
+        });
+        expect(otherSite.send).not.toHaveBeenCalled();
+        expect(global.document.dispatchEvent).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'radicle-permissions-changed',
+            detail: { origin: 'https://app.example' },
+          })
+        );
+
+        // Seed progress is not a permission change.
+        global.document.dispatchEvent.mockClear();
+        emitProviderEvent({ event: 'seedStatus', origin: 'https://app.example', data: {} });
+        expect(global.document.dispatchEvent).not.toHaveBeenCalled();
+      } finally {
+        delete global.document;
+        delete global.CustomEvent;
+      }
+    });
+
     test('a refused disconnect throws and tells no page', async () => {
       const { mod, webview, execute } = await loadProvider();
       execute.mockResolvedValueOnce({ error: { code: 4100, message: 'Origin not authorized' } });

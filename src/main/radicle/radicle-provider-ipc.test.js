@@ -146,6 +146,51 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
   expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
 });
 
+test('provider IPC tells every other window when a site disconnects', async () => {
+  registerRadicleProviderIpc();
+  const executeHandler = mockIpcHandle.mock.calls.find(
+    ([channel]) => channel === 'radicle:provider-execute'
+  )[1];
+  const askingWindow = { isDestroyed: () => false, send: jest.fn() };
+  const otherWindow = { isDestroyed: () => false, send: jest.fn() };
+  const closedWindow = { isDestroyed: () => true, send: jest.fn() };
+  const { BrowserWindow } = require('electron');
+  BrowserWindow.getAllWindows.mockReturnValue([
+    { webContents: askingWindow },
+    { webContents: otherWindow },
+    { webContents: closedWindow },
+  ]);
+  try {
+    // Refused: no window hears of it.
+    permissions.getPermission.mockReturnValueOnce(null);
+    await executeHandler({ sender: askingWindow }, {
+      method: 'radicle_disconnect',
+      params: {},
+      origin: ORIGIN,
+    });
+    expect(otherWindow.send).not.toHaveBeenCalled();
+
+    const reply = await executeHandler({ sender: askingWindow }, {
+      method: 'radicle_disconnect',
+      params: {},
+      origin: ORIGIN,
+    });
+    expect(reply).toEqual({ result: { connected: false } });
+    // The asking window tells its own pages (radicle-provider.js).
+    expect(askingWindow.send).not.toHaveBeenCalled();
+    expect(otherWindow.send).toHaveBeenCalledWith('radicle:providerEvent', {
+      event: 'disconnect',
+      origin: ORIGIN,
+      data: { origin: ORIGIN },
+    });
+    expect(closedWindow.send).not.toHaveBeenCalled();
+  } finally {
+    BrowserWindow.getAllWindows.mockImplementation(() => [
+      { webContents: { isDestroyed: jest.fn(() => false), send: mockProviderSend } },
+    ]);
+  }
+});
+
 test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent custody', async () => {
   const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
   registerRadicleProviderIpc();
@@ -404,6 +449,13 @@ describe('node actions', () => {
 
   test('radicle_disconnect revokes the origin grant, works while node stopped', async () => {
     manager.getCurrentStatus.mockReturnValue({ status: 'stopped', error: null });
+    const result = await executeRadicleMethod('radicle_disconnect', {}, ORIGIN);
+    expect(result).toEqual({ connected: false });
+    expect(permissions.revokePermission).toHaveBeenCalledWith(ORIGIN);
+  });
+
+  test('radicle_disconnect still works on a profile with Radicle disabled', async () => {
+    manager.isDisabledForProfile.mockReturnValue(true);
     const result = await executeRadicleMethod('radicle_disconnect', {}, ORIGIN);
     expect(result).toEqual({ connected: false });
     expect(permissions.revokePermission).toHaveBeenCalledWith(ORIGIN);

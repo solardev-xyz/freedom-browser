@@ -125,20 +125,21 @@ function nodeRunning() {
   return getCurrentStatus().status === STATUS.RUNNING;
 }
 
+// Every window's chrome routes a provider event to its own open pages of
+// `origin` (radicle-provider.js's onEvent handler). `exceptSender` skips the
+// window that asked, which has already told its own pages.
+function broadcastProviderEvent(event, origin, data, exceptSender = null) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.webContents.isDestroyed() && win.webContents !== exceptSender) {
+      win.webContents.send(IPC.RADICLE_PROVIDER_EVENT, { event, origin, data });
+    }
+  }
+}
+
 function getSeedStatusBroadcaster(origin) {
   let broadcast = seedStatusBroadcasters.get(origin);
   if (broadcast) return broadcast;
-  broadcast = (data) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.webContents.isDestroyed()) {
-        win.webContents.send(IPC.RADICLE_PROVIDER_EVENT, {
-          event: 'seedStatus',
-          origin,
-          data,
-        });
-      }
-    }
-  };
+  broadcast = (data) => broadcastProviderEvent('seedStatus', origin, data);
   seedStatusBroadcasters.set(origin, broadcast);
   return broadcast;
 }
@@ -336,7 +337,11 @@ async function executeRadicleMethod(
   if (!origin || typeof origin !== 'string') {
     throw providerError(ERRORS.UNAUTHORIZED, 'Missing origin');
   }
-  if (isDisabledForProfile()) {
+  // Disconnecting only forgets this site's record and rule, so it stays
+  // possible on a profile with Radicle disabled: the sidebar's × and its
+  // Disconnect must still clear a site connected before Radicle was turned
+  // off.
+  if (isDisabledForProfile() && method !== 'radicle_disconnect') {
     throw providerError(ERRORS.UNAVAILABLE, 'Radicle is disabled for this profile', {
       reason: 'profile-disabled',
     });
@@ -482,6 +487,13 @@ function registerRadicleProviderIpc() {
         onSeedStatus,
         approval: meta?.approval,
       });
+      if (method === 'radicle_disconnect') {
+        // The site may be open in other windows too. The asking window tells
+        // its own pages and repaints its banner (radicle-provider.js); every
+        // other window learns here, so its pages get the disconnect event
+        // and its Radicle banner stops showing the site as connected.
+        broadcastProviderEvent('disconnect', origin, { origin }, event?.sender ?? null);
+      }
       return { result };
     } catch (err) {
       if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);

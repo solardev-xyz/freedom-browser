@@ -86,6 +86,10 @@ window.radicleProvider?.onEvent?.(({ event, origin, data }) => {
       sendRadicleEvent(webview, event, data);
     }
   }
+  // Main tells every other window when a site disconnects (from a page or
+  // from another window's sidebar), so this window's Radicle banner and
+  // permissions screen drop it too.
+  if (event === 'disconnect') notifyRadiclePermissionsChanged(origin);
 });
 
 async function handleRadicleRequest(webview, request) {
@@ -160,7 +164,8 @@ async function handleRadicleRequest(webview, request) {
         // Symmetric with the 'connect' event above. The chrome's own
         // Disconnect (lib/wallet/radicle-connection.js) goes through
         // disconnectRadicleSite() below, which tells every open page of the
-        // site; this path tells the page that asked.
+        // site in this window; this path tells the page that asked. Main
+        // tells every other window (radicle-provider-ipc.js).
         assertSameDocument();
         sendRadicleEvent(webview, 'disconnect', { origin: permissionKey });
         notifyRadiclePermissionsChanged(permissionKey);
@@ -314,7 +319,9 @@ function notifyRadiclePermissionsChanged(origin) {
  * permissions screen). Runs main's own radicle_disconnect, so the record,
  * the "always allow writes" rule, the auto-write limiter's counts and the
  * seed-status broadcaster all go together, exactly as when the site asks,
- * then tells every open page of that site it was disconnected.
+ * then tells every open page of that site in this window it was
+ * disconnected. Main tells every other window, whose pages and banners
+ * learn through the onEvent handler above.
  */
 export async function disconnectRadicleSite(origin) {
   if (!origin) return;

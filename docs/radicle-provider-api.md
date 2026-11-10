@@ -129,10 +129,12 @@ Prompt (once) for connection. Repeat calls return existing state. Emits
 
 The inverse of `requestAccess`: the origin relinquishes its own grant
 (connection AND signing, plus auto-approvals). No consent prompt — an
-origin may always drop its own access. Works while the node is stopped.
+origin may always drop its own access. Works while the node is stopped,
+and on a profile with Radicle disabled (the only method that does).
 Emits the `disconnect` provider event. The chrome's Disconnect (the
 sidebar's Radicle banner and Radicle Permissions screen) runs this same
-method for the site and sends `disconnect` to each of its open pages.
+method for the site and sends `disconnect` to each of its open pages, in
+every window.
 
 ### `radicle_getCapabilities` → capability object (no permission)
 
