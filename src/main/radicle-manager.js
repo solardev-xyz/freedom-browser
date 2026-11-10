@@ -7,6 +7,8 @@ const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
+const { withPrivateDir } = require('./private-files');
+const { isPrivateSender } = require('./private/private-sender');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -174,6 +176,11 @@ async function startRadicleInternal() {
   updateState(STATUS.STARTING);
   try {
     const radHome = await prepareRadicleDataDir();
+    // The home is owner-only now (profile-paths). Its keys/ is opened
+    // through the home's handle, never through a link: one that is a link,
+    // or not ours, stops the start. Keys an older build left with the
+    // umask's modes are narrowed (K-3).
+    withPrivateDir(radHome, (home) => home.openDir('keys', { create: false })?.repair('radicle'));
     const result = await embedded.start(radHome, 'FreedomBrowser');
     updateService('radicle', {
       api: 'radapi://local',
@@ -196,14 +203,39 @@ function startRadicle() {
   return enqueueLifecycle(startRadicleInternal);
 }
 
+// How long a stop waits for the add-on's shutdown to answer. One that never
+// answers would otherwise hold the lifecycle queue (every later start, stop,
+// alias change and re-key) forever; past this, the stop counts as unproved:
+// the node still counts as started, and a re-key leaves its data alone.
+const SHUTDOWN_TIMEOUT_MS = 30_000;
+
+function shutdownWithin(timeoutMs) {
+  let timer;
+  const timedOut = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(
+        `The Radicle node did not answer its shutdown within ${Math.round(timeoutMs / 1000)}s`
+      ));
+    }, timeoutMs);
+  });
+  return Promise.race([embedded.shutdown(), timedOut]).finally(() => clearTimeout(timer));
+}
+
+function notStoppedError(message) {
+  const err = new Error(message);
+  err.code = 'RADICLE_NOT_STOPPED';
+  return err;
+}
+
 // Stop the node. Resolves once the add-on proved it stopped (its shutdown
-// joined the node's thread); otherwise records the error and throws.
+// joined the node's thread); otherwise, or when the shutdown doesn't answer
+// in time, records the error and throws.
 async function stopNode() {
   // Stopped, and proved stopped: the add-on no longer counts it as started.
   if (currentState === STATUS.STOPPED && !embedded.isStarted()) return;
   updateState(STATUS.STOPPING);
   try {
-    await embedded.shutdown();
+    await shutdownWithin(SHUTDOWN_TIMEOUT_MS);
   } catch (err) {
     clearService('radicle');
     updateState(STATUS.ERROR, err.message);
@@ -496,9 +528,13 @@ function setNodeAlias(alias) {
 function withRadicleStopped(work) {
   return enqueueLifecycle(async () => {
     const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
-    await stopNode();
+    try {
+      await stopNode();
+    } catch (err) {
+      throw notStoppedError(err.message);
+    }
     if (embedded.isStarted()) {
-      throw new Error('The Radicle node did not stop, so its data was not reset');
+      throw notStoppedError('The Radicle node did not stop, so its data was not reset');
     }
     try {
       return await work();
@@ -518,6 +554,14 @@ function createRadicleLifecycle() {
   return { withStopped: withRadicleStopped };
 }
 
+// PRIVATE MODE GUARD (R-9): seeding writes a lasting seeding policy and
+// fetches the repository into storage, which a private window must not
+// leave behind. isPrivateSender fails closed: a sender whose window can no
+// longer be read counts as private. The page-facing provider applies the
+// same check (radicle-provider-ipc.js).
+const PRIVATE_SEED_FAILURE = () =>
+  failure('RADICLE_PRIVATE_WINDOW', 'Seeding is not available in private windows');
+
 function registerRadicleIpc() {
   ipcMain.handle(IPC.RADICLE_START, () => startRadicle());
   ipcMain.handle(IPC.RADICLE_STOP, () => stopRadicle());
@@ -530,6 +574,7 @@ function registerRadicleIpc() {
   };
 
   ipcMain.handle(IPC.RADICLE_SEED, async (event, rid) => {
+    if (isPrivateSender(event)) return PRIVATE_SEED_FAILURE();
     if (isDisabledForProfile()) {
       return failure('RADICLE_DISABLED', 'Radicle is disabled for this profile');
     }
@@ -538,7 +583,7 @@ function registerRadicleIpc() {
   });
   ipcMain.handle(IPC.RADICLE_GET_CONNECTIONS, () => getConnections());
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, (event, rid) =>
-    refetchRepository(rid, pushStatus(event))
+    isPrivateSender(event) ? PRIVATE_SEED_FAILURE() : refetchRepository(rid, pushStatus(event))
   );
   ipcMain.handle(IPC.RADICLE_GET_SEED_STATUS, (_event, rid) => getSeedFetchStatus(rid));
 }

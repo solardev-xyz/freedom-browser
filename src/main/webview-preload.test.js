@@ -299,6 +299,31 @@ describe('webview-preload', () => {
     );
   });
 
+  test('the internal Radicle viewer cannot seed or sync from a private window (R-9)', async () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      isPrivateWindow: true,
+      location: {
+        href: 'file:///app/pages/rad-browser.html',
+        protocol: 'file:',
+        pathname: '/app/pages/rad-browser.html',
+      },
+    });
+
+    ipcRenderer.invoke.mockClear();
+    await expect(exposures.freedomAPI.seedRadicle('z3abc')).rejects.toThrow(
+      'Seeding is not available in private windows'
+    );
+    await expect(exposures.freedomAPI.syncRadicleRepo('z3abc')).rejects.toThrow(
+      'Seeding is not available in private windows'
+    );
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SEED, 'z3abc');
+    expect(ipcRenderer.invoke).not.toHaveBeenCalledWith(IPC.RADICLE_SYNC_REPO, 'z3abc');
+
+    // Reading status stays available.
+    await exposures.freedomAPI.getRadicleStatus();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_GET_STATUS);
+  });
+
   test('exposes profile mutation methods only on the settings page', async () => {
     const { exposures, ipcRenderer } = loadWebviewPreloadModule({
       location: {
@@ -1472,15 +1497,16 @@ describe('webview-preload', () => {
     const video = {
       tagName: 'VIDEO',
       src: '',
-      querySelector: jest.fn((selector) =>
-        selector === 'source' ? { src: 'https://cdn.example/video.mp4' } : null
+      // A src-less first <source> is skipped, not taken as "no source".
+      querySelectorAll: jest.fn((selector) =>
+        selector === 'source' ? [{ src: '' }, { src: 'https://cdn.example/video.mp4' }] : []
       ),
       parentElement: body,
     };
     const audio = {
       tagName: 'AUDIO',
       src: 'https://cdn.example/audio.mp3',
-      querySelector: jest.fn(() => null),
+      querySelectorAll: jest.fn(() => []),
       parentElement: body,
     };
 
@@ -1512,6 +1538,60 @@ describe('webview-preload', () => {
         mediaType: 'audio',
         mediaSrc: 'https://cdn.example/audio.mp3',
       })
+    );
+  });
+
+  test('addresses the source a media element is playing, not the first <source>', async () => {
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'https://example.com/media',
+        protocol: 'https:',
+        pathname: '/media',
+      },
+    });
+    const body = global.document.body;
+    // <video><source src=a.webm><source src=a.mp4></video> where the browser
+    // picked a.mp4: currentSrc wins over both `src` and the first <source>.
+    const video = {
+      tagName: 'VIDEO',
+      src: '',
+      currentSrc: 'https://cdn.example/a.mp4',
+      querySelectorAll: jest.fn(() => [
+        { src: 'https://cdn.example/a.webm' },
+        { src: 'https://cdn.example/a.mp4' },
+      ]),
+      parentElement: body,
+    };
+    const stream = {
+      tagName: 'VIDEO',
+      src: '',
+      currentSrc: '',
+      querySelectorAll: jest.fn(() => [{ src: '' }]),
+      parentElement: body,
+    };
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 1,
+      clientY: 2,
+      target: video,
+      defaultPrevented: false,
+    });
+    await flushTimers();
+    expect(ipcRenderer.sendToHost).toHaveBeenLastCalledWith(
+      'context-menu',
+      expect.objectContaining({ mediaType: 'video', mediaSrc: 'https://cdn.example/a.mp4' })
+    );
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 3,
+      clientY: 4,
+      target: stream,
+      defaultPrevented: false,
+    });
+    await flushTimers();
+    expect(ipcRenderer.sendToHost).toHaveBeenLastCalledWith(
+      'context-menu',
+      expect.objectContaining({ mediaType: 'video', mediaSrc: '' })
     );
   });
 

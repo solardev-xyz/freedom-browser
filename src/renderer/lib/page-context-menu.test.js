@@ -90,7 +90,20 @@ const loadPageContextMenuModule = async (options = {}) => {
   const pageGroup = createElement();
   const selectionGroup = createElement();
   const linkGroup = createElement();
+  const linkInspectBtn = createElement();
+  linkGroup.querySelector = jest.fn((selector) => {
+    if (selector === '[data-action="inspect"]') return linkInspectBtn;
+    return null;
+  });
   const imageGroup = createElement();
+  const mediaGroup = createElement();
+  const mediaOpenBtn = createElement();
+  const mediaCopyBtn = createElement();
+  mediaGroup.querySelector = jest.fn((selector) => {
+    if (selector === '[data-action="open-media-new-tab"]') return mediaOpenBtn;
+    if (selector === '[data-action="copy-media-address"]') return mediaCopyBtn;
+    return null;
+  });
   const backBtn = createElement();
   const forwardBtn = createElement();
   const viewSourceBtn = createElement();
@@ -112,6 +125,7 @@ const loadPageContextMenuModule = async (options = {}) => {
     '[data-group="selection"]': selectionGroup,
     '[data-group="link"]': linkGroup,
     '[data-group="image"]': imageGroup,
+    '[data-group="media"]': mediaGroup,
     '[data-action="back"]': backBtn,
     '[data-action="forward"]': forwardBtn,
     '[data-action="view-source"]': viewSourceBtn,
@@ -129,7 +143,7 @@ const loadPageContextMenuModule = async (options = {}) => {
 
   pageContextMenu.querySelectorAll = jest.fn((selector) => {
     if (selector === '.context-menu-group') {
-      return [pageGroup, selectionGroup, linkGroup, imageGroup];
+      return [pageGroup, selectionGroup, linkGroup, imageGroup, mediaGroup];
     }
 
     return [];
@@ -198,7 +212,11 @@ const loadPageContextMenuModule = async (options = {}) => {
     pageGroup,
     selectionGroup,
     linkGroup,
+    linkInspectBtn,
     imageGroup,
+    mediaGroup,
+    mediaOpenBtn,
+    mediaCopyBtn,
     backBtn,
     forwardBtn,
     viewSourceBtn,
@@ -445,6 +463,96 @@ describe('page-context-menu', () => {
     expect(forwardBtn.disabled).toBe(true);
   });
 
+  // #979: right-clicking an image inside a link (<a href><img></a>) shows both
+  // the link group and the image group together, with the link group's inspect
+  // hidden to avoid a duplicate action above the image items.
+  test('shows both link and image groups for a linked image (#979)', async () => {
+    const { mod, linkGroup, imageGroup, linkInspectBtn } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    mod.showPageContextMenu(10, 20, {
+      linkUrl: 'https://example.com/target',
+      imageSrc: 'https://example.com/thumb.png',
+    });
+
+    expect(linkGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(imageGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(linkInspectBtn.classList.toggle).toHaveBeenCalledWith('hidden', true);
+
+    // Opening over a plain link (no image) unhides the link inspect button
+    // and leaves the image group hidden.
+    mod.showPageContextMenu(10, 20, {
+      linkUrl: 'https://example.com/target',
+    });
+    expect(linkInspectBtn.classList.toggle).toHaveBeenCalledWith('hidden', false);
+  });
+
+  // #979: right-clicking a video or audio inside a link shows both the link
+  // group and the media group together, with dynamic labels and inspect at end.
+  test('shows both link and media groups for a linked video or audio (#979)', async () => {
+    const { mod, linkGroup, mediaGroup, linkInspectBtn, mediaOpenBtn, mediaCopyBtn } =
+      await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    // Linked video
+    mod.showPageContextMenu(10, 20, {
+      linkUrl: 'https://example.com/target',
+      mediaType: 'video',
+      mediaSrc: 'https://example.com/clip.mp4',
+    });
+
+    expect(linkGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(mediaGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(linkInspectBtn.classList.toggle).toHaveBeenCalledWith('hidden', true);
+    expect(mediaOpenBtn.textContent).toBe('Open Video in New Tab');
+    expect(mediaCopyBtn.textContent).toBe('Copy Video Address');
+
+    // Linked audio
+    mod.showPageContextMenu(10, 20, {
+      linkUrl: 'https://example.com/target',
+      mediaType: 'audio',
+      mediaSrc: 'https://example.com/track.mp3',
+    });
+
+    expect(linkGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(mediaGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(linkInspectBtn.classList.toggle).toHaveBeenCalledWith('hidden', true);
+    expect(mediaOpenBtn.textContent).toBe('Open Audio in New Tab');
+    expect(mediaCopyBtn.textContent).toBe('Copy Audio Address');
+
+    // Standalone video (not inside a link)
+    mod.showPageContextMenu(10, 20, {
+      mediaType: 'video',
+      mediaSrc: 'https://example.com/clip.mp4',
+    });
+
+    expect(mediaGroup.classList.add).toHaveBeenCalledWith('visible');
+  });
+
+  // A <video> fed by srcObject (camera/WebRTC) or with no src/<source> has no
+  // address to open or copy: the media group still shows, as in Chrome, but
+  // its items are disabled rather than silent no-ops — and re-enabled the next
+  // time the menu opens over media that does have one.
+  test('disables the media items when the element has no source URL', async () => {
+    const { mod, mediaGroup, pageGroup, mediaOpenBtn, mediaCopyBtn } =
+      await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    mod.showPageContextMenu(10, 20, { mediaType: 'video' });
+    expect(mediaGroup.classList.add).toHaveBeenCalledWith('visible');
+    expect(pageGroup.classList.add).not.toHaveBeenCalledWith('visible');
+    expect(mediaOpenBtn.textContent).toBe('Open Video in New Tab');
+    expect(mediaOpenBtn.disabled).toBe(true);
+    expect(mediaCopyBtn.disabled).toBe(true);
+
+    mod.showPageContextMenu(10, 20, {
+      mediaType: 'audio',
+      mediaSrc: 'https://example.com/track.mp3',
+    });
+    expect(mediaOpenBtn.disabled).toBe(false);
+    expect(mediaCopyBtn.disabled).toBe(false);
+  });
+
   test('withholds view source on browser-owned trust interstitials', async () => {
     const { mod, pageContextMenu, viewSourceBtn, pushDebug } = await loadPageContextMenuModule();
 
@@ -674,6 +782,18 @@ describe('page-context-menu', () => {
     mod.showPageContextMenu(20, 30, { imageSrc: 'https://example.com/image.png' });
     await triggerMenuAction(pageContextMenu, 'copy-image-address');
     expect(electronAPI.copyText).toHaveBeenCalledWith('https://example.com/image.png');
+
+    mod.showPageContextMenu(20, 30, { mediaSrc: 'https://example.com/media.mp4' });
+    await triggerMenuAction(pageContextMenu, 'open-media-new-tab');
+    expect(global.document.dispatchEvent).toHaveBeenCalledWith({
+      type: 'open-url-new-tab',
+      detail: { url: 'https://example.com/media.mp4' },
+    });
+
+    urlUtils.applyEnsNamePreservation.mockReturnValueOnce('');
+    mod.showPageContextMenu(20, 30, { mediaSrc: 'https://example.com/media.mp4' });
+    await triggerMenuAction(pageContextMenu, 'copy-media-address');
+    expect(electronAPI.copyText).toHaveBeenCalledWith('https://example.com/media.mp4');
   });
 
   test('takes the keyboard from the guest and hands it back to the same page', async () => {

@@ -115,9 +115,9 @@ const CATEGORIES = {
 const RESOURCES = {
   file: 'resources.json',
   title: 'uBlock Origin scriptlets and redirect resources (via @ghostery/adblocker)',
-  tag: 'v2.20.1',
+  tag: 'v2.20.3',
   sourceUrl:
-    'https://raw.githubusercontent.com/ghostery/adblocker/v2.20.1/packages/adblocker/assets/ublock-origin/resources.json',
+    'https://raw.githubusercontent.com/ghostery/adblocker/v2.20.3/packages/adblocker/assets/ublock-origin/resources.json',
   sha256: '5ce0ce483f0e5514308ccb0240960a9dd7bfeab417debeef96960dce2c95f690',
   license: 'GPL-3.0-only',
   upstream: {
@@ -130,13 +130,13 @@ const RESOURCES = {
     },
     ghostery: {
       repo: 'ghostery/adblocker',
-      tag: 'v2.20.1',
-      tagCommit: 'c18718adc33e82a086d996d0b0f75deb3d01745a',
+      tag: 'v2.20.3',
+      tagCommit: '039d9f60cf61ee9b6878b6e2061095079df7db3e',
       commit: '7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec',
       commitUrl:
         'https://github.com/ghostery/adblocker/commit/7f5784d0a1dc177171ee3d6d39a7e4ac7a7eecec',
       buildScript:
-        'https://github.com/ghostery/adblocker/blob/v2.20.1/packages/adblocker/assets/update.js',
+        'https://github.com/ghostery/adblocker/blob/v2.20.3/packages/adblocker/assets/update.js',
     },
   },
 };

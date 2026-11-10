@@ -1,1 +1,2 @@
 - Re-creating your identity stops the Radicle node before resetting its data, then starts it again ([#958](https://github.com/solardev-xyz/freedom-browser/issues/958))
+  - If the Radicle node does not stop (or does not answer within 30 seconds), no node is given the new identity and setup says so, instead of leaving Ant and Radicle on different identities
