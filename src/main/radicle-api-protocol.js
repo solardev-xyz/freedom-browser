@@ -47,6 +47,9 @@ const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 // dns.lookup, zlib and crypto across main wait behind the queue (#514).
 const REPO_LIST_CONCURRENCY = 2;
 const REVISION_RE = /^[0-9a-f]{40}$/;
+const MISSING_RE = /not found|does not exist|NotFound/i;
+// What `rad:` answers for a repository it will not serve, private or absent.
+const REPO_NOT_FOUND = Object.freeze({ error: 'repository not found' });
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
 // The one page allowed to reach `radapi:`. Unlike `rad:` — public repo
@@ -204,16 +207,24 @@ async function serveNodeApi(pathname) {
   try {
     const status = await embedded.status();
     if (pathname === '/') {
-      return json({
-        version: status?.version || 'embedded',
-        mode: 'embedded',
-      }, 200, { cors: false });
+      return json(
+        {
+          version: status?.version || 'embedded',
+          mode: 'embedded',
+        },
+        200,
+        { cors: false }
+      );
     }
     const repos = await embedded.listRepos();
-    return json({
-      repos: { total: repos.length },
-      peers: { connected: status?.connectedPeers ?? 0 },
-    }, 200, { cors: false });
+    return json(
+      {
+        repos: { total: repos.length },
+        peers: { connected: status?.connectedPeers ?? 0 },
+      },
+      200,
+      { cors: false }
+    );
   } catch (err) {
     log.warn('[radapi] node status failed:', err.message);
     return json({ error: err.message }, 503, { cors: false });
@@ -251,7 +262,9 @@ function decodeRepoApiPath(apiPath) {
 
 function paginate(items, searchParams) {
   const params =
-    searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams || '');
+    searchParams instanceof URLSearchParams
+      ? searchParams
+      : new URLSearchParams(searchParams || '');
   const status = params.get('status');
   const filtered = status ? items.filter((item) => item?.state?.status === status) : items;
   const page = Math.max(0, Number.parseInt(params.get('page') || '0', 10) || 0);
@@ -264,16 +277,12 @@ function paginate(items, searchParams) {
 
 function pageParams(searchParams) {
   const params =
-    searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams || '');
+    searchParams instanceof URLSearchParams
+      ? searchParams
+      : new URLSearchParams(searchParams || '');
   return {
-    page: Math.min(
-      1_000_000,
-      Math.max(0, Number.parseInt(params.get('page') || '0', 10) || 0)
-    ),
-    perPage: Math.min(
-      100,
-      Math.max(1, Number.parseInt(params.get('perPage') || '30', 10) || 30)
-    ),
+    page: Math.min(1_000_000, Math.max(0, Number.parseInt(params.get('page') || '0', 10) || 0)),
+    perPage: Math.min(100, Math.max(1, Number.parseInt(params.get('perPage') || '30', 10) || 30)),
   };
 }
 
@@ -336,9 +345,39 @@ async function serveBoundedRepoApi(
 
   try {
     if (!allowPrivate) {
-      const info = await embedded.repoInfo(rid);
+      // A private repository answers exactly as one that is not stored: the
+      // same status and body. A 403 for private beside a 404 for absent let
+      // any page test whether a private RID is on this node (R-2). Every
+      // repoInfo failure answers the same way, not only "not found": a
+      // stored private repo whose identity doc is unreadable (corrupt,
+      // storage locked) would otherwise surface as a 500 carrying the add-on
+      // text, which an absent RID never produces. Only the response is
+      // equalised, not its timing: a stored RID opens the repo and reads its
+      // identity doc, an absent one fails at the storage lookup.
+      let info;
+      try {
+        info = await embedded.repoInfo(rid);
+      } catch (err) {
+        // The read ended for its caller (gone, or out of time): that is the
+        // read's state, not the repository's, so it answers as any ended
+        // read does. Every other failure here, an over-cap identity reply
+        // (R-3) included, stays the absent repository's 404: a 502 for a
+        // stored private repo would tell it apart from an absent one.
+        if (err instanceof embedded.ReadEnded) return endedReply();
+        if (!MISSING_RE.test(err.message)) {
+          // Same private-window redaction as the shared log site below.
+          log.warn(
+            '[rad]',
+            redactForLog(rid),
+            redactForLog(apiPath),
+            '→',
+            redactForLog(err.message)
+          );
+        }
+        return reply(REPO_NOT_FOUND, 404);
+      }
       if (info?.visibility?.type !== 'public') {
-        return reply({ error: 'repository is not public' }, 403);
+        return reply(REPO_NOT_FOUND, 404);
       }
     }
     // Every addon call checks the read's signal first (withReadBounds);
@@ -380,9 +419,7 @@ async function serveBoundedRepoApi(
               : reply({ error: 'invalid revision' }, 400);
           } else {
             const params =
-              search instanceof URLSearchParams
-                ? search
-                : new URLSearchParams(search || '');
+              search instanceof URLSearchParams ? search : new URLSearchParams(search || '');
             const parent = params.get('parent');
             if (!REVISION_RE.test(parent || '')) {
               response = reply({ error: 'missing parent revision' }, 400);
@@ -424,13 +461,19 @@ async function serveBoundedRepoApi(
     if (err instanceof embedded.ReplyTooLarge) {
       return method === 'HEAD' ? withoutBody(tooLargeReply()) : tooLargeReply();
     }
-    const missing = /not found|does not exist|NotFound/i.test(err.message);
+    const missing = MISSING_RE.test(err.message);
     if (!missing) {
       // PRIVATE MODE GUARD: this core serves both `rad:` and `radapi:`, and
       // both registrations mark private sessions — the RID, the repo path
       // and the error text (which quotes them) must never reach main.log
       // for a private window.
-      log.warn('[radapi]', redactForLog(rid), redactForLog(apiPath), '→', redactForLog(err.message));
+      log.warn(
+        '[radapi]',
+        redactForLog(rid),
+        redactForLog(apiPath),
+        '→',
+        redactForLog(err.message)
+      );
     }
     return reply({ error: err.message }, missing ? 404 : 500);
   }

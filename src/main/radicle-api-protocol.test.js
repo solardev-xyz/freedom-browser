@@ -265,7 +265,9 @@ describe('radapi protocol', () => {
     });
 
     test('ignores requests for every other scheme', () => {
-      expect(guardRadicleApiRequest(request('https://example.com/', 'https://example.com/x'))).toBeNull();
+      expect(
+        guardRadicleApiRequest(request('https://example.com/', 'https://example.com/x'))
+      ).toBeNull();
       expect(guardRadicleApiRequest(request('https://example.com/', 'rad://z3gq/tree'))).toBeNull();
     });
   });
@@ -407,14 +409,12 @@ describe('radapi protocol', () => {
       const response = await serveRepoApi(RID, apiPath, { allowPrivate });
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toBe('application/json');
-      expect(response.headers.get('access-control-allow-origin')).toBe(
-        allowPrivate ? null : '*'
-      );
+      expect(response.headers.get('access-control-allow-origin')).toBe(allowPrivate ? null : '*');
       await expect(response.text()).resolves.toBe(text);
     }
   });
 
-  test('refuses a response over the caller\'s cap, raw text or parsed (R-3)', async () => {
+  test("refuses a response over the caller's cap, raw text or parsed (R-3)", async () => {
     embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
     embedded.blobAtRaw.mockResolvedValue(`{"content":"${'x'.repeat(200)}"}`);
     embedded.issues.mockResolvedValue([{ title: 'y'.repeat(200) }]);
@@ -657,8 +657,127 @@ describe('radapi protocol', () => {
   test('does not expose private repositories through the public repo API', async () => {
     embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private' } });
     const response = await serveRepoApi(RID, '/issues');
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(embedded.issues).not.toHaveBeenCalled();
+  });
+
+  // R-2: 403 for a stored private RID beside 404 for an absent one told any
+  // page which private repositories this node holds.
+  test.each(['', '/issues', `/tree/${REVISION}`, `/commits/${REVISION}`])(
+    'a private repository and an absent one answer alike for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockResolvedValueOnce({ visibility: { type: 'private', allow: [] } });
+      const privateRepo = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absentRepo = await serveRepoApi(RID, apiPath);
+
+      const shape = async (response) => ({
+        status: response.status,
+        headers: [...response.headers.entries()].sort(),
+        body: await response.text(),
+      });
+      const privateShape = await shape(privateRepo);
+      expect(privateShape).toEqual(await shape(absentRepo));
+      expect(privateShape.status).toBe(404);
+      expect(JSON.parse(privateShape.body)).toEqual({ error: 'repository not found' });
+      expect(privateShape.body).not.toContain(RID);
+    }
+  );
+
+  // R1-M2: any other repoInfo failure (a stored private repo with a corrupt
+  // identity doc, locked storage) must not become a 500 carrying the add-on
+  // text beside an absent RID's 404.
+  test.each(['', '/issues'])(
+    'other repoInfo failures answer like an absent repository for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockRejectedValueOnce(
+        new Error(`identity document of ${RID} is corrupt: storage is locked`)
+      );
+      const failed = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absent = await serveRepoApi(RID, apiPath);
+      const shape = async (r) => ({
+        status: r.status,
+        headers: [...r.headers.entries()].sort(),
+        body: await r.text(),
+      });
+      const failedShape = await shape(failed);
+      expect(failedShape).toEqual(await shape(absent));
+      expect(failedShape.status).toBe(404);
+      expect(failedShape.body).not.toContain('corrupt');
+      expect(embedded.issues).not.toHaveBeenCalled();
+    }
+  );
+
+  // R-3 meets R-2 (#948, merging #957): the read bounds' own errors on the
+  // visibility read. An over-cap identity reply is a failure like any other
+  // there, so it answers as an absent repository does, never as a 502 a
+  // stored private RID alone could produce.
+  test('an over-cap repoInfo reply answers like an absent repository', async () => {
+    const shape = async (r) => ({
+      status: r.status,
+      headers: [...r.headers.entries()].sort(),
+      body: await r.text(),
+    });
+    embedded.repoInfo.mockRejectedValueOnce(new embedded.ReplyTooLarge('repoInfo'));
+    const overCap = await shape(await serveRepoApi(RID, '/issues', { maxResponseChars: 100 }));
+    embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+    const absent = await shape(await serveRepoApi(RID, '/issues', { maxResponseChars: 100 }));
+    expect(overCap).toEqual(absent);
+    expect(overCap.status).toBe(404);
+    expect(embedded.issues).not.toHaveBeenCalled();
+  });
+
+  // A read that ended during the visibility read answers as an ended read,
+  // whatever the repository: that is the read's state, not the repo's.
+  test.each([
+    ['private', async () => ({ visibility: { type: 'private', allow: [] } })],
+    [
+      'absent',
+      async () => {
+        throw new Error(`repository ${RID} not found in storage`);
+      },
+    ],
+    ['public', async () => ({ visibility: { type: 'public' } })],
+  ])('a read that ends during the visibility read of a %s repository is a 503', async (_, info) => {
+    const log = require('./logger');
+    log.warn.mockClear();
+    const ended = new AbortController();
+    embedded.repoInfo.mockImplementationOnce(async () => {
+      ended.abort();
+      return info();
+    });
+    // The real bound check runs only on a real addon call; script it here.
+    const response = await serveRepoApi(RID, '/issues', { signal: ended.signal });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: 'request cancelled' });
+    expect(embedded.issues).not.toHaveBeenCalled();
+
+    embedded.repoInfo.mockRejectedValueOnce(new embedded.ReadEnded());
+    const thrown = await serveRepoApi(RID, '/issues', { signal: ended.signal });
+    expect(thrown.status).toBe(503);
+    expect(log.warn.mock.calls.filter((call) => call[0] === '[rad]')).toEqual([]);
+  });
+
+  test('logs a non-"not found" repoInfo failure, redacted in a private window', async () => {
+    const log = require('./logger');
+    const { runWithPrivateLogContext } = require('./private/private-log-context');
+    embedded.repoInfo.mockRejectedValue(new Error(`identity of ${RID} unreadable`));
+
+    await serveRepoApi(RID, '/issues');
+    await runWithPrivateLogContext(true, () => serveRepoApi(RID, '/issues'));
+
+    const warnings = log.warn.mock.calls.filter((call) => call[0] === '[rad]');
+    expect(warnings).toEqual([
+      ['[rad]', RID, '/issues', '→', `identity of ${RID} unreadable`],
+      ['[rad]', '<private>', '<private>', '→', '<private>'],
+    ]);
+  });
+
+  test('radapi: still serves private repos', async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
+    embedded.buildRepoMeta.mockResolvedValueOnce({ rid: RID });
+    expect((await serveRepoApi(RID, '', { allowPrivate: true })).status).toBe(200);
   });
 
   test.each([
@@ -683,11 +802,7 @@ describe('radapi protocol', () => {
     ['a?b.txt', 'a%3Fb.txt'],
     ['ünïcode.rs', '%C3%BCn%C3%AFcode.rs'],
   ])('accepts %s when the viewer encodes it as %s', (name, encoded) => {
-    expect(decodeRepoApiPath(`/blob/${REVISION}/${encoded}`)).toEqual([
-      'blob',
-      REVISION,
-      name,
-    ]);
+    expect(decodeRepoApiPath(`/blob/${REVISION}/${encoded}`)).toEqual(['blob', REVISION, name]);
   });
 
   test('rejects the unencoded form the viewer used to send', () => {
@@ -740,7 +855,13 @@ describe('radapi protocol', () => {
 
     const warnings = log.warn.mock.calls.filter((call) => call[0] === '[radapi]');
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual(['[radapi]', RID, `/tree/${REVISION}/src`, '→', 'tree read failed']);
+    expect(warnings[0]).toEqual([
+      '[radapi]',
+      RID,
+      `/tree/${REVISION}/src`,
+      '→',
+      'tree read failed',
+    ]);
   });
 
   // The dispatcher's registry is process-wide and rejects a duplicate

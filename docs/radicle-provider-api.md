@@ -38,7 +38,14 @@ The provider exists for everything that is **not** a public read:
 Installed in the page's main world of every web page's top frame before any
 of the page's own scripts run, alongside `window.swarm` and `window.ethereum`.
 A page's Content Security Policy does not affect it. It is not installed in
-private windows, in sub-frames, or on Freedom's internal pages.
+private windows, in sub-frames, or on Freedom's internal pages. Main also
+refuses every method that changes lasting state when it comes from a private
+window, or from a sender main cannot place in a known window: `radicle_seed`,
+`radicle_unseed`, `radicle_sync`, `radicle_disconnect` and the COB writes
+(`4100`, reason `private_window`). The reads it still answers there don't
+record their use in the permission store, and no grant is recorded from a
+private window. A page that reaches the provider channel anyway leaves
+nothing behind.
 
 ```javascript
 window.radicle.request({ method: string, params?: object }): Promise<any>
@@ -239,7 +246,14 @@ Successful COB mutations announce their updated refs before returning.
   `radicle_commitAndPush({ rid, changes[] })`, but v1 ships COB writes
   only (issues + patch comments cover the collaboration loop around
   existing patches).
-- **Private repos** are invisible to the public `rad:` URL scheme. v1 does
+- **Private repos** are invisible to the public `rad:` URL scheme: a
+  private repository answers exactly as one this node does not store (404,
+  `{ "error": "repository not found" }`), so a page cannot tell them apart
+  from the response. Any other failure to read a repository's identity on
+  this path (corrupt identity doc, locked storage) answers the same 404.
+  Response timing is not equalised: a stored RID opens the repository and
+  reads its identity document, an absent one fails at the storage lookup,
+  so a page timing many requests may still see a difference. v1 does
   not expose them through the provider either.
 - **No repo creation** (`rad init`) in v1 — it needs a working copy and
   raises squatting/spam questions; revisit with patch creation.

@@ -1,1 +1,0 @@
-- Prevented a busy browser startup from incorrectly timing out the Myotis Ethereum and Gnosis light clients before they receive their start request.
