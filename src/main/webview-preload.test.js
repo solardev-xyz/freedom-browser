@@ -1659,6 +1659,9 @@ describe('injected provider request timeouts', () => {
   // Parity with the sibling provider the radicle one was modelled on.
   test('swarm prompt/long-running methods use the same 300s budget', () => {
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
+    // They prompt like signing (#991).
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getEncryptionKey')).toBe(300000);
+    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_deriveSharedSecrets')).toBe(300000);
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readChunk')).toBe(60000);
   });
 

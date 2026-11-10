@@ -137,10 +137,12 @@ jest.mock('./feed-store', () => ({
 
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
+const mockGetSiteEncryptionKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
 jest.mock('../identity-manager', () => ({
   getDerivedKeys: mockGetDerivedKeys,
   getPublisherKey: mockGetPublisherKey,
+  getSiteEncryptionKey: mockGetSiteEncryptionKey,
   getUserWalletKey: mockGetUserWalletKey,
 }));
 
@@ -287,6 +289,7 @@ describe('swarm-provider-ipc', () => {
         extensions: {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,
+          encryptionKey: true,
         },
         limits: {
           maxDataBytes: LIMITS.maxDataBytes,
@@ -297,6 +300,7 @@ describe('swarm-provider-ipc', () => {
           maxMessageBytes: LIMITS.maxMessageBytes,
           maxTargetDepth: LIMITS.maxTargetDepth,
           maxSubscriptions: LIMITS.maxSubscriptions,
+          maxSharedSecretKeys: LIMITS.maxSharedSecretKeys,
         },
       });
     });
@@ -354,6 +358,7 @@ describe('swarm-provider-ipc', () => {
         maxMessageBytes: LIMITS.maxMessageBytes,
         maxTargetDepth: LIMITS.maxTargetDepth,
         maxSubscriptions: LIMITS.maxSubscriptions,
+        maxSharedSecretKeys: LIMITS.maxSharedSecretKeys,
       });
       expect(result.result.specVersion).toBe('1.0');
     });
@@ -1426,6 +1431,179 @@ describe('swarm-provider-ipc', () => {
       expect(result.error.code).toBe(4100);
       expect(result.error.message).toBe('The origin is not authorized for this operation');
       expect(result.error.data.reason).toBe('feed_not_granted');
+    });
+  });
+
+  describe('encryption key (#991)', () => {
+    const { SigningKey } = jest.requireActual('ethers');
+    const SITE_KEY = `0x${'11'.repeat(32)}`;
+    const PEER_KEY = `0x${'22'.repeat(32)}`;
+    const OTHER_PEER_KEY = `0x${'33'.repeat(32)}`;
+    const sitePublic = SigningKey.computePublicKey(SITE_KEY, true);
+    const peerPublic = SigningKey.computePublicKey(PEER_KEY, true);
+    const otherPeerPublic = SigningKey.computePublicKey(OTHER_PEER_KEY, true);
+    // What the other side computes with its own key: ECDH x coordinate.
+    const xOf = (privateKey, publicKey) =>
+      new SigningKey(privateKey).computeSharedSecret(publicKey).slice(4, 68);
+
+    function grant(mode = 'app-scoped') {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', connectedAt: 1, lastUsed: 1, autoApprove: {} });
+      mockHasFeedGrant.mockReturnValue(true);
+      mockGetOriginEntry.mockReturnValue({ identityMode: mode, publisherKeyIndex: 0, walletIndex: 0, feeds: {} });
+      mockGetSiteEncryptionKey.mockResolvedValue({ privateKey: SITE_KEY });
+    }
+
+    test.each(['app-scoped', 'bee-wallet', 'ethereum-wallet'])(
+      'returns the site key when the site signs with %s, never a signing key',
+      async (mode) => {
+        grant(mode);
+
+        const result = await invokeProvider('swarm_getEncryptionKey', {}, 'myapp.eth');
+
+        expect(result.result).toEqual({ publicKey: sitePublic.slice(2), curve: 'secp256k1' });
+        expect(mockGetSiteEncryptionKey).toHaveBeenCalledWith('myapp.eth');
+        expect(mockGetDerivedKeys).not.toHaveBeenCalled();
+        expect(mockGetPublisherKey).not.toHaveBeenCalled();
+        expect(mockGetUserWalletKey).not.toHaveBeenCalled();
+      }
+    );
+
+    test('needs the connection and the feed grant', async () => {
+      grant();
+      mockGetPermission.mockReturnValue(null);
+      for (const [method, params] of [
+        ['swarm_getEncryptionKey', {}],
+        ['swarm_deriveSharedSecrets', { publicKeys: [peerPublic] }],
+      ]) {
+        const result = await invokeProvider(method, params, 'myapp.eth');
+        expect(result.error).toMatchObject({ code: 4100, data: { reason: 'not_connected' } });
+      }
+
+      grant();
+      mockHasFeedGrant.mockReturnValue(false);
+      for (const [method, params] of [
+        ['swarm_getEncryptionKey', {}],
+        ['swarm_deriveSharedSecrets', { publicKeys: [peerPublic] }],
+      ]) {
+        const result = await invokeProvider(method, params, 'myapp.eth');
+        expect(result.error).toMatchObject({ code: 4100, data: { reason: 'feed_not_granted' } });
+      }
+      expect(mockGetSiteEncryptionKey).not.toHaveBeenCalled();
+    });
+
+    test('a locked vault is an internal error that names it', async () => {
+      grant();
+      mockGetSiteEncryptionKey.mockRejectedValue(new Error('Vault must be unlocked to derive encryption keys'));
+
+      for (const [method, params] of [
+        ['swarm_getEncryptionKey', {}],
+        ['swarm_deriveSharedSecrets', { publicKeys: [peerPublic] }],
+      ]) {
+        const result = await invokeProvider(method, params, 'myapp.eth');
+        expect(result.error).toMatchObject({
+          code: -32603,
+          message: 'Vault must be unlocked to derive encryption keys',
+        });
+      }
+    });
+
+    test('derives what the other side derives, for each key in order', async () => {
+      grant();
+      const peerUncompressed = SigningKey.computePublicKey(PEER_KEY, false);
+
+      const result = await invokeProvider('swarm_deriveSharedSecrets', {
+        publicKeys: [peerPublic, otherPeerPublic, peerUncompressed, peerPublic.slice(2).toUpperCase()],
+      }, 'myapp.eth');
+
+      const peerSecret = xOf(PEER_KEY, sitePublic);
+      expect(result.result).toEqual({
+        sharedSecrets: [peerSecret, xOf(OTHER_PEER_KEY, sitePublic), peerSecret, peerSecret],
+      });
+      expect(peerSecret).toMatch(/^[0-9a-f]{64}$/);
+      expect(mockGetSiteEncryptionKey).toHaveBeenCalledTimes(1);
+    });
+
+    test('derives with the site key itself, as ACT does for the publisher', async () => {
+      grant();
+
+      const result = await invokeProvider('swarm_deriveSharedSecrets', { publicKeys: [sitePublic] }, 'myapp.eth');
+
+      expect(result.result.sharedSecrets).toEqual([xOf(SITE_KEY, sitePublic)]);
+    });
+
+    test.each([
+      ['no params', null, 'invalid_params', undefined],
+      ['no publicKeys', {}, 'invalid_public_key', undefined],
+      ['an empty list', { publicKeys: [] }, 'invalid_public_key', undefined],
+      ['a string instead of a list', { publicKeys: 'abc' }, 'invalid_public_key', undefined],
+      ['a short key', { publicKeys: [peerPublic, '0x02abcd'] }, 'invalid_public_key', 1],
+      ['a wrong prefix', { publicKeys: [`0x05${'ab'.repeat(32)}`] }, 'invalid_public_key', 0],
+      ['a non-hex key', { publicKeys: [`02${'zz'.repeat(32)}`] }, 'invalid_public_key', 0],
+      ['a number', { publicKeys: [7] }, 'invalid_public_key', 0],
+      ['a megabyte string', { publicKeys: ['02'.repeat(500000)] }, 'invalid_public_key', 0],
+      ['an option', { publicKeys: [peerPublic], options: { raw: true } }, 'unsupported_option', undefined],
+    ])('refuses %s before deriving anything', async (_label, params, reason, index) => {
+      grant();
+
+      const result = await invokeProvider('swarm_deriveSharedSecrets', params, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32602);
+      expect(result.error.data.reason).toBe(reason);
+      if (index !== undefined) expect(result.error.data.index).toBe(index);
+      expect(mockGetSiteEncryptionKey).not.toHaveBeenCalled();
+    });
+
+    test('refuses a key that is not a point on the curve', async () => {
+      grant();
+      // x = 2^256 - 1 is above the field prime, so no such point exists.
+      const result = await invokeProvider('swarm_deriveSharedSecrets', {
+        publicKeys: [peerPublic, `02${'ff'.repeat(32)}`],
+      }, 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: -32602, data: { reason: 'invalid_public_key', index: 1 } });
+    });
+
+    test('caps the number of keys per call', async () => {
+      grant();
+      const publicKeys = new Array(LIMITS.maxSharedSecretKeys + 1).fill(peerPublic);
+
+      const result = await invokeProvider('swarm_deriveSharedSecrets', { publicKeys }, 'myapp.eth');
+
+      expect(result.error).toMatchObject({
+        code: -32602,
+        data: { reason: 'payload_too_large', limit: 256, actual: 257 },
+      });
+      const atLimit = await invokeProvider(
+        'swarm_deriveSharedSecrets',
+        { publicKeys: publicKeys.slice(1) },
+        'myapp.eth'
+      );
+      expect(atLimit.result.sharedSecrets).toHaveLength(256);
+    });
+
+    test('Agent custody refuses an auto-approved use; a prompted one runs', async () => {
+      const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+      const chrome = { id: 1 };
+      const guest = { ...fakeWebContents(), hostWebContents: chrome };
+      mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+      grant();
+      const handler = ipcHandlers['swarm:provider-execute'];
+      const call = (method, params, meta) =>
+        handler({ sender: chrome }, { method, params, origin: 'myapp.eth', meta });
+      setAgentPageCustody(guest, true);
+      try {
+        for (const [method, params] of [
+          ['swarm_getEncryptionKey', {}],
+          ['swarm_deriveSharedSecrets', { publicKeys: [peerPublic] }],
+        ]) {
+          const refused = await call(method, params, { webContentsId: 9, approval: 'auto' });
+          expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+          const prompted = await call(method, params, { webContentsId: 9, approval: 'user' });
+          expect(prompted.result).toBeDefined();
+        }
+      } finally {
+        setAgentPageCustody(guest, false);
+      }
     });
   });
 

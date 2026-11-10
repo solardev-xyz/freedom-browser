@@ -9,6 +9,8 @@ const {
   deriveEthereumKey,
   deriveEd25519Key,
   derivePublisherKey,
+  siteEncryptionKeyPath,
+  deriveSiteEncryptionKey,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -248,6 +250,53 @@ describe('derivation', () => {
 
     test('PATHS.SWARM_PUBLISHER is the expected base path', () => {
       expect(PATHS.SWARM_PUBLISHER).toBe("m/44'/73406'");
+      expect(PATHS.SWARM_ENCRYPTION).toBe("m/44'/73407'");
+    });
+  });
+
+  describe('deriveSiteEncryptionKey (#991)', () => {
+    // Pinned: a site's key must never change, or everything encrypted to it
+    // becomes unreadable. If this fails, the derivation changed.
+    test('derives the pinned key for a site', () => {
+      const key = deriveSiteEncryptionKey(TEST_MNEMONIC, 'myapp.eth');
+      expect(key.path).toBe("m/44'/73407'/333645928'/1944099083'/2041816228'");
+      expect(key.publicKey).toBe(
+        '0x03ef272cdf077beaa7fa68374f850d6cedf79bf558705a4fa7225bf87be758a323'
+      );
+      expect(key.privateKey).toMatch(/^0x[0-9a-f]{64}$/);
+    });
+
+    test('the path is three hardened indexes under the encryption namespace', () => {
+      const path = siteEncryptionKeyPath('https://app.example.com');
+      const match = path.match(/^m\/44'\/73407'\/(\d+)'\/(\d+)'\/(\d+)'$/);
+      expect(match).not.toBeNull();
+      for (const index of match.slice(1).map(Number)) {
+        expect(index).toBeLessThan(2 ** 31);
+      }
+    });
+
+    test('is the same for a site every time, and differs between sites', () => {
+      const a = deriveSiteEncryptionKey(TEST_MNEMONIC, 'myapp.eth');
+      expect(deriveSiteEncryptionKey(TEST_MNEMONIC, 'myapp.eth').privateKey).toBe(a.privateKey);
+      for (const site of ['myapp.eth.', 'other.eth', 'https://myapp.eth', 'bzz://' + 'a'.repeat(64)]) {
+        expect(deriveSiteEncryptionKey(TEST_MNEMONIC, site).privateKey).not.toBe(a.privateKey);
+      }
+      expect(deriveSiteEncryptionKey(TEST_MNEMONIC_24, 'myapp.eth').privateKey).not.toBe(a.privateKey);
+    });
+
+    test('is separate from the wallets and the publisher keys', () => {
+      const keys = deriveAllKeys(TEST_MNEMONIC);
+      const key = deriveSiteEncryptionKey(TEST_MNEMONIC, 'myapp.eth');
+      const others = [keys.userWallet, keys.beeWallet, derivePublisherKey(TEST_MNEMONIC, 0)];
+      for (const other of others) {
+        expect(key.privateKey).not.toBe(other.privateKey);
+      }
+    });
+
+    test('throws on an invalid mnemonic or an empty site', () => {
+      expect(() => deriveSiteEncryptionKey('invalid', 'myapp.eth')).toThrow('Invalid mnemonic');
+      expect(() => deriveSiteEncryptionKey(TEST_MNEMONIC, '')).toThrow('non-empty string');
+      expect(() => siteEncryptionKeyPath(null)).toThrow('non-empty string');
     });
   });
 

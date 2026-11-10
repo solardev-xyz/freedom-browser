@@ -13,6 +13,8 @@ const {
   deriveEd25519Key,
   deriveUserWallet,
   derivePublisherKey,
+  siteEncryptionKeyPath,
+  deriveSiteEncryptionKey,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -61,6 +63,8 @@ module.exports = {
   deriveEd25519Key,
   deriveUserWallet,
   derivePublisherKey,
+  siteEncryptionKeyPath,
+  deriveSiteEncryptionKey,
   getSeed,
   PATHS,
   createBeeKeystore,

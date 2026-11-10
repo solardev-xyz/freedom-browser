@@ -37,6 +37,7 @@ const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissi
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
+const { SigningKey } = require('ethers');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, getAllFeeds } = require('./feed-store');
 const {
@@ -55,7 +56,12 @@ const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
-const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
+const {
+  getDerivedKeys,
+  getPublisherKey,
+  getSiteEncryptionKey,
+  getUserWalletKey,
+} = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
@@ -75,6 +81,9 @@ const LIMITS = {
   defaultTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   minTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
   maxSubscriptions: 32,
+  // Public keys per swarm_deriveSharedSecrets call: enough to wrap a group
+  // key for a large community in one approval.
+  maxSharedSecretKeys: 256,
 };
 
 const SPEC_VERSION = '1.0';
@@ -152,6 +161,8 @@ const KNOWN_METHODS = [
   'swarm_writeSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_getMessagingIdentity',
   'swarm_subscribe',
   'swarm_unsubscribe',
@@ -209,6 +220,8 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_writeFeedEntry',
   'swarm_writeSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getEncryptionKey',
+  'swarm_deriveSharedSecrets',
   'swarm_sendPss',
   'swarm_sendGsoc',
 ]);
@@ -491,6 +504,18 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return result;
     }
 
+    if (method === 'swarm_getEncryptionKey') {
+      const result = await handleGetEncryptionKey(normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
+    if (method === 'swarm_deriveSharedSecrets') {
+      const result = await handleDeriveSharedSecrets(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     // Messaging extension — no vault-timer reset: PSS/GSOC use node/mined
     // keys, never vault-derived signing keys.
     if (method === 'swarm_getMessagingIdentity') {
@@ -544,6 +569,7 @@ async function handleGetCapabilities(origin) {
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        encryptionKey: true,
       },
       limits: {
         maxDataBytes: LIMITS.maxDataBytes,
@@ -554,6 +580,7 @@ async function handleGetCapabilities(origin) {
         maxMessageBytes: LIMITS.maxMessageBytes,
         maxTargetDepth: LIMITS.maxTargetDepth,
         maxSubscriptions: LIMITS.maxSubscriptions,
+        maxSharedSecretKeys: LIMITS.maxSharedSecretKeys,
       },
     },
   };
@@ -1248,6 +1275,108 @@ async function handleGetSigningIdentity(origin) {
   } catch (err) {
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
+}
+
+/**
+ * Handle swarm_getEncryptionKey: the site's encryption public key, after
+ * connection + feed/signing grant.
+ *
+ * The key (identity/derivation.js deriveSiteEncryptionKey) is one per
+ * permission key, the same whatever publisher identity the site signs with,
+ * and never shared with another site. That last point is why key agreement
+ * uses it and not the publisher identity: a bee-wallet or ethereum-wallet
+ * identity is shared across sites, so ECDH on it would let any site with
+ * signing access read what was encrypted to another.
+ */
+async function handleGetEncryptionKey(origin) {
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    return {
+      result: {
+        publicKey: SigningKey.computePublicKey(key.privateKey, true).replace(/^0x/, ''),
+        curve: 'secp256k1',
+      },
+    };
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+// A compressed (33-byte) or uncompressed (65-byte) secp256k1 public key,
+// with or without 0x. Length is bounded before the regexp sees it (#478).
+function parsePublicKey(value) {
+  const hex = normalizeAddress(value);
+  if (hex.length !== 66 && hex.length !== 130) return null;
+  if (!/^(0[23][0-9a-fA-F]{64}|04[0-9a-fA-F]{128})$/.test(hex)) return null;
+  return `0x${hex.toLowerCase()}`;
+}
+
+/**
+ * Handle swarm_deriveSharedSecrets: ECDH between the site's encryption key
+ * and each given public key. Returns each shared point's x coordinate, the
+ * input of Bee's and Ant's ACT session keys, so a page can do ACT itself.
+ */
+async function handleDeriveSharedSecrets(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const { publicKeys } = params;
+  if (!Array.isArray(publicKeys) || publicKeys.length === 0) {
+    return invalidParams('publicKeys must be a non-empty array', 'invalid_public_key');
+  }
+  if (publicKeys.length > LIMITS.maxSharedSecretKeys) {
+    return invalidParams(
+      `publicKeys may hold at most ${LIMITS.maxSharedSecretKeys} keys`,
+      'payload_too_large',
+      { limit: LIMITS.maxSharedSecretKeys, actual: publicKeys.length }
+    );
+  }
+  const parsed = [];
+  for (let index = 0; index < publicKeys.length; index += 1) {
+    const publicKey = parsePublicKey(publicKeys[index]);
+    if (!publicKey) {
+      return invalidParams(
+        'each public key must be a hex secp256k1 public key, compressed (66 characters) or uncompressed (130)',
+        'invalid_public_key',
+        { index }
+      );
+    }
+    parsed.push(publicKey);
+  }
+
+  if (!hasFeedGrant(origin)) {
+    return feedNotGranted();
+  }
+
+  let signingKey;
+  try {
+    const key = await getSiteEncryptionKey(origin);
+    signingKey = new SigningKey(key.privateKey);
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+
+  const sharedSecrets = [];
+  for (let index = 0; index < parsed.length; index += 1) {
+    let point;
+    try {
+      // 0x04 ‖ x ‖ y. Throws for a key that is not a point on the curve.
+      point = signingKey.computeSharedSecret(parsed[index]);
+    } catch {
+      return invalidParams('public key is not a point on secp256k1', 'invalid_public_key', { index });
+    }
+    sharedSecrets.push(point.slice(4, 68));
+  }
+
+  return { result: { sharedSecrets } };
 }
 
 /**

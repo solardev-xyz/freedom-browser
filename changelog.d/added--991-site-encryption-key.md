@@ -1,0 +1,2 @@
+- An encryption key for each site in `window.swarm`, so apps can encrypt for their members without keeping secrets in the page ([#991](https://github.com/solardev-xyz/freedom-browser/issues/991))
+  - Restored with your recovery phrase, and never shared with another site

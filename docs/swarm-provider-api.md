@@ -3,8 +3,9 @@
 **Spec version:** `1.0` (the `specVersion` returned by `swarm_getCapabilities`)
 
 `window.swarm` lets a web page publish to Swarm, read and write chunks and
-feeds, sign with a publisher identity, and send and receive PSS/GSOC
-messages, all through the user's own Swarm node, with per-origin consent.
+feeds, sign with a publisher identity, agree keys with the site's own
+encryption key, and send and receive PSS/GSOC messages, all through the
+user's own Swarm node, with per-origin consent.
 
 It is the only way a page reaches the node. Requests from web content to the
 node's local HTTP API (`localhost:1633` and the port Freedom actually runs it
@@ -160,7 +161,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
 | `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
-| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
+| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes, `swarm_deriveSharedSecrets`; `swarm_writeFeedEntry` (neither `limit` nor `actual`)    |
 | `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`                                                                                                         |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
@@ -168,6 +169,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | `chunk_not_found`, `chunk_type_mismatch`                                                                        | Chunk reads, `swarm_readData`                                                                                            |
 | `invalid_feed_name`, `invalid_topic`, `feed_not_found`, `feed_empty`, `entry_not_found`, `index_already_exists` | Feed methods                                                                                                             |
 | `invalid_topic`, `invalid_recipient`, `invalid_target`, `invalid_payload`, `invalid_address`, `invalid_kind`    | Messaging methods                                                                                                        |
+| `invalid_public_key` (+ `index` when one key of the list is at fault)                                           | `swarm_deriveSharedSecrets`                                                                                              |
 | `subscription_not_found`                                                                                        | `swarm_unsubscribe`                                                                                                      |
 | `too_many_subscriptions` (+ `limit`)                                                                            | `swarm_subscribe`                                                                                                        |
 | `rate_limited`                                                                                                  | Permission-free reads (+ `windowMs`, `maxRequests`, `maxBytes`), new GSOC topics (+ `limit`, `windowMs`, `retryAfterMs`) |
@@ -207,14 +209,16 @@ an ENS name.
 |                | `swarm_getUploadStatus`                                                                                                              | connection                   | never                                                                                                                              |
 | **Publish**    | `swarm_publishData`, `swarm_publishFiles`, `swarm_publishChunk`                                                                      | connection                   | every call, unless "always allow" (`autoApprove.publish`)                                                                          |
 | **Feeds**      | `swarm_createFeed`, `swarm_updateFeed`, `swarm_writeFeedEntry`                                                                       | connection + feed grant      | the first call grants the tier and picks the identity; later calls prompt unless `autoApprove.feeds`                               |
-| **Signing**    | `swarm_getSigningIdentity`, `swarm_writeSingleOwnerChunk`                                                                            | connection + feed grant      | as Feeds, with `autoApprove.signing`                                                                                               |
+| **Signing**    | `swarm_getSigningIdentity`, `swarm_writeSingleOwnerChunk`, `swarm_getEncryptionKey`, `swarm_deriveSharedSecrets`                     | connection + feed grant      | as Feeds, with `autoApprove.signing`                                                                                               |
 | **Messaging**  | `swarm_getMessagingIdentity`, `swarm_subscribe`, `swarm_sendPss`, `swarm_sendGsoc`                                                   | connection + messaging grant | the first call grants the tier; sends prompt every time unless `autoApprove.messaging`; identity and subscribe do not prompt again |
 |                | `swarm_unsubscribe`                                                                                                                  | connection                   | never                                                                                                                              |
 
 Notes:
 
 - Feeds and Signing share **one** feed grant; they differ only in which
-  auto-approve flag skips the per-call prompt.
+  auto-approve flag skips the per-call prompt. The encryption key methods are
+  in the Signing tier: `autoApprove.signing` covers them too, and their
+  prompt names the encryption key instead of the publisher identity.
 - If the feed grant exists but the identity vault is locked, the user is asked
   to unlock it; the unlock prompt (which names the site) takes the place of
   the per-call approval for that call.
@@ -322,6 +326,30 @@ Messaging is different: PSS decrypts with the **node's** key, so
 the PSS public key is the same for every origin. GSOC writes are signed with a
 key mined from the topic, not with any user identity.
 
+### Site encryption key
+
+Each site also has an **encryption key** of its own: a secp256k1 key used
+only for key agreement (`swarm_getEncryptionKey`,
+`swarm_deriveSharedSecrets`), never for signing.
+
+- It is the same whatever publisher identity the site signs with, and **no
+  other site has it**, also when sites share a `bee-wallet` or
+  `ethereum-wallet` identity. Key agreement on a shared identity would let
+  any site with signing access read what was encrypted to another, so those
+  keys are never used for it.
+- It is derived from the vault's recovery phrase at
+  `m/44'/73407'/{a}'/{b}'/{c}'`, where `a`, `b` and `c` are the first three
+  big-endian 32-bit words of
+  `SHA-256("freedom-browser/swarm-encryption-key/v1\n" + permissionKey)`,
+  each with its top bit cleared. Restoring the recovery phrase restores the
+  key on any device, with nothing else to back up.
+- It follows the **permission key**. A `bzz://<ref>` origin changes with every
+  redeploy, and so does its key: serve an app that encrypts under an ENS name
+  or a feed manifest, or it cannot read what was encrypted to it before.
+- Disconnecting does not change it, and nothing can rotate it. Rotate group
+  keys with envelope encryption on top of it.
+- Using it needs the identity vault to be unlocked.
+
 ## Origin isolation guarantees
 
 - **Upload tags** (`tagUid` from `swarm_publishFiles`) are recorded against
@@ -362,6 +390,7 @@ Reported by `swarm_getCapabilities` under `limits`:
 | `maxMessageBytes`      | 4000            | `swarm_sendPss`, `swarm_sendGsoc`                   |
 | `maxTargetDepth`       | 3 bytes         | `swarm_sendPss` `targets`                           |
 | `maxSubscriptions`     | 32 per origin   | `swarm_subscribe`                                   |
+| `maxSharedSecretKeys`  | 256 per call    | `swarm_deriveSharedSecrets` `publicKeys`            |
 
 Not reported there:
 
@@ -430,10 +459,11 @@ it serves a [permission manifest](#permission-manifests):
              | 'ultra-light-mode' | 'no-usable-stamps',
   publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
   features: ['messaging'],
-  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true },
+  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true,
+                encryptionKey: true },
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
             maxChunkPayloadBytes, maxMessageBytes, maxTargetDepth,
-            maxSubscriptions }
+            maxSubscriptions, maxSharedSecretKeys }
 }
 ```
 
@@ -593,6 +623,64 @@ The address (`owner`, checksummed with `0x`) that `swarm_writeSingleOwnerChunk`
 and newly created feeds will be signed with, and its kind. Does not need the
 node to be running. This is the way to obtain the signing grant before the
 first write.
+
+### Encryption key
+
+Key agreement with the site's [encryption key](#site-encryption-key). Pages
+encrypt and decrypt themselves (for example HKDF and AES-GCM with WebCrypto);
+the private key never leaves Freedom.
+
+#### `swarm_getEncryptionKey` → `{ publicKey, curve: 'secp256k1' }` (signing tier)
+
+The site's compressed public key (66 hex). Publish it, for example in one of
+the site's feeds, so others can encrypt to it. Does not need the node to be
+running.
+
+#### `swarm_deriveSharedSecrets { publicKeys, options? }` → `{ sharedSecrets }` (signing tier)
+
+ECDH between the site's key and each of 1–256 public keys (compressed, 66
+hex, or uncompressed, 130 hex starting `04`; `0x` optional). Returns, in the
+same order, each shared point's x coordinate as 64 hex: the same value the
+other side gets from its private key and the site's public key. One call is
+one prompt, so wrap a group key for every member in one call.
+
+Use it as key material, not as a key: derive keys from it with a KDF and a
+context of your own. A key that is not a point on secp256k1 is
+`invalid_public_key` with its `index`.
+
+It also lets a page use Swarm's access control (ACT) with the site's key,
+building and reading the grantee data itself with the chunk methods. Bee and
+Ant derive ACT keys as `keccak256(x ‖ nonce)` (nonce `0x00` for the lookup
+key, `0x01` for the access-key decryption key), where `x` is this value
+**with its leading zero bytes removed**, as Go's `big.Int.Bytes()` encodes it
+(about one key in 256 has one). Ant's `crates/ant-crypto/src/act.rs` documents
+the full scheme.
+
+For example, one AES key per member from one prompt (`hexToBytes` is a
+helper of your own):
+
+```javascript
+const { sharedSecrets } = await window.swarm.deriveSharedSecrets({ publicKeys: memberKeys });
+const memberAesKeys = await Promise.all(
+  sharedSecrets.map(async (secret) => {
+    const material = await crypto.subtle.importKey('raw', hexToBytes(secret), 'HKDF', false, [
+      'deriveKey',
+    ]);
+    return crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(32),
+        info: new TextEncoder().encode('my-app/member-key/v1'),
+      },
+      material,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+  })
+);
+```
 
 ### Messaging
 

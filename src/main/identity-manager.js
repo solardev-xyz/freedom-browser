@@ -272,6 +272,24 @@ async function getPublisherKey(originIndex) {
 }
 
 /**
+ * Derive a site's encryption key (key agreement only, see
+ * identity/derivation.js deriveSiteEncryptionKey). Vault must be unlocked.
+ * Derived on demand, like publisher keys, so nothing outlives a lock.
+ * @param {string} site - The site's permission key
+ * @returns {Promise<Object>} { privateKey, publicKey, path }
+ */
+async function getSiteEncryptionKey(site) {
+  const identity = await loadIdentityModule();
+  const mnemonic = identity.getMnemonic();
+
+  if (!mnemonic) {
+    throw new Error('Vault must be unlocked to derive encryption keys');
+  }
+
+  return identity.deriveSiteEncryptionKey(mnemonic, site);
+}
+
+/**
  * Derive a browser Ethereum wallet key by wallet/account index.
  * Vault must be unlocked. This returns the same key material used by
  * wallet transaction/message signing without persisting it elsewhere.
@@ -1724,6 +1742,7 @@ module.exports = {
   // Key operations
   getDerivedKeys,
   getPublisherKey,
+  getSiteEncryptionKey,
   getUserWalletKey,
 
   // Multi-wallet operations

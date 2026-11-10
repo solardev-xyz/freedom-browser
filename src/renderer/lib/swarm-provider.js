@@ -174,7 +174,9 @@ async function handleSwarmRequest(webview, request) {
       result = await handleFeedSigningRequest(method, params, permissionKey, 'feeds', webview);
     } else if (
       method === 'swarm_writeSingleOwnerChunk' ||
-      method === 'swarm_getSigningIdentity'
+      method === 'swarm_getSigningIdentity' ||
+      method === 'swarm_getEncryptionKey' ||
+      method === 'swarm_deriveSharedSecrets'
     ) {
       result = await handleFeedSigningRequest(method, params, permissionKey, 'signing', webview);
     } else if (
