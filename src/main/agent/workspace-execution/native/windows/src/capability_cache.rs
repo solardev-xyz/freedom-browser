@@ -109,6 +109,10 @@ fn prune_locked(home: &Path, current_temp: &Path, minimum_entries: usize,
 mod tests {
     use super::*;
     use serde_json::json;
+    use anyhow::Context;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
     // Content/error-path fixtures use a one-entry trigger. Production's batched
     // trigger is checked separately below and by the native workload qualifier.
@@ -131,11 +135,12 @@ mod tests {
     struct Fixture { home: std::path::PathBuf, temp: std::path::PathBuf, guard: Option<StartupLock> }
     impl Fixture {
         fn new() -> Result<Self> {
-            let home = std::env::temp_dir().join(format!("freedom-cap-cleanup-{}-{}", std::process::id(),
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
-            fs::create_dir(&home)?;
+            let home = std::env::temp_dir().join(format!("freedom-cap-cleanup-{}-{}-{}", std::process::id(),
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)));
+            fs::create_dir(&home).context("Create unique owned cache fixture")?;
             let temp = home.join("freedom-win-workspace-active");
-            fs::create_dir(&temp)?;
+            fs::create_dir(&temp).context("Create private root in owned cache fixture")?;
             let mut guard = StartupLock::open(&home, None)?;
             assert!(guard.try_acquire()?);
             Ok(Self { home, temp, guard: Some(guard) })
