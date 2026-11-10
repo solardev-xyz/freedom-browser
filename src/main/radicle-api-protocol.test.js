@@ -5,6 +5,10 @@ jest.mock('./logger', () => ({
 }));
 
 jest.mock('./radicle-embedded', () => ({
+  // The read bounds are the real ones (R-3); the reads are scripted.
+  withReadBounds: jest.requireActual('./radicle-embedded').withReadBounds,
+  ReadEnded: jest.requireActual('./radicle-embedded').ReadEnded,
+  ReplyTooLarge: jest.requireActual('./radicle-embedded').ReplyTooLarge,
   status: jest.fn(),
   listRepos: jest.fn(),
   buildRepoMeta: jest.fn(),
@@ -41,6 +45,7 @@ const {
   serveRepoApi,
   decodeRepoApiPath,
   mapWithConcurrency,
+  boundedStringify,
   REPO_LIST_CONCURRENCY,
 } = require('./radicle-api-protocol');
 
@@ -260,7 +265,9 @@ describe('radapi protocol', () => {
     });
 
     test('ignores requests for every other scheme', () => {
-      expect(guardRadicleApiRequest(request('https://example.com/', 'https://example.com/x'))).toBeNull();
+      expect(
+        guardRadicleApiRequest(request('https://example.com/', 'https://example.com/x'))
+      ).toBeNull();
       expect(guardRadicleApiRequest(request('https://example.com/', 'rad://z3gq/tree'))).toBeNull();
     });
   });
@@ -402,11 +409,123 @@ describe('radapi protocol', () => {
       const response = await serveRepoApi(RID, apiPath, { allowPrivate });
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toBe('application/json');
-      expect(response.headers.get('access-control-allow-origin')).toBe(
-        allowPrivate ? null : '*'
-      );
+      expect(response.headers.get('access-control-allow-origin')).toBe(allowPrivate ? null : '*');
       await expect(response.text()).resolves.toBe(text);
     }
+  });
+
+  test("refuses a response over the caller's cap, raw text or parsed (R-3)", async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    embedded.blobAtRaw.mockResolvedValue(`{"content":"${'x'.repeat(200)}"}`);
+    embedded.issues.mockResolvedValue([{ title: 'y'.repeat(200) }]);
+
+    for (const apiPath of [`/blob/${REVISION}/big.bin`, '/issues']) {
+      const capped = await serveRepoApi(RID, apiPath, { maxResponseChars: 100 });
+      expect(capped.status).toBe(502);
+      expect(capped.headers.get('access-control-allow-origin')).toBe('*');
+      await expect(capped.json()).resolves.toEqual({
+        error: 'repository data too large to serve here',
+      });
+
+      // Without a cap (the internal viewer's radapi:) the same read is served.
+      const uncapped = await serveRepoApi(RID, apiPath, { allowPrivate: true });
+      expect(uncapped.status).toBe(200);
+    }
+    const small = await serveRepoApi(RID, `/blob/${REVISION}/big.bin`, {
+      maxResponseChars: 10_000,
+    });
+    expect(small.status).toBe(200);
+  });
+
+  test('stops serializing a composed reply at the cap (R-3, #948 round 1)', async () => {
+    // A discussion of 32,768 comment bodies: about 34 Mi characters of JSON,
+    // over the 16 Mi cap. The reply stops at the cap, without serializing
+    // the rest, and is a 502.
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    const body = 'c'.repeat(1024);
+    let read = 0;
+    const comments = new Proxy(
+      Array.from({ length: 32_768 }, () => ({ id: 'x', body })),
+      {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && /^[0-9]+$/.test(key)) read += 1;
+          return Reflect.get(target, key, receiver);
+        },
+      }
+    );
+    embedded.issue.mockResolvedValue({ id: 'abc', title: 'big', discussion: comments });
+    const stringify = jest.spyOn(JSON, 'stringify');
+    try {
+      const response = await serveRepoApi(RID, '/issues/abc', {
+        maxResponseChars: 16 * 1024 * 1024,
+      });
+      expect(response.status).toBe(502);
+      await expect(response.json()).resolves.toEqual({
+        error: 'repository data too large to serve here',
+      });
+      // About half the comments are read, and never the whole reply.
+      expect(read).toBeGreaterThan(16_000);
+      expect(read).toBeLessThan(17_000);
+      expect(stringify.mock.calls.some(([value]) => value?.discussion === comments)).toBe(false);
+    } finally {
+      stringify.mockRestore();
+    }
+  });
+
+  test('an addon reply over the cap, refused before it is parsed, is a 502 (R-3)', async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    embedded.issues.mockRejectedValue(new embedded.ReplyTooLarge('issues'));
+    for (const method of ['GET', 'HEAD']) {
+      const response = await serveRepoApi(RID, '/issues', { method, maxResponseChars: 100 });
+      expect(response.status).toBe(502);
+      if (method === 'HEAD') await expect(response.text()).resolves.toBe('');
+    }
+  });
+
+  test('a read that ended is answered without serializing its reply (R-3)', async () => {
+    const ended = new AbortController();
+    embedded.repoInfo.mockImplementation(async () => {
+      ended.abort();
+      return { visibility: { type: 'public' } };
+    });
+    embedded.issues.mockResolvedValue([{ title: 'x' }]);
+    const response = await serveRepoApi(RID, '', { signal: ended.signal });
+    expect(response.status).toBe(503);
+    expect(embedded.buildRepoMeta).not.toHaveBeenCalled();
+    embedded.repoInfo.mockReset();
+    embedded.issues.mockRejectedValue(new embedded.ReadEnded());
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    const cancelled = await serveRepoApi(RID, '/issues', { signal: new AbortController().signal });
+    expect(cancelled.status).toBe(503);
+  });
+
+  describe('boundedStringify', () => {
+    const values = [
+      { a: 1, b: 'two', c: [true, null, undefined, () => 1, Symbol('s')], d: undefined },
+      { nested: { deep: [{ x: -0, y: NaN, z: Infinity, w: 1.5e300 }] }, e: 'é\u2028\ud800"\\' },
+      [],
+      {},
+      'text',
+      42,
+      { toJSON: () => ({ replaced: true }) },
+      { date: new Date(0) },
+    ];
+    test.each(values.map((value, index) => [index, value]))(
+      'is JSON.stringify under the cap (%s)',
+      (_index, value) => {
+        expect(boundedStringify(value, 1_000_000)).toBe(JSON.stringify(value));
+        expect(boundedStringify(value, null)).toBe(JSON.stringify(value));
+      }
+    );
+
+    test('returns null as soon as the text would pass the cap', () => {
+      const value = { list: ['abc', 'defg'] };
+      const text = JSON.stringify(value);
+      expect(boundedStringify(value, text.length)).toBe(text);
+      expect(boundedStringify(value, text.length - 1)).toBeNull();
+      // One string over the cap is refused before it is escaped.
+      expect(boundedStringify({ big: 'x'.repeat(50) }, 40)).toBeNull();
+    });
   });
 
   test('forwards a commit history page untouched', async () => {
@@ -590,6 +709,56 @@ describe('radapi protocol', () => {
     }
   );
 
+  // R-3 meets R-2 (#948, merging #957): the read bounds' own errors on the
+  // visibility read. An over-cap identity reply is a failure like any other
+  // there, so it answers as an absent repository does, never as a 502 a
+  // stored private RID alone could produce.
+  test('an over-cap repoInfo reply answers like an absent repository', async () => {
+    const shape = async (r) => ({
+      status: r.status,
+      headers: [...r.headers.entries()].sort(),
+      body: await r.text(),
+    });
+    embedded.repoInfo.mockRejectedValueOnce(new embedded.ReplyTooLarge('repoInfo'));
+    const overCap = await shape(await serveRepoApi(RID, '/issues', { maxResponseChars: 100 }));
+    embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+    const absent = await shape(await serveRepoApi(RID, '/issues', { maxResponseChars: 100 }));
+    expect(overCap).toEqual(absent);
+    expect(overCap.status).toBe(404);
+    expect(embedded.issues).not.toHaveBeenCalled();
+  });
+
+  // A read that ended during the visibility read answers as an ended read,
+  // whatever the repository: that is the read's state, not the repo's.
+  test.each([
+    ['private', async () => ({ visibility: { type: 'private', allow: [] } })],
+    [
+      'absent',
+      async () => {
+        throw new Error(`repository ${RID} not found in storage`);
+      },
+    ],
+    ['public', async () => ({ visibility: { type: 'public' } })],
+  ])('a read that ends during the visibility read of a %s repository is a 503', async (_, info) => {
+    const log = require('./logger');
+    log.warn.mockClear();
+    const ended = new AbortController();
+    embedded.repoInfo.mockImplementationOnce(async () => {
+      ended.abort();
+      return info();
+    });
+    // The real bound check runs only on a real addon call; script it here.
+    const response = await serveRepoApi(RID, '/issues', { signal: ended.signal });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: 'request cancelled' });
+    expect(embedded.issues).not.toHaveBeenCalled();
+
+    embedded.repoInfo.mockRejectedValueOnce(new embedded.ReadEnded());
+    const thrown = await serveRepoApi(RID, '/issues', { signal: ended.signal });
+    expect(thrown.status).toBe(503);
+    expect(log.warn.mock.calls.filter((call) => call[0] === '[rad]')).toEqual([]);
+  });
+
   test('logs a non-"not found" repoInfo failure, redacted in a private window', async () => {
     const log = require('./logger');
     const { runWithPrivateLogContext } = require('./private/private-log-context');
@@ -606,7 +775,6 @@ describe('radapi protocol', () => {
   });
 
   test('radapi: still serves private repos', async () => {
-
     embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
     embedded.buildRepoMeta.mockResolvedValueOnce({ rid: RID });
     expect((await serveRepoApi(RID, '', { allowPrivate: true })).status).toBe(200);
@@ -634,11 +802,7 @@ describe('radapi protocol', () => {
     ['a?b.txt', 'a%3Fb.txt'],
     ['ünïcode.rs', '%C3%BCn%C3%AFcode.rs'],
   ])('accepts %s when the viewer encodes it as %s', (name, encoded) => {
-    expect(decodeRepoApiPath(`/blob/${REVISION}/${encoded}`)).toEqual([
-      'blob',
-      REVISION,
-      name,
-    ]);
+    expect(decodeRepoApiPath(`/blob/${REVISION}/${encoded}`)).toEqual(['blob', REVISION, name]);
   });
 
   test('rejects the unencoded form the viewer used to send', () => {
@@ -691,7 +855,13 @@ describe('radapi protocol', () => {
 
     const warnings = log.warn.mock.calls.filter((call) => call[0] === '[radapi]');
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual(['[radapi]', RID, `/tree/${REVISION}/src`, '→', 'tree read failed']);
+    expect(warnings[0]).toEqual([
+      '[radapi]',
+      RID,
+      `/tree/${REVISION}/src`,
+      '→',
+      'tree read failed',
+    ]);
   });
 
   // The dispatcher's registry is process-wide and rejects a duplicate
