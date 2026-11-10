@@ -98,8 +98,11 @@ shows the per-write prompt itself) or `agent_custody`.
    The prompt offers a per-site **"always allow writes"** rule
    (`autoApprove.signing`). Writes the rule answers are rate-limited per
    origin in main: a burst of 5, then 1 per 30 s, and at most 50 in any
-   24 hours. Past the limit a write falls back to the prompt, where the
-   user can also turn the rule off. The counts are held in memory.
+   24 hours. A rule-answered write that fails before anything is signed
+   (invalid params, `repo_not_found`) is not counted. Past the limit a
+   write falls back to the prompt, where the user can turn the rule off
+   by unchecking it, whether they then approve or reject that write. The
+   counts are held in memory.
    On a tab Freedom Agent holds, the rule does not apply: each write
    prompts, and main refuses one the renderer reports as automatic
    (`4100`, reason `agent_custody`).

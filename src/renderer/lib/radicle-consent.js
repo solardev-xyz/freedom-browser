@@ -85,8 +85,17 @@ function finish(approved, { keepSidebar = false } = {}) {
   // than leaving the wallet view behind (which may not even be enabled).
   if (!keepSidebar && !sidebarWasOpen) closeSidebar();
 
-  if (approved) resolve(offersAlways ? { alwaysAllow } : undefined);
-  else reject({ code: 4001, message: 'User rejected the request' });
+  if (approved) {
+    resolve(offersAlways ? { alwaysAllow } : undefined);
+    return;
+  }
+  // The checkbox state goes back with a rejection too: unchecking the rule
+  // and rejecting is how the user stops a site without publishing the
+  // write in front of them. It rides on the rejection object only; the
+  // provider passes code/message/data on to the page, never this field.
+  const rejection = { code: 4001, message: 'User rejected the request' };
+  if (offersAlways) rejection.alwaysAllow = alwaysAllow;
+  reject(rejection);
 }
 
 /**
@@ -96,7 +105,8 @@ function finish(approved, { keepSidebar = false } = {}) {
  * confusion from spammy pages).
  *
  * With `always: { label, checked }` the prompt also shows that checkbox,
- * and resolves to `{ alwaysAllow }`, its state when approved.
+ * and resolves to `{ alwaysAllow }`, its state when approved; a rejection
+ * then also carries `alwaysAllow`, the box's state when rejected.
  */
 function prompt({ title, origin, wants, allows, warning, approveLabel, owner, always = null }) {
   return new Promise((resolve, reject) => {

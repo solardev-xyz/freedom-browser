@@ -166,6 +166,54 @@ describe('radicle-consent owner binding', () => {
     await expect(promptPromise).resolves.toEqual({ alwaysAllow: true });
   });
 
+  test('a rejected per-write prompt reports the "always allow" checkbox too', async () => {
+    const { mod, elementsById } = await loadConsent();
+    const owner = createElement('webview');
+    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
+
+    // Unchecked, then Reject: the rejection says the rule should be off.
+    let promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    elementsById['radicle-consent-always'].checked = false;
+    elementsById['radicle-consent-reject'].dispatch('click');
+    await expect(promptPromise).rejects.toEqual({
+      code: 4001,
+      message: 'User rejected the request',
+      alwaysAllow: false,
+    });
+
+    // Back and a dismissal carry it the same way.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { alwaysAllow: true }
+    );
+    elementsById['radicle-consent-always'].checked = false;
+    mod.dismissRadicleConsent(owner);
+    await expect(promptPromise).rejects.toMatchObject({ code: 4001, alwaysAllow: false });
+
+    // A prompt that offered no rule rejects without the field.
+    promptPromise = mod.showRadicleSignedWriteApproval(
+      'https://app.example',
+      'radicle_commentIssue',
+      params,
+      owner,
+      { agentHeld: true }
+    );
+    elementsById['radicle-consent-reject'].dispatch('click');
+    await expect(promptPromise).rejects.toEqual({
+      code: 4001,
+      message: 'User rejected the request',
+    });
+  });
+
   test('on a tab in Agent custody the per-write prompt offers no rule', async () => {
     const { mod, elementsById } = await loadConsent();
     const owner = createElement('webview');

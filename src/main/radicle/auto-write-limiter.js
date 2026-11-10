@@ -5,7 +5,9 @@
  * Per origin: a burst of BURST writes, then one more per REFILL_MS, and at
  * most DAILY_MAX in any rolling DAY_MS. A write the limit refuses is not
  * lost: the provider falls back to the per-write prompt, and a write the
- * user approves there is not counted.
+ * user approves there is not counted. An admitted write that then fails
+ * before anything was signed (bad params, unknown repo) gives its token and
+ * daily slot back through the refund admit() returns.
  *
  * In memory: the counts start again when the browser restarts.
  */
@@ -39,17 +41,30 @@ function createAutoWriteLimiter({ now = () => Date.now(), limits = LIMITS } = {}
   }
 
   /**
-   * Count one automatic write for `origin` if the limit allows it.
+   * Count one automatic write for `origin` if the limit allows it. The
+   * charge is taken now, before the write runs, so concurrent writes can't
+   * all pass on the same unspent budget.
    * @param {string} origin - normalized origin
-   * @returns {boolean} whether the write may go ahead without a prompt
+   * @returns {Function|null} null when the write needs a prompt; otherwise
+   *   a refund() that returns the token and daily slot (once) — for a write
+   *   that failed without signing anything.
    */
   function admit(origin) {
     const time = now();
     const state = stateFor(origin, time);
-    if (state.tokens < 1 || state.recent.length >= limits.DAILY_MAX) return false;
+    if (state.tokens < 1 || state.recent.length >= limits.DAILY_MAX) return null;
     state.tokens -= 1;
     state.recent.push(time);
-    return true;
+    let refunded = false;
+    return function refund() {
+      if (refunded) return;
+      refunded = true;
+      // forget() (a disconnect) since admit: the slate is already clean.
+      if (origins.get(origin) !== state) return;
+      const index = state.recent.indexOf(time);
+      if (index !== -1) state.recent.splice(index, 1);
+      state.tokens = Math.min(limits.BURST, state.tokens + 1);
+    };
   }
 
   return {

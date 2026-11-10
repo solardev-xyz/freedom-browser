@@ -314,6 +314,59 @@ describe('radicle-provider', () => {
       });
     });
 
+    test('unchecking the rule and rejecting the fallback prompt turns the rule off unpublished', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockResolvedValueOnce({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValueOnce({
+        code: 4001,
+        message: 'User rejected the request',
+        alwaysAllow: false,
+      });
+
+      sendRequest({ id: 19, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+
+      // Only the automatic attempt main refused; nothing was published.
+      expect(execute.mock.calls.map((call) => call[3])).toEqual([
+        { webContentsId: 41, approval: 'auto' },
+      ]);
+      expect(permissions.setAutoApprove).toHaveBeenCalledWith(
+        'https://app.example',
+        'signing',
+        false
+      );
+      // The page gets a plain rejection, not the checkbox state.
+      expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+        id: 19,
+        result: null,
+        error: { code: 4001, message: 'User rejected the request', data: undefined },
+      });
+    });
+
+    test('checking the box and rejecting does not turn the rule on', async () => {
+      const { sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValueOnce({
+        code: 4001,
+        message: 'User rejected the request',
+        alwaysAllow: true,
+      });
+
+      sendRequest({ id: 20, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+      await flushMicrotasks();
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(permissions.setAutoApprove).not.toHaveBeenCalled();
+    });
+
     test('any other refusal of a rule-answered write is returned, not prompted', async () => {
       const { webview, sendRequest, consentMocks, execute } = await loadProvider({
         permission: { origin: 'https://app.example' },

@@ -205,10 +205,23 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
   // back past its limit) can outlast the document: a prompt for one that
   // has gone would sit in the single consent slot and block its successor's.
   assertSameDocument();
-  const answer = await showRadicleSignedWriteApproval(permissionKey, method, params, webview, {
-    agentHeld,
-    alwaysAllow: ruleOn,
-  });
+  let answer;
+  try {
+    answer = await showRadicleSignedWriteApproval(permissionKey, method, params, webview, {
+      agentHeld,
+      alwaysAllow: ruleOn,
+    });
+  } catch (error) {
+    // Unchecking the rule and rejecting turns the rule off without
+    // publishing this write — the one place the user can revoke it (there
+    // is no Radicle site-permissions screen). Saved even if the document
+    // has since navigated away: the rule belongs to the site, not the page.
+    // Checking the box and then rejecting does not turn it on.
+    if (!agentHeld && ruleOn && error?.alwaysAllow === false) {
+      await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', false);
+    }
+    throw error;
+  }
   assertSameDocument();
   if (!agentHeld && typeof answer?.alwaysAllow === 'boolean' && answer.alwaysAllow !== ruleOn) {
     await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', answer.alwaysAllow);

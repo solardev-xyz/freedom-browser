@@ -290,6 +290,32 @@ async function handleCobWrite(fn, params) {
   }
 }
 
+// Reasons a COB write fails with before anything is signed: parameter
+// validation (cob-service checks them before calling the node) and an
+// unknown repo or object. Any other failure (native_failed, announce_failed)
+// may come after the signature, so it keeps its automatic-write charge.
+const UNSIGNED_FAILURE_REASONS = new Set(['repo_not_found']);
+
+function failedBeforeSigning(err) {
+  return (
+    err?.code === ERRORS.INVALID_PARAMS.code || UNSIGNED_FAILURE_REASONS.has(err?.data?.reason)
+  );
+}
+
+/**
+ * A signed write. A rule-answered write that fails before signing gives its
+ * limiter charge back, so a site retrying a bad write doesn't burn its
+ * daily budget on writes that never published.
+ */
+async function handleSignedWrite(fn, params, refundAutoWrite) {
+  try {
+    return await handleCobWrite(fn, params);
+  } catch (err) {
+    if (refundAutoWrite && failedBeforeSigning(err)) refundAutoWrite();
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -318,6 +344,9 @@ async function executeRadicleMethod(
   }
 
   const tier = METHOD_TIERS[method];
+  // Set when the "always allow writes" rule answered this write: the
+  // limiter's charge for it, returned if the write fails before signing.
+  let refundAutoWrite = null;
   if (tier !== 'none') {
     if (!permissions.getPermission(origin)) {
       throw providerError(ERRORS.UNAUTHORIZED, 'Origin not connected', {
@@ -340,7 +369,8 @@ async function executeRadicleMethod(
           reason: 'approval_required',
         });
       }
-      if (!autoWriteLimiter.admit(normalizeOrigin(origin))) {
+      refundAutoWrite = autoWriteLimiter.admit(normalizeOrigin(origin));
+      if (!refundAutoWrite) {
         throw providerError(
           ERRORS.UNAUTHORIZED,
           'This site has used up its automatic writes for now; this one needs the user\'s approval',
@@ -384,13 +414,13 @@ async function executeRadicleMethod(
     case 'radicle_getIdentity':
       return handleCobWrite(() => cob.getIdentity(), params);
     case 'radicle_createIssue':
-      return handleCobWrite((p) => cob.createIssue(p), params);
+      return handleSignedWrite((p) => cob.createIssue(p), params, refundAutoWrite);
     case 'radicle_commentIssue':
-      return handleCobWrite((p) => cob.commentIssue(p), params);
+      return handleSignedWrite((p) => cob.commentIssue(p), params, refundAutoWrite);
     case 'radicle_editIssueState':
-      return handleCobWrite((p) => cob.editIssueState(p), params);
+      return handleSignedWrite((p) => cob.editIssueState(p), params, refundAutoWrite);
     case 'radicle_commentPatch':
-      return handleCobWrite((p) => cob.commentPatch(p), params);
+      return handleSignedWrite((p) => cob.commentPatch(p), params, refundAutoWrite);
     /* istanbul ignore next -- KNOWN_METHODS guard makes this unreachable */
     default:
       throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
