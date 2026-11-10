@@ -69,6 +69,43 @@ describe('rpc-manager API key file (K-5)', () => {
     expect(fs.readFileSync(keysPath, 'utf8')).toBe(before);
     expect(tempFiles()).toEqual([]);
   });
+
+  // A refused read must not let the next save replace the file with only
+  // the one new key (K-5 review, R1-M1).
+  posixTest('a key file owned by another account is never overwritten', () => {
+    const stored = JSON.stringify({ infura: { apiKey: 'keep-me', enabled: true } });
+    fs.writeFileSync(keysPath, stored);
+    fs.chmodSync(keysPath, 0o644);
+    const uid = process.getuid();
+    const getuid = jest.spyOn(process, 'getuid').mockReturnValue(uid + 1);
+
+    expect(rpc.hasApiKey('alchemy')).toBe(false);
+    const set = rpc.setApiKey('alchemy', 'new-key');
+    expect(set.success).toBe(false);
+    expect(set.error).toMatch(/owned by another account.*not overwritten/);
+    const removed = rpc.removeApiKey('infura');
+    expect(removed.success).toBe(false);
+    expect(removed.error).toMatch(/not overwritten/);
+    expect(fs.readFileSync(keysPath, 'utf8')).toBe(stored);
+    expect(modeOf(keysPath)).toBe(0o644);
+    expect(onApiKeysChanged).not.toHaveBeenCalled();
+
+    // Once it reads again, a save keeps every stored key.
+    getuid.mockRestore();
+    expect(rpc.setApiKey('alchemy', 'new-key')).toEqual({ success: true });
+    const saved = JSON.parse(fs.readFileSync(keysPath, 'utf8'));
+    expect(saved.infura.apiKey).toBe('keep-me');
+    expect(saved.alchemy.apiKey).toBe('new-key');
+  });
+
+  test('a key file that is not JSON is never overwritten', () => {
+    fs.writeFileSync(keysPath, '{"infura": {"apiKey": "keep-me"');
+    const set = rpc.setApiKey('alchemy', 'new-key');
+    expect(set.success).toBe(false);
+    expect(set.error).toMatch(/not overwritten/);
+    expect(fs.readFileSync(keysPath, 'utf8')).toBe('{"infura": {"apiKey": "keep-me"');
+    expect(tempFiles()).toEqual([]);
+  });
 });
 
 describe('the shared RPC key store (K-5 review)', () => {

@@ -24,6 +24,13 @@ function getProviderManager() {
 }
 
 let apiKeysCache = null;
+// Why the stored file could not be read, when it couldn't. A save would
+// replace it with only what is in memory (an empty cache plus the one
+// change), so every stored key would be lost; saves refuse instead until a
+// read succeeds. The one exception is a symbolic link at the name: the
+// rename replaces the link itself and the file it points to keeps its
+// content, so nothing stored is lost by replacing it (K-5 review).
+let apiKeysReadError = null;
 
 // The keyed-provider catalog (Alchemy/Infura/DRPC) from the network
 // registry, keyed by id. Each entry: { id, role, keyed, name, website,
@@ -43,12 +50,31 @@ function loadApiKeys() {
 
   try {
     apiKeysCache = readRpcApiKeys();
+    apiKeysReadError = null;
   } catch (err) {
     console.error('[RpcManager] Failed to load API keys:', err);
     apiKeysCache = {};
+    apiKeysReadError = err;
   }
 
   return apiKeysCache;
+}
+
+// Before a change that will be saved: re-read a file that failed to read
+// (it may have been fixed since), and say why it can't be overwritten if it
+// still can't be read.
+function loadApiKeysForChange() {
+  if (apiKeysReadError) apiKeysCache = null;
+  const apiKeys = loadApiKeys();
+  const err = apiKeysReadError;
+  if (err && !(err.code === 'UNSAFE_PRIVATE_PATH' && err.link)) {
+    return {
+      error:
+        `Your saved API keys could not be read (${err.message}), so they were not ` +
+        'overwritten. Fix or remove rpc-api-keys.json in the Freedom data folder, then try again.',
+    };
+  }
+  return { apiKeys };
 }
 
 // Owner-only temp file, fsync, rename (rpc-api-key-store.js): a crash or a
@@ -56,6 +82,7 @@ function loadApiKeys() {
 function saveApiKeys() {
   try {
     writeRpcApiKeys(apiKeysCache);
+    apiKeysReadError = null;
     return true;
   } catch (err) {
     console.error('[RpcManager] Failed to save API keys:', err);
@@ -71,7 +98,8 @@ function setApiKey(providerId, apiKey) {
     return { success: false, error: `Unknown provider: ${providerId}` };
   }
 
-  const apiKeys = loadApiKeys();
+  const { apiKeys, error } = loadApiKeysForChange();
+  if (error) return { success: false, error };
   apiKeys[providerId] = { apiKey, enabled: true, addedAt: Date.now() };
   apiKeysCache = apiKeys;
 
@@ -88,7 +116,8 @@ function setApiKey(providerId, apiKey) {
  * Remove the API key for a keyed provider.
  */
 function removeApiKey(providerId) {
-  const apiKeys = loadApiKeys();
+  const { apiKeys, error } = loadApiKeysForChange();
+  if (error) return { success: false, error };
   if (!apiKeys[providerId]) {
     return { success: false, error: `No API key found for provider: ${providerId}` };
   }
