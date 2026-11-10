@@ -2169,6 +2169,33 @@ describe('navigation', () => {
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
 
+    // A background tab's own `bzz://` navigation (a page's scripted `location`
+    // change, replayed with that tab's webview) records its Swarm base on that
+    // tab and that guest — never on the tab the user is looking at (#969).
+    test("a background tab's Swarm navigation syncs its base to that tab, not the active one", async () => {
+      const bgTab = createTab(2, 'https://second.example', {
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const activeTab = ctx.activeRef.tab;
+      ctx.tabsRef.list = [activeTab, bgTab];
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`, null, bgTab.webview, { pageInitiated: true });
+      await flushMicrotasks();
+
+      expect(bgTab.navigationState.currentBzzBase).toBeTruthy();
+      expect(activeTab.navigationState.currentBzzBase || null).toBeNull();
+      expect(ctx.electronAPI.setBzzBase).toHaveBeenCalledWith(
+        22,
+        bgTab.navigationState.currentBzzBase
+      );
+      expect(ctx.electronAPI.setBzzBase).not.toHaveBeenCalledWith(
+        activeTab.webview.getWebContentsId(),
+        expect.anything()
+      );
+    });
+
     test('probes the in-manifest path so index-less manifests deep-link (#172)', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();

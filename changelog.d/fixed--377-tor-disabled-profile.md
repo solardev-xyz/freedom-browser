@@ -1,1 +1,0 @@
-- The Nodes menu says "Tor disabled for this profile" when Tor is turned off for the profile, instead of the toggle silently snapping back ([#377](https://github.com/solardev-xyz/freedom-browser/issues/377))
