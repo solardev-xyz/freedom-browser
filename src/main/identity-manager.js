@@ -42,12 +42,18 @@ let beeLifecycle = { stop: null, start: null };
  * `needsKeyReinjection` answers whether the node's last start could not open
  * its keystore (K-3); the next unlock then re-injects the key.
  * `refuseKeyReinjection(message)` reports that it would not: the keystore
- * holds another identity.
+ * holds another identity. `onKeyReinjectionNeeded(listener)` subscribes to
+ * a start that stops for re-injection, so an already unlocked vault
+ * recovers at once rather than on its next unlock.
  * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>,
  *   needsKeyReinjection?: () => boolean,
- *   refuseKeyReinjection?: (message: string) => void}} hooks
+ *   refuseKeyReinjection?: (message: string) => void,
+ *   onKeyReinjectionNeeded?: (listener: () => void) => void}} hooks
  */
 function setBeeLifecycle(hooks = {}) {
+  if (typeof hooks.onKeyReinjectionNeeded === 'function') {
+    hooks.onKeyReinjectionNeeded(recoverBeeKeystoreIfUnlocked);
+  }
   beeLifecycle = {
     stop: typeof hooks.stop === 'function' ? hooks.stop : null,
     start: typeof hooks.start === 'function' ? hooks.start : null,
@@ -237,9 +243,7 @@ async function unlockVault(password) {
   // The Swarm node could not open its keystore at its last start: write it
   // again from the recovery phrase, with a new password (K-3).
   if (beeLifecycle.needsKeyReinjection?.() === true) {
-    void reencryptBeeKeystore().catch((err) => {
-      console.warn('[IdentityManager] Could not re-inject the Swarm key:', err.message);
-    });
+    recoverBeeKeystoreIfUnlocked();
   }
 
   // Migrate old vaults: save addresses to metadata if not present
@@ -457,7 +461,14 @@ function reencryptBeeKeystore() {
   if (!derivedKeys) {
     return Promise.reject(new Error(VAULT_LOCKED_MESSAGE));
   }
-  const dataDir = path.resolve(getAntDataDir());
+  let dataDir;
+  try {
+    // Throws for a data directory Freedom refuses (a symbolic link, K-3):
+    // a rejection, never a throw into the unlock that asked.
+    dataDir = path.resolve(getAntDataDir());
+  } catch (err) {
+    return Promise.reject(err);
+  }
   const running = keystoreRecoveries.get(dataDir);
   if (running) return running;
   const recovery = recoverBeeKeystore(dataDir, derivedKeys).finally(() => {
@@ -465,6 +476,21 @@ function reencryptBeeKeystore() {
   });
   keystoreRecoveries.set(dataDir, recovery);
   return recovery;
+}
+
+/**
+ * Re-inject the Swarm key now if the vault is unlocked; a locked vault
+ * does it on its next unlock (unlockVault). Called on unlock and when a
+ * node start stops for re-injection while the vault is already unlocked.
+ * A start that the recovery itself makes and that stops again joins the
+ * recovery still running (keystoreRecoveries) rather than starting another,
+ * so a keystore that keeps failing is tried once, not in a loop.
+ */
+function recoverBeeKeystoreIfUnlocked() {
+  if (!derivedKeys) return;
+  void reencryptBeeKeystore().catch((err) => {
+    console.warn('[IdentityManager] Could not re-inject the Swarm key:', err.message);
+  });
 }
 
 async function recoverBeeKeystore(dataDir, keys) {

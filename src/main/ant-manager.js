@@ -64,6 +64,10 @@ let overlayRetryTimer = null;
 // sealed copy would not decrypt): the vault's next unlock re-injects the key
 // (identity-manager, through createAntLifecycle). K-3.
 let keystoreNeedsReinjection = false;
+// Told when a start stops for re-injection, so a vault that is already
+// unlocked recovers at once instead of waiting for a lock and an unlock
+// (identity-manager subscribes through createAntLifecycle). K-3.
+let keyReinjectionListener = null;
 const statusListeners = new Set();
 
 function closeChainBridge(bridge = chainBridge) {
@@ -743,6 +747,21 @@ function startDisabledAnt() {
   log.info('[Ant] Disabled for active profile');
 }
 
+function sweepPasswordHandoffs() {
+  let dataDir;
+  let handoffBaseDir;
+  try {
+    dataDir = getAntDataPath();
+    handoffBaseDir = getHandoffBaseDir();
+  } catch (err) {
+    log.warn('[Ant] Not sweeping password handoffs:', err.message);
+    return;
+  }
+  void keystorePassword
+    .withKeystoreLock(dataDir, () => keystorePassword.sweepAbandonedHandoffs(handoffBaseDir))
+    .catch((err) => log.warn('[Ant] Could not sweep password handoffs:', err.message));
+}
+
 async function startAnt() {
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
     log.info(`[Ant] Ignoring start request, current state: ${currentState}`);
@@ -764,13 +783,10 @@ async function startAnt() {
   // read its password long ago, or spawn a new one. This process holds the
   // profile lock, the sweep runs under the keystore lock (at once when no
   // injection or recovery holds it), and it skips the handoffs this
-  // process's own starts still own.
-  const handoffBaseDir = getHandoffBaseDir();
-  void keystorePassword
-    .withKeystoreLock(getAntDataPath(), () =>
-      keystorePassword.sweepAbandonedHandoffs(handoffBaseDir)
-    )
-    .catch((err) => log.warn('[Ant] Could not sweep password handoffs:', err.message));
+  // process's own starts still own. A data directory Freedom refuses (a
+  // symbolic link, K-3) skips the sweep: the bundled start below ends in
+  // ERROR with the refusal, and the other start paths do not need it.
+  sweepPasswordHandoffs();
 
   const profileConfig = getProfileAntConfig();
   const managedProfileNode = isManagedAntConfig(profileConfig);
@@ -984,6 +1000,12 @@ async function startAnt() {
       keystoreNeedsReinjection = true;
       updateState(STATUS.ERROR, keystorePassword.REINJECT_MESSAGE);
       setStatusMessage('ant', keystorePassword.REINJECT_MESSAGE);
+      // An unlocked vault re-injects now; a locked one on its next unlock.
+      try {
+        keyReinjectionListener?.();
+      } catch (listenerErr) {
+        log.warn('[Ant] Could not ask for re-injection:', listenerErr.message);
+      }
       return;
     }
     updateState(STATUS.ERROR, err.message);
@@ -1489,6 +1511,11 @@ function createAntLifecycle(deps = {}) {
         updateState(STATUS.ERROR, message);
         setStatusMessage('ant', message);
       }),
+    // `listener()` runs each time a start stops for re-injection, so the
+    // identity side can recover at once when the vault is already unlocked.
+    onKeyReinjectionNeeded: (listener) => {
+      keyReinjectionListener = typeof listener === 'function' ? listener : null;
+    },
   };
 }
 

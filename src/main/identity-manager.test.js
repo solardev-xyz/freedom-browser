@@ -1206,6 +1206,116 @@ describe('Swarm keystore password (K-3)', () => {
     for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
   };
 
+  // The Ant side of the pairing (ant-manager createAntLifecycle): a start
+  // that stops for re-injection sets the flag and tells the subscriber.
+  function antSide({ startFails = () => false } = {}) {
+    const side = { needed: false, listener: null };
+    side.stopForReinjection = () => {
+      side.needed = true;
+      side.listener?.();
+    };
+    side.hooks = {
+      start: jest.fn(async () => {
+        if (startFails()) side.stopForReinjection();
+        else side.needed = false;
+      }),
+      needsKeyReinjection: () => side.needed,
+      refuseKeyReinjection: jest.fn(() => {
+        side.needed = false;
+      }),
+      onKeyReinjectionNeeded: (listener) => {
+        side.listener = listener;
+      },
+    };
+    return side;
+  }
+
+  test('a start that fails while the vault is unlocked recovers without a lock and unlock', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+
+    // The sealed password stops decrypting at a later start (a reset keychain).
+    ant.stopForReinjection();
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+    expect(ant.needed).toBe(false);
+  });
+
+  test('a start that fails while the vault is locked waits for the unlock', async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+
+    ant.stopForReinjection();
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+
+    await mod.unlockVault('password123');
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery's own start that fails again is not recovered in a loop", async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide({ startFails: () => true });
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.stopForReinjection();
+    await settle();
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+    // Still asked for: the next unlock tries again.
+    expect(ant.needed).toBe(true);
+  });
+
+  test("a start that fails while unlocked still never overwrites another identity's keystore", async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(OTHER_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.stopForReinjection();
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(ant.hooks.refuseKeyReinjection).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).not.toHaveBeenCalled();
+  });
+
+  test('an Ant data directory Freedom refuses fails the recovery, not the unlock', async () => {
+    const { mod, identityMock } = load(keychain());
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, antDir());
+    const ant = antSide();
+    ant.needed = true;
+    mod.setBeeLifecycle(ant.hooks);
+
+    await expect(mod.unlockVault('password123')).resolves.toBeUndefined();
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    await expect(mod.reencryptBeeKeystore()).rejects.toThrow(/symbolic link/);
+  });
+
   // The K-3 review's reproduction: a keystore for account A, its sealed
   // password lost, and a vault that derives account B. Recovery must keep
   // A's keystore, the only encrypted copy of A's key, not write B's over it.

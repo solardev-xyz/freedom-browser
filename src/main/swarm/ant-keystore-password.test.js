@@ -232,6 +232,22 @@ describe('ant keystore password (K-3)', () => {
     }
   });
 
+  // A link at the seal's name is #943's refusal, never a lost password: a
+  // re-injection armed by it would write the key again beside the link.
+  posixTest('a link at the seal stays a refusal, never a re-inject', async () => {
+    const keystore = loadWith(fakeSafeStorage());
+    const keysDir = path.join(dataDir, 'keys');
+    fs.mkdirSync(keysDir, { mode: 0o700 });
+    const outside = path.join(dataDir, 'outside.sealed');
+    fs.writeFileSync(outside, 'x', { mode: 0o600 });
+    fs.symlinkSync(outside, path.join(keysDir, 'keystore-password.sealed'));
+
+    const err = await keystore.unsealPassword(dataDir).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('UNSAFE_PRIVATE_PATH');
+    expect(err).not.toBeInstanceOf(keystore.KeystorePasswordUnavailableError);
+  });
+
   test('a seal that does not read back as the password is never published', async () => {
     const storage = fakeSafeStorage();
     const keystore = loadWith(storage);

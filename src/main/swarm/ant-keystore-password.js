@@ -441,7 +441,11 @@ async function unsealPassword(data, { pin } = {}) {
       keystorePin.guard('unseal');
       return result;
     } catch (err) {
-      if (err instanceof KeystorePasswordUnavailableError) throw err;
+      // A link at the seal's name keeps #943's refusal: an error to show,
+      // never a reason to re-inject the key.
+      if (err instanceof KeystorePasswordUnavailableError || err instanceof UnsafePrivatePathError) {
+        throw err;
+      }
       throw new KeystorePasswordUnavailableError(err);
     }
   } finally {

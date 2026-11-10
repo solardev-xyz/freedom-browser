@@ -739,6 +739,11 @@ describe('ant-manager', () => {
       portSequence: [false],
       httpResponse: () => ({ statusCode: 500, body: '' }),
     });
+    // identity-manager subscribes, so an unlocked vault recovers at once.
+    const reinjectionNeeded = jest.fn(() => {
+      expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: real.REINJECT_MESSAGE });
+    });
+    ctx.mod.createAntLifecycle().onKeyReinjectionNeeded(reinjectionNeeded);
 
     await ctx.mod.startAnt();
     await flushMicrotasks();
@@ -749,6 +754,7 @@ describe('ant-manager', () => {
     expect(keystorePassword.forgetSealedPassword).not.toHaveBeenCalled();
     expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: real.REINJECT_MESSAGE });
     expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(true);
+    expect(reinjectionNeeded).toHaveBeenCalledTimes(1);
   });
 
   test('a keys/ that is a link stops the start before anything is written (K-3)', async () => {
@@ -757,6 +763,8 @@ describe('ant-manager', () => {
       unsafeKeysDir: true,
       portSequence: [false],
     });
+    const reinjectionNeeded = jest.fn();
+    ctx.mod.createAntLifecycle().onKeyReinjectionNeeded(reinjectionNeeded);
 
     await ctx.mod.startAnt();
 
@@ -770,6 +778,9 @@ describe('ant-manager', () => {
       status: 'error',
       error: expect.stringContaining('symbolic link'),
     });
+    // A refusal to show, never a reason to re-inject the key.
+    expect(ctx.mod.createAntLifecycle().needsKeyReinjection()).toBe(false);
+    expect(reinjectionNeeded).not.toHaveBeenCalled();
   });
 
   describe('an ant-data that is a symbolic link (K-3)', () => {
