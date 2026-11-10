@@ -8,6 +8,7 @@ const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
 const { withPrivateDir } = require('./private-files');
+const { isPrivateSender } = require('./private/private-sender');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -442,6 +443,14 @@ function setNodeAlias(alias) {
   });
 }
 
+// PRIVATE MODE GUARD (R-9): seeding writes a lasting seeding policy and
+// fetches the repository into storage, which a private window must not
+// leave behind. isPrivateSender fails closed: a sender whose window can no
+// longer be read counts as private. The page-facing provider applies the
+// same check (radicle-provider-ipc.js).
+const PRIVATE_SEED_FAILURE = () =>
+  failure('RADICLE_PRIVATE_WINDOW', 'Seeding is not available in private windows');
+
 function registerRadicleIpc() {
   ipcMain.handle(IPC.RADICLE_START, () => startRadicle());
   ipcMain.handle(IPC.RADICLE_STOP, () => stopRadicle());
@@ -454,6 +463,7 @@ function registerRadicleIpc() {
   };
 
   ipcMain.handle(IPC.RADICLE_SEED, async (event, rid) => {
+    if (isPrivateSender(event)) return PRIVATE_SEED_FAILURE();
     if (isDisabledForProfile()) {
       return failure('RADICLE_DISABLED', 'Radicle is disabled for this profile');
     }
@@ -462,7 +472,7 @@ function registerRadicleIpc() {
   });
   ipcMain.handle(IPC.RADICLE_GET_CONNECTIONS, () => getConnections());
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, (event, rid) =>
-    refetchRepository(rid, pushStatus(event))
+    isPrivateSender(event) ? PRIVATE_SEED_FAILURE() : refetchRepository(rid, pushStatus(event))
   );
   ipcMain.handle(IPC.RADICLE_GET_SEED_STATUS, (_event, rid) => getSeedFetchStatus(rid));
 }
