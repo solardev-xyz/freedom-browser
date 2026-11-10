@@ -55,17 +55,16 @@ const admission = createRadReadAdmission();
 
 // Each request's webRequest id and tab, handed to the protocol handler.
 //
-// The handler gets neither: Electron passes it no request id or tab, and
-// the referrer is at most the page's origin (empty from a dweb page). URL
-// order can't stand in for
-// them, since requests for the same URL reach the handler in a different
-// order from their webRequest events (#948 round 1: 70 wrong tabs in 600
-// reads across two tabs). So onBeforeSendHeaders gives every `rad:` request
-// a random token in HANDOFF_HEADER, replacing any value the page set, and
-// keeps the request's id and tab under it, per session. The handler reads
-// the token back from its Request: on Electron 45 the header arrives there
-// (probed for #948 with two sessions and 600 concurrent same-URL reads:
-// every token reached its own handler).
+// The handler gets neither: Electron passes it no request id or tab, and the
+// referrer is at most the page's origin (empty from a dweb page). URL order
+// can't stand in for them, since requests for the same URL reach the handler
+// in a different order from their webRequest events (#948 round 1: 70 wrong
+// tabs in 600 reads across two tabs). So onBeforeSendHeaders gives every
+// `rad:` request a random token in HANDOFF_HEADER, replacing any value the
+// page set, and keeps the request's id and tab under it, per session. The
+// handler reads the token back from its Request: on Electron 45 the header
+// arrives there (probed for #948 with two sessions and 600 concurrent
+// same-URL reads: every token reached its own handler).
 //
 // The token also carries cancellation. Chromium cancels a `rad:` request
 // when its page navigates away or its tab or window closes, but Electron
