@@ -151,7 +151,7 @@ function hasUnsafePath(bzzUrl) {
  *    than the resolved hash.
  *
  * Returns one of:
- *  - `{ ok: true, url }`              — usable Bee gateway URL.
+ *  - `{ ok: true, url, base }`        — usable Bee gateway URL and the node base it extends.
  *  - `{ ok: false, status, message, logMessage }` — semantic failure (404
  *    mismatch / no contenthash, 415 unsupported codec, 502 resolver
  *    conflict/error). `message` goes to the page, `logMessage` to the
@@ -177,6 +177,7 @@ async function buildGatewayUrl(bzzUrl) {
 
     return {
       ok: true,
+      base: antApiUrl,
       url: `${antApiUrl}/bzz/${host}${parsed.pathname}${parsed.search}`,
     };
   }
@@ -246,6 +247,7 @@ async function resolveEnsToGatewayUrl(host, parsed, antApiUrl) {
     }
     return {
       ok: true,
+      base: antApiUrl,
       url: `${antApiUrl}/bzz/${result.decoded}${joinPublishedPath(result.basePath, parsed.pathname)}${parsed.search}`,
     };
   }
@@ -500,8 +502,9 @@ async function handleBzzRequest(
   }
   const gatewayUrl = built.url;
   // The target as undici will send it, whatever supplied its path (a name's
-  // record can carry one), stays beneath `/bzz/<ref>/`.
-  if (!isContainedTarget(gatewayUrl, ['bzz'], { encodedSeparators: false })) {
+  // record can carry one), stays beneath `/bzz/<ref>/` under the node's own
+  // base, which for an external node can carry a path prefix.
+  if (!isContainedTarget(gatewayUrl, ['bzz'], { encodedSeparators: false, base: built.base })) {
     log.info(
       `[bzz-protocol] 502 for ${redactUrlForLog(request.url)}: target leaves its content root`
     );

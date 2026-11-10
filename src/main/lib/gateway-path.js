@@ -62,14 +62,27 @@ function isContainedPath(pathname, { encodedSeparators = true } = {}) {
  * an HTTP client will send it (`new URL` resolves dot segments and reads `\`
  * as `/`): the path begins with `/<namespace>/<reference>` for one of
  * `namespaces`, still does once decoded, and holds no dot segment.
+ *
+ * `base` is the gateway URL the handler appended that root to. A user's
+ * external node can sit under a path prefix (`https://bee.example/bee`), so
+ * the root is checked beneath the base's own path, on the base's origin,
+ * rather than at the start of the whole pathname.
  */
-function isContainedTarget(gatewayUrl, namespaces, { encodedSeparators = true } = {}) {
-  let pathname;
+function isContainedTarget(gatewayUrl, namespaces, { encodedSeparators = true, base } = {}) {
+  let target;
+  let prefix = '';
   try {
-    ({ pathname } = new URL(gatewayUrl));
+    target = new URL(gatewayUrl);
+    if (base !== undefined) {
+      const baseUrl = new URL(base);
+      if (baseUrl.origin !== target.origin) return false;
+      prefix = baseUrl.pathname.replace(/\/+$/, '');
+    }
   } catch {
     return false;
   }
+  if (prefix && !target.pathname.startsWith(`${prefix}/`)) return false;
+  const pathname = target.pathname.slice(prefix.length);
   const [root, namespace, reference] = pathname.split('/');
   if (root !== '' || !namespaces.includes(namespace) || !reference) return false;
   if (!encodedSeparators && hasEncodedSeparator(pathname)) return false;

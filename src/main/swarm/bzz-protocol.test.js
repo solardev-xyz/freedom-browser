@@ -51,6 +51,7 @@ describe('buildGatewayUrl', () => {
   test('converts bzz://<hash>/path to the Swarm gateway URL', async () => {
     await expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).resolves.toEqual({
       ok: true,
+      base: 'http://127.0.0.1:1633',
       url: `http://127.0.0.1:1633/bzz/${HASH}/index.html`,
     });
   });
@@ -58,6 +59,7 @@ describe('buildGatewayUrl', () => {
   test('preserves query string and drops fragment (Chromium never sends it)', async () => {
     await expect(buildGatewayUrl(`bzz://${HASH}/page?v=1`)).resolves.toEqual({
       ok: true,
+      base: 'http://127.0.0.1:1633',
       url: `http://127.0.0.1:1633/bzz/${HASH}/page?v=1`,
     });
   });
@@ -65,6 +67,7 @@ describe('buildGatewayUrl', () => {
   test('supports 128-char encrypted refs', async () => {
     await expect(buildGatewayUrl(`bzz://${ENCRYPTED_HASH}/`)).resolves.toEqual({
       ok: true,
+      base: 'http://127.0.0.1:1633',
       url: `http://127.0.0.1:1633/bzz/${ENCRYPTED_HASH}/`,
     });
   });
@@ -96,6 +99,7 @@ describe('buildGatewayUrl', () => {
 
       await expect(buildGatewayUrl('bzz://meinhard.eth/page.html?v=1')).resolves.toEqual({
         ok: true,
+        base: 'http://127.0.0.1:1633',
         url: `http://127.0.0.1:1633/bzz/${HASH}/page.html?v=1`,
       });
       expect(mockResolveEnsContent).toHaveBeenCalledWith('meinhard.eth');
@@ -111,6 +115,7 @@ describe('buildGatewayUrl', () => {
 
       await expect(buildGatewayUrl('bzz://myapp.box/')).resolves.toEqual({
         ok: true,
+        base: 'http://127.0.0.1:1633',
         url: `http://127.0.0.1:1633/bzz/${HASH}/`,
       });
     });
@@ -126,6 +131,7 @@ describe('buildGatewayUrl', () => {
 
       await expect(buildGatewayUrl('bzz://alice.wei/')).resolves.toEqual({
         ok: true,
+        base: 'http://127.0.0.1:1633',
         url: `http://127.0.0.1:1633/bzz/${HASH}/`,
       });
       expect(mockResolveEnsContent).toHaveBeenCalledWith('alice.wei');
@@ -142,6 +148,7 @@ describe('buildGatewayUrl', () => {
 
       await expect(buildGatewayUrl('bzz://apoorv.gwei/')).resolves.toEqual({
         ok: true,
+        base: 'http://127.0.0.1:1633',
         url: `http://127.0.0.1:1633/bzz/${HASH}/`,
       });
       expect(mockResolveEnsContent).toHaveBeenCalledWith('apoorv.gwei');
@@ -295,7 +302,11 @@ describe('buildGatewayUrl', () => {
       });
 
       const result = await buildGatewayUrl(url);
-      expect(result).toEqual({ ok: true, url: `http://127.0.0.1:1633/bzz/${HASH}/` });
+      expect(result).toEqual({
+        ok: true,
+        base: 'http://127.0.0.1:1633',
+        url: `http://127.0.0.1:1633/bzz/${HASH}/`,
+      });
       expect(mockResolveEnsContent).toHaveBeenCalledWith(name);
     });
 
@@ -540,6 +551,50 @@ describe('handleBzzRequest', () => {
     const res = await handleBzzRequest(makeRequest('bzz://docs.example.tez/'), { fetchImpl });
     expect(res.status).toBe(502);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  // An external node's API can sit under a path prefix (ant-manager keeps it):
+  // the content root is checked beneath that prefix, not at the URL's root.
+  describe('external node under a path prefix', () => {
+    afterEach(() => getAntApiUrl.mockReturnValue('http://127.0.0.1:1633'));
+
+    test('serves a hash under the prefix', async () => {
+      getAntApiUrl.mockReturnValue('https://bee.example/bee');
+      const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+      const res = await handleBzzRequest(makeRequest(`bzz://${HASH}/index.html`), { fetchImpl });
+      expect(res.status).toBe(200);
+      expect(fetchImpl.mock.calls[0][0]).toBe(`https://bee.example/bee/bzz/${HASH}/index.html`);
+    });
+
+    test('serves a resolved name under a nested prefix', async () => {
+      getAntApiUrl.mockReturnValue('https://bee.example/a/b');
+      mockResolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'bzz',
+        decoded: HASH,
+        basePath: '/site',
+      });
+      const fetchImpl = jest.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+      const res = await handleBzzRequest(makeRequest('bzz://docs.example.tez/x'), { fetchImpl });
+      expect(res.status).toBe(200);
+      expect(fetchImpl.mock.calls[0][0]).toBe(`https://bee.example/a/b/bzz/${HASH}/site/x`);
+    });
+
+    test('still refuses a record path that climbs out of the prefixed root', async () => {
+      getAntApiUrl.mockReturnValue('https://bee.example/bee');
+      mockResolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'bzz',
+        decoded: HASH,
+        basePath: '/site/../../../stamps',
+      });
+      const fetchImpl = jest.fn();
+      const res = await handleBzzRequest(makeRequest('bzz://docs.example.tez/'), { fetchImpl });
+      expect(res.status).toBe(502);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
   });
 
   test('forwards only allowlisted request headers to the node', async () => {

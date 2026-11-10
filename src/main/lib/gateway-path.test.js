@@ -112,3 +112,32 @@ describe('isContainedTarget', () => {
     expect(isContainedTarget(`${GW}/ipfs/${ref}/x`, ['bzz'])).toBe(false);
   });
 });
+
+describe('isContainedTarget with a base', () => {
+  const ref = 'a'.repeat(64);
+  const opts = (base) => ({ encodedSeparators: false, base });
+
+  test.each([
+    ['http://node', `http://node/bzz/${ref}/x`],
+    ['http://node/', `http://node/bzz/${ref}/x`],
+    ['https://bee.example/bee', `https://bee.example/bee/bzz/${ref}/index.html`],
+    ['https://bee.example/a/b', `https://bee.example/a/b/bzz/${ref}/`],
+  ])('passes beneath %s', (base, url) => {
+    expect(isContainedTarget(url, ['bzz'], opts(base))).toBe(true);
+  });
+
+  test.each([
+    // Climbs out of the prefix, as the URL parser resolves it.
+    ['https://bee.example/bee', `https://bee.example/bee/bzz/${ref}/../../../stamps`],
+    ['https://bee.example/bee', `https://bee.example/bee/bzz/${ref}/..%2f..%2fstamps`],
+    // The prefix is not a prefix at a segment boundary.
+    ['https://bee.example/bee', `https://bee.example/beehive/bzz/${ref}/x`],
+    // The prefix itself is not the namespace.
+    ['https://bee.example/bee', `https://bee.example/bee/stamps`],
+    // A different origin than the base.
+    ['https://bee.example/bee', `https://evil.example/bee/bzz/${ref}/x`],
+    ['not a url', `http://node/bzz/${ref}/x`],
+  ])('refuses beneath %s: %s', (base, url) => {
+    expect(isContainedTarget(url, ['bzz'], opts(base))).toBe(false);
+  });
+});
