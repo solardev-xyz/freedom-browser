@@ -22,6 +22,7 @@ const {
   prepareRadicleDataDir,
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
+const keystorePassword = require('./swarm/ant-keystore-password');
 const { withPrivateDir } = require('./private-files');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
 const {
@@ -43,12 +44,28 @@ let beeLifecycle = { stop: null, start: null };
 
 /**
  * Register Bee node lifecycle hooks used around identity (re)injection.
- * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>}} hooks
+ * `needsKeyReinjection` answers whether the node's last start could not open
+ * its keystore (K-3); the next unlock then re-injects the key.
+ * `refuseKeyReinjection(message)` reports that it would not: the keystore
+ * holds another identity. `onKeyReinjectionNeeded(listener)` subscribes to
+ * a start that stops for re-injection, so an already unlocked vault
+ * recovers at once rather than on its next unlock.
+ * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>,
+ *   needsKeyReinjection?: () => boolean,
+ *   refuseKeyReinjection?: (message: string) => void,
+ *   onKeyReinjectionNeeded?: (listener: () => void) => void}} hooks
  */
 function setBeeLifecycle(hooks = {}) {
+  if (typeof hooks.onKeyReinjectionNeeded === 'function') {
+    hooks.onKeyReinjectionNeeded(recoverBeeKeystoreIfUnlocked);
+  }
   beeLifecycle = {
     stop: typeof hooks.stop === 'function' ? hooks.stop : null,
     start: typeof hooks.start === 'function' ? hooks.start : null,
+    needsKeyReinjection:
+      typeof hooks.needsKeyReinjection === 'function' ? hooks.needsKeyReinjection : null,
+    refuseKeyReinjection:
+      typeof hooks.refuseKeyReinjection === 'function' ? hooks.refuseKeyReinjection : null,
   };
 }
 
@@ -341,6 +358,12 @@ async function unlockVault(password) {
   publishDerivedKeys(identity, mnemonic, epoch);
   console.log('[IdentityManager] Vault unlocked, keys derived');
 
+  // The Swarm node could not open its keystore at its last start: write it
+  // again from the recovery phrase, with a new password (K-3).
+  if (beeLifecycle.needsKeyReinjection?.() === true) {
+    recoverBeeKeystoreIfUnlocked();
+  }
+
   // Migrate old vaults: save addresses to metadata if not present
   const meta = getVaultMeta();
   if (meta && !meta.addresses) {
@@ -528,12 +551,135 @@ async function readRadicleDid() {
 }
 
 /**
- * Generate a random password for Bee keystore
- * This password is separate from the vault password for defense in depth
+ * Generate a random password for the Bee keystore. It is sealed in the OS
+ * keychain, not written beside the keystore, when there is a keychain
+ * (persistBeeKeystorePassword).
  * @returns {string}
  */
 function generateBeeKeystorePassword() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Keep `password` for `dataDir`'s keystore: sealed in the OS keychain, or
+ * in the owner-only config.yaml where there is none. Either way the other
+ * copy is dropped, so the node never reads a stale password.
+ */
+async function persistBeeKeystorePassword(identity, dataDir, password) {
+  const sealed = await keystorePassword.sealPassword(dataDir, password);
+  if (!sealed) keystorePassword.forgetSealedPassword(dataDir);
+  identity.createBeeConfig(
+    dataDir,
+    sealed ? null : password,
+    getBeeApiPortForIdentityConfig(),
+    getBeeP2pPortForIdentityConfig()
+  );
+}
+
+// The recovery running for each Swarm data directory, if any, with the
+// vault epoch it was started in: a second unlock while it runs joins it
+// instead of starting another. A recovery from an earlier epoch (the vault
+// was locked and unlocked again meanwhile) is not joined: it stops at its
+// epoch check, and the new unlock queues its own behind it.
+const keystoreRecoveries = new Map();
+
+/**
+ * Re-encrypt the Swarm keystore with a new password after its sealed one
+ * stopped decrypting (a reset keychain, a profile copied to another
+ * machine). Same key, derived from the recovery phrase again, so the node
+ * keeps its identity and state; nothing is wiped. Starts the node again.
+ *
+ * Only for the unlocked vault's own identity: the keystore's unencrypted
+ * `address` must be the derived Swarm address. A keystore of another
+ * identity (an imported data directory, another vault's), or one whose
+ * address cannot be read, is never overwritten; the node reports it
+ * instead, and a manual re-injection remains possible.
+ *
+ * Bound to the vault epoch it starts in (K-1): a lock, vault delete or quit
+ * while it waits for the keystore lock or builds the keystore stops it
+ * before the key is written, with the vault-locked error.
+ *
+ * One recovery at a time per data directory, and under the same keystore
+ * lock as injection and the node's startup migration (ant-manager
+ * ensureConfig), so the keystore on disk always ends with its own password.
+ * @returns {Promise<boolean>} whether the keystore was re-encrypted
+ */
+function reencryptBeeKeystore() {
+  const epoch = currentVaultEpoch();
+  let dataDir;
+  try {
+    keysForEpoch(epoch);
+    // Throws for a data directory Freedom refuses (a symbolic link, K-3):
+    // a rejection, never a throw into the unlock that asked.
+    dataDir = path.resolve(getAntDataDir());
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  const running = keystoreRecoveries.get(dataDir);
+  if (running && running.epoch === epoch) return running.promise;
+  const promise = recoverBeeKeystore(dataDir, epoch).finally(() => {
+    if (keystoreRecoveries.get(dataDir)?.promise === promise) {
+      keystoreRecoveries.delete(dataDir);
+    }
+  });
+  keystoreRecoveries.set(dataDir, { epoch, promise });
+  return promise;
+}
+
+/**
+ * Re-inject the Swarm key now if the vault is unlocked; a locked vault
+ * does it on its next unlock (unlockVault). Called on unlock and when a
+ * node start stops for re-injection while the vault is already unlocked.
+ * A start that the recovery itself makes and that stops again joins the
+ * recovery still running (keystoreRecoveries) rather than starting another,
+ * so a keystore that keeps failing is tried once, not in a loop.
+ */
+function recoverBeeKeystoreIfUnlocked() {
+  if (!getDerivedKeys()) return;
+  void reencryptBeeKeystore().catch((err) => {
+    console.warn('[IdentityManager] Could not re-inject the Swarm key:', err.message);
+  });
+}
+
+async function recoverBeeKeystore(dataDir, epoch) {
+  const identity = await loadIdentityModule();
+  const recovered = await keystorePassword.withKeystoreLock(dataDir, async () => {
+    // The vault may have been locked while this waited for the lock.
+    keysForEpoch(epoch);
+    // An earlier recovery or an injection may have settled it meanwhile.
+    if (beeLifecycle.needsKeyReinjection && beeLifecycle.needsKeyReinjection() !== true) {
+      return false;
+    }
+    // Read from the cache only now, after every await so far.
+    const { beeWallet } = keysForEpoch(epoch);
+    const derived = beeWallet.address.toLowerCase().replace(/^0x/, '');
+    if (keystorePassword.keystoreAddress(dataDir) !== derived) {
+      throw new keystorePassword.KeystoreIdentityMismatchError();
+    }
+    const password = generateBeeKeystorePassword();
+    // Checked again once the keystore is built, right before it is written.
+    await identity.injectBeeKey(dataDir, beeWallet.privateKey, password, {
+      beforeWrite: () => keysForEpoch(epoch),
+    });
+    // The keystore is on disk now: keep its password whatever the vault
+    // does meanwhile, or nothing could open it (as in injectBeeIdentity).
+    await persistBeeKeystorePassword(identity, dataDir, password);
+    return true;
+  }).catch((err) => {
+    if (err instanceof keystorePassword.KeystoreIdentityMismatchError) {
+      console.warn('[IdentityManager] Not re-injecting the Swarm key:', err.message);
+      beeLifecycle.refuseKeyReinjection?.(err.message);
+    }
+    throw err;
+  });
+  if (!recovered) return false;
+  injectedNodes.bee = true;
+  console.log('[IdentityManager] Swarm keystore re-encrypted with a new password');
+  // Outside the lock: the start takes it again for its config.
+  if (beeLifecycle.start) {
+    await beeLifecycle.start();
+  }
+  return true;
 }
 
 function getBeeApiPortForIdentityConfig() {
@@ -706,7 +852,8 @@ function assertNodeKeysDirUsable(dataDir) {
 
 /**
  * Inject Bee identity
- * Generates its own random password for the keystore (stored in config.yaml)
+ * Generates its own random password for the keystore (sealed in the OS
+ * keychain, or stored in config.yaml where there is none)
  * This is intentionally different from the vault password
  * @returns {Promise<{address: string}>}
  */
@@ -736,21 +883,23 @@ async function injectBeeIdentity(epoch = currentVaultEpoch()) {
     // This is separate from the vault password - defense in depth
     const beePassword = generateBeeKeystorePassword();
 
-    // Inject the key with the random password, read from the cache only now
-    // and checked again once the (slow) keystore is built, before it is written.
-    const { beeWallet } = keysForEpoch(epoch);
-    address = beeWallet.address;
-    await identity.injectBeeKey(dataDir, beeWallet.privateKey, beePassword, {
-      beforeWrite: () => keysForEpoch(epoch),
+    // Inject the key with the random password, and keep that password where
+    // the node can open the keystore on startup: the OS keychain, or
+    // config.yaml without one (K-3). Under the keystore lock, so no recovery
+    // or node start writes another password in between. The key is read
+    // from the cache only inside the lock, after every await so far, and
+    // checked again once the (slow) keystore is built, before it is written
+    // (K-1). Once the keystore is on disk its password is always kept, even
+    // if the vault locks meanwhile: it is not vault key material, and
+    // dropping it would leave a keystore nothing can open.
+    await keystorePassword.withKeystoreLock(dataDir, async () => {
+      const { beeWallet } = keysForEpoch(epoch);
+      address = beeWallet.address;
+      await identity.injectBeeKey(dataDir, beeWallet.privateKey, beePassword, {
+        beforeWrite: () => keysForEpoch(epoch),
+      });
+      await persistBeeKeystorePassword(identity, dataDir, beePassword);
     });
-
-    // Store the password in config so Bee can decrypt the keystore on startup
-    identity.createBeeConfig(
-      dataDir,
-      beePassword,
-      getBeeApiPortForIdentityConfig(),
-      getBeeP2pPortForIdentityConfig()
-    );
 
     injectedNodes.bee = true;
   } finally {
@@ -2087,6 +2236,7 @@ module.exports = {
   // Identity injection
   setBeeLifecycle,
   setRadicleLifecycle,
+  reencryptBeeKeystore,
   closeVaultAuthority,
   repairIdentityFiles,
   removeStaleBeeDirs,
