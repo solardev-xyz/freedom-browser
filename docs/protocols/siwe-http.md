@@ -19,7 +19,7 @@ GET /members HTTP/1.1
 Host: club.example
 
 HTTP/1.1 401 Unauthorized
-WWW-Authenticate: SIWE realm="club.example", nonce="8nQ2vLx0mK91abCd",
+WWW-Authenticate: SIWE realm="club.example", nonce="8nQ2vLx0mK91abCdT4wZpR",
     uri="https://club.example/members", chain-id=1, version=1,
     statement="Sign in to Example Club",
     expiration-time="2026-11-10T12:05:00Z"
@@ -80,7 +80,8 @@ Everything ERC-4361 asks of a verifier:
 - the message parses as ERC-4361;
 - its domain (and scheme, for `http`) is the server's own;
 - its URI is on the server's origin;
-- its nonce was issued by the server, is unexpired and is consumed now;
+- its nonce was issued by the server with at least 128 bits of randomness,
+  is unexpired and is consumed now;
 - its chain ID, version, `Expiration Time` and `Not Before` hold;
 - the signature recovers to the address the message names. A smart-account
   server may also accept ERC-1271 or ERC-6492 signatures.

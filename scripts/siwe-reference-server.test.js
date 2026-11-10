@@ -50,6 +50,12 @@ test("Freedom's message signs in, and the session cookie keeps the visitor in", 
   expect(again.status).toBe(200);
 });
 
+test('nonces carry 128 bits of randomness', async () => {
+  const res = await fetch(`${base}/members`);
+  const found = findSiweChallenge({ 'WWW-Authenticate': [res.headers.get('www-authenticate')] });
+  expect(found.params.nonce).toMatch(/^[0-9a-f]{32}$/);
+});
+
 test('a nonce works once', async () => {
   const { message, signature } = await signIn();
   const headers = { Authorization: authorizationValue(message, signature) };

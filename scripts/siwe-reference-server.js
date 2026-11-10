@@ -104,7 +104,7 @@ function createSiweReferenceServer({
   const sessions = new Map(); // session id → address
 
   function challenge(res, host, origin, reason) {
-    const nonce = crypto.randomBytes(12).toString('hex');
+    const nonce = crypto.randomBytes(16).toString('hex'); // 128 bits, as the doc asks
     const expiresAt = Date.now() + NONCE_TTL_MS;
     nonces.set(nonce, { expiresAt });
     const params = [
