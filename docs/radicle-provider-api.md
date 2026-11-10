@@ -77,7 +77,12 @@ provider:
 
 `data.reason` values include: `invalid_rid`, `invalid_id`, `invalid_title`,
 `invalid_body`, `not_seeded`, `repo_not_found`, `announce_failed`,
-`payload_too_large`.
+`payload_too_large`. A signed write main refuses carries `4100` with
+`approval_required` (no per-write approval and no "always allow writes"
+rule), `auto_write_limit` (the rule's rate limit is used up; Freedom then
+shows the per-write prompt itself), `agent_custody`, or `private_window`
+(the write came from a private window, or from a sender main cannot place
+in a known window; see [Provider object](#provider-object)).
 
 ## Permission tiers
 
@@ -96,13 +101,31 @@ provider:
    First call MAY prompt; rejection → 4001. Writes sign with the user's
    node identity — there are no per-origin sub-identities in v1 (a forge
    wants you to be _you_; see Design decisions).
-   On a tab Freedom Agent holds, the grant does not answer a write on its
-   own: each write prompts with its content, and main refuses one the
-   renderer reports as grant-answered (`4100`, reason `agent_custody`).
+   The grant lets a site ask; it does not answer a write. Each COB write
+   prompts with its exact content, saying that it is signed with the
+   user's Radicle identity and is public and permanent; rejection → 4001.
+   The prompt offers a per-site **"always allow writes"** rule
+   (`autoApprove.signing`). Writes the rule answers are rate-limited per
+   origin in main: a burst of 5, then 1 per 30 s, and at most 50 in any
+   24 hours. A rule-answered write refused for invalid params (checked
+   before anything is signed) is not counted; any other failure, including
+   `repo_not_found`, is. Past the limit a
+   write falls back to the prompt, which says why it appeared; the user
+   can turn the rule off there by unchecking it, whether they then approve
+   or reject that write. The counts are held in memory.
+   On a tab Freedom Agent holds, the rule does not apply: each write
+   prompts, and main refuses one the renderer reports as automatic
+   (`4100`, reason `agent_custody`).
 
-Auto-approve per origin and per tier MAY be offered, revocable at any
-time, mirroring the Swarm provider's `{ publish, feeds, signing }` model
-with `{ node, signing }`.
+Auto-approve is stored per origin and per tier as `{ node, signing }`,
+mirroring the Swarm provider's `{ publish, feeds, signing }` model, and is
+revocable at any time from the browser chrome, not only from a fallback
+prompt. While the visible tab's site is connected, the sidebar shows a
+Radicle banner (in the set-up view too, since Radicle needs no wallet).
+Clicking it opens **Radicle Permissions**, whose "Always allow writes as
+you" switch turns `autoApprove.signing` off; the site's next write prompts
+again. Disconnect there, or the banner's ×, runs `radicle_disconnect` for
+the site. Every rule also ends when the site disconnects.
 
 ## Methods
 
@@ -115,8 +138,12 @@ Prompt (once) for connection. Repeat calls return existing state. Emits
 
 The inverse of `requestAccess`: the origin relinquishes its own grant
 (connection AND signing, plus auto-approvals). No consent prompt — an
-origin may always drop its own access. Works while the node is stopped.
-Emits the `disconnect` provider event.
+origin may always drop its own access. Works while the node is stopped,
+and on a profile with Radicle disabled (the only method that does).
+Emits the `disconnect` provider event. The chrome's Disconnect (the
+sidebar's Radicle banner and Radicle Permissions screen) runs this same
+method for the site and sends `disconnect` to each of its open pages, in
+every window.
 
 ### `radicle_getCapabilities` → capability object (no permission)
 
@@ -267,5 +294,6 @@ Successful COB mutations announce their updated refs before returning.
 - Writes are irrevocable once announced. The signing-grant prompt MUST
   make clear that the site will be able to author content as the user on
   the Radicle network.
-- Rate-limit write methods per origin to protect the network and the
-  user's reputation from runaway dApps.
+- Write methods are rate-limited per origin when the "always allow
+  writes" rule answers them (see Permission tiers), to protect the network
+  and the user's reputation from runaway dApps.

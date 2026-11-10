@@ -10,7 +10,7 @@
  * webview (window.ethereum) → renderer (this) → main (RPC/signing)
  */
 
-import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval, showVaultUnlock, updateSwarmConnectionBanner, updateX402ConnectionBanner } from './wallet-ui.js';
+import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval, showVaultUnlock, updateSwarmConnectionBanner, updateX402ConnectionBanner, updateRadicleConnectionBanner } from './wallet-ui.js';
 import { buildDappTxContext, extractSelector } from './wallet/dapp-tx.js';
 import { isSafeAccount, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
 import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
@@ -789,11 +789,14 @@ export function setActiveWebview(webview) {
   activeWebview = webview;
 
   // Repaint the connection banners for the newly visible tab (they read its
-  // committed page identity via getActiveDisplayUrl)
+  // committed page identity via getActiveDisplayUrl). A tab switch fires no
+  // navigation-completed, so this is the only repaint the Radicle banner
+  // gets until the new tab navigates.
   setTimeout(() => {
     updateConnectionBanner();
     updateSwarmConnectionBanner();
     updateX402ConnectionBanner();
+    updateRadicleConnectionBanner();
   }, 50);
 }
 

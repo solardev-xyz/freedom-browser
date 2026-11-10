@@ -86,6 +86,10 @@ window.radicleProvider?.onEvent?.(({ event, origin, data }) => {
       sendRadicleEvent(webview, event, data);
     }
   }
+  // Main tells every other window when a site disconnects (from a page or
+  // from another window's sidebar), so this window's Radicle banner and
+  // permissions screen drop it too.
+  if (event === 'disconnect') notifyRadiclePermissionsChanged(origin);
 });
 
 async function handleRadicleRequest(webview, request) {
@@ -148,18 +152,7 @@ async function handleRadicleRequest(webview, request) {
       if (!SIGNED_WRITE_METHODS.has(method)) {
         result = await forwardToMain(method, params, permissionKey);
       } else {
-        // The grant answers a write without a prompt, except on a tab in
-        // Agent custody: there the user approves each write's content
-        // (main refuses a grant-answered write on its own custody reading).
-        const prompted = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
-        if (prompted) {
-          await showRadicleSignedWriteApproval(permissionKey, method, params, webview);
-          assertSameDocument();
-        }
-        result = await forwardToMain(method, params, permissionKey, {
-          webContentsId: guestIdOf(webview),
-          approval: prompted ? 'user' : 'auto',
-        });
+        result = await signedWrite(webview, method, params, permissionKey, assertSameDocument);
       }
     } else {
       // Remaining connection-tier methods: getNodeStatus, listSeededRepos,
@@ -168,12 +161,15 @@ async function handleRadicleRequest(webview, request) {
       assertSameDocument();
       result = await forwardToMain(method, params, permissionKey);
       if (method === 'radicle_disconnect') {
-        // Symmetric with the 'connect' event above. NOTE: if a chrome-side
-        // revocation surface (permission-management UI) ever appears, the
-        // event should move to main — the authority — so every revocation
-        // path emits it, not just this request path.
+        // Symmetric with the 'connect' event above, and the same as the
+        // chrome's own Disconnect (disconnectRadicleSite() below): main has
+        // dropped the whole site, so every open page of it in this window
+        // is told, the asking page and its sibling tabs alike. Main tells
+        // every other window (radicle-provider-ipc.js) but not this one,
+        // the sender. Told before the same-document check: a sibling must
+        // learn even if the asking page has navigated away meanwhile.
+        tellSitePagesDisconnected(permissionKey);
         assertSameDocument();
-        sendRadicleEvent(webview, 'disconnect', { origin: permissionKey });
       }
     }
 
@@ -191,12 +187,79 @@ async function handleRadicleRequest(webview, request) {
   }
 }
 
+/**
+ * One COB write (R-6). The grant lets a site ask; each write still needs
+ * the user: its own prompt, showing the content, or the site's "always
+ * allow writes" rule (autoApprove.signing), which the prompt's checkbox
+ * sets. Main counts rule-answered writes per origin and refuses one past
+ * its limit (`auto_write_limit`); that write falls back to the prompt. A
+ * tab in Agent custody always prompts, and its prompt offers no rule.
+ */
+async function signedWrite(webview, method, params, permissionKey, assertSameDocument) {
+  const meta = { webContentsId: guestIdOf(webview) };
+  const agentHeld = isTabAgentOwned?.(Number(webview.dataset?.tabId)) === true;
+  const ruleOn =
+    !agentHeld && Boolean(await window.radiclePermissions.getAutoApprove(permissionKey, 'signing'));
+  let limited = false;
+  if (ruleOn) {
+    assertSameDocument();
+    try {
+      return await forwardToMain(method, params, permissionKey, { ...meta, approval: 'auto' });
+    } catch (error) {
+      if (error?.data?.reason !== 'auto_write_limit') throw error;
+      limited = true;
+    }
+  }
+  // Either await above (the rule lookup, a rule-answered write main sent
+  // back past its limit) can outlast the document: a prompt for one that
+  // has gone would sit in the single consent slot and block its successor's.
+  assertSameDocument();
+  let answer;
+  try {
+    answer = await showRadicleSignedWriteApproval(permissionKey, method, params, webview, {
+      agentHeld,
+      alwaysAllow: ruleOn,
+      limited,
+    });
+  } catch (error) {
+    // Unchecking the rule and rejecting turns the rule off without
+    // publishing this write. (The sidebar's Radicle Permissions screen,
+    // lib/wallet/radicle-connection.js, turns it off at any time; this is
+    // the same switch where the user already is.) Saved even if the document
+    // has since navigated away: the rule belongs to the site, not the page.
+    // Checking the box and then rejecting does not turn it on. A failure
+    // to save is logged, not thrown: the page still gets the user's 4001,
+    // and the rule (still on) will offer the same checkbox on its next
+    // fallback prompt.
+    if (!agentHeld && ruleOn && error?.alwaysAllow === false) {
+      try {
+        await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', false);
+        notifyRadiclePermissionsChanged(permissionKey);
+      } catch (revokeError) {
+        console.error(
+          `[RadicleProvider] Could not turn off "always allow writes" for ${permissionKey}`,
+          revokeError
+        );
+      }
+    }
+    throw error;
+  }
+  assertSameDocument();
+  if (!agentHeld && typeof answer?.alwaysAllow === 'boolean' && answer.alwaysAllow !== ruleOn) {
+    await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', answer.alwaysAllow);
+    notifyRadiclePermissionsChanged(permissionKey);
+    assertSameDocument();
+  }
+  return forwardToMain(method, params, permissionKey, { ...meta, approval: 'user' });
+}
+
 async function handleRequestAccess(webview, permissionKey, assertSameDocument) {
   const existing = await window.radiclePermissions.getPermission(permissionKey);
   if (!existing) {
     await showRadicleConnect(permissionKey, webview);
     assertSameDocument();
     await window.radiclePermissions.grantPermission(permissionKey);
+    notifyRadiclePermissionsChanged(permissionKey);
     assertSameDocument();
     sendRadicleEvent(webview, 'connect', { origin: permissionKey });
   }
@@ -240,4 +303,44 @@ export function sendRadicleEvent(webview, event, data) {
   if (webview && webview.send) {
     webview.send('radicle:provider-event', { event, data });
   }
+}
+
+/**
+ * A site's Radicle permission record changed (connected, rule switched,
+ * disconnected). The sidebar's Radicle banner listens for this so it never
+ * shows a stale "auto" badge after the consent prompt changes the rule.
+ */
+function notifyRadiclePermissionsChanged(origin) {
+  if (typeof document === 'undefined' || typeof CustomEvent !== 'function') return;
+  document.dispatchEvent(new CustomEvent('radicle-permissions-changed', { detail: { origin } }));
+}
+
+/**
+ * Chrome-initiated disconnect (the sidebar's Radicle banner and its
+ * permissions screen). Runs main's own radicle_disconnect, so the record,
+ * the "always allow writes" rule, the auto-write limiter's counts and the
+ * seed-status broadcaster all go together, exactly as when the site asks,
+ * then tells every open page of that site in this window it was
+ * disconnected. Main tells every other window, whose pages and banners
+ * learn through the onEvent handler above.
+ */
+export async function disconnectRadicleSite(origin) {
+  if (!origin) return;
+  await forwardToMain('radicle_disconnect', {}, origin);
+  tellSitePagesDisconnected(origin);
+}
+
+/**
+ * Main has disconnected `origin`: send `disconnect` to every open page of
+ * that site in this window and repaint this window's Radicle banner. Both
+ * the page-initiated and the chrome-initiated paths end here; main's
+ * broadcast covers every other window.
+ */
+function tellSitePagesDisconnected(origin) {
+  for (const webview of providerWebviews) {
+    if (getPermissionKey(getDisplayUrlForWebview(webview)) === origin) {
+      sendRadicleEvent(webview, 'disconnect', { origin });
+    }
+  }
+  notifyRadiclePermissionsChanged(origin);
 }
