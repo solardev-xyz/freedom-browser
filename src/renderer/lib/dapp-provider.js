@@ -809,22 +809,28 @@ export function emitAccountsChanged(webview, accounts) {
 }
 
 /**
- * Emit chainChanged event to a webview
+ * Tell one page a chain through chainChanged, recorded as what it was told
+ * only once the send went through. An onchain app is pinned and never told.
  */
 export function emitChainChanged(webview, chainId) {
-  // The chain selector is global browser UI, but an ERC-8244 document's
-  // provider identity is fixed by its URL. Selecting another wallet chain
-  // must not emit a contradictory event into that document.
-  if (getOnchainApp(webview)) return;
-  toldChains.set(webview, chainId);
-  sendProviderEvent(webview, 'chainChanged', chainId);
+  tellChain(webview, chainId);
 }
 
 /**
- * Emit connect event to a webview
+ * Emit connect to a webview, which tells the page a chain just as
+ * chainChanged does: record it, once delivered, so the page's transactions
+ * and signatures go to the chain it was told here.
  */
 export function emitConnect(webview, chainId) {
-  sendProviderEvent(webview, 'connect', { chainId });
+  if (!webview?.send) return;
+  try {
+    webview.send('dapp:provider-event', { event: 'connect', data: { chainId } });
+  } catch (err) {
+    console.warn('[DappProvider] Could not send connect:', err?.message || err);
+    return;
+  }
+  // An onchain app's chain is its pin, not a record.
+  if (!getOnchainApp(webview)) toldChains.set(webview, chainId);
 }
 
 /**
@@ -832,17 +838,6 @@ export function emitConnect(webview, chainId) {
  */
 export function emitDisconnect(webview, error) {
   sendProviderEvent(webview, 'disconnect', error || { code: 4900, message: 'Disconnected' });
-}
-
-/**
- * Broadcast event to all webviews (when chain changes globally, etc.)
- */
-export function broadcastProviderEvent(event, data) {
-  // This would need access to all webviews
-  // For now, just emit to active webview
-  if (activeWebview) {
-    sendProviderEvent(activeWebview, event, data);
-  }
 }
 
 // Exported for use by swarm-provider.js and swarm-connect.js

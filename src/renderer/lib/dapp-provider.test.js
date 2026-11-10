@@ -1098,6 +1098,64 @@ describe('dapp-provider uses the chain the page sees', () => {
     await flushMicrotasks();
     expect(ctx.walletMocks.safeMessageStart).toHaveBeenCalled();
   });
+
+  test("a connect event's chain is what the page's transactions go to", async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    ctx.mod.emitConnect(ctx.webview, '0x1');
+    expect(ctx.webview.send).toHaveBeenCalledWith('dapp:provider-event', {
+      event: 'connect', data: { chainId: '0x1' },
+    });
+
+    ctx.sendRequest({ id: 1, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenLastCalledWith(
+      ctx.webview, 'https://app.example', tx, 1);
+
+    // The page heard 0x1, so a sync to the selection (Gnosis) tells it.
+    ctx.mod.syncPagesToSelectedChain();
+    expect(chainEventsSentTo(ctx.webview)).toEqual([
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x64' }],
+    ]);
+  });
+
+  test('a connect or chainChanged that fails to send records nothing', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    const send = ctx.webview.send;
+    ctx.webview.send = jest.fn((channel, ...rest) => {
+      if (channel === 'dapp:provider-event') throw new Error('The WebView must be attached');
+      return send(channel, ...rest);
+    });
+
+    expect(() => ctx.mod.emitConnect(ctx.webview, '0x1')).not.toThrow();
+    expect(() => ctx.mod.emitChainChanged(ctx.webview, '0x5')).not.toThrow();
+    ctx.sendRequest({ id: 1, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    // Told nothing: the wallet's chain.
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenLastCalledWith(
+      ctx.webview, 'https://app.example', tx, 100);
+  });
+
+  test('emitChainChanged records the chain it told the page', async () => {
+    const ctx = await loadProvider({
+      permission: { walletIndex: 0, chainId: 100, autoApprove: {} },
+    });
+    const tx = { to: '0xc0ffee', data: TX_DATA };
+    ctx.mod.emitChainChanged(ctx.webview, '0x1');
+    expect(chainEventsSentTo(ctx.webview)).toEqual([
+      ['dapp:provider-event', { event: 'chainChanged', data: '0x1' }],
+    ]);
+    ctx.sendRequest({ id: 1, method: 'eth_sendTransaction', params: [tx] });
+    await flushMicrotasks();
+    expect(ctx.walletUi.showDappTxApproval).toHaveBeenLastCalledWith(
+      ctx.webview, 'https://app.example', tx, 1);
+  });
 });
 
 // #764: a request is attributed to the webview that sent it — its own
