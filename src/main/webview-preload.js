@@ -1424,12 +1424,20 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
 
   // Radicle
-  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  // PRIVATE MODE GUARD (R-9): no seeding policy or fetched repository may
+  // outlive a private window; main refuses these too.
+  seedRadicle: guardInternal('seedRadicle', (rid) =>
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:seed', rid)
+  ),
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
-    ipcRenderer.invoke('radicle:syncRepo', rid)
+    IS_PRIVATE_WINDOW
+      ? Promise.reject(new Error('Seeding is not available in private windows'))
+      : ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
@@ -1474,6 +1482,23 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // ============================================
 // Context Menu Handler (works on all pages)
 // ============================================
+
+// The URL a <video>/<audio> context menu addresses: the source the element is
+// actually playing (`currentSrc`, what Chrome's "Copy video address" uses),
+// so a multi-<source> element whose browser picked a later source copies that
+// one, not the first listed. Before resource selection has run (preload="none",
+// still loading) currentSrc is '', so fall back to the `src` attribute, then
+// the first <source> child that names a URL — skipping a src-less one rather
+// than stopping at it. '' when nothing is addressable (a `srcObject` stream).
+const getMediaElementSrc = (element) => {
+  if (element.currentSrc) return element.currentSrc;
+  if (element.src) return element.src;
+  const sources = element.querySelectorAll ? element.querySelectorAll('source') : [];
+  for (const source of sources) {
+    if (source.src) return source.src;
+  }
+  return '';
+};
 
 // The elements a `contextmenu` really passed through, innermost first, up to
 // (but not including) `document.body` — the same bound the plain ancestor walk
@@ -1586,21 +1611,13 @@ window.addEventListener(
       // Check for video
       if (element.tagName === 'VIDEO') {
         context.mediaType = 'video';
-        if (element.src) {
-          context.mediaSrc = element.src;
-        } else if (element.querySelector('source')) {
-          context.mediaSrc = element.querySelector('source').src;
-        }
+        context.mediaSrc = getMediaElementSrc(element);
       }
 
       // Check for audio
       if (element.tagName === 'AUDIO') {
         context.mediaType = 'audio';
-        if (element.src) {
-          context.mediaSrc = element.src;
-        } else if (element.querySelector('source')) {
-          context.mediaSrc = element.querySelector('source').src;
-        }
+        context.mediaSrc = getMediaElementSrc(element);
       }
 
       // Check if element is editable

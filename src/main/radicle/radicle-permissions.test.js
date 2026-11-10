@@ -14,6 +14,11 @@ jest.mock('electron', () => ({
   app: { getPath: jest.fn(() => mockUserData) },
   ipcMain: { handle: (...args) => mockIpcHandle(...args) },
 }));
+// The sidebar's toggle is the chrome of a public window; a private window's
+// is refused (radicle-provider-private.test.js covers that side).
+jest.mock('../private/private-sender', () => ({
+  isPrivateSender: (event) => event?.sender?.private !== false,
+}));
 
 const permissions = require('./radicle-permissions');
 
@@ -107,7 +112,7 @@ describe('"always allow writes" rule', () => {
     const handler = mockIpcHandle.mock.calls.find(
       ([channel]) => channel === 'radicle:set-auto-approve'
     )[1];
-    expect(handler({}, ORIGIN, 'signing', false)).toBe(true);
+    expect(handler({ sender: { private: false } }, ORIGIN, 'signing', false)).toBe(true);
     expect(ruleOn()).toBe(false);
   });
 });

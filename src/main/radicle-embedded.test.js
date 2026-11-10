@@ -58,6 +58,43 @@ describe('radicle-embedded addon loading', () => {
     }
   });
 
+  test('a packaged build loads only the add-on it ships, ignoring the env override (R-7)', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'Freedom-Resources-'));
+    Object.defineProperty(process, 'resourcesPath', { configurable: true, value: resources });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const planted = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(planted, `module.exports = {${REQUIRED_FAKE_EXPORTS}};`);
+    process.env.FREEDOM_RADICLE_ADDON = planted;
+
+    try {
+      jest.isolateModules(() => {
+        jest.doMock('electron', () => ({ app: { isPackaged: true } }));
+        const embedded = require('./radicle-embedded');
+        expect(embedded.candidatePaths()).toEqual([
+          path.join(resources, 'radicle-bin', 'libradicle.node'),
+        ]);
+        expect(embedded.isAvailable()).toBe(false);
+        expect(embedded.getAddonPath()).toBeNull();
+      });
+    } finally {
+      jest.dontMock('electron');
+      if (original) Object.defineProperty(process, 'resourcesPath', original);
+      else delete process.resourcesPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
+  test('a development build still honours FREEDOM_RADICLE_ADDON first', () => {
+    process.env.FREEDOM_RADICLE_ADDON = '/somewhere/libradicle.node';
+    jest.isolateModules(() => {
+      jest.doMock('electron', () => ({ app: { isPackaged: false } }));
+      expect(require('./radicle-embedded').candidatePaths()[0]).toBe('/somewhere/libradicle.node');
+    });
+    jest.dontMock('electron');
+  });
+
   test('call() surfaces addon {error} payloads as thrown errors', async () => {
     // Fake addon: a real file on disk that require() can load.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));

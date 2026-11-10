@@ -161,3 +161,42 @@ trap; the recovery stays, since #395 removes one cause, not the trap path.
   passed on Electron 44.7.0.
 - Linux x64, Node 24.21.0. The native Myotis recovery campaigns on macOS arm64
   were not re-run.
+
+## 3.0.3 re-validation — 30 October 2026
+
+Freedom now pins 3.0.3. `c4w.wasm` is `3244888b…`, 1372803 bytes (3.0.2:
+`d84bac79…`, 1371569), and `c4w.js` changes only where the emscripten glue
+follows the new WASM (constant offsets, import names). The other JS files and
+type declarations change only their copyright line; the `package.json` exports,
+the `node` conditional export, `prebuilds/` for the same five platforms and the
+`C4_DISABLE_NATIVE` escape hatch are unchanged, so `colibri-runtime.js` keeps
+disabling native. Two upstream changes reach the shipped WASM:
+
+- corpus-core/colibri-stateless#407: outside PAP, an `eth_call` that reads or
+  writes a storage slot missing from the proof now fails instead of verifying
+  as zero. Empty storage roots and accounts created in the same transaction
+  still read as zero. This is the verifier every ENS content-hash lookup goes
+  through, so a prover that omitted a slot used to yield a verified zero.
+- corpus-core/colibri-stateless#403: the `op_zstd` wrapper compiled into every
+  binding, the WASM included, carried a PolyForm-Noncommercial-1.0.0 header
+  (#401). It is MIT now, so the whole package is MIT.
+
+Checks:
+
+- `_c4w_get_current_version_number()` on the shipped 3.0.3 WASM returns 196611
+  (3.0.2: 196610), which is what `colibri-runtime.js` encodes from the package
+  version.
+- The offline fixtures above, captured on 3.0.0, still verify on 3.0.3, and
+  every rejection control still rejects (`checkpoint-verifier-worker.test.js`,
+  `colibri-runtime.test.js` and the rest of `src/main/ens`, 772 tests).
+- `capture.cjs` (with its version assertion pointed at 3.0.3, not committed)
+  verified live Ethereum (slot 15542688) and Gnosis (slot 30868768) checkpoints
+  through the production worker against a three-authority quorum. Those
+  captures were not kept as fixtures.
+- The real ENS suite (`ENS_COLIBRI_E2E=1`) passed all six scenarios, including
+  the `.box` CCIP-Read lookup that ends in a proven `eth_call`, and the live
+  `test-e2e/live/eth-sites.spec.js` cold start (ENS, WNS and GNS sites rendered
+  in the real Electron main process, native addon still disabled) passed on
+  Electron 45.1.0.
+- Linux x64, Node 24.22.1. The native path (`C4_DISABLE_NATIVE` unset) and the
+  macOS native Myotis recovery campaigns were not re-run.

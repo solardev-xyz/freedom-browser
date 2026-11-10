@@ -56,6 +56,7 @@ const permissions = require('./radicle-permissions');
 const { createAutoWriteLimiter } = require('./auto-write-limiter');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
+const { isPrivateSender } = require('../private/private-sender');
 
 const SPEC_VERSION = '0.2';
 
@@ -324,16 +325,23 @@ async function handleSignedWrite(fn, params, refundAutoWrite) {
  * @param {string} method
  * @param {object} params
  * @param {string} origin - display-URL-derived origin from the renderer
+ * @param {{onSeedStatus?: Function, privateSender?: boolean}} [options]
+ *   privateSender: the request came from a private (or unclassifiable)
+ *   window. Lasting changes are refused, and use is not recorded (R-9).
  */
 async function executeRadicleMethod(
   method,
   params = {},
   origin,
-  { onSeedStatus, approval } = {}
+  { onSeedStatus, approval, privateSender = false } = {}
 ) {
   if (!KNOWN_METHODS.has(method)) {
     throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
   }
+  const privateRefusal = privateWindowRefusal(privateSender, method);
+  if (privateRefusal) throw privateRefusal;
+  // Snapshot-only for a private window, whatever the caller passed.
+  if (privateSender) onSeedStatus = undefined;
   if (!origin || typeof origin !== 'string') {
     throw providerError(ERRORS.UNAUTHORIZED, 'Missing origin');
   }
@@ -382,7 +390,8 @@ async function executeRadicleMethod(
         );
       }
     }
-    permissions.updateLastUsed(origin);
+    // A private window's use is not recorded (R-9).
+    if (!privateSender) permissions.updateLastUsed(origin);
   }
 
   switch (method) {
@@ -463,6 +472,32 @@ function agentCustodyRefusal(sender, method, meta) {
   return null;
 }
 
+// PRIVATE MODE GUARD (R-9): a private window must leave nothing behind.
+// The provider is not installed in private windows, but the chrome
+// renderer forwards any guest's provider message, so main decides on the
+// sender it can see, the window's chrome renderer, and fails closed: a
+// sender it cannot classify as a known public window counts as private
+// (private-sender.js). From such a sender:
+//  - every method that changes lasting state is refused: the seeding
+//    policy and fetched repositories (seed, unseed, sync), signed COB
+//    writes, and the origin's grant (disconnect revokes it);
+//  - the reads that stay allowed do not record their use: no lastUsed
+//    write to radicle-permissions.json.
+const PRIVATE_REFUSED_METHODS = new Set([
+  'radicle_seed',
+  'radicle_unseed',
+  'radicle_sync',
+  'radicle_disconnect',
+  ...SIGNED_WRITE_METHODS,
+]);
+
+function privateWindowRefusal(privateSender, method) {
+  if (!privateSender || !PRIVATE_REFUSED_METHODS.has(method)) return null;
+  return providerError(ERRORS.UNAUTHORIZED, 'Not available in private windows', {
+    reason: 'private_window',
+  });
+}
+
 function registerRadicleProviderIpc() {
   // Chrome-facing alias management (sidebar Nodes tab). Registered here —
   // not in radicle-manager — because the alias write must also invalidate
@@ -476,16 +511,24 @@ function registerRadicleProviderIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (event, { method, params, origin, meta } = {}) => {
+    // Before the seed-status broadcaster or the backend is touched.
+    const privateSender = isPrivateSender(event);
+    const privateRefusal = privateWindowRefusal(privateSender, method);
+    if (privateRefusal) return { error: privateRefusal };
     const refusal = agentCustodyRefusal(event?.sender, method, meta);
     if (refusal) return { error: refusal };
     const hadBroadcaster = seedStatusBroadcasters.has(origin);
-    const onSeedStatus = PUSH_METHODS.has(method)
-      ? getSeedStatusBroadcaster(origin)
-      : undefined;
+    // A private window's seed-status read is a snapshot: no broadcaster
+    // for its origin and no subscription to the fetch, since nothing a
+    // private window does may outlive it, and the disconnect that would
+    // remove them is refused to it (R-9).
+    const onSeedStatus =
+      PUSH_METHODS.has(method) && !privateSender ? getSeedStatusBroadcaster(origin) : undefined;
     try {
       const result = await executeRadicleMethod(method, params, origin, {
         onSeedStatus,
         approval: meta?.approval,
+        privateSender,
       });
       if (method === 'radicle_disconnect') {
         // The site may be open in other windows too. The asking window tells
