@@ -738,9 +738,20 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
  * @returns {Promise<Object>}
  */
 async function getIdentityStatus() {
-  await prepareRadicleDataDir();
+  // The vault decides which view the wallet panel shows, so read it first:
+  // an identity folder Freedom refuses (a symbolic link, K-3) is the one
+  // failure that ends in `{ error }` for the whole status.
   const hasVaultResult = await hasVault();
   const isUnlocked = await isVaultUnlocked();
+
+  // A node home Freedom refuses (the Radicle or Ant data folder is a symbolic
+  // link) only costs that node's fields: the wallet stays reachable and the
+  // node says why when it is started. Finish any pending Radicle carry-over
+  // first, so the short home isn't judged while it is still being filled.
+  const radicleHomeReady = await nodeHomeReadable('Radicle', async () => {
+    await prepareRadicleDataDir();
+    return true;
+  }, false);
 
   // Try to get addresses - works even when vault is locked
   let addresses = null;
@@ -769,22 +780,40 @@ async function getIdentityStatus() {
       userWallet: meta?.addresses?.userWallet || null,
       beeWallet: meta?.addresses?.beeWallet || null,
       ipfsPeerId: readIpfsPeerId(),
-      radicleDid: await readRadicleDid(),
+      radicleDid: radicleHomeReady
+        ? await nodeHomeReadable('Radicle', readRadicleDid, null)
+        : null,
     };
   }
 
   return {
     hasVault: hasVaultResult,
     isUnlocked,
-    beeInjected: isBeeIdentityInjected(),
+    beeInjected: await nodeHomeReadable('Ant', isBeeIdentityInjected, false),
     ipfsInjected: isIpfsIdentityInjected(),
     ipfsIdentityPrepared: isIpfsIdentityPrepared(),
     ipfsIdentityMode: 'ephemeral',
     ipfsStableIdentitySupported: false,
     ipfsNativeIdentityActive: false,
-    radicleInjected: isRadicleIdentityInjected(),
+    radicleInjected: radicleHomeReady
+      ? await nodeHomeReadable('Radicle', isRadicleIdentityInjected, false)
+      : false,
     addresses,
   };
+}
+
+/**
+ * Read one node's home for the identity status, answering `fallback` (and
+ * saying why in the log) when that home is refused rather than failing the
+ * whole status.
+ */
+async function nodeHomeReadable(label, read, fallback) {
+  try {
+    return await read();
+  } catch (err) {
+    console.warn(`[IdentityManager] ${label} data folder unavailable:`, err.message);
+    return fallback;
+  }
 }
 
 /**

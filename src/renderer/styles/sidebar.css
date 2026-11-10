@@ -376,6 +376,12 @@
   opacity: 0.9;
 }
 
+/* Disabled while the identity folder is refused (the reason is shown above). */
+.setup-cta-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ============================================
    Wallet Address Card
    ============================================ */

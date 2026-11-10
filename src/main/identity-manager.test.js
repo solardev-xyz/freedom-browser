@@ -1131,4 +1131,43 @@ describe('identity file repair at startup (K-3)', () => {
     // Followed nowhere: the folder behind the link is left as it was.
     expect(fs.lstatSync(dir).isSymbolicLink()).toBe(true);
   });
+  posixTest('a linked Radicle or Ant home costs only that node: get-status still reports the vault', async () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    fs.writeFileSync(path.join(dir, 'identity-vault.json'), '{"version":1}');
+    fs.writeFileSync(
+      path.join(dir, 'vault-meta.json'),
+      JSON.stringify({ addresses: { userWallet: '0xabc', beeWallet: '0xdef' } })
+    );
+    for (const [env, name] of [
+      ['FREEDOM_RADICLE_DATA', 'radicle'],
+      ['FREEDOM_ANT_DATA', 'ant'],
+    ]) {
+      const real = path.join(root, `moved-${name}`);
+      fs.mkdirSync(real);
+      fs.symlinkSync(real, path.join(root, name));
+      process.env[env] = path.join(root, name);
+    }
+
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    mod.registerIdentityIpc();
+
+    const status = await ipcMain.invoke(IPC.IDENTITY_GET_STATUS);
+    expect(status.error).toBeUndefined();
+    expect(status).toMatchObject({
+      hasVault: true,
+      beeInjected: false,
+      radicleInjected: false,
+      addresses: { userWallet: '0xabc', beeWallet: '0xdef', radicleDid: null },
+    });
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Radicle data folder unavailable:',
+      expect.stringContaining('symbolic link')
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Ant data folder unavailable:',
+      expect.stringContaining('symbolic link')
+    );
+  });
 });

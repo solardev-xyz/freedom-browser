@@ -59,6 +59,7 @@ let privateNotice;
 let swarmIdEl;
 let ipfsIdEl;
 let setupErrorEl;
+let setupBtnEl;
 let ipfsCopyBtn;
 let radicleIdEl;
 let passwordValueEl;
@@ -76,6 +77,7 @@ export function initWalletUi() {
   // Cache coordinator DOM references
   setupCta = document.getElementById('sidebar-setup-cta');
   setupErrorEl = document.getElementById('sidebar-setup-error');
+  setupBtnEl = document.getElementById('sidebar-setup-btn');
   privateNotice = document.getElementById('sidebar-private-notice');
   walletState.identityView = document.getElementById('sidebar-identity');
   swarmIdEl = document.getElementById('sidebar-swarm-id');
@@ -240,19 +242,26 @@ export async function updateIdentityState() {
 
   } catch (err) {
     console.error('[WalletUI] Failed to update identity state:', err);
+    showSetupError(null);
     showView('setup');
   }
 }
 
 /**
- * Show a specific view
+ * Show why the identity folder can't be used, or clear it. While a reason is
+ * shown, Get Started is disabled: setup would only fail on the same folder.
  */
 function showSetupError(message) {
-  if (!setupErrorEl) return;
-  setupErrorEl.textContent = message || '';
-  setupErrorEl.classList.toggle('hidden', !message);
+  if (setupErrorEl) {
+    setupErrorEl.textContent = message || '';
+    setupErrorEl.classList.toggle('hidden', !message);
+  }
+  if (setupBtnEl) setupBtnEl.disabled = Boolean(message);
 }
 
+/**
+ * Show a specific view
+ */
 function showView(view) {
   walletState.viewMode = view;
   setupCta?.classList.toggle('hidden', view !== 'setup');
