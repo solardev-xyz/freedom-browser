@@ -1195,6 +1195,9 @@ describe('identity file repair at startup (K-3)', () => {
         // An earlier suite's fs-offload stub (a dir that stays busy) is still
         // registered; these tests want the real deletes.
         [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
+        // Likewise the #513 suite's profile-paths stub, whose
+        // prepareRadicleDataDir answers that suite's own Radicle home.
+        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
       },
       userDataDir: root,
     });
@@ -1241,6 +1244,65 @@ describe('identity file repair at startup (K-3)', () => {
     expect(results.radicle).toMatchObject({ did: 'did:key:zTest' });
     expect(identityMock.injectRadicleKey).toHaveBeenCalled();
     expect(fs.readdirSync(real)).toEqual([]);
+  });
+
+  // A real home whose keys/ is a link used to be refused only by the key
+  // write, after the stale-state wipe (and, for Ant, after the running node
+  // was stopped and never restarted). It is now refused before either.
+  function linkKeysDir(home, name) {
+    const outside = path.join(root, `outside-${name}-keys`);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(home, 'keys'));
+    return outside;
+  }
+
+  posixTest('a linked keys/ in a real Ant home: refused before Ant is stopped or wiped', async () => {
+    const home = realHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    fs.mkdirSync(path.join(home, 'statestore'));
+    fs.writeFileSync(path.join(home, 'identity.json'), '{}');
+    const outside = linkKeysDir(home, 'ant');
+    const { mod, identityMock } = loadWithMockIdentity();
+    const stop = jest.fn(async () => true);
+    const start = jest.fn(async () => {});
+    mod.setBeeLifecycle({ stop, start });
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', true);
+
+    expect(results.bee).toEqual({
+      refused: true,
+      error: expect.stringContaining('symbolic link'),
+    });
+    expect(stop).not.toHaveBeenCalled();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(identityMock.createBeeConfig).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(home, 'statestore'))).toBe(true);
+    expect(fs.existsSync(path.join(home, 'identity.json'))).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(results.radicle).toMatchObject({ did: 'did:key:zTest' });
+  });
+
+  posixTest('a linked keys/ in a real Radicle home: refused before node/cobs/storage are wiped', async () => {
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    const home = realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    for (const dir of ['node', 'cobs', 'storage']) fs.mkdirSync(path.join(home, dir));
+    const outside = linkKeysDir(home, 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', false);
+
+    expect(results.radicle).toEqual({
+      refused: true,
+      error: expect.stringContaining('symbolic link'),
+    });
+    expect(identityMock.injectRadicleKey).not.toHaveBeenCalled();
+    for (const dir of ['node', 'cobs', 'storage']) {
+      expect(fs.existsSync(path.join(home, dir))).toBe(true);
+    }
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(results.bee).toMatchObject({ address: '0xbee' });
   });
 
   test('a node failure that is not a refused link still fails injectAll', async () => {

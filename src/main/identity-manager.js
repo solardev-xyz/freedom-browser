@@ -547,6 +547,23 @@ async function wipeStaleBeeState(dataDir) {
 }
 
 /**
+ * Refuse a node home whose keys/ folder Freedom will not write through (a
+ * symbolic link, or not a folder: K-3) before anything in that home is
+ * stopped or wiped. The key write itself opens keys/ through the home's
+ * handle and refuses the same way, but only after the stale-state wipe has
+ * run (and, for Ant, after the node was stopped), so checking first leaves
+ * the home, and a running node, exactly as they were. A missing keys/ is
+ * fine: the injection creates it.
+ * @param {string} dataDir - the node's data directory
+ * @throws {UnsafePrivatePathError}
+ */
+function assertNodeKeysDirUsable(dataDir) {
+  withPrivateDir(dataDir, (home) => {
+    home.openDir('keys', { create: false });
+  });
+}
+
+/**
  * Inject Bee identity
  * Generates its own random password for the keystore (stored in config.yaml)
  * This is intentionally different from the vault password
@@ -564,6 +581,9 @@ async function injectBeeIdentity() {
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
+
+  // A keys/ Freedom refuses ends here, before the node is stopped or wiped.
+  assertNodeKeysDirUsable(dataDir);
 
   // Stop Bee (if running) and wipe its stale state before writing fresh keys.
   const beeWasRunning = await wipeStaleBeeState(dataDir);
@@ -640,6 +660,9 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
+
+  // A keys/ Freedom refuses ends here, before node/cobs/storage are wiped.
+  assertNodeKeysDirUsable(dataDir);
 
   // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
   // routing db, etc.) becomes invalid. Remove stale state directories.
