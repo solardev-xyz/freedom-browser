@@ -47,6 +47,7 @@ describe('dApp provider Agent wallet handoff', () => {
       showVaultUnlock: jest.fn(),
       updateSwarmConnectionBanner: jest.fn(),
       updateX402ConnectionBanner: jest.fn(),
+      updateRadicleConnectionBanner: jest.fn(),
     }));
     jest.doMock('./wallet/dapp-tx.js', () => ({
       buildDappTxContext: jest.fn(),
@@ -103,6 +104,7 @@ describe('dApp provider Agent wallet handoff', () => {
       showVaultUnlock: jest.fn(),
       updateSwarmConnectionBanner: jest.fn(),
       updateX402ConnectionBanner: jest.fn(),
+      updateRadicleConnectionBanner: jest.fn(),
     }));
     jest.doMock('./wallet/dapp-tx.js', () => ({
       buildDappTxContext: jest.fn(),
@@ -242,6 +244,7 @@ const loadProvider = async (options = {}) => {
     showVaultUnlock: jest.fn(),
     updateSwarmConnectionBanner: jest.fn(),
     updateX402ConnectionBanner: jest.fn(),
+      updateRadicleConnectionBanner: jest.fn(),
   };
   jest.doMock('./wallet-ui.js', () => walletUi);
   jest.doMock('./wallet/dapp-tx.js', () => ({
@@ -1417,6 +1420,26 @@ describe('dapp-provider attributes requests to the requesting webview', () => {
     expect(mod.getActiveDisplayUrl()).toBe(VISIBLE);
     mod.setActiveWebview(background);
     expect(mod.getActiveDisplayUrl()).toBe(BACKGROUND);
+  });
+
+  // A tab switch fires no navigation-completed, so setActiveWebview is the
+  // only thing that repaints the banners for the newly visible tab — the
+  // Radicle one included (R-6: its × and its "auto" badge must follow the
+  // visible site, not the tab the sidebar was opened on).
+  test('a tab switch repaints every connection banner, the Radicle one included', async () => {
+    const { mod, background, walletUi } = await twoTabs();
+    const banners = [
+      walletUi.updateConnectionBanner,
+      walletUi.updateSwarmConnectionBanner,
+      walletUi.updateX402ConnectionBanner,
+      walletUi.updateRadicleConnectionBanner,
+    ];
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    banners.forEach((fn) => fn.mockClear());
+
+    mod.setActiveWebview(background);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    for (const fn of banners) expect(fn).toHaveBeenCalledTimes(1);
   });
 });
 

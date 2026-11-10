@@ -2453,6 +2453,115 @@
 }
 
 /* ============================================
+   Radicle Connection Banner
+   Same shape as the Swarm and x402 banners above. It is the chrome's way
+   into a site's window.radicle permissions, including turning off its
+   "always allow writes" rule (lib/wallet/radicle-connection.js).
+   ============================================ */
+
+.radicle-connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  /* Outside the padded wallet section, so it carries that section's 16px
+     inset itself and lines up with the dApp/Swarm banners. */
+  margin: 16px 16px 0;
+  flex-shrink: 0;
+  /* theme-literal: Radicle's brand violet as a tint, the banner's identity; light override below */
+  background: rgba(155, 89, 182, 0.1);
+  /* theme-literal: Radicle's brand violet as a tint, the banner's identity; light override below */
+  border: 1px solid rgba(155, 89, 182, 0.3);
+  border-radius: 8px;
+}
+
+.radicle-connection-banner.hidden {
+  display: none;
+}
+
+/* The Radicle banner sits outside #sidebar-identity (Radicle needs no
+   wallet, so it has to show in the set-up view too). Where the identity
+   view's own banners would be out of sight, it steps aside as well: under
+   any open sub-screen, in a private window's notice, and on the Nodes and
+   Settings tabs. */
+#sidebar:has(.sidebar-subscreen:not(.hidden)) .radicle-connection-banner,
+#sidebar:has(#sidebar-private-notice:not(.hidden)) .radicle-connection-banner,
+#sidebar:has(#sidebar-identity:not(.hidden) #tab-wallet.hidden) .radicle-connection-banner {
+  display: none;
+}
+
+.radicle-connection-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+
+.radicle-connection-indicator {
+  width: 8px;
+  height: 8px;
+  /* theme-literal: Radicle's brand violet, the same dot colour as the protocol glyph */
+  background: #9b59b6;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.radicle-connection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.radicle-connection-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.radicle-connection-site {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.radicle-connection-disconnect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.radicle-connection-disconnect:hover {
+  color: var(--danger);
+  /* theme-literal: the danger red as a hover tint, same as the sibling banners' close buttons */
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.radicle-connection-disconnect svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-theme="light"] .radicle-connection-banner {
+  /* theme-literal: Radicle's brand violet as a lighter tint for the light palette */
+  background: rgba(155, 89, 182, 0.08);
+  /* theme-literal: Radicle's brand violet as a lighter tint for the light palette */
+  border-color: rgba(155, 89, 182, 0.25);
+}
+
+/* ============================================
    x402 Auto-Pay Banner
    ============================================ */
 
@@ -2951,7 +3060,7 @@
   cursor: pointer;
 }
 
-/* Manage-permissions screens (Wallet / Auto-pay / Swarm). These paint from the
+/* Manage-permissions screens (Wallet / Auto-pay / Swarm / Radicle). These paint from the
    palette in styles/variables.css — `--text`, `--muted`, `--border` — like the
    rest of the sidebar. They used to quote `--text-primary`/`--text-secondary`/
    `--text-tertiary`/`--bg-elevated`, which are defined nowhere, so the dark
