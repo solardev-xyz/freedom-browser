@@ -216,9 +216,19 @@ async function signedWrite(webview, method, params, permissionKey, assertSameDoc
     // publishing this write — the one place the user can revoke it (there
     // is no Radicle site-permissions screen). Saved even if the document
     // has since navigated away: the rule belongs to the site, not the page.
-    // Checking the box and then rejecting does not turn it on.
+    // Checking the box and then rejecting does not turn it on. A failure
+    // to save is logged, not thrown: the page still gets the user's 4001,
+    // and the rule (still on) will offer the same checkbox on its next
+    // fallback prompt.
     if (!agentHeld && ruleOn && error?.alwaysAllow === false) {
-      await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', false);
+      try {
+        await window.radiclePermissions.setAutoApprove(permissionKey, 'signing', false);
+      } catch (revokeError) {
+        console.error(
+          `[RadicleProvider] Could not turn off "always allow writes" for ${permissionKey}`,
+          revokeError
+        );
+      }
     }
     throw error;
   }

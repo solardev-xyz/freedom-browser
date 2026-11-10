@@ -611,22 +611,25 @@ describe('signed write approval (R-6)', () => {
     permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
     cob.commentIssue.mockRejectedValueOnce(new cob.CobValidationError('invalid_body', 'bad'));
     await expectProviderError(write('auto'), -32602, 'invalid_body');
-    const notFound = Object.assign(new Error('issue not found'), { reason: 'repo_not_found' });
-    cob.commentIssue.mockRejectedValueOnce(notFound);
-    await expectProviderError(write('auto'), -32603, 'repo_not_found');
-    // Both failures refunded: the full burst of 5 is still there.
+    // Refunded: the full burst of 5 is still there.
     for (let i = 0; i < 5; i += 1) await write('auto');
     await expectProviderError(write('auto'), 4100, 'auto_write_limit');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(7);
+    expect(cob.commentIssue).toHaveBeenCalledTimes(6);
   });
 
   test('a rule-answered write that may have been signed stays counted', async () => {
     permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    // repo_not_found is any native "not found", including a missing
+    // replyTo/issueId the page chose, which can come after signing.
     for (const reason of ['native_failed', 'announce_failed']) {
       cob.commentIssue.mockRejectedValueOnce(Object.assign(new Error('boom'), { reason }));
       await expectProviderError(write('auto'), -32603, reason);
     }
-    for (let i = 0; i < 3; i += 1) await write('auto');
+    cob.commentIssue.mockRejectedValueOnce(
+      Object.assign(new Error('comment not found'), { reason: 'repo_not_found' })
+    );
+    await expectProviderError(write('auto'), -32603, 'repo_not_found');
+    for (let i = 0; i < 2; i += 1) await write('auto');
     await expectProviderError(write('auto'), 4100, 'auto_write_limit');
   });
 

@@ -349,6 +349,47 @@ describe('radicle-provider', () => {
       });
     });
 
+    test('a failed revoke still answers the page with the user rejection', async () => {
+      const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        signingGrant: true,
+        writeRule: true,
+      });
+      execute.mockResolvedValueOnce({
+        error: { code: 4100, message: 'limit', data: { reason: 'auto_write_limit' } },
+      });
+      consentMocks.showRadicleSignedWriteApproval.mockRejectedValueOnce({
+        code: 4001,
+        message: 'User rejected the request',
+        alwaysAllow: false,
+      });
+      permissions.setAutoApprove.mockRejectedValueOnce(new Error('store unavailable'));
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        sendRequest({ id: 20, method: 'radicle_commentIssue', params: { body: 'Hi' } });
+        await flushMicrotasks();
+
+        expect(permissions.setAutoApprove).toHaveBeenCalledWith(
+          'https://app.example',
+          'signing',
+          false
+        );
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining('Could not turn off "always allow writes"'),
+          expect.objectContaining({ message: 'store unavailable' })
+        );
+        expect(webview.send).toHaveBeenCalledWith('radicle:provider-response', {
+          id: 20,
+          result: null,
+          error: { code: 4001, message: 'User rejected the request', data: undefined },
+        });
+        expect(execute).toHaveBeenCalledTimes(1);
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
     test('checking the box and rejecting does not turn the rule on', async () => {
       const { sendRequest, consentMocks, permissions, execute } = await loadProvider({
         permission: { origin: 'https://app.example' },

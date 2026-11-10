@@ -290,16 +290,15 @@ async function handleCobWrite(fn, params) {
   }
 }
 
-// Reasons a COB write fails with before anything is signed: parameter
-// validation (cob-service checks them before calling the node) and an
-// unknown repo or object. Any other failure (native_failed, announce_failed)
-// may come after the signature, so it keeps its automatic-write charge.
-const UNSIGNED_FAILURE_REASONS = new Set(['repo_not_found']);
-
+// The only COB write failure known to come before anything is signed is a
+// parameter error: cob-service validates every field before it calls the
+// node. A native failure — including one cob-service tags `repo_not_found`
+// because its message matches /not found/ (an unknown repo, but also a
+// missing issue, patch or replyTo the page chose) — may come after the
+// change was signed and stored, so it keeps its automatic-write charge;
+// otherwise a page could repeat it without the limit ever applying.
 function failedBeforeSigning(err) {
-  return (
-    err?.code === ERRORS.INVALID_PARAMS.code || UNSIGNED_FAILURE_REASONS.has(err?.data?.reason)
-  );
+  return err?.code === ERRORS.INVALID_PARAMS.code;
 }
 
 /**
