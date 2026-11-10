@@ -515,11 +515,12 @@ function setNodeAlias(alias) {
  * One lifecycle-queue operation, so every start, stop, alias change and
  * other re-key queues behind it. Inside it, once the earlier operations
  * have run:
- *  - it notes whether the node is running,
- *  - if so, stops it and requires the add-on's proof that it stopped (a stop
+ *  - it notes whether the node is running (RUNNING),
+ *  - if it is, or the add-on still counts a node as started (an unproved
+ *    earlier stop), stops it and requires the add-on's proof that it stopped (a stop
  *    without that proof throws, and `work` never runs),
  *  - awaits `work`,
- *  - and in `finally` starts the node again if it was running: as the new
+ *  - and in `finally` starts the node again only if it was RUNNING: as the new
  *    identity, or as the old one when `work` failed before its key write.
  * @template T
  * @param {() => Promise<T>} work
@@ -527,12 +528,17 @@ function setNodeAlias(alias) {
  */
 function withRadicleStopped(work) {
   return enqueueLifecycle(async () => {
-    const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
+    // Restart only a node the user had running. A node in ERROR whose
+    // add-on still counts as started (a stop the user asked for whose
+    // shutdown was never proved) must be stopped before the wipe, but not
+    // brought back up: the user's last action was a stop (R2-M1).
+    const wasRunning = currentState === STATUS.RUNNING;
+    const mustStop = wasRunning || embedded.isStarted();
     // No node to stop: the add-on's shutdown would be a no-op, and
     // stopNode would still clear the service and overwrite a visible ERROR
     // (a missing add-on, a failed start) with STOPPED. Leave the status as
     // it is; the isStarted check below still holds.
-    if (wasRunning) {
+    if (mustStop) {
       try {
         await stopNode();
       } catch (err) {

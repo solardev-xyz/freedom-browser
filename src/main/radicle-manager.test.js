@@ -659,6 +659,52 @@ describe('re-key critical section (R-8)', () => {
     }
   });
 
+  // Round-2 review (R2-M1): the user's Stop timed out, so the node is in
+  // ERROR with the add-on still counting it as started. A re-key must stop
+  // it (with proof) before the wipe, but must not start it again: the
+  // user's last action was a stop.
+  test('a re-key after an unproved user stop stops the node but does not restart it', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    try {
+      const ctx = loadManager();
+      const node = modelNode(ctx);
+      await ctx.mod.startRadicle();
+      let answerShutdown;
+      ctx.embedded.shutdown.mockImplementation(
+        () => new Promise((resolve) => {
+          answerShutdown = () => {
+            node.nativeAlive = false;
+            node.wrapperStarted = false;
+            resolve({ ok: true });
+          };
+        })
+      );
+
+      const stopping = ctx.mod.stopRadicle();
+      await flush();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(stopping).resolves.toMatchObject({ status: 'error' });
+      expect(node.wrapperStarted).toBe(true);
+
+      // The re-key's stop waits on the shutdown, which now answers in time.
+      const work = jest.fn(async () => {
+        expect(node.nativeAlive).toBe(false);
+        return 'did';
+      });
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+      await flush();
+      answerShutdown();
+      await expect(rekey).resolves.toBe('did');
+      expect(work).toHaveBeenCalledTimes(1);
+      expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
+      expect(node.nativeAlive).toBe(false);
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'stopped', error: null });
+      fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('a stop the add-on rejects reaches the re-key as RADICLE_NOT_STOPPED', async () => {
     const ctx = loadManager();
     modelNode(ctx, { shutdownFails: true });
