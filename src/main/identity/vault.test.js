@@ -152,6 +152,21 @@ describe('vault', () => {
       expect(getMnemonic()).toBeNull();
     });
 
+    test('an unlock that finishes after a lock leaves the vault locked (K-1)', async () => {
+      // unlockVault runs synchronously up to the PBKDF2 decrypt; the lock
+      // lands while that decrypt is still in flight.
+      const unlocking = unlockVault(tempDir, 'password123', 100);
+      lockVault();
+
+      await expect(unlocking).rejects.toThrow('The vault was locked while it was being unlocked');
+      expect(isUnlocked()).toBe(false);
+      expect(getMnemonic()).toBeNull();
+
+      // A fresh unlock afterwards still works.
+      await unlockVault(tempDir, 'password123', 0);
+      expect(getMnemonic()).toBe(TEST_MNEMONIC);
+    });
+
     test('throws when no vault exists', async () => {
       const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-'));
 

@@ -17,9 +17,12 @@ const { withPrivateDir } = require('../private-files');
  * @param {string} dataDir - Bee data directory
  * @param {string} privateKey - 0x-prefixed hex private key
  * @param {string} password - Password to encrypt the keystore
+ * @param {{ beforeWrite?: () => void }} [options] - beforeWrite runs once the
+ *   keystore is built, right before it is written, and may throw to stop
+ *   the write (identity-manager checks the vault epoch there, K-1)
  * @returns {Promise<void>}
  */
-async function injectBeeKey(dataDir, privateKey, password) {
+async function injectBeeKey(dataDir, privateKey, password, { beforeWrite } = {}) {
   // Owner-only keys directory and keystore (K-3). keys/ is opened before
   // the keystore is encrypted and the keystore is written through that
   // handle, so a keys/ swapped for a link during the await cannot redirect
@@ -27,6 +30,7 @@ async function injectBeeKey(dataDir, privateKey, password) {
   return withPrivateDir(dataDir, async (data) => {
     const keys = data.openDir('keys');
     const keystore = await createBeeKeystore(privateKey, password);
+    beforeWrite?.();
     keys.write('swarm.key', keystore);
     console.log(`[Identity] Bee key injected at ${path.join(keys.path, 'swarm.key')}`);
   });

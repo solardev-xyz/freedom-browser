@@ -38,6 +38,7 @@ const { publishData, publishFilesFromContent, getUploadStatus } = require('./pub
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
+const { currentVaultEpoch } = require('../identity/vault-epoch');
 const {
   getOriginEntry,
   getFeed,
@@ -1052,6 +1053,9 @@ async function handleWriteSingleOwnerChunk(params, origin) {
       },
     };
   }
+  // The key is good for the vault epoch it is read in; the write checks it
+  // again before signing and uploading (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   try {
     signerKey = await resolveSignerKey(activeIdentity);
@@ -1073,7 +1077,10 @@ async function handleWriteSingleOwnerChunk(params, origin) {
   });
 
   try {
-    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, { span: span.value });
+    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, {
+      span: span.value,
+      epoch,
+    });
     updateEntry(historyEntry.id, {
       status: 'completed',
       reference: result.reference,
@@ -1400,6 +1407,8 @@ async function handleUpdateFeed(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
+  // The key is good for the vault epoch it is read in (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
@@ -1418,7 +1427,7 @@ async function handleUpdateFeed(params, origin) {
   });
 
   try {
-    const updateResult = await updateFeed(signerKey, topicString, reference);
+    const updateResult = await updateFeed(signerKey, topicString, reference, undefined, { epoch });
 
     updateFeedReference(origin, feedId, reference);
     updateEntry(historyEntry.id, { status: 'completed', ...updateResult, reference });
@@ -1490,6 +1499,8 @@ async function handleWriteFeedEntry(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
+  // The key is good for the vault epoch it is read in (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
@@ -1509,7 +1520,7 @@ async function handleWriteFeedEntry(params, origin) {
   });
 
   try {
-    const result = await writeFeedPayload(signerKey, topicString, payload, { index });
+    const result = await writeFeedPayload(signerKey, topicString, payload, { index, epoch });
 
     updateEntry(historyEntry.id, { status: 'completed' });
     log.info(`[SwarmProvider] writeFeedEntry succeeded for ${origin}: feed=${name}, index=${result.index}`);

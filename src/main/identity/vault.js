@@ -18,6 +18,15 @@ const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 let unlockedMnemonic = null;
 let autoLockTimer = null;
 
+// Called on every lock (explicit or the inactivity auto-lock), so whatever
+// holds keys derived from the mnemonic drops them at the same moment.
+const lockListeners = new Set();
+
+// Moves on with every lock. An unlock whose decryption was still running
+// when the vault was locked (or deleted, which locks it) must not publish
+// its mnemonic afterwards (K-1).
+let lockGeneration = 0;
+
 // Default auto-lock timeout (15 minutes)
 const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
 
@@ -357,8 +366,14 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
+  const generation = lockGeneration;
 
   const mnemonic = await decryptVaultMnemonic(readVaultData(dataDir), password);
+  // The vault was locked (or deleted, which locks it) while the decryption
+  // ran: that lock wins, so the mnemonic is never published after it (K-1).
+  if (generation !== lockGeneration) {
+    throw new Error('The vault was locked while it was being unlocked');
+  }
 
   // Validate decrypted mnemonic
   if (!isValidMnemonic(mnemonic)) {
@@ -373,14 +388,32 @@ async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS)
 }
 
 /**
- * Lock the vault (clear mnemonic from memory)
+ * Lock the vault (clear mnemonic from memory) and tell every lock listener.
  */
 function lockVault() {
+  lockGeneration += 1;
   unlockedMnemonic = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
     autoLockTimer = null;
   }
+  for (const listener of lockListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.error('[Vault] Lock listener failed:', err.message);
+    }
+  }
+}
+
+/**
+ * Run `listener` whenever the vault locks, including the auto-lock.
+ * @param {() => void} listener
+ * @returns {() => void} removes the listener
+ */
+function onLock(listener) {
+  lockListeners.add(listener);
+  return () => lockListeners.delete(listener);
 }
 
 /**
@@ -534,6 +567,7 @@ module.exports = {
   importVault,
   unlockVault,
   lockVault,
+  onLock,
   isUnlocked,
   getMnemonic,
   resetAutoLockTimer,
