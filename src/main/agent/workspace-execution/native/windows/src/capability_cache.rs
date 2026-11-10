@@ -116,6 +116,18 @@ mod tests {
         prune_with_writer(home, temp, guard, 1, codex_windows_sandbox::write_file_atomically)
     }
 
+    fn junction(link: &Path, target: &Path) -> Result<()> {
+        let cmd = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32").join("cmd.exe");
+        let link = codex_windows_sandbox::canonicalize_path(link.parent().unwrap()).join(link.file_name().unwrap());
+        let target = codex_windows_sandbox::canonicalize_path(target);
+        let output = std::process::Command::new(cmd).args(["/d", "/c", "mklink", "/J"])
+            .arg(&link).arg(&target).output()?;
+        assert!(output.status.success(), "Owned junction fixture failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        Ok(())
+    }
+
     struct Fixture { home: std::path::PathBuf, temp: std::path::PathBuf, guard: Option<StartupLock> }
     impl Fixture {
         fn new() -> Result<Self> {
@@ -214,11 +226,9 @@ mod tests {
         let fixture = Fixture::new()?;
         let link = fixture.home.join("freedom-win-workspace-link01");
         let target = fixture.home.join("absent-target");
-        let cmd = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
-            .join("System32/cmd.exe");
-        let output = std::process::Command::new(cmd).args(["/d", "/c", "mklink", "/J"])
-            .arg(&link).arg(&target).output()?;
-        assert!(output.status.success(), "Owned junction fixture could not be created");
+        fs::create_dir(&target)?;
+        junction(&link, &target)?;
+        fs::remove_dir(&target)?;
         let before = fixture.save(json!({fixture.key("freedom-win-workspace-link01"):"link-id"}))?;
         assert_eq!(prune(&fixture.home, &fixture.temp, fixture.guard.as_ref().unwrap())?, 0);
         assert_eq!(serde_json::from_slice::<Value>(&fs::read(fixture.home.join("cap_sid"))?)?, before);
@@ -278,20 +288,14 @@ mod tests {
     fn resolves_a_junctioned_home_and_does_not_replace_a_reparse_cache() -> Result<()> {
         let fixture = Fixture::new()?;
         let alias = fixture.home.join("home-alias");
-        let cmd = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
-            .join("System32/cmd.exe");
-        let output = std::process::Command::new(&cmd).args(["/d", "/c", "mklink", "/J"])
-            .arg(&alias).arg(&fixture.home).output()?;
-        assert!(output.status.success(), "Owned home junction could not be created");
+        junction(&alias, &fixture.home)?;
         fixture.save(json!({fixture.key("freedom-win-workspace-gone01"):"expired-id"}))?;
         assert_eq!(prune(&alias, &fixture.temp, fixture.guard.as_ref().unwrap())?, 1);
         fs::remove_file(fixture.home.join("cap_sid"))?;
         let target = fixture.home.join("owned-cache-target");
         fs::create_dir(&target)?;
         fs::write(target.join("sentinel"), "preserved")?;
-        let output = std::process::Command::new(cmd).args(["/d", "/c", "mklink", "/J"])
-            .arg(fixture.home.join("cap_sid")).arg(&target).output()?;
-        assert!(output.status.success(), "Owned cache junction could not be created");
+        junction(&fixture.home.join("cap_sid"), &target)?;
         assert_eq!(prune(&fixture.home, &fixture.temp, fixture.guard.as_ref().unwrap())?, 0);
         assert!(is_reparse(&fs::symlink_metadata(fixture.home.join("cap_sid"))?));
         assert_eq!(fs::read_to_string(target.join("sentinel"))?, "preserved");
