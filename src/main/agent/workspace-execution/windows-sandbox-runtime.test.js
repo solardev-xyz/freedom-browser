@@ -7,14 +7,20 @@ const { resolveWindowsSandbox } = require('./windows-sandbox-runtime');
 const { BINARIES, REVISION, adapterSourceSha256 } = require('../../../../scripts/build-windows-workspace');
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
-test('runtime rejects an adapter manifest that omits the startup-lock module', async () => {
+test('runtime rejects an adapter manifest that omits the capability-cache module', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-windows-source-'));
   try {
     const image = Buffer.alloc(160);
     image.write('MZ'); image.writeUInt32LE(128, 60); image.writeUInt32LE(0x4550, 128); image.writeUInt16LE(0x8664, 132);
     for (const name of BINARIES) fs.writeFileSync(path.join(directory, name), image);
     const manifest = { version: 1, backend: 'elevated', revision: REVISION, arch: 'x64',
-      adapterSha256: sha(fs.readFileSync(path.join(__dirname, 'native/windows/src/main.rs'))),
+      adapterSha256: (() => {
+        const hash = crypto.createHash('sha256');
+        for (const name of ['src/main.rs', 'src/startup_lock.rs']) {
+          hash.update(name + '\0').update(fs.readFileSync(path.join(__dirname, 'native/windows', name), 'utf8').replace(/\r\n/g, '\n'));
+        }
+        return hash.digest('hex');
+      })(),
       binaries: Object.fromEntries(BINARIES.map(name => [name, sha(image)])) };
     const save = () => fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify(manifest));
     save();

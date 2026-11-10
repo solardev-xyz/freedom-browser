@@ -61,33 +61,78 @@ async function main() {
   // A whole-run lock would deadlock this barrier. Only startup state may be
   // serialised: all four workloads must be able to execute at the same time.
   const caps = () => JSON.parse(fs.readFileSync(path.join(executor.home, 'cap_sid'), 'utf8'));
-  for (let round = 0; round < 8; round++) {
-    const before = caps();
-    const markers = Array.from({ length: 4 }, (_, index) => `parallel-${round}-${index}.ready`);
-    const batch = await Promise.all(markers.map(marker => execute(`
-      const fs = require('fs');
-      fs.writeFileSync(require('path').join(process.env.TEMP, 'owned-temp-proof.txt'), 'private');
-      fs.writeFileSync(${JSON.stringify(marker)}, 'ready');
-      const peers = ${JSON.stringify(markers)};
-      const deadline = Date.now() + 15000;
-      const wait = () => {
-        if (peers.every(peer => fs.existsSync(peer))) { console.log('parallel-ready'); return; }
-        if (Date.now() >= deadline) { console.error('parallel barrier timed out'); process.exitCode = 2; return; }
-        setTimeout(wait, 20);
-      };
-      wait();
-    `)));
-    const after = caps();
-    const stable = ['workspace', 'readonly'].every(key => before[key] === after[key]) &&
-      ['workspace_by_cwd', 'writable_root_by_path'].every(key => Object.entries(before[key] || {})
-        .every(([root, sid]) => after[key]?.[root] === sid));
-    const added = Object.keys(after.writable_root_by_path || {}).length - Object.keys(before.writable_root_by_path || {}).length;
-    const passed = stable && added >= markers.length && batch.every(result => result.state === 'completed' && result.exitCode === 0 && result.stdout.trim() === 'parallel-ready');
-    record(`parallel-startup-state-${round}`, passed, { stable, successful: batch.filter(result => result.state === 'completed').length,
-      addedWriteRoots: added, entriesBefore: Object.keys(before.writable_root_by_path || {}).length, entriesAfter: Object.keys(after.writable_root_by_path || {}).length,
-      timings: batch.map(result => ({ startupWaitMs: result.startupWaitMs, startupMs: result.startupMs })),
-      failures: batch.filter(result => result.state !== 'completed').map(result => ({ state: result.state, exitCode: result.exitCode, error: result.error })) });
+  // Keep one workload writing to its private root throughout other startups.
+  // Its cached SID must survive every cleanup, even while older dead roots go.
+  let retainedOutput = '';
+  const retained = executor.execute(await createWorkspaceExecutionPolicy({ workspaceRoot: workspace,
+    runtimeRoots: access.runtimeRoots, network: 'full', limits: { timeoutMs: 180000 } }), {
+    command: process.execPath, args: ['-e', `
+      const fs = require('fs'), path = require('path');
+      fs.writeFileSync('retained-temp.txt', process.env.TEMP);
+      console.log('retained-ready');
+      const timer = setInterval(() => {
+        fs.writeFileSync(path.join(process.env.TEMP, 'live.txt'), 'still-private');
+        if (fs.existsSync('retained-release.ready')) { clearInterval(timer); console.log('retained-done'); }
+      }, 20);
+    `], onOutput: (_stream, bytes) => { retainedOutput += bytes; },
+  });
+  for (let i = 0; i < 100 && !retainedOutput.includes('retained-ready'); i++) await sleep(100);
+  const retainedStarted = retainedOutput.includes('retained-ready');
+  let retainedKey, retainedSid;
+  let ownedTemporaryRoot;
+  try {
+    assert.ok(retainedStarted, 'The retained workload must start before cleanup qualification');
+    const retainedTemp = fs.readFileSync(path.join(workspace, 'retained-temp.txt'), 'utf8');
+    retainedKey = fs.realpathSync(retainedTemp).replace(/\\/g, '/').toLowerCase();
+    retainedSid = caps().writable_root_by_path[retainedKey];
+    assert.ok(retainedSid, 'The running private root must have a capability');
+    const parentPrefix = path.dirname(retainedKey).replace(/\\/g, '/') + '/freedom-win-workspace-';
+    ownedTemporaryRoot = root => root.startsWith(parentPrefix) && /^[a-z0-9]{6}$/.test(root.slice(parentPrefix.length));
+    for (let round = 0; round < 8; round++) {
+      const before = caps();
+      const liveBefore = Object.keys(before.writable_root_by_path || {}).filter(root => fs.existsSync(root));
+      const markers = Array.from({ length: 4 }, (_, index) => `parallel-${round}-${index}.ready`);
+      const batch = await Promise.all(markers.map(marker => execute(`
+        const fs = require('fs');
+        fs.writeFileSync(require('path').join(process.env.TEMP, 'owned-temp-proof.txt'), 'private');
+        fs.writeFileSync(${JSON.stringify(marker)}, 'ready');
+        const peers = ${JSON.stringify(markers)};
+        const deadline = Date.now() + 15000;
+        const wait = () => {
+          if (peers.every(peer => fs.existsSync(peer))) { console.log('parallel-ready'); return; }
+          if (Date.now() >= deadline) { console.error('parallel barrier timed out'); process.exitCode = 2; return; }
+          setTimeout(wait, 20);
+        };
+        wait();
+      `)));
+      const after = caps();
+      const stable = ['workspace', 'readonly'].every(key => before[key] === after[key]) &&
+        Object.entries(before.workspace_by_cwd || {}).every(([root, sid]) => after.workspace_by_cwd?.[root] === sid) &&
+        liveBefore.every(root => after.writable_root_by_path?.[root] === before.writable_root_by_path[root]) &&
+        after.writable_root_by_path?.[retainedKey] === retainedSid;
+      const added = Object.keys(after.writable_root_by_path || {}).filter(root => !(root in (before.writable_root_by_path || {}))).length;
+      const privateEntries = Object.keys(after.writable_root_by_path || {}).filter(ownedTemporaryRoot).length;
+      const passed = stable && added >= markers.length && privateEntries <= 32 + markers.length && batch.every(result => result.state === 'completed' && result.exitCode === 0 && !result.privateDirectoryCleanupFailed && result.stdout.trim() === 'parallel-ready');
+      record(`parallel-startup-state-${round}`, passed, { stable, successful: batch.filter(result => result.state === 'completed').length,
+        addedWriteRoots: added, privateEntries, entriesBefore: Object.keys(before.writable_root_by_path || {}).length, entriesAfter: Object.keys(after.writable_root_by_path || {}).length,
+        timings: batch.map(result => ({ startupWaitMs: result.startupWaitMs, startupMs: result.startupMs })),
+        failures: batch.filter(result => result.state !== 'completed').map(result => ({ state: result.state, exitCode: result.exitCode, error: result.error, stdout: result.stdout.slice(0, 1000), stderr: result.stderr.slice(0, 1000) })) });
+    }
+  } finally {
+    fs.writeFileSync(path.join(workspace, 'retained-release.ready'), 'release');
+    const result = await retained;
+    record('live-private-root-survives-cleanup', retainedStarted && result.state === 'completed' && result.stdout.includes('retained-done'),
+      { state: result.state, exitCode: result.exitCode, stderr: result.stderr });
   }
+  for (let cycle = 0; cycle < 40; cycle++) {
+    const result = await execute("console.log('cleanup-cycle')");
+    const after = caps();
+    const privateEntries = Object.keys(after.writable_root_by_path || {}).filter(ownedTemporaryRoot).length;
+    record(`bounded-temporary-cache-${cycle}`, result.state === 'completed' && result.stdout.trim() === 'cleanup-cycle' &&
+      !result.privateDirectoryCleanupFailed && privateEntries <= 32,
+      { state: result.state, privateEntries });
+  }
+  record('ended-private-root-eventually-pruned', !(retainedKey in (caps().writable_root_by_path || {})));
   await check('startup-lock-private', `
     try { require('fs').openSync(${JSON.stringify(path.join(executor.home, '.freedom-startup-v1.lock'))}, 'r'); process.exitCode = 2; }
     catch (error) { console.log(error.code); }
