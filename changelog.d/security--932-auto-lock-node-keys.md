@@ -1,1 +1,5 @@
-- The vault's automatic lock now also stops Swarm feed signing with the node wallet and node key setup, not only wallet signing ([#932](https://github.com/solardev-xyz/freedom-browser/issues/932))
+- Locking the vault now stops every use of its keys, not only wallet signing ([#932](https://github.com/solardev-xyz/freedom-browser/issues/932))
+  - The automatic lock also stops Swarm feed signing with the node wallet and node key setup, which kept working while the vault showed as locked
+  - A Swarm feed write or upload that was queued or already running when the vault locked is refused instead of signed with the old keys
+  - Deleting the vault while an unlock was still in progress no longer leaves the deleted vault's keys usable for signing
+  - Quitting Freedom revokes the vault's keys before shutdown, so nothing can sign or set up node keys while the app winds down
