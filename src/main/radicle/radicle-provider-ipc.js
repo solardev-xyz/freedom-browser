@@ -328,10 +328,11 @@ async function handleSignedWrite(fn, params, refundAutoWrite) {
  * @param {{onSeedStatus?: Function, approval?: 'user'|'auto', privateSender?: boolean}} [options]
  *   approval: how the renderer answered a signed write (`meta.approval`).
  *   Only 'user' (the per-write prompt was shown and accepted) skips the
- *   rule gate (tier, node and custody checks still apply); anything else,
- *   including leaving it out, is rule-gated: refused with `approval_required` unless the
- *   site's "always allow writes" rule exists, then charged against
- *   autoWriteLimiter (`auto_write_limit` once used up) (R-6).
+ *   rule gate; the private-window, tier and node checks still apply.
+ *   Anything else, including leaving it out, is rule-gated: refused with
+ *   `approval_required` unless the site's "always allow writes" rule
+ *   exists, then charged against autoWriteLimiter (`auto_write_limit`
+ *   once used up) (R-6).
  *   privateSender: the request came from a private (or unclassifiable)
  *   window. Lasting changes are refused, and use is not recorded (R-9).
  */
