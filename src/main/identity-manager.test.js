@@ -1110,6 +1110,9 @@ describe('identity file repair at startup (K-3)', () => {
     fs.renameSync(dir, real);
     fs.symlinkSync(real, dir);
     jest.spyOn(console, 'error').mockImplementation(() => {});
+    // get-status prepares the Radicle home first; an override skips the
+    // control-socket length check a long temp root (macOS) would trip.
+    process.env.FREEDOM_RADICLE_DATA = path.join(root, 'radicle');
 
     const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: root,

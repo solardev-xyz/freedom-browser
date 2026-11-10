@@ -58,6 +58,7 @@ let setupCta;
 let privateNotice;
 let swarmIdEl;
 let ipfsIdEl;
+let setupErrorEl;
 let ipfsCopyBtn;
 let radicleIdEl;
 let passwordValueEl;
@@ -74,6 +75,7 @@ const IPFS_EPHEMERAL_TITLE =
 export function initWalletUi() {
   // Cache coordinator DOM references
   setupCta = document.getElementById('sidebar-setup-cta');
+  setupErrorEl = document.getElementById('sidebar-setup-error');
   privateNotice = document.getElementById('sidebar-private-notice');
   walletState.identityView = document.getElementById('sidebar-identity');
   swarmIdEl = document.getElementById('sidebar-swarm-id');
@@ -218,6 +220,10 @@ export async function updateIdentityState() {
 
   try {
     const status = await window.identity.getStatus();
+    // The identity folder couldn't be read (say, it is a symbolic link,
+    // which Freedom refuses, K-3): say why here rather than only offering
+    // a setup that would fail on the same folder.
+    showSetupError(status?.error);
 
     if (!status.hasVault) {
       showView('setup');
@@ -241,6 +247,12 @@ export async function updateIdentityState() {
 /**
  * Show a specific view
  */
+function showSetupError(message) {
+  if (!setupErrorEl) return;
+  setupErrorEl.textContent = message || '';
+  setupErrorEl.classList.toggle('hidden', !message);
+}
+
 function showView(view) {
   walletState.viewMode = view;
   setupCta?.classList.toggle('hidden', view !== 'setup');
