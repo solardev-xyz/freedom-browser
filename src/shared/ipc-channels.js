@@ -373,6 +373,14 @@ module.exports = {
   X402_UPDATE_PERMISSION: 'x402:update-permission',
   X402_GET_RECEIPTS: 'x402:get-receipts',
 
+  // Sign-In with Ethereum over HTTP auth (#1152) — sign-in card (renderer ↔ main)
+  SIWE_CHALLENGE: 'siwe:challenge',
+  SIWE_CHALLENGE_CLOSED: 'siwe:challenge-closed',
+  SIWE_GET_CHALLENGE: 'siwe:get-challenge',
+  SIWE_PREPARE: 'siwe:prepare',
+  SIWE_COMPLETE: 'siwe:complete',
+  SIWE_CANCEL: 'siwe:cancel',
+
   // Unified payment history (x402 + wallet sends + dapp sends)
   PAYMENTS_GET_RECENT: 'payments:get-recent',
   PAYMENTS_GET_BY_ID: 'payments:get-by-id',

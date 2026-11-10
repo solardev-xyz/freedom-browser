@@ -6455,6 +6455,69 @@
 }
 
 /* ============================================
+   Sign-In with Ethereum (HTTP auth, #1152)
+   The Sign Message screen in a sign-in mode; the account picker is the
+   Connect screen's. Only the lines below are its own.
+   ============================================ */
+
+#sidebar-siwe-signin .dapp-sign-origin {
+  padding-bottom: 8px;
+  margin-bottom: 0;
+}
+
+.siwe-checked {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 18px;
+  font-size: 12px;
+  color: var(--foreground-muted);
+}
+
+.siwe-checked svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  stroke: var(--secure-fg);
+}
+
+.siwe-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--foreground-muted);
+}
+
+/* Device accounts sign on the device: say which one before the click. */
+.siwe-kind {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--foreground-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+/* The name and address take the free width, so the chip sits by the chevron. */
+#sidebar-siwe-signin .dapp-connect-selector-info,
+#sidebar-siwe-signin .dapp-connect-wallet-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+#sidebar-siwe-signin .dapp-connect-selector-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+#sidebar-siwe-signin .dapp-sign-message {
+  max-height: 178px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ============================================
    Safe (multi-owner) accounts
    ============================================ */
 

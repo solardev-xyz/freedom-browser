@@ -310,6 +310,7 @@ const { installAdblockUpdater } = require('./adblock/update-scheduler');
 const { attachWebRequestDispatcher } = require('./webrequest-dispatcher');
 const { installAntApiGuard } = require('./swarm/ant-api-guard');
 const { installX402Interception } = require('./x402/intercept');
+const { installSiweInterception, registerSiweIpc } = require('./siwe-auth/intercept');
 const { registerX402Ipc } = require('./x402/ipc');
 const { registerBzzProtocol } = require('./swarm/bzz-protocol');
 const { registerIpfsProtocol, registerIpnsProtocol } = require('./ipfs/ipfs-protocol');
@@ -657,6 +658,7 @@ async function bootstrap() {
     openAgentPopup: (contents, url) => agentRuntime?.service?.openCustodyPopup(contents, url) ?? false,
   });
   registerX402Ipc();
+  registerSiweIpc();
   registerOnchainProvenanceIpc();
   paymentHistory.registerPaymentHistoryIpc();
   registerSwarmIpc();
@@ -747,6 +749,8 @@ async function bootstrap() {
   // policy either way.
   installOnchainProvenanceCapture();
   installX402Interception();
+  // Sign-In with Ethereum over HTTP auth (#1152): asks, never signs alone.
+  installSiweInterception();
   attachWebRequestDispatcher(defaultSession);
   // Per-site permission prompts (camera, mic, notifications, …) with
   // deny-by-default for everything unhandled. Webviews don't set a
@@ -766,7 +770,9 @@ async function bootstrap() {
   // PRIVATE MODE GUARD (x402): payment interception is NOT attached to
   // private sessions. The wallet providers are unavailable in private
   // windows, so no payment could ever be signed; excluding the x402
-  // handlers keeps 402 responses flowing to the page untouched.
+  // handlers keeps 402 responses flowing to the page untouched. The same
+  // holds for SIWE sign-in (#1152): a private window never offers to sign
+  // a site in, so its 401s reach the page untouched too.
   setPrivateSessionConfigurator((privateSession, { partition }) => {
     // The dweb protocol handlers log request URLs (and, underneath, the
     // names they resolve) to the persistent main.log. Passing the partition
@@ -783,7 +789,7 @@ async function bootstrap() {
       registerOnchainAppProtocol(privateSession, { privatePartition: partition });
     }
     attachWebRequestDispatcher(privateSession, {
-      exclude: (name) => name.startsWith('x402-'),
+      exclude: (name) => name.startsWith('x402-') || name.startsWith('siwe-'),
     });
     attachDownloadsManager(privateSession, { privatePartition: partition });
     installPermissionHandlers(privateSession, { privatePartition: partition });

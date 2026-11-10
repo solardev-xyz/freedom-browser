@@ -4139,6 +4139,138 @@
               </div>
             </div>
 
+            <!-- Sign-In with Ethereum (HTTP auth, #1152) sub-screen: the Sign
+                 Message screen in a sign-in mode, with the Connect screen's
+                 account picker. Shown when a site answers 401 with a SIWE
+                 challenge (src/main/siwe-auth/). -->
+            <div id="sidebar-siwe-signin" class="sidebar-subscreen sidebar-modal hidden">
+              <div
+                class="subscreen-header"
+                data-back="siwe-signin-back"
+                data-title="Sign In"
+              ></div>
+
+              <div class="subscreen-content">
+                <div class="dapp-sign-origin">
+                  <div class="dapp-sign-site" id="siwe-signin-site">example.com</div>
+                  <div class="dapp-sign-action">asks you to sign in with your Ethereum account</div>
+                </div>
+
+                <div class="siwe-checked">
+                  <svg viewBox="0 0 24 24" fill="none" stroke-width="2" aria-hidden="true">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                    <path d="m9 12 2 2 4-4" />
+                  </svg>
+                  <span>Domain checked: the site in your address bar</span>
+                </div>
+
+                <div class="dapp-connect-field">
+                  <label class="dapp-connect-label" id="siwe-signin-account-label">Sign in as</label>
+                  <div class="dapp-connect-selector" id="siwe-signin-selector">
+                    <button
+                      type="button"
+                      class="dapp-connect-selector-btn"
+                      id="siwe-signin-account-btn"
+                      aria-labelledby="siwe-signin-account-label"
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                    >
+                      <div class="dapp-connect-selector-info">
+                        <span class="dapp-connect-wallet-name" id="siwe-signin-account-name"
+                          >Main Wallet</span
+                        >
+                        <code class="dapp-connect-wallet-address" id="siwe-signin-account-address"
+                          >0x0000…0000</code
+                        >
+                      </div>
+                      <span class="siwe-kind hidden" id="siwe-signin-account-kind"></span>
+                      <svg
+                        class="dapp-connect-selector-chevron"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        aria-hidden="true"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </button>
+                    <div class="dapp-connect-selector-dropdown hidden" id="siwe-signin-dropdown">
+                      <div
+                        class="dapp-connect-selector-list"
+                        id="siwe-signin-account-list"
+                        role="listbox"
+                        aria-labelledby="siwe-signin-account-label"
+                      ></div>
+                    </div>
+                  </div>
+                  <div class="siwe-hint hidden" id="siwe-signin-remembered">
+                    You signed in to this site with this account last time.
+                  </div>
+                </div>
+
+                <div class="dapp-sign-message-container">
+                  <div class="dapp-sign-message-label">Message Freedom will sign</div>
+                  <div class="dapp-sign-message" id="siwe-signin-message"></div>
+                </div>
+
+                <div class="dapp-sign-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="16" x2="12" y2="12" />
+                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                  </svg>
+                  <span id="siwe-signin-note"
+                    >Signing in shows this site the account's address. It can't move funds or approve
+                    anything else.</span
+                  >
+                </div>
+
+                <div class="dapp-sign-unlock hidden" id="siwe-signin-unlock">
+                  <p class="dapp-sign-unlock-text">Unlock your vault to sign in.</p>
+                  <button type="button" class="dapp-sign-touchid-btn hidden" id="siwe-signin-touchid-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4" />
+                      <path d="M8 15c0-2.2 1.8-4 4-4" />
+                      <path d="M12 4a8 8 0 0 0-8 8c0 1.5.3 2.9.9 4.2" />
+                      <path d="M12 4a8 8 0 0 1 8 8c0 1.5-.3 2.9-.9 4.2" />
+                      <path d="M2 12c-.1 1.1-.1 3 .2 4.5" />
+                      <path d="M22 12c.1 1.1.1 3-.2 4.5" />
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+                  <button type="button" class="dapp-unlock-password-link hidden" id="siwe-signin-password-link">
+                    or enter your password
+                  </button>
+                  <div class="dapp-sign-password-section hidden" id="siwe-signin-password-section">
+                    <div class="dapp-sign-password-row">
+                      <input
+                        type="password"
+                        class="password-input"
+                        id="siwe-signin-password-input"
+                        placeholder="Enter password"
+                        autocomplete="off"
+                        aria-label="Vault password"
+                      />
+                      <button type="button" class="dapp-sign-password-submit" id="siwe-signin-password-submit">
+                        Unlock
+                      </button>
+                    </div>
+                  </div>
+                  <div class="dapp-sign-error hidden" id="siwe-signin-unlock-error"></div>
+                </div>
+
+                <div class="dapp-sign-error hidden" id="siwe-signin-error" role="alert"></div>
+
+                <div class="dapp-sign-actions">
+                  <button type="button" class="dapp-sign-reject-btn" id="siwe-signin-cancel">Reject</button>
+                  <button type="button" class="dapp-sign-approve-btn" id="siwe-signin-approve" disabled>
+                    Sign in
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <!-- x402 Payment Approval sub-screen -->
             <div id="sidebar-x402-approval" class="sidebar-subscreen sidebar-modal hidden">
               <div
