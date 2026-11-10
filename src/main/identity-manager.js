@@ -664,6 +664,21 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
 }
 
 /**
+ * Run one node's injection, answering `{ refused: true, error }` when that
+ * node's home is a symbolic link Freedom refuses (K-3) instead of failing
+ * every other node with it. Any other failure still throws.
+ */
+async function injectNodeUnlessRefused(label, inject) {
+  try {
+    return await inject();
+  } catch (err) {
+    if (err?.code !== 'UNSAFE_PRIVATE_PATH' || !err.link) throw err;
+    console.warn(`[IdentityManager] ${label} identity not injected:`, err.message);
+    return { refused: true, error: err.message };
+  }
+}
+
+/**
  * Inject all identities
  * @param {string} radicleAlias - Alias for Radicle node
  * @param {boolean} force - Force overwrite even if keys exist
@@ -681,21 +696,28 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     needsRestart: [],
   };
 
+  // Each node home is injected on its own: one Freedom refuses (the Ant or
+  // Radicle data folder is a symbolic link, K-3) costs only that node, which
+  // answers `{ refused: true, error }` and says why when it is started. The
+  // vault and the other node still get set up, so onboarding completes.
+
   // Inject Bee (only if not already injected OR force)
   // Bee generates its own random keystore password internally
-  if (force || !isBeeIdentityInjected()) {
+  results.bee = await injectNodeUnlessRefused('Ant', async () => {
+    if (!force && isBeeIdentityInjected()) {
+      return { address: derivedKeys.beeWallet.address, alreadyInjected: true };
+    }
     const wasInjected = isBeeIdentityInjected();
-    results.bee = await injectBeeIdentity();
+    const bee = await injectBeeIdentity();
     if (wasInjected && force) {
       // Bee's restart is owned by injectBeeIdentity (via the lifecycle hook),
       // which stops the lock-holding node before the wipe and starts it again
       // with the new key. Deliberately NOT added to needsRestart so the
       // renderer doesn't restart Bee a second time (issue #90).
-      results.bee.reinjected = true;
+      bee.reinjected = true;
     }
-  } else {
-    results.bee = { address: derivedKeys.beeWallet.address, alreadyInjected: true };
-  }
+    return bee;
+  });
 
   // Native freedom-ipfs uses ephemeral libp2p identities for read-only
   // retrieval today. Keep this in the result so onboarding can show IPFS as an
@@ -706,24 +728,25 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
   // carry-over of an older profile's Radicle home first: judged against a
   // short home still being migrated, the identity would read as missing and
   // re-injection would wipe the node/cobs/storage that are on their way in.
-  await prepareRadicleDataDir();
-  if (force || !isRadicleIdentityInjected()) {
-    const wasInjected = isRadicleIdentityInjected();
-    results.radicle = await injectRadicleIdentity(radicleAlias);
-    if (wasInjected && force) {
-      results.radicle.reinjected = true;
-      results.needsRestart.push('radicle');
+  results.radicle = await injectNodeUnlessRefused('Radicle', async () => {
+    await prepareRadicleDataDir();
+    if (force || !isRadicleIdentityInjected()) {
+      const wasInjected = isRadicleIdentityInjected();
+      const radicle = await injectRadicleIdentity(radicleAlias);
+      if (wasInjected && force) {
+        radicle.reinjected = true;
+        results.needsRestart.push('radicle');
+      }
+      return radicle;
     }
-  } else {
-    // Get DID
     const identity = await loadIdentityModule();
     const radicleIdentity = identity.createRadicleIdentity(
       derivedKeys.radicleKey.privateKey,
       derivedKeys.radicleKey.publicKey,
       radicleAlias
     );
-    results.radicle = { did: radicleIdentity.did, alreadyInjected: true };
-  }
+    return { did: radicleIdentity.did, alreadyInjected: true };
+  });
 
   console.log('[IdentityManager] All identities injected/verified');
   return results;
