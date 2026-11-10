@@ -565,7 +565,9 @@ async function handleGetCapabilities(origin) {
       canPublish: isConnected && preFlight.ok,
       reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
       publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-      features: ['messaging'],
+      // Extensions a page can detect, named as in the Swarm provider SWIP's
+      // companion drafts (messaging, encryption key).
+      features: ['messaging', 'encryption-key'],
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,

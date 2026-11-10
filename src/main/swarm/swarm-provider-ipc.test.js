@@ -285,7 +285,7 @@ describe('swarm-provider-ipc', () => {
         canPublish: true,
         reason: null,
         publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-        features: ['messaging'],
+        features: ['messaging', 'encryption-key'],
         extensions: {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,

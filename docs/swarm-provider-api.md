@@ -461,7 +461,7 @@ it serves a [permission manifest](#permission-manifests):
   reason: null | 'not-connected' | 'node-stopped' | 'node-not-ready'
              | 'ultra-light-mode' | 'no-usable-stamps',
   publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
-  features: ['messaging'],
+  features: ['messaging', 'encryption-key'],
   extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true,
                 encryptionKey: true },
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
@@ -472,6 +472,11 @@ it serves a [permission manifest](#permission-manifests):
 
 `reason` is `not-connected` whenever the origin is not connected, regardless
 of node state.
+
+`features` names the extensions a page can rely on, as the Swarm provider
+SWIP does: `messaging` (PSS and GSOC) and `encryption-key` (the
+[site encryption key](#site-encryption-key)). Detect extensions there;
+`extensions` holds flags specific to Freedom.
 
 ### Publishing
 
