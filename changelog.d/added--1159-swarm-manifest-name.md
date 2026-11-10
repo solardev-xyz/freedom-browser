@@ -1,0 +1,2 @@
+- Swarm apps can declare their permissions in `swarm-manifest.json`, the name the Swarm provider standard uses ([#1159](https://github.com/solardev-xyz/freedom-browser/issues/1159))
+  - `freedom-manifest.json` still works, and moving to the new name doesn't ask users again

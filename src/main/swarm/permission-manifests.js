@@ -29,6 +29,21 @@ const BODY_IDLE_TIMEOUT_MS = 15_000;
 const TOKEN_TTL_MS = 5 * 60 * 1000;
 const MAX_RECEIPTS = 20;
 const UNRESOLVED_BACKOFF_MS = [2_000, 10_000, 30_000, 60_000];
+// Where a site declares its manifest, newest name first. `swarm-manifest.json`
+// is the name the Swarm provider SWIP standardises (#1159);
+// `freedom-manifest.json` is Freedom's original name and stays readable, so
+// apps that ship it keep working. Each file carries its own schema.
+const MANIFEST_FILES = [
+  { path: 'swarm-manifest.json', schema: 'swarm-manifest/1' },
+  { path: 'freedom-manifest.json', schema: 'freedom-manifest/1' },
+];
+// Both schemas are the same v1 format, so the new name fingerprints as the
+// original one. The fingerprint then keeps meaning "same format, same
+// capabilities": records written before #1159 still match what they observe,
+// and a consent sheet opened from one file stays decidable if the site
+// switches to the other while it is open. (Whether to ask at all depends on
+// the capabilities, so a rename never prompts either way.)
+const FINGERPRINT_SCHEMA_ALIASES = { 'swarm-manifest/1': 'freedom-manifest/1' };
 const CAPABILITY_KEYS = ['publish', 'feeds', 'signing', 'messaging'];
 const CAPABILITY_META = {
   publish: { label: 'Publish content', detail: 'Use your postage stamps and bandwidth.' },
@@ -117,9 +132,9 @@ function assertExactKeys(value, allowed, label) {
   }
 }
 
-function validateManifest(value) {
+function validateManifest(value, schema = MANIFEST_FILES[0].schema) {
   assertExactKeys(value, ['schema', 'name', 'description', 'capabilities'], 'manifest');
-  if (value.schema !== 'freedom-manifest/1') throw new Error('unsupported manifest schema');
+  if (value.schema !== schema) throw new Error('unsupported manifest schema');
   if (hasUnsafeText(value.name, 32) || value.name.trim() === '') throw new Error('invalid manifest name');
   if (value.description !== undefined && hasUnsafeText(value.description, 160)) throw new Error('invalid manifest description');
   assertExactKeys(value.capabilities, ['swarm'], 'capabilities');
@@ -216,7 +231,7 @@ async function readLimitedJson(response) {
 // wording one manifest showed with the hash of another.
 function fingerprint(manifest) {
   return crypto.createHash('sha256').update(JSON.stringify({
-    schema: manifest.schema,
+    schema: FINGERPRINT_SCHEMA_ALIASES[manifest.schema] || manifest.schema,
     capabilities: Object.keys(manifest.capabilities).sort(),
   })).digest('hex');
 }
@@ -230,7 +245,23 @@ async function discover(committedUrl, fetchManifest = handleBzzRequest) {
   }
   if (url.protocol !== 'bzz:') return { status: 'unsupported' };
 
-  const manifestUrl = `bzz://${url.host}/freedom-manifest.json`;
+  // The first valid manifest wins. A transient failure ends the lookup, so a
+  // flaky fetch can't read the site from one file now and the other next time.
+  // An invalid `swarm-manifest.json` still lets `freedom-manifest.json` answer:
+  // Bee serves a site's error document (often its index page) with a 200 for
+  // any missing path, so on such a site a missing new file looks invalid. Both
+  // files are the site's own content, so falling back grants nothing the site
+  // doesn't declare. When neither is valid, the new file's outcome stands.
+  let outcome = { status: 'absent' };
+  for (const file of MANIFEST_FILES) {
+    const found = await discoverFile(`bzz://${url.host}/${file.path}`, file.schema, fetchManifest);
+    if (found.status === 'found' || found.status === 'unresolved') return found;
+    if (outcome.status === 'absent') outcome = found;
+  }
+  return outcome;
+}
+
+async function discoverFile(manifestUrl, schema, fetchManifest) {
   let response;
   try {
     response = await fetchManifest(new Request(manifestUrl));
@@ -241,7 +272,7 @@ async function discover(committedUrl, fetchManifest = handleBzzRequest) {
   if (!response.ok) return { status: response.status >= 400 && response.status < 500 ? 'invalid' : 'unresolved' };
   try {
     const { raw, value } = await readLimitedJson(response);
-    const manifest = validateManifest(value);
+    const manifest = validateManifest(value, schema);
     return {
       status: 'found',
       manifest,
