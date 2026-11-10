@@ -131,7 +131,7 @@ validation and node failures, `data`:
 | `feed_not_granted`       | A feeds/signing method without the feed grant                                                |
 | `messaging_not_granted`  | A messaging method without the messaging grant                                               |
 | `tag_ownership_mismatch` | `swarm_getUploadStatus` for a tag this origin did not create, or one already reported `done` |
-| `shared_identity`        | `swarm_writeSingleOwnerChunk` while the origin's active identity is shared with other sites |
+| `shared_identity`        | `swarm_writeSingleOwnerChunk` while the origin's active identity is shared with other sites  |
 
 A `4100` raised by the chrome before the request reaches the main process
 carries the message `Origin not authorized. Call swarm_requestAccess first.`
