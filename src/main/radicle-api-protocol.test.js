@@ -565,9 +565,47 @@ describe('radapi protocol', () => {
     }
   );
 
-  test('other repoInfo failures are still 500s, and radapi: still serves private repos', async () => {
-    embedded.repoInfo.mockRejectedValueOnce(new Error('storage is locked'));
-    expect((await serveRepoApi(RID, '')).status).toBe(500);
+  // R1-M2: any other repoInfo failure (a stored private repo with a corrupt
+  // identity doc, locked storage) must not become a 500 carrying the add-on
+  // text beside an absent RID's 404.
+  test.each(['', '/issues'])(
+    'other repoInfo failures answer like an absent repository for %s',
+    async (apiPath) => {
+      embedded.repoInfo.mockRejectedValueOnce(
+        new Error(`identity document of ${RID} is corrupt: storage is locked`)
+      );
+      const failed = await serveRepoApi(RID, apiPath);
+      embedded.repoInfo.mockRejectedValueOnce(new Error(`repository ${RID} not found in storage`));
+      const absent = await serveRepoApi(RID, apiPath);
+      const shape = async (r) => ({
+        status: r.status,
+        headers: [...r.headers.entries()].sort(),
+        body: await r.text(),
+      });
+      const failedShape = await shape(failed);
+      expect(failedShape).toEqual(await shape(absent));
+      expect(failedShape.status).toBe(404);
+      expect(failedShape.body).not.toContain('corrupt');
+      expect(embedded.issues).not.toHaveBeenCalled();
+    }
+  );
+
+  test('logs a non-"not found" repoInfo failure, redacted in a private window', async () => {
+    const log = require('./logger');
+    const { runWithPrivateLogContext } = require('./private/private-log-context');
+    embedded.repoInfo.mockRejectedValue(new Error(`identity of ${RID} unreadable`));
+
+    await serveRepoApi(RID, '/issues');
+    await runWithPrivateLogContext(true, () => serveRepoApi(RID, '/issues'));
+
+    const warnings = log.warn.mock.calls.filter((call) => call[0] === '[rad]');
+    expect(warnings).toEqual([
+      ['[rad]', RID, '/issues', '→', `identity of ${RID} unreadable`],
+      ['[rad]', '<private>', '<private>', '→', '<private>'],
+    ]);
+  });
+
+  test('radapi: still serves private repos', async () => {
 
     embedded.repoInfo.mockResolvedValue({ visibility: { type: 'private' } });
     embedded.buildRepoMeta.mockResolvedValueOnce({ rid: RID });

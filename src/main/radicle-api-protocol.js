@@ -238,13 +238,22 @@ async function serveRepoApi(
     if (!allowPrivate) {
       // A private repository answers exactly as one that is not stored: the
       // same status and body. A 403 for private beside a 404 for absent let
-      // any page test whether a private RID is on this node (R-2).
+      // any page test whether a private RID is on this node (R-2). Every
+      // repoInfo failure answers the same way, not only "not found": a
+      // stored private repo whose identity doc is unreadable (corrupt,
+      // storage locked) would otherwise surface as a 500 carrying the add-on
+      // text, which an absent RID never produces. Only the response is
+      // equalised, not its timing: a stored RID opens the repo and reads its
+      // identity doc, an absent one fails at the storage lookup.
       let info;
       try {
         info = await embedded.repoInfo(rid);
       } catch (err) {
-        if (MISSING_RE.test(err.message)) return reply(REPO_NOT_FOUND, 404);
-        throw err;
+        if (!MISSING_RE.test(err.message)) {
+          // Same private-window redaction as the shared log site below.
+          log.warn('[rad]', redactForLog(rid), redactForLog(apiPath), '→', redactForLog(err.message));
+        }
+        return reply(REPO_NOT_FOUND, 404);
       }
       if (info?.visibility?.type !== 'public') {
         return reply(REPO_NOT_FOUND, 404);
