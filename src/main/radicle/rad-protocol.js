@@ -29,8 +29,13 @@
  *    data is public P2P content; the sensitive surface is excluded above.
  *  - Gated on the active profile's Radicle node mode (403 when disabled),
  *    checked per-request like every other Radicle consumer in main.
+ *  - Bounded (R-3): reads go through rad-read-admission.js (concurrency,
+ *    per-requester queue, wait and run timeouts, abort when the page goes
+ *    away), a read that has ended starts no further native call, and a
+ *    response over MAX_RESPONSE_CHARS is refused.
  */
 
+const { randomUUID } = require('node:crypto');
 const log = require('../logger');
 const {
   runWithPrivateLogContext,
@@ -40,6 +45,149 @@ const {
 } = require('../private/private-log-context');
 const { isDisabledForProfile } = require('../radicle-manager');
 const { decodeRepoApiPath, serveRepoApi } = require('../radicle-api-protocol');
+const { createRadReadAdmission, RadReadRefused } = require('./rad-read-admission');
+const { registerWebRequestHandler } = require('../webrequest-dispatcher');
+
+// The most JSON text one `rad:` response carries (a blob, a diff, a tree).
+const MAX_RESPONSE_CHARS = 16 * 1024 * 1024;
+
+const admission = createRadReadAdmission();
+
+// Each request's webRequest id and tab, handed to the protocol handler.
+//
+// The handler gets neither: Electron passes it no request id or tab, and the
+// referrer is at most the page's origin (empty from a dweb page). URL order
+// can't stand in for them, since requests for the same URL reach the handler
+// in a different order from their webRequest events (#948 round 1: 70 wrong
+// tabs in 600 reads across two tabs). So onBeforeSendHeaders gives every
+// `rad:` request a random token in HANDOFF_HEADER, replacing any value the
+// page set, and keeps the request's id and tab under it, per session. The
+// handler reads the token back from its Request: on Electron 45 the header
+// arrives there (probed for #948 with two sessions and 600 concurrent
+// same-URL reads: every token reached its own handler).
+//
+// The token also carries cancellation. Chromium cancels a `rad:` request
+// when its page navigates away or its tab or window closes, but Electron
+// does not abort the Request's AbortSignal for a `protocol.handle` handler
+// (Electron 45, probed for #947). webRequest reports it, under the
+// request's id: onErrorOccurred with net::ERR_ABORTED, which aborts that
+// read's own signal.
+//
+// Do not "simplify" this to `request.signal`, or to the URL order: see
+// above. Revisit only once Electron aborts the signal, with a test in a
+// real Electron process.
+const HANDOFF_HEADER = 'x-freedom-rad-req';
+// Electron session -> { byToken: token -> entry, byId: webRequest id -> token }
+const handoffs = new WeakMap();
+
+function handoffsFor(webSession) {
+  let table = handoffs.get(webSession);
+  if (!table) {
+    table = { byToken: new Map(), byId: new Map() };
+    handoffs.set(webSession, table);
+  }
+  return table;
+}
+
+function forget(table, token) {
+  const entry = table.byToken.get(token);
+  if (!entry) return;
+  table.byToken.delete(token);
+  if (table.byId.get(entry.id) === token) table.byId.delete(entry.id);
+}
+
+/** onBeforeSendHeaders: tag a `rad:` request with its handoff token. */
+function tagRadRequest(details, { session: webSession } = {}) {
+  if (!details?.url?.startsWith('rad:') || !webSession) return null;
+  const table = handoffsFor(webSession);
+  // A request that comes this way again (a redirect) gets a fresh token.
+  const previous = table.byId.get(details.id);
+  if (previous) forget(table, previous);
+  const token = randomUUID();
+  table.byToken.set(token, {
+    id: details.id,
+    webContentsId: details.webContentsId ?? null,
+    initiatorOrigin: details.initiatorOrigin ?? null,
+    controller: new AbortController(),
+  });
+  table.byId.set(details.id, token);
+  const requestHeaders = {};
+  for (const [name, value] of Object.entries(details.requestHeaders || {})) {
+    if (name.toLowerCase() !== HANDOFF_HEADER) requestHeaders[name] = value;
+  }
+  requestHeaders[HANDOFF_HEADER] = token;
+  return { requestHeaders };
+}
+
+/** onCompleted / onErrorOccurred: the request is over; abort its read if
+ * its page went away. */
+function endRadRequest(details, { session: webSession } = {}) {
+  if (!details?.url?.startsWith('rad:') || !webSession) return;
+  const table = handoffs.get(webSession);
+  const token = table?.byId.get(details.id);
+  if (!token) return;
+  const entry = table.byToken.get(token);
+  forget(table, token);
+  if (entry && details.error === 'net::ERR_ABORTED') entry.controller.abort();
+}
+
+// This read's signal, aborted when its page goes away, and its tab.
+// `ended` when its token is one this session issued and has forgotten: the
+// request ended before the handler ran, so nothing is read. A request
+// without a token (a session the tracker isn't attached to) falls back to
+// its own signal and an untabbed requester.
+function claimRead(request, webSession) {
+  const token = request.headers?.get?.(HANDOFF_HEADER);
+  if (!token || !webSession) {
+    return {
+      signal: request.signal,
+      webContentsId: null,
+      initiatorOrigin: null,
+      release: () => {},
+    };
+  }
+  const table = handoffs.get(webSession);
+  const entry = table?.byToken.get(token);
+  if (!entry) return { ended: true };
+  return {
+    signal: entry.controller.signal,
+    webContentsId: entry.webContentsId,
+    initiatorOrigin: entry.initiatorOrigin,
+    // The read is over: an abort can no longer matter.
+    release: () => forget(table, token),
+  };
+}
+
+// Who a read is counted against: its tab, within its session (each private
+// window has its own session). Without a tab, its origin; failing that, one
+// bucket for the session (fails closed: a full bucket refuses, never admits).
+//
+// What a read without a tab carries (Electron 45, probed for #948 R3 with a
+// page, a dedicated worker, a shared worker and a service worker):
+// - a tagged read: webRequest's `initiatorOrigin`, which Chromium sets and a
+//   page can't choose. A page's own fetch always has its tab, so this only
+//   covers a request webRequest saw without one.
+// - an untagged read: a dedicated or shared worker's fetch reaches the
+//   handler without passing webRequest at all (no token, no tab, no
+//   origin), so only its Request's referrer is left. That is the page's
+//   origin for an http(s) page, which can blank it (`no-referrer`) but not
+//   name another origin; it is empty for a dweb page (bzz:, ipfs:, ...), so
+//   workers on dweb pages share the session bucket. Nothing else in the
+//   Request tells them apart (headers are Accept and User-Agent only).
+// - a service worker's `rad:` fetch fails before the handler.
+function requesterKey(request, session, { webContentsId, initiatorOrigin } = {}) {
+  if (webContentsId !== null && webContentsId !== undefined)
+    return `${session}|tab:${webContentsId}`;
+  if (initiatorOrigin && initiatorOrigin !== 'null') return `${session}|origin:${initiatorOrigin}`;
+  let origin = '';
+  try {
+    const referrer = new URL(request.referrer);
+    origin = referrer.host ? `${referrer.protocol}//${referrer.host}` : referrer.protocol;
+  } catch {
+    // No referrer
+  }
+  return origin ? `${session}|origin:${origin}` : `${session}|`;
+}
 
 // Same RID shape the request-rewriter enforces: z + base58btc.
 const RID_RE = /^z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
@@ -110,7 +258,7 @@ function jsonErrorResponse(status, message) {
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub.
  */
-async function handleRadRequest(request) {
+async function handleRadRequest(request, { session = 'default', webSession = null } = {}) {
   const method = (request.method || 'GET').toUpperCase();
   if (!ALLOWED_METHODS.has(method)) {
     return jsonErrorResponse(405, 'method not allowed');
@@ -130,8 +278,34 @@ async function handleRadRequest(request) {
     return jsonErrorResponse(built.status, built.message);
   }
 
-  return serveRepoApi(built.rid, built.path, { method, search: built.search });
+  const claim = claimRead(request, webSession);
+  if (claim.ended) return jsonErrorResponse(503, 'request cancelled');
+  const { signal, webContentsId, initiatorOrigin, release } = claim;
+  try {
+    // `work` ends when the page goes away or the run deadline passes: the
+    // serving pipeline then starts no further native call (R-3).
+    return await admission.run(
+      requesterKey(request, session, { webContentsId, initiatorOrigin }),
+      signal,
+      (work) =>
+        serveRepoApi(built.rid, built.path, {
+          method,
+          search: built.search,
+          maxResponseChars: MAX_RESPONSE_CHARS,
+          signal: work,
+        })
+    );
+  } catch (err) {
+    if (err instanceof RadReadRefused) return jsonErrorResponse(err.status, err.message);
+    // The page is gone; nobody reads this.
+    if (err?.name === 'AbortError') return jsonErrorResponse(503, 'request cancelled');
+    throw err;
+  } finally {
+    release();
+  }
 }
+
+let trackerRegistered = false;
 
 /**
  * Register the `rad:` protocol handler on the given session.
@@ -149,9 +323,20 @@ function registerRadProtocol(targetSession, { privatePartition = null } = {}) {
   // registration per session, so the private session's handler marks every
   // request it serves as private for the duration.
   const isPrivate = !!privatePartition;
+  // Process-wide, like radapi's guard: every session that attaches the
+  // dispatcher afterwards sees it (src/main/index.js orders it so).
+  if (!trackerRegistered) {
+    registerWebRequestHandler('onBeforeSendHeaders', 'rad-read-tracker', tagRadRequest);
+    registerWebRequestHandler('onCompleted', 'rad-read-tracker', endRadRequest);
+    registerWebRequestHandler('onErrorOccurred', 'rad-read-tracker', endRadRequest);
+    trackerRegistered = true;
+  }
   try {
+    const session = privatePartition || 'default';
     targetSession.protocol.handle('rad', (request) =>
-      runWithPrivateLogContext(isPrivate, () => handleRadRequest(request))
+      runWithPrivateLogContext(isPrivate, () =>
+        handleRadRequest(request, { session, webSession: targetSession })
+      )
     );
     log.info('[rad-protocol] handler registered');
   } catch (err) {
@@ -163,4 +348,8 @@ module.exports = {
   registerRadProtocol,
   handleRadRequest,
   buildRadReference,
+  tagRadRequest,
+  endRadRequest,
+  HANDOFF_HEADER,
+  MAX_RESPONSE_CHARS,
 };

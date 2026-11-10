@@ -15,6 +15,7 @@ import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
 import {
   BEE_WALLET_IDENTITY_ID,
   getActivePublisherIdentity,
+  identityLabel,
   renderPublisherIdentitySelector,
 } from './publisher-identity-selector.js';
 
@@ -111,8 +112,40 @@ let currentBannerPermissionKey = null;
 
 function syncFeedApproveButton() {
   if (swarmFeedApproveBtn) {
-    swarmFeedApproveBtn.disabled = !(swarmFeedVaultUnlocked && swarmFeedQueue.armed);
+    swarmFeedApproveBtn.disabled =
+      !(swarmFeedVaultUnlocked && swarmFeedQueue.armed) || sharedIdentityBlocksFeedRequest();
   }
+}
+
+const SIGNING_WARNING =
+  'Publisher signing can create Single Owner Chunks and reveal the active publisher owner for this site.';
+
+// SW-1: a raw Single Owner Chunk needs a publisher identity only this site
+// uses; main refuses one under a shared identity (`shared_identity`), so
+// the prompt says so and keeps Allow off until the user picks another.
+function sharedIdentityBlocksFeedRequest() {
+  if (swarmFeedQueue.current?.method !== 'swarm_writeSingleOwnerChunk') return false;
+  return getActivePublisherIdentity(swarmFeedIdentityState)?.shared === true;
+}
+
+function syncFeedSharedIdentityNotice() {
+  const current = swarmFeedQueue.current;
+  if (!current || current.autoApproveType !== 'signing' || !swarmFeedWarning) return;
+  // The encryption key is the site's own whatever identity it signs with, so
+  // its prompt keeps its own warning.
+  if (ENCRYPTION_METHODS.has(current.method)) return;
+  const active = getActivePublisherIdentity(swarmFeedIdentityState);
+  if (active?.shared !== true) {
+    swarmFeedWarning.textContent = SIGNING_WARNING;
+  } else if (current.method === 'swarm_writeSingleOwnerChunk') {
+    swarmFeedWarning.textContent =
+      `${identityLabel(active)} is also used by other sites, so it cannot write ` +
+      'Single Owner Chunks for this one. Choose or create an app-scoped identity for this site.';
+  } else {
+    swarmFeedWarning.textContent =
+      `${identityLabel(active)} is also used by other sites: they sign as the same owner address.`;
+  }
+  syncFeedApproveButton();
 }
 
 function rejectDismissed(queue) {
@@ -836,7 +869,7 @@ function applyFeedPromptCopy(method, params, autoApproveType) {
         'This key belongs to this site only. Using it lets the site read what others encrypted to it.';
     } else {
       swarmFeedWarning.textContent = signing
-        ? 'Publisher signing can create Single Owner Chunks and reveal the active publisher owner for this site.'
+        ? SIGNING_WARNING
         : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
     }
   }
@@ -878,6 +911,7 @@ function renderFeedIdentitySelector() {
     onSelect: (identity) => activateFeedPromptIdentity(identity),
     onCreateAppScoped: () => createFeedPromptIdentity(),
   });
+  syncFeedSharedIdentityNotice();
 }
 
 async function refreshFeedIdentitySelector() {

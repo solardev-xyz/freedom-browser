@@ -39,7 +39,15 @@ const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicStr
 const { Topic } = require('@ethersphere/bee-js');
 const { SigningKey } = require('ethers');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
-const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, getAllFeeds } = require('./feed-store');
+const {
+  getOriginEntry,
+  getFeed,
+  setFeed,
+  updateFeedReference,
+  hasFeedGrant,
+  getAllFeeds,
+  isIdentitySharedWithOtherOrigins,
+} = require('./feed-store');
 const {
   publishChunk,
   readChunk,
@@ -1057,6 +1065,22 @@ async function handleWriteSingleOwnerChunk(params, origin) {
 
   const originEntry = getOriginEntry(origin);
   const activeIdentity = getActiveOriginIdentity(originEntry);
+  // SW-1: the identifier is the page's to choose, so under an identity other
+  // sites sign with too (the Ant wallet, an Ethereum wallet account, a
+  // publisher key another origin holds) a raw SOC could be another site's
+  // feed entry, keccak256(topic || index), written as that shared owner.
+  // Feeds stay available under such an identity: their topics are
+  // origin-namespaced. Raw SOCs need an identity only this site uses.
+  if (isIdentitySharedWithOtherOrigins(origin, activeIdentity)) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message:
+          'Single Owner Chunks need a publisher identity only this site uses; the active one is shared with other sites',
+        data: { reason: 'shared_identity' },
+      },
+    };
+  }
   let signerKey;
   try {
     signerKey = await resolveSignerKey(activeIdentity);

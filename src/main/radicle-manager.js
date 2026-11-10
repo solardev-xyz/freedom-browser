@@ -7,6 +7,8 @@ const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
+const { withPrivateDir } = require('./private-files');
+const { isPrivateSender } = require('./private/private-sender');
 const seedStatus = require('./radicle/seed-status');
 const {
   MODE,
@@ -153,6 +155,11 @@ async function startRadicleInternal() {
   updateState(STATUS.STARTING);
   try {
     const radHome = await prepareRadicleDataDir();
+    // The home is owner-only now (profile-paths). Its keys/ is opened
+    // through the home's handle, never through a link: one that is a link,
+    // or not ours, stops the start. Keys an older build left with the
+    // umask's modes are narrowed (K-3).
+    withPrivateDir(radHome, (home) => home.openDir('keys', { create: false })?.repair('radicle'));
     const result = await embedded.start(radHome, 'FreedomBrowser');
     updateService('radicle', {
       api: 'radapi://local',
@@ -436,6 +443,14 @@ function setNodeAlias(alias) {
   });
 }
 
+// PRIVATE MODE GUARD (R-9): seeding writes a lasting seeding policy and
+// fetches the repository into storage, which a private window must not
+// leave behind. isPrivateSender fails closed: a sender whose window can no
+// longer be read counts as private. The page-facing provider applies the
+// same check (radicle-provider-ipc.js).
+const PRIVATE_SEED_FAILURE = () =>
+  failure('RADICLE_PRIVATE_WINDOW', 'Seeding is not available in private windows');
+
 function registerRadicleIpc() {
   ipcMain.handle(IPC.RADICLE_START, () => startRadicle());
   ipcMain.handle(IPC.RADICLE_STOP, () => stopRadicle());
@@ -448,6 +463,7 @@ function registerRadicleIpc() {
   };
 
   ipcMain.handle(IPC.RADICLE_SEED, async (event, rid) => {
+    if (isPrivateSender(event)) return PRIVATE_SEED_FAILURE();
     if (isDisabledForProfile()) {
       return failure('RADICLE_DISABLED', 'Radicle is disabled for this profile');
     }
@@ -456,7 +472,7 @@ function registerRadicleIpc() {
   });
   ipcMain.handle(IPC.RADICLE_GET_CONNECTIONS, () => getConnections());
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, (event, rid) =>
-    refetchRepository(rid, pushStatus(event))
+    isPrivateSender(event) ? PRIVATE_SEED_FAILURE() : refetchRepository(rid, pushStatus(event))
   );
   ipcMain.handle(IPC.RADICLE_GET_SEED_STATUS, (_event, rid) => getSeedFetchStatus(rid));
 }

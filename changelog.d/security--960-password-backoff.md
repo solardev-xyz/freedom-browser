@@ -1,0 +1,1 @@
+- Repeated wrong vault passwords now pause further attempts, for up to a minute ([#960](https://github.com/solardev-xyz/freedom-browser/issues/960))
