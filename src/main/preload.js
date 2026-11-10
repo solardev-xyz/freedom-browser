@@ -1044,6 +1044,12 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   grantMessaging: (origin) => ipcRenderer.invoke('swarm:grant-messaging', origin),
   revokeMessaging: (origin) => ipcRenderer.invoke('swarm:revoke-messaging', origin),
   hasMessagingGrant: (origin) => ipcRenderer.invoke('swarm:has-messaging-grant', origin),
+  // A site lost its connection, by any route; the provider tells its pages.
+  onOriginDisconnected: (callback) => {
+    const handler = (_event, payload) => callback(payload?.origin);
+    ipcRenderer.on('swarm:origin-disconnected', handler);
+    return () => ipcRenderer.removeListener('swarm:origin-disconnected', handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('swarmManifest', {

@@ -11,7 +11,7 @@
  */
 
 import { getPermissionKey } from './dapp-provider.js';
-import { getDisplayUrlForWebview, getNavigationKeyForWebview, isTabAgentOwned } from './tabs.js';
+import { getDisplayUrlForWebview, getNavigationKeyForWebview, getTabs, isTabAgentOwned } from './tabs.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
 import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest, routeToPublishSetup } from './wallet-ui.js';
 
@@ -91,6 +91,46 @@ window.addEventListener('settings:updated', (event) => {
   identityWalletEnabled = event.detail?.enableIdentityWallet === true;
 });
 
+// Main tells every window when a site loses its connection, whichever route
+// revoked it (the banner, Settings, a manifest that withdraws it).
+window.swarmPermissions?.onOriginDisconnected?.((origin) => notifySiteDisconnected(origin));
+
+/**
+ * Send `disconnect` to every page of `origin` in this window's tabs, not only
+ * the one in front (#1158), and refresh the connection banner.
+ */
+export function notifySiteDisconnected(origin) {
+  if (!origin) return;
+  for (const tab of getTabs?.() || []) {
+    const webview = tab?.webview;
+    if (webview && getPermissionKey(getDisplayUrlForWebview(webview)) === origin) {
+      // A later reconnect in the same document is announced again.
+      connectAnnounced.get(webview)?.origins.delete(origin);
+      sendSwarmEvent(webview, 'disconnect', { origin });
+    }
+  }
+  updateSwarmConnectionBanner(origin);
+}
+
+// Which sites each page has been told `connect` for, in its current
+// document. An operation's manifest check and a later requestAccess can each
+// open a refresh that sees the site unconnected and then shares one sheet's
+// decision; the page hears `connect` once.
+const connectAnnounced = new WeakMap();
+
+function announceConnect(webview, navigationKey, origin) {
+  // Not to a document the tab has navigated to since the check began.
+  if (getNavigationKeyForWebview(webview) !== navigationKey) return;
+  let seen = connectAnnounced.get(webview);
+  if (!seen || seen.navigationKey !== navigationKey) {
+    seen = { navigationKey, origins: new Set() };
+    connectAnnounced.set(webview, seen);
+  }
+  if (seen.origins.has(origin)) return;
+  seen.origins.add(origin);
+  sendSwarmEvent(webview, 'connect', { origin });
+}
+
 /**
  * Setup Swarm provider request listener for a webview.
  * Called from tabs.js when creating a webview.
@@ -122,6 +162,8 @@ async function handleSwarmRequest(webview, request) {
   const { id, method, params } = request;
   // Captured at arrival; see navigationGenerations above.
   const generation = getNavigationGeneration(webview);
+  // The document that asked, for events that must not reach a later one.
+  const navigationKey = getNavigationKeyForWebview(webview);
 
   // Gate: reject if feature disabled
   if (!identityWalletEnabled) {
@@ -140,7 +182,7 @@ async function handleSwarmRequest(webview, request) {
     }
 
     if (method === 'swarm_requestAccess') {
-      result = await handleRequestAccess(webview, displayUrl, permissionKey);
+      result = await handleRequestAccess(webview, displayUrl, permissionKey, navigationKey);
     } else if (method === 'swarm_getCapabilities') {
       // No prompt needed — coarse capability info, safe for any origin
       result = await forwardToMain(method, params, permissionKey);
@@ -224,7 +266,7 @@ async function ensureManifestFresh(webview, committedUrl, permissionKey, eager) 
   if (!cached || (eager && !cached.eager)) {
     cached = {
       eager,
-      promise: performManifestRefresh({ permissionKey, committedUrl, navigationKey, eager }),
+      promise: performManifestRefresh({ webview, permissionKey, committedUrl, navigationKey, eager }),
     };
     navigationCache.origins.set(permissionKey, cached);
   }
@@ -239,7 +281,7 @@ async function ensureManifestFresh(webview, committedUrl, permissionKey, eager) 
   }
 }
 
-async function performManifestRefresh({ permissionKey, committedUrl, navigationKey, eager }) {
+async function performManifestRefresh({ webview, permissionKey, committedUrl, navigationKey, eager }) {
   const result = await window.swarmManifest.check({
     origin: permissionKey,
     committedUrl,
@@ -251,9 +293,16 @@ async function performManifestRefresh({ permissionKey, committedUrl, navigationK
   }
   if (result.kind !== 'consent') return;
 
+  const wasConnected = Boolean(await window.swarmPermissions.getPermission(permissionKey));
   const outcome = await showPermissionManifest(result.model, result.token);
   const decision = await window.swarmManifest.decide(result.token, outcome);
   if (!decision.allowed) throw ERRORS.USER_REJECTED;
+
+  // The sheet connected the site ("Allow all" or "ask each time"): tell the
+  // page, as the plain connect prompt does (#1158).
+  if (!wasConnected && (await window.swarmPermissions.getPermission(permissionKey))) {
+    announceConnect(webview, navigationKey, permissionKey);
+  }
 }
 
 /**
@@ -376,7 +425,7 @@ async function forwardToMain(method, params, permissionKey) {
 /**
  * Handle swarm_requestAccess: check existing permission or show prompt.
  */
-async function handleRequestAccess(webview, displayUrl, permissionKey) {
+async function handleRequestAccess(webview, displayUrl, permissionKey, navigationKey) {
   // Check if already connected
   const existing = await window.swarmPermissions.getPermission(permissionKey);
   if (existing) {
@@ -392,6 +441,9 @@ async function handleRequestAccess(webview, displayUrl, permissionKey) {
   const connectResult = await new Promise((resolve, reject) => {
     showSwarmConnect(displayUrl, permissionKey, resolve, reject, webview);
   });
+  // Through the same guard as the manifest sheet: the asking document only,
+  // and once even when two queued prompts are both approved.
+  announceConnect(webview, navigationKey, permissionKey);
 
   return connectResult;
 }

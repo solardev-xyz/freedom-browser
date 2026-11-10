@@ -424,10 +424,9 @@ it serves a [permission manifest](#permission-manifests):
   or messaging grant, no auto-approvals, so each publish, feed write,
   signing or messaging action still prompts as if there were no manifest.
   _Don’t allow_ is `4001`. In both approving cases the call resolves with
-  the usual shape, but **no `connect` event fires**: treat the resolved
-  promise, not the event, as the signal that the origin is connected, and
-  read `swarm_getCapabilities` rather than assuming the manifest's
-  capabilities were granted.
+  the usual shape and the page gets a `connect` event. Read
+  `swarm_getCapabilities` rather than assuming the manifest's capabilities
+  were granted.
 
 #### `swarm_getCapabilities` → capability object (public)
 
@@ -661,11 +660,11 @@ is unknown or not the caller's.
 
 ## Events
 
-| Event        | Payload      | When                                                                 |
-| ------------ | ------------ | -------------------------------------------------------------------- |
-| `connect`    | `{ origin }` | The user approved the connect prompt (not the manifest sheet)        |
-| `disconnect` | `{ origin }` | The user disconnected the origin; sent to the page in the active tab |
-| `message`    | see below    | A subscribed message arrived                                         |
+| Event        | Payload      | When                                                                     |
+| ------------ | ------------ | ------------------------------------------------------------------------ |
+| `connect`    | `{ origin }` | The origin was connected, by the connect prompt or the manifest sheet    |
+| `disconnect` | `{ origin }` | The origin's connection was revoked; sent to every open page of the site |
+| `message`    | see below    | A subscribed message arrived                                             |
 
 ```javascript
 {
@@ -676,12 +675,15 @@ is unknown or not the caller's.
 }
 ```
 
-`connect` is not emitted when the origin was already connected, nor when the
-connection came from approving the [manifest sheet](#permission-manifests). `disconnect`
-goes to whatever page is in the active tab, so compare `data.origin` with your
-own; it is not emitted when only one tier is revoked (e.g. messaging in
-Settings) or when a manifest change withdraws a grant. Do not treat the events as the only source of truth: a call
-failing with `4100` means the grant is gone.
+`connect` goes to the page whose call connected the origin: the page that
+answered the connect prompt, or the one that opened the
+[manifest sheet](#permission-manifests). It is not emitted when the origin was
+already connected. `disconnect` goes to every open page of the origin, in every
+window, whatever revoked the connection: the connection banner, Settings, or a
+manifest change that withdraws it. It is not emitted when only one tier or
+auto-approval is revoked (e.g. messaging in Settings): a call failing with
+`4100` is how a page learns that. Do not treat the events as the only source of
+truth either way.
 
 ## Example
 

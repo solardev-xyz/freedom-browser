@@ -636,8 +636,10 @@ describe('disconnectSwarmApp', () => {
   });
 
   // A key from the permissions list can name a site in another tab: revoking
-  // it must leave the visible, still-connected site's banner (and its page)
-  // alone; revoking the visible site hides the banner and tells its page.
+  // it must leave the visible, still-connected site's banner alone; revoking
+  // the visible site hides the banner. Pages hear `disconnect` from main's
+  // revoke broadcast (swarm-provider.js notifySiteDisconnected), not from
+  // here, so no tab is told twice.
   test('hides the banner only when the revoked site is the one it shows', async () => {
     const ctx = await loadSwarmConnect();
     const provider = await import('../dapp-provider.js');
@@ -658,9 +660,6 @@ describe('disconnectSwarmApp', () => {
 
     await ctx.mod.disconnectSwarmApp('bzz://visible');
     expect(banner.classList.contains('hidden')).toBe(true);
-    expect(visible.send).toHaveBeenCalledWith('swarm:provider-event', {
-      event: 'disconnect',
-      data: { origin: 'bzz://visible' },
-    });
+    expect(visible.send).not.toHaveBeenCalled();
   });
 });

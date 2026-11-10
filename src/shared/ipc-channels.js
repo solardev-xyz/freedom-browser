@@ -458,6 +458,7 @@ module.exports = {
   // Swarm Provider (main-process authority)
   SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
   SWARM_PROVIDER_EVENT: 'swarm:provider-event',
+  SWARM_ORIGIN_DISCONNECTED: 'swarm:origin-disconnected',
 
   // Swarm publish setup (src/main/swarm/publish-setup-service.js). Chrome
   // only, except the state read and push, which the internal pages also use.
