@@ -12,6 +12,8 @@ const path = require('path');
 
 // Each encrypt waits for the next queued hold, if any.
 const mockEncryptHolds = [];
+// Each decrypt likewise waits for the next queued hold, if any.
+const mockDecryptHolds = [];
 jest.mock('@metamask/browser-passworder', () => ({
   encrypt: async (password, value) => {
     const hold = mockEncryptHolds.shift();
@@ -19,6 +21,8 @@ jest.mock('@metamask/browser-passworder', () => ({
     return JSON.stringify({ password, value });
   },
   decrypt: async (password, text) => {
+    const hold = mockDecryptHolds.shift();
+    if (hold) await hold;
     const stored = JSON.parse(text);
     if (stored.password !== password) throw new Error('Incorrect password');
     return stored.value;
@@ -55,6 +59,7 @@ describe('vault mutations (K-2 review)', () => {
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-mutations-'));
     mockEncryptHolds.length = 0;
+    mockDecryptHolds.length = 0;
     vault.lockVault();
   });
   afterEach(() => {
@@ -116,7 +121,10 @@ describe('vault mutations (K-2 review)', () => {
   test('a vault replaced from outside mid-write is not overwritten', async () => {
     await vault.importVault(dir, 'oldpassword', MNEMONIC_A);
     const vaultPath = vault.getVaultPath(dir);
-    const foreign = JSON.stringify({ version: 1, encrypted: JSON.stringify({ password: 'other', value: { mnemonic: MNEMONIC_B } }) });
+    const foreign = JSON.stringify({
+      version: 1,
+      encrypted: JSON.stringify({ password: 'other', value: { mnemonic: MNEMONIC_B } }),
+    });
     vault._setVaultWriteObserver((step) => {
       if (step === 'file-synced') fs.writeFileSync(vaultPath, foreign);
     });
@@ -126,6 +134,38 @@ describe('vault mutations (K-2 review)', () => {
     );
     expect(fs.readFileSync(vaultPath, 'utf8')).toBe(foreign);
     expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  test('a vault replaced from outside during the delete password check is not removed (R3-M1)', async () => {
+    await vault.importVault(dir, 'oldpassword', MNEMONIC_A);
+    const vaultPath = vault.getVaultPath(dir);
+    const foreign = JSON.stringify({
+      version: 1,
+      encrypted: JSON.stringify({ password: 'other', value: { mnemonic: MNEMONIC_B } }),
+    });
+
+    const held = deferred();
+    mockDecryptHolds.push(held.promise);
+    const deleting = vault.deleteVault(dir, 'oldpassword');
+    deleting.catch(() => {});
+    await settle();
+    // The password check is under way against the vault it read; another
+    // process puts a different vault at the name meanwhile.
+    fs.writeFileSync(vaultPath, foreign);
+    held.resolve();
+
+    await expect(deleting).rejects.toThrow('The vault changed while it was being deleted');
+    expect(fs.readFileSync(vaultPath, 'utf8')).toBe(foreign);
+    await expect(opensWith(dir, 'other')).resolves.toBe(MNEMONIC_B);
+  });
+
+  test('a delete whose vault is unchanged still removes it and locks', async () => {
+    await vault.importVault(dir, 'oldpassword', MNEMONIC_A);
+    await vault.unlockVault(dir, 'oldpassword', 0);
+    await vault.deleteVault(dir, 'oldpassword');
+    expect(fs.existsSync(vault.getVaultPath(dir))).toBe(false);
+    expect(vault.isUnlocked()).toBe(false);
+    await expect(vault.deleteVault(dir, 'oldpassword')).rejects.toThrow('No vault found');
   });
 
   (process.platform === 'win32' ? test.skip : test)(
@@ -189,7 +229,13 @@ describe('vault mutations (K-2 review)', () => {
       const realFsync = fs.fsyncSync;
       jest.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
         const target = opened.get(fd) || '';
-        steps.push(target === dir ? 'fsync directory' : target.endsWith('.tmp') ? 'fsync temp file' : `fsync ${target}`);
+        steps.push(
+          target === dir
+            ? 'fsync directory'
+            : target.endsWith('.tmp')
+              ? 'fsync temp file'
+              : `fsync ${target}`
+        );
         return realFsync(fd);
       });
       const realRename = fs.renameSync;

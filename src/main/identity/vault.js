@@ -454,14 +454,28 @@ function changePassword(dataDir, currentPassword, newPassword) {
  */
 function deleteVault(dataDir, password) {
   return withVaultMutation(dataDir, async () => {
-    // Verify password first
-    await unlockVault(dataDir, password, 0);
-    lockVault();
+    if (!vaultExists(dataDir)) {
+      throw new Error('No vault found. Create one first.');
+    }
+    // Verify the password against the vault as read here, and remember which
+    // file that was: the check takes hundreds of milliseconds of PBKDF2.
+    const { vaultData, digest } = readVaultFile(dataDir);
+    const mnemonic = await decryptVaultMnemonic(vaultData, password);
+    if (!isValidMnemonic(mnemonic)) {
+      throw new Error('Decrypted data is not a valid mnemonic');
+    }
 
-    // Delete vault file
+    // Like every replace (renameOverVault), only remove the file whose
+    // password was just checked: a vault put there from outside meanwhile
+    // was never verified and is left alone.
     const vaultPath = getVaultPath(dataDir);
-    if (fs.existsSync(vaultPath)) {
-      fs.unlinkSync(vaultPath);
+    const live = liveVaultDigest(vaultPath);
+    if (live !== null && live !== digest) {
+      throw new Error('The vault changed while it was being deleted; nothing was removed');
+    }
+    lockVault();
+    if (live !== null) {
+      fs.rmSync(vaultPath, { force: true });
     }
     // withVaultMutation swept leftover temp copies before the password check;
     // nothing can have written one since, but sweep again so the phrase is
