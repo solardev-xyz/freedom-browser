@@ -2984,6 +2984,152 @@ describe('ens-resolver', () => {
       }
     });
 
+    // After an all-errored first wave, the second runs against whatever is
+    // left. One endpoint agreeing with itself is single-source evidence.
+    function fourPoolWithDeterministicOrder() {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [...TEST_PROVIDERS, 'https://test-d.example.com'],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999;
+      invalidateCachedProvider();
+      return () => { Math.random = origRandom; };
+    }
+
+    test('3 errors + one fresh provider → its answer is unverified, not verified', async () => {
+      const restore = fourPoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+        ]));
+
+        const result = await resolveEnsContent('lone-second-wave.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.uri).toBe(`ipfs://${IPFS_HASH}`);
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          queried: ['test-d.example.com'],
+          quorum: { k: 1, m: 1, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('3 errors + one fresh provider → its not-found is unverified, not verified', async () => {
+      const restore = fourPoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', {
+            kind: 'reject',
+            payload: new Error('execution reverted: ResolverNotFound("lone-not-found.eth")'),
+          }],
+        ]));
+
+        const result = await resolveEnsContent('lone-not-found.eth');
+
+        expect(result).toMatchObject({ type: 'not_found', reason: 'NO_RESOLVER' });
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          quorum: { k: 1, m: 1, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('3 errors + two fresh providers that agree → verified', async () => {
+      const { restore } = fivePoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('pair-second-wave.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust).toMatchObject({
+          level: 'verified',
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          quorum: { k: 2, m: 2, achieved: true },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('K = M = 3: two fresh providers that agree after 3 errors are unverified', async () => {
+      const { restore } = fivePoolWithDeterministicOrder({ ensQuorumM: 3 });
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('pair-under-m3.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          quorum: { k: 2, m: 2, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('K = M = 4 with three providers: a first wave of three that agree is unverified', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 4,
+        ensQuorumM: 4,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      invalidateCachedProvider();
+      const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodPayload }])));
+
+      const result = await resolveEnsContent('three-under-m4.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust).toMatchObject({ level: 'unverified', quorum: { k: 3, m: 3, achieved: false } });
+      expect(result.trust.agreed).toHaveLength(3);
+    });
+
     test('second wave also unverified → keep first-wave evidence (no downgrade)', async () => {
       const { restore } = fivePoolWithDeterministicOrder();
       try {
