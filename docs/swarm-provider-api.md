@@ -341,9 +341,11 @@ only for key agreement (`swarm_getEncryptionKey`,
 - It is derived from the vault's recovery phrase at
   `m/44'/73407'/{a}'/{b}'/{c}'`, where `a`, `b` and `c` are the first three
   big-endian 32-bit words of
-  `SHA-256("freedom-browser/swarm-encryption-key/v1\n" + permissionKey)`,
+  `SHA-256("swarm-provider/encryption-key/v1\n" + permissionKey)`,
   each with its top bit cleared. Restoring the recovery phrase restores the
-  key on any device, with nothing else to back up.
+  key on any device, with nothing else to back up. The label is
+  vendor-neutral so that the recipe can be standardised with the Swarm
+  provider API, and other browsers derive the same key from the same phrase.
 - It follows the **permission key**. A `bzz://<ref>` origin changes with every
   redeploy, and so does its key: serve an app that encrypts under an ENS name
   or a feed manifest, or it cannot read what was encrypted to it before.

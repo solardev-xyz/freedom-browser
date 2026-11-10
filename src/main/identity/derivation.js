@@ -41,8 +41,11 @@ const PATHS = {
 // Domain separation for the hash that turns a site into its key path. The
 // path, and so the key, must never change for a site: anything encrypted to
 // the key would become unreadable. Changing this string, the hash, or the
-// way the permission key is formed is therefore a breaking change.
-const SITE_ENCRYPTION_KEY_DOMAIN = 'freedom-browser/swarm-encryption-key/v1\n';
+// way the permission key is formed is therefore a breaking change. The label
+// is vendor-neutral on purpose: the Swarm provider API's encryption
+// extension (SWIP) specifies this recipe, so every browser that follows it
+// derives the same key for a site from the same recovery phrase.
+const SITE_ENCRYPTION_KEY_DOMAIN = 'swarm-provider/encryption-key/v1\n';
 
 /**
  * Generate a new BIP-39 mnemonic

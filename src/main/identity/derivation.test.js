@@ -259,9 +259,9 @@ describe('derivation', () => {
     // becomes unreadable. If this fails, the derivation changed.
     test('derives the pinned key for a site', () => {
       const key = deriveSiteEncryptionKey(TEST_MNEMONIC, 'myapp.eth');
-      expect(key.path).toBe("m/44'/73407'/333645928'/1944099083'/2041816228'");
+      expect(key.path).toBe("m/44'/73407'/1359753964'/1747624480'/1277407076'");
       expect(key.publicKey).toBe(
-        '0x03ef272cdf077beaa7fa68374f850d6cedf79bf558705a4fa7225bf87be758a323'
+        '0x035d600fe9b13fb91f71e00fb423c133ab67e809999712b67149bc86287d271d7e'
       );
       expect(key.privateKey).toMatch(/^0x[0-9a-f]{64}$/);
     });
