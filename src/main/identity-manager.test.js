@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const IPC = require('../shared/ipc-channels');
 const {
   createTempUserDataDir,
   loadMainModule,
@@ -1345,5 +1346,217 @@ describe('identity file repair at startup (K-3)', () => {
     expect(fs.statSync(vaultPath).mode & 0o777).toBe(0o600);
     expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
     expect(fs.statSync(outside).mode & 0o777).toBe(0o644);
+  });
+  posixTest('an identity folder that is a link: the IPC handlers answer with the refusal, not a throw', async () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    const real = path.join(root, 'moved-identity');
+    fs.renameSync(dir, real);
+    fs.symlinkSync(real, dir);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    // get-status prepares the Radicle home first; an override skips the
+    // control-socket length check a long temp root (macOS) would trip.
+    process.env.FREEDOM_RADICLE_DATA = path.join(root, 'radicle');
+
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    expect(() => mod.registerIdentityIpc()).not.toThrow();
+
+    const explained = `Freedom will not use ${dir} because it is a symbolic link.`;
+    await expect(ipcMain.invoke('identity:get-vault-meta')).resolves.toBeNull();
+    await expect(ipcMain.invoke(IPC.IDENTITY_HAS_VAULT)).resolves.toEqual({
+      hasVault: false,
+      error: expect.stringContaining(explained),
+    });
+    await expect(ipcMain.invoke(IPC.IDENTITY_GET_STATUS)).resolves.toEqual({
+      error: expect.stringContaining(explained),
+    });
+    // Followed nowhere: the folder behind the link is left as it was.
+    expect(fs.lstatSync(dir).isSymbolicLink()).toBe(true);
+  });
+  posixTest('a linked Radicle or Ant home costs only that node: get-status still reports the vault', async () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    fs.writeFileSync(path.join(dir, 'identity-vault.json'), '{"version":1}');
+    fs.writeFileSync(
+      path.join(dir, 'vault-meta.json'),
+      JSON.stringify({ addresses: { userWallet: '0xabc', beeWallet: '0xdef' } })
+    );
+    for (const [env, name] of [
+      ['FREEDOM_RADICLE_DATA', 'radicle'],
+      ['FREEDOM_ANT_DATA', 'ant'],
+    ]) {
+      const real = path.join(root, `moved-${name}`);
+      fs.mkdirSync(real);
+      fs.symlinkSync(real, path.join(root, name));
+      process.env[env] = path.join(root, name);
+    }
+
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    mod.registerIdentityIpc();
+
+    const status = await ipcMain.invoke(IPC.IDENTITY_GET_STATUS);
+    expect(status.error).toBeUndefined();
+    expect(status).toMatchObject({
+      hasVault: true,
+      beeInjected: false,
+      radicleInjected: false,
+      addresses: { userWallet: '0xabc', beeWallet: '0xdef', radicleDid: null },
+    });
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Radicle data folder unavailable:',
+      expect.stringContaining('symbolic link')
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Ant data folder unavailable:',
+      expect.stringContaining('symbolic link')
+    );
+  });
+
+  // A linked node home used to fail injectAllIdentities outright, after the
+  // vault (and, in quick setup, Touch ID) already existed, so onboarding
+  // never reached its last step. Each node is now injected on its own.
+  function linkHome(env, name) {
+    const real = path.join(root, `moved-${name}`);
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, path.join(root, name));
+    process.env[env] = path.join(root, name);
+    return real;
+  }
+  function realHome(env, name) {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir);
+    process.env[env] = dir;
+    return dir;
+  }
+  function loadWithMockIdentity() {
+    const identityMock = makeRestartIdentityMock();
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      extraMocks: {
+        [require.resolve('./identity')]: () => identityMock,
+        // An earlier suite's fs-offload stub (a dir that stays busy) is still
+        // registered; these tests want the real deletes.
+        [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
+        // Likewise the #513 suite's profile-paths stub, whose
+        // prepareRadicleDataDir answers that suite's own Radicle home.
+        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
+      },
+      userDataDir: root,
+    });
+    return { mod, identityMock };
+  }
+
+  posixTest('a linked Radicle home: injectAll still sets up Ant and reports Radicle refused', async () => {
+    const real = linkHome('FREEDOM_RADICLE_DATA', 'radicle');
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', false);
+
+    expect(results.bee).toMatchObject({ address: '0xbee' });
+    expect(identityMock.injectBeeKey).toHaveBeenCalled();
+    expect(results.radicle).toEqual({
+      refused: true,
+      error: expect.stringContaining('because it is a symbolic link'),
+    });
+    expect(results.needsRestart).toEqual([]);
+    expect(identityMock.injectRadicleKey).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Radicle identity not injected:',
+      expect.stringContaining('symbolic link')
+    );
+    // Followed nowhere: nothing was written behind the link.
+    expect(fs.readdirSync(real)).toEqual([]);
+  });
+
+  posixTest('a linked Ant home: injectAll still sets up Radicle and reports Ant refused', async () => {
+    const real = linkHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', true);
+
+    expect(results.bee).toEqual({
+      refused: true,
+      error: expect.stringContaining('because it is a symbolic link'),
+    });
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(results.radicle).toMatchObject({ did: 'did:key:zTest' });
+    expect(identityMock.injectRadicleKey).toHaveBeenCalled();
+    expect(fs.readdirSync(real)).toEqual([]);
+  });
+
+  // A real home whose keys/ is a link used to be refused only by the key
+  // write, after the stale-state wipe (and, for Ant, after the running node
+  // was stopped and never restarted). It is now refused before either.
+  function linkKeysDir(home, name) {
+    const outside = path.join(root, `outside-${name}-keys`);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(home, 'keys'));
+    return outside;
+  }
+
+  posixTest('a linked keys/ in a real Ant home: refused before Ant is stopped or wiped', async () => {
+    const home = realHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    fs.mkdirSync(path.join(home, 'statestore'));
+    fs.writeFileSync(path.join(home, 'identity.json'), '{}');
+    const outside = linkKeysDir(home, 'ant');
+    const { mod, identityMock } = loadWithMockIdentity();
+    const stop = jest.fn(async () => true);
+    const start = jest.fn(async () => {});
+    mod.setBeeLifecycle({ stop, start });
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', true);
+
+    expect(results.bee).toEqual({
+      refused: true,
+      error: expect.stringContaining('symbolic link'),
+    });
+    expect(stop).not.toHaveBeenCalled();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(identityMock.createBeeConfig).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(home, 'statestore'))).toBe(true);
+    expect(fs.existsSync(path.join(home, 'identity.json'))).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(results.radicle).toMatchObject({ did: 'did:key:zTest' });
+  });
+
+  posixTest('a linked keys/ in a real Radicle home: refused before node/cobs/storage are wiped', async () => {
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    const home = realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    for (const dir of ['node', 'cobs', 'storage']) fs.mkdirSync(path.join(home, dir));
+    const outside = linkKeysDir(home, 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', false);
+
+    expect(results.radicle).toEqual({
+      refused: true,
+      error: expect.stringContaining('symbolic link'),
+    });
+    expect(identityMock.injectRadicleKey).not.toHaveBeenCalled();
+    for (const dir of ['node', 'cobs', 'storage']) {
+      expect(fs.existsSync(path.join(home, dir))).toBe(true);
+    }
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(results.bee).toMatchObject({ address: '0xbee' });
+  });
+
+  test('a node failure that is not a refused link still fails injectAll', async () => {
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    identityMock.injectRadicleKey.mockImplementation(() => {
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    await mod.createNewVault('password-123');
+
+    await expect(mod.injectAllIdentities('FreedomBrowser', false)).rejects.toThrow('disk full');
   });
 });

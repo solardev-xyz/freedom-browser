@@ -1,1 +1,0 @@
-- Settings > About Freedom no longer shows "Last checked" while an update downloads or waits to install ([#594](https://github.com/solardev-xyz/freedom-browser/issues/594))

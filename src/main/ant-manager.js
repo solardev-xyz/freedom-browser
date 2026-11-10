@@ -880,7 +880,18 @@ async function startAnt() {
     return;
   }
 
-  const dataDir = getAntDataPath();
+  // A data directory that is a symbolic link is refused (K-3), with a
+  // message naming it and saying what to do; that ends the start in ERROR,
+  // not stuck in STARTING.
+  let dataDir;
+  try {
+    dataDir = getAntDataPath();
+  } catch (err) {
+    log.error('[Ant] Data directory refused:', err.message);
+    updateState(STATUS.ERROR, err.message);
+    setStatusMessage('ant', 'Node failed to start');
+    return;
+  }
 
   // In injected-identity mode (an identity vault exists) never spawn antd
   // without the injected keystore: antd would self-generate a throwaway
@@ -1276,7 +1287,13 @@ function setUseInjectedIdentity(enabled) {
  * Check if keys have been injected
  */
 function hasInjectedKeys() {
-  const dataDir = getAntDataPath();
+  let dataDir;
+  try {
+    dataDir = getAntDataPath();
+  } catch {
+    // A refused (linked) data directory has no keys Freedom will use.
+    return false;
+  }
   const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
   return fs.existsSync(swarmKeyPath);
 }
@@ -1322,7 +1339,14 @@ function registerAntIpc() {
     getNodeStatus: getStatus,
     getApiBase: () => require('./service-registry').getAntApiUrl(),
     getSpawnedAt,
-    getDataDir: () => (getSpawnedAt() ? getAntDataPath() : null),
+    getDataDir: () => {
+      if (!getSpawnedAt()) return null;
+      try {
+        return getAntDataPath();
+      } catch {
+        return null;
+      }
+    },
   });
   // The usage line, with whether Clear cache is on offer and why not.
   const getCacheStatus = async () => {
@@ -1396,9 +1420,19 @@ function isBundledNodeActive() {
 }
 
 function getCacheSettingsView() {
+  // A data directory that is a symbolic link is refused (K-3): the view
+  // carries why, which Settings shows on the cache row, instead of throwing.
+  let dataDir = null;
+  let dataDirError = '';
+  try {
+    dataDir = getAntDataPath();
+  } catch (err) {
+    dataDirError = err.message;
+  }
   return antCache.cacheSettingsView({
     stored: loadSettings().antCacheCapacityBytes,
-    hasExistingCache: hasExistingCacheFile(getAntDataPath()),
+    hasExistingCache: hasExistingCacheFile(dataDir),
+    dataDirError,
     profileMode: getProfileAntConfig()?.mode || null,
     registryMode: require('./service-registry').getRegistry().ant?.mode || null,
     nodeActive: isBundledNodeActive(),

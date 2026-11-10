@@ -1,1 +1,3 @@
-- Node keys, the identity vault, the Touch ID unlock credential and the Swarm node's config are readable only by your own account on macOS and Linux, and are never read or written through a link planted in their place ([#942](https://github.com/solardev-xyz/freedom-browser/issues/942))
+- Node keys, the Touch ID unlock credential and the Swarm node's config are readable only by your own account on macOS and Linux, and are never read or written through a link planted in their place ([#942](https://github.com/solardev-xyz/freedom-browser/issues/942))
+  - A Touch ID unlock credential an earlier version left readable by other accounts is narrowed to your own at startup
+  - Freedom no longer follows a symbolic link in place of its identity, Swarm node or Radicle folder. If you moved one of these folders elsewhere and left a link behind, the node or wallet now stops with a message naming the folder: move the real folder back in place of the link

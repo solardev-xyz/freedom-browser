@@ -177,10 +177,15 @@ async function loadSwarmConnect() {
     getActivePageUrl: jest.fn(() => ''),
   }));
   jest.doMock('./permission-manage.js', () => ({ showSwarmPermissions: jest.fn() }));
+  const renderPublisherIdentitySelector = jest.fn();
   jest.doMock('./publisher-identity-selector.js', () => ({
     BEE_WALLET_IDENTITY_ID: 'bee-wallet',
-    getActivePublisherIdentity: jest.fn(() => ({ id: 'ident-1', mode: 'app-scoped', stored: true })),
-    renderPublisherIdentitySelector: jest.fn(),
+    getActivePublisherIdentity: jest.fn(
+      (state) =>
+        state?.identities?.find((identity) => identity.id === state.activeIdentityId) ?? null
+    ),
+    identityLabel: jest.fn((identity) => identity?.label || identity?.mode || 'Publisher identity'),
+    renderPublisherIdentitySelector,
   }));
 
   const mod = await import('./swarm-connect.js');
@@ -193,6 +198,7 @@ async function loadSwarmConnect() {
     elements: document.elements,
     hideAllSubscreens,
     openSidebarPanel,
+    renderPublisherIdentitySelector,
   };
 }
 
@@ -562,6 +568,63 @@ describe('swarm approval prompts queue concurrent requests', () => {
 
     // The arm window elapsing must not hand out Allow on a locked vault.
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
+  });
+});
+
+describe('Single Owner Chunk prompt under a shared identity (SW-1)', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  };
+
+  async function showSigning(method, identities) {
+    const ctx = await loadSwarmConnect();
+    global.window.swarmFeedStore.getOriginIdentities.mockResolvedValue({
+      activeIdentityId: identities[0].id,
+      identities,
+    });
+    trackedPrompt((resolve, reject) =>
+      ctx.mod.showSwarmFeedApproval('https://a.example', { identifier: 'ab'.repeat(32) }, resolve, reject, {
+        method,
+        autoApproveType: 'signing',
+      })
+    );
+    await armPrompt();
+    await settle();
+    return ctx;
+  }
+
+  test('says the identity is shared and keeps Allow off until another is chosen', async () => {
+    const ctx = await showSigning('swarm_writeSingleOwnerChunk', [
+      { id: 'bee-wallet', mode: 'bee-wallet', label: 'Ant wallet identity', shared: true },
+      { id: 'app-scoped:3', mode: 'app-scoped', label: 'App-scoped identity 4', shared: false },
+    ]);
+
+    const warning = ctx.elements['swarm-feed-warning'].textContent;
+    expect(warning).toContain('Ant wallet identity is also used by other sites');
+    expect(warning).toContain('cannot write Single Owner Chunks');
+    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
+
+    // The user picks the identity only this site uses.
+    const { onSelect } = ctx.renderPublisherIdentitySelector.mock.calls.at(-1)[2];
+    await onSelect({ id: 'app-scoped:3', mode: 'app-scoped', shared: false });
+    expect(ctx.elements['swarm-feed-warning'].textContent).toBe(
+      'Publisher signing can create Single Owner Chunks and reveal the active publisher owner for this site.'
+    );
+    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
+  });
+
+  test('disclosing a shared signing identity is allowed, with the notice', async () => {
+    const ctx = await showSigning('swarm_getSigningIdentity', [
+      { id: 'ethereum-wallet:0', mode: 'ethereum-wallet', label: 'Main Wallet', shared: true },
+    ]);
+
+    expect(ctx.elements['swarm-feed-warning'].textContent).toBe(
+      'Main Wallet is also used by other sites: they sign as the same owner address.'
+    );
+    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
   });
 });
 

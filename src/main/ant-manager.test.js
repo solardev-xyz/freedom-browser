@@ -325,6 +325,9 @@ function loadAntManagerModule(options = {}) {
     }),
     // profile-paths creates the data directory through this.
     ensurePrivateDir: jest.fn((dir) => {
+      // A data directory that is a symbolic link: private-files' refusal
+      // (its real wording is pinned in profile-paths.test.js).
+      if (options.linkedDataDirError && dir === dataDir) throw options.linkedDataDirError;
       if (!fsMock.existsSync(dir)) fsMock.mkdirSync(dir, { recursive: true, mode: 0o700 });
       return dir;
     }),
@@ -766,6 +769,49 @@ describe('ant-manager', () => {
     expect(ctx.mod.getStatus()).toEqual({
       status: 'error',
       error: expect.stringContaining('symbolic link'),
+    });
+  });
+
+  describe('an ant-data that is a symbolic link (K-3)', () => {
+    const linkedDataDirError = () => {
+      const dir = path.join(DEFAULT_USER_DATA_DIR, 'ant-data');
+      const err = new Error(
+        `Freedom will not use ${dir} because it is a symbolic link. Move the folder the link points to back to ${dir} in place of the link, then try again.`
+      );
+      err.name = 'UnsafePrivatePathError';
+      err.code = 'UNSAFE_PRIVATE_PATH';
+      return err;
+    };
+
+    test('ends the start in the error state with the refusal, not stuck starting', async () => {
+      const err = linkedDataDirError();
+      const ctx = loadAntManagerModule({ linkedDataDirError: err, portSequence: [false] });
+
+      await ctx.mod.startAnt();
+
+      expect(ctx.mod.getStatus()).toEqual({ status: 'error', error: err.message });
+      expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'Node failed to start');
+      expect(ctx.privateFiles.openPrivateDir).not.toHaveBeenCalled();
+      expect(ctx.spawn).not.toHaveBeenCalled();
+      expect(ctx.mod.hasInjectedKeys()).toBe(false);
+    });
+
+    test('Settings gets the cache view with the refusal as its reason, not a throw', async () => {
+      const err = linkedDataDirError();
+      const ctx = loadAntManagerModule({ linkedDataDirError: err });
+      ctx.mod.registerAntIpc();
+
+      await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_GET_SETTINGS)).resolves.toMatchObject({
+        managed: false,
+        reason: err.message,
+        clearReason: err.message,
+      });
+      // A size change is refused with the same message rather than saved.
+      await expect(ctx.ipcMain.invoke(IPC.ANT_CACHE_SET_SIZE, 2 * 1024 ** 3)).resolves.toEqual({
+        ok: false,
+        error: err.message,
+      });
+      expect(ctx.saveSettings).not.toHaveBeenCalled();
     });
   });
 

@@ -25,6 +25,7 @@ const { getActiveProfile } = require('./profile-resolver');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { withPrivateDir } = require('./private-files');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
+const { withPasswordAttempt } = require('./identity/password-attempts');
 
 // Identity module - loaded lazily
 let identityModule = null;
@@ -650,6 +651,23 @@ async function wipeStaleBeeState(dataDir) {
 }
 
 /**
+ * Refuse a node home whose keys/ folder Freedom will not write through (a
+ * symbolic link, or not a folder: K-3) before anything in that home is
+ * stopped or wiped. The key write itself opens keys/ through the home's
+ * handle and refuses the same way, but only after the stale-state wipe has
+ * run (and, for Ant, after the node was stopped), so checking first leaves
+ * the home, and a running node, exactly as they were. A missing keys/ is
+ * fine: the injection creates it.
+ * @param {string} dataDir - the node's data directory
+ * @throws {UnsafePrivatePathError}
+ */
+function assertNodeKeysDirUsable(dataDir) {
+  withPrivateDir(dataDir, (home) => {
+    home.openDir('keys', { create: false });
+  });
+}
+
+/**
  * Inject Bee identity
  * Generates its own random password for the keystore (sealed in the OS
  * keychain, or stored in config.yaml where there is none)
@@ -668,6 +686,9 @@ async function injectBeeIdentity() {
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
+
+  // A keys/ Freedom refuses ends here, before the node is stopped or wiped.
+  assertNodeKeysDirUsable(dataDir);
 
   // Stop Bee (if running) and wipe its stale state before writing fresh keys.
   const beeWasRunning = await wipeStaleBeeState(dataDir);
@@ -744,6 +765,9 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  // A keys/ Freedom refuses ends here, before node/cobs/storage are wiped.
+  assertNodeKeysDirUsable(dataDir);
+
   // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
   // routing db, etc.) becomes invalid. Remove stale state directories.
   const staleDirs = ['node', 'cobs', 'storage'];
@@ -767,6 +791,21 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
 }
 
 /**
+ * Run one node's injection, answering `{ refused: true, error }` when that
+ * node's home is a symbolic link Freedom refuses (K-3) instead of failing
+ * every other node with it. Any other failure still throws.
+ */
+async function injectNodeUnlessRefused(label, inject) {
+  try {
+    return await inject();
+  } catch (err) {
+    if (err?.code !== 'UNSAFE_PRIVATE_PATH' || !err.link) throw err;
+    console.warn(`[IdentityManager] ${label} identity not injected:`, err.message);
+    return { refused: true, error: err.message };
+  }
+}
+
+/**
  * Inject all identities
  * @param {string} radicleAlias - Alias for Radicle node
  * @param {boolean} force - Force overwrite even if keys exist
@@ -784,21 +823,28 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
     needsRestart: [],
   };
 
+  // Each node home is injected on its own: one Freedom refuses (the Ant or
+  // Radicle data folder is a symbolic link, K-3) costs only that node, which
+  // answers `{ refused: true, error }` and says why when it is started. The
+  // vault and the other node still get set up, so onboarding completes.
+
   // Inject Bee (only if not already injected OR force)
   // Bee generates its own random keystore password internally
-  if (force || !isBeeIdentityInjected()) {
+  results.bee = await injectNodeUnlessRefused('Ant', async () => {
+    if (!force && isBeeIdentityInjected()) {
+      return { address: derivedKeys.beeWallet.address, alreadyInjected: true };
+    }
     const wasInjected = isBeeIdentityInjected();
-    results.bee = await injectBeeIdentity();
+    const bee = await injectBeeIdentity();
     if (wasInjected && force) {
       // Bee's restart is owned by injectBeeIdentity (via the lifecycle hook),
       // which stops the lock-holding node before the wipe and starts it again
       // with the new key. Deliberately NOT added to needsRestart so the
       // renderer doesn't restart Bee a second time (issue #90).
-      results.bee.reinjected = true;
+      bee.reinjected = true;
     }
-  } else {
-    results.bee = { address: derivedKeys.beeWallet.address, alreadyInjected: true };
-  }
+    return bee;
+  });
 
   // Native freedom-ipfs uses ephemeral libp2p identities for read-only
   // retrieval today. Keep this in the result so onboarding can show IPFS as an
@@ -809,24 +855,25 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
   // carry-over of an older profile's Radicle home first: judged against a
   // short home still being migrated, the identity would read as missing and
   // re-injection would wipe the node/cobs/storage that are on their way in.
-  await prepareRadicleDataDir();
-  if (force || !isRadicleIdentityInjected()) {
-    const wasInjected = isRadicleIdentityInjected();
-    results.radicle = await injectRadicleIdentity(radicleAlias);
-    if (wasInjected && force) {
-      results.radicle.reinjected = true;
-      results.needsRestart.push('radicle');
+  results.radicle = await injectNodeUnlessRefused('Radicle', async () => {
+    await prepareRadicleDataDir();
+    if (force || !isRadicleIdentityInjected()) {
+      const wasInjected = isRadicleIdentityInjected();
+      const radicle = await injectRadicleIdentity(radicleAlias);
+      if (wasInjected && force) {
+        radicle.reinjected = true;
+        results.needsRestart.push('radicle');
+      }
+      return radicle;
     }
-  } else {
-    // Get DID
     const identity = await loadIdentityModule();
     const radicleIdentity = identity.createRadicleIdentity(
       derivedKeys.radicleKey.privateKey,
       derivedKeys.radicleKey.publicKey,
       radicleAlias
     );
-    results.radicle = { did: radicleIdentity.did, alreadyInjected: true };
-  }
+    return { did: radicleIdentity.did, alreadyInjected: true };
+  });
 
   console.log('[IdentityManager] All identities injected/verified');
   return results;
@@ -841,9 +888,20 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
  * @returns {Promise<Object>}
  */
 async function getIdentityStatus() {
-  await prepareRadicleDataDir();
+  // The vault decides which view the wallet panel shows, so read it first:
+  // an identity folder Freedom refuses (a symbolic link, K-3) is the one
+  // failure that ends in `{ error }` for the whole status.
   const hasVaultResult = await hasVault();
   const isUnlocked = await isVaultUnlocked();
+
+  // A node home Freedom refuses (the Radicle or Ant data folder is a symbolic
+  // link) only costs that node's fields: the wallet stays reachable and the
+  // node says why when it is started. Finish any pending Radicle carry-over
+  // first, so the short home isn't judged while it is still being filled.
+  const radicleHomeReady = await nodeHomeReadable('Radicle', async () => {
+    await prepareRadicleDataDir();
+    return true;
+  }, false);
 
   // Try to get addresses - works even when vault is locked
   let addresses = null;
@@ -872,22 +930,40 @@ async function getIdentityStatus() {
       userWallet: meta?.addresses?.userWallet || null,
       beeWallet: meta?.addresses?.beeWallet || null,
       ipfsPeerId: readIpfsPeerId(),
-      radicleDid: await readRadicleDid(),
+      radicleDid: radicleHomeReady
+        ? await nodeHomeReadable('Radicle', readRadicleDid, null)
+        : null,
     };
   }
 
   return {
     hasVault: hasVaultResult,
     isUnlocked,
-    beeInjected: isBeeIdentityInjected(),
+    beeInjected: await nodeHomeReadable('Ant', isBeeIdentityInjected, false),
     ipfsInjected: isIpfsIdentityInjected(),
     ipfsIdentityPrepared: isIpfsIdentityPrepared(),
     ipfsIdentityMode: 'ephemeral',
     ipfsStableIdentitySupported: false,
     ipfsNativeIdentityActive: false,
-    radicleInjected: isRadicleIdentityInjected(),
+    radicleInjected: radicleHomeReady
+      ? await nodeHomeReadable('Radicle', isRadicleIdentityInjected, false)
+      : false,
     addresses,
   };
+}
+
+/**
+ * Read one node's home for the identity status, answering `fallback` (and
+ * saying why in the log) when that home is refused rather than failing the
+ * whole status.
+ */
+async function nodeHomeReadable(label, read, fallback) {
+  try {
+    return await read();
+  } catch (err) {
+    console.warn(`[IdentityManager] ${label} data folder unavailable:`, err.message);
+    return fallback;
+  }
 }
 
 /**
@@ -1548,7 +1624,9 @@ async function deleteVaultData(password) {
  * Startup repair (K-3): the vault and the quick-unlock credential an older
  * build wrote with the umask's mode (usually 0644) become owner-only,
  * through a no-follow descriptor, so a link planted at either name is left
- * alone. Writes of the vault go through its own atomic writer (vault.js);
+ * alone. For the vault this only narrows its mode before anything reads it:
+ * vault.js owns the vault's own reads and writes (#939: it narrows on read
+ * and replaces the file atomically through an owner-only temp file).
  * quick-unlock.js reads and writes the credential through the same
  * directory handle as here.
  */
@@ -1627,13 +1705,22 @@ function registerIdentityIpc() {
 
   // Get vault metadata (setup type, etc.)
   ipcMain.handle('identity:get-vault-meta', () => {
-    return getVaultMeta();
+    try {
+      return getVaultMeta();
+    } catch (err) {
+      // An identity folder that is a symbolic link is refused (K-3); no
+      // metadata, said in the log rather than an unhandled IPC error.
+      console.warn('[IdentityManager] Vault metadata unavailable:', err.message);
+      return null;
+    }
   });
 
   // Unlock vault
+  // Every handler that checks the vault password goes through the shared
+  // wrong-password back-off (K-4).
   ipcMain.handle(IPC.IDENTITY_UNLOCK, async (_event, password) => {
     try {
-      await unlockVault(password);
+      await withPasswordAttempt(() => unlockVault(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1677,7 +1764,7 @@ function registerIdentityIpc() {
       }
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const mnemonic = await exportMnemonic();
       return { success: true, mnemonic };
     } catch (err) {
@@ -1694,7 +1781,7 @@ function registerIdentityIpc() {
       assertPrivateKeyExportable(accountIndex);
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const privateKey = await exportPrivateKeyForAccount(accountIndex);
       return { success: true, privateKey };
     } catch (err) {
@@ -1705,7 +1792,7 @@ function registerIdentityIpc() {
   // Change password
   ipcMain.handle(IPC.IDENTITY_CHANGE_PASSWORD, async (_event, currentPassword, newPassword) => {
     try {
-      await changeVaultPassword(currentPassword, newPassword);
+      await withPasswordAttempt(() => changeVaultPassword(currentPassword, newPassword));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1715,7 +1802,7 @@ function registerIdentityIpc() {
   // Delete vault
   ipcMain.handle(IPC.IDENTITY_DELETE_VAULT, async (_event, password) => {
     try {
-      await deleteVaultData(password);
+      await withPasswordAttempt(() => deleteVaultData(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
