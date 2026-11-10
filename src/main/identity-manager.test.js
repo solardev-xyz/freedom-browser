@@ -34,6 +34,7 @@ function makeProfileIdentityMock() {
   return {
     createVault: jest.fn().mockResolvedValue('test mnemonic'),
     unlockVault: jest.fn().mockResolvedValue(undefined),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0xuser-private' },
       beeWallet: { address: '0xbee', privateKey: '0xbee-private' },
@@ -55,7 +56,7 @@ function makeRestartIdentityMock() {
     createVault: jest.fn(async () => 'test test test test test test test test test test test about'),
     unlockVault: jest.fn(async () => {}),
     vaultExists: jest.fn(async () => true),
-    isUnlocked: jest.fn(async () => true),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0x01' },
       beeWallet: { address: '0xbee', privateKey: '0x02' },
@@ -139,7 +140,8 @@ describe('identity-manager profile paths', () => {
     expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
       antDir,
       '0xbee-private',
-      expect.any(String)
+      expect.any(String),
+      { beforeWrite: expect.any(Function) }
     );
     expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
       antDir,
@@ -1189,7 +1191,8 @@ describe('Swarm keystore password (K-3)', () => {
     expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
       path.join(root, 'ant'),
       '0x02',
-      expect.stringMatching(/^[0-9a-f]{64}$/)
+      expect.stringMatching(/^[0-9a-f]{64}$/),
+      expect.objectContaining({ beforeWrite: expect.any(Function) })
     );
     const password = identityMock.injectBeeKey.mock.calls[0][2];
     expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
@@ -1281,6 +1284,64 @@ describe('Swarm keystore password (K-3)', () => {
     expect(ant.hooks.start).toHaveBeenCalledTimes(1);
     // Still asked for: the next unlock tries again.
     expect(ant.needed).toBe(true);
+  });
+
+  // K-1 x K-3: a recovery holds no key across an await. A lock while it
+  // waits for the keystore lock stops it before any key is read, and the
+  // next unlock runs its own recovery rather than joining the stale one.
+  test('a lock while a recovery waits for the keystore lock stops it; the next unlock recovers', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    identityMock.lockVault = jest.fn();
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    let release;
+    const held = keystore.withKeystoreLock(antDir(), () => new Promise((r) => (release = r)));
+    const stale = mod.reencryptBeeKeystore();
+    await settle();
+    await mod.lockVault();
+    // Unlocked again while the stale recovery still waits: this unlock's
+    // own recovery queues behind it instead of joining it.
+    ant.needed = true;
+    await mod.unlockVault('password123');
+    release();
+    await held;
+    await expect(stale).rejects.toThrow(/locked/i);
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('a lock while a recovery builds the keystore stops it before the write', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    identityMock.lockVault = jest.fn();
+    writeKeystore(VAULT_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    let built;
+    identityMock.injectBeeKey = jest.fn(async (dataDir, privateKey, password, opts) => {
+      await new Promise((r) => (built = r));
+      opts.beforeWrite();
+      writeKeystore(VAULT_BEE, password);
+    });
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.needed = true;
+    const recovery = mod.reencryptBeeKeystore();
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    await mod.lockVault();
+    built();
+    await expect(recovery).rejects.toThrow(/locked/i);
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(keystore.hasSealedPassword(antDir())).toBe(false);
+    expect(ant.hooks.start).not.toHaveBeenCalled();
   });
 
   test("a start that fails while unlocked still never overwrites another identity's keystore", async () => {
