@@ -1,1 +1,0 @@
-- The Swarm node no longer grows by several GB of memory once its cache passes 512 MB ([#615](https://github.com/solardev-xyz/freedom-browser/issues/615))
