@@ -52,6 +52,11 @@ const mockRegistryUnsubscribe = jest.fn();
 const mockRegistryConfigure = jest.fn();
 const mockRegistryCancelByWebContents = jest.fn();
 const mockRegistryCancelStaleByWebContents = jest.fn();
+const mockIsManagedAntNode = jest.fn(() => true);
+jest.mock('../ant-manager', () => ({
+  isManagedAntNode: (...args) => mockIsManagedAntNode(...args),
+}));
+
 jest.mock('./subscription-registry', () => ({
   configure: mockRegistryConfigure,
   subscribe: mockRegistrySubscribe,
@@ -294,6 +299,7 @@ describe('swarm-provider-ipc', () => {
         extensions: {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,
+          pssHistory: true,
         },
         limits: {
           maxDataBytes: LIMITS.maxDataBytes,
@@ -2600,8 +2606,32 @@ describe('swarm-provider-ipc', () => {
         expect(result.error.code).toBe(-32602);
       });
 
-      test('pss refuses history instead of ignoring it (#1157)', async () => {
+      test('pss history asks the registry for the mailbox (#1157)', async () => {
         mockMessagingGranted();
+        mockReachable();
+        mockResolvePssTopicHex.mockReturnValue(PSS_TOPIC_HEX);
+        mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-3' });
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+
+        const result = await invokeProvider(
+          'swarm_subscribe',
+          { kind: 'pss', topic: 'dm:alice', history: true },
+          ORIGIN,
+          META
+        );
+        expect(result.result).toEqual({ subscriptionId: 'sub-3', kind: 'pss', key: PSS_TOPIC_HEX });
+        expect(mockRegistrySubscribe).toHaveBeenCalledWith({
+          origin: ORIGIN,
+          webContentsId: 7,
+          kind: 'pss',
+          key: PSS_TOPIC_HEX,
+          history: true,
+        });
+      });
+
+      test('history is refused on a node Freedom does not run itself (#1157)', async () => {
+        mockMessagingGranted();
+        mockIsManagedAntNode.mockReturnValueOnce(false);
         const result = await invokeProvider(
           'swarm_subscribe',
           { kind: 'pss', topic: 'dm:alice', history: true },
@@ -2627,10 +2657,13 @@ describe('swarm-provider-ipc', () => {
         result = await invokeProvider('swarm_subscribe', { kind: 'pss', topic: 't', history: false }, ORIGIN, META);
         expect(result.result).toMatchObject({ subscriptionId: 'sub-1', kind: 'pss' });
 
+        expect(mockRegistrySubscribe).toHaveBeenLastCalledWith(expect.not.objectContaining({ history: true }));
+
         mockDeriveGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
         mockReachable();
         result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't', history: true }, ORIGIN, META);
         expect(result.result).toMatchObject({ subscriptionId: 'sub-1', kind: 'gsoc' });
+        expect(mockRegistrySubscribe).toHaveBeenLastCalledWith(expect.not.objectContaining({ history: true }));
       });
 
       test('pss rejects an address param', async () => {

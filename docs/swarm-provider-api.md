@@ -160,7 +160,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | Reason                                                                                                          | Methods                                                                                                                  |
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
-| `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`; `swarm_subscribe` with `history: true` (`option: 'history'`)     |
+| `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`; `swarm_subscribe` `history` on a node without the mailbox        |
 | `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
 | `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`                                                                                                         |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
@@ -437,7 +437,8 @@ it serves a [permission manifest](#permission-manifests):
              | 'ultra-light-mode' | 'no-usable-stamps',
   publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
   features: ['messaging'],
-  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true },
+  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true,
+                pssHistory: boolean },  // the node has the PSS mailbox
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
             maxChunkPayloadBytes, maxMessageBytes, maxTargetDepth,
             maxSubscriptions }
@@ -642,14 +643,32 @@ Opens a long-lived subscription; messages arrive as `message` events.
 - `kind: 'gsoc'` with either `topic` or a 64-hex `address` (not both).
 - `kind: 'pss'` with `topic` (`address` is refused); receives PSS messages
   addressed to this node.
-- `history`: the SWIP's optional PSS mailbox, which would deliver messages
-  sent before the subscription. Freedom doesn't have it yet, so
-  `history: true` on a PSS subscription is refused with `unsupported_option`
-  (`data.option: 'history'`) rather than ignored. `false` is accepted, and
-  GSOC ignores the field, since a GSOC address has no backlog.
+- `history: true` (PSS only): the mailbox. When the subscription opens, the
+  node sweeps its neighborhood for PSS messages sent to it on the topic
+  earlier and delivers them along with live ones, so a page can catch up on
+  what arrived while it wasn't listening.
+  - It is a recent window, not the full backlog: it reaches back as far as
+    the node's sweep goes (minutes to hours on a busy neighborhood), and
+    messages whose postage expired are gone.
+  - Recovered messages look like live ones; `receivedAt` is when Freedom got
+    them. The sweep can overlap live delivery, and a reconnect after a
+    dropped node connection sweeps again (recovering what the outage
+    missed), so messages can arrive twice: give them ids of your own.
+  - The backlog can arrive before `swarm_subscribe` resolves. Attach your
+    `message` listener first, and match `subscription` once you have the id.
+  - Because PSS uses the node's key, the backlog also holds messages other
+    sites received on the same topic.
+  - Only Freedom's own node has the mailbox. With a reused or external node
+    (which may be Bee or an older Ant), `history: true` is refused with
+    `unsupported_option` (`data.option: 'history'`) before any prompt.
+    `swarm_getCapabilities` reports which in `extensions.pssHistory`.
+  - `history` must be a boolean. GSOC ignores it, since a GSOC address has
+    no backlog.
 
 `key` is the GSOC address or the PSS topic hash. Several subscriptions to the
-same `kind`/`key`, from any origins, share one node connection. Resolves
+same `kind`/`key`, from any origins, share one node connection, except that a
+history subscription gets one of its own (the node sweeps the backlog once per
+connection). Resolves
 once the node accepts the subscription (bounded at 30 s). Errors:
 `invalid_kind`, `invalid_topic`, `invalid_address`, `too_many_subscriptions`
 (`-32602`, 32 per origin); `establish_timeout`, `node_subscription_limit`,

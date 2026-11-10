@@ -552,6 +552,8 @@ async function handleGetCapabilities(origin) {
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        // swarm_subscribe's PSS `history` (the node's mailbox) works here.
+        pssHistory: nodeHasMailbox(),
       },
       limits: {
         maxDataBytes: LIMITS.maxDataBytes,
@@ -1997,19 +1999,18 @@ async function handleSubscribe(params, origin, meta) {
     return invalidParams('kind must be "gsoc" or "pss"', 'invalid_kind');
   }
 
-  // The PSS mailbox (`history`) is optional in the messaging SWIP, and Freedom
-  // doesn't have it yet. Refuse it rather than ignore it, so a page can tell it
-  // won't get messages sent while it wasn't listening (#1157). GSOC has no
-  // backlog, so the SWIP ignores `history` there.
+  // `history` asks for the PSS mailbox: messages sent to the node on this
+  // topic while nobody listened (#1157). GSOC has no backlog, so the SWIP
+  // ignores the field there.
   if (params.history !== undefined && typeof params.history !== 'boolean') {
     return invalidParams('history must be a boolean', 'invalid_params');
   }
-  if (kind === 'pss' && params.history === true) {
-    return invalidParams(
-      'history is not supported: only messages sent while subscribed are delivered',
-      'unsupported_option',
-      { option: 'history' }
-    );
+  const history = kind === 'pss' && params.history === true;
+  // Only Freedom's own Ant is known to have the mailbox (since v0.5.50). A
+  // reused or external node may be Bee or an older Ant, which would ignore
+  // `?history=true` without a word: refuse it there, as the SWIP asks.
+  if (history && !nodeHasMailbox()) {
+    return invalidParams('history is not available on this node', 'unsupported_option', { option: 'history' });
   }
 
   const hasTopic = params.topic !== undefined && params.topic !== null;
@@ -2115,6 +2116,7 @@ async function handleSubscribe(params, origin, meta) {
       webContentsId,
       kind,
       key,
+      ...(history && { history: true }),
     });
     log.info(`[SwarmProvider] subscribe succeeded for ${origin}: ${kind}:${key}`);
     return { result: { subscriptionId, kind, key } };
@@ -2226,6 +2228,14 @@ async function checkSwarmPreFlight() {
   } catch (err) {
     log.error('[SwarmProvider] Pre-flight check failed:', err.message);
     return { ok: false, reason: 'node-stopped' };
+  }
+}
+
+function nodeHasMailbox() {
+  try {
+    return require('../ant-manager').isManagedAntNode() === true;
+  } catch {
+    return false;
   }
 }
 

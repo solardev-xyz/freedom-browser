@@ -12,6 +12,12 @@
  * socket per (kind, key) and fans messages out to every subscription on
  * it. The socket is closed when its last subscription goes away.
  *
+ * A PSS subscription with `history` gets a socket of its own: the node
+ * sweeps its mailbox backlog once per socket, when it opens, so a
+ * subscriber joining an open shared socket would never get it. It doesn't
+ * cost one of the node's 8 pull pipelines (Ant runs one per neighborhood and
+ * attaches every socket for it), only a subscriber slot on that pipeline.
+ *
  * Establishment is bounded: the socket layer reconnects forever, so a
  * node that stops answering would otherwise leave a subscription pending
  * for the life of the app while still holding a slot in the per-origin
@@ -25,6 +31,11 @@ const crypto = require('crypto');
 // receive messages (its id hasn't reached the page and, for a socket that
 // is still connecting, the page may already be gone).
 const DEFAULT_ESTABLISH_TIMEOUT_MS = 30_000;
+// A history subscription's backlog arrives as soon as its socket opens,
+// inside the establishment window, so it is held rather than dropped and
+// delivered once the subscription is established. Bounded like the node's
+// own per-subscriber buffer is.
+const MAX_HELD_HISTORY_MESSAGES = 256;
 
 // id → { id, origin, webContentsId, kind, key, socketKey, pending }
 const subscriptions = new Map();
@@ -79,7 +90,10 @@ function fanOut(socketKey, payload) {
     // `pending` subscriptions have not been acknowledged to the page yet:
     // the caller is still awaiting establishment, so the page has no id to
     // correlate the message with — and may not even be on screen any more.
-    if (sub && !sub.pending) deliver(sub, payload);
+    // A history subscription holds them instead (its backlog comes first).
+    if (!sub) continue;
+    if (!sub.pending) deliver(sub, payload);
+    else if (sub.held && sub.held.length < MAX_HELD_HISTORY_MESSAGES) sub.held.push(payload);
   }
 }
 
@@ -124,7 +138,7 @@ function withEstablishTimeout(established) {
  * @throws {Error} reason 'too_many_subscriptions' | 'node_subscription_limit'
  *   | 'establish_timeout' | 'subscription_cancelled' | socket errors
  */
-async function subscribe({ origin, webContentsId, kind, key }) {
+async function subscribe({ origin, webContentsId, kind, key, history = false }) {
   if (countByOrigin(origin) >= maxSubscriptionsPerOrigin) {
     throw semanticError(
       'too_many_subscriptions',
@@ -132,15 +146,17 @@ async function subscribe({ origin, webContentsId, kind, key }) {
     );
   }
 
-  const socketKey = `${kind}:${key}`;
+  const subscriptionId = crypto.randomBytes(16).toString('hex');
+  const withHistory = history === true && kind === 'pss';
+  const socketKey = withHistory ? `${kind}:${key}:history:${subscriptionId}` : `${kind}:${key}`;
   let socket = sockets.get(socketKey);
   if (!socket) {
-    const handle = openSocket({ kind, key }, { onMessage: (payload) => fanOut(socketKey, payload) });
+    const target = withHistory ? { kind, key, history: true } : { kind, key };
+    const handle = openSocket(target, { onMessage: (payload) => fanOut(socketKey, payload) });
     socket = { handle, subIds: new Set() };
     sockets.set(socketKey, socket);
   }
 
-  const subscriptionId = crypto.randomBytes(16).toString('hex');
   const subscription = {
     id: subscriptionId,
     origin,
@@ -149,6 +165,7 @@ async function subscribe({ origin, webContentsId, kind, key }) {
     key,
     socketKey,
     pending: true,
+    ...(withHistory && { held: [] }),
   };
   subscriptions.set(subscriptionId, subscription);
   socket.subIds.add(subscriptionId);
@@ -168,6 +185,11 @@ async function subscribe({ origin, webContentsId, kind, key }) {
   }
 
   subscription.pending = false;
+  // Release what a history subscription held while it established; a failed
+  // or cancelled one was removed above, and its held messages with it.
+  const held = subscription.held || [];
+  delete subscription.held;
+  for (const payload of held) deliver(subscription, payload);
   return { subscriptionId };
 }
 

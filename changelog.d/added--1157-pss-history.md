@@ -1,0 +1,2 @@
+- Swarm apps can catch up on PSS messages that arrived while they weren't open, with `history: true` on a subscription ([#1157](https://github.com/solardev-xyz/freedom-browser/issues/1157))
+  - The node delivers a recent window of earlier messages along with live ones

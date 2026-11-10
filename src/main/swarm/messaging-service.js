@@ -281,13 +281,19 @@ function toPayloadBuffer(wsData) {
 /**
  * Open a long-lived subscription socket to the node.
  *
- * @param {{ kind: 'gsoc'|'pss', key: string }} target - `key` is the 64-hex
- *   GSOC/SOC address (gsoc) or the 64-hex hashed topic (pss).
+ * @param {{ kind: 'gsoc'|'pss', key: string, history?: boolean }} target - `key`
+ *   is the 64-hex GSOC/SOC address (gsoc) or the 64-hex hashed topic (pss).
+ *   `history` (pss only) asks the node to sweep its recent mailbox backlog
+ *   when the socket opens, so messages sent while nobody listened arrive
+ *   too. A reconnect sweeps again, which recovers what the outage missed
+ *   and can deliver some messages twice.
  * @param {{ onMessage: (payload: Buffer) => void }} handlers
  * @returns {{ established: Promise<void>, cancel: () => void }}
  */
-function openSubscriptionSocket({ kind, key }, { onMessage }) {
-  const path = kind === 'gsoc' ? `/gsoc/subscribe/${key}` : `/pss/subscribe/${key}`;
+function openSubscriptionSocket({ kind, key, history = false }, { onMessage }) {
+  const path = kind === 'gsoc'
+    ? `/gsoc/subscribe/${key}`
+    : `/pss/subscribe/${key}${history ? '?history=true' : ''}`;
   const url = `${wsBaseUrl()}${path}`;
 
   let cancelled = false;

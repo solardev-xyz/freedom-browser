@@ -1,2 +1,0 @@
-- In `window.swarm`, unsubscribing always succeeds, and asking a PSS subscription for missed messages (`history`) is refused rather than silently ignored ([#1157](https://github.com/solardev-xyz/freedom-browser/issues/1157))
-  - Unsubscribing an id that is already closed used to fail with `subscription_not_found`
