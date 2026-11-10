@@ -15,6 +15,8 @@ pub struct StartupLock {
 }
 
 impl StartupLock {
+    pub(super) fn is_held(&self) -> bool { self.held }
+
     pub fn open(home: &Path, user: Option<&str>) -> io::Result<Self> {
         #[cfg(windows)]
         let file = protected_file(&home.join(".freedom-startup-v1.lock"), user)?;

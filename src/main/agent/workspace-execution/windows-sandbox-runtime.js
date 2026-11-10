@@ -21,7 +21,7 @@ async function resolveWindowsSandbox(options = {}) {
     throw new Error('Windows sandbox helper is incompatible; rebuild it');
   }
   const sourceHash = crypto.createHash('sha256');
-  for (const name of ['src/main.rs', 'src/startup_lock.rs']) {
+  for (const name of ['src/main.rs', 'src/startup_lock.rs', 'src/capability_cache.rs']) {
     const source = await fs.promises.readFile(path.join(__dirname, 'native/windows', name), 'utf8');
     sourceHash.update(name + '\0').update(source.replace(/\r\n/g, '\n'));
   }
