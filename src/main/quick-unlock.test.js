@@ -278,6 +278,25 @@ describe('quick-unlock', () => {
         error: 'Incorrect password',
       });
     });
+
+    test('a Touch ID unlock resets the count like a right typed password', async () => {
+      const verifyPassword = byPassword();
+      const { mod } = setup(verifyPassword);
+      for (let i = 0; i < 3; i += 1) await mod.enableQuickUnlock('wrong');
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+
+      // Count and lock-out are cleared: three wrong typed passwords are
+      // free again (each is checked, none refused) before any lock-out.
+      for (let i = 0; i < 3; i += 1) {
+        await expect(mod.enableQuickUnlock('wrong')).resolves.toEqual({
+          success: false,
+          error: 'Incorrect password',
+        });
+      }
+      expect(verifyPassword).toHaveBeenCalledTimes(7);
+      const locked = await mod.enableQuickUnlock('right');
+      expect(locked.error).toMatch(/Too many wrong passwords/);
+    });
   });
 
   // Security audit O-8: after Touch ID, main finishes the job itself and

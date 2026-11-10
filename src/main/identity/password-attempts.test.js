@@ -35,6 +35,15 @@ describe('wrong-password back-off (K-4)', () => {
     expect(attempts.state()).toEqual({ failures: 0, blockedUntil: 0 });
   });
 
+  test('a right password checked outside the back-off (Touch ID) also resets it', async () => {
+    const attempts = createPasswordAttempts({ now: () => 0 });
+    for (let i = 0; i < 3; i += 1) await attempts.withPasswordAttempt(wrong).catch(() => {});
+    expect(attempts.state().blockedUntil).toBeGreaterThan(0);
+    attempts.noteRightPassword();
+    expect(attempts.state()).toEqual({ failures: 0, blockedUntil: 0 });
+    await expect(attempts.withPasswordAttempt(right)).resolves.toBe('ok');
+  });
+
   test('other errors do not count; parallel guesses run one at a time', async () => {
     const attempts = createPasswordAttempts({ now: () => 0 });
     await attempts.withPasswordAttempt(() => Promise.reject(new Error('No vault found'))).catch(() => {});

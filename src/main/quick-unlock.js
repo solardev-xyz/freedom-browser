@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const { getIdentityDataDir, getQuickUnlockCredentialPath } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const vault = require('./identity/vault');
-const { withPasswordAttempt } = require('./identity/password-attempts');
+const { withPasswordAttempt, noteRightPassword } = require('./identity/password-attempts');
 
 const CREDENTIAL_VERSION = 2;
 
@@ -118,8 +118,11 @@ async function verifyTypedPassword(password) {
 // prompt, not from a guess, so it stays outside the back-off. A lock-out
 // from wrong typed passwords doesn't block Touch ID, and a stale stored
 // credential (vault password changed elsewhere) doesn't add to the count.
+// A stored password that checks out is still a right password, so it resets
+// the count like a typed one would.
 async function verifyStoredPassword(password) {
   await vault.verifyPassword(getIdentityDataDir(), password);
+  noteRightPassword();
 }
 
 /**

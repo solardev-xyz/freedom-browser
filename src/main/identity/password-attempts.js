@@ -4,7 +4,11 @@
  * Every vault password check in main (unlock, mnemonic and private-key
  * export, password change, vault delete, quick-unlock enrolment) goes
  * through withPasswordAttempt. Touch ID quick unlock doesn't: its password
- * comes from secure storage behind a biometric prompt, not from a guess.
+ * comes from secure storage behind a biometric prompt, not from a guess,
+ * so it is never refused by a lock-out and a stale stored password never
+ * adds to the count. A stored password that does check out still proves
+ * the user is present, so it calls noteRightPassword, which resets the
+ * count just as a right typed password does.
  *
  * The first FREE_FAILURES wrong passwords in a row cost nothing extra;
  * after that each one locks password checks out for BASE_DELAY_MS,
@@ -83,13 +87,20 @@ function createPasswordAttempts({ now = monotonicNow, limits = LIMITS } = {}) {
     return run;
   }
 
+  /**
+   * A right password checked outside the back-off (Touch ID's stored one).
+   * Resets the count and any lock-out, as a right typed password would.
+   */
+  function noteRightPassword() {
+    failures = 0;
+    blockedUntil = 0;
+  }
+
   return {
     withPasswordAttempt,
+    noteRightPassword,
     state: () => ({ failures, blockedUntil }),
-    reset: () => {
-      failures = 0;
-      blockedUntil = 0;
-    },
+    reset: noteRightPassword,
   };
 }
 
@@ -100,5 +111,6 @@ module.exports = {
   PasswordAttemptsThrottled,
   createPasswordAttempts,
   withPasswordAttempt: (check) => shared.withPasswordAttempt(check),
+  noteRightPassword: () => shared.noteRightPassword(),
   _resetPasswordAttempts: () => shared.reset(),
 };
