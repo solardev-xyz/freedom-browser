@@ -644,6 +644,62 @@ describe('names over IPNS', () => {
     expect(resolveEnsContent).toHaveBeenCalledTimes(2);
   });
 
+  test.each([
+    ['another URL', 'https://elsewhere.example/'],
+    ['the bound key itself', `ipns://${IPNS_KEY}/`],
+  ])('an error page ends the active binding, whatever URL failed (%s)', async (_label, failed) => {
+    const resolveEnsContent = answers(IPNS_B58);
+    const { documents, guest, nonce: n } = bound({ resolveEnsContent });
+    expect((await documents.attest(eventFrom(guest), n)).requester.key).toBe('example.com');
+    guest.commitErrorPage(failed);
+    // A later raw navigation to the key gets no name.
+    guest.commit(`ipns://${IPNS_KEY}/`);
+    const raw = nonce();
+    expect(documents.hello(eventFrom(guest), { nonce: raw }).ok).toBe(true);
+    expect((await documents.attest(eventFrom(guest), raw)).requester).toMatchObject({
+      transportKey: `ipns://${IPNS_KEY}`,
+      key: `ipns://${IPNS_KEY}`,
+    });
+    expect(resolveEnsContent).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ['another URL', 'https://elsewhere.example/'],
+    ['the bound key itself', `ipns://${IPNS_KEY}/`],
+  ])('an error page takes a held binding, whatever URL failed (%s)', async (_label, failed) => {
+    const resolveEnsContent = answers(IPNS_B58);
+    const { documents } = setup({ resolveEnsContent });
+    const { guest } = open(documents);
+    expect(documents.bindName({ guest: guest.id, name: 'example.com', key: IPNS_KEY })).toBe(true);
+    guest.commitErrorPage(failed);
+    guest.commit(`ipns://${IPNS_KEY}/`);
+    const raw = nonce();
+    expect(documents.hello(eventFrom(guest), { nonce: raw }).ok).toBe(true);
+    expect((await documents.attest(eventFrom(guest), raw)).requester.key).toBe(`ipns://${IPNS_KEY}`);
+    expect(resolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('a cancelled load keeps a held binding and the active one', async () => {
+    const resolveEnsContent = jest.fn(async (name) => ({
+      type: 'ok',
+      protocol: 'ipns',
+      decoded: name === 'other.example' ? 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG' : IPNS_B58,
+    }));
+    const { documents, guest } = bound({ resolveEnsContent });
+    guest.failLoad('https://elsewhere.example/', { code: -3 });
+    guest.commit(`ipns://${IPNS_KEY}/two`);
+    const two = nonce();
+    documents.hello(eventFrom(guest), { nonce: two });
+    expect((await documents.attest(eventFrom(guest), two)).requester.key).toBe('example.com');
+
+    expect(documents.bindName({ guest: guest.id, name: 'other.example', key: OTHER_IPNS_KEY })).toBe(true);
+    guest.failLoad(`ipns://${OTHER_IPNS_KEY}/`, { code: -3 });
+    guest.commit(`ipns://${OTHER_IPNS_KEY}/`);
+    const other = nonce();
+    documents.hello(eventFrom(guest), { nonce: other });
+    expect((await documents.attest(eventFrom(guest), other)).requester.key).toBe('other.example');
+  });
+
   test('a held binding does not displace an active one the commit stays on', async () => {
     const { documents, guest } = bound({ resolveEnsContent: answers(IPNS_B58) });
     expect(documents.bindName({ guest: guest.id, name: 'other.example', key: OTHER_IPNS_KEY })).toBe(true);

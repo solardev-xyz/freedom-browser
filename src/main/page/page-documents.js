@@ -285,8 +285,8 @@ function createPageDocuments(deps = {}) {
    * fragment, `pushState`) keep it. An error page that replaces the document
    * commits with `did-fail-provisional-load` instead of
    * `did-frame-navigate`; it ends the document and starts none, so the error
-   * page's hello finds no document. A cancelled or uncommitted load keeps
-   * the document.
+   * page's hello finds no document, and ends any name binding, held or
+   * active. A cancelled or uncommitted load keeps the document.
    */
   function track(contents) {
     if (!contents || !Number.isInteger(contents.id) || guests.has(contents.id)) return;
@@ -306,7 +306,13 @@ function createPageDocuments(deps = {}) {
       'did-fail-provisional-load',
       (_event, code, _description, url, isMainFrame, processId, routingId) => {
         if (isMainFrame !== true || guests.get(contents.id) !== state) return;
-        if (replacedByErrorPage(contents, code, url, processId, routingId)) endCurrent(state);
+        if (!replacedByErrorPage(contents, code, url, processId, routingId)) return;
+        endCurrent(state);
+        // An error page is a commit, and not one on any IPNS key, whatever
+        // URL failed: it takes a held binding and ends the active one. The
+        // chrome binds again on its next navigation to the name.
+        state.pendingBind = null;
+        state.binding = null;
       }
     );
     contents.once('destroyed', () => {
