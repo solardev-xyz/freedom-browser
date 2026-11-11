@@ -70,6 +70,8 @@ function deriveAllKeys(mnemonic) {
   // Derive Ed25519 keys via SLIP-0010
   const radicleKey = deriveEd25519Key(seed, PATHS.RADICLE);
   const ipfsKey = deriveEd25519Key(seed, PATHS.IPFS);
+  // The BIP-39 seed opens every key above; nothing needs it past here (K-1).
+  seed.fill(0);
 
   return {
     userWallet,
