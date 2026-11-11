@@ -225,6 +225,29 @@ describe('profile paths', () => {
     });
   });
 
+  // freedom-core design 0008, "Spawn and lock": the service's own HOME, an
+  // empty owner-only directory of the profile's, whatever its Radicle home.
+  test("freedom-radicled's HOME: the profile's radicled-home, whichever its Radicle home", () => {
+    const appRoot = path.join(track(createTempUserDataDir()), 'Freedom');
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    const catalog = { source: 'catalog', appRoot, metadata: { slot: 2 } };
+    const expected = path.join(userDataDir, 'radicled-home');
+
+    const paths = loadPaths(userDataDir, { activeProfile: catalog });
+    expect(paths.RADICLED_HOME_DIR).toBe('radicled-home');
+    expect(paths.getRadicledHomeDir()).toBe(expected);
+    expect(fs.statSync(expected).isDirectory()).toBe(true);
+    expect(fs.readdirSync(expected)).toEqual([]);
+    if (process.platform !== 'win32') expect(fs.statSync(expected).mode & 0o777).toBe(0o700);
+    // The short Radicle home is elsewhere, outside userData.
+    expect(paths.getComponentDataDirs().radicleHome).toBe(path.join(appRoot, 'R', '2'));
+
+    // The legacy home, and an override, leave it where it is.
+    expect(loadPaths(userDataDir).getRadicledHomeDir()).toBe(expected);
+    process.env.FREEDOM_RADICLE_DATA = track(createTempUserDataDir());
+    expect(loadPaths(userDataDir).getRadicledHomeDir()).toBe(expected);
+  });
+
   (process.platform === 'win32' ? test.skip : test)(
     'node and identity data dirs are owner-only, older 0755 ones narrowed (K-3)',
     async () => {

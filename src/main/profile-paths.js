@@ -7,6 +7,9 @@ const { ensurePrivateDir } = require('./private-files');
 
 const RADICLE_SOCKET_PATH_LIMIT = 100;
 const RADICLE_SHORT_HOME_DIR = 'R';
+// freedom-radicled's own `HOME` (freedom-core design 0008, "Spawn and lock"),
+// under the profile's userData directory, beside its `radicle-data`.
+const RADICLED_HOME_DIR = 'radicled-home';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -283,6 +286,19 @@ async function prepareRadicleDataDir() {
   return ensurePrivateDir(radicleDir);
 }
 
+/**
+ * The empty directory freedom-radicled gets as its `HOME` (freedom-core
+ * design 0008, "Spawn and lock"), so the user's own never reaches it: the
+ * profile's `<userData>/radicled-home`, owner-only. It is the profile's,
+ * whichever Radicle home the profile has (the short one, `radicle-data` or
+ * `FREEDOM_RADICLE_DATA`): it holds no Radicle data, nothing places a socket
+ * in it, and it goes with the profile's userData directory. The service's
+ * confinement grants it read-write, beside the Radicle home (design 0010).
+ */
+function getRadicledHomeDir() {
+  return ensurePrivateDir(path.join(app.getPath('userData'), RADICLED_HOME_DIR));
+}
+
 // Each managed component's data directory: its default name under a
 // profile's userData directory, and the variable that overrides it.
 const COMPONENT_DATA_DIRS = Object.freeze({
@@ -365,6 +381,7 @@ function createProfileTempDir(prefix) {
 
 module.exports = {
   RADICLE_STAGING_INFIX,
+  RADICLED_HOME_DIR,
   createProfileTempDir,
   getAgentDataDir,
   getAntDataDir,
@@ -379,6 +396,7 @@ module.exports = {
   getProfileUserDataDir,
   getQuickUnlockCredentialPath,
   getRadicleDataDir,
+  getRadicledHomeDir,
   getTorDataDir,
   prepareRadicleDataDir,
 };

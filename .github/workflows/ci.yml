@@ -529,6 +529,17 @@ jobs:
         env:
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
 
+      # The service's client against the same binary (design 0008, "Process
+      # model" and Errors): rad.hello with its confinement, in an
+      # environment that holds what the service refuses (RAD_*, GIT_*,
+      # SSH_AUTH_SOCK, the user's HOME); a start step's error, then exit 0
+      # and no restart; and the start steps before the node, with no network.
+      - name: freedom-radicled client (real binary)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/radicle/radicled-client.integration.test.js
+        env:
+          FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
+
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
       - name: Verify the win-arm64 release asset
