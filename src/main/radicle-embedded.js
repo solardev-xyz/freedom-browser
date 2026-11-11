@@ -19,6 +19,7 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const log = require('./logger');
+const { redactForLog } = require('./private/private-log-context');
 const path = require('path');
 const fs = require('fs');
 const {
@@ -247,7 +248,13 @@ async function cloneRepoWithProgress(rid, timeoutMs = 120000, onProgress = () =>
     try {
       onProgress(JSON.parse(eventRaw));
     } catch (err) {
-      log.warn('[RadicleEmbedded] Ignoring invalid clone progress event:', err.message);
+      // PRIVATE MODE GUARD (#1073): a private window's seed or sync gets
+      // here in its log context, and JSON.parse's text quotes part of the
+      // event, whose fetch errors can name the Radicle storage path.
+      log.warn(
+        '[RadicleEmbedded] Ignoring invalid clone progress event:',
+        redactForLog(err.message)
+      );
     }
   });
   return parseResult(raw);
