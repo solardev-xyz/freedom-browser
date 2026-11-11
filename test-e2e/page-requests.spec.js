@@ -63,7 +63,8 @@ const state = (electronApp) =>
     trace: globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice(),
   }));
 
-const activeGuestId = (win) => win.evaluate(() => document.querySelector('webview:not(.hidden)').getWebContentsId());
+const activeGuestId = (win) =>
+  win.evaluate(() => document.querySelector('webview:not(.hidden)')?.getWebContentsId() ?? null);
 
 const inPage = (win, js) =>
   win.evaluate((code) => document.querySelector('webview:not(.hidden)').executeJavaScript(code), js);
@@ -110,8 +111,13 @@ test('the page request channels answer only the document that asked (0011 PRQ-2)
   // A tab opened after the routes were set, so its boot switch carries them.
   const before = await activeGuestId(win);
   await win.locator('[data-test="new-tab-btn"]').click();
-  await expect.poll(() => activeGuestId(win)).not.toBe(before);
-  const id = await activeGuestId(win);
+  let id = null;
+  await expect
+    .poll(async () => {
+      id = await activeGuestId(win).catch(() => null);
+      return id !== null && id !== before;
+    })
+    .toBe(true);
 
   // The app's preload says hello, and a routed request reaches main as this
   // document's: its key, its URL, its guest.

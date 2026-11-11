@@ -40,6 +40,32 @@ test('a private webview gets no provider at all', () => {
   expect(boot).not.toHaveProperty('ethereum');
 });
 
+// freedom-core design 0011, PRQ-2: the E2E harness's routes through
+// page:request. Main passes them only in test mode (page-requests.js
+// `testPageRoutes`, empty otherwise); the switch carries them only when
+// there are some, and never to a private webview, which has no providers.
+test('the harness\'s page routes ride on a normal webview\'s switch only when there are some', () => {
+  expect(decode(buildWebviewBootSwitch({ isPrivate: false }))).not.toHaveProperty('testPageRoutes');
+  expect(decode(buildWebviewBootSwitch({ isPrivate: false, testPageRoutes: [] }))).not.toHaveProperty('testPageRoutes');
+  expect(
+    decode(buildWebviewBootSwitch({ isPrivate: false, testPageRoutes: ['swarm:swarm_readChunk', 7] })).testPageRoutes
+  ).toEqual(['swarm:swarm_readChunk']);
+  expect(
+    decode(buildWebviewBootSwitch({ isPrivate: true, testPageRoutes: ['swarm:swarm_readChunk'] }))
+  ).not.toHaveProperty('testPageRoutes');
+});
+
+test('the app\'s instance routes nothing until the harness enables its hooks', () => {
+  jest.isolateModules(() => {
+    const { testPageRoutes, enablePageRequestTestHooks } = require('./page/page-requests');
+    expect(testPageRoutes()).toEqual([]);
+    const hooks = enablePageRequestTestHooks();
+    expect(testPageRoutes()).toEqual([]);
+    hooks.setRoutes(['swarm:swarm_readChunk']);
+    expect(testPageRoutes()).toEqual(['swarm:swarm_readChunk']);
+  });
+});
+
 test('only an explicit true is private', () => {
   expect(decode(buildWebviewBootSwitch({})).isPrivate).toBe(false);
 });
