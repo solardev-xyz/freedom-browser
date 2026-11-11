@@ -1,1 +1,1 @@
-- A `HEAD` request for a file on a `bzz://` page now reports `Accept-Ranges: bytes`, so readers that check for range support before fetching parts of a file (lazy SQLite and similar) no longer fall back to downloading all of it ([#169](https://github.com/solardev-xyz/freedom-browser/issues/169))
+- A `HEAD` request for a file on a `bzz://` page reports `Accept-Ranges: bytes`, matching the byte-range reads its `GET` already supports ([#169](https://github.com/solardev-xyz/freedom-browser/issues/169))
