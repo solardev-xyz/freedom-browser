@@ -98,7 +98,20 @@ test('connect a phone account and sign a message through the bridge page', async
 
   await win.fill('#connect-phone-name-input', 'E2E Phone');
   await win.click('#connect-phone-submit');
-  await expect(win.locator('#connect-phone-success')).toBeVisible({ timeout: 15_000 });
+
+  // Main has the phone sign a check as the account before adding it
+  // (#1078): a fresh session, in the signing panel.
+  await expect(win.locator('#sidebar-remote-signing')).toBeVisible({ timeout: 30_000 });
+  await expect(win.locator('#remote-signing-request-label')).toHaveText(/show this account is yours/);
+  await expect(win.locator('#sidebar-remote-signing')).toHaveAttribute(
+    'data-bridge-url',
+    /#openlv:\/\//
+  );
+  const checkUrl = await win.locator('#sidebar-remote-signing').getAttribute('data-bridge-url');
+  expect(checkUrl).not.toBe(connectUrl);
+  await scanQr(phonePage, services.bridgeOrigin, checkUrl);
+
+  await expect(win.locator('#connect-phone-success')).toBeVisible({ timeout: 45_000 });
   await expect(win.locator('#connect-phone-result-address')).toHaveText(phoneWallet.address);
   await win.click('#connect-phone-done');
 

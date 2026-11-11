@@ -1,6 +1,7 @@
 import { state } from './state.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { boundPopoverToViewport } from './popover-bounds.js';
+import { isPrivateWindow } from './private-mode.js';
 
 // DOM references
 let bridgeBtn = null;
@@ -349,7 +350,9 @@ export async function updateGithubBridgeIcon() {
   const addressInput = document.getElementById('address-input');
   const url = addressInput?.value || '';
 
-  if (isGitHubRepoUrl(url)) {
+  // An import seeds a repository that outlives the window, so a private
+  // window offers none (R-9); main refuses a private sender's import too.
+  if (!isPrivateWindow() && isGitHubRepoUrl(url)) {
     currentUrl = url;
     await refreshBridgeButtonForUrl(url);
   } else {

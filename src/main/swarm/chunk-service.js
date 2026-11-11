@@ -8,6 +8,7 @@
 const { PrivateKey, BeeResponseError, Identifier, EthAddress } = require('@ethersphere/bee-js');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { noUsableBatchError } = require('./batch-errors');
+const { currentVaultEpoch, assertVaultEpoch } = require('../identity/vault-epoch');
 
 function spanToResult(span) {
   const value = span.toBigInt();
@@ -261,12 +262,18 @@ async function readData(reference, root) {
 }
 
 async function writeSingleOwnerChunk(signerPrivateKey, identifier, data, options = {}) {
+  // options.epoch: the vault epoch the key was read in. A lock since then
+  // stops the write before signing, and before the signed chunk leaves
+  // (K-1).
+  const epoch = Number.isSafeInteger(options.epoch) ? options.epoch : currentVaultEpoch();
+  assertVaultEpoch(epoch);
   const bee = getBee();
   const signer = new PrivateKey(signerPrivateKey);
   const chunk = bee.makeContentAddressedChunk(data, options.span);
   const soc = chunk.toSingleOwnerChunk(identifier, signer);
   const batchId = await selectChunkBatch();
 
+  assertVaultEpoch(epoch);
   await uploadSingleOwnerChunk(bee, batchId, soc);
 
   return {

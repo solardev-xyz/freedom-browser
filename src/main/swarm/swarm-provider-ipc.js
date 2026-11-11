@@ -38,7 +38,16 @@ const { publishData, publishFilesFromContent, getUploadStatus } = require('./pub
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
-const { getOriginEntry, getFeed, setFeed, updateFeedReference, hasFeedGrant, getAllFeeds } = require('./feed-store');
+const { currentVaultEpoch } = require('../identity/vault-epoch');
+const {
+  getOriginEntry,
+  getFeed,
+  setFeed,
+  updateFeedReference,
+  hasFeedGrant,
+  getAllFeeds,
+  isIdentitySharedWithOtherOrigins,
+} = require('./feed-store');
 const {
   publishChunk,
   readChunk,
@@ -369,6 +378,20 @@ function reservePermissionFreeReadBytes(origin, bytes) {
 }
 
 /**
+ * The read budget as feed-service meters a feed read (readFeedPayload):
+ * what came off the network is charged, what is about to be read is
+ * reserved first, and an entry larger than the whole byte budget is refused
+ * as data_too_large.
+ */
+function permissionFreeReadMeter(origin) {
+  return {
+    maxBytes: getReadBudget(origin).maxBytes,
+    charge: (bytes) => consumePermissionFreeReadBudget(origin, { bytes }),
+    reserve: (bytes) => reservePermissionFreeReadBytes(origin, bytes),
+  };
+}
+
+/**
  * Execute a Swarm provider method.
  * @param {string} method
  * @param {*} params
@@ -634,7 +657,9 @@ async function handlePublishData(params, origin) {
 
 // Windows device names: a path segment named one of these (any case, with or
 // without an extension, trailing dots/spaces ignored) opens the device instead
-// of a file in the temp directory publishFilesFromContent writes to.
+// of a file on Windows. publishFiles no longer writes the files to disk
+// (#1052), but these paths stay refused: a site that uses them can't be saved
+// to a Windows disk, and the paths a page may publish stay what they were.
 const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])$/i;
 
 function isWindowsReservedName(segment) {
@@ -679,8 +704,8 @@ function validateVirtualPath(p) {
       return { valid: false, message: '"." and ".." segments are not allowed' };
     }
     // Win32 path normalization trims a trailing dot or space from every
-    // segment, so 'foo.' would land on 'foo' (silently overwriting it in the
-    // temp directory) and '.. ' would trim toward '..'.
+    // segment, so 'foo.' would land on 'foo' (silently overwriting it once
+    // saved to a Windows disk) and '.. ' would trim toward '..'.
     if (/[. ]$/.test(seg)) {
       return { valid: false, message: 'Path segments may not end in a dot or space' };
     }
@@ -711,7 +736,7 @@ function normalizeBytes(bytes) {
 }
 
 /**
- * Handle swarm_publishFiles: validate, enforce limits, write to temp dir, publish.
+ * Handle swarm_publishFiles: validate, enforce limits, publish the files as a collection.
  */
 async function handlePublishFiles(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -1028,6 +1053,25 @@ async function handleWriteSingleOwnerChunk(params, origin) {
 
   const originEntry = getOriginEntry(origin);
   const activeIdentity = getActiveOriginIdentity(originEntry);
+  // SW-1: the identifier is the page's to choose, so under an identity other
+  // sites sign with too (the Ant wallet, an Ethereum wallet account, a
+  // publisher key another origin holds) a raw SOC could be another site's
+  // feed entry, keccak256(topic || index), written as that shared owner.
+  // Feeds stay available under such an identity: their topics are
+  // origin-namespaced. Raw SOCs need an identity only this site uses.
+  if (isIdentitySharedWithOtherOrigins(origin, activeIdentity)) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message:
+          'Single Owner Chunks need a publisher identity only this site uses; the active one is shared with other sites',
+        data: { reason: 'shared_identity' },
+      },
+    };
+  }
+  // The key is good for the vault epoch it is read in; the write checks it
+  // again before signing and uploading (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   try {
     signerKey = await resolveSignerKey(activeIdentity);
@@ -1049,7 +1093,10 @@ async function handleWriteSingleOwnerChunk(params, origin) {
   });
 
   try {
-    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, { span: span.value });
+    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, {
+      span: span.value,
+      epoch,
+    });
     updateEntry(historyEntry.id, {
       status: 'completed',
       reference: result.reference,
@@ -1376,6 +1423,8 @@ async function handleUpdateFeed(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
+  // The key is good for the vault epoch it is read in (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
@@ -1394,7 +1443,7 @@ async function handleUpdateFeed(params, origin) {
   });
 
   try {
-    const updateResult = await updateFeed(signerKey, topicString, reference);
+    const updateResult = await updateFeed(signerKey, topicString, reference, undefined, { epoch });
 
     updateFeedReference(origin, feedId, reference);
     updateEntry(historyEntry.id, { status: 'completed', ...updateResult, reference });
@@ -1466,6 +1515,8 @@ async function handleWriteFeedEntry(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
+  // The key is good for the vault epoch it is read in (K-1).
+  const epoch = currentVaultEpoch();
   let signerKey;
   const feedIdentity = getFeedIdentity(originEntry, existingFeed);
   try {
@@ -1485,7 +1536,7 @@ async function handleWriteFeedEntry(params, origin) {
   });
 
   try {
-    const result = await writeFeedPayload(signerKey, topicString, payload, { index });
+    const result = await writeFeedPayload(signerKey, topicString, payload, { index, epoch });
 
     updateEntry(historyEntry.id, { status: 'completed' });
     log.info(`[SwarmProvider] writeFeedEntry succeeded for ${origin}: feed=${name}, index=${result.index}`);
@@ -1499,9 +1550,12 @@ async function handleWriteFeedEntry(params, origin) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'index_already_exists' } } };
     }
 
-    // Translate SOC payload size errors
-    if (err.message && (err.message.includes('too large') || err.message.includes('payload size'))) {
-      return { error: { ...ERRORS.INVALID_PARAMS, message: 'Payload exceeds maximum SOC size', data: { reason: 'payload_too_large' } } };
+    // The page's payload, refused by feed-service. Matched by reason, not by
+    // text: a node's malformed answer can read "payload size … exceeds" too,
+    // and that is the node's failure, a retryable -32603 (#1054). The only
+    // payload it refuses is an empty one, so its own text is the message.
+    if (err.reason === 'payload_too_large') {
+      return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'payload_too_large' } } };
     }
 
     log.error(`[SwarmProvider] writeFeedEntry failed for ${origin}:`, err.message);
@@ -1511,7 +1565,14 @@ async function handleWriteFeedEntry(params, origin) {
 
 /**
  * Handle swarm_readFeedEntry: validate, resolve topic/owner, read feed entry.
- * Does NOT require feed grant or vault — read-only operation.
+ * Does NOT require feed grant or vault — read-only operation. One request
+ * against the permission-free read budget, like swarm_readData, and the
+ * entry's bytes against the byte budget as they are read: an explicit
+ * index's SOC is charged once read and the size its wrapped chunk's span
+ * gives is reserved before the node joins it; the latest entry is reserved
+ * from its declared length, or as it streams. An entry larger than the whole
+ * byte budget is data_too_large, and one that does not fit what is left of
+ * the window is rate_limited, without reading the rest of it.
  */
 async function handleReadFeedEntry(params, origin) {
   if (!params || typeof params !== 'object') {
@@ -1593,23 +1654,25 @@ async function handleReadFeedEntry(params, origin) {
   }
 
   try {
-    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index);
-
-    const base64Data = result.payload.toString('base64');
-    const byteBudgetError = consumePermissionFreeReadBudget(origin, {
-      bytes: result.payload.length,
-    });
-    if (byteBudgetError) return byteBudgetError;
+    // The entry's bytes are paid for as they are read, before they are held.
+    const result = await readFeedPayload(resolvedOwner, resolvedTopic, index, permissionFreeReadMeter(origin));
 
     return {
       result: {
-        data: base64Data,
+        data: result.payload.toString('base64'),
         encoding: 'base64',
         index: result.index,
         nextIndex: result.nextIndex,
       },
     };
   } catch (err) {
+    if (err.refusal) return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
     if (err.reason === 'feed_empty') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'feed_empty' } } };
     }
@@ -1780,7 +1843,8 @@ async function handleSendPss(params, origin) {
     await messagingService.sendPss({
       topic: params.topic,
       targets: targets.toLowerCase(),
-      recipient,
+      // The compressed SEC1 key, 66 hex, lowercased like `targets` (#1062).
+      recipient: recipient.toLowerCase(),
       data: payload,
     });
     return { result: { sent: true } };

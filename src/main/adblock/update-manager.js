@@ -37,6 +37,18 @@ const { refreshEngine, getEnabledFeedCategories } = require('./service');
 // aborted download stops pulling bytes.
 const IO_TIMEOUT_MS = 2 * 60 * 1000;
 
+// The signed manifest is a few KB of JSON (a version, a signature and one
+// entry per list). readFeedPayload holds a feed read to its meter's maxBytes;
+// this read pays no page's budget, so its meter only caps the size, well
+// above any real manifest, so an oversized entry is refused before it is
+// downloaded rather than held whole.
+const MANIFEST_MAX_BYTES = 1024 * 1024;
+const MANIFEST_READ_METER = Object.freeze({
+  maxBytes: MANIFEST_MAX_BYTES,
+  charge: () => null,
+  reserve: () => null,
+});
+
 function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
@@ -81,7 +93,12 @@ function withInactivityTimeout(start, ms) {
 async function defaultReadFeed() {
   const { Topic } = require('@ethersphere/bee-js');
   const { readFeedPayload } = require('../swarm/feed-service');
-  const { payload } = await readFeedPayload(FEED_OWNER_ADDRESS, Topic.fromString(FEED_TOPIC));
+  const { payload } = await readFeedPayload(
+    FEED_OWNER_ADDRESS,
+    Topic.fromString(FEED_TOPIC),
+    undefined,
+    MANIFEST_READ_METER
+  );
   return JSON.parse(payload.toString('utf-8'));
 }
 
@@ -319,4 +336,9 @@ async function runUpdateOnce(io = {}) {
   return { status: 'applied', version: manifest.version };
 }
 
-module.exports = { runUpdateOnce, _defaultDownloadBlob: defaultDownloadBlob };
+module.exports = {
+  runUpdateOnce,
+  MANIFEST_MAX_BYTES,
+  _defaultReadFeed: defaultReadFeed,
+  _defaultDownloadBlob: defaultDownloadBlob,
+};
