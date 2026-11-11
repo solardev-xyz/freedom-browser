@@ -1,0 +1,268 @@
+/**
+ * Tests for the Safe status card's error states (#1066 follow-up).
+ *
+ * Focus: a status check that fails offers a retry, and an activation that
+ * was sent but couldn't be verified (activateSafe's SAFE_UNVERIFIED with
+ * the deployment's hash) shows its own message with a re-check and never
+ * an Activate button, whatever the following status reads say, until one
+ * reports the Safe deployed.
+ */
+
+jest.mock('./send.js', () => ({ updateSendAvailability: jest.fn() }));
+jest.mock('./vault-unlock.js', () => ({ showVaultUnlock: jest.fn() }));
+
+const originalWindow = global.window;
+const originalDocument = global.document;
+
+const SENT_MESSAGE =
+  "Freedom sent the activation, but couldn't verify on Gnosis that it went through.";
+const STATUS_UNVERIFIED = "Freedom couldn't verify on Gnosis whether this account is activated.";
+
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+};
+
+/**
+ * A card whose innerHTML setter registers every `id="…"` it contains as a
+ * clickable element, which is all this module reads back from the DOM.
+ */
+function createDom() {
+  const elements = {};
+  const makeEl = (id) => {
+    const listeners = {};
+    const classes = new Set();
+    return {
+      id,
+      disabled: false,
+      textContent: '',
+      classList: {
+        add: (c) => classes.add(c),
+        remove: (c) => classes.delete(c),
+        contains: (c) => classes.has(c),
+      },
+      addEventListener: (type, fn) => {
+        (listeners[type] ||= []).push(fn);
+      },
+      click: () => (listeners.click || []).map((fn) => fn()),
+    };
+  };
+  const card = makeEl('safe-status-card');
+  let html = '';
+  Object.defineProperty(card, 'innerHTML', {
+    get: () => html,
+    set: (value) => {
+      html = String(value);
+      for (const key of Object.keys(elements)) {
+        if (key !== 'safe-status-card') delete elements[key];
+      }
+      for (const match of html.matchAll(/id="([^"]+)"/g)) {
+        const el = makeEl(match[1]);
+        if (
+          /class="[^"]*hidden[^"]*" id="safe-status-error"/.test(html) &&
+          match[1] === 'safe-status-error'
+        ) {
+          el.classList.add('hidden');
+        }
+        elements[match[1]] = el;
+      }
+    },
+  });
+  elements['safe-status-card'] = card;
+  return {
+    card,
+    document: {
+      getElementById: (id) => elements[id] || null,
+      // escapeHtml's text-node round trip.
+      createElement: () => {
+        let text = '';
+        return {
+          set textContent(v) {
+            text = String(v);
+          },
+          get innerHTML() {
+            return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          },
+        };
+      },
+    },
+    byId: (id) => elements[id] || null,
+  };
+}
+
+const READY = {
+  deployed: false,
+  chainId: 100,
+  executorIndex: 0,
+  executorAddress: '0x' + '11'.repeat(20),
+  executorBalance: '10000000000000000000',
+  estimatedCost: '1000000000000000',
+  needsFunds: false,
+};
+
+describe('safe-status card', () => {
+  let dom;
+  let mod;
+  let walletState;
+
+  beforeEach(async () => {
+    jest.resetModules();
+    dom = createDom();
+    global.document = dom.document;
+    global.window = {
+      wallet: {
+        getSafeStatus: jest.fn(),
+        activateSafe: jest.fn(),
+      },
+    };
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    ({ walletState } = await import('./wallet-state.js'));
+    walletState.derivedWallets = [
+      { index: 0, type: 'mnemonic', name: 'Main', address: READY.executorAddress },
+      { index: 5, type: 'safe', name: 'Team', address: '0x' + '55'.repeat(20) },
+      { index: 6, type: 'safe', name: 'Other', address: '0x' + '66'.repeat(20) },
+    ];
+    walletState.activeWalletIndex = 5;
+    mod = await import('./safe-status.js');
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test('a failed status check offers a retry that checks again', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({
+      success: false,
+      code: 'SAFE_UNVERIFIED',
+      error: STATUS_UNVERIFIED,
+    });
+    await mod.refreshSafeStatusCard();
+    expect(dom.card.innerHTML).toContain('verify on Gnosis whether');
+    expect(dom.byId('safe-status-activate')).toBeNull();
+    const retry = dom.byId('safe-status-retry');
+    expect(retry).not.toBeNull();
+
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await Promise.all(retry.click());
+    expect(window.wallet.getSafeStatus).toHaveBeenCalledTimes(2);
+    expect(dom.byId('safe-status-activate')).not.toBeNull();
+  });
+
+  async function activateSentUnverified() {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    window.wallet.activateSafe.mockResolvedValueOnce({
+      success: false,
+      code: 'SAFE_UNVERIFIED',
+      hash: '0x' + 'ab'.repeat(32),
+      error: SENT_MESSAGE,
+    });
+  }
+
+  test('a sent but unverified activation shows its message and no Activate, even when the next read fails', async () => {
+    await activateSentUnverified();
+    // The next status read would fail unverified: the card must still
+    // show the activation's own message, not the status read's.
+    window.wallet.getSafeStatus.mockResolvedValue({
+      success: false,
+      code: 'SAFE_UNVERIFIED',
+      error: STATUS_UNVERIFIED,
+    });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.card.innerHTML).toContain('sent the activation');
+    expect(dom.byId('safe-status-activate')).toBeNull();
+
+    await Promise.all(dom.byId('safe-status-retry').click());
+    expect(dom.card.innerHTML).toContain('sent the activation');
+    expect(dom.byId('safe-status-activate')).toBeNull();
+  });
+
+  test('a lagging "not deployed" read after a sent activation still offers no Activate', async () => {
+    await activateSentUnverified();
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+
+    // An endpoint behind the chain answers unverified 0x: status "ready".
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await Promise.all(dom.byId('safe-status-retry').click());
+    expect(dom.byId('safe-status-activate')).toBeNull();
+    expect(dom.card.innerHTML).toContain('sent the activation');
+
+    // Switching away and back doesn't bring Activate back either.
+    walletState.activeWalletIndex = 5;
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    expect(dom.byId('safe-status-activate')).toBeNull();
+
+    // A verified deployed answer clears it.
+    window.wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...READY, deployed: true },
+    });
+    await Promise.all(dom.byId('safe-status-retry').click());
+    expect(dom.card.classList.contains('hidden')).toBe(true);
+  });
+
+  test('an unverified status before anything was sent keeps Activate on a later ready read', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    // SAFE_UNVERIFIED with no hash: thrown before the deployment was sent.
+    window.wallet.activateSafe.mockResolvedValueOnce({
+      success: false,
+      code: 'SAFE_UNVERIFIED',
+      error: STATUS_UNVERIFIED,
+    });
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.byId('safe-status-activate')).not.toBeNull();
+    // …and the activation's error is shown on the re-rendered card.
+    const slot = dom.byId('safe-status-error');
+    expect(slot.textContent).toBe(STATUS_UNVERIFIED);
+    expect(slot.classList.contains('hidden')).toBe(false);
+  });
+
+  test('an activation error lands in the error slot even when the refresh itself fails', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    window.wallet.activateSafe.mockResolvedValueOnce({ success: false, error: 'RPC down' });
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: false, error: 'No chain source' });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.byId('safe-status-retry')).not.toBeNull();
+    expect(dom.byId('safe-status-error').textContent).toBe('RPC down');
+  });
+
+  test('an account switch during activation keeps the message off the other account', async () => {
+    await activateSentUnverified();
+    let release;
+    window.wallet.activateSafe.mockReset();
+    window.wallet.activateSafe.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      })
+    );
+    const clicked = dom.byId('safe-status-activate').click();
+
+    // The user switches to another Safe while the receipt is awaited.
+    walletState.activeWalletIndex = 6;
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    expect(dom.byId('safe-status-activate')).not.toBeNull();
+
+    release({ success: false, code: 'SAFE_UNVERIFIED', hash: '0xab', error: SENT_MESSAGE });
+    await Promise.all(clicked);
+    await flush();
+    expect(dom.card.innerHTML).not.toContain('sent the activation');
+    expect(dom.byId('safe-status-activate')).not.toBeNull();
+
+    // Back on the first Safe, the sent activation is remembered.
+    walletState.activeWalletIndex = 5;
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    expect(dom.card.innerHTML).toContain('sent the activation');
+    expect(dom.byId('safe-status-activate')).toBeNull();
+  });
+});

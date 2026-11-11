@@ -377,7 +377,10 @@ describe('activateSafe', () => {
 
   test('neither deploys nor marks on unverified code at the address (#1066)', async () => {
     stubChainState({ code: '0x60806040', verified: false, balance: DEPLOY_COST * 2n });
-    await expect(activateSafe(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    const err = await activateSafe(5).catch((e) => e);
+    expect(err).toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    // Nothing was sent: no hash, so the card may offer Activate again.
+    expect(err.hash).toBeUndefined();
     expect(mockDeploySafe).not.toHaveBeenCalled();
     expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
   });
@@ -408,10 +411,13 @@ describe('activateSafe', () => {
     stubCodeReads([{ code: '0x', verified: true }]);
     mockWaitForTransaction.mockResolvedValueOnce({ status: 'confirmed', verified: false });
 
-    await expect(activateSafe(5)).rejects.toMatchObject({
+    const sentErr = await activateSafe(5).catch((e) => e);
+    expect(sentErr).toMatchObject({
       code: 'SAFE_UNVERIFIED',
       message: /sent the activation, but couldn't verify/,
     });
+    // The sent deployment's hash rides on the error (the card keys on it).
+    expect(sentErr.hash).toBe('0x' + 'ab'.repeat(32));
     expect(mockDeploySafe).toHaveBeenCalledTimes(1);
     expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
     // The verified read after the receipt is what was asked.

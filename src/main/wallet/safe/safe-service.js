@@ -253,8 +253,8 @@ async function getSafeStatus(index) {
  * create another address than the record's, and `SAFE_UNVERIFIED` when
  * the chain shows code at the address that no verified source confirms.
  * After the deployment is sent, it also throws `SAFE_UNVERIFIED`, with
- * nothing marked, when neither its receipt nor the Safe's code is
- * verified (confirmDeployment).
+ * nothing marked and the deployment's `hash` on the error, when neither
+ * its receipt nor the Safe's code is verified (confirmDeployment).
  *
  * @param {number} index - Wallet index of the safe record
  * @returns {Promise<{safeAddress: string, hash?: string, alreadyDeployed?: boolean}>}
@@ -295,7 +295,7 @@ async function activateSafe(index) {
   if (receipt.status !== 'confirmed') {
     throw new Error('Safe deployment transaction failed on chain');
   }
-  await confirmDeployment(record, receipt);
+  await confirmDeployment(record, receipt, tx.hash);
   return { safeAddress, hash: tx.hash };
 }
 
@@ -310,7 +310,7 @@ async function activateSafe(index) {
  * neither does, nothing is marked and the Safe stays pending: activation
  * refuses with SAFE_UNVERIFIED, and the next status check reads again.
  */
-async function confirmDeployment(record, receipt) {
+async function confirmDeployment(record, receipt, hash) {
   if (receipt.verified === true) {
     await markSafeDeployed(record.index, DEPLOY_CHAIN_ID);
     return;
@@ -322,12 +322,17 @@ async function confirmDeployment(record, receipt) {
     console.warn('[SafeService] Could not verify the Safe deployment:', err.message);
   }
   if (!deployed) {
-    throw codedError(
+    const err = codedError(
       "Freedom sent the activation, but couldn't verify on Gnosis that it went through. " +
         'It checks again the next time you open this account. ' +
         'If it stays unverified, add an RPC provider in Settings.',
       SAFE_UNVERIFIED
     );
+    // The deployment's hash tells this SAFE_UNVERIFIED (sent) apart from
+    // the one thrown before anything was sent: the status card must not
+    // offer Activate again while a sent deployment is unverified.
+    err.hash = hash;
+    throw err;
   }
 }
 
