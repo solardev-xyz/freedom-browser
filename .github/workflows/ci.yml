@@ -1518,9 +1518,11 @@ jobs:
       # focus ring every chrome text field draws (`chrome-input-focus`, #246),
       # the shared sidebar sub-screen header shape (`sidebar-subscreen-headers`)
       # and the download shelf, whose dismissed card must stay dismissed for the
-      # rest of the transfer (`downloads`, #309), and the application menu's
-      # History menu, which reads private-window state (`history-menu`, #584).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
+      # rest of the transfer (`downloads`, #309), the application menu's
+      # History menu, which reads private-window state (`history-menu`, #584),
+      # and main's page documents, which number a tab's documents and bind each
+      # one's hello after its commit (`page-documents`, freedom-core 0011 PRQ-1).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1533,7 +1535,8 @@ jobs:
             test-e2e/sidebar-subscreen-headers.spec.js \
             test-e2e/downloads.spec.js \
             test-e2e/agent-review-layout.spec.js \
-            test-e2e/history-menu.spec.js
+            test-e2e/history-menu.spec.js \
+            test-e2e/page-documents.spec.js
 
       - name: Upload software rendering profile
         if: always()
