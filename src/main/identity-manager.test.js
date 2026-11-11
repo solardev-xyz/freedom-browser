@@ -1744,10 +1744,6 @@ describe('identity file repair at startup (K-3)', () => {
 
     const explained = `Freedom will not use ${dir} because it is a symbolic link.`;
     await expect(ipcMain.invoke('identity:get-vault-meta')).resolves.toBeNull();
-    await expect(ipcMain.invoke(IPC.IDENTITY_HAS_VAULT)).resolves.toEqual({
-      hasVault: false,
-      error: expect.stringContaining(explained),
-    });
     await expect(ipcMain.invoke(IPC.IDENTITY_GET_STATUS)).resolves.toEqual({
       error: expect.stringContaining(explained),
     });

@@ -734,8 +734,6 @@ contextBridge.exposeInMainWorld('serviceRegistry', {
 });
 
 contextBridge.exposeInMainWorld('identity', {
-  hasVault: () => ipcRenderer.invoke('identity:has-vault'),
-  isUnlocked: () => ipcRenderer.invoke('identity:is-unlocked'),
   getStatus: () => ipcRenderer.invoke('identity:get-status'),
   getVaultMeta: () => ipcRenderer.invoke('identity:get-vault-meta'),
   generateMnemonic: (strength = 256) => ipcRenderer.invoke('identity:generate-mnemonic', strength),

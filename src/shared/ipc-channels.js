@@ -310,8 +310,6 @@ module.exports = {
   GITHUB_BRIDGE_CHECK_EXISTING: 'github-bridge:check-existing',
 
   // Identity Management
-  IDENTITY_HAS_VAULT: 'identity:has-vault',
-  IDENTITY_IS_UNLOCKED: 'identity:is-unlocked',
   IDENTITY_GENERATE_MNEMONIC: 'identity:generate-mnemonic',
   IDENTITY_CREATE_VAULT: 'identity:create-vault',
   IDENTITY_IMPORT_MNEMONIC: 'identity:import-mnemonic',
