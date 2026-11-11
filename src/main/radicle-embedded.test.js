@@ -342,6 +342,42 @@ describe('buildRepoMeta shape', () => {
     });
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  // PRIVATE MODE GUARD (#1050): a seeders() failure is swallowed here, so
+  // the protocol's redacted catch never runs, and the add-on's text can
+  // name the repository's storage path. Under the context a private `rad:`
+  // or `radapi:` registration sets, its log line carries none of it.
+  const HOME = '/home/alice/.config/Freedom/profiles/default/radicle';
+  const SEEDERS_FAILED = `failed to open '${HOME}/storage/zAbc/refs': Permission denied`;
+  test.each([
+    ['a private', true, '<private>'],
+    ['a normal', false, SEEDERS_FAILED],
+  ])('a seeders() failure in %s context', async (_label, isPrivate, logged) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(
+      fake,
+      'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'repoInfo: async () => JSON.stringify({ rid: "rad:zAbc", name: "demo" }),' +
+        `seeders: async () => JSON.stringify({ error: ${JSON.stringify(SEEDERS_FAILED)} }),` +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    await jest.isolateModulesAsync(async () => {
+      const embedded = require('./radicle-embedded');
+      const log = require('./logger');
+      const { runWithPrivateLogContext } = require('./private/private-log-context');
+      const meta = await runWithPrivateLogContext(isPrivate, () =>
+        embedded.buildRepoMeta('rad:zAbc')
+      );
+      expect(meta.seeding).toBe(0);
+      const prefix = '[RadicleEmbedded] seeders() failed:';
+      expect(log.warn.mock.calls.filter((args) => args[0] === prefix)).toEqual([[prefix, logged]]);
+      expect(JSON.stringify(log.warn.mock.calls).includes(HOME)).toBe(!isPrivate);
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('shutdown proof (R-8)', () => {
