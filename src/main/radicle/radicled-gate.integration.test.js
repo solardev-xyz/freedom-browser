@@ -12,6 +12,11 @@
  *   fails, and removes nothing; once the home is free, it goes through;
  * - the alias rewrite is refused while another process holds the home, and
  *   written under the gate once it is free;
+ * - an identity re-key while another process holds the home touches
+ *   nothing, and blocks nothing; once the home is free, it wipes and asks
+ *   the core for the key;
+ * - a legacy home's carry-over to a new, empty short home another process
+ *   holds replaces nothing; once the home is free, it carries it over;
  * - with the add-on downloaded too (`npm run radicle:download`), the add-on
  *   runs under hold-lock: a second owner is refused while it runs, and
  *   takes the gate once it has stopped; and an add-on start waiting out
@@ -41,6 +46,23 @@ const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
 // Past the binary's 5 s of retries, with room to spare on a slow runner.
 const REFUSAL_MS = 30_000;
 const LOCK_HELD = 'The Radicle data is in use by another process. Close it and try again.';
+// The add-on's control socket lives in its home (`node/control.sock`), and
+// macOS's temporary directory is too long for a socket's path: a short root
+// there.
+const TMP_ROOT = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+// What the loaders below stand in for: a stand-in one test registers
+// outlives resetModules, so each loader lets go of every one first.
+const STAND_INS = [
+  'logger.js',
+  'profile-paths.js',
+  'profile-resolver.js',
+  path.join('core', 'node-identity-guard.js'),
+  path.join('core', 'vault-backend.js'),
+  'service-registry.js',
+  'service-locks.js',
+  'radicle-embedded.js',
+].map((rel) => path.join(SRC, rel));
+const withoutStandIns = () => STAND_INS.forEach((file) => jest.dontMock(file));
 
 function addonAvailable() {
   let available = false;
@@ -58,7 +80,7 @@ describeIfBinary("the Radicle home's gate with the real freedom-radicled", () =>
   const cleanups = [];
 
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicled-gate-'));
+    root = fs.mkdtempSync(path.join(TMP_ROOT, 'frg-'));
     lockDir = path.join(root, 'locks');
     home = path.join(root, 'R', '1');
   });
@@ -130,6 +152,7 @@ describeIfBinary("the Radicle home's gate with the real freedom-radicled", () =>
       listSeededRepos: async () => [],
       getVersion: () => '0.8.0',
     };
+    withoutStandIns();
     const { mod: manager } = loadMainModule(path.join(SRC, 'radicle-manager.js'), {
       extraMocks: {
         [path.join(SRC, 'logger.js')]: () => quietLog,
@@ -258,13 +281,131 @@ describeIfBinary("the Radicle home's gate with the real freedom-radicled", () =>
     REFUSAL_MS
   );
 
+  /** The production identity-manager, its gate the real binary's, on `home`
+   * (FREEDOM_RADICLE_DATA), with a fake for the core's vault: unlocked, and
+   * writing a key as the core would. */
+  function identityManager() {
+    const radicleBefore = process.env.FREEDOM_RADICLE_DATA;
+    process.env.FREEDOM_RADICLE_DATA = home;
+    cleanups.push(() => {
+      if (radicleBefore === undefined) delete process.env.FREEDOM_RADICLE_DATA;
+      else process.env.FREEDOM_RADICLE_DATA = radicleBefore;
+    });
+    const vaultBackend = {
+      status: async () => ({ exists: true, unlocked: true, epoch: null, fingerprint: null }),
+      addresses: async () => ({
+        user_wallets: [],
+        bee_wallet: '0xbee',
+        publishers: [],
+        radicle: { public_key: '00', did: 'did:key:zTest', node_id: 'zTest' },
+      }),
+      writeNodeIdentity: jest.fn(async ({ home: dir }) => {
+        fs.mkdirSync(path.join(dir, 'keys'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'keys', 'radicle'), 'the new key');
+        return { status: 'installed', did: 'did:key:zTest', node_id: 'zTest' };
+      }),
+    };
+    withoutStandIns();
+    const userDataDir = path.join(root, 'profile');
+    fs.mkdirSync(userDataDir, { recursive: true });
+    const { mod } = loadMainModule(path.join(SRC, 'identity-manager.js'), {
+      userDataDir,
+      extraMocks: {
+        [path.join(SRC, 'logger.js')]: () => quietLog,
+        [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
+        [path.join(SRC, 'core', 'vault-backend.js')]: () => ({ vaultBackend }),
+      },
+    });
+    const guard = require(path.join(SRC, 'core', 'node-identity-guard.js'));
+    guard.setStartupRecovery(null);
+    return { mod, vaultBackend, guard };
+  }
+
+  test(
+    'an identity re-key while another process holds the home touches nothing; once free, it wipes and asks the core',
+    async () => {
+      const files = {
+        'keys/radicle': 'the old key',
+        'node/node.db': 'routing',
+        'cobs/cache.db': 'cobs',
+        'storage/repo/obj': 'seeded',
+      };
+      for (const [rel, content] of Object.entries(files)) {
+        fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true });
+        fs.writeFileSync(path.join(home, rel), content);
+      }
+      const { mod, vaultBackend, guard } = identityManager();
+      const other = await heldElsewhere();
+
+      await expect(mod.injectRadicleIdentity('Alias')).rejects.toMatchObject({
+        name: 'RadicleGateError',
+        code: 'lock_held',
+      });
+      for (const [rel, content] of Object.entries(files)) {
+        expect(fs.readFileSync(path.join(home, rel), 'utf8')).toBe(content);
+      }
+      expect(vaultBackend.writeNodeIdentity).not.toHaveBeenCalled();
+      expect(guard.nodeBlockReason('radicle')).toBeNull();
+
+      await other.release();
+      await expect(mod.injectRadicleIdentity('Alias')).resolves.toEqual({ did: 'did:key:zTest' });
+      for (const dir of ['node', 'cobs', 'storage']) {
+        expect(fs.existsSync(path.join(home, dir))).toBe(false);
+      }
+      expect(vaultBackend.writeNodeIdentity).toHaveBeenCalledTimes(1);
+      expect(fs.readFileSync(path.join(home, 'keys', 'radicle'), 'utf8')).toBe('the new key');
+      // The gate went before the core's write: it can be had at once.
+      const after = await hold();
+      await after.release();
+    },
+    REFUSAL_MS
+  );
+
+  test(
+    "a legacy home's carry-over to a new, empty short home another process holds replaces nothing; once free, it carries it over",
+    async () => {
+      const appRoot = path.join(root, 'app');
+      const userDataDir = path.join(appRoot, 'Profiles', 'work');
+      const legacy = path.join(userDataDir, 'radicle-data');
+      fs.mkdirSync(path.join(legacy, 'keys'), { recursive: true });
+      fs.writeFileSync(path.join(legacy, 'keys', 'radicle.pub'), 'public-key');
+      const shortHome = path.join(appRoot, 'R', '1');
+      // hold-lock makes the home it holds: a service's new, empty home.
+      const other = await heldElsewhere(shortHome);
+      const { ino } = fs.statSync(shortHome);
+      const activeProfile = { source: 'catalog', appRoot, isDev: false, metadata: { slot: 1 } };
+      withoutStandIns();
+      const { mod: paths } = loadMainModule(path.join(SRC, 'profile-paths.js'), {
+        userDataDir,
+        extraMocks: {
+          [path.join(SRC, 'logger.js')]: () => quietLog,
+          [path.join(SRC, 'profile-resolver.js')]: () => ({
+            getActiveProfile: () => activeProfile,
+          }),
+          [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
+        },
+      });
+
+      await expect(paths.prepareRadicleDataDir()).rejects.toMatchObject({ code: 'lock_held' });
+      expect(fs.statSync(shortHome).ino).toBe(ino);
+      expect(fs.readdirSync(shortHome)).toEqual([]);
+      expect(fs.readdirSync(path.dirname(shortHome))).toEqual(['1']);
+
+      await other.release();
+      await expect(paths.prepareRadicleDataDir()).resolves.toBe(shortHome);
+      expect(fs.readFileSync(path.join(shortHome, 'keys', 'radicle.pub'), 'utf8')).toBe(
+        'public-key'
+      );
+      expect(fs.readdirSync(path.dirname(shortHome))).toEqual(['1']);
+    },
+    REFUSAL_MS
+  );
+
   /** The production radicle-manager on the real add-on, on a home with the
    * fixture's identity and no peer (radicle-contract-backends.js). */
   async function managerWithAddon() {
     const { BACKENDS } = require('../../../test/helpers/radicle-contract-backends');
-    // A fake an earlier test registered outlives resetModules: this one
-    // loads production's own.
-    jest.dontMock(path.join(SRC, 'radicle-embedded.js'));
+    withoutStandIns();
     writeIdentity(home);
     const backend = await BACKENDS.addon.load({ home });
     cleanups.push(() => backend.close());

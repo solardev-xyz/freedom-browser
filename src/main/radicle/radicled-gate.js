@@ -10,9 +10,11 @@
  *   identity write on the home (so main never holds it while the core may
  *   need it); the add-on, from before its start until its shutdown proves
  *   it stopped, so it is a writer the gate excludes too; the alias rewrite,
- *   with the node stopped; and profile delete, on a catalog profile's
- *   `R/<slot>` home, while it removes it (design 0013, "Deletion", in main
- *   until the core deletes profiles).
+ *   with the node stopped; an identity re-key's wipe of the home's state,
+ *   let go before the core's write takes the gate; a legacy home's
+ *   carry-over into the short home (profile-paths.js); and profile delete,
+ *   on a catalog profile's `R/<slot>` home, while it removes it (design
+ *   0013, "Deletion", in main until the core deletes profiles).
  * - **Its answers** (fc-service's `hold_lock`) are the core's and
  *   freedom-ipfsd's: see hold-lock.js.
  * - **The binary** is the one the service runs (radicled-binary.js), in the
