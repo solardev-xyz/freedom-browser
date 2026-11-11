@@ -12,6 +12,26 @@ The handler also accepts Ethereum-named hosts: `bzz://swarm.eth/...`, `bzz://sit
 
 > **Origin model.** `bzz://swarm.eth` and `bzz://<resolved-hash>` are different origins from Chromium's perspective — cookies, localStorage, IndexedDB, and service workers are not shared between them. This mirrors HTTPS, where `https://example.com` and `https://192.0.2.1` are also different origins even when they resolve to the same server. Pinning storage to the ENS name keeps state stable across contenthash updates.
 
+## Byte ranges on `bzz://`
+
+Single-range requests are a kept contract of the `bzz:` handler, so a page can read a large file lazily, a few KiB at a time (a SQLite database read page by page, as [swarmlite](https://github.com/petfold/swarmlite) does; [#169](https://github.com/solardev-xyz/freedom-browser/issues/169)). What a page's own `fetch` or `XMLHttpRequest` gets back:
+
+| Request                                                                  | Answer                                                                                                                |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `Range: bytes=a-b`, `bytes=a-`, or `bytes=-n`, inside the file           | `206`, `Content-Range: bytes a-b/<total>`, `Content-Length` of the slice, exactly those bytes, `Accept-Ranges: bytes` |
+| A single range that runs past the end                                    | `206`, clamped to the last byte                                                                                       |
+| A single range starting at or past the end, or a malformed `Range` value | `416`, not retried (with an unsatisfied-range `Content-Range: bytes */<total>` when the range was well-formed)        |
+| `HEAD`                                                                   | `200`, `Content-Length` of the whole file, `Accept-Ranges: bytes`; a `Range` on a `HEAD` is ignored                   |
+| `If-Range`                                                               | forwarded; a stale validator gets the whole `200`                                                                     |
+
+The handler forwards `Range` and `If-Range` to the node verbatim and passes the node's answer through unmodified, so the same holds whether the node fetched the chunks cold or had them cached. The one header it adds is `Accept-Ranges: bytes` on a `200` `HEAD`: Ant (antd v0.5.77, observed 2026-11-11) answers `HEAD` without it although the matching `GET` honours a range.
+
+A ranged read is retried like any other `GET`: a `5xx` or a dropped connection is retried with the same `Range` header on the schedule above, and a `404` is final. A lazy reader that opens a file before its node has warmed up should retry a `404` with its own backoff, the way it would against an HTTP gateway.
+
+**Not part of the contract:** a multi-range request (`Range: bytes=0-9,20-29`) is passed through as the node answers it. Ant v0.5.77 returns a `multipart/byteranges` body, which it builds by fetching the whole file first, so it saves nothing over two single-range reads; issue those instead.
+
+The contract is pinned at three levels: `src/main/swarm/bzz-protocol.http.test.js` drives the handler against an Ant-shaped fake node over real HTTP, `src/main/__tests__/integration/dweb-range-electron.test.js` checks the answers a real Electron process and a real `bzz:` page's `fetch`/XHR receive through `protocol.handle`, and the Ant pin-bump checklist in `docs/agent-playbooks/bundled-binaries.md` re-runs the range matrix against the real node.
+
 ## Migrating Swarm sites to the `bzz://` scheme
 
 Versions of Freedom before this change loaded `bzz://<hash>/path` by rewriting it to the gateway URL `http://127.0.0.1:1633/bzz/<hash>/path` and navigating there. Pages saw `window.location.protocol === 'http:'` and `window.location.pathname === '/bzz/<hash>/path'`.
