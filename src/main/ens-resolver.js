@@ -1642,17 +1642,26 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
 // one of its public `eth_rpc` servers without checking it against the
 // proven code hash, and a call that reads no storage gets no proof at all.
 // So one of those servers could answer any address, name or revert, and it
-// would pass as verified. An order that names Colibri skips it, and the
-// next method answers with its own label. Colibri can come back once a
-// release binds the code it runs, and the whole call, to proven state.
+// would pass as verified. An order that names Colibri gets Myotis and the
+// quorum in its place, each answering with its own label. Colibri can come
+// back once a release binds the code it runs, and the whole call, to proven
+// state.
 const RESOLUTION_METHOD_IDS = new Set(['myotis', 'quorum', 'direct']);
+
+// What a saved Colibri slot becomes: the verified methods the legacy
+// Colibri default gets, in the same place in the order. Without this a
+// saved `colibri, direct` would drop to Direct alone and answer unverified,
+// while `colibri` alone answers from Myotis or the quorum.
+const COLIBRI_NAME_SUBSTITUTE = ['myotis', 'quorum'];
 
 function resolutionPolicy(network) {
   const verification = network?.verification || {};
   const configured = Array.isArray(verification.order)
-    ? verification.order.filter((method, index, all) =>
-        RESOLUTION_METHOD_IDS.has(method) && all.indexOf(method) === index
-      )
+    ? verification.order
+        .flatMap((method) => (method === 'colibri' ? COLIBRI_NAME_SUBSTITUTE : [method]))
+        .filter((method, index, all) =>
+          RESOLUTION_METHOD_IDS.has(method) && all.indexOf(method) === index
+        )
     : [];
   if (configured.length > 0) {
     return {
@@ -1664,8 +1673,7 @@ function resolutionPolicy(network) {
   // Legacy network-config.json files only have `primary`. Preserve their old
   // behavior until the user saves the new policy: Myotis first when enabled,
   // the selected remote strategy next, and quorum as the direct fallback.
-  // A Colibri primary, the old default, keeps Myotis and the quorum (#1076),
-  // and so does an order that named no method but Colibri.
+  // A Colibri primary, the old default, keeps Myotis and the quorum (#1076).
   const primary = verification.primary === 'direct' ? 'direct' : 'quorum';
   return {
     order: [...new Set(['myotis', primary, 'quorum'])],

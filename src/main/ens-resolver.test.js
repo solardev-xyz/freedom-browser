@@ -3252,19 +3252,38 @@ describe('ens-resolver', () => {
       expectNoColibri(result);
     });
 
-    test('with Direct after Colibri, Direct answers, unverified', async () => {
+    test('with Direct after Colibri, the quorum answers before Direct', async () => {
+      // Colibri's slot becomes Myotis and the quorum, as for Colibri alone,
+      // so a kept Direct fallback doesn't turn every lookup unverified.
       withOrder({ ensResolutionOrder: ['colibri', 'direct'] });
       mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
 
       const result = await resolveEnsAddress('direct.eth');
 
-      expect(result).toMatchObject({
-        success: true,
-        address: REAL,
-        trust: { level: 'unverified', queried: ['test-a.example.com'] },
-      });
-      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ success: true, address: REAL, trust: quorumTrust });
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
       expectNoColibri(result);
+    });
+
+    test.each([
+      [['colibri', 'direct'], '[myotis,quorum,direct]'],
+      [['direct', 'colibri'], '[direct,myotis,quorum]'],
+      [['quorum', 'colibri'], '[quorum,myotis]'],
+      [['colibri'], '[myotis,quorum]'],
+      [['myotis', 'colibri', 'quorum'], '[myotis,quorum]'],
+      [['direct'], '[direct]'],
+    ])('a saved order %j resolves as %s', async (order, expected) => {
+      withOrder({ ensResolutionOrder: order });
+      mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
+      const infoSpy = jest.spyOn(resolverLog, 'info').mockImplementation(() => {});
+      try {
+        await resolveEnsAddress('order.eth');
+        expect(infoSpy.mock.calls.map(([line]) => line).join('\n')).toContain(
+          `[ens] policy name=order.eth kind=addr order=${expected} `
+        );
+      } finally {
+        infoSpy.mockRestore();
+      }
     });
 
     test('with Colibri alone, Myotis answers first when it is ready', async () => {

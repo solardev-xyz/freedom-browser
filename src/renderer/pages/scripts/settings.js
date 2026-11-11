@@ -3638,7 +3638,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   // Colibri answers no name lookup (#1076): its proofs don't cover the
   // contract code a lookup runs. The resolver skips it wherever the order
   // puts it, so its row here says so instead of offering verified answers.
-  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. The next method answers.";
+  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. The local node, then several servers, answer in its place.";
 
   let config = { networks: {}, sources: [] };
   let enabledOrder = ['myotis', 'colibri', 'quorum'];
