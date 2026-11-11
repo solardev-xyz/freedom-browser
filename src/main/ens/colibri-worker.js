@@ -108,8 +108,9 @@ function createDiskStorage(dir) {
   };
 }
 
-// Only plain, cloneable fields cross back to the main process. The router and
-// ethers' BrowserProvider read `code`, `data` (EVM revert bytes) and `message`.
+// Only plain, cloneable fields cross back to the main process. The router
+// (via colibri-resolver.js) reads `code`, `data` (EVM revert bytes) and
+// `message`.
 function serializeError(err) {
   const out = {
     name: typeof err?.name === 'string' ? err.name : 'Error',
