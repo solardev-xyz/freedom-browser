@@ -204,8 +204,10 @@ const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
 });
 
 // Whether a failed log scan failed because the configuration leaves no RPC
-// quorum at all (fewer endpoints than the quorum size, or no quorum in the
-// read order), rather than because endpoints are down for now.
+// quorum at all (fewer distinct providers than the quorum size, or no quorum
+// in the read order), rather than because endpoints are down for now. The
+// router's text goes on after "endpoints" (chain-data-router.js
+// quorumShortError); only its opening words are matched.
 function logScanQuorumMissing(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
   return /RPC quorum needs \d+ endpoints|No chain source left for eth_getLogs/.test(message);
@@ -510,7 +512,8 @@ async function startAntChainBridge({
           warnedNoLogQuorum = true;
           log.warn(
             '[Ant chain] eth_getLogs is answered by the RPC quorum only, and none is configured ' +
-              'for Gnosis: add RPC endpoints (at least the quorum size, m) and keep "quorum" in ' +
+              'for Gnosis: add RPC endpoints at distinct providers (at least the quorum size, m; ' +
+              'URLs at one provider count once) and keep "quorum" in ' +
               "the read order, or Ant cannot find its postage batches or chequebook"
           );
         }
@@ -605,6 +608,7 @@ module.exports = {
   rankLogScanError,
   logScanRangeCap,
   antErrorReply,
+  logScanQuorumMissing,
   LOG_SCAN_ROUTER_OPTIONS,
   LOG_SCAN_ERROR_RANK: RANK,
   ANT_LOG_SCAN_SHRINK_NEEDLES,

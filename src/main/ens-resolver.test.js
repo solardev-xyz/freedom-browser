@@ -2786,6 +2786,103 @@ describe('ens-resolver', () => {
       expect(result.trust.quorum.achieved).toBe(false);
     });
 
+    // #1094: the pool counts providers, not URL strings. One provider listed
+    // under three URLs plus one other is two providers, so K<3 as above.
+    test('one provider under several URLs counts once in the quorum pool', async () => {
+      const settings = {
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+      };
+      mockLoadSettings.mockReturnValue({
+        ...settings,
+        ensPublicRpcProviders: [
+          TEST_PROVIDERS[0],
+          `${TEST_PROVIDERS[0]}/`,
+          'https://TEST-A.example.com/second-key',
+          TEST_PROVIDERS[1],
+        ],
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const collapsed = await resolveEnsContent('one-provider-many-urls.eth');
+      expect(collapsed.type).toBe('ok');
+      expect(collapsed.trust.level).toBe('unverified');
+      expect(collapsed.trust.quorum.achieved).toBe(false);
+
+      // A third provider makes the quorum, and the repeats are not asked.
+      mockLoadSettings.mockReturnValue({
+        ...settings,
+        ensPublicRpcProviders: [
+          TEST_PROVIDERS[0],
+          `${TEST_PROVIDERS[0]}/`,
+          TEST_PROVIDERS[1],
+          TEST_PROVIDERS[2],
+        ],
+      });
+      const verified = await resolveEnsContent('three-providers-four-urls.eth');
+      expect(verified.trust.level).toBe('verified');
+      expect([...verified.trust.queried].sort()).toEqual([
+        'test-a.example.com',
+        'test-b.example.com',
+        'test-c.example.com',
+      ]);
+    });
+
+    // #1097 R1-M1: the pool keeps every URL, and only the quorum counts
+    // providers once. So a second URL at a provider whose first is down
+    // (a second key, a second local node) stands in for it once the first
+    // is quarantined, instead of the provider dropping out of the pool.
+    test("a quarantined URL's same-provider alias stands in for it", async () => {
+      const alias = 'https://test-a.example.com/second-key';
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], alias, TEST_PROVIDERS[1], TEST_PROVIDERS[2]],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999; // no shuffle: the first URL is test-a's own
+      try {
+        invalidateCachedProvider();
+        const down = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        mockProviderAnchorMap = new Map([[TEST_PROVIDERS[0], { headNumber: down }]]);
+        const data = { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) };
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: down }],
+          [alias, data],
+          [TEST_PROVIDERS[1], data],
+          [TEST_PROVIDERS[2], data],
+        ]));
+
+        // The anchor asks each provider once; test-a's first URL is down,
+        // so only two heads come back and this read is unverified.
+        const first = await resolveEnsContent('alias-standin-1.eth');
+        expect(first.trust.level).toBe('unverified');
+
+        // Its URL is quarantined now, and the alias makes test-a a member.
+        const second = await resolveEnsContent('alias-standin-2.eth');
+        expect(second.trust.level).toBe('verified');
+        expect([...second.trust.queried].sort()).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
     // Even when K=2 providers would naturally agree on current-head
     // state, an attacker claiming a head within the safety-depth window
     // should not force a "verified" stale answer. Structural downgrade
@@ -3129,6 +3226,59 @@ describe('ens-resolver', () => {
 
         expect(result.type).toBe('ok');
         expect(result.trust.level).toBe('unverified');
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
+    // #1097 R2-M1: the second wave excludes the *providers* the first wave
+    // asked, not just their URLs. With test-a listed under three keys, a
+    // URL-only filter would leave test-a's other two keys as the second
+    // wave; they'd agree with each other at m=2 and label one provider's
+    // answer verified, the #1094 bug one wave later.
+    test('second wave never re-asks a first-wave provider under another URL', async () => {
+      const keyTwo = 'https://test-a.example.com/key-2';
+      const keyThree = 'https://test-a.example.com/key-3';
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], keyTwo, keyThree, TEST_PROVIDERS[1], TEST_PROVIDERS[2]],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999; // no shuffle: the first wave is [test-a, test-b, test-c]
+      try {
+        invalidateCachedProvider();
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+          [keyTwo, { kind: 'data', payload: goodPayload }],
+          [keyThree, { kind: 'data', payload: goodPayload }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+        ]));
+
+        const contractsBefore = ethers.Contract.mock.calls.length;
+        const result = await resolveEnsContent('second-wave-same-provider.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('unverified');
+        // No second wave ran: the first wave's evidence is what's reported.
+        expect(result.trust.queried).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+        const asked = ethers.Contract.mock.calls.slice(contractsBefore).map((args) => args[2]?.url);
+        expect(asked).toContain(TEST_PROVIDERS[0]);
+        expect(asked).not.toContain(keyTwo);
+        expect(asked).not.toContain(keyThree);
       } finally {
         Math.random = origRandom;
       }

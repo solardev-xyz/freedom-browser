@@ -1,12 +1,14 @@
 /**
- * A Safe's deployed mark through the real chain router (#1066, #1092).
+ * A Safe's deployed mark through the real chain router (#1066, #1092, #1094).
  *
  * The mark trusts the router's `verified` label: on a verified eth_getCode
  * read, or on the verified receipt of the deployment Freedom sent. These
  * tests run safe-service and transaction-service's receipt wait against
  * the real router, with one dishonest RPC endpoint configured in the two
  * ways that used to make its word a verified quorum: its URL listed twice,
- * and a quorum with m = 1. Neither writes the mark. Two distinct endpoints
+ * a quorum with m = 1, and one provider listed under two URLs (a trailing
+ * slash, two paths, two API keys, two loopback names or ports). None writes
+ * the mark. Two distinct endpoints
  * that agree still do. Colibri's word counts only where the router's own
  * rules (#1048) label it verified: its unproven "no such receipt" leaves an
  * endpoint's mined receipt unverified, while its proven receipt marks.
@@ -119,10 +121,11 @@ const MINED_RECEIPT = {
   status: '0x1',
 };
 
-// What an endpoint answers: the honest one the chain's state, the forger a
-// deployed Safe and a successful receipt.
+// What an endpoint answers: the honest ones the chain's state, the forger
+// (any URL that isn't one of the honest ones) a deployed Safe and a
+// successful receipt.
 function answer(url, method) {
-  const deployed = url === FORGER || mockChain.sent;
+  const deployed = !HONEST.includes(url) || mockChain.sent;
   if (method === 'eth_getCode') return deployed ? SAFE_CODE : '0x';
   if (method === 'eth_getTransactionReceipt') return deployed ? MINED_RECEIPT : null;
   throw new Error(`unexpected ${method}`);
@@ -163,6 +166,15 @@ afterEach(() => {
 describe.each([
   ['its URL listed twice', [FORGER, FORGER], {}],
   ['a quorum with m = 1', [FORGER], { m: 1 }],
+  ['its URL with and without a trailing slash', [FORGER, `${FORGER}/`], {}],
+  ['its host on two paths', [`${FORGER}/one`, `${FORGER}/two`], {}],
+  [
+    'two API keys at one keyed provider',
+    ['https://lb.drpc.live/gnosis/key-one', 'https://lb.drpc.live/gnosis/key-two'],
+    {},
+  ],
+  ['as 127.0.0.1 and localhost', ['http://127.0.0.1:8545', 'http://localhost:8545'], {}],
+  ['on two loopback ports', ['http://127.0.0.1:8545', 'http://127.0.0.1:18549'], {}],
 ])('one dishonest endpoint, %s', (_name, endpoints, quorum) => {
   test('its eth_getCode does not mark the Safe deployed', async () => {
     useEndpoints(endpoints, quorum);

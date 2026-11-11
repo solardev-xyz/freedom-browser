@@ -2,6 +2,7 @@ const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
 const blockscoutLogs = require('./blockscout-logs');
+const { distinctEndpoints } = require('./endpoint-identity');
 
 const READ_METHODS = new Set([
   'eth_blockNumber',
@@ -615,20 +616,57 @@ function quorumVerifies(chainId) {
   return quorumSize(chainId).m > 1;
 }
 
+// Blockscout's answer is verified only as its quorum's is (#1094): its
+// newest blocks come from the RPC quorum, so with m = 1 they are one
+// endpoint's word. With fewer distinct providers than m it isn't asked at
+// all (requestLogIndex).
+function blockscoutVerifies(chainId) {
+  return quorumVerifies(chainId);
+}
+
 // Whether an answer from `source` on `chainId` is labelled verified.
 function sourceVerifies(source, chainId) {
   if (source === 'quorum') return quorumVerifies(chainId);
-  return source === 'myotis' || source === 'colibri' || source === 'blockscout';
+  if (source === 'blockscout') return blockscoutVerifies(chainId);
+  return source === 'myotis' || source === 'colibri';
 }
 
-// The chain's RPC endpoints, each once, in its first place in registry order
-// (#1092, as freedom-core's router: deviation `endpoint-dedup`). Every entry
-// is a quorum member of its own, so a URL listed twice (a user source that
-// repeats a builtin's) agreed with itself and reached m = 2 alone. Two
-// entries are one endpoint when their resolved URLs are the same string: the
-// identity main's endpoint references give the core, one per (chain, URL).
+// The chain's RPC endpoints, each URL once, in its first place in registry
+// order (#1092, as freedom-core's router: deviation `endpoint-dedup`). Direct
+// and its fee quote take this list: they make no verification claim, so they
+// keep every distinct URL and fail over to a same-provider alias (a second
+// local node, a second key, DRPC's public host behind an expired key).
 function rpcEndpoints(chainId) {
   return [...new Set(registry.getEndpoints(chainId, 'rpc'))];
+}
+
+// The chain's RPC endpoints as quorum members: each provider once, at its
+// first place in registry order (#1094; endpoint-identity.js says when two
+// URLs are one provider). Every member is counted on its own, so one
+// provider listed twice (with a trailing slash, on two paths, with two API
+// keys, or as `localhost` and `127.0.0.1`) agreed with itself and reached
+// m = 2 alone. The quorum and Blockscout's pair take this list. A user
+// source sorts ahead of every builtin, so a provider the user added keeps
+// the user's URL and its `user-configured` trust.
+function quorumEndpoints(chainId) {
+  return distinctEndpoints(registry.getEndpoints(chainId, 'rpc'));
+}
+
+// The error a quorum read gets when the chain lists fewer providers than
+// the quorum needs. Ant's logScanQuorumMissing matches its opening words
+// ("RPC quorum needs <m> endpoints"); the rest says that listed URLs at one
+// provider count once, so a user who sees two URLs in Settings knows why
+// two aren't enough. Counts only, never URLs: this reaches Ant and dApps,
+// and a URL can carry an API key.
+function quorumShortError(chainId, m, distinct) {
+  const listed = registry.getEndpoints(chainId, 'rpc').length;
+  const detail =
+    listed === distinct
+      ? `${listed} listed`
+      : `${listed} listed, from ${distinct} distinct provider${distinct === 1 ? '' : 's'}`;
+  return new SourceUnavailableError(
+    `RPC quorum needs ${m} endpoints at distinct providers (${detail})`
+  );
 }
 
 // The two-second budget is a *fall-through* allowance, not a global ceiling.
@@ -1770,12 +1808,12 @@ function requestQuorumRound(
 
 async function requestQuorum(chainId, method, params, options = {}) {
   const { k, m } = quorumSize(chainId);
-  const endpoints = rpcEndpoints(chainId);
+  const endpoints = quorumEndpoints(chainId);
   const { logRange = null, keeper = createErrorKeeper(null) } = options;
   const askQuorum = (urls) =>
     requestQuorumRound(chainId, method, params, { ...options, keeper, urls });
 
-  if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
+  if (endpoints.length < m) throw quorumShortError(chainId, m, endpoints.length);
   if (!logRange) return askQuorum(endpoints.slice(0, k));
 
   // A range-capped log scan asks the first k endpoints able to serve its span.
@@ -1859,8 +1897,8 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     throw new SourceUnavailableError('Blockscout is left alone for a while after its last failure');
   }
   const { m } = quorumSize(chainId);
-  const endpoints = rpcEndpoints(chainId);
-  if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
+  const endpoints = quorumEndpoints(chainId);
+  if (endpoints.length < m) throw quorumShortError(chainId, m, endpoints.length);
   const quorumSpan = quorumLogSpan(chainId, endpoints, m, now);
   if (quorumSpan >= logRange.span) {
     throw new SourceUnavailableError('the RPC quorum can verify this span itself');
@@ -2003,7 +2041,7 @@ async function requestLogIndex(chainId, method, params, options = {}) {
   return {
     result,
     trust: {
-      level: 'verified',
+      level: blockscoutVerifies(chainId) ? 'verified' : 'unverified',
       method: 'blockscout',
       block: null,
       agreed,

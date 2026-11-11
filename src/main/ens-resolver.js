@@ -5,6 +5,7 @@ const { ens_normalize } = require('@adraffy/ens-normalize');
 const IPC = require('../shared/ipc-channels');
 const { cidV1BytesToBase32 } = require('../shared/cid-utils');
 const registry = require('./networks/network-registry');
+const { distinctEndpoints, endpointIdentity } = require('./networks/endpoint-identity');
 const { prefetchGatewayUrl, NOOP_HANDLE: NOOP_PREFETCH } = require('./ens-prefetch');
 const myotisManager = require('./myotis/myotis-manager');
 const { ccipReadFetch } = require('./ens/ccip-fetch');
@@ -134,7 +135,9 @@ function getEffectiveRpcEndpoints() {
   const envOverride = (process.env.ETH_RPC || '').trim();
   const list = envOverride ? [envOverride, ...saved] : [...saved];
 
-  // De-dupe by case-insensitive URL; drop empties.
+  // De-dupe by case-insensitive URL; drop empties. Two URLs at one provider
+  // both stay here, so the single-source path can fail over from one to the
+  // other; the quorum counts each provider once (getQuorumProviders).
   const seen = new Set();
   return list.filter((url) => {
     if (typeof url !== 'string') return false;
@@ -180,9 +183,22 @@ function markProviderSuccess(url) {
   quarantine.delete(url);
 }
 
-// Returns providers in shuffled order, quarantined ones filtered out.
+// Returns providers in shuffled order, quarantined ones filtered out. Every
+// listed URL, so it feeds only the unverified single-source path, which
+// makes no claim about agreement and should fail over to a second URL at a
+// provider whose first is down or rate-limited.
 function getAvailableProviders() {
   return getShuffledPublicProviders().filter((url) => !isQuarantined(url));
+}
+
+// The available providers as quorum members: each provider once, at its
+// first non-quarantined URL (#1094, networks/endpoint-identity.js). Every
+// count and selection the anchor and the consensus waves make goes through
+// this, so one provider listed twice (with a trailing slash, on two paths,
+// with two API keys, or as `localhost` and `127.0.0.1`) can't agree with
+// itself into a verified answer.
+function getQuorumProviders() {
+  return distinctEndpoints(getAvailableProviders());
 }
 
 // Reset all pool state. Settings-list changes are detected lazily by
@@ -325,7 +341,7 @@ async function getPinnedBlock() {
     return { number: pinnedBlockCache.number, hash: pinnedBlockCache.hash };
   }
 
-  const available = getAvailableProviders();
+  const available = getQuorumProviders();
   if (available.length < MIN_QUORUM_PROVIDERS) {
     // Caller will fall through to the single-source unverified path.
     return null;
@@ -1465,7 +1481,7 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
   // "verified" badge we can't defend.
   const quorumUnderpowered =
     desiredK < MIN_QUORUM_PROVIDERS || desiredM < 2;
-  if (available.length < MIN_QUORUM_PROVIDERS || quorumUnderpowered) {
+  if (getQuorumProviders().length < MIN_QUORUM_PROVIDERS || quorumUnderpowered) {
     return resolveSingleSourceUnverified(
       available[0],
       normalizedName,
@@ -1503,10 +1519,10 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
   // already-quarantined flakes in the first K would let classifyNoAgreement
   // return unverified_data from a single (possibly malicious) source while
   // the providers that carried anchor corroboration sit idle.
-  const waveAvailable = getAvailableProviders();
+  const waveAvailable = getQuorumProviders();
   if (waveAvailable.length < MIN_QUORUM_PROVIDERS) {
     return resolveSingleSourceUnverified(
-      waveAvailable[0] || available[0],
+      getAvailableProviders()[0] || available[0],
       normalizedName,
       callData,
       anchor,
@@ -1551,7 +1567,10 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
       verdict.kind === 'unverified_data' ||
       verdict.kind === 'unverified_not_found';
     if (upgradable) {
-      const remaining = getAvailableProviders().filter((u) => !firstSelection.includes(u));
+      // Providers, not URLs, the first wave didn't ask: a same-provider
+      // alias of a first-wave member would agree with it.
+      const asked = new Set(firstSelection.map((u) => endpointIdentity(u)));
+      const remaining = getQuorumProviders().filter((u) => !asked.has(endpointIdentity(u)));
       // Unverified upgrades require enough fresh providers for the second
       // wave alone to clear the quorum threshold; otherwise the escalation
       // can only ever produce more unverified evidence.

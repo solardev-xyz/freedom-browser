@@ -36,6 +36,7 @@ const {
   LOG_SCAN_ROUTER_OPTIONS,
   antErrorReply,
   antShrinksLogScanOn,
+  logScanQuorumMissing,
 } = require('./ant-chain-bridge');
 
 const XBZZ = '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da';
@@ -719,5 +720,70 @@ describe('Blockscout is asked only when the quorum cannot verify the span', () =
     const got = await bridgeGetLogs(DEPLOY_BLOCK, HEAD);
     expect(got.error).toContain('No chain source left for eth_getLogs');
     expect(blockscout.calls).toHaveLength(0);
+  });
+});
+
+// #1094: Blockscout's answer is verified only as its quorum's is. Its newest
+// blocks come from the RPC quorum, so with m = 1 they are one endpoint's
+// word, and a quorum that is one provider under two URLs is no quorum.
+describe("Blockscout's label follows its quorum's (#1094)", () => {
+  // Two capped endpoints: no quorum serves a 10,500-block span, so after
+  // the first scan teaches their caps, Blockscout pairs with one of them for
+  // the leading 9,500 blocks and the quorum reads the newest 1,000.
+  const FROM = HEAD - 10_499;
+  const withQuorum = (quorum) =>
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'colibri', 'quorum', 'direct'] },
+      quorum: { k: 3, timeoutMs: 5000, ...quorum },
+    });
+
+  test.each([
+    [1, false, 'unverified'],
+    [2, true, 'verified'],
+  ])('with m = %i its answer is verified: %s', async (m, verified, level) => {
+    useProviders({ publicnode: CAPPED, drpc: CAPPED });
+    withQuorum({ m });
+    await bridgeGetLogs(FROM, HEAD); // teaches the caps
+    const got = await bridgeGetLogs(FROM, HEAD);
+    expect(got).toMatchObject({ source: 'blockscout', verified });
+    expect(got.result).toEqual(inRange(CHAIN, FROM, HEAD));
+
+    let answer;
+    router
+      .request(100, 'eth_getLogs', params(FROM, HEAD), {
+        background: true,
+        ...LOG_SCAN_ROUTER_OPTIONS,
+        includeTrust: true,
+      })
+      .then((value) => {
+        answer = value;
+      });
+    for (let waited = 0; !answer && waited <= 120_000; waited += 100) {
+      await jest.advanceTimersByTimeAsync(waited === 0 ? 0 : 100);
+    }
+    expect(answer).toMatchObject({ source: 'blockscout', verified, trust: { level, method: 'blockscout' } });
+  });
+
+  test('one provider under two URLs is no quorum: Blockscout is not asked', async () => {
+    useProviders({ publicnode: CAPPED });
+    withQuorum({ m: 2 });
+    mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+      role === 'prover'
+        ? ['https://prover.example']
+        : ['https://publicnode.example', 'https://publicnode.example/second-key']
+    );
+    for (let scan = 0; scan < 2; scan += 1) {
+      const got = await bridgeGetLogs(FROM, HEAD);
+      expect(got.error).toContain(
+        'RPC quorum needs 2 endpoints at distinct providers (2 listed, from 1 distinct provider)'
+      );
+      expect(got.source).toBeUndefined();
+      // The router's own text still reads, to the bridge, as a missing
+      // quorum (its once-per-start warning) and not as a range refusal.
+      expect(logScanQuorumMissing(got.cause)).toBe(true);
+      expect(got.shrinks).toBe(false);
+    }
+    expect(blockscout.calls).toHaveLength(0);
+    expect(requests).toEqual([]);
   });
 });
