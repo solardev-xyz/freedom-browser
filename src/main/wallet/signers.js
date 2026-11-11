@@ -20,11 +20,15 @@
  */
 
 const { Wallet, computeAddress } = require('ethers');
+const { BrowserWindow } = require('electron');
+
+const IPC = require('../../shared/ipc-channels');
 
 const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
 const {
   getWalletRecord,
   isHardwareWalletIndex,
+  recordLedgerAddressCheck,
   recordRemoteAddressCheck,
   WALLET_TYPES,
 } = require('../identity-manager');
@@ -79,6 +83,21 @@ function createVaultBackend(walletIndex) {
 }
 
 /**
+ * Tell every chrome window its copy of the wallet list is stale. Only the
+ * windows' own webContents, not their guest pages: a page has no business
+ * hearing when the user signed with a Ledger.
+ */
+function notifyWalletRecordsChanged() {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      if (!win.isDestroyed()) win.webContents.send(IPC.WALLET_RECORDS_CHANGED);
+    } catch {
+      // Window may be closing
+    }
+  }
+}
+
+/**
  * Build a signer for the given wallet index.
  *
  * Construction is cheap and does not touch the vault; each method borrows
@@ -118,7 +137,22 @@ function getSigner(walletIndex) {
   }
   let backend;
   if (record && record.type === WALLET_TYPES.LEDGER) {
-    backend = createLedgerBackend(record);
+    let addressCheck = record.addressCheck;
+    backend = createLedgerBackend(record, {
+      // What the device said about a record no device has matched yet
+      // (#1065): kept on the record. A sign that changes the stored state
+      // (an old unchecked owner turning matched) tells the chrome, so the
+      // Safe owner warning and create-safe's owner sub-label drop without
+      // waiting for the next identity reload or a Connect Hardware Wallet
+      // visit.
+      onAddressCheck: (matched) => {
+        const state = recordLedgerAddressCheck(walletIndex, matched);
+        if (state && state !== addressCheck) {
+          addressCheck = state;
+          notifyWalletRecordsChanged();
+        }
+      },
+    });
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record, {
       // What the phone's answer showed about the record (#1078): kept on

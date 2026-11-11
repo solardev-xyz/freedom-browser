@@ -24,6 +24,9 @@ const {
 jest.mock('./chains', () => ({
   getTxExplorerUrl: (chainId, hash) => `https://explorer.test/${chainId}/${hash}`,
 }));
+// A fake Ledger, for the one test that runs the real Ledger backend.
+const mockLedgerEth = { getAddress: jest.fn(), signTransaction: jest.fn() };
+jest.mock('./ledger/transport', () => ({ withEthApp: (task) => task(mockLedgerEth) }));
 
 // Deterministic test key (not a real wallet)
 const TEST_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
@@ -346,6 +349,31 @@ describe('signAndSendTransaction (signer-based)', () => {
         decliningSigner,
       ),
     ).rejects.toThrow(/User rejected on device/);
+  });
+
+  it('broadcasts nothing when a Ledger answers with a signature from another key (#1063)', async () => {
+    // The real Ledger backend over a fake device that holds the account's
+    // address but answers with another key's signature.
+    const { createLedgerBackend } = require('./ledger/signer');
+    const otherKey = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+    mockLedgerEth.getAddress.mockResolvedValue({ address: testWallet.address });
+    mockLedgerEth.signTransaction.mockImplementation(async (_path, rawHex) => {
+      const { signature } = Transaction.from(await otherKey.signTransaction(Transaction.from('0x' + rawHex)));
+      return { r: signature.r.slice(2), s: signature.s.slice(2), v: signature.yParity.toString(16) };
+    });
+    const ledgerSigner = createLedgerBackend({ index: 1000000, address: testWallet.address, path: "44'/60'/0'/0/0" });
+
+    await expect(
+      signAndSendTransaction(
+        {
+          to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '1', gasLimit: '21000',
+          maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', chainId: 1,
+        },
+        ledgerSigner,
+      ),
+    ).rejects.toMatchObject({ code: 'LEDGER_BAD_SIGNATURE' });
+    expect(mockLedgerEth.signTransaction).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
   });
 });
 
