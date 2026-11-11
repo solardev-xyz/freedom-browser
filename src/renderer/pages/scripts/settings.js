@@ -3635,6 +3635,13 @@ freedomAPI.onSettingsUpdated?.((settings) => {
     { id: 'direct', link: '#networks/1', linkLabel: 'Configure' },
   ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
+  // Colibri answers no name lookup (#1076): its proofs don't cover the
+  // contract code a lookup runs. The resolver doesn't drop its slot: it
+  // puts the quorum there, and Myotis too when this list enables it
+  // (`colibriNameSubstitute` in ens-resolver.js), each answering with its
+  // own label. One already earlier in the order keeps its earlier place.
+  // So the row says it is substituted instead of offering verified answers.
+  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. Several servers, and the local node if it's enabled here, take its place unless they come earlier.";
 
   let config = { networks: {}, sources: [] };
   let enabledOrder = ['myotis', 'colibri', 'quorum'];
@@ -3717,12 +3724,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
       setBadge('myotis', 'Syncing…', 'warning');
     }
 
-    const hasProver = activeSources('prover').length > 0;
-    setBadge(
-      'colibri',
-      hasProver ? 'Verified' : 'No proof server',
-      hasProver ? 'verified' : 'warning'
-    );
+    setBadge('colibri', 'Not used for names', 'warning');
     setBadge(
       'quorum',
       `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -3802,7 +3804,7 @@ freedomAPI.onSettingsUpdated?.((settings) => {
                 <p class="row-label">${esc(method.label)}</p>
                 <span class="resolver-badge" data-method-status="${id}">Loading…</span>
               </div>
-              ${networkSourceHelp(id)}
+              ${id === 'colibri' ? `<p class="row-help">${esc(COLIBRI_NAMES_HELP)}</p>` : networkSourceHelp(id)}
               ${link}
               ${networkSourceAdvanced(id, { open: openAdvanced.has(id), extra: configRow })}
             </div>

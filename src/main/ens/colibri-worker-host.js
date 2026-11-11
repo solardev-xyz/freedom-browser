@@ -1,8 +1,8 @@
 // Main-process side of the Colibri worker (#495): one long-lived worker per
 // chain (`colibri-worker.js`) owns that chain's Colibri clients and verifier
 // storage. This module hands out EIP-1193-shaped client proxies whose
-// `request()` is a message round trip, so neither the router nor ethers'
-// BrowserProvider (ENS) ever runs WASM verification on the main thread.
+// `request()` is a message round trip, so the chain-data router never runs
+// WASM verification on the main thread.
 //
 // A worker is replaced, never repaired:
 // - a WASM trap (#453) marks it retiring: new requests go to a fresh worker and
