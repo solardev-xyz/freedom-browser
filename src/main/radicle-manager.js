@@ -17,6 +17,11 @@ const { isPrivateSender } = require('./private/private-sender');
 const { redactForLog } = require('./private/private-log-context');
 const seedStatus = require('./radicle/seed-status');
 const {
+  takeRadicleGate,
+  withRadicleGate,
+  switchedHomeRefusal,
+} = require('./radicle/radicled-gate');
+const {
   MODE,
   updateService,
   setStatusMessage,
@@ -38,6 +43,20 @@ let lastError = null;
 let useInjectedIdentity = false;
 let lifecycleTail = Promise.resolve();
 let infoUpdatePromise = null;
+// The Radicle home's gate (freedom-core design 0008, "Spawn and lock" and
+// Rollback; radicle/radicled-gate.js), held for the add-on from before its
+// start until its shutdown proves it stopped: `{ hold, lost }`, `hold` null
+// in a development build without freedom-radicled (ungated). Null while no
+// node can hold the home. A stop that wasn't proved keeps it: the node may
+// still write the home (R-8).
+let homeGate = null;
+// The gate waits of the starts asked for and not yet past their gate. A
+// stop gives each up at once, begun or not, so it never waits out another
+// writer's hold (0008, Rollback).
+const gateWaits = new Set();
+// The failure a node reports when the holder of its home's gate ends under
+// it (0008, Rollback).
+const GATE_LOST = 'freedom-radicled hold-lock exited';
 
 function enqueueLifecycle(operation) {
   const result = lifecycleTail.then(operation, operation);
@@ -157,7 +176,43 @@ function stopUnproved() {
 
 const UNPROVED_STOP_MESSAGE = 'The Radicle node did not stop; stop it again before starting it';
 
-async function startRadicleInternal() {
+/** Takes the home's gate for a node about to start; `signal` gives up the
+ * wait. Rejects with a RadicleGateError. */
+async function takeHomeGate(home, signal) {
+  const gate = { hold: null, lost: false };
+  gate.hold = await takeRadicleGate(home, { signal, onLost: () => onHomeGateLost(gate) });
+  homeGate = gate;
+  return gate;
+}
+
+async function releaseHomeGate() {
+  const gate = homeGate;
+  homeGate = null;
+  await gate?.hold?.release();
+}
+
+/**
+ * The gate's holder ended under the node: another gated writer (the
+ * service, a profile delete, the core's identity write) could now take the
+ * home while the add-on writes to it. A running node stops, with the loss as
+ * its error, and the user starts it again, which takes the gate again. A
+ * start still under way checks for the loss itself, before its node starts
+ * and once it has.
+ */
+function onHomeGateLost(gate) {
+  gate.lost = true;
+  if (homeGate !== gate || currentState !== STATUS.RUNNING) return;
+  void enqueueLifecycle(async () => {
+    if (homeGate !== gate) return;
+    try {
+      await stopNode({ error: GATE_LOST });
+    } catch {
+      // Reported through the status.
+    }
+  });
+}
+
+async function startRadicleInternal({ signal = null } = {}) {
   if (currentState === STATUS.RUNNING) return getCurrentStatus();
   if (stopUnproved()) {
     // Before prepareRadicleDataDir() or embedded.start(): nothing touches
@@ -188,6 +243,19 @@ async function startRadicleInternal() {
   updateState(STATUS.STARTING);
   try {
     const radHome = await prepareRadicleDataDir();
+    // The home's gate, before anything here reads or writes the home's
+    // files (0008, Rollback): the add-on is a writer the gate excludes, as
+    // the service is. Held until a shutdown proves the node stopped
+    // (stopNode); a start that leaves no node lets it go (below).
+    const gate = await takeHomeGate(radHome, signal);
+    // Under the gate, so no service switches the home meanwhile.
+    const switched = switchedHomeRefusal(radHome);
+    if (switched) {
+      log.warn('[Radicle] Not starting the add-on: the service has switched its home');
+      clearService('radicle');
+      updateState(STATUS.ERROR, switched);
+      return getCurrentStatus();
+    }
     // The home is owner-only now (profile-paths). Its keys/ is opened
     // through the home's handle, never through a link. The node opens
     // keys/radicle by its path, following a link there: missing is fine
@@ -205,7 +273,13 @@ async function startRadicleInternal() {
       updateState(STATUS.ERROR, blockedNow);
       return getCurrentStatus();
     }
+    if (gate.lost) throw new Error(GATE_LOST);
     const result = await embedded.start(radHome, 'FreedomBrowser');
+    // The gate went while the node started: it never runs ungated.
+    if (gate.lost) {
+      await stopNode({ error: GATE_LOST });
+      return getCurrentStatus();
+    }
     updateService('radicle', {
       api: 'radapi://local',
       gateway: 'radapi://local',
@@ -218,18 +292,35 @@ async function startRadicleInternal() {
     return getCurrentStatus();
   } catch (err) {
     clearService('radicle');
-    updateState(STATUS.ERROR, err.message);
+    // A wait for the gate a stop gave up: nothing started, nothing failed.
+    if (err?.name === 'RadicleGateError' && err.code === 'cancelled') {
+      updateState(STATUS.STOPPED);
+    } else {
+      updateState(STATUS.ERROR, err.message);
+    }
     return getCurrentStatus();
+  } finally {
+    // A start that left no node holds no gate.
+    if (!embedded.isStarted()) await releaseHomeGate();
   }
 }
 
 function startRadicle() {
-  return enqueueLifecycle(startRadicleInternal);
+  // Made as the start is asked for, so a stop asked for after it gives up
+  // its gate wait even before the wait has begun.
+  const gateWait = new AbortController();
+  gateWaits.add(gateWait);
+  const started = enqueueLifecycle(() => startRadicleInternal({ signal: gateWait.signal }));
+  const done = () => gateWaits.delete(gateWait);
+  started.then(done, done);
+  return started;
 }
 
 // Stop the node. Resolves once the add-on proved it stopped (its shutdown
-// joined the node's thread); otherwise records the error and throws.
-async function stopNode() {
+// joined the node's thread), and its home's gate is let go; otherwise
+// records the error and throws, the gate still held. `error` is what a
+// proved stop leaves as the status's error (the gate's loss), if anything.
+async function stopNode({ error = null } = {}) {
   // Stopped, and proved stopped: the add-on no longer counts it as started.
   if (currentState === STATUS.STOPPED && !embedded.isStarted()) return;
   updateState(STATUS.STOPPING);
@@ -240,8 +331,10 @@ async function stopNode() {
     updateState(STATUS.ERROR, err.message);
     throw err;
   }
+  // Proved stopped: the gate goes last.
+  await releaseHomeGate();
   clearService('radicle');
-  updateState(STATUS.STOPPED);
+  updateState(error ? STATUS.ERROR : STATUS.STOPPED, error);
 }
 
 async function stopRadicleInternal() {
@@ -254,6 +347,8 @@ async function stopRadicleInternal() {
 }
 
 function stopRadicle() {
+  // A start still waiting for the home's gate gives up at once.
+  for (const gateWait of gateWaits) gateWait.abort();
   return enqueueLifecycle(stopRadicleInternal);
 }
 
@@ -503,13 +598,22 @@ function setNodeAlias(alias) {
       // A stop that wasn't proved: nothing is written or restarted.
       if (stopUnproved()) return failure('RADICLE_NOT_STOPPED', lastError || UNPROVED_STOP_MESSAGE);
     }
-    const configPath = path.join(await prepareRadicleDataDir(), 'config.json');
+    const radHome = await prepareRadicleDataDir();
+    const configPath = path.join(radHome, 'config.json');
     try {
-      let config = {};
-      if (fs.existsSync(configPath)) config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      config.node = config.node || {};
-      config.node.alias = alias;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      // With the node stopped, under the home's gate alone (freedom-core
+      // design 0008, "Identity changes"): no other writer of the home, the
+      // service among them, runs while the alias is rewritten.
+      await withRadicleGate(radHome, (gate) => {
+        let config = {};
+        if (fs.existsSync(configPath)) config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        config.node = config.node || {};
+        config.node.alias = alias;
+        if (gate.gated && !gate.held()) {
+          throw new Error("The Radicle home's lock was lost; the alias was not written");
+        }
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      });
     } catch (err) {
       return failure('ALIAS_WRITE_FAILED', err.message);
     }

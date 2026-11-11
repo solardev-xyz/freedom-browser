@@ -226,9 +226,11 @@ function loadIpcHandlersModule(options = {}) {
   const requestProfileQuitAsync = options.requestProfileQuitAsync || jest.fn(() => ({ ok: true }));
   const isProfileLocked = options.isProfileLocked || jest.fn(() => false);
   // freedom-cored's gate on a profile's identity directory (design 0001),
-  // and freedom-ipfsd's on its IPFS data (design 0007).
+  // freedom-ipfsd's on its IPFS data (design 0007), and freedom-radicled's
+  // on its Radicle home (design 0008).
   const withCoreGate = jest.fn((_dir, fn) => fn());
   const withIpfsGate = jest.fn((_dir, fn) => fn());
+  const withRadicleGate = jest.fn((_dir, fn) => fn());
   const myotisManager = options.myotisManager || {
     stopAllMyotis: jest.fn(),
     refreshMyotisStatus: jest.fn(),
@@ -280,6 +282,7 @@ function loadIpcHandlersModule(options = {}) {
       }),
       [require.resolve('./core/core-gate')]: () => ({ withCoreGate }),
       [require.resolve('./ipfs/ipfsd-gate')]: () => ({ withIpfsGate }),
+      [require.resolve('./radicle/radicled-gate')]: () => ({ withRadicleGate }),
       [require.resolve('./myotis/myotis-manager')]: () => myotisManager,
       ...(options.radicleManager
         ? { [require.resolve('./radicle-manager')]: () => options.radicleManager }
@@ -324,6 +327,7 @@ function loadIpcHandlersModule(options = {}) {
     isProfileLocked,
     withCoreGate,
     withIpfsGate,
+    withRadicleGate,
     myotisManager,
     importProfileForActiveApp,
     listProfilesForActiveApp,
@@ -993,6 +997,7 @@ describe('ipc-handlers', () => {
     expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work', {
       withCoreGate: ctx.withCoreGate,
       withIpfsGate: ctx.withIpfsGate,
+      withRadicleGate: ctx.withRadicleGate,
     });
   });
 
@@ -1002,6 +1007,25 @@ describe('ipc-handlers', () => {
     const held = Object.assign(
       new Error('The IPFS data is in use by another process. Close it and try again.'),
       { name: 'IpfsGateError', code: 'lock_held' }
+    );
+    const ctx = loadIpcHandlersModule({
+      deleteProfileForActiveApp: jest.fn(async () => {
+        throw held;
+      }),
+    });
+
+    const result = await ctx.mod.deleteProfileFromIpc({ id: 'work', confirmDisplayName: 'Work' });
+
+    expect(result).toEqual(failure('PROFILE_DELETE_FAILED', held.message));
+  });
+
+  // freedom-core design 0008, "Spawn and lock": a writer holding the
+  // profile's Radicle home gate (the service, the add-on) fails the delete,
+  // with its reason.
+  test("a profile whose Radicle home is held by another writer isn't deleted", async () => {
+    const held = Object.assign(
+      new Error('The Radicle data is in use by another process. Close it and try again.'),
+      { name: 'RadicleGateError', code: 'lock_held' }
     );
     const ctx = loadIpcHandlersModule({
       deleteProfileForActiveApp: jest.fn(async () => {
@@ -1060,6 +1084,7 @@ describe('ipc-handlers', () => {
     expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work', {
       withCoreGate: ctx.withCoreGate,
       withIpfsGate: ctx.withIpfsGate,
+      withRadicleGate: ctx.withRadicleGate,
     });
   });
 
@@ -1127,6 +1152,7 @@ describe('ipc-handlers', () => {
     expect(ctx.deleteProfileForActiveApp).toHaveBeenCalledWith('work', 'Work', {
       withCoreGate: ctx.withCoreGate,
       withIpfsGate: ctx.withIpfsGate,
+      withRadicleGate: ctx.withRadicleGate,
     });
   });
 

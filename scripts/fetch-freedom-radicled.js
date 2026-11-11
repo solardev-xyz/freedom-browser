@@ -5,8 +5,9 @@ const { createReleaseFetcher } = require('./lib/freedom-core-release');
 // design 0008), into `freedom-radicled-bin/<os>-<arch>/`. freedom-core
 // releases it beside the core, on tags of its own, with the same archive
 // layout and SHA256SUMS; scripts/lib/freedom-core-release.js fetches and
-// verifies all three. Nothing in the app runs it yet: Radicle still runs on
-// the libradicle add-on until main moves onto the service (0008, step 6 on).
+// verifies all three. The app runs only its `hold-lock`, the Radicle home's
+// gate: Radicle still runs on the libradicle add-on until main moves onto
+// the service (0008, step 6 on).
 // The known-good release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run); never float on `latest`. Override with
 // FREEDOM_RADICLED_RELEASE_TAG for local testing.
