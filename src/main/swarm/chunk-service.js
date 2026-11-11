@@ -284,6 +284,66 @@ async function writeSingleOwnerChunk(signerPrivateKey, identifier, data, options
   };
 }
 
+/**
+ * Publish a Single Owner Chunk the caller signed itself (#647). Nothing is
+ * signed here: the chunk is rebuilt from its parts (identifier ‖ signature ‖
+ * span ‖ payload) and must validate as the SOC at keccak256(identifier ‖
+ * owner), i.e. the signature must recover to `owner` over the SOC digest of
+ * `identifier` and the inner content-addressed chunk's address. Only then is
+ * it stamped with the node's batch, and the bytes that validated are the
+ * ones uploaded.
+ *
+ * @param {{ owner: string, identifier: string, signature: string,
+ *   data: Uint8Array, span?: bigint }} params - owner/identifier/signature as
+ *   hex (owner and signature may carry 0x). `onVerified` runs once the
+ *   chunk validated, before a batch is chosen or anything is uploaded.
+ */
+async function publishSignedSingleOwnerChunk({ owner, identifier, signature, data, span, onVerified }) {
+  const bee = getBee();
+  const signatureBytes = Buffer.from(String(signature).replace(/^0x/, ''), 'hex');
+  // Bee and Ant read the recovery byte as 27/28 only; the library maps any
+  // other value to 28, which would accept a chunk the node then refuses.
+  const v = signatureBytes[64];
+  if (signatureBytes.length !== 65 || (v !== 27 && v !== 28)) {
+    throw makeSemanticError('invalid_signature', 'signature must end in a recovery byte of 27 or 28');
+  }
+
+  const chunk = bee.makeContentAddressedChunk(data, span);
+  const ownerAddress = new EthAddress(owner);
+  const socIdentifier = new Identifier(identifier);
+  const expectedAddress = bee.calculateSingleOwnerChunkAddress(socIdentifier, ownerAddress);
+  const raw = Buffer.concat([
+    Buffer.from(socIdentifier.toUint8Array()),
+    signatureBytes,
+    Buffer.from(chunk.data),
+  ]);
+
+  let soc;
+  try {
+    soc = bee.unmarshalSingleOwnerChunk(raw, expectedAddress);
+  } catch (err) {
+    throw makeSemanticError(
+      'invalid_signature',
+      'The signature does not recover to owner for this identifier and chunk',
+      err
+    );
+  }
+  if (!soc.owner.equals(ownerAddress)) {
+    throw makeSemanticError('invalid_signature', 'The signature does not recover to owner');
+  }
+  onVerified?.();
+
+  const batchId = await selectChunkBatch();
+  await uploadSingleOwnerChunk(bee, batchId, soc);
+
+  return {
+    reference: toHex(soc.address),
+    owner: soc.owner.toChecksum(),
+    identifier: soc.identifier.toHex(),
+    batchIdUsed: batchId,
+  };
+}
+
 async function readSingleOwnerChunk(params) {
   const bee = getBee();
   const { address, owner, identifier } = params;
@@ -330,6 +390,7 @@ module.exports = {
   readData,
   dataSizeFromSpan,
   writeSingleOwnerChunk,
+  publishSignedSingleOwnerChunk,
   readSingleOwnerChunk,
   getSignerAddress,
   spanToResult,

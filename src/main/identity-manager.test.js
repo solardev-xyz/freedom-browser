@@ -501,6 +501,37 @@ describe('identity-manager ledger accounts', () => {
       .rejects.toThrow('Missing derivation path');
   });
 
+  test('getFreedomSigningAddresses lists the Ant key and every account with the vault locked (#647)', async () => {
+    expect(await identityManager.getFreedomSigningAddresses())
+      .toEqual({ addresses: new Set(), complete: true });
+
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: {
+        userWallet: '0x0000000000000000000000000000000000000001',
+        beeWallet: '0x00000000000000000000000000000000000000Bb',
+      },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: HARDWARE_INDEX_BASE, name: 'Stax', address: LEDGER_ADDRESS, type: 'ledger', path: LEDGER_PATH },
+      ],
+    });
+    expect(await identityManager.getFreedomSigningAddresses()).toEqual({
+      addresses: new Set([
+        '0000000000000000000000000000000000000001',
+        '00000000000000000000000000000000000000bb',
+        LEDGER_ADDRESS.slice(2).toLowerCase(),
+      ]),
+      complete: true,
+    });
+
+    // A mnemonic account whose address is only known once unlocked.
+    const meta = readVaultMeta();
+    meta.derivedWallets.push({ index: 1, name: 'Second' });
+    writeVaultMeta(meta);
+    expect((await identityManager.getFreedomSigningAddresses()).complete).toBe(false);
+  });
+
   test('getDerivedWallets returns the stored device address without derivation', async () => {
     seedMainWallet();
     await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);

@@ -54,6 +54,7 @@ const {
   readDataRoot,
   readData,
   writeSingleOwnerChunk,
+  publishSignedSingleOwnerChunk,
   readSingleOwnerChunk,
   getSignerAddress,
 } = require('./chunk-service');
@@ -64,7 +65,12 @@ const { getAntApiUrl } = require('../service-registry');
 const { getPublishReadiness } = require('./publish-setup-service');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { isNoUsableBatchError } = require('./batch-errors');
-const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
+const {
+  getDerivedKeys,
+  getPublisherKey,
+  getUserWalletKey,
+  getFreedomSigningAddresses,
+} = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
@@ -159,6 +165,7 @@ const KNOWN_METHODS = [
   'swarm_readChunk',
   'swarm_readData',
   'swarm_writeSingleOwnerChunk',
+  'swarm_publishSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
   'swarm_getMessagingIdentity',
@@ -213,6 +220,7 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_publishData',
   'swarm_publishFiles',
   'swarm_publishChunk',
+  'swarm_publishSingleOwnerChunk',
   'swarm_createFeed',
   'swarm_updateFeed',
   'swarm_writeFeedEntry',
@@ -480,6 +488,12 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return result;
     }
 
+    if (method === 'swarm_publishSingleOwnerChunk') {
+      const result = await handlePublishSingleOwnerChunk(params, normalizedOrigin);
+      if (result.result) resetVaultAutoLockTimer();
+      return result;
+    }
+
     if (method === 'swarm_getUploadStatus') {
       return handleGetUploadStatus(params, normalizedOrigin);
     }
@@ -567,6 +581,8 @@ async function handleGetCapabilities(origin) {
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
+        // swarm_publishSingleOwnerChunk: a SOC the page signed (#647).
+        pageSignedSingleOwnerChunks: true,
       },
       limits: {
         maxDataBytes: LIMITS.maxDataBytes,
@@ -1112,6 +1128,120 @@ async function handleWriteSingleOwnerChunk(params, origin) {
   } catch (err) {
     updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] writeSingleOwnerChunk failed for ${origin}:`, err.message);
+    return nodeWriteError(err);
+  }
+}
+
+/**
+ * Handle swarm_publishSingleOwnerChunk: publish a Single Owner Chunk the page
+ * signed itself, stamped by the node (#647). Connection tier, like
+ * swarm_publishChunk: no Freedom key is used, so the feed/signing grant is
+ * not needed. The signature must recover to `owner` for this identifier and
+ * chunk before anything is stamped.
+ *
+ * An owner that is one of Freedom's own signing addresses (the Ant node key,
+ * a wallet account) is refused (SW-1, #950): a page can ask a wallet account
+ * for a `personal_sign` of 32 bytes, which is exactly a SOC signature, and
+ * would then write raw SOCs, another site's feed entries included, as that
+ * shared owner. App-scoped publisher keys sign only Freedom's own writes, so
+ * under one a page can publish only a chunk already signed for the network.
+ */
+async function handlePublishSingleOwnerChunk(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const owner = normalizeAddress(params.owner);
+  if (!/^[0-9a-fA-F]{40}$/.test(owner)) {
+    return invalidParams('owner must be a valid 40-character hex address', 'invalid_owner');
+  }
+
+  const identifierError = validateHexString(params.identifier, 32, 'invalid_identifier', 'identifier');
+  if (identifierError) return identifierError;
+
+  const signatureError = validateHexString(params.signature, 65, 'invalid_signature', 'signature', {
+    allow0xPrefix: true,
+  });
+  if (signatureError) return signatureError;
+
+  const { payload, error } = validateChunkPayload(params.data);
+  if (error) return { error };
+
+  const span = validateSpan(params.span);
+  if (!span.ok) {
+    return invalidParams('span must be a non-negative unsigned 64-bit integer', 'invalid_span');
+  }
+
+  let held;
+  try {
+    held = await getFreedomSigningAddresses();
+  } catch (err) {
+    log.error(`[SwarmProvider] Freedom signing addresses unavailable for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: 'Could not check the owner against Freedom identities' } };
+  }
+  if (held.addresses.has(owner.toLowerCase())) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message: 'The owner is one of Freedom\'s own identities; use swarm_writeSingleOwnerChunk or a feed method',
+        data: { reason: 'freedom_identity' },
+      },
+    };
+  }
+  if (!held.complete) {
+    return {
+      error: {
+        ...ERRORS.INTERNAL_ERROR,
+        message: `${VAULT_LOCKED_MESSAGE}: an account address is not known while the vault is locked`,
+        data: { reason: 'vault_locked' },
+      },
+    };
+  }
+
+  const preFlight = await checkSwarmPreFlight();
+  if (!preFlight.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+  }
+
+  let historyEntry = null;
+  try {
+    const result = await publishSignedSingleOwnerChunk({
+      owner,
+      identifier: params.identifier,
+      signature: params.signature,
+      data: payload,
+      span: span.value,
+      onVerified: () => {
+        historyEntry = addEntry({
+          type: 'soc',
+          name: 'Signed SOC chunk',
+          status: 'uploading',
+          origin,
+          bytesSize: payload.length,
+        });
+      },
+    });
+    updateEntry(historyEntry.id, {
+      status: 'completed',
+      reference: result.reference,
+      batchIdUsed: result.batchIdUsed,
+    });
+    return {
+      result: {
+        reference: result.reference,
+        owner: result.owner,
+        identifier: result.identifier,
+      },
+    };
+  } catch (err) {
+    if (err.reason === 'invalid_signature') {
+      return invalidParams(err.message, 'invalid_signature');
+    }
+    if (historyEntry) updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
+    log.error(`[SwarmProvider] publishSingleOwnerChunk failed for ${origin}:`, err.message);
     return nodeWriteError(err);
   }
 }

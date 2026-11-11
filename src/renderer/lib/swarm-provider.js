@@ -60,6 +60,7 @@ const SETUP_ROUTED_METHODS = new Set([
   'swarm_publishData',
   'swarm_publishFiles',
   'swarm_publishChunk',
+  'swarm_publishSingleOwnerChunk',
   'swarm_createFeed',
   'swarm_updateFeed',
   'swarm_writeFeedEntry',
@@ -144,7 +145,13 @@ async function handleSwarmRequest(webview, request) {
     } else if (method === 'swarm_getCapabilities') {
       // No prompt needed — coarse capability info, safe for any origin
       result = await forwardToMain(method, params, permissionKey);
-    } else if (method === 'swarm_publishData' || method === 'swarm_publishFiles' || method === 'swarm_publishChunk') {
+    } else if (
+      method === 'swarm_publishData' ||
+      method === 'swarm_publishFiles' ||
+      method === 'swarm_publishChunk' ||
+      // Signed by the page itself: the publish tier, no feed/signing grant.
+      method === 'swarm_publishSingleOwnerChunk'
+    ) {
       const permission = await requirePermissionAndReturn(permissionKey);
       const autoApproved = Boolean(permission?.autoApprove?.publish) && !isAgentHeld(webview);
 

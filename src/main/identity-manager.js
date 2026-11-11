@@ -1519,6 +1519,44 @@ async function getDerivedWallets() {
 }
 
 /**
+ * The addresses Freedom-held keys a page could get a signature from sign as:
+ * the Ant node key and every wallet account (mnemonic and device accounts
+ * alike, since `personal_sign` of 32 bytes is a Single Owner Chunk
+ * signature). Readable while the vault is locked, from vault-meta.json.
+ *
+ * App-scoped publisher keys are not listed: they sign nothing but SOC
+ * digests of Freedom's own writes, and need the mnemonic to derive.
+ *
+ * @returns {Promise<{ addresses: Set<string>, complete: boolean }>}
+ *   lower-case bare-hex addresses; `complete` is false when an account's
+ *   address is not known (a locked vault with an older record).
+ */
+async function getFreedomSigningAddresses() {
+  const addresses = new Set();
+  const add = (address) => {
+    if (typeof address === 'string' && address) {
+      addresses.add(address.replace(/^0x/i, '').toLowerCase());
+    }
+  };
+  const meta = getVaultMeta();
+  if (!meta) return { addresses, complete: true };
+
+  let complete = true;
+  const keys = getDerivedKeys();
+  add(keys?.beeWallet?.address);
+  add(keys?.userWallet?.address);
+  add(meta.addresses?.beeWallet);
+  add(meta.addresses?.userWallet);
+  if (!keys && !meta.addresses?.beeWallet) complete = false;
+
+  for (const wallet of await getDerivedWallets()) {
+    if (wallet.address) add(wallet.address);
+    else complete = false;
+  }
+  return { addresses, complete };
+}
+
+/**
  * Refuse a device account address that is malformed or already in the
  * wallet list, or a wallet list that doesn't exist yet.
  *
@@ -2458,6 +2496,7 @@ module.exports = {
   isHardwareWalletIndex,
   getWalletRecord,
   getDerivedWallets,
+  getFreedomSigningAddresses,
   getActiveWalletIndex,
   setActiveWalletIndex,
   createDerivedWallet,

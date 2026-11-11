@@ -69,6 +69,8 @@ const elementIds = [
   'swarm-publish-name',
   'swarm-publish-paths-row',
   'swarm-publish-paths',
+  'swarm-publish-owner-row',
+  'swarm-publish-owner',
   'swarm-publish-reject',
   'swarm-publish-confirm',
   'swarm-publish-auto-approve',
@@ -412,6 +414,40 @@ describe('swarm approval prompts queue concurrent requests', () => {
     await ctx.elements['swarm-publish-confirm'].fire('click');
     await second.promise;
     expect(second.resolved).toBe(true);
+  });
+
+  test('a page-signed SOC names its signer, and the next prompt hides it (#647)', async () => {
+    const ctx = await loadSwarmConnect();
+    const owner = 'ab'.repeat(20);
+
+    const signed = trackedPrompt((resolve, reject) =>
+      ctx.mod.showSwarmPublishApproval(
+        'https://a.example',
+        { owner, identifier: 'cd'.repeat(32), signature: 'ef'.repeat(65), data: 'hello' },
+        resolve,
+        reject,
+        'swarm_publishSingleOwnerChunk'
+      )
+    );
+    const chunk = trackedPrompt((resolve, reject) =>
+      ctx.mod.showSwarmPublishApproval('https://a.example', { data: 'x' }, resolve, reject, 'swarm_publishChunk')
+    );
+
+    expect(ctx.elements['swarm-publish-type'].textContent).toBe('Single Owner Chunk');
+    expect(ctx.elements['swarm-publish-size'].textContent).toBe('5 B');
+    expect(ctx.elements['swarm-publish-owner'].textContent).toBe(`0x${owner}`);
+    expect(ctx.elements['swarm-publish-owner-row'].classList.contains('hidden')).toBe(false);
+
+    await armPrompt();
+    await ctx.elements['swarm-publish-confirm'].fire('click');
+    await signed.promise;
+    expect(ctx.elements['swarm-publish-type'].textContent).toBe('Swarm chunk');
+    expect(ctx.elements['swarm-publish-owner-row'].classList.contains('hidden')).toBe(true);
+
+    await armPrompt();
+    await ctx.elements['swarm-publish-reject'].fire('click');
+    await chunk.promise.catch(() => {});
+    expect(chunk.rejected).toMatchObject({ code: 4001 });
   });
 
   test('concurrent connect requests queue as well', async () => {

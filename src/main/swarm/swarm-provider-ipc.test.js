@@ -100,12 +100,14 @@ const mockReadData = jest.fn();
 const mockWriteSingleOwnerChunk = jest.fn();
 const mockReadSingleOwnerChunk = jest.fn();
 const mockGetSignerAddress = jest.fn();
+const mockPublishSignedSoc = jest.fn();
 jest.mock('./chunk-service', () => ({
   publishChunk: mockPublishChunk,
   readChunk: mockReadChunk,
   readDataRoot: mockReadDataRoot,
   readData: mockReadData,
   writeSingleOwnerChunk: mockWriteSingleOwnerChunk,
+  publishSignedSingleOwnerChunk: mockPublishSignedSoc,
   readSingleOwnerChunk: mockReadSingleOwnerChunk,
   getSignerAddress: mockGetSignerAddress,
 }));
@@ -143,10 +145,12 @@ jest.mock('./feed-store', () => ({
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
+const mockGetFreedomSigningAddresses = jest.fn();
 jest.mock('../identity-manager', () => ({
   getDerivedKeys: mockGetDerivedKeys,
   getPublisherKey: mockGetPublisherKey,
   getUserWalletKey: mockGetUserWalletKey,
+  getFreedomSigningAddresses: (...args) => mockGetFreedomSigningAddresses(...args),
 }));
 
 const mockAddEntry = jest.fn().mockReturnValue({ id: 'test-id' });
@@ -292,6 +296,7 @@ describe('swarm-provider-ipc', () => {
         extensions: {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,
+          pageSignedSingleOwnerChunks: true,
         },
         limits: {
           maxDataBytes: LIMITS.maxDataBytes,
@@ -1461,6 +1466,217 @@ describe('swarm-provider-ipc', () => {
       expect(result.error.code).toBe(4100);
       expect(result.error.message).toBe('The origin is not authorized for this operation');
       expect(result.error.data.reason).toBe('feed_not_granted');
+    });
+  });
+
+  describe('swarm_publishSingleOwnerChunk (#647)', () => {
+    const OWNER = '0x' + 'ab'.repeat(20);
+    const IDENTIFIER = 'cd'.repeat(32);
+    const SIGNATURE = '0x' + 'ef'.repeat(64) + '1b';
+    const REFERENCE = '12'.repeat(32);
+    const params = (extra = {}) => ({
+      owner: OWNER,
+      identifier: IDENTIFIER,
+      signature: SIGNATURE,
+      data: 'hello',
+      ...extra,
+    });
+
+    function mockPreFlightOk() {
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
+    }
+
+    function heldAddresses(addresses = [], complete = true) {
+      mockGetFreedomSigningAddresses.mockResolvedValue({
+        addresses: new Set(addresses.map((a) => a.replace(/^0x/, '').toLowerCase())),
+        complete,
+      });
+    }
+
+    function verifiedPublish() {
+      mockPublishSignedSoc.mockImplementation(async (args) => {
+        args.onVerified();
+        return {
+          reference: REFERENCE,
+          owner: '0x' + 'AB'.repeat(20),
+          identifier: IDENTIFIER,
+          batchIdUsed: 'batch1',
+        };
+      });
+    }
+
+    function expectNoFreedomKeyUsed() {
+      expect(mockGetDerivedKeys).not.toHaveBeenCalled();
+      expect(mockGetPublisherKey).not.toHaveBeenCalled();
+      expect(mockGetUserWalletKey).not.toHaveBeenCalled();
+      expect(mockWriteSingleOwnerChunk).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      heldAddresses();
+      mockHasFeedGrant.mockReturnValue(false);
+    });
+
+    test('publishes a page-signed SOC with the connection grant alone', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      verifiedPublish();
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params({ span: 5 }), 'myapp.eth');
+
+      expect(result.result).toEqual({
+        reference: REFERENCE,
+        owner: '0x' + 'AB'.repeat(20),
+        identifier: IDENTIFIER,
+      });
+      expect(mockPublishSignedSoc).toHaveBeenCalledWith(expect.objectContaining({
+        owner: 'ab'.repeat(20),
+        identifier: IDENTIFIER,
+        signature: SIGNATURE,
+        data: Buffer.from('hello'),
+        span: 5n,
+      }));
+      expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'soc',
+        name: 'Signed SOC chunk',
+        origin: 'myapp.eth',
+        bytesSize: 5,
+      }));
+      expect(mockUpdateEntry).toHaveBeenCalledWith('test-id', expect.objectContaining({
+        status: 'completed',
+        reference: REFERENCE,
+      }));
+      expect(mockHasFeedGrant).not.toHaveBeenCalled();
+      expectNoFreedomKeyUsed();
+    });
+
+    test('is refused without the connection grant', async () => {
+      mockGetPermission.mockReturnValue(null);
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: 4100, data: { reason: 'not_connected' } });
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+    });
+
+    test('a signature that does not verify is invalid_signature, with no history entry', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishSignedSoc.mockRejectedValue(Object.assign(
+        new Error('The signature does not recover to owner for this identifier and chunk'),
+        { reason: 'invalid_signature' }
+      ));
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: -32602, data: { reason: 'invalid_signature' } });
+      expect(mockAddEntry).not.toHaveBeenCalled();
+      expect(mockUpdateEntry).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['the Ant wallet', '0x' + '11'.repeat(20)],
+      ['a wallet account', '0x' + 'AB'.repeat(20)],
+    ])('an owner that is %s is refused before anything is stamped', async (_label, held) => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { publish: true } });
+      heldAddresses(['0x' + '11'.repeat(20), '0x' + 'AB'.repeat(20)]);
+
+      // Matched whatever the case and 0x prefix the page sends.
+      const result = await invokeProvider(
+        'swarm_publishSingleOwnerChunk',
+        params({ owner: held.toLowerCase() }),
+        'myapp.eth'
+      );
+
+      expect(result.error).toMatchObject({ code: 4100, data: { reason: 'freedom_identity' } });
+      expect(mockGetPublishReadiness).not.toHaveBeenCalled();
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+      expect(mockAddEntry).not.toHaveBeenCalled();
+      expectNoFreedomKeyUsed();
+    });
+
+    test('an owner check that cannot complete fails closed', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      heldAddresses([], false);
+      const incomplete = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+      expect(incomplete.error).toMatchObject({ code: -32603, data: { reason: 'vault_locked' } });
+
+      mockGetFreedomSigningAddresses.mockRejectedValue(new Error('meta unreadable'));
+      const thrown = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+      expect(thrown.error.code).toBe(-32603);
+
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+      expect(mockAddEntry).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['owner', { owner: '0x1234' }, 'invalid_owner'],
+      ['identifier', { identifier: '0x' + 'cd'.repeat(32) }, 'invalid_identifier'],
+      ['signature length', { signature: 'ef'.repeat(64) }, 'invalid_signature'],
+      ['signature hex', { signature: 'zz'.repeat(65) }, 'invalid_signature'],
+      ['empty data', { data: '' }, 'invalid_params'],
+      ['oversized data', { data: Buffer.alloc(4097) }, 'payload_too_large'],
+      ['span', { span: -1 }, 'invalid_span'],
+      ['options', { options: { pin: false } }, 'unsupported_option'],
+    ])('validates %s before the owner check', async (_label, extra, reason) => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(extra), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: -32602, data: { reason } });
+      expect(mockGetFreedomSigningAddresses).not.toHaveBeenCalled();
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+    });
+
+    test('a node that is not ready is reported with the pre-flight reason', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockGetPublishReadiness.mockResolvedValueOnce({ ok: false, reason: 'no-usable-stamps' });
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error).toMatchObject({ code: 4900, data: { reason: 'no-usable-stamps' } });
+      expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+    });
+
+    test('an upload failure after verification marks the history entry failed', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishSignedSoc.mockImplementation(async (args) => {
+        args.onVerified();
+        throw new Error('SOC upload failed (500): boom');
+      });
+
+      const result = await invokeProvider('swarm_publishSingleOwnerChunk', params(), 'myapp.eth');
+
+      expect(result.error.code).toBe(-32603);
+      expect(mockUpdateEntry).toHaveBeenCalledWith('test-id', expect.objectContaining({
+        status: 'failed',
+      }));
+    });
+
+    test('Agent custody refuses an auto-approved signed-SOC write', async () => {
+      const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+      const chrome = { id: 1 };
+      const guest = { ...fakeWebContents(), hostWebContents: chrome };
+      mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { publish: true } });
+      setAgentPageCustody(guest, true);
+      try {
+        const refused = await ipcHandlers['swarm:provider-execute'](
+          { sender: chrome },
+          {
+            method: 'swarm_publishSingleOwnerChunk',
+            params: params(),
+            origin: 'myapp.eth',
+            meta: { webContentsId: 9, approval: 'auto' },
+          }
+        );
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+        expect(mockPublishSignedSoc).not.toHaveBeenCalled();
+      } finally {
+        setAgentPageCustody(guest, false);
+      }
     });
   });
 
