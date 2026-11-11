@@ -58,6 +58,43 @@ describe('radicle-embedded addon loading', () => {
     }
   });
 
+  test('a packaged build loads only the add-on it ships, ignoring the env override (R-7)', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+    const resources = fs.mkdtempSync(path.join(os.tmpdir(), 'Freedom-Resources-'));
+    Object.defineProperty(process, 'resourcesPath', { configurable: true, value: resources });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const planted = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(planted, `module.exports = {${REQUIRED_FAKE_EXPORTS}};`);
+    process.env.FREEDOM_RADICLE_ADDON = planted;
+
+    try {
+      jest.isolateModules(() => {
+        jest.doMock('electron', () => ({ app: { isPackaged: true } }));
+        const embedded = require('./radicle-embedded');
+        expect(embedded.candidatePaths()).toEqual([
+          path.join(resources, 'radicle-bin', 'libradicle.node'),
+        ]);
+        expect(embedded.isAvailable()).toBe(false);
+        expect(embedded.getAddonPath()).toBeNull();
+      });
+    } finally {
+      jest.dontMock('electron');
+      if (original) Object.defineProperty(process, 'resourcesPath', original);
+      else delete process.resourcesPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
+  test('a development build still honours FREEDOM_RADICLE_ADDON first', () => {
+    process.env.FREEDOM_RADICLE_ADDON = '/somewhere/libradicle.node';
+    jest.isolateModules(() => {
+      jest.doMock('electron', () => ({ app: { isPackaged: false } }));
+      expect(require('./radicle-embedded').candidatePaths()[0]).toBe('/somewhere/libradicle.node');
+    });
+    jest.dontMock('electron');
+  });
+
   test('call() surfaces addon {error} payloads as thrown errors', async () => {
     // Fake addon: a real file on disk that require() can load.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
@@ -261,4 +298,195 @@ describe('buildRepoMeta shape', () => {
     });
     fs.rmSync(dir, { recursive: true, force: true });
   });
+});
+
+describe('shutdown proof (R-8)', () => {
+  afterEach(() => {
+    delete process.env.FREEDOM_RADICLE_ADDON;
+    jest.resetModules();
+  });
+
+  test('the node counts as started until the add-on proves it stopped', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    // The first shutdown fails before the node's thread has joined; the
+    // second one succeeds.
+    fs.writeFileSync(
+      fake,
+      'let shutdowns = 0;' +
+        'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'start: async () => JSON.stringify({ did: "did:key:z6MkTest" }),' +
+        'shutdown: async () => { shutdowns += 1;' +
+        ' return shutdowns === 1' +
+        '  ? JSON.stringify({ error: "control channel closed" })' +
+        '  : JSON.stringify({ ok: true }); },' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const embedded = require('./radicle-embedded');
+        await embedded.start(dir, 'Alias');
+        expect(embedded.isStarted()).toBe(true);
+
+        const stopping = embedded.shutdown();
+        // Still started while the add-on has not answered, and after it
+        // failed to prove the node stopped.
+        expect(embedded.isStarted()).toBe(true);
+        await expect(stopping).rejects.toThrow('control channel closed');
+        expect(embedded.isStarted()).toBe(true);
+
+        await expect(embedded.shutdown()).resolves.toEqual({ ok: true });
+        expect(embedded.isStarted()).toBe(false);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shutdown in flight (R-8 review)', () => {
+  afterEach(() => {
+    delete global.__radicleShutdown;
+    delete process.env.FREEDOM_RADICLE_ADDON;
+    jest.resetModules();
+  });
+
+  test('a second shutdown while one is in flight waits on it, not the add-on', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    fs.writeFileSync(
+      fake,
+      'module.exports = {' +
+        REQUIRED_FAKE_EXPORTS +
+        'start: async () => JSON.stringify({ did: "did:key:z6MkTest" }),' +
+        'shutdown: () => global.__radicleShutdown(),' +
+        '};'
+    );
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    let answer;
+    global.__radicleShutdown = jest.fn(
+      () => new Promise((resolve) => {
+        answer = () => resolve(JSON.stringify({ ok: true }));
+      })
+    );
+    try {
+      await jest.isolateModulesAsync(async () => {
+        const embedded = require('./radicle-embedded');
+        await embedded.start(dir, 'Alias');
+        const first = embedded.shutdown();
+        const second = embedded.shutdown();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(global.__radicleShutdown).toHaveBeenCalledTimes(1);
+        expect(embedded.isStarted()).toBe(true);
+        answer();
+        await expect(first).resolves.toEqual({ ok: true });
+        await expect(second).resolves.toEqual({ ok: true });
+        expect(embedded.isStarted()).toBe(false);
+        // Proved stopped: a later shutdown asks nothing of the add-on.
+        await expect(embedded.shutdown()).resolves.toEqual({ ok: true });
+        expect(global.__radicleShutdown).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('read bounds (R-3)', () => {
+  // The fake addon's reads come from `global.__radicleFake`, so a test can
+  // hold one and see which run.
+  function withScriptedAddon(run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-addon-'));
+    const fake = path.join(dir, 'libradicle.node.js');
+    const scripted = ['issue', 'treeAt', 'blobAt', 'repoInfo']
+      .map((name) => `${name}: (...args) => global.__radicleFake.${name}(...args),`)
+      .join('');
+    fs.writeFileSync(fake, `module.exports = {${REQUIRED_FAKE_EXPORTS}${scripted}};`);
+    process.env.FREEDOM_RADICLE_ADDON = fake;
+    return jest
+      .isolateModulesAsync(async () => run(require('./radicle-embedded')))
+      .finally(() => {
+        delete global.__radicleFake;
+        delete process.env.FREEDOM_RADICLE_ADDON;
+        jest.resetModules();
+        fs.rmSync(dir, { recursive: true, force: true });
+      });
+  }
+
+  test('a read that has ended starts no addon call, and parses nothing', () =>
+    withScriptedAddon(async (embedded) => {
+      const ended = new AbortController();
+      ended.abort();
+      global.__radicleFake = { issue: jest.fn(async () => '{"id":"x"}') };
+      await expect(
+        embedded.withReadBounds({ signal: ended.signal }, () => embedded.issue('rad:zAbc', 'x'))
+      ).rejects.toBeInstanceOf(embedded.ReadEnded);
+      expect(global.__radicleFake.issue).not.toHaveBeenCalled();
+
+      // Ended while the call ran: its reply is dropped unparsed.
+      const running = new AbortController();
+      global.__radicleFake.issue = jest.fn(async () => {
+        running.abort();
+        return '{"id":"x"}';
+      });
+      const parse = jest.spyOn(JSON, 'parse');
+      try {
+        await expect(
+          embedded.withReadBounds({ signal: running.signal }, () => embedded.issue('rad:zAbc', 'x'))
+        ).rejects.toBeInstanceOf(embedded.ReadEnded);
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        parse.mockRestore();
+      }
+    }));
+
+  test('a composed read stops between its addon calls (readme: tree, then blob)', () =>
+    withScriptedAddon(async (embedded) => {
+      const ended = new AbortController();
+      global.__radicleFake = {
+        treeAt: jest.fn(async () => {
+          ended.abort();
+          return JSON.stringify({ entries: [{ name: 'README.md', kind: 'blob' }] });
+        }),
+        blobAt: jest.fn(async () => '{"content":"x"}'),
+      };
+      await expect(
+        embedded.withReadBounds({ signal: ended.signal }, () =>
+          embedded.readmeAtRaw('rad:zAbc', 'r')
+        )
+      ).rejects.toBeInstanceOf(embedded.ReadEnded);
+      expect(global.__radicleFake.treeAt).toHaveBeenCalledTimes(1);
+      expect(global.__radicleFake.blobAt).not.toHaveBeenCalled();
+    }));
+
+  test('a reply over the cap is refused before it is parsed, parsed or raw', () =>
+    withScriptedAddon(async (embedded) => {
+      const reply = JSON.stringify({ id: 'x', body: 'y'.repeat(100) });
+      global.__radicleFake = {
+        issue: async () => reply,
+        blobAt: async () => reply,
+      };
+      const parse = jest.spyOn(JSON, 'parse');
+      try {
+        const capped = { maxReplyChars: reply.length - 1 };
+        await expect(
+          embedded.withReadBounds(capped, () => embedded.issue('rad:zAbc', 'x'))
+        ).rejects.toBeInstanceOf(embedded.ReplyTooLarge);
+        await expect(
+          embedded.withReadBounds(capped, () => embedded.blobAtRaw('rad:zAbc', 'r', 'f'))
+        ).rejects.toBeInstanceOf(embedded.ReplyTooLarge);
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        parse.mockRestore();
+      }
+      // At the cap, and outside any bounds, the reply is served.
+      await expect(
+        embedded.withReadBounds({ maxReplyChars: reply.length }, () =>
+          embedded.issue('rad:zAbc', 'x')
+        )
+      ).resolves.toMatchObject({ id: 'x' });
+      await expect(embedded.issue('rad:zAbc', 'x')).resolves.toMatchObject({ id: 'x' });
+    }));
 });
