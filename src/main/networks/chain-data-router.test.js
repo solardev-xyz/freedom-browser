@@ -1,4 +1,5 @@
 const { execFileSync } = require('node:child_process');
+const { proverOutageError } = require('../../../test/helpers/colibri-prover-outage');
 const mockRegistry = {
   getNetwork: jest.fn(),
   getEndpoints: jest.fn(),
@@ -2250,6 +2251,40 @@ describe('chain-data-router', () => {
       expect(mockLog.verbose).toHaveBeenCalledWith(expect.stringContaining('Out of gas'));
       expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // Colibri no longer proves a read itself when the prover is down, so the
+  // prover's error is its whole answer, and the read moves on.
+  describe('a failed remote proof (#1059)', () => {
+    test('falls through to the next source, labelled as that source', async () => {
+      const outage = proverOutageError();
+      expect(outage).toMatchObject({
+        code: 4900,
+        message: expect.stringContaining(
+          'remote proof failed (no local proving): HTTP error! Status: 503'
+        ),
+      });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['colibri', 'direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRequestViaColibri.mockRejectedValue(outage);
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x7' }),
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        await expect(request(1, 'eth_getBalance', ['0xabc', 'latest'])).resolves.toEqual({
+          result: '0x7',
+          source: 'direct',
+          verified: false,
+        });
+      }
+      // A prover outage is no verifier fault: Colibri isn't backed off for it.
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
+      expect(mockLog.warn).not.toHaveBeenCalled();
+    }, 60_000);
   });
 });
 
