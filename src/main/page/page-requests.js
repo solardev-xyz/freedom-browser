@@ -6,18 +6,23 @@
  * way in", "Requests and handles" and "Events"; step PRQ-2).
  *
  *   page:hello    preload -> main (send)    { nonce }
- *   page:request  preload -> main (invoke)  { nonce, provider, method, params }
+ *   page:reserve  preload -> main (invoke)  { nonce, method, bytes }
+ *                                           -> { ticket } | { error }
+ *   page:request  preload -> main (invoke)  { nonce, provider, method, params, ticket? }
  *                                           -> { result } | { error }
  *   page:event    main -> preload           { nonce, provider, event, data }
  *                 (WebFrameMain.send)
  *
- * A request is refused, before anything runs, when its method has no row in
- * the closed method table (`page-methods.js`), when the table refuses it, or
- * when no dispatcher serves it. Then main attests the sender
+ * A request that carries a ticket burns it on arrival, before any other
+ * check. It is then refused, before anything runs, when its method has no
+ * row in the closed method table (`page-methods.js`), when the table
+ * refuses it, or when no dispatcher serves it; when the size walk
+ * (`shared/page-request-bounds.js`) refuses it; or when it is over 1 MiB and
+ * brings no ticket main holds. Then main attests the sender
  * (`page-documents.js`: a tab, not private, not a preview, the top frame,
  * the current document's nonce, the frame URL on the document's transport
- * key) and admits the request only while its document, its window and the
- * browser each have room for one more in flight. Only then does main record
+ * key), checks a ticket's binding, and charges the request to its document,
+ * its window and the browser (`page-budgets.js`). Only then does main record
  * it.
  *
  * Every record has main's deadline: today's page-world time limit for its
@@ -46,6 +51,13 @@
 
 const crypto = require('crypto');
 const {
+  PAGE_REQUEST_LIMITS,
+  measurePageRequest,
+  pageRequestMaxBytes,
+  pageRequestWalkError,
+} = require('../../shared/page-request-bounds');
+const { BUDGETS, TICKETS, chargeOf, createPageBudgets } = require('./page-budgets');
+const {
   CLASS,
   PROVIDERS,
   methodRow,
@@ -53,17 +65,17 @@ const {
   unknownMethodError,
   timeoutError,
 } = require('./page-methods');
-const { createPageDocuments } = require('./page-documents');
+const { createPageDocuments, transportKeyOf } = require('./page-documents');
 
 const CHANNELS = Object.freeze({
   HELLO: 'page:hello',
+  RESERVE: 'page:reserve',
   REQUEST: 'page:request',
   EVENT: 'page:event',
 });
 
-// Requests in flight (design 0011, "The numbers", proposed). PRQ-2b adds
-// the byte budgets beside these counts.
-const BOUNDS = Object.freeze({ document: 64, window: 256, browser: 1024 });
+const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
+const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
@@ -116,6 +128,14 @@ function normalizeError(error) {
   return out;
 }
 
+// Only the keys a request of this kind has.
+function hasOnlyKeys(payload, keys) {
+  for (const key in payload) {
+    if (!keys.has(key)) return false;
+  }
+  return true;
+}
+
 function isLive(contents) {
   try {
     return Boolean(contents) && contents.isDestroyed() === false;
@@ -133,14 +153,16 @@ function isLive(contents) {
  * @param {object} [options.hooks] test hooks, read at each use: `dispatch`
  *   serves every method with a row, `beforeEventSend(message, target)` may
  *   hold an event between main's check and the send, `onTrace(entry)` hears
- *   what main did.
+ *   what main did, and `onCopy(entry)` hears each copy a dispatcher reports
+ *   (`context.copied`), with whether the request's charge is in place.
  */
 function createPageRequests({
   documents = createPageDocuments(),
   webContentsFromId = (id) => require('electron').webContents.fromId(id),
   dispatchers = {},
   hooks = {},
-  bounds = BOUNDS,
+  budgets: budgetBounds = BUDGETS,
+  tickets: ticketBounds = TICKETS,
   randomHex = (bytes) => crypto.randomBytes(bytes).toString('hex'),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -148,7 +170,6 @@ function createPageRequests({
   let lastId = 0;
   const records = new Map(); // id -> record
   const byDocument = new Map(); // `${guest}:${navigation}` -> Set<record>
-  const perWindow = new Map(); // window id -> requests in flight
   const handles = new Map(); // handle -> record
   const handleListeners = new Set();
 
@@ -160,6 +181,16 @@ function createPageRequests({
     }
   };
 
+  const budgets = createPageBudgets({
+    budgets: budgetBounds,
+    tickets: ticketBounds,
+    isCurrent: (requester) => documentHolds(requester),
+    randomHex,
+    setTimer,
+    clearTimer,
+    onTrace: trace,
+  });
+
   const documentKey = (requester) => `${requester.guest}:${requester.navigation}`;
 
   function dispatcherFor(provider, method) {
@@ -168,21 +199,13 @@ function createPageRequests({
     return typeof dispatcher === 'function' ? dispatcher : null;
   }
 
-  // The count bounds: room for one more request in the document, its window
-  // and the browser.
-  function hasRoom(requester) {
-    const inDocument = byDocument.get(documentKey(requester))?.size || 0;
-    const inWindow = perWindow.get(requester.window) || 0;
-    return inDocument < bounds.document && inWindow < bounds.window && records.size < bounds.browser;
-  }
-
   function stopDeadline(record) {
     if (record.timer === null) return;
     clearTimer(record.timer);
     record.timer = null;
   }
 
-  function open(requester, provider, method, row) {
+  function open(requester, provider, method, row, charge, chargeBytes) {
     const record = {
       id: ++lastId,
       key: documentKey(requester),
@@ -191,6 +214,8 @@ function createPageRequests({
       provider,
       method,
       row,
+      charge,
+      chargeBytes,
       handle: null,
       shown: false,
       timer: null,
@@ -206,14 +231,22 @@ function createPageRequests({
     records.set(record.id, record);
     if (!byDocument.has(record.key)) byDocument.set(record.key, new Set());
     byDocument.get(record.key).add(record);
-    perWindow.set(record.window, (perWindow.get(record.window) || 0) + 1);
     record.timer = setTimer(() => expire(record), row.timeoutMs);
     record.timer?.unref?.();
-    trace({ kind: 'recorded', id: record.id, provider, method, guest: requester.guest, navigation: requester.navigation });
+    trace({
+      kind: 'recorded',
+      id: record.id,
+      provider,
+      method,
+      guest: requester.guest,
+      navigation: requester.navigation,
+      charge: chargeBytes,
+    });
     return record;
   }
 
-  // The record leaves the bounds once it is answered and its work is over.
+  // The record, and its charge, go once it is answered and its work, which
+  // holds its payload and every copy, is over.
   function release(record) {
     if (record.released || !record.answered || !record.settled) return;
     record.released = true;
@@ -223,9 +256,7 @@ function createPageRequests({
     const inDocument = byDocument.get(record.key);
     inDocument?.delete(record);
     if (inDocument && inDocument.size === 0) byDocument.delete(record.key);
-    const inWindow = (perWindow.get(record.window) || 1) - 1;
-    if (inWindow > 0) perWindow.set(record.window, inWindow);
-    else perWindow.delete(record.window);
+    budgets.release(record.charge);
     trace({ kind: 'released', id: record.id });
   }
 
@@ -295,8 +326,10 @@ function createPageRequests({
     return true;
   }
 
-  // A document ended: its handles close, and nothing is answered to it.
+  // A document ended: its handles close, nothing is answered to it, and its
+  // reservation, waiting or granted, is released.
   documents.onEnded(({ guest, navigation, reason }) => {
+    budgets.documentEnded(`${guest}:${navigation}`, GONE);
     const inDocument = byDocument.get(`${guest}:${navigation}`);
     if (!inDocument) return;
     const closeReason = reason === 'closed' ? CLOSED.CLOSED : CLOSED.NAVIGATED;
@@ -317,7 +350,20 @@ function createPageRequests({
       isCurrent: () => documents.isCurrent(record.requester),
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
+      copied: (label) => copied(record, label),
     });
+  }
+
+  // A dispatcher made or caused a copy of the request's bytes (design 0011,
+  // "Measured, not assumed"): its charge must already be in place.
+  function copied(record, label) {
+    const inPlace = !record.charge.released && record.charge.bytes >= record.chargeBytes;
+    try {
+      hooks.onCopy?.({ id: record.id, label, charged: record.charge.bytes, charge: record.chargeBytes, inPlace });
+    } catch {
+      // A test hook never changes what main does.
+    }
+    return inPlace;
   }
 
   async function run(record, dispatch, event, nonce, naming, params) {
@@ -358,26 +404,85 @@ function createPageRequests({
    */
   function request(event, payload) {
     if (!isPlainObject(payload)) return errorOf(INVALID_REQUEST);
+    // A ticket is burnt on arrival, before any other check, whether the
+    // request is then served or refused: none is presented twice.
+    const presented = Object.prototype.hasOwnProperty.call(payload, 'ticket');
+    const ticket = presented ? budgets.burn(payload.ticket) : null;
+    const refuse = (answer, reason) => {
+      budgets.refuseTicket(ticket);
+      trace({ kind: 'refused', reason });
+      return answer;
+    };
+    if (!hasOnlyKeys(payload, REQUEST_KEYS)) return refuse(errorOf(INVALID_REQUEST), 'shape');
     const { nonce, provider, method, params } = payload;
-    if (typeof provider !== 'string' || !PROVIDER_SET.has(provider)) return errorOf(INVALID_REQUEST);
-    if (typeof method !== 'string' || !method) return errorOf(INVALID_REQUEST);
+    if (typeof provider !== 'string' || !PROVIDER_SET.has(provider)) return refuse(errorOf(INVALID_REQUEST), 'shape');
+    if (typeof method !== 'string' || !method) return refuse(errorOf(INVALID_REQUEST), 'shape');
     const row = methodRow(provider, method);
-    if (!row) return { error: unknownMethodError(provider, method) };
-    if (row.class === CLASS.REFUSED) return { error: { ...row.error } };
+    if (!row) return refuse({ error: unknownMethodError(provider, method) }, 'unlisted');
+    if (row.class === CLASS.REFUSED) return refuse({ error: { ...row.error } }, 'refused');
     const dispatch = dispatcherFor(provider, method);
-    if (!dispatch) return { error: unknownMethodError(provider, method) };
+    if (!dispatch) return refuse({ error: unknownMethodError(provider, method) }, 'no-dispatcher');
+    // Measured first, before main keeps, copies or validates anything.
+    const measured = measurePageRequest(payload, pageRequestMaxBytes(provider, method), { skipKey: 'ticket' });
+    if (!measured.ok) {
+      return refuse({ error: pageRequestWalkError(measured.reason, provider, method, measured.size) }, measured.reason);
+    }
+    // A large request needs a ticket main holds, and any ticket presented
+    // must be one.
+    if ((presented && !ticket) || (measured.size > PAGE_REQUEST_LIMITS.ticketAbove && !ticket)) {
+      return refuse(errorOf(LIMIT_EXCEEDED), 'ticket');
+    }
     const attested = documents.attestNow(event, nonce);
-    if (!attested.ok) {
-      trace({ kind: 'refused', provider, method, reason: attested.reason });
-      return refusal(attested.reason);
+    if (!attested.ok) return refuse(refusal(attested.reason), attested.reason);
+    const chargeBytes = chargeOf(provider, method, measured);
+    let charge;
+    if (ticket) {
+      // The ticket's charge, the most a request of its size can be charged,
+      // moves to the request with no gap; or both go on a mismatch.
+      charge = budgets.takeTicket(ticket, attested.requester, method, measured.size);
+      if (!charge) {
+        trace({ kind: 'refused', reason: 'ticket-binding' });
+        return errorOf(LIMIT_EXCEEDED);
+      }
+    } else {
+      charge = budgets.admit(attested.requester, chargeBytes);
+      if (!charge) {
+        trace({ kind: 'refused', reason: 'limit' });
+        return errorOf(LIMIT_EXCEEDED);
+      }
     }
-    if (!hasRoom(attested.requester)) {
-      trace({ kind: 'refused', provider, method, reason: 'limit' });
-      return errorOf(LIMIT_EXCEEDED);
-    }
-    const record = open(attested.requester, provider, method, row);
+    const record = open(attested.requester, provider, method, row, charge, chargeBytes);
     run(record, dispatch, event, nonce, attested.naming, params);
     return record.reply;
+  }
+
+  /**
+   * `page:reserve`: a turn for a request over 1 MiB. Answers `{ ticket }`
+   * when its turn comes, or `{ error }`, or `GONE` once the document that
+   * asked has gone.
+   */
+  function reserve(event, payload) {
+    if (!isPlainObject(payload) || !hasOnlyKeys(payload, RESERVE_KEYS)) return errorOf(INVALID_REQUEST);
+    const attested = documents.attestNow(event, payload.nonce);
+    if (!attested.ok) {
+      trace({ kind: 'refused', reason: attested.reason });
+      return refusal(attested.reason);
+    }
+    return budgets.reserve(attested.requester, { method: payload.method, bytes: payload.bytes }, refusal);
+  }
+
+  // What a waiting reservation passes again before its ticket is made: the
+  // guest live, the document current, its frame the guest's main frame and
+  // not detached, and the frame URL on the document's transport key.
+  function documentHolds(requester) {
+    if (!documents.isCurrent(requester)) return false;
+    const frame = liveMainFrame(requester);
+    if (!frame) return false;
+    try {
+      return transportKeyOf(frame.url) === requester.transportKey;
+    } catch {
+      return false;
+    }
   }
 
   // The guest's main frame, if it is still the target's frame.
@@ -436,26 +541,23 @@ function createPageRequests({
     return () => handleListeners.delete(listener);
   }
 
-  /** Requests in flight, for tests and diagnostics. */
+  /** Requests in flight and what they are charged, for tests and diagnostics. */
   function stats() {
-    return {
-      browser: records.size,
-      windows: Object.fromEntries(perWindow),
-      documents: Object.fromEntries([...byDocument].map(([key, set]) => [key, set.size])),
-      handles: handles.size,
-    };
+    return { ...budgets.usage(), records: records.size, handles: handles.size };
   }
 
   function register(ipcMain) {
     ipcMain.on(CHANNELS.HELLO, (event, payload) => {
       hello(event, payload);
     });
+    ipcMain.handle(CHANNELS.RESERVE, (event, payload) => reserve(event, payload));
     ipcMain.handle(CHANNELS.REQUEST, (event, payload) => request(event, payload));
   }
 
   return {
     track: (contents) => documents.track(contents),
     hello,
+    reserve,
     request,
     sendEvent,
     findHandle,
@@ -517,6 +619,9 @@ function enablePageRequestTestHooks() {
     setBeforeEventSend: (hold) => {
       sharedHooks.beforeEventSend = typeof hold === 'function' ? hold : undefined;
     },
+    setOnCopy: (hear) => {
+      sharedHooks.onCopy = typeof hear === 'function' ? hear : undefined;
+    },
     sendEvent: (target, provider, event, data) => getPageRequests().sendEvent(target, provider, event, data),
     stats: () => getPageRequests().stats(),
   };
@@ -524,7 +629,6 @@ function enablePageRequestTestHooks() {
 
 module.exports = {
   CHANNELS,
-  BOUNDS,
   CLOSED,
   GONE,
   createPageRequests,

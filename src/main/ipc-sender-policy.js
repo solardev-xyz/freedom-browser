@@ -30,8 +30,9 @@
  *       PROFILE_MANAGER settings.html or profiles.html.
  *     `ipc-sender-policy.test.js` parses webview-preload.js and fails if a
  *     channel is added there without a tier here, or given a different tier.
- *   - The page channels (`page:hello`, `page:request`; freedom-core design
- *     0011, "The way in") are the one exception to the chrome's reach: they
+ *   - The page channels (`page:hello`, `page:reserve`, `page:request`;
+ *     freedom-core design 0011, "The way in") are the one exception to the
+ *     chrome's reach: they
  *     take only a tab webview's top frame, and never an internal page or the
  *     chrome, which has no page to speak for. Main then attests the sender
  *     itself (src/main/page/page-documents.js).
@@ -209,6 +210,7 @@ const PROFILE_MANAGER_CHANNELS = [
 // channel, these refuse the chrome.
 const PAGE_CHANNELS = [
   'page:hello',
+  'page:reserve',
   'page:request',
 ];
 const PAGE_CHANNEL_SET = new Set(PAGE_CHANNELS);
