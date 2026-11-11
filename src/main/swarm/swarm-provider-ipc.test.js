@@ -1999,7 +1999,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.error.data).toBeUndefined();
     });
 
-    test('translates payload too large error', async () => {
+    test('an empty payload refused by feed-service says so, not that it is too large', async () => {
       mockFeedCapability('myapp.eth');
       mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
       mockPreFlightOk();
@@ -2012,7 +2012,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: '' }, 'myapp.eth');
 
       expect(result.error.code).toBe(-32602);
-      expect(result.error.message).toBe('Payload exceeds maximum SOC size');
+      expect(result.error.message).toBe('A feed entry needs at least 1 byte of data');
       expect(result.error.data).toEqual({ reason: 'payload_too_large' });
     });
 

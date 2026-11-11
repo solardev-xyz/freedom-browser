@@ -648,6 +648,17 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
  * @returns {Promise<{ payload: Buffer, index: number, nextIndex: number|null }>}
  */
 async function readFeedPayload(ownerAddress, topic, index, meter) {
+  // Every read is metered: a missing meter is the caller's bug, refused here
+  // before anything is asked of the node rather than as a TypeError midway.
+  if (
+    !meter ||
+    !Number.isSafeInteger(meter.maxBytes) ||
+    meter.maxBytes < 0 ||
+    typeof meter.charge !== 'function' ||
+    typeof meter.reserve !== 'function'
+  ) {
+    throw new TypeError('readFeedPayload needs a read meter ({ maxBytes, charge, reserve })');
+  }
   const bee = getBee();
   const owner = new EthAddress(ownerAddress);
 

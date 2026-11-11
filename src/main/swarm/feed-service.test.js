@@ -1007,6 +1007,32 @@ describe('feed-service', () => {
       expect(writer.uploadReference).not.toHaveBeenCalled();
     });
 
+    // The explicit-index check (#1054) awaits the node too: a vault lock
+    // while it is out must stop the write after it answers, before upload.
+    test('a write whose explicit-index check outlasts the vault epoch uploads nothing', async () => {
+      const vaultEpoch = require('../identity/vault-epoch');
+      let answerCheck;
+      const writer = createMockWriter();
+      mockDownloadChunk.mockImplementation(() => new Promise((_resolve, reject) => {
+        answerCheck = reject;
+      }));
+      mockMakeFeedWriter.mockReturnValue(writer);
+      mockBatchForAutoSelect();
+
+      const writing = writeFeedPayload(TEST_PRIVATE_KEY, 'myapp.eth/epoch', 'x', {
+        index: 5,
+        epoch: vaultEpoch.currentVaultEpoch(),
+      });
+      writing.catch(() => {});
+      for (let i = 0; i < 10 && !answerCheck; i += 1) await Promise.resolve();
+      expect(answerCheck).toBeDefined();
+      vaultEpoch.advanceVaultEpoch();
+      answerCheck(make404()); // the index is free
+
+      await expect(writing).rejects.toThrow(/locked/i);
+      expect(writer.uploadPayload).not.toHaveBeenCalled();
+    });
+
     test('a key read in an earlier epoch is refused at once', async () => {
       const vaultEpoch = require('../identity/vault-epoch');
       const taken = vaultEpoch.currentVaultEpoch();

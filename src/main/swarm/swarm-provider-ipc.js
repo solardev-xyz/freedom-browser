@@ -1552,9 +1552,10 @@ async function handleWriteFeedEntry(params, origin) {
 
     // The page's payload, refused by feed-service. Matched by reason, not by
     // text: a node's malformed answer can read "payload size … exceeds" too,
-    // and that is the node's failure, a retryable -32603 (#1054).
+    // and that is the node's failure, a retryable -32603 (#1054). The only
+    // payload it refuses is an empty one, so its own text is the message.
     if (err.reason === 'payload_too_large') {
-      return { error: { ...ERRORS.INVALID_PARAMS, message: 'Payload exceeds maximum SOC size', data: { reason: 'payload_too_large' } } };
+      return { error: { ...ERRORS.INVALID_PARAMS, message: err.message, data: { reason: 'payload_too_large' } } };
     }
 
     log.error(`[SwarmProvider] writeFeedEntry failed for ${origin}:`, err.message);
