@@ -23,7 +23,8 @@ const RETIRED_RUNTIME_ERROR = /Colibri WASM runtime was retired after a trap/;
 // The bundled default writes these to process.cwd(), which means launching
 // the browser from a different directory loses the warm-cache state and
 // scatters files across the filesystem. The host passes a stable per-app dir
-// (`<userData>/colibri`); keys are chain-scoped, so workers for *different*
+// (`<userData>/colibri`) to the normal windows' workers (a private window's
+// gets none: createMemoryStorage below); keys are chain-scoped, so workers for *different*
 // chains never write the same file. Two workers for the *same* chain can,
 // though: when a WASM trap retires a worker that still has requests in
 // flight, it keeps draining (with a fresh instance on the same storage) while
@@ -108,6 +109,86 @@ function createDiskStorage(dir) {
   };
 }
 
+// A private window's verifier state (#1058). Besides headers and sync state,
+// Colibri saves `tx_cache_<chain>`, `code_<hash>` and `call_<chain>_<address>`
+// records, and the last names every contract a page called: on disk they
+// would outlive the private window. The host spawns the private windows'
+// workers with no storage dir, and they get this instead, the same
+// interface held in the worker's own memory. It ends with the worker, which
+// the host terminates when the last private window closes.
+//
+// That can be days, and Buffer bytes live outside the V8 heap, so the
+// worker's maxOldGenerationSizeMb does not count them. The cache records
+// (`call_`, `code_`, `tx_cache_`) are what grows with browsing, one per
+// contract or bytecode a page touches, so they share a byte budget and the
+// least recently used one is dropped once it is spent: Colibri reads a
+// missing record as a cache miss and fetches and verifies it again. The
+// verifier's own state (`states_`, `sync_`, headers) is never dropped, since
+// losing it would mean bootstrapping verification again; it grows by one
+// sync-committee record per ~27 h period, which stays small for any window
+// lifetime.
+const MEMORY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const MEMORY_CACHE_KEY = /^(call_|code_|tx_cache_)/;
+
+function createMemoryStorage({ maxCacheBytes = MEMORY_CACHE_MAX_BYTES } = {}) {
+  const entries = new Map();
+  // Cache records only, oldest use first (a Map keeps insertion order, and a
+  // use re-inserts the key at the end).
+  const cache = new Map();
+  let cacheBytes = 0;
+
+  function dropCached(key) {
+    if (!cache.has(key)) return;
+    cacheBytes -= cache.get(key);
+    cache.delete(key);
+  }
+
+  function del(key) {
+    entries.delete(key);
+    dropCached(key);
+  }
+
+  return {
+    get: (key) => {
+      if (!entries.has(key)) return null;
+      if (cache.has(key)) {
+        const size = cache.get(key);
+        cache.delete(key);
+        cache.set(key, size);
+      }
+      return Buffer.from(entries.get(key));
+    },
+    set: (key, value) => {
+      const copy = Buffer.from(value);
+      del(key);
+      if (!MEMORY_CACHE_KEY.test(key)) {
+        entries.set(key, copy);
+        return;
+      }
+      // A record bigger than the whole budget is not kept at all.
+      if (copy.length > maxCacheBytes) return;
+      for (const oldest of cache.keys()) {
+        if (cacheBytes + copy.length <= maxCacheBytes) break;
+        del(oldest);
+      }
+      entries.set(key, copy);
+      cache.set(key, copy.length);
+      cacheBytes += copy.length;
+    },
+    del,
+  };
+}
+
+// The worker's storage: on disk under `storageDir`, or in memory when the
+// host passes none. Anything but a non-empty path gets memory: a missing
+// dir must never fall back to some disk location (Colibri's own default is
+// process.cwd()).
+function createStorage(storageDir) {
+  return typeof storageDir === 'string' && storageDir !== ''
+    ? createDiskStorage(storageDir)
+    : createMemoryStorage();
+}
+
 // Only plain, cloneable fields cross back to the main process. The router and
 // ethers' BrowserProvider read `code`, `data` (EVM revert bytes) and `message`.
 function serializeError(err) {
@@ -152,7 +233,7 @@ function createColibriService({ runtime, storageDir, post }) {
     runtime.setRuntimeResetListener?.((err) => {
       post({ type: 'trap', message: serializeError(err).message });
     });
-    await Colibri.register_storage(createDiskStorage(storageDir));
+    await Colibri.register_storage(createStorage(storageDir));
   }
 
   async function handle(message) {
@@ -201,4 +282,11 @@ if (!isMainThread && parentPort) {
   }
 }
 
-module.exports = { createColibriService, createDiskStorage, serializeError, STALE_TMP_MS };
+module.exports = {
+  createColibriService,
+  createDiskStorage,
+  createMemoryStorage,
+  MEMORY_CACHE_MAX_BYTES,
+  serializeError,
+  STALE_TMP_MS,
+};

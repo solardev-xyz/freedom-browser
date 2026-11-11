@@ -14,7 +14,7 @@ const {
   runWithPrivateLogContext,
   redactForLog,
 } = require('./private/private-log-context');
-const { isPrivateWebContents } = require('./private/private-windows');
+const { isPrivateSender } = require('./private/private-sender');
 
 // PRIVATE MODE GUARD (name logging): the name being resolved IS the
 // browsing history of the tab that asked for it, and log.info/warn land in
@@ -2877,8 +2877,13 @@ function noReverseResult(normalizedAddress) {
 // the consensus wave, the per-method dispatch and the shared
 // cache-and-log — without threading a flag through every resolver hop. The
 // resolution itself is unchanged.
+//
+// The same mark keeps the lookup's Colibri reads off the disk store (#1058),
+// so it fails closed: only a sender main places in a known public window is
+// public. One it can't place (none, destroyed, mid-teardown, or a lookup
+// that throws) counts as private (private/private-sender.js).
 function privateResolveContext(event) {
-  return isPrivateWebContents(event?.sender);
+  return isPrivateSender(event);
 }
 
 function registerEnsIpc() {

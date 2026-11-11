@@ -49,9 +49,10 @@ READ_METHODS.add('web3_sha3');
 //   listed here serves the method as far as the router knows, and its adapter
 //   still refuses what depends on the request (Myotis: which methods its addon
 //   version serves, block tags other than `latest`, state overrides, blob
-//   transactions; see requestMyotis), which is reported as that source's
-//   failure. A Myotis refusal of the request itself is not a source failure:
-//   it is the answer (see nativeResult).
+//   transactions; see requestMyotis. Colibri: a block it can't prove at; see
+//   requestColibri), which is reported as that source's failure. A Myotis
+//   refusal of the request itself is not a source failure: it is the answer
+//   (see nativeResult).
 // - logSpan: the widest eth_getLogs block span the source serves.
 //   'learned-per-endpoint' means each RPC endpoint's cap is learned from its
 //   range-limit replies and the source asks only endpoints whose cap covers
@@ -102,6 +103,46 @@ READ_METHODS.add('web3_sha3');
 // alike. (Verification itself no longer blocks the browser: it runs in a
 // worker thread since #495, where a wide range used to freeze the main
 // process for 20-30 s.)
+//
+// Colibri doesn't prove every answer either (#1046). Colibri 3.0.3 classes
+// some requests as unproofable (src/chains/eth/verifier/eth_verify.c), sends
+// those to one of its `eth_rpc` servers and returns that server's `result`
+// as a success, even under Strategy.VerifiedOnly (rpc_handle_unproofable,
+// src/api/colibri_common.c). The servers are the package's default public
+// RPC hosts, which the user never configured. Such an answer is one public
+// RPC's word, and would be labelled verified. So Colibri serves neither kind:
+// - eth_gasPrice and eth_feeHistory, which it never proves
+//   (`not_verifieable_yet_methods`): `unsupported` below;
+// - a read at a `pending` or `earliest` block (`eth_has_unproofable_block_tag`:
+//   a pending block has no beacon block, and the earliest predates the beacon
+//   chain): requestColibri refuses it before Colibri is asked
+//   (colibriRequestParams), and the next source answers.
+// Nor does it serve eth_call or eth_estimateGas. In privacy mode
+// (`privacy_mode: 'basic'`, which the worker always sets) Colibri runs both
+// locally (METHOD_LOCAL in eth_verify.c) on contract code it fetches from an
+// `eth_rpc` server, and never checks that code against the proven code hash
+// (call_ctx.c's call_account_get_code, eth_account.c). A call that reads no
+// storage and no block context fetches no proof at all, and its result is
+// accepted (verify_call.c's verify_call_result_and_finish). So a call's
+// answer can be one public RPC's code, run locally with no proof behind it:
+// both are `unsupported` below.
+// Nor does it serve eth_maxPriorityFeePerGas: Colibri 3.0.3 answers it with a
+// hard-coded 1 gwei (verify_block.c's eth_set_block_data), attached to a
+// proven header but not derived from it, so the "verified" tip says nothing
+// about the market. `unsupported` below.
+// Nor does it answer a read whose proof isn't tied to the requested block
+// (#1060). Colibri proves such an answer from *some* authenticated block, so
+// a lying prover could answer from another one, and it would be labelled
+// verified. requestColibri refuses those too, and asks Colibri only for:
+// - an account read (eth_getBalance, eth_getCode, eth_getTransactionCount,
+//   eth_getStorageAt) at `latest`, given or appended, whose proof must be at
+//   most a minute old;
+// - eth_getBlockByNumber at `latest`, a number or a hash, which Colibri
+//   compares with the proven block, or without a block (`latest`);
+// - eth_getBlockByHash at a 32-byte hash, compared the same way.
+// A block that isn't a string (an EIP-1898 object), `safe`, `finalized` and
+// `justified` go elsewhere for every method: Colibri ties none of them to its
+// proof.
 const COST = Object.freeze({
   SERIALIZED: 'serialized',
   PROOF: 'proof',
@@ -121,7 +162,15 @@ const SOURCE_CAPABILITIES = Object.freeze({
     cost: COST.SERIALIZED,
   }),
   colibri: Object.freeze({
-    unsupported: new Set([...SINGLE_NODE_METHODS, 'eth_getLogs']),
+    unsupported: new Set([
+      ...SINGLE_NODE_METHODS,
+      'eth_getLogs',
+      'eth_gasPrice',
+      'eth_feeHistory',
+      'eth_call',
+      'eth_estimateGas',
+      'eth_maxPriorityFeePerGas',
+    ]),
     // Its upstream refuses more than 10,000 blocks per log query, then retries
     // another node (#496). Not consulted while eth_getLogs is unsupported.
     logSpan: 10_000,
@@ -155,6 +204,107 @@ function sourceServesMethod(source, method) {
   return !SOURCE_CAPABILITIES[source]?.unsupported.has(method);
 }
 
+// Where each read method Colibri serves takes its block parameter, as
+// Colibri 3.0.3 reads it (`eth_block_tag_index` in eth_verify.c, which
+// mirrors its prover modules). Methods not listed take none.
+const COLIBRI_BLOCK_PARAM = new Map([
+  ['eth_getBalance', 1],
+  ['eth_getCode', 1],
+  ['eth_getTransactionCount', 1],
+  ['eth_getStorageAt', 2],
+  ['eth_getBlockByNumber', 0],
+]);
+// The account reads, which Colibri 3.0.3 ties to the requested block only at
+// `latest` (#1060). verify_account_proof.c proves the account against the
+// header in the proof and compares no requested number or hash with that
+// header. No tag but `latest` is gated (eth_verify.h), so `safe`,
+// `finalized` or `justified` would pass unchecked. At `latest` each proof
+// must be at most a minute old: Colibri's freshness gate
+// (eth_check_latest_freshness, with the worker's max_latest_age_seconds).
+// The verifier reads the block as the account read's last param
+// (account_block_tag) and gates it only when that is the string `latest`,
+// so the block must be last.
+const COLIBRI_LATEST_ONLY = new Set([
+  'eth_getBalance',
+  'eth_getCode',
+  'eth_getTransactionCount',
+  'eth_getStorageAt',
+]);
+// The blocks eth_getBlockByNumber is Colibri's at: `latest`, which its
+// freshness gate holds to a minute; a block number, compared with the proven
+// block's; a 32-byte hash, compared with its hash (verify_block.c's
+// c4_eth_matches_blocknumber). Every other string goes elsewhere:
+// - `pending` and `earliest`, which Colibri answers from a public RPC
+//   (`eth_json_is_unproofable_tag`);
+// - `safe`, `finalized`, and any other string its validator lets through,
+//   which it matches with any proven block: it compares only a string that
+//   starts with `0x`, and its validator (json_validate.c's check_hex) also
+//   passes `0X10` or `1x10`;
+// - `justified`, a tag Colibri names but doesn't gate (eth_verify.h).
+// A number is `0x` and at most 16 hex digits without a leading zero,
+// which Colibri compares as a 64-bit number (json_as_uint64); a hash is `0x`
+// and 64 hex digits, which it compares as 32 bytes.
+const COLIBRI_BLOCK_NUMBER = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]{0,15})$/;
+const COLIBRI_BLOCK_HASH = /^0x[0-9a-fA-F]{64}$/;
+const COLIBRI_NOT_A_STRING = 'at a block that isn\'t a string';
+
+// The params Colibri is asked this read with (`{ params }`), or why it
+// can't prove it (`{ refusal }`, completing "Colibri cannot prove <method>").
+// Only a read whose answer Colibri ties to the requested block goes to it:
+// - an account read at `latest`. Without its block parameter it is read at
+//   `latest` by every source, and Colibri is asked with `latest` appended:
+//   left out, Colibri would apply no freshness gate (the verifier would read
+//   the address or storage slot as the block). Any other block, params too
+//   short to append it in its place, and params after the block, go
+//   elsewhere.
+// - eth_getBlockByNumber at `latest`, a number, a hash or no block at all
+//   (null params included), which verify_block.c compares with the proven
+//   block or holds to the freshness gate;
+// - eth_getBlockByHash at a 32-byte hash;
+// - eth_blockNumber with no params, which the freshness gate holds to a
+//   minute.
+// A block that isn't a string (an EIP-1898 object, null, a number) is never
+// Colibri's: no verifier compares one.
+function colibriRequestParams(method, params) {
+  if (method === 'eth_blockNumber') {
+    // eth_blockNumber takes no params, and every RPC answers the head.
+    // Colibri 3.0.3 holds its proven header to the freshness gate only when
+    // args are empty or args[0] is `latest`, and matches any other args[0]
+    // (`finalized`, say) with any proven block (verify_block.c:260-261), so
+    // a lying prover's stale number would be labelled verified. Colibri is
+    // asked only with no params (null, which it reads as `[]`, included).
+    if (params == null || (Array.isArray(params) && params.length === 0)) return { params };
+    return { refusal: 'with params' };
+  }
+  if (method === 'eth_getBlockByHash') {
+    if (!Array.isArray(params) || params.length === 0) return { refusal: 'without a block hash' };
+    if (typeof params[0] !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
+    return COLIBRI_BLOCK_HASH.test(params[0]) ? { params } : { refusal: `at block "${params[0]}"` };
+  }
+  const index = COLIBRI_BLOCK_PARAM.get(method);
+  if (index === undefined) return { params };
+  if (!COLIBRI_LATEST_ONLY.has(method)) {
+    // Colibri reads params that aren't an array as `[params]`, null as `[]`.
+    if (!Array.isArray(params)) {
+      return params == null ? { params } : { refusal: 'with params that aren\'t an array' };
+    }
+    if (index >= params.length) return { params };
+    const block = params[index];
+    if (typeof block !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
+    return block === 'latest' || COLIBRI_BLOCK_NUMBER.test(block) || COLIBRI_BLOCK_HASH.test(block)
+      ? { params }
+      : { refusal: `at block "${block}"` };
+  }
+  if (!Array.isArray(params)) return { refusal: 'with params that aren\'t an array' };
+  if (params.length === index) return { params: [...params, 'latest'] };
+  if (params.length < index || params.length > index + 1) {
+    return { refusal: `with params of length ${params.length}` };
+  }
+  const block = params[index];
+  if (typeof block !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
+  return block === 'latest' ? { params } : { refusal: `at block "${block}"` };
+}
+
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
 const DEFAULT_NON_MYOTIS_READ_ORDER = ['colibri', 'quorum', 'direct'];
 const DEFAULT_BROADCAST_ORDER = ['myotis', 'direct'];
@@ -181,6 +331,21 @@ const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
 // transaction they report as mined goes on to Colibri for its proof (see
 // txLookupNeedsProof and request()).
 const TX_LOOKUP_METHODS = new Set(['eth_getTransactionReceipt', 'eth_getTransactionByHash']);
+// The field of a transaction lookup's answer that names its transaction.
+// Colibri 3.0.3's privacy-mode receipt lookup (verify_pap_tx.c,
+// pap_tx_receipt) takes the block and index from the prover's tx_cache, which
+// nothing authenticates, and proves the receipt at that index without
+// comparing its transaction hash with the requested one (#1060). A lying
+// prover can so hand back another transaction's genuinely proven receipt: a
+// reverted send would read as confirmed. The receipt's transactionHash is the
+// keccak of the proven transaction's bytes (eth_tx.c,
+// c4_write_receipt_data_from_raw), so comparing it with the requested hash
+// binds the answer to the request. pap_tx_by_hash already compares; the
+// router checks both lookups the same way.
+const TX_LOOKUP_HASH_FIELD = {
+  eth_getTransactionReceipt: 'transactionHash',
+  eth_getTransactionByHash: 'hash',
+};
 // Per (chain, method) backoff from the verifier itself faulting (a WASM trap,
 // or its worker replaced under the request), whoever asked: wallet-internal
 // reads carry no routing context, so the per-app adaptive state above never
@@ -924,19 +1089,21 @@ async function feeQuote(source, gasPriceValue, priorityValue = null, getBlock = 
   const gasPrice = BigInt(gasPriceValue);
   if (gasPrice <= 0n) throw new Error(`${source} returned a non-positive gas price`);
 
+  // Not Colibri: it can't prove eth_gasPrice, so any quote it made would
+  // rest on one public RPC's word (#1046), and it doesn't serve the method.
   const metadata = {
     source,
-    verified: source === 'myotis' || source === 'colibri' || source === 'quorum',
+    verified: source === 'myotis' || source === 'quorum',
   };
 
   const priority = priorityValue == null ? null : BigInt(priorityValue);
   // A provider can implement both methods yet return fee hints that cannot
-  // form a valid type-2 transaction (Colibri's verified priority fee is
-  // 1 gwei while mainnet's gas price is a fraction of that). Never combine
-  // the hint with another provider's gas price. The block that prices an
-  // unusable hint comes from `getBlock`: the same source for Colibri and
-  // Direct, but the router's other sources for Myotis, which serves no
-  // blocks (see getFeeQuote).
+  // form a valid type-2 transaction (Colibri's verified priority fee was
+  // 1 gwei while mainnet's gas price was a fraction of that, when it still
+  // quoted). Never combine the hint with another provider's gas price. The
+  // block that prices an unusable hint comes from `getBlock`: the same
+  // source for the quorum and Direct, but the router's other sources for
+  // Myotis, which serves no blocks (see getFeeQuote).
   if (priority != null && priority >= 0n && priority <= gasPrice) {
     return eip1559Quote(gasPrice - priority, priority, metadata);
   }
@@ -1249,6 +1416,10 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   if (!sourceServesMethod('colibri', method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
   }
+  const asked = colibriRequestParams(method, params);
+  if (asked.refusal) {
+    throw new SourceUnavailableError(`Colibri cannot prove ${method} ${asked.refusal}`);
+  }
   if (colibriBackedOff(chainId, method)) {
     throw new SourceUnavailableError(
       `Colibri backed off for ${method} after repeated verifier faults`
@@ -1274,7 +1445,7 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   // still has to settle inside the chain's configured timeout.
   const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
   const requestPromise = Promise.resolve()
-    .then(() => requestViaColibri(chainId, method, params, { deadlineMs: budgetMs }))
+    .then(() => requestViaColibri(chainId, method, asked.params, { deadlineMs: budgetMs }))
     .then(
       (result) => {
         noteColibriAnswer(chainId, method);
@@ -1301,7 +1472,27 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   // still waiting on the prover), so the request settles; keep it tracked
   // until then so repeated page calls cannot accumulate background work.
   requestPromise.then(release, release);
-  return withSourceDeadline(requestPromise, 'Colibri', budgetMs);
+  const result = await withSourceDeadline(requestPromise, 'Colibri', budgetMs);
+  const unbound = colibriTxLookupUnbound(method, params, result);
+  if (unbound) throw new Error(unbound);
+  return result;
+}
+
+// Why a transaction lookup's answer from Colibri isn't the requested
+// transaction's (see TX_LOOKUP_HASH_FIELD), or null when it is, or when it is
+// no transaction lookup or no transaction (null).
+function colibriTxLookupUnbound(method, params, result) {
+  const field = TX_LOOKUP_HASH_FIELD[method];
+  if (!field || result === null || result === undefined) return null;
+  const requested = Array.isArray(params) ? params[0] : undefined;
+  const answered = typeof result === 'object' ? result[field] : undefined;
+  if (
+    typeof requested === 'string' && typeof answered === 'string' &&
+    requested.toLowerCase() === answered.toLowerCase()
+  ) {
+    return null;
+  }
+  return `Colibri's proven ${method} answer is not for the requested transaction`;
 }
 
 async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
@@ -2109,7 +2300,9 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
 // with the source that gave it. A mined transaction is then asked of Colibri,
 // whose proof replaces that answer; if Colibri fails, the answer already in
 // hand is returned instead of asking the later sources a second time. When
-// every later source failed, Colibri is simply the last source left.
+// every later source failed, Colibri is simply the last source left; its null
+// or pending answer then is served `verified: false`, as is one in a
+// Colibri-only order: it proves nothing either.
 //
 // Trust model (#750): before, Colibri answered first and a null it could not
 // prove fell through to the RPCs anyway (after a 4-10 s trap). A null or
@@ -2267,6 +2460,22 @@ async function request(
       });
       signal?.throwIfAborted();
       const result = includeTrust ? sourceResult.result : sourceResult;
+      if (
+        source === 'colibri' && TX_LOOKUP_METHODS.has(method) &&
+        !txLookupNeedsProof(method, result)
+      ) {
+        // Colibri reports the transaction unknown or pending. Nothing proves
+        // an absence (Colibri 3.0.3's verify_pap_tx.c answers success with
+        // no data for a hash its prover holds as pending): asked to prove a
+        // transaction a source reported as mined, the mined answer in hand
+        // stands, labelled as its source's. With none in hand (every later
+        // source failed, or a Colibri-only order), Colibri's answer is
+        // served as the unproven word it is: `verified: false`, without its
+        // proof's trust. Either way this is an answer, not a Colibri failure,
+        // so no adaptive failure is recorded for it.
+        if (txLookup.unverified) return txLookup.unverified;
+        return { result, source, verified: false };
+      }
       if (
         txLookup.colibriDeferred && source !== 'colibri' &&
         txLookupNeedsProof(method, result)
