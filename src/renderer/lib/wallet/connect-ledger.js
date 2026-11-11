@@ -197,6 +197,9 @@ async function loadAccountsPage(replace, onFailure = showError) {
       scheme: schemeSelect?.value || 'live',
       start: replace ? 0 : discoveredAccounts.length,
       count: ACCOUNTS_PER_PAGE,
+      // Check the wallet's unchecked Ledger records once per list, not
+      // again on every "Load more" page (#1065).
+      checkRecords: replace,
     });
     if (!result.success) {
       onFailure(result.error || 'Failed to read accounts from the device');

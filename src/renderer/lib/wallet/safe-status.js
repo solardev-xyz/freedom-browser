@@ -5,10 +5,13 @@
  *   - ready:        activation fee quote + who pays + Activate button
  *   - needs-funds:  blocking "fund <executor> with ≥ X xDAI" card
  *   - no-executor:  none of the owners is a browser account that can pay
+ *   - owner check:  a Ledger owner no device has matched yet (#1065), shown
+ *                   above any of the above, deployed or not
  * (Pending SafeTxs live in the wallet-wide "unfinished transactions"
- * row — see safe-pending-list.js.) A deployed Safe shows no card. The Send button's
- * availability is owned by send.js; this module just triggers the
- * re-evaluation whenever the active account changes.
+ * row — see safe-pending-list.js.) A deployed Safe with checked owners
+ * shows no card. The Send button's availability is owned by send.js; this
+ * module just triggers the re-evaluation whenever the active account
+ * changes.
  */
 
 import { walletState } from './wallet-state.js';
@@ -25,6 +28,48 @@ import { showVaultUnlock } from './vault-unlock.js';
 
 let card;
 let refreshToken = 0;
+let ownerWarning = '';
+
+/**
+ * The Safe's Ledger owners no device has shown to hold their address
+ * (#1065): records added before main read the address back from the
+ * device, or ones the Ledger last connected didn't hold. New Safes refuse
+ * them as owners; a Safe created before that still lists them.
+ *
+ * @returns {Array<Object>} the owner records, unchecked or mismatched
+ */
+export function uncheckedLedgerOwners(wallet, records = walletState.derivedWallets || []) {
+  if (wallet?.type !== 'safe' || !Array.isArray(wallet.owners)) return [];
+  return wallet.owners
+    .map((ownerIndex) => records.find((record) => record.index === ownerIndex))
+    .filter(
+      (owner) => owner?.type === 'ledger' && owner.addressCheck && owner.addressCheck !== 'matched'
+    );
+}
+
+/** The warning for those owners, or '' when there are none. */
+export function ownerWarningHtml(owners) {
+  if (!owners.length) return '';
+  const named = owners
+    .map(
+      (owner) =>
+        `"${escapeHtml(owner.name)}" (${
+          owner.addressCheck === 'mismatched'
+            ? 'not on the Ledger last connected'
+            : 'not checked on its Ledger yet'
+        })`
+    )
+    .join(', ');
+  const one = owners.length === 1;
+  return `
+    <div class="safe-status-text safe-status-owner-warning">
+      <strong>Check ${one ? 'this owner' : 'these owners'} before adding funds.</strong>
+      No Ledger has confirmed ${one ? 'the address of' : 'the addresses of'} ${named}, so this
+      account may not be under your control. Connect the Ledger that holds
+      ${one ? 'it' : 'them'} and open Connect Hardware Wallet.
+    </div>
+  `;
+}
 
 /**
  * Re-evaluate the card for the active account. Called whenever the
@@ -42,10 +87,13 @@ export async function refreshSafeStatusCard() {
     return;
   }
 
+  ownerWarning = ownerWarningHtml(uncheckedLedgerOwners(wallet));
+
   // Deployed safes need no activation card — and the record snapshot is
   // trustworthy once it says deployed (deployment is permanent).
   if (isSafeDeployed(wallet)) {
-    card.classList.add('hidden');
+    ++refreshToken;
+    hideUnlessWarning();
     return;
   }
 
@@ -72,7 +120,7 @@ export async function refreshSafeStatusCard() {
 
 function renderStatus(status) {
   if (status.deployed) {
-    card.classList.add('hidden');
+    hideUnlessWarning();
     return;
   }
 
@@ -152,6 +200,15 @@ async function handleActivate() {
 }
 
 function render(html) {
-  card.innerHTML = html;
+  card.innerHTML = ownerWarning + html;
   card.classList.remove('hidden');
+}
+
+/** A Safe with nothing to activate still shows the owner warning. */
+function hideUnlessWarning() {
+  if (ownerWarning) {
+    render('');
+  } else {
+    card.classList.add('hidden');
+  }
 }

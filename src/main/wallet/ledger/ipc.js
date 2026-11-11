@@ -17,18 +17,26 @@ function registerLedgerIpc() {
   // instructions ("plug it in", "open the app", …). The connect screen
   // polls this while waiting for the user to get the device ready.
   //
-  // The connected device also checks the Ledger records no device has
-  // matched yet (#1065); the ones it doesn't hold come back as
-  // `mismatched`, for the chrome to tell the user. A failed check leaves
-  // them as they were and doesn't fail discovery.
+  // With `checkRecords: true`, the connected device also checks the
+  // Ledger records no device has matched yet (#1065); the ones it doesn't
+  // hold come back as `mismatched`, for the chrome to tell the user. A
+  // failed check leaves them as they were and doesn't fail discovery.
+  // The check costs a second device session, so only Connect Hardware
+  // Wallet's first page asks for it: a "Load more" page would re-read the
+  // same records and repeat the notice, and the Safe board's warm
+  // detection would wait on it before highlighting the row. Signing
+  // records the result for a record anyway.
   ipcMain.handle('ledger:get-accounts', async (_event, options = {}) => {
     try {
-      const accounts = await listAccounts(options);
+      const { checkRecords = false, ...listOptions } = options || {};
+      const accounts = await listAccounts(listOptions);
       let mismatched = [];
-      try {
-        mismatched = await checkLedgerAccounts();
-      } catch (err) {
-        console.warn('[LedgerIPC] Account check failed:', err.message);
+      if (checkRecords === true) {
+        try {
+          mismatched = await checkLedgerAccounts();
+        } catch (err) {
+          console.warn('[LedgerIPC] Account check failed:', err.message);
+        }
       }
       return { success: true, accounts, mismatched };
     } catch (err) {

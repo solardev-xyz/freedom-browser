@@ -27,6 +27,7 @@ const loadScreen = async () => {
   const statusText = createElement('span', { textContent: 'Looking for your Ledger…' });
   const detectView = createElement('div', { classes: ['hidden'] });
   const accountsView = createElement('div', { classes: ['hidden'] });
+  const loadMoreBtn = createElement('button');
 
   const elementsById = {
     'sidebar-connect-ledger': screen,
@@ -38,7 +39,7 @@ const loadScreen = async () => {
     'connect-ledger-accounts-step': accountsView,
     'connect-ledger-scheme': createElement('select', { value: 'live' }),
     'connect-ledger-account-list': createElement('div'),
-    'connect-ledger-load-more': createElement('button'),
+    'connect-ledger-load-more': loadMoreBtn,
     'connect-ledger-name-input': createElement('input'),
     'connect-ledger-submit': createElement('button'),
     'connect-ledger-error': createElement('div', { classes: ['hidden'] }),
@@ -89,6 +90,7 @@ const loadScreen = async () => {
     getAccounts,
     showInlineError,
     loadDerivedWallets,
+    loadMoreBtn,
   };
 };
 
@@ -232,6 +234,35 @@ describe('connect ledger — wallet accounts the device does not hold (#1065)', 
 
     expect(showInlineError).not.toHaveBeenCalled();
     expect(loadDerivedWallets).not.toHaveBeenCalled();
+    await mod.closeConnectLedger();
+  });
+
+  test('only the first page asks main to check the records, not "Load more" (#1065)', async () => {
+    const { mod, getAccounts, showInlineError, loadMoreBtn } = await loadScreen();
+    const mismatched = [{ index: 1000001, name: 'Old Ledger', address: '0xdef', path: "44'/60'/1'/0/0" }];
+    getAccounts.mockResolvedValue({
+      success: true,
+      accounts: [{ address: '0xabc', path: "44'/60'/0'/0/0" }],
+      mismatched,
+    });
+
+    await mod.openConnectLedger();
+    await flushMicrotasks();
+    expect(getAccounts).toHaveBeenCalledTimes(1);
+    expect(getAccounts.mock.calls[0][0]).toMatchObject({ start: 0, checkRecords: true });
+    expect(showInlineError).toHaveBeenCalledTimes(1);
+
+    // Main answers a page that wasn't checked with no mismatches.
+    getAccounts.mockResolvedValue({
+      success: true,
+      accounts: [{ address: '0x123', path: "44'/60'/1'/0/0" }],
+      mismatched: [],
+    });
+    loadMoreBtn.dispatch('click');
+    await flushMicrotasks();
+    expect(getAccounts).toHaveBeenCalledTimes(2);
+    expect(getAccounts.mock.calls[1][0]).toMatchObject({ start: 1, checkRecords: false });
+    expect(showInlineError).toHaveBeenCalledTimes(1);
     await mod.closeConnectLedger();
   });
 
