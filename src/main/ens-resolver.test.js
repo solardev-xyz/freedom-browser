@@ -710,9 +710,18 @@ describe('ens-resolver', () => {
       }
     );
 
-    test('an HTTP 503 in the error message is still a provider error', async () => {
+    test('an HTTP 503 answer is still a provider error', async () => {
       const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
-      const unavailable = () => new Error('bad response (status=503, statusText="Service Unavailable")');
+      // The error ethers raises for an endpoint that answers 503.
+      const unavailable = () => {
+        const request = new actualEthers.FetchRequest('https://rpc.example');
+        try {
+          new actualEthers.FetchResponse(503, 'Service Unavailable', {}, null, request).assertOk();
+        } catch (err) {
+          return err;
+        }
+        throw new Error('assertOk accepted a 503');
+      };
       routeByProvider(new Map([
         [TEST_PROVIDERS[0], { kind: 'reject', payload: unavailable() }],
         [TEST_PROVIDERS[1], { kind: 'reject', payload: unavailable() }],
@@ -737,6 +746,134 @@ describe('ens-resolver', () => {
       expect(second.uri).toBe(`ipfs://${IPFS_V0}`);
       // Cold path hits K=3 legs; warm path hits 0 (cache).
       expect(mockUrResolve.mock.calls.length).toBe(callsAfterCold);
+    });
+
+    const revertReason = (reason) => '0x08c379a0' + actualEthers.AbiCoder.defaultAbiCoder().encode(['string'], [reason]).slice(2);
+    // Call data is hex, so it can hold any run of digits: ethers' message
+    // for a failed call embeds it.
+    const DIGITS_CALLDATA = '0x9061b923' + '00'.repeat(30) + '4295035040' + '00'.repeat(30);
+
+    test.each([
+      ['a custom-error revert whose call data holds 429 and 50x digits', { code: 3, message: 'execution reverted', data: '0x12345678' }, DIGITS_CALLDATA],
+      ['a revert whose reason says timeout', { code: 3, message: 'execution reverted: timeout', data: revertReason('timeout') }, undefined],
+      ['a revert whose reason says no response', { code: -32000, message: 'execution reverted: no response' }, undefined],
+      ['a revert whose reason names an HTTP status', { code: -32000, message: 'execution reverted: 503 Service Unavailable' }, undefined],
+    ])('%s is an execution outcome and quarantines no endpoint', async (label, rpcError, calldata) => {
+      const error = rpcCallError(rpcError, calldata);
+      if (calldata) expect(error.message).toMatch(/429|50[234]/);
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: error }])));
+      const slug = label.replace(/\W+/g, '-');
+      const failing = await resolveEnsContent(`${slug}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+      expect(failing.trust.level).toBe('verified');
+
+      // Every endpoint is still healthy: the next name uses the full pool.
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${slug}.box`);
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test('a name echoed in an ethers error message never quarantines an endpoint', async () => {
+      // dnsEncode refuses a label over 255 bytes, and its message quotes the
+      // name: a name that holds "503" or "timeout" must not read as an
+      // endpoint failure.
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      for (const label of ['x503'.repeat(64), 'timeout'.repeat(37)]) {
+        expect(() => actualEthers.dnsEncode(`${label}.eth`, 255)).toThrow(label);
+        const failing = await resolveEnsContent(`${label}.eth`);
+        expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+        expect(failing.trust.level).toBe('verified');
+      }
+
+      const healthy = await resolveEnsContent('healthy-after-echoed-name.box');
+      expect(healthy.trust).toMatchObject({ level: 'verified' });
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test('an ABI decoding error stays an answer', async () => {
+      let decodeError;
+      try {
+        new actualEthers.Interface(['function f() view returns (bytes)']).decodeFunctionResult('f', '0x1234');
+      } catch (err) {
+        decodeError = err;
+      }
+      expect(decodeError.code).toBe('BAD_DATA');
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: decodeError }])));
+      const failing = await resolveEnsContent('abi-decoding.box');
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+    });
+
+    test.each([
+      ['a JSON-RPC internal error', { code: -32603, message: 'internal error' }],
+      ['a node that did not respond', { code: -32000, message: 'no response' }],
+      ['a node rate limit', { code: -32000, message: '429 Too Many Requests' }],
+      ['a node that timed out', { code: -32000, message: 'request timeout' }],
+    ])('%s still quarantines the endpoint', async (label, rpcError) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: rpcCallError(rpcError) }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: rpcCallError(rpcError) }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+      const slug = label.replace(/\W+/g, '-');
+      await resolveEnsContent(`${slug}.box`);
+
+      // Two endpoints sit in quarantine: one source is left.
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const next = await resolveEnsContent(`after-${slug}.box`);
+      expect(next.trust.level).toBe('unverified');
+      expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
+    });
+
+    // A status comes from the answer's own status (SERVER_ERROR), never
+    // from the node's text, which can echo calldata or a gas figure
+    // (freedom-core design 0004, classification rule 7).
+    test.each([
+      ['a bare status in the text', { code: -32000, message: 'upstream answered 503' }],
+      ['echoed call data holding 429', { code: -32000, message: 'invalid argument 0: 0x9061b923000429000502' }],
+      ['a gas figure holding 504', { code: -32000, message: 'intrinsic gas too low: have 15040, want 21000' }],
+    ])("%s in a node's message quarantines no endpoint", async (label, rpcError) => {
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'reject', payload: rpcCallError(rpcError) }])));
+      const slug = label.replace(/\W+/g, '-');
+      const failing = await resolveEnsContent(`${slug}.box`);
+      expect(failing).toMatchObject({ type: 'not_found', reason: 'NO_CONTENTHASH' });
+
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const healthy = await resolveEnsContent(`healthy-after-${slug}.box`);
+      expect(healthy.trust.queried).toHaveLength(TEST_PROVIDERS.length);
+    });
+
+    test.each([
+      ['a socket reset', () => Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })],
+      ['a refused connection behind happy eyeballs', () => Object.assign(new AggregateError([Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })]), {})],
+      ['an answer without a response for the request', () => actualEthers.makeError('missing response for request', 'BAD_DATA', { value: [], info: { payload: { id: 1 } } })],
+      ['an HTTP 200 whose body is an HTML page', () => {
+        const page = new actualEthers.FetchResponse(200, 'OK', { 'content-type': 'text/html' }, actualEthers.toUtf8Bytes('<html>captive portal</html>'), null);
+        try { return page.bodyJson; } catch (err) { return err; }
+      }],
+      ['an expired TLS certificate', () => Object.assign(new Error('certificate has expired'), { code: 'CERT_HAS_EXPIRED' })],
+      ['a TLS host name mismatch', () => Object.assign(new Error("Hostname/IP does not match certificate's altnames"), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' })],
+      ['a TLS protocol error', () => Object.assign(new Error('write EPROTO'), { code: 'EPROTO' })],
+      ['a network that is down', () => Object.assign(new Error('connect ENETDOWN'), { code: 'ENETDOWN' })],
+      ['a local address not available', () => Object.assign(new Error('connect EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })],
+    ])('%s quarantines the endpoint', async (label, makeFailure) => {
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: makeFailure() }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: makeFailure() }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
+      const slug = label.replace(/\W+/g, '-');
+      await resolveEnsContent(`${slug}.box`);
+
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodBytes }])));
+      const next = await resolveEnsContent(`after-${slug}.box`);
+      expect(next.trust.level).toBe('unverified');
+      expect(next.trust.queried).toEqual([new URL(TEST_PROVIDERS[2]).host]);
     });
 
     test('does not cache transient NO_CONTENTHASH errors', async () => {
@@ -2989,6 +3126,152 @@ describe('ens-resolver', () => {
       } finally {
         Math.random = origRandom;
       }
+    });
+
+    // After an all-errored first wave, the second runs against whatever is
+    // left. One endpoint agreeing with itself is single-source evidence.
+    function fourPoolWithDeterministicOrder() {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [...TEST_PROVIDERS, 'https://test-d.example.com'],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999;
+      invalidateCachedProvider();
+      return () => { Math.random = origRandom; };
+    }
+
+    test('3 errors + one fresh provider → its answer is unverified, not verified', async () => {
+      const restore = fourPoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+        ]));
+
+        const result = await resolveEnsContent('lone-second-wave.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.uri).toBe(`ipfs://${IPFS_HASH}`);
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          queried: ['test-d.example.com'],
+          quorum: { k: 1, m: 1, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('3 errors + one fresh provider → its not-found is unverified, not verified', async () => {
+      const restore = fourPoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', {
+            kind: 'reject',
+            payload: new Error('execution reverted: ResolverNotFound("lone-not-found.eth")'),
+          }],
+        ]));
+
+        const result = await resolveEnsContent('lone-not-found.eth');
+
+        expect(result).toMatchObject({ type: 'not_found', reason: 'NO_RESOLVER' });
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          quorum: { k: 1, m: 1, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('3 errors + two fresh providers that agree → verified', async () => {
+      const { restore } = fivePoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('pair-second-wave.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust).toMatchObject({
+          level: 'verified',
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          quorum: { k: 2, m: 2, achieved: true },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('K = M = 3: two fresh providers that agree after 3 errors are unverified', async () => {
+      const { restore } = fivePoolWithDeterministicOrder({ ensQuorumM: 3 });
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('pair-under-m3.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust).toMatchObject({
+          level: 'unverified',
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          quorum: { k: 2, m: 2, achieved: false },
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    test('K = M = 4 with three providers: a first wave of three that agree is unverified', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 4,
+        ensQuorumM: 4,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      invalidateCachedProvider();
+      const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+      routeByProvider(new Map(TEST_PROVIDERS.map((url) => [url, { kind: 'data', payload: goodPayload }])));
+
+      const result = await resolveEnsContent('three-under-m4.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust).toMatchObject({ level: 'unverified', quorum: { k: 3, m: 3, achieved: false } });
+      expect(result.trust.agreed).toHaveLength(3);
     });
 
     test('second wave also unverified → keep first-wave evidence (no downgrade)', async () => {
