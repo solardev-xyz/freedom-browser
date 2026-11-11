@@ -2444,6 +2444,16 @@ describe('swarm-provider-ipc', () => {
         expect(result.error.data.reason).toBe('invalid_recipient');
       });
 
+      test('accepts only a compressed key: not x ‖ y, uncompressed, or prefixless (#1062)', async () => {
+        mockMessagingGranted();
+        const xy = 'ef'.repeat(64);
+        for (const recipient of [xy, `04${xy}`, `0x${xy}`, 'ef'.repeat(32), `04${'ef'.repeat(32)}`, `${RECIPIENT}ef`]) {
+          const result = await invokeProvider('swarm_sendPss', { ...validParams, recipient }, ORIGIN);
+          expect(result.error.data.reason).toBe('invalid_recipient');
+        }
+        expect(mockSendPss).not.toHaveBeenCalled();
+      });
+
       test('requires targets (2-3 whole bytes of hex)', async () => {
         // undefined/empty, odd hex, 1-byte (below the storability floor),
         // and 4-byte (over the mining cap) are all invalid_target.
@@ -2502,7 +2512,7 @@ describe('swarm-provider-ipc', () => {
 
         const result = await invokeProvider(
           'swarm_sendPss',
-          { ...validParams, targets: 'AABB', recipient: `0x${RECIPIENT}` },
+          { ...validParams, targets: 'AABB', recipient: `0x${RECIPIENT.toUpperCase()}` },
           ORIGIN
         );
         expect(result.result).toEqual({ sent: true });
