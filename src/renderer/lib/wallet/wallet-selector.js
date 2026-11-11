@@ -45,6 +45,13 @@ export function initWalletSelector(openCreateWallet, openConnectLedger, openConn
   openCreateSafeFn = openCreateSafe;
 
   setupWalletSelector();
+
+  // Main changed a stored record on its own — a Ledger sign turned an old
+  // unchecked owner `matched` (#1065) — so repaint from the stored list:
+  // the Safe owner warning and create-safe's owner sub-label read it.
+  window.addEventListener('wallet:records-changed', () => {
+    loadDerivedWallets();
+  });
 }
 
 function setupWalletSelector() {
@@ -119,12 +126,22 @@ function walletTypeBadge(type) {
   return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
 }
 
-/** A phone account its phone last answered from another account (#1078). */
+/**
+ * The tooltip for a device account its device last didn't match: a Ledger
+ * account the last connected Ledger doesn't hold (#1065), or a phone
+ * account its phone last answered from another account (#1078).
+ */
+const MISMATCH_TITLES = {
+  ledger: "The Ledger last connected doesn't hold this address. Connect the Ledger that does.",
+  remote:
+    'Your phone last answered from a different account. Select this account on your phone and check it again from Wallet Settings.',
+};
+
 export function addressCheckBadge(wallet) {
-  if (wallet.type !== 'remote' || wallet.addressCheck !== 'mismatched') return '';
+  const title = MISMATCH_TITLES[wallet.type];
+  if (!title || wallet.addressCheck !== 'mismatched') return '';
   return (
-    '<span class="wallet-selector-item-badge" ' +
-    'title="Your phone last answered from a different account. Select this account on your phone and check it again from Wallet Settings.">' +
+    `<span class="wallet-selector-item-badge" title="${escapeHtml(title)}">` +
     "Doesn't match</span>"
   );
 }

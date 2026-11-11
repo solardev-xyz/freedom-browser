@@ -84,6 +84,28 @@ describe('createLedgerError', () => {
     // Round-trips through mapLedgerError unchanged (LEDGER_ prefix pass-through)
     expect(mapLedgerError(err)).toBe(err);
   });
+
+  // Every code needs its own user-facing message: one missing from MESSAGES
+  // silently falls back to the generic "reconnect the device" text.
+  test('every code has its own message', () => {
+    const unknown = createLedgerError(LEDGER_ERROR_CODES.UNKNOWN).message;
+    for (const code of Object.values(LEDGER_ERROR_CODES)) {
+      const err = createLedgerError(code);
+      expect(err.code).toBe(code);
+      if (code !== LEDGER_ERROR_CODES.UNKNOWN) expect(err.message).not.toBe(unknown);
+    }
+  });
+
+  test.each([
+    // #1063/#1065: the device's own answers are checked.
+    [LEDGER_ERROR_CODES.BAD_SIGNATURE, /doesn't match this request\. Nothing was sent/],
+    [LEDGER_ERROR_CODES.ADDRESS_MISMATCH, /different address at that path/],
+    [LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED, /hasn't been checked on its Ledger/],
+    // #1064: typed data hw-app-eth would garble is never sent.
+    [LEDGER_ERROR_CODES.TYPED_DATA_UNSUPPORTED, /didn't send it to the device/],
+  ])('%s says what happened', (code, message) => {
+    expect(createLedgerError(code).message).toMatch(message);
+  });
 });
 
 describe('isLedgerUserRejection', () => {
