@@ -1,0 +1,1 @@
+- Ledger signature requests that would reach the device garbled are now refused with a clear message, instead of failing with a generic device error ([#1064](https://github.com/solardev-xyz/freedom-browser/issues/1064))
