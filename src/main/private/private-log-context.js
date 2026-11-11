@@ -108,10 +108,23 @@ function redactedFailure(status, build, ...browsingValues) {
   };
 }
 
+/**
+ * A transport error's code for the persistent log (`ECONNREFUSED`,
+ * `UND_ERR_SOCKET`, `native_gateway_error`), or '' when it has none shaped
+ * like one. The dweb transports log this instead of the error's message,
+ * whose text can carry the URL or path that was fetched — in a normal
+ * window as much as in a private one.
+ */
+function errorCodeForLog(err) {
+  const code = err?.cause?.code || err?.code;
+  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_:.-]{0,63}$/.test(code) ? code : '';
+}
+
 module.exports = {
   runWithPrivateLogContext,
   isPrivateLogContext,
   redactForLog,
   redactUrlForLog,
   redactedFailure,
+  errorCodeForLog,
 };

@@ -22,8 +22,16 @@ const {
   prepareRadicleDataDir,
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
+const keystorePassword = require('./swarm/ant-keystore-password');
+const { withPrivateDir } = require('./private-files');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
 const { verifiedDeployedMark, verifiedDeployments } = require('./wallet/safe/deployed-mark');
+const {
+  currentVaultEpoch,
+  advanceVaultEpoch,
+  assertVaultEpoch,
+} = require('./identity/vault-epoch');
+const { withPasswordAttempt } = require('./identity/password-attempts');
 
 // Identity module - loaded lazily
 let identityModule = null;
@@ -37,17 +45,135 @@ let beeLifecycle = { stop: null, start: null };
 
 /**
  * Register Bee node lifecycle hooks used around identity (re)injection.
- * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>}} hooks
+ * `needsKeyReinjection` answers whether the node's last start could not open
+ * its keystore (K-3); the next unlock then re-injects the key.
+ * `refuseKeyReinjection(message)` reports that it would not: the keystore
+ * holds another identity. `onKeyReinjectionNeeded(listener)` subscribes to
+ * a start that stops for re-injection, so an already unlocked vault
+ * recovers at once rather than on its next unlock.
+ * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>,
+ *   needsKeyReinjection?: () => boolean,
+ *   refuseKeyReinjection?: (message: string) => void,
+ *   onKeyReinjectionNeeded?: (listener: () => void) => void}} hooks
  */
 function setBeeLifecycle(hooks = {}) {
+  if (typeof hooks.onKeyReinjectionNeeded === 'function') {
+    hooks.onKeyReinjectionNeeded(recoverBeeKeystoreIfUnlocked);
+  }
   beeLifecycle = {
     stop: typeof hooks.stop === 'function' ? hooks.stop : null,
     start: typeof hooks.start === 'function' ? hooks.start : null,
+    needsKeyReinjection:
+      typeof hooks.needsKeyReinjection === 'function' ? hooks.needsKeyReinjection : null,
+    refuseKeyReinjection:
+      typeof hooks.refuseKeyReinjection === 'function' ? hooks.refuseKeyReinjection : null,
   };
 }
 
-// Cached derived keys (only available when unlocked)
+// Optional Radicle node lifecycle hook, wired by the main process (see
+// index.js). The embedded node writes node/, cobs/ and storage/ while it
+// runs, so a re-key must stop it, with proof that it stopped, before wiping
+// them (R-8). `withStopped(work)` runs `work` as one operation of the node's
+// lifecycle queue (radicle-manager withRadicleStopped): it stops the node
+// (throwing, without running `work`, when the stop is not proven), awaits
+// `work`, and restarts a node that was running. Starts, alias changes and
+// other re-keys queue behind it.
+let radicleLifecycle = { withStopped: null };
+
+/**
+ * Register the Radicle node lifecycle hook used around identity (re)injection.
+ * @param {{withStopped?: <T>(work: () => Promise<T>) => Promise<T>}} hooks
+ */
+function setRadicleLifecycle(hooks = {}) {
+  radicleLifecycle = {
+    withStopped: typeof hooks.withStopped === 'function' ? hooks.withStopped : null,
+  };
+}
+
+// Cached derived keys. Valid only while the vault is unlocked: every lock
+// path clears them (an explicit lock, the vault's inactivity auto-lock, a
+// vault delete), and every reader goes through getDerivedKeys(), which also
+// checks the vault's own lock state. Before this, the auto-lock cleared only
+// the vault's mnemonic, and signers that read this cache (bee-wallet feed and
+// SOC signing, identity injection) kept working while the status said
+// "locked" (K-1).
 let derivedKeys = null;
+
+// Set once at app quit: no unlock, signing or injection after that (K-1).
+let vaultAuthorityClosed = false;
+
+// Zero the derived keys that are mutable byte arrays (the Ed25519 Radicle
+// and IPFS keys) before dropping them, so a reference something else still
+// holds no longer opens anything. The mnemonic and the secp256k1 keys are
+// JavaScript strings, which cannot be wiped in place; dropping them is all
+// that can be done there.
+function wipeDerivedKeys(keys) {
+  if (!keys) return;
+  for (const key of Object.values(keys)) {
+    if (key?.privateKey instanceof Uint8Array) key.privateKey.fill(0);
+  }
+}
+
+function clearDerivedKeys() {
+  const keys = derivedKeys;
+  derivedKeys = null;
+  wipeDerivedKeys(keys);
+}
+
+// Every lock, vault delete or replacement, and app quit: move the vault
+// epoch on and drop every derived key, synchronously, before anything can
+// await. Work that read a key in an earlier epoch then refuses to use it
+// (identity/vault-epoch.js).
+function revokeVaultAuthority() {
+  advanceVaultEpoch();
+  clearDerivedKeys();
+}
+
+/**
+ * The derived keys for work that started in `epoch`, or the vault-locked
+ * error if the vault was locked (or deleted, or the app began quitting)
+ * since. Call it right before a key is used or written, after every await.
+ * @param {number} epoch
+ * @returns {Object}
+ */
+function keysForEpoch(epoch) {
+  if (vaultAuthorityClosed) throw new Error(VAULT_LOCKED_MESSAGE);
+  assertVaultEpoch(epoch);
+  return requireDerivedKeys();
+}
+
+// Publish keys derived for an unlock/create/import only if no lock, delete
+// or quit happened while it ran.
+function publishDerivedKeys(identity, mnemonic, epoch) {
+  if (vaultAuthorityClosed || epoch !== currentVaultEpoch()) {
+    // The vault module may have published the mnemonic just before: take
+    // it back, or the vault would read as unlocked without keys.
+    identity.lockVault();
+    throw new Error('The vault was locked while it was being opened');
+  }
+  // Derive first, so a failed derivation leaves the current set in place;
+  // then zero the set being replaced (a re-unlock while unlocked, by
+  // password or Touch ID), so its byte arrays don't outlive it.
+  const next = identity.deriveAllKeys(mnemonic);
+  const previous = derivedKeys;
+  derivedKeys = next;
+  if (previous && previous !== next) wipeDerivedKeys(previous);
+}
+
+/**
+ * At app quit: revoke the vault's authority and refuse any new unlock,
+ * signing or injection for the rest of the process. Running nodes keep the
+ * identities they already have.
+ */
+function closeVaultAuthority() {
+  vaultAuthorityClosed = true;
+  revokeVaultAuthority();
+  try {
+    loadIdentityModule().lockVault();
+  } catch (err) {
+    console.warn('[IdentityManager] Could not lock the vault at quit:', err.message);
+  }
+}
 
 // Track which nodes have been injected
 let injectedNodes = {
@@ -107,6 +233,11 @@ function loadIdentityModule() {
 
   try {
     identityModule = require('./identity');
+    // The inactivity auto-lock runs inside the vault module; this hook is how
+    // it reaches the cache above.
+    if (typeof identityModule.onLock === 'function') {
+      identityModule.onLock(revokeVaultAuthority);
+    }
     return identityModule;
   } catch (err) {
     console.error('[IdentityManager] Failed to load identity module:', err);
@@ -141,6 +272,8 @@ async function isVaultUnlocked() {
  * @returns {Promise<string>} The generated mnemonic (for backup display)
  */
 async function createNewVault(password, strength = 256, userKnowsPassword = true) {
+  if (vaultAuthorityClosed) throw new Error(VAULT_LOCKED_MESSAGE);
+  const epoch = currentVaultEpoch();
   const identity = await loadIdentityModule();
   const dataDir = getIdentityDataDir();
 
@@ -154,7 +287,7 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
 
   // Auto-unlock after creation
   await identity.unlockVault(dataDir, password);
-  derivedKeys = identity.deriveAllKeys(mnemonic);
+  publishDerivedKeys(identity, mnemonic, epoch);
 
   // Save vault metadata including public addresses (so we can display without unlock)
   saveVaultMeta({
@@ -177,6 +310,8 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
  * @returns {Promise<void>}
  */
 async function importExistingMnemonic(password, mnemonic, userKnowsPassword = true) {
+  if (vaultAuthorityClosed) throw new Error(VAULT_LOCKED_MESSAGE);
+  const epoch = currentVaultEpoch();
   const identity = await loadIdentityModule();
   const dataDir = getIdentityDataDir();
 
@@ -190,7 +325,7 @@ async function importExistingMnemonic(password, mnemonic, userKnowsPassword = tr
 
   // Auto-unlock after import
   await identity.unlockVault(dataDir, password);
-  derivedKeys = identity.deriveAllKeys(mnemonic);
+  publishDerivedKeys(identity, mnemonic, epoch);
 
   // Save vault metadata including public addresses (so we can display without unlock)
   saveVaultMeta({
@@ -209,6 +344,8 @@ async function importExistingMnemonic(password, mnemonic, userKnowsPassword = tr
  * @returns {Promise<void>}
  */
 async function unlockVault(password) {
+  if (vaultAuthorityClosed) throw new Error(VAULT_LOCKED_MESSAGE);
+  const epoch = currentVaultEpoch();
   const identity = await loadIdentityModule();
   const dataDir = getIdentityDataDir();
 
@@ -219,8 +356,14 @@ async function unlockVault(password) {
     throw new Error('Failed to retrieve mnemonic after unlock');
   }
 
-  derivedKeys = identity.deriveAllKeys(mnemonic);
+  publishDerivedKeys(identity, mnemonic, epoch);
   console.log('[IdentityManager] Vault unlocked, keys derived');
+
+  // The Swarm node could not open its keystore at its last start: write it
+  // again from the recovery phrase, with a new password (K-3).
+  if (beeLifecycle.needsKeyReinjection?.() === true) {
+    recoverBeeKeystoreIfUnlocked();
+  }
 
   // Migrate old vaults: save addresses to metadata if not present
   const meta = getVaultMeta();
@@ -240,18 +383,40 @@ async function unlockVault(password) {
  * Lock the vault
  */
 async function lockVault() {
-  const identity = await loadIdentityModule();
+  // No await before the revocation: it takes effect when this is called.
+  const identity = loadIdentityModule();
   identity.lockVault();
-  derivedKeys = null;
+  // The lock hook already did this; a vault module without the hook (a
+  // test double) still gets it.
+  revokeVaultAuthority();
   console.log('[IdentityManager] Vault locked');
 }
 
 /**
- * Get derived keys (only if unlocked)
+ * Get derived keys, or null while the vault is locked. Checks the vault's
+ * lock state on every call, so a lock path that missed the cache still
+ * cannot hand out a key.
  * @returns {Object|null}
  */
 function getDerivedKeys() {
+  if (!derivedKeys || vaultAuthorityClosed) return null;
+  if (loadIdentityModule().isUnlocked() !== true) {
+    clearDerivedKeys();
+    return null;
+  }
   return derivedKeys;
+}
+
+/**
+ * The derived keys, or throw the vault-locked error.
+ * @returns {Object}
+ */
+function requireDerivedKeys() {
+  const keys = getDerivedKeys();
+  if (!keys) {
+    throw new Error(VAULT_LOCKED_MESSAGE);
+  }
+  return keys;
 }
 
 /**
@@ -387,12 +552,135 @@ async function readRadicleDid() {
 }
 
 /**
- * Generate a random password for Bee keystore
- * This password is separate from the vault password for defense in depth
+ * Generate a random password for the Bee keystore. It is sealed in the OS
+ * keychain, not written beside the keystore, when there is a keychain
+ * (persistBeeKeystorePassword).
  * @returns {string}
  */
 function generateBeeKeystorePassword() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Keep `password` for `dataDir`'s keystore: sealed in the OS keychain, or
+ * in the owner-only config.yaml where there is none. Either way the other
+ * copy is dropped, so the node never reads a stale password.
+ */
+async function persistBeeKeystorePassword(identity, dataDir, password) {
+  const sealed = await keystorePassword.sealPassword(dataDir, password);
+  if (!sealed) keystorePassword.forgetSealedPassword(dataDir);
+  identity.createBeeConfig(
+    dataDir,
+    sealed ? null : password,
+    getBeeApiPortForIdentityConfig(),
+    getBeeP2pPortForIdentityConfig()
+  );
+}
+
+// The recovery running for each Swarm data directory, if any, with the
+// vault epoch it was started in: a second unlock while it runs joins it
+// instead of starting another. A recovery from an earlier epoch (the vault
+// was locked and unlocked again meanwhile) is not joined: it stops at its
+// epoch check, and the new unlock queues its own behind it.
+const keystoreRecoveries = new Map();
+
+/**
+ * Re-encrypt the Swarm keystore with a new password after its sealed one
+ * stopped decrypting (a reset keychain, a profile copied to another
+ * machine). Same key, derived from the recovery phrase again, so the node
+ * keeps its identity and state; nothing is wiped. Starts the node again.
+ *
+ * Only for the unlocked vault's own identity: the keystore's unencrypted
+ * `address` must be the derived Swarm address. A keystore of another
+ * identity (an imported data directory, another vault's), or one whose
+ * address cannot be read, is never overwritten; the node reports it
+ * instead, and a manual re-injection remains possible.
+ *
+ * Bound to the vault epoch it starts in (K-1): a lock, vault delete or quit
+ * while it waits for the keystore lock or builds the keystore stops it
+ * before the key is written, with the vault-locked error.
+ *
+ * One recovery at a time per data directory, and under the same keystore
+ * lock as injection and the node's startup migration (ant-manager
+ * ensureConfig), so the keystore on disk always ends with its own password.
+ * @returns {Promise<boolean>} whether the keystore was re-encrypted
+ */
+function reencryptBeeKeystore() {
+  const epoch = currentVaultEpoch();
+  let dataDir;
+  try {
+    keysForEpoch(epoch);
+    // Throws for a data directory Freedom refuses (a symbolic link, K-3):
+    // a rejection, never a throw into the unlock that asked.
+    dataDir = path.resolve(getAntDataDir());
+  } catch (err) {
+    return Promise.reject(err);
+  }
+  const running = keystoreRecoveries.get(dataDir);
+  if (running && running.epoch === epoch) return running.promise;
+  const promise = recoverBeeKeystore(dataDir, epoch).finally(() => {
+    if (keystoreRecoveries.get(dataDir)?.promise === promise) {
+      keystoreRecoveries.delete(dataDir);
+    }
+  });
+  keystoreRecoveries.set(dataDir, { epoch, promise });
+  return promise;
+}
+
+/**
+ * Re-inject the Swarm key now if the vault is unlocked; a locked vault
+ * does it on its next unlock (unlockVault). Called on unlock and when a
+ * node start stops for re-injection while the vault is already unlocked.
+ * A start that the recovery itself makes and that stops again joins the
+ * recovery still running (keystoreRecoveries) rather than starting another,
+ * so a keystore that keeps failing is tried once, not in a loop.
+ */
+function recoverBeeKeystoreIfUnlocked() {
+  if (!getDerivedKeys()) return;
+  void reencryptBeeKeystore().catch((err) => {
+    console.warn('[IdentityManager] Could not re-inject the Swarm key:', err.message);
+  });
+}
+
+async function recoverBeeKeystore(dataDir, epoch) {
+  const identity = await loadIdentityModule();
+  const recovered = await keystorePassword.withKeystoreLock(dataDir, async () => {
+    // The vault may have been locked while this waited for the lock.
+    keysForEpoch(epoch);
+    // An earlier recovery or an injection may have settled it meanwhile.
+    if (beeLifecycle.needsKeyReinjection && beeLifecycle.needsKeyReinjection() !== true) {
+      return false;
+    }
+    // Read from the cache only now, after every await so far.
+    const { beeWallet } = keysForEpoch(epoch);
+    const derived = beeWallet.address.toLowerCase().replace(/^0x/, '');
+    if (keystorePassword.keystoreAddress(dataDir) !== derived) {
+      throw new keystorePassword.KeystoreIdentityMismatchError();
+    }
+    const password = generateBeeKeystorePassword();
+    // Checked again once the keystore is built, right before it is written.
+    await identity.injectBeeKey(dataDir, beeWallet.privateKey, password, {
+      beforeWrite: () => keysForEpoch(epoch),
+    });
+    // The keystore is on disk now: keep its password whatever the vault
+    // does meanwhile, or nothing could open it (as in injectBeeIdentity).
+    await persistBeeKeystorePassword(identity, dataDir, password);
+    return true;
+  }).catch((err) => {
+    if (err instanceof keystorePassword.KeystoreIdentityMismatchError) {
+      console.warn('[IdentityManager] Not re-injecting the Swarm key:', err.message);
+      beeLifecycle.refuseKeyReinjection?.(err.message);
+    }
+    throw err;
+  });
+  if (!recovered) return false;
+  injectedNodes.bee = true;
+  console.log('[IdentityManager] Swarm keystore re-encrypted with a new password');
+  // Outside the lock: the start takes it again for its config.
+  if (beeLifecycle.start) {
+    await beeLifecycle.start();
+  }
+  return true;
 }
 
 function getBeeApiPortForIdentityConfig() {
@@ -547,15 +835,34 @@ async function wipeStaleBeeState(dataDir) {
 }
 
 /**
+ * Refuse a node home whose keys/ folder Freedom will not write through (a
+ * symbolic link, or not a folder: K-3) before anything in that home is
+ * stopped or wiped. The key write itself opens keys/ through the home's
+ * handle and refuses the same way, but only after the stale-state wipe has
+ * run (and, for Ant, after the node was stopped), so checking first leaves
+ * the home, and a running node, exactly as they were. A missing keys/ is
+ * fine: the injection creates it.
+ * @param {string} dataDir - the node's data directory
+ * @throws {UnsafePrivatePathError}
+ */
+function assertNodeKeysDirUsable(dataDir) {
+  withPrivateDir(dataDir, (home) => {
+    home.openDir('keys', { create: false });
+  });
+}
+
+/**
  * Inject Bee identity
- * Generates its own random password for the keystore (stored in config.yaml)
+ * Generates its own random password for the keystore (sealed in the OS
+ * keychain, or stored in config.yaml where there is none)
  * This is intentionally different from the vault password
  * @returns {Promise<{address: string}>}
  */
-async function injectBeeIdentity() {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+async function injectBeeIdentity(epoch = currentVaultEpoch()) {
+  // Bound to the vault epoch, not to a key object: a lock, delete or quit
+  // while this awaits (the node's stop and wipe, keystore generation) stops
+  // it before the key is written (K-1).
+  keysForEpoch(epoch);
 
   const identity = await loadIdentityModule();
   const dataDir = getAntDataDir();
@@ -565,38 +872,52 @@ async function injectBeeIdentity() {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  // A keys/ Freedom refuses ends here, before the node is stopped or wiped.
+  assertNodeKeysDirUsable(dataDir);
+
   // Stop Bee (if running) and wipe its stale state before writing fresh keys.
   const beeWasRunning = await wipeStaleBeeState(dataDir);
 
-  // Generate a random password for the Bee keystore
-  // This is separate from the vault password - defense in depth
-  const beePassword = generateBeeKeystorePassword();
+  let address;
+  try {
+    // Generate a random password for the Bee keystore
+    // This is separate from the vault password - defense in depth
+    const beePassword = generateBeeKeystorePassword();
 
-  // Inject the key with the random password
-  await identity.injectBeeKey(dataDir, derivedKeys.beeWallet.privateKey, beePassword);
+    // Inject the key with the random password, and keep that password where
+    // the node can open the keystore on startup: the OS keychain, or
+    // config.yaml without one (K-3). Under the keystore lock, so no recovery
+    // or node start writes another password in between. The key is read
+    // from the cache only inside the lock, after every await so far, and
+    // checked again once the (slow) keystore is built, before it is written
+    // (K-1). Once the keystore is on disk its password is always kept, even
+    // if the vault locks meanwhile: it is not vault key material, and
+    // dropping it would leave a keystore nothing can open.
+    await keystorePassword.withKeystoreLock(dataDir, async () => {
+      const { beeWallet } = keysForEpoch(epoch);
+      address = beeWallet.address;
+      await identity.injectBeeKey(dataDir, beeWallet.privateKey, beePassword, {
+        beforeWrite: () => keysForEpoch(epoch),
+      });
+      await persistBeeKeystorePassword(identity, dataDir, beePassword);
+    });
 
-  // Store the password in config so Bee can decrypt the keystore on startup
-  identity.createBeeConfig(
-    dataDir,
-    beePassword,
-    getBeeApiPortForIdentityConfig(),
-    getBeeP2pPortForIdentityConfig()
-  );
-
-  injectedNodes.bee = true;
-
-  // If we stopped a running node to wipe it, bring it back up with the new
-  // identity so the user isn't left with a silently-stopped node.
-  if (beeWasRunning && beeLifecycle.start) {
-    try {
-      await beeLifecycle.start();
-    } catch (err) {
-      console.warn('[IdentityManager] Bee start hook failed after injection:', err.message);
+    injectedNodes.bee = true;
+  } finally {
+    // If we stopped a running node to wipe it, bring it back up (with the
+    // new identity, or the one it had if injection stopped) so the user
+    // isn't left with a silently-stopped node.
+    if (beeWasRunning && beeLifecycle.start) {
+      try {
+        await beeLifecycle.start();
+      } catch (err) {
+        console.warn('[IdentityManager] Bee start hook failed after injection:', err.message);
+      }
     }
   }
 
-  console.log(`[IdentityManager] Bee identity injected: ${derivedKeys.beeWallet.address}`);
-  return { address: derivedKeys.beeWallet.address };
+  console.log(`[IdentityManager] Bee identity injected: ${address}`);
+  return { address };
 }
 
 /**
@@ -607,10 +928,8 @@ async function injectBeeIdentity() {
  * that the runtime cannot consume.
  * @returns {Promise<{mode: string, active: boolean, peerId: null, stableIdentitySupported: boolean}>}
  */
-async function injectIpfsIdentity() {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+async function injectIpfsIdentity(epoch = currentVaultEpoch()) {
+  keysForEpoch(epoch);
 
   injectedNodes.ipfs = false;
 
@@ -628,39 +947,109 @@ async function injectIpfsIdentity() {
  * @param {string} alias - Node alias
  * @returns {Promise<{did: string}>}
  */
-async function injectRadicleIdentity(alias = 'FreedomBrowser') {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+async function injectRadicleIdentity(
+  alias = 'FreedomBrowser',
+  epoch = currentVaultEpoch(),
+  { beforeRekey = null } = {}
+) {
+  // Bound to the vault epoch, like injectBeeIdentity (K-1).
+  keysForEpoch(epoch);
 
   const identity = await loadIdentityModule();
   const dataDir = await prepareRadicleDataDir();
+  keysForEpoch(epoch);
 
   // Ensure directory exists
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
-  // routing db, etc.) becomes invalid. Remove stale state directories.
-  const staleDirs = ['node', 'cobs', 'storage'];
-  for (const dir of staleDirs) {
-    if (await removePathWithRetry(path.join(dataDir, dir))) {
-      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+  // A keys/ Freedom refuses ends here, before the node is stopped and
+  // node/cobs/storage are wiped (K-3).
+  assertNodeKeysDirUsable(dataDir);
+
+  // The wipe and the key write, with the node stopped (R-8). They run inside
+  // one operation of the node's lifecycle queue: the node is stopped, with
+  // the add-on's proof, before the first removal, and nothing starts it
+  // again until the key is written (or the injection fails); then it
+  // restarts if it was running. A stop without proof throws before any of
+  // this, and the data is left alone. `beforeRekey` runs first inside the
+  // section, once the stop is proved: injectAllIdentities re-keys Ant there,
+  // so no node changes identity unless Radicle can change it too.
+  const rekey = async () => {
+    if (beforeRekey) await beforeRekey();
+    keysForEpoch(epoch);
+    assertNodeKeysDirUsable(dataDir);
+
+    // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
+    // routing db, etc.) becomes invalid. Remove stale state directories.
+    const staleDirs = ['node', 'cobs', 'storage'];
+    for (const dir of staleDirs) {
+      if (await removePathWithRetry(path.join(dataDir, dir))) {
+        console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+      }
     }
-  }
 
-  const did = identity.injectRadicleKey(
-    dataDir,
-    derivedKeys.radicleKey.privateKey,
-    derivedKeys.radicleKey.publicKey,
-    alias
-  );
+    // Read from the cache only now, after every await.
+    const { radicleKey } = keysForEpoch(epoch);
+    const injected = identity.injectRadicleKey(
+      dataDir,
+      radicleKey.privateKey,
+      radicleKey.publicKey,
+      alias
+    );
 
-  injectedNodes.radicle = true;
+    injectedNodes.radicle = true;
+    return injected;
+  };
+  const did = radicleLifecycle.withStopped
+    ? await radicleLifecycle.withStopped(rekey)
+    : await rekey();
 
   console.log(`[IdentityManager] Radicle identity injected: ${did}`);
   return { did };
+}
+
+/**
+ * Run one node's injection, answering `{ refused: true, error }` when that
+ * node's home is a symbolic link Freedom refuses (K-3) instead of failing
+ * every other node with it. Any other failure still throws.
+ */
+async function injectNodeUnlessRefused(label, inject) {
+  try {
+    return await inject();
+  } catch (err) {
+    if (err?.code !== 'UNSAFE_PRIVATE_PATH' || !err.link) throw err;
+    console.warn(`[IdentityManager] ${label} identity not injected:`, err.message);
+    return { refused: true, error: err.message };
+  }
+}
+
+/**
+ * The error a failed Radicle injection reaches onboarding with, saying which
+ * node has which identity and how to retry (R-8). `bee` is Ant's result when
+ * Ant was already re-keyed in the same run, else null.
+ */
+function radicleInjectionError(err, bee) {
+  const reason = err?.message || String(err);
+  let message;
+  if (err?.code === 'RADICLE_NOT_STOPPED') {
+    message =
+      `Radicle node could not be stopped, so no node was given the new identity: ${reason}. ` +
+      'Ant and Radicle keep their current identities. Stop Radicle (or restart Freedom) ' +
+      'and run identity setup again.';
+  } else if (bee && !bee.refused && !bee.alreadyInjected) {
+    message =
+      `Radicle was not given the new identity: ${reason}. Ant already uses the new ` +
+      'identity; Radicle keeps its old one. Run identity setup again to re-key Radicle.';
+  } else {
+    message = `Radicle was not given the new identity: ${reason}. ` +
+      "Ant's identity was not changed either. Run identity setup again to retry.";
+  }
+  const wrapped = new Error(message);
+  wrapped.code = err?.code;
+  wrapped.cause = err;
+  return wrapped;
 }
 
 /**
@@ -670,60 +1059,94 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
  * @returns {Promise<Object>}
  */
 async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = false) {
-  if (!derivedKeys) {
-    throw new Error(VAULT_LOCKED_MESSAGE);
-  }
+  const epoch = currentVaultEpoch();
+  const keys = keysForEpoch(epoch);
 
   const results = {
     // Include user wallet (Account 0) - not injected anywhere, just derived
-    userWallet: { address: derivedKeys.userWallet.address },
+    userWallet: { address: keys.userWallet.address },
     // Track if any node was re-injected (needs restart)
     needsRestart: [],
   };
 
+  // Each node home is injected on its own: one Freedom refuses (the Ant or
+  // Radicle data folder is a symbolic link, K-3) costs only that node, which
+  // answers `{ refused: true, error }` and says why when it is started. The
+  // vault and the other node still get set up, so onboarding completes.
+
   // Inject Bee (only if not already injected OR force)
   // Bee generates its own random keystore password internally
-  if (force || !isBeeIdentityInjected()) {
-    const wasInjected = isBeeIdentityInjected();
-    results.bee = await injectBeeIdentity();
-    if (wasInjected && force) {
-      // Bee's restart is owned by injectBeeIdentity (via the lifecycle hook),
-      // which stops the lock-holding node before the wipe and starts it again
-      // with the new key. Deliberately NOT added to needsRestart so the
-      // renderer doesn't restart Bee a second time (issue #90).
-      results.bee.reinjected = true;
-    }
-  } else {
-    results.bee = { address: derivedKeys.beeWallet.address, alreadyInjected: true };
-  }
+  let beeDone = false;
+  let beeError = null;
+  const injectBee = async () => {
+    results.bee = await injectNodeUnlessRefused('Ant', async () => {
+      if (!force && isBeeIdentityInjected()) {
+        return { address: keysForEpoch(epoch).beeWallet.address, alreadyInjected: true };
+      }
+      const wasInjected = isBeeIdentityInjected();
+      const bee = await injectBeeIdentity(epoch);
+      if (wasInjected && force) {
+        // Bee's restart is owned by injectBeeIdentity (via the lifecycle hook),
+        // which stops the lock-holding node before the wipe and starts it again
+        // with the new key. Deliberately NOT added to needsRestart so the
+        // renderer doesn't restart Bee a second time (issue #90).
+        bee.reinjected = true;
+      }
+      return bee;
+    }).catch((err) => {
+      beeError = err;
+      throw err;
+    });
+    beeDone = true;
+  };
 
   // Native freedom-ipfs uses ephemeral libp2p identities for read-only
   // retrieval today. Keep this in the result so onboarding can show IPFS as an
   // intentional identity mode rather than a failed injection.
-  results.ipfs = await injectIpfsIdentity();
+  results.ipfs = await injectIpfsIdentity(epoch);
 
   // Inject Radicle (only if not already injected OR force). Finish any pending
   // carry-over of an older profile's Radicle home first: judged against a
   // short home still being migrated, the identity would read as missing and
   // re-injection would wipe the node/cobs/storage that are on their way in.
-  await prepareRadicleDataDir();
-  if (force || !isRadicleIdentityInjected()) {
-    const wasInjected = isRadicleIdentityInjected();
-    results.radicle = await injectRadicleIdentity(radicleAlias);
-    if (wasInjected && force) {
-      results.radicle.reinjected = true;
-      results.needsRestart.push('radicle');
-    }
-  } else {
-    // Get DID
-    const identity = await loadIdentityModule();
-    const radicleIdentity = identity.createRadicleIdentity(
-      derivedKeys.radicleKey.privateKey,
-      derivedKeys.radicleKey.publicKey,
-      radicleAlias
-    );
-    results.radicle = { did: radicleIdentity.did, alreadyInjected: true };
+  //
+  // When Radicle is re-keyed, Ant is re-keyed inside Radicle's stopped
+  // section (R-8): only once Radicle's node is proved stopped. A Radicle stop
+  // that fails then changes no node's keys; a later Radicle failure says
+  // that Ant already has the new identity and Radicle does not.
+  try {
+    results.radicle = await injectNodeUnlessRefused('Radicle', async () => {
+      await prepareRadicleDataDir();
+      if (force || !isRadicleIdentityInjected()) {
+        const wasInjected = isRadicleIdentityInjected();
+        const radicle = await injectRadicleIdentity(radicleAlias, epoch, {
+          beforeRekey: beeDone ? null : injectBee,
+        });
+        if (wasInjected && force) {
+          // Radicle's restart is owned by injectRadicleIdentity (the lifecycle
+          // hook stops the node before the wipe and restarts it after), so it
+          // is not in needsRestart: the renderer would restart it a second time.
+          radicle.reinjected = true;
+        }
+        return radicle;
+      }
+      const identity = await loadIdentityModule();
+      const { radicleKey } = keysForEpoch(epoch);
+      const radicleIdentity = identity.createRadicleIdentity(
+        radicleKey.privateKey,
+        radicleKey.publicKey,
+        radicleAlias
+      );
+      return { did: radicleIdentity.did, alreadyInjected: true };
+    });
+  } catch (err) {
+    // Ant's own failure, inside Radicle's section, is reported as it is.
+    if (err === beeError) throw err;
+    throw radicleInjectionError(err, beeDone ? results.bee : null);
   }
+
+  // Radicle needed no re-key, or its home was refused before the section.
+  if (!beeDone) await injectBee();
 
   console.log('[IdentityManager] All identities injected/verified');
   return results;
@@ -738,26 +1161,38 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
  * @returns {Promise<Object>}
  */
 async function getIdentityStatus() {
-  await prepareRadicleDataDir();
+  // The vault decides which view the wallet panel shows, so read it first:
+  // an identity folder Freedom refuses (a symbolic link, K-3) is the one
+  // failure that ends in `{ error }` for the whole status.
   const hasVaultResult = await hasVault();
   const isUnlocked = await isVaultUnlocked();
 
+  // A node home Freedom refuses (the Radicle or Ant data folder is a symbolic
+  // link) only costs that node's fields: the wallet stays reachable and the
+  // node says why when it is started. Finish any pending Radicle carry-over
+  // first, so the short home isn't judged while it is still being filled.
+  const radicleHomeReady = await nodeHomeReadable('Radicle', async () => {
+    await prepareRadicleDataDir();
+    return true;
+  }, false);
+
   // Try to get addresses - works even when vault is locked
   let addresses = null;
+  const keys = getDerivedKeys();
 
-  if (derivedKeys) {
+  if (keys) {
     // Vault is unlocked - compute from derived keys (most accurate)
     const identity = await loadIdentityModule();
 
     const radicleIdentity = identity.createRadicleIdentity(
-      derivedKeys.radicleKey.privateKey,
-      derivedKeys.radicleKey.publicKey,
+      keys.radicleKey.privateKey,
+      keys.radicleKey.publicKey,
       'FreedomBrowser'
     );
 
     addresses = {
-      userWallet: derivedKeys.userWallet.address,
-      beeWallet: derivedKeys.beeWallet.address,
+      userWallet: keys.userWallet.address,
+      beeWallet: keys.beeWallet.address,
       ipfsPeerId: null,
       radicleDid: radicleIdentity.did,
     };
@@ -769,22 +1204,40 @@ async function getIdentityStatus() {
       userWallet: meta?.addresses?.userWallet || null,
       beeWallet: meta?.addresses?.beeWallet || null,
       ipfsPeerId: readIpfsPeerId(),
-      radicleDid: await readRadicleDid(),
+      radicleDid: radicleHomeReady
+        ? await nodeHomeReadable('Radicle', readRadicleDid, null)
+        : null,
     };
   }
 
   return {
     hasVault: hasVaultResult,
     isUnlocked,
-    beeInjected: isBeeIdentityInjected(),
+    beeInjected: await nodeHomeReadable('Ant', isBeeIdentityInjected, false),
     ipfsInjected: isIpfsIdentityInjected(),
     ipfsIdentityPrepared: isIpfsIdentityPrepared(),
     ipfsIdentityMode: 'ephemeral',
     ipfsStableIdentitySupported: false,
     ipfsNativeIdentityActive: false,
-    radicleInjected: isRadicleIdentityInjected(),
+    radicleInjected: radicleHomeReady
+      ? await nodeHomeReadable('Radicle', isRadicleIdentityInjected, false)
+      : false,
     addresses,
   };
+}
+
+/**
+ * Read one node's home for the identity status, answering `fallback` (and
+ * saying why in the log) when that home is refused rather than failing the
+ * whole status.
+ */
+async function nodeHomeReadable(label, read, fallback) {
+  try {
+    return await read();
+  } catch (err) {
+    console.warn(`[IdentityManager] ${label} data folder unavailable:`, err.message);
+    return fallback;
+  }
 }
 
 /**
@@ -1437,18 +1890,46 @@ async function changeVaultPassword(currentPassword, newPassword) {
  * @param {string} password - Must verify password
  */
 async function deleteVaultData(password) {
-  const identity = await loadIdentityModule();
+  // Revoke first, before any await: work holding a key from this vault
+  // stops now, whatever the password check decides (K-1).
+  const identity = loadIdentityModule();
+  identity.lockVault();
+  revokeVaultAuthority();
   const dataDir = getIdentityDataDir();
   await identity.deleteVault(dataDir, password);
-  derivedKeys = null;
+  revokeVaultAuthority();
   injectedNodes = { bee: false, ipfs: false, radicle: false };
   console.log('[IdentityManager] Vault deleted');
+}
+
+/**
+ * Startup repair (K-3): the vault and the quick-unlock credential an older
+ * build wrote with the umask's mode (usually 0644) become owner-only,
+ * through a no-follow descriptor, so a link planted at either name is left
+ * alone. For the vault this only narrows its mode before anything reads it:
+ * vault.js owns the vault's own reads and writes (#939: it narrows on read
+ * and replaces the file atomically through an owner-only temp file).
+ * quick-unlock.js reads and writes the credential through the same
+ * directory handle as here.
+ */
+function repairIdentityFiles() {
+  try {
+    withPrivateDir(getIdentityDataDir(), (dir) => {
+      dir.repair('identity-vault.json');
+      dir.repair('quick-unlock.dat');
+    });
+  } catch (err) {
+    // A data directory that is a link is refused (profile-paths); say so
+    // without taking startup down.
+    console.warn('[IdentityManager] Identity files not repaired:', err.message);
+  }
 }
 
 /**
  * Register IPC handlers for identity operations
  */
 function registerIdentityIpc() {
+  repairIdentityFiles();
   // Check if vault exists
   ipcMain.handle(IPC.IDENTITY_HAS_VAULT, async () => {
     try {
@@ -1506,13 +1987,22 @@ function registerIdentityIpc() {
 
   // Get vault metadata (setup type, etc.)
   ipcMain.handle('identity:get-vault-meta', () => {
-    return getVaultMeta();
+    try {
+      return getVaultMeta();
+    } catch (err) {
+      // An identity folder that is a symbolic link is refused (K-3); no
+      // metadata, said in the log rather than an unhandled IPC error.
+      console.warn('[IdentityManager] Vault metadata unavailable:', err.message);
+      return null;
+    }
   });
 
   // Unlock vault
+  // Every handler that checks the vault password goes through the shared
+  // wrong-password back-off (K-4).
   ipcMain.handle(IPC.IDENTITY_UNLOCK, async (_event, password) => {
     try {
-      await unlockVault(password);
+      await withPasswordAttempt(() => unlockVault(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1556,7 +2046,7 @@ function registerIdentityIpc() {
       }
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const mnemonic = await exportMnemonic();
       return { success: true, mnemonic };
     } catch (err) {
@@ -1573,7 +2063,7 @@ function registerIdentityIpc() {
       assertPrivateKeyExportable(accountIndex);
       const identity = await loadIdentityModule();
       const dataDir = getIdentityDataDir();
-      await identity.verifyPassword(dataDir, password);
+      await withPasswordAttempt(() => identity.verifyPassword(dataDir, password));
       const privateKey = await exportPrivateKeyForAccount(accountIndex);
       return { success: true, privateKey };
     } catch (err) {
@@ -1584,7 +2074,7 @@ function registerIdentityIpc() {
   // Change password
   ipcMain.handle(IPC.IDENTITY_CHANGE_PASSWORD, async (_event, currentPassword, newPassword) => {
     try {
-      await changeVaultPassword(currentPassword, newPassword);
+      await withPasswordAttempt(() => changeVaultPassword(currentPassword, newPassword));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1594,7 +2084,7 @@ function registerIdentityIpc() {
   // Delete vault
   ipcMain.handle(IPC.IDENTITY_DELETE_VAULT, async (_event, password) => {
     try {
-      await deleteVaultData(password);
+      await withPasswordAttempt(() => deleteVaultData(password));
       return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
@@ -1750,6 +2240,10 @@ module.exports = {
 
   // Identity injection
   setBeeLifecycle,
+  setRadicleLifecycle,
+  reencryptBeeKeystore,
+  closeVaultAuthority,
+  repairIdentityFiles,
   removeStaleBeeDirs,
   wipeStaleBeeState,
   injectBeeIdentity,

@@ -16,6 +16,7 @@ const path = require('path');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
+const { isPrivateSender } = require('../private/private-sender');
 
 const PERMISSIONS_FILE = 'radicle-permissions.json';
 
@@ -158,7 +159,10 @@ function setAutoApprove(origin, type, enabled) {
   if (!permissions[key].autoApprove) {
     permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
   }
-  permissions[key].autoApprove[type] = enabled;
+  // Only a literal `true` turns a rule on: these are written over IPC, and a
+  // truthy non-boolean must not leave a rule on that the chrome's toggle
+  // (lib/wallet/radicle-connection.js) and the provider read differently.
+  permissions[key].autoApprove[type] = enabled === true;
   permissionsCache = permissions;
   savePermissions();
 
@@ -170,18 +174,29 @@ function setAutoApprove(origin, type, enabled) {
 }
 
 function registerRadiclePermissionsIpc() {
+  // PRIVATE MODE GUARD (R-9): the provider's consent flow grants from the
+  // chrome renderer, which in a private window would record the private
+  // session's sites on disk. Grants and use records from a private (or
+  // unclassifiable) sender are refused: null for a grant, false for the
+  // rest. Revoking stays open, since it removes a record.
   ipcMain.handle(IPC.RADICLE_GET_PERMISSION, (_event, origin) => getPermission(origin));
-  ipcMain.handle(IPC.RADICLE_GRANT_PERMISSION, (_event, origin) => grantPermission(origin));
+  ipcMain.handle(IPC.RADICLE_GRANT_PERMISSION, (event, origin) =>
+    isPrivateSender(event) ? null : grantPermission(origin)
+  );
   ipcMain.handle(IPC.RADICLE_REVOKE_PERMISSION, (_event, origin) => revokePermission(origin));
   ipcMain.handle(IPC.RADICLE_GET_ALL_PERMISSIONS, () => getAllPermissions());
-  ipcMain.handle(IPC.RADICLE_UPDATE_LAST_USED, (_event, origin) => updateLastUsed(origin));
+  ipcMain.handle(IPC.RADICLE_UPDATE_LAST_USED, (event, origin) =>
+    isPrivateSender(event) ? false : updateLastUsed(origin)
+  );
   ipcMain.handle(IPC.RADICLE_HAS_SIGNING_GRANT, (_event, origin) => hasSigningGrant(origin));
-  ipcMain.handle(IPC.RADICLE_GRANT_SIGNING, (_event, origin) => grantSigning(origin));
+  ipcMain.handle(IPC.RADICLE_GRANT_SIGNING, (event, origin) =>
+    isPrivateSender(event) ? false : grantSigning(origin)
+  );
   ipcMain.handle(IPC.RADICLE_GET_AUTO_APPROVE, (_event, origin, type) =>
     getAutoApprove(origin, type)
   );
-  ipcMain.handle(IPC.RADICLE_SET_AUTO_APPROVE, (_event, origin, type, enabled) =>
-    setAutoApprove(origin, type, enabled)
+  ipcMain.handle(IPC.RADICLE_SET_AUTO_APPROVE, (event, origin, type, enabled) =>
+    isPrivateSender(event) ? false : setAutoApprove(origin, type, enabled)
   );
 
   console.log('[RadiclePermissions] IPC handlers registered');

@@ -38,6 +38,7 @@ import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, openStampManager, closeStampManager } from './wallet/stamp-manager.js';
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
+import { initRadicleConnection, updateRadicleConnectionBanner } from './wallet/radicle-connection.js';
 import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval } from './wallet/swarm-connect.js';
 import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
 import { initPermissionManage, showDappPermissions, showSwarmPermissions, showX402Permissions, closeDappPerms, closeSwarmPerms, closeX402Perms } from './wallet/permission-manage.js';
@@ -50,6 +51,7 @@ export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSi
 export { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock };
 export { showPermissionManifest };
 export { updateX402ConnectionBanner };
+export { updateRadicleConnectionBanner };
 export { showDappPermissions, showSwarmPermissions, showX402Permissions };
 export { getSelectedChainId, setSelectedChainId };
 
@@ -58,6 +60,8 @@ let setupCta;
 let privateNotice;
 let swarmIdEl;
 let ipfsIdEl;
+let setupErrorEl;
+let setupBtnEl;
 let ipfsCopyBtn;
 let radicleIdEl;
 let passwordValueEl;
@@ -74,6 +78,8 @@ const IPFS_EPHEMERAL_TITLE =
 export function initWalletUi() {
   // Cache coordinator DOM references
   setupCta = document.getElementById('sidebar-setup-cta');
+  setupErrorEl = document.getElementById('sidebar-setup-error');
+  setupBtnEl = document.getElementById('sidebar-setup-btn');
   privateNotice = document.getElementById('sidebar-private-notice');
   walletState.identityView = document.getElementById('sidebar-identity');
   swarmIdEl = document.getElementById('sidebar-swarm-id');
@@ -93,6 +99,7 @@ export function initWalletUi() {
   initPermissionManifest();
   initVaultUnlock();
   initPermissionManage();
+  initRadicleConnection();
   initDappTx();
   initDappX402();
   initRecentPayments();
@@ -218,6 +225,10 @@ export async function updateIdentityState() {
 
   try {
     const status = await window.identity.getStatus();
+    // The identity folder couldn't be read (say, it is a symbolic link,
+    // which Freedom refuses, K-3): say why here rather than only offering
+    // a setup that would fail on the same folder.
+    showSetupError(status?.error);
 
     if (!status.hasVault) {
       showView('setup');
@@ -234,8 +245,21 @@ export async function updateIdentityState() {
 
   } catch (err) {
     console.error('[WalletUI] Failed to update identity state:', err);
+    showSetupError(null);
     showView('setup');
   }
+}
+
+/**
+ * Show why the identity folder can't be used, or clear it. While a reason is
+ * shown, Get Started is disabled: setup would only fail on the same folder.
+ */
+function showSetupError(message) {
+  if (setupErrorEl) {
+    setupErrorEl.textContent = message || '';
+    setupErrorEl.classList.toggle('hidden', !message);
+  }
+  if (setupBtnEl) setupBtnEl.disabled = Boolean(message);
 }
 
 /**
