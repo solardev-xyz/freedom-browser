@@ -128,6 +128,7 @@ function renderStatus(status, index) {
         This account can receive funds, but none of its owners is a
         browser account that could pay the activation fee.
       </div>
+      <div class="unlock-error hidden" id="safe-status-error"></div>
     `);
     return;
   }
@@ -145,6 +146,7 @@ function renderStatus(status, index) {
         <strong>${formatRawTokenBalance(status.estimatedCost)} xDAI</strong>.
       </div>
       <button type="button" class="safe-status-btn" id="safe-status-refresh">I've added funds</button>
+      <div class="unlock-error hidden" id="safe-status-error"></div>
     `);
     document
       .getElementById('safe-status-refresh')
@@ -204,13 +206,19 @@ async function handleActivate() {
   }
 
   await refreshSafeStatusCard(); // re-render first, then surface errors on it
-  // Every card state has the error slot. An account switch meanwhile
-  // shows another account's card: this error is not about it.
+  // Every card state rendered for a not-deployed Safe has the error slot
+  // (renderStatusError, renderSentUnverified, and all three renderStatus
+  // branches). An account switch meanwhile shows another account's card:
+  // this error is not about it.
   if (!result.success && result.code !== 'VAULT_LOCKED' && walletRecord()?.index === index) {
-    // NEEDS_FUNDS re-renders as its own blocking state; anything else
-    // (RPC down …) must be said out loud, not just reset.
     console.error('[SafeStatus] Activation failed:', result.error);
-    showInlineError(document.getElementById('safe-status-error'), result.error);
+    // NEEDS_FUNDS that re-rendered as the fund card already says it; any
+    // other error (RPC down, a reverted send …), or NEEDS_FUNDS landing on
+    // a card that doesn't ask for funds, must be said out loud.
+    const fundCardShown = Boolean(document.getElementById('safe-status-refresh'));
+    if (!(result.code === 'SAFE_NEEDS_FUNDS' && fundCardShown)) {
+      showInlineError(document.getElementById('safe-status-error'), result.error);
+    }
   }
 }
 

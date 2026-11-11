@@ -265,6 +265,69 @@ describe('safe-status card', () => {
     expect(dom.byId('safe-status-error').textContent).toBe('RPC down');
   });
 
+  test('a non-funds activation error is shown when the refresh lands on the fund card', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    // The send reverted after the executor paid gas: it's now short.
+    window.wallet.activateSafe.mockResolvedValueOnce({ success: false, error: 'Reverted' });
+    window.wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...READY, executorBalance: '1', needsFunds: true },
+    });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.byId('safe-status-refresh')).not.toBeNull();
+    const slot = dom.byId('safe-status-error');
+    expect(slot.textContent).toBe('Reverted');
+    expect(slot.classList.contains('hidden')).toBe(false);
+  });
+
+  test('NEEDS_FUNDS that renders the fund card is not repeated in the slot', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    window.wallet.activateSafe.mockResolvedValueOnce({
+      success: false,
+      code: 'SAFE_NEEDS_FUNDS',
+      error: 'Fund the executor',
+    });
+    window.wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...READY, executorBalance: '1', needsFunds: true },
+    });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.byId('safe-status-refresh')).not.toBeNull();
+    expect(dom.byId('safe-status-error').classList.contains('hidden')).toBe(true);
+  });
+
+  test('NEEDS_FUNDS is shown when a lagging read still renders Activate', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    window.wallet.activateSafe.mockResolvedValueOnce({
+      success: false,
+      code: 'SAFE_NEEDS_FUNDS',
+      error: 'Fund the executor',
+    });
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.byId('safe-status-error').textContent).toBe('Fund the executor');
+  });
+
+  test('an activation error is shown when the refresh lands on the no-executor card', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
+    await mod.refreshSafeStatusCard();
+    window.wallet.activateSafe.mockResolvedValueOnce({ success: false, error: 'Owner removed' });
+    window.wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...READY, executorIndex: null, executorAddress: null },
+    });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.card.innerHTML).toContain('none of its owners');
+    expect(dom.byId('safe-status-error').textContent).toBe('Owner removed');
+  });
+
   test('an account switch during activation keeps the message off the other account', async () => {
     await activateSentUnverified();
     let release;
