@@ -41,7 +41,7 @@ beforeEach(() => {
 
 test('with nothing to check, the device is not touched', async () => {
   mockGetLedgerRecordsToCheck.mockReturnValue([]);
-  await expect(checkLedgerAccounts()).resolves.toEqual([]);
+  await expect(checkLedgerAccounts()).resolves.toEqual({ mismatched: [], updated: false });
   expect(mockReadAddresses).not.toHaveBeenCalled();
 });
 
@@ -53,9 +53,10 @@ test('each record is read at its own path and its result kept; mismatches come b
     '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
   ]);
 
-  await expect(checkLedgerAccounts()).resolves.toEqual([
-    { index: PLANTED.index, name: 'Planted', address: PLANTED.address, path: PLANTED.path },
-  ]);
+  await expect(checkLedgerAccounts()).resolves.toEqual({
+    mismatched: [{ index: PLANTED.index, name: 'Planted', address: PLANTED.address, path: PLANTED.path }],
+    updated: true,
+  });
   expect(mockReadAddresses).toHaveBeenCalledWith([HELD.path, PLANTED.path]);
   expect(mockRecordLedgerAddressCheck).toHaveBeenCalledWith(HELD.index, true);
   expect(mockRecordLedgerAddressCheck).toHaveBeenCalledWith(PLANTED.index, false);
@@ -65,12 +66,27 @@ test('a record whose state stays matched is not reported', async () => {
   mockGetLedgerRecordsToCheck.mockReturnValue([PLANTED]);
   mockReadAddresses.mockResolvedValue(['0x70997970C51812dc3A010C7d01b50e0d17dc79C8']);
   mockRecordLedgerAddressCheck.mockReturnValue('matched');
-  await expect(checkLedgerAccounts()).resolves.toEqual([]);
+  await expect(checkLedgerAccounts()).resolves.toEqual({ mismatched: [], updated: true });
+});
+
+test('an unchecked record the device holds turns matched and reports an update', async () => {
+  mockGetLedgerRecordsToCheck.mockReturnValue([HELD]);
+  mockReadAddresses.mockResolvedValue([HELD.address]);
+  await expect(checkLedgerAccounts()).resolves.toEqual({ mismatched: [], updated: true });
+});
+
+test('a mismatched record that is still mismatched is not an update', async () => {
+  mockGetLedgerRecordsToCheck.mockReturnValue([{ ...PLANTED, addressCheck: 'mismatched' }]);
+  mockReadAddresses.mockResolvedValue(['0x70997970C51812dc3A010C7d01b50e0d17dc79C8']);
+  await expect(checkLedgerAccounts()).resolves.toEqual({
+    mismatched: [{ index: PLANTED.index, name: 'Planted', address: PLANTED.address, path: PLANTED.path }],
+    updated: false,
+  });
 });
 
 test('a record without a path is left unchecked', async () => {
   mockGetLedgerRecordsToCheck.mockReturnValue([{ ...PLANTED, path: undefined }]);
-  await expect(checkLedgerAccounts()).resolves.toEqual([]);
+  await expect(checkLedgerAccounts()).resolves.toEqual({ mismatched: [], updated: false });
   expect(mockReadAddresses).not.toHaveBeenCalled();
   expect(mockRecordLedgerAddressCheck).not.toHaveBeenCalled();
 });

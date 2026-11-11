@@ -212,6 +212,11 @@ async function loadAccountsPage(replace, onFailure = showError) {
       // device (#1065); these it doesn't hold. Kept, but unusable until
       // the Ledger that holds them is connected.
       showError(mismatchNotice(result.mismatched));
+    }
+    if (result.updated || result.mismatched?.length) {
+      // A record's check state changed — a match too, which clears the
+      // Safe owner warning, the create-safe owner sub-label and the
+      // "Doesn't match" badge — so repaint from the stored records.
       loadDerivedWallets();
     }
     return true;

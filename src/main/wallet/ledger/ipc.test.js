@@ -16,13 +16,13 @@ beforeAll(() => registerLedgerIpc());
 
 beforeEach(() => {
   mockListAccounts.mockReset().mockResolvedValue(ACCOUNTS);
-  mockCheckLedgerAccounts.mockReset().mockResolvedValue([]);
+  mockCheckLedgerAccounts.mockReset().mockResolvedValue({ mismatched: [], updated: false });
 });
 
 describe('ledger:get-accounts', () => {
   test('a connected device also checks the unchecked Ledger records (#1065)', async () => {
     const mismatched = [{ index: 1000001, name: 'Planted', address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', path: "44'/60'/1'/0/0" }];
-    mockCheckLedgerAccounts.mockResolvedValue(mismatched);
+    mockCheckLedgerAccounts.mockResolvedValue({ mismatched, updated: true });
 
     await expect(
       mockIpcMain.invoke('ledger:get-accounts', { scheme: 'live', start: 0, count: 5, checkRecords: true })
@@ -30,6 +30,7 @@ describe('ledger:get-accounts', () => {
       success: true,
       accounts: ACCOUNTS,
       mismatched,
+      updated: true,
     });
     expect(mockCheckLedgerAccounts).toHaveBeenCalledTimes(1);
     // The check flag is main's, not the transport's.
@@ -37,16 +38,26 @@ describe('ledger:get-accounts', () => {
   });
 
   test('a page that does not ask (Load more, the Safe board) is not checked', async () => {
-    mockCheckLedgerAccounts.mockResolvedValue([{ index: 1000001, name: 'Planted' }]);
+    mockCheckLedgerAccounts.mockResolvedValue({ mismatched: [{ index: 1000001, name: 'Planted' }], updated: true });
     await expect(
       mockIpcMain.invoke('ledger:get-accounts', { scheme: 'live', start: 5, count: 5 })
-    ).resolves.toEqual({ success: true, accounts: ACCOUNTS, mismatched: [] });
+    ).resolves.toEqual({ success: true, accounts: ACCOUNTS, mismatched: [], updated: false });
     await expect(
       mockIpcMain.invoke('ledger:get-accounts', { scheme: 'live', start: 0, count: 1 })
-    ).resolves.toEqual({ success: true, accounts: ACCOUNTS, mismatched: [] });
+    ).resolves.toEqual({ success: true, accounts: ACCOUNTS, mismatched: [], updated: false });
     // Only a literal `true` asks; a truthy string from the renderer doesn't.
     await mockIpcMain.invoke('ledger:get-accounts', { checkRecords: 'yes' });
     expect(mockCheckLedgerAccounts).not.toHaveBeenCalled();
+  });
+
+  test('a check that only matched records reports the update (#1065)', async () => {
+    mockCheckLedgerAccounts.mockResolvedValue({ mismatched: [], updated: true });
+    await expect(mockIpcMain.invoke('ledger:get-accounts', { checkRecords: true })).resolves.toEqual({
+      success: true,
+      accounts: ACCOUNTS,
+      mismatched: [],
+      updated: true,
+    });
   });
 
   test('a failed check does not fail discovery', async () => {
@@ -56,6 +67,7 @@ describe('ledger:get-accounts', () => {
       success: true,
       accounts: ACCOUNTS,
       mismatched: [],
+      updated: false,
     });
   });
 

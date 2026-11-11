@@ -227,13 +227,28 @@ describe('connect ledger — wallet accounts the device does not hold (#1065)', 
 
   test('nothing is said when every account matches', async () => {
     const { mod, getAccounts, showInlineError, loadDerivedWallets } = await loadScreen();
-    getAccounts.mockResolvedValue({ success: true, accounts: [], mismatched: [] });
+    getAccounts.mockResolvedValue({ success: true, accounts: [], mismatched: [], updated: false });
 
     await mod.openConnectLedger();
     await flushMicrotasks();
 
     expect(showInlineError).not.toHaveBeenCalled();
     expect(loadDerivedWallets).not.toHaveBeenCalled();
+    await mod.closeConnectLedger();
+  });
+
+  test('a record that now matches reloads the wallet list, with nothing said (#1065)', async () => {
+    // An unchecked (or mismatched) record the connected Ledger holds turns
+    // matched in main; the Safe owner warning, create-safe sub-label and
+    // "Doesn't match" badge read the renderer's copy, so it must reload.
+    const { mod, getAccounts, showInlineError, loadDerivedWallets } = await loadScreen();
+    getAccounts.mockResolvedValue({ success: true, accounts: [], mismatched: [], updated: true });
+
+    await mod.openConnectLedger();
+    await flushMicrotasks();
+
+    expect(showInlineError).not.toHaveBeenCalled();
+    expect(loadDerivedWallets).toHaveBeenCalled();
     await mod.closeConnectLedger();
   });
 
