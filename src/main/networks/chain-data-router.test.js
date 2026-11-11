@@ -443,6 +443,32 @@ describe('chain-data-router', () => {
     ], { deadlineMs: expect.any(Number) });
   });
 
+  // PRIVATE MODE GUARD (Colibri store, #1058): Colibri picks a private
+  // window's in-memory store from the async context the caller marked (the
+  // onchain-app handler of a private session). The router passes no flag of
+  // its own, so the mark must reach Colibri through it.
+  test('a read in a private window’s context reaches Colibri in that context', async () => {
+    const { runWithPrivateLogContext, isPrivateLogContext } =
+      jest.requireActual('../private/private-log-context');
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 7000 },
+    });
+    const seen = [];
+    mockRequestViaColibri.mockImplementation(async () => {
+      seen.push(isPrivateLogContext());
+      return '0x1';
+    });
+    const read = (data) =>
+      request(100, 'eth_call', [{ to: '0xabc', data }, 'latest'], {
+        routingContext: { origin: 'https://app.example' },
+      });
+
+    await runWithPrivateLogContext(true, () => read('0x01'));
+    await read('0x02');
+    expect(seen).toEqual([true, false]);
+  });
+
   // The worker host terminates a Colibri worker still verifying past this
   // deadline (#495), so it must be the same budget the caller waits for.
   test('hands Colibri the same deadline the caller waits on', async () => {

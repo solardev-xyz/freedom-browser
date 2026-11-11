@@ -29,6 +29,7 @@ const { Transaction, Signature, TypedDataEncoder } = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
+const { assertLedgerCanSendTypedData } = require('./eip712-limits');
 const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
 
 /** hw-app-eth returns r/s as bare hex and v as hex string or number. */
@@ -89,6 +90,12 @@ function createLedgerBackend(record) {
       const { strippedTypes, payload } = getEip712WirePayload(typedData);
 
       return withVerifiedDevice(async (eth) => {
+        // hw-app-eth sends some typed data wrongly to an Ethereum app that
+        // reads it field by field, so that typed data isn't sent (#1064). The
+        // original Nano S's app never reads it that way (app-ethereum builds
+        // HAVE_EIP712_FULL_SUPPORT for every other model): it answers 0x6d00
+        // and signs the hashes below, which hw-app-eth can't garble.
+        if (eth.transport?.deviceModel?.id !== 'nanoS') assertLedgerCanSendTypedData(payload);
         let sig;
         try {
           sig = await eth.signEIP712Message(record.path, payload);
