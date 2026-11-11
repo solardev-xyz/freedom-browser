@@ -618,6 +618,7 @@ function reDispatchAsWindowEvent(channel) {
 }
 reDispatchAsWindowEvent('settings:updated');
 reDispatchAsWindowEvent('payments:tx-recorded');
+reDispatchAsWindowEvent('wallet:records-changed');
 
 contextBridge.exposeInMainWorld('ant', {
   start: () => ipcRenderer.invoke('ant:start'),

@@ -28,6 +28,16 @@ const mockRemoteBackend = {
 const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
 
 const mockRecordLedgerAddressCheck = jest.fn();
+const mockWindowSend = jest.fn();
+const mockGuestSend = jest.fn();
+jest.mock('electron', () => ({
+  BrowserWindow: {
+    getAllWindows: () => [
+      { isDestroyed: () => false, webContents: { send: (...args) => mockWindowSend(...args) } },
+      { isDestroyed: () => true, webContents: { send: (...args) => mockGuestSend(...args) } },
+    ],
+  },
+}));
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
@@ -196,6 +206,40 @@ describe('getSigner (ledger-backed dispatch)', () => {
     expect(mockRecordLedgerAddressCheck).toHaveBeenCalledWith(2, false);
     onAddressCheck(true);
     expect(mockRecordLedgerAddressCheck).toHaveBeenLastCalledWith(2, true);
+  });
+
+  test('a sign that turns an old unchecked record matched tells the chrome, once (#1065)', () => {
+    mockGetWalletRecord.mockReturnValue({ ...LEDGER_RECORD, addressCheck: 'unchecked' });
+    mockWindowSend.mockClear();
+    mockGuestSend.mockClear();
+    mockRecordLedgerAddressCheck.mockReset().mockReturnValue('matched');
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+
+    onAddressCheck(true);
+    expect(mockWindowSend).toHaveBeenCalledTimes(1);
+    expect(mockWindowSend).toHaveBeenCalledWith('wallet:records-changed');
+    // A destroyed window is skipped.
+    expect(mockGuestSend).not.toHaveBeenCalled();
+
+    // The same signer signing again changes nothing stored: no repeat.
+    onAddressCheck(true);
+    expect(mockWindowSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('a sign that leaves the stored state as it was says nothing (#1065)', () => {
+    mockGetWalletRecord.mockReturnValue({ ...LEDGER_RECORD, addressCheck: 'matched' });
+    mockWindowSend.mockClear();
+    mockRecordLedgerAddressCheck.mockReset().mockReturnValue('matched');
+    getSigner(2);
+    const [, { onAddressCheck }] = mockCreateLedgerBackend.mock.calls[0];
+    onAddressCheck(false);
+    onAddressCheck(true);
+
+    // Not a Ledger record any more (deleted mid-sign): null, nothing said.
+    mockRecordLedgerAddressCheck.mockReturnValue(null);
+    onAddressCheck(true);
+    expect(mockWindowSend).not.toHaveBeenCalled();
   });
 
   test('factory-level normalization applies to ledger backends too', async () => {

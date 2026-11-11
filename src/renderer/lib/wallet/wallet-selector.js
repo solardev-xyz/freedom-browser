@@ -45,6 +45,13 @@ export function initWalletSelector(openCreateWallet, openConnectLedger, openConn
   openCreateSafeFn = openCreateSafe;
 
   setupWalletSelector();
+
+  // Main changed a stored record on its own — a Ledger sign turned an old
+  // unchecked owner `matched` (#1065) — so repaint from the stored list:
+  // the Safe owner warning and create-safe's owner sub-label read it.
+  window.addEventListener('wallet:records-changed', () => {
+    loadDerivedWallets();
+  });
 }
 
 function setupWalletSelector() {
