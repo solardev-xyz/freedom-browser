@@ -141,7 +141,7 @@ and no `data`.
 
 | Reason                                | Raised when                                                                                                                                                                 |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `node-stopped`                        | The node is not running or does not answer (reads probe `/node` with a 5 s timeout)                                                                                         |
+| `node-stopped`                        | The node is off or failed, or does not answer (reads probe `/node` with a 5 s timeout)                                                                                      |
 | `node-not-ready`                      | The node is still connecting to Gnosis Chain or to peers, is still looking for the wallet's existing storage, or a batch bought moments ago is not yet known to the network |
 | `ultra-light-mode`                    | The node runs in ultra-light mode (no Gnosis Chain connection) and cannot publish                                                                                           |
 | `no-usable-stamps`                    | No postage batch with room for the write                                                                                                                                    |
@@ -151,9 +151,16 @@ and no `data`.
 
 The four setup reasons (`node-stopped`, `node-not-ready`, `ultra-light-mode`,
 `no-usable-stamps`) on a write method also open Freedom's publish setup screen
-for the user. Reads only ever report `node-stopped`. A `4900` without `data`
+for the user. Reads report only `node-stopped` and `node-not-ready`. A `4900` without `data`
 means the provider is disabled, or (message "Could not refresh this app’s
 permission manifest", with a typographic apostrophe U+2019) the app's permission manifest could not be fetched.
+
+A call made while Freedom starts, stops or restarts the node (at launch, when
+the identity is set up or its keystore is recovered after an unlock, or from
+the Restart button) waits for the node, for up to 30 s, instead of failing. A
+node still starting after that is `node-not-ready`, so `node-stopped` means a
+node that is off, failed or not answering. `swarm_getCapabilities` does not
+wait: it reports `node-not-ready` until the node is back.
 
 **`-32602`**
 

@@ -1121,6 +1121,32 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     expect(sections).toEqual(['radicle stopped']);
   });
 
+  test('a wipe that fails after stopping the node ends its planned restart (#988)', async () => {
+    seedBeeInjected();
+    const mgr = loadIdentityManager(dataDirs, {
+      removePath: async () => {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      },
+    });
+    await mgr.createNewVault('password-123');
+    const start = jest.fn();
+    const abandonRestart = jest.fn();
+    // The node was running: its stop begins a planned restart.
+    mgr.setBeeLifecycle({ stop: async () => true, start, abandonRestart });
+    fs.mkdirSync(path.join(dataDirs.bee, 'statestore'), { recursive: true });
+
+    let err;
+    try {
+      err = await mgr.injectBeeIdentity().catch((e) => e);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
+    expect(err.message).toBe('permission denied');
+    // No start follows, so page calls stop waiting for one.
+    expect(start).not.toHaveBeenCalled();
+    expect(abandonRestart).toHaveBeenCalledTimes(1);
+  });
+
   test('first-time injection reports nothing for restart', async () => {
     const mgr = loadIdentityManager(dataDirs);
     await mgr.createNewVault('password-123');
@@ -1412,6 +1438,28 @@ describe('Swarm keystore password (K-3)', () => {
     await mod.unlockVault('password123');
     await new Promise((resolve) => setImmediate(resolve));
     expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+  });
+
+  test('a recovery is a planned restart for the node manager until the node is started (#988)', async () => {
+    const { mod } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    let needed = true;
+    const order = [];
+    const start = jest.fn(async () => {
+      order.push('start');
+      needed = false;
+    });
+    const restartingUntil = jest.fn((promise) => {
+      promise.then(() => order.push('recovery settled'));
+    });
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed, restartingUntil });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    // Page calls wait from the unlock until the node has been started.
+    expect(restartingUntil).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['start', 'recovery settled']);
   });
 
   const settle = async () => {

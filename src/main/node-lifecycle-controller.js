@@ -14,6 +14,7 @@ function defaultDependencies() {
   return {
     startAnt: () => require('./ant-manager').startAnt(),
     stopAnt: () => require('./ant-manager').stopAnt(),
+    restartAnt: () => require('./ant-manager').restartAnt(),
     startIpfs: () => require('./ipfs-manager').startIpfs(),
     stopIpfs: () => require('./ipfs-manager').stopIpfs(),
     startRadicle: () => require('./radicle-manager').startRadicle(),
@@ -128,21 +129,27 @@ class NodeLifecycleController {
 
   async #apply(service, action) {
     const chainId = chainIdForService(service);
+    const name = `${service[0].toUpperCase()}${service.slice(1)}`;
     const start =
       chainId === null
-        ? this.dependencies[`start${service[0].toUpperCase()}${service.slice(1)}`]
+        ? this.dependencies[`start${name}`]
         : () => this.dependencies.startMyotis(chainId);
     const stop =
       chainId === null
-        ? this.dependencies[`stop${service[0].toUpperCase()}${service.slice(1)}`]
+        ? this.dependencies[`stop${name}`]
         : () => this.dependencies.stopMyotis(chainId);
+    // A manager's own restart, where it has one (Ant: page calls wait for
+    // the node meanwhile, #988).
+    const restart = chainId === null ? this.dependencies[`restart${name}`] : null;
     if (typeof start !== 'function' || typeof stop !== 'function') {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
         `Freedom cannot manage the ${service} node lifecycle`
       );
     }
-    if (action === 'restart') {
+    if (action === 'restart' && typeof restart === 'function') {
+      await restart();
+    } else if (action === 'restart') {
       await stop();
       await start();
     } else if (action === 'start') {

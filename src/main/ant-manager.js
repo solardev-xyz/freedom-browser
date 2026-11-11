@@ -56,6 +56,8 @@ let antProcess = null;
 let antSpawnedAt = null;
 let healthCheckInterval = null;
 let pendingStart = false;
+// A start queued while stopping, scheduled for after the exit.
+let startScheduled = false;
 let forceKillTimeout = null;
 let chainBridge = null;
 let startGeneration = 0;
@@ -69,6 +71,17 @@ let keystoreNeedsReinjection = false;
 // (identity-manager subscribes through createAntLifecycle). K-3.
 let keyReinjectionListener = null;
 const statusListeners = new Set();
+// Restarts Freedom makes on purpose (#988): identity injection stops the
+// node, writes the new key and starts it again, and so do the publish
+// setup's Restart button, the agent's restart and keystore recovery after an
+// unlock. While one is under way, or the node is starting or stopping, a
+// `window.swarm` call waits for the node (waitForNodeSettled) instead of
+// failing with `node-stopped`. A restart ends when its owner says so, or
+// after PLANNED_RESTART_MAX_MS, so one that never starts the node again
+// cannot hold calls for long.
+const PLANNED_RESTART_MAX_MS = 30_000;
+const plannedRestarts = new Set();
+const settleWaiters = new Set();
 
 function closeChainBridge(bridge = chainBridge) {
   if (chainBridge === bridge) chainBridge = null;
@@ -528,6 +541,7 @@ function updateState(newState, error = null) {
       log.error('[Ant] Status listener failed:', err);
     }
   }
+  notifySettleWaiters();
 }
 
 /**
@@ -537,6 +551,70 @@ function updateState(newState, error = null) {
 function onStatusChange(listener) {
   statusListeners.add(listener);
   return () => statusListeners.delete(listener);
+}
+
+/**
+ * Mark a planned restart as under way (#988). Returns the function that
+ * ends it; it also ends by itself after PLANNED_RESTART_MAX_MS.
+ * @returns {() => void}
+ */
+function beginPlannedRestart() {
+  const restart = {};
+  const end = () => {
+    if (!plannedRestarts.delete(restart)) return;
+    clearTimeout(restart.timer);
+    notifySettleWaiters();
+  };
+  restart.timer = setTimeout(end, PLANNED_RESTART_MAX_MS);
+  restart.timer.unref?.();
+  plannedRestarts.add(restart);
+  return end;
+}
+
+/**
+ * Whether the node is past any start, stop or planned restart: running,
+ * stopped or failed, with nothing on the way to change that.
+ */
+function isNodeSettled() {
+  return (
+    plannedRestarts.size === 0 &&
+    !startScheduled &&
+    currentState !== STATUS.STARTING &&
+    currentState !== STATUS.STOPPING
+  );
+}
+
+// Checked again a microtask later: what follows a status change in the same
+// tick can begin a restart or queue a start (a start that stops for keystore
+// re-injection publishes ERROR, then starts the recovery), and waiting calls
+// must not resume into that.
+function notifySettleWaiters() {
+  if (!isNodeSettled() || settleWaiters.size === 0) return;
+  queueMicrotask(() => {
+    if (!isNodeSettled()) return;
+    for (const waiter of settleWaiters) waiter();
+  });
+}
+
+/**
+ * Resolves true once the node is settled (isNodeSettled), or false if it
+ * still is not after `timeoutMs`.
+ * @param {number} timeoutMs
+ * @returns {Promise<boolean>}
+ */
+function waitForNodeSettled(timeoutMs) {
+  if (isNodeSettled()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (settled) => {
+      clearTimeout(timer);
+      settleWaiters.delete(waiter);
+      resolve(settled);
+    };
+    const waiter = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    settleWaiters.add(waiter);
+  });
 }
 
 /**
@@ -1117,7 +1195,14 @@ async function startAnt() {
       if (pendingStart) {
         log.info('[Ant] Processing queued start request');
         pendingStart = false;
-        setTimeout(() => startAnt(), 100);
+        // Not settled until the start runs (#988).
+        startScheduled = true;
+        setTimeout(() => {
+          startScheduled = false;
+          startAnt();
+          // A start that had nothing to do changes no state to tell waiters.
+          notifySettleWaiters();
+        }, 100);
       }
     });
 
@@ -1289,6 +1374,20 @@ function stopAnt() {
     // Try graceful shutdown via SIGTERM
     antProcess.kill('SIGTERM');
   }).then(() => bridgeClosed);
+}
+
+/**
+ * Stop the node and start it again as one planned restart, so page calls
+ * made meanwhile wait for it (#988).
+ */
+async function restartAnt() {
+  const end = beginPlannedRestart();
+  try {
+    await stopAnt();
+    await startAnt();
+  } finally {
+    end();
+  }
 }
 
 function checkBinary() {
@@ -1481,24 +1580,55 @@ const LOCK_HOLDING_STATES = new Set([
 // it with the new key. Any live process is treated as active (STARTING grabs
 // the lock before health passes; STOPPING is before the close event; ERROR can
 // leave the process alive), otherwise the wipe fails with EPERM on Windows
-// (issue #90). Dependencies are injectable so the decision can be unit-tested
-// without spawning a real node.
+// (issue #90). A stop here is a planned restart until `start` runs (#988):
+// the injector starts the node again once the key is written. Dependencies
+// are injectable so the decision can be unit-tested without spawning a real
+// node.
 function createAntLifecycle(deps = {}) {
   const getStatusFn = deps.getStatus || getStatus;
   const hasLiveProcessFn = deps.hasLiveProcess || hasLiveProcess;
   const stopFn = deps.stopAnt || stopAnt;
   const startFn = deps.startAnt || startAnt;
   const setInjected = deps.setUseInjectedIdentity || setUseInjectedIdentity;
+  const beginRestart = deps.beginPlannedRestart || beginPlannedRestart;
+  let restartEnd = null;
+  const finishRestart = () => {
+    restartEnd?.();
+    restartEnd = null;
+  };
   return {
     stop: async () => {
       const status = getStatusFn().status;
       const active = hasLiveProcessFn() || LOCK_HOLDING_STATES.has(status);
-      if (active) await stopFn();
+      if (active) {
+        finishRestart();
+        restartEnd = beginRestart();
+        try {
+          await stopFn();
+        } catch (err) {
+          // The injector does not start a node it could not stop.
+          finishRestart();
+          throw err;
+        }
+      }
       return active;
     },
     start: async () => {
       setInjected(true);
-      await startFn();
+      try {
+        await startFn();
+      } finally {
+        finishRestart();
+      }
+    },
+    // The injector will not start the node again (wiping its old state
+    // failed after the stop): the restart `stop` began ends now.
+    abandonRestart: finishRestart,
+    // Keystore recovery after an unlock (K-3) rewrites the key and then
+    // starts the node: a planned restart until `promise` settles.
+    restartingUntil: (promise) => {
+      const end = beginRestart();
+      Promise.resolve(promise).then(end, end);
     },
     // The last start could not open keys/swarm.key (K-3).
     needsKeyReinjection: deps.needsKeyReinjection || (() => keystoreNeedsReinjection),
@@ -1526,10 +1656,14 @@ module.exports = {
   hasLiveProcess,
   startAnt,
   stopAnt,
+  restartAnt,
   getActivePort,
   getStatus,
   onStatusChange,
   waitForStartSettled,
+  beginPlannedRestart,
+  isNodeSettled,
+  waitForNodeSettled,
   getSpawnedAt,
   getAntDataPath,
   setUseInjectedIdentity,
