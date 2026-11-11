@@ -116,12 +116,66 @@ function createDiskStorage(dir) {
 // workers with no storage dir, and they get this instead, the same
 // interface held in the worker's own memory. It ends with the worker, which
 // the host terminates when the last private window closes.
-function createMemoryStorage() {
+//
+// That can be days, and Buffer bytes live outside the V8 heap, so the
+// worker's maxOldGenerationSizeMb does not count them. The cache records
+// (`call_`, `code_`, `tx_cache_`) are what grows with browsing, one per
+// contract or bytecode a page touches, so they share a byte budget and the
+// least recently used one is dropped once it is spent: Colibri reads a
+// missing record as a cache miss and fetches and verifies it again. The
+// verifier's own state (`states_`, `sync_`, headers) is never dropped, since
+// losing it would mean bootstrapping verification again; it grows by one
+// sync-committee record per ~27 h period, which stays small for any window
+// lifetime.
+const MEMORY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const MEMORY_CACHE_KEY = /^(call_|code_|tx_cache_)/;
+
+function createMemoryStorage({ maxCacheBytes = MEMORY_CACHE_MAX_BYTES } = {}) {
   const entries = new Map();
+  // Cache records only, oldest use first (a Map keeps insertion order, and a
+  // use re-inserts the key at the end).
+  const cache = new Map();
+  let cacheBytes = 0;
+
+  function dropCached(key) {
+    if (!cache.has(key)) return;
+    cacheBytes -= cache.get(key);
+    cache.delete(key);
+  }
+
+  function del(key) {
+    entries.delete(key);
+    dropCached(key);
+  }
+
   return {
-    get: (key) => (entries.has(key) ? Buffer.from(entries.get(key)) : null),
-    set: (key, value) => { entries.set(key, Buffer.from(value)); },
-    del: (key) => { entries.delete(key); },
+    get: (key) => {
+      if (!entries.has(key)) return null;
+      if (cache.has(key)) {
+        const size = cache.get(key);
+        cache.delete(key);
+        cache.set(key, size);
+      }
+      return Buffer.from(entries.get(key));
+    },
+    set: (key, value) => {
+      const copy = Buffer.from(value);
+      del(key);
+      if (!MEMORY_CACHE_KEY.test(key)) {
+        entries.set(key, copy);
+        return;
+      }
+      // A record bigger than the whole budget is not kept at all.
+      if (copy.length > maxCacheBytes) return;
+      for (const oldest of cache.keys()) {
+        if (cacheBytes + copy.length <= maxCacheBytes) break;
+        del(oldest);
+      }
+      entries.set(key, copy);
+      cache.set(key, copy.length);
+      cacheBytes += copy.length;
+    },
+    del,
   };
 }
 
@@ -232,6 +286,7 @@ module.exports = {
   createColibriService,
   createDiskStorage,
   createMemoryStorage,
+  MEMORY_CACHE_MAX_BYTES,
   serializeError,
   STALE_TMP_MS,
 };

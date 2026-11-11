@@ -15,7 +15,13 @@ jest.mock('node:fs', () => ({
   renameSync: (...args) => mockRenameSync(...args),
 }));
 
-const { createColibriService, serializeError, STALE_TMP_MS } = require('./colibri-worker');
+const {
+  createColibriService,
+  createMemoryStorage,
+  MEMORY_CACHE_MAX_BYTES,
+  serializeError,
+  STALE_TMP_MS,
+} = require('./colibri-worker');
 
 const STORAGE_DIR = '/tmp/freedom-test-userdata/colibri';
 const CONFIG = { chainId: 1, proverUrl: 'https://test-prover.example', zkProof: true };
@@ -358,5 +364,56 @@ describe('memory storage for a private worker', () => {
     const second = await captureStorage(null);
     first.set('headers_1', Buffer.from([1]));
     expect(second.get('headers_1')).toBeNull();
+  });
+
+  // A private window can stay open for days: the cache records a page's
+  // calls leave behind share a byte budget, and the least recently used one
+  // goes first. The verifier's own state is never dropped.
+  test('drops the least recently used cache record once the byte budget is spent', () => {
+    const storage = createMemoryStorage({ maxCacheBytes: 10 });
+    storage.set('states_1', Buffer.alloc(50, 1));
+    storage.set('sync_1_7', Buffer.alloc(50, 2));
+    storage.set('call_1_0xaa', Buffer.alloc(4, 3));
+    storage.set('code_0xbb', Buffer.alloc(4, 4));
+    // A read counts as a use: call_ is now newer than code_.
+    expect(storage.get('call_1_0xaa')).toEqual(Buffer.alloc(4, 3));
+    storage.set('tx_cache_1', Buffer.alloc(4, 5));
+
+    expect(storage.get('code_0xbb')).toBeNull();
+    expect(storage.get('call_1_0xaa')).toEqual(Buffer.alloc(4, 3));
+    expect(storage.get('tx_cache_1')).toEqual(Buffer.alloc(4, 5));
+    expect(storage.get('states_1')).toEqual(Buffer.alloc(50, 1));
+    expect(storage.get('sync_1_7')).toEqual(Buffer.alloc(50, 2));
+  });
+
+  test('frees the old size when a record is overwritten or deleted', () => {
+    const storage = createMemoryStorage({ maxCacheBytes: 10 });
+    storage.set('call_1_0xaa', Buffer.alloc(6));
+    storage.set('call_1_0xaa', Buffer.alloc(6));
+    storage.set('code_0xbb', Buffer.alloc(4));
+    expect(storage.get('call_1_0xaa')).not.toBeNull();
+    storage.del('call_1_0xaa');
+    storage.set('code_0xcc', Buffer.alloc(6));
+    expect(storage.get('code_0xbb')).not.toBeNull();
+    expect(storage.get('code_0xcc')).not.toBeNull();
+  });
+
+  test('does not keep a cache record bigger than the whole budget', () => {
+    const storage = createMemoryStorage({ maxCacheBytes: 10 });
+    storage.set('code_0xbb', Buffer.alloc(4));
+    storage.set('code_0xcc', Buffer.alloc(11));
+    expect(storage.get('code_0xcc')).toBeNull();
+    expect(storage.get('code_0xbb')).not.toBeNull();
+  });
+
+  test('a private worker holds its cache records to the default budget', async () => {
+    const storage = await captureStorage(null);
+    const record = Buffer.alloc(1024 * 1024);
+    for (let i = 0; i < 40; i += 1) storage.set(`call_1_0x${i}`, record);
+    let kept = 0;
+    for (let i = 0; i < 40; i += 1) if (storage.get(`call_1_0x${i}`)) kept += 1;
+    expect(kept * record.length).toBeLessThanOrEqual(MEMORY_CACHE_MAX_BYTES);
+    expect(storage.get('call_1_0x39')).not.toBeNull();
+    expect(storage.get('call_1_0x0')).toBeNull();
   });
 });
