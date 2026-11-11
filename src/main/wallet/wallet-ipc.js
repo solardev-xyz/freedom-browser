@@ -559,9 +559,7 @@ function registerWalletIpc() {
       // A locked vault is recoverable — the renderer walks the user
       // through the standard unlock and retries.
       const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
-      // `hash` is set only on a SAFE_UNVERIFIED thrown after the
-      // deployment was sent (safe-service confirmDeployment).
-      return { success: false, error: err.message, code, hash: err.hash };
+      return { success: false, error: err.message, code };
     }
   };
 

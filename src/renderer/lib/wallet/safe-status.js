@@ -114,6 +114,14 @@ function renderStatus(status, index) {
     return;
   }
 
+  // An activation already sent outranks every "not deployed" state below:
+  // a lagging read can quote a redeploy the executor (having just paid
+  // gas) can no longer cover, and asking for funds then would be wrong.
+  if (sentUnverified.has(index)) {
+    renderSentUnverified(index);
+    return;
+  }
+
   if (status.executorIndex === null) {
     render(`
       <div class="safe-status-text">
@@ -141,11 +149,6 @@ function renderStatus(status, index) {
     document
       .getElementById('safe-status-refresh')
       ?.addEventListener('click', refreshSafeStatusCard);
-    return;
-  }
-
-  if (sentUnverified.has(index)) {
-    renderSentUnverified(index);
     return;
   }
 

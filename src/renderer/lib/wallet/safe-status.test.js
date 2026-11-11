@@ -205,6 +205,36 @@ describe('safe-status card', () => {
     expect(dom.card.classList.contains('hidden')).toBe(true);
   });
 
+  test('a sent activation shows its own message, not the fund-the-executor card, when the executor is short', async () => {
+    await activateSentUnverified();
+    // A lagging endpoint quotes a redeploy the executor, having just paid
+    // gas, can no longer cover.
+    window.wallet.getSafeStatus.mockResolvedValue({
+      success: true,
+      status: { ...READY, executorBalance: '1', needsFunds: true },
+    });
+    await Promise.all(dom.byId('safe-status-activate').click());
+    await flush();
+    expect(dom.card.innerHTML).toContain('sent the activation');
+    expect(dom.byId('safe-status-refresh')).toBeNull();
+    expect(dom.byId('safe-status-activate')).toBeNull();
+
+    await Promise.all(dom.byId('safe-status-retry').click());
+    expect(dom.card.innerHTML).toContain('sent the activation');
+    expect(dom.card.innerHTML).not.toContain('fund');
+    expect(dom.byId('safe-status-refresh')).toBeNull();
+  });
+
+  test('a short executor with nothing sent still gets the fund card', async () => {
+    window.wallet.getSafeStatus.mockResolvedValueOnce({
+      success: true,
+      status: { ...READY, executorBalance: '1', needsFunds: true },
+    });
+    await mod.refreshSafeStatusCard();
+    expect(dom.byId('safe-status-refresh')).not.toBeNull();
+    expect(dom.card.innerHTML).not.toContain('sent the activation');
+  });
+
   test('an unverified status before anything was sent keeps Activate on a later ready read', async () => {
     window.wallet.getSafeStatus.mockResolvedValueOnce({ success: true, status: READY });
     await mod.refreshSafeStatusCard();
