@@ -1,0 +1,2 @@
+- An RPC answer is no longer shown as verified just because the same RPC URL was listed twice, or because the quorum was set to one ([#1092](https://github.com/solardev-xyz/freedom-browser/issues/1092))
+  - A URL listed twice counts once, and a quorum set to one endpoint is treated as that endpoint alone
