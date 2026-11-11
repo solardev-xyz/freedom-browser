@@ -1,3 +1,3 @@
 - A new Safe account's address no longer rests on one RPC answer, and activating a Safe refuses to deploy it at any other address ([#1066](https://github.com/solardev-xyz/freedom-browser/issues/1066))
-  - A Safe counts as activated only once an answer labelled verified (from Myotis, Colibri, or an RPC quorum) sees it on chain or gives its activation's receipt. An RPC quorum can still be one provider listed under two different URLs ([#1094](https://github.com/solardev-xyz/freedom-browser/issues/1094))
+  - A Safe counts as activated only once an answer labelled verified (from Myotis, Colibri, or an RPC quorum) sees it on chain or gives its activation's receipt. An RPC quorum can still be one node or operator under two different hostnames ([#1100](https://github.com/solardev-xyz/freedom-browser/issues/1100))
   - A Safe an earlier version marked activated is checked again before it can send or sign for apps
