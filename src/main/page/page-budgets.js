@@ -11,8 +11,9 @@
  * copy, is over.
  *
  * A request's charge is what main may hold for it at once: its size times
- * its method's copies, 128 bytes for each value and each property name, and
- * for `swarm_publishFiles` 1 MiB of stream buffers.
+ * its method's copies, 128 bytes for each value and each property name, for
+ * `swarm_publishFiles` 1 MiB of stream buffers, and 16 KiB for main's own
+ * bookkeeping of the request.
  *
  * A request over 1 MiB (only the two Swarm uploads allow one) first reserves
  * a turn (`page:reserve`). The browser grants two at a time, from the
@@ -49,6 +50,11 @@ const COPIES = Object.freeze({
 const DEFAULT_COPIES = 24;
 const STREAM_BYTES = Object.freeze({ 'swarm:swarm_publishFiles': MiB });
 const VALUE_BYTES = 128;
+// Main's own bookkeeping of every request while it holds it: the record, the
+// dispatcher's context and its promises, and the IPC event the request
+// keeps. The two uploads' copies are counted exactly, so without it their
+// measured peaks passed their charges by a few KiB.
+const REQUEST_BYTES = 16 * 1024;
 
 // Large requests (design 0011, "The numbers", proposed).
 const TICKETS = Object.freeze({ turns: 2, waiting: 16, unusedMs: 30_000, bytes: 32 });
@@ -60,7 +66,12 @@ const streamOf = (provider, method) => own(STREAM_BYTES, `${provider}:${method}`
 
 /** The charge of a measured request (`measurePageRequest`'s answer). */
 function chargeOf(provider, method, { size, values, names }) {
-  return size * copiesOf(provider, method) + VALUE_BYTES * (values + names) + streamOf(provider, method);
+  return (
+    size * copiesOf(provider, method) +
+    VALUE_BYTES * (values + names) +
+    streamOf(provider, method) +
+    REQUEST_BYTES
+  );
 }
 
 /**
@@ -337,6 +348,7 @@ module.exports = {
   DEFAULT_COPIES,
   STREAM_BYTES,
   VALUE_BYTES,
+  REQUEST_BYTES,
   TICKETS,
   chargeOf,
   largestChargeOf,

@@ -23,12 +23,12 @@ const ROOT = path.resolve(__dirname, '..');
 const FORGED_PRELOAD = path.join(__dirname, 'page-budgets-forged-preload.js');
 const MiB = 1024 * 1024;
 const REST = 64 * 1024;
-// What this measurement can't resolve: main's own bookkeeping of a request
-// (its record, the dispatcher's context, the IPC event) and whatever else
-// main allocates meanwhile. Observed up to about 130 KiB on a 100 MiB
-// request; the two uploads' charges, whose copies design 0011 counts
-// exactly, have no other headroom.
-const NOISE = 256 * 1024;
+// The measurement's resolution, and nothing else: main's heap and external
+// memory after a full GC also count whatever main allocated between the
+// baseline and the copy that isn't the request's (other IPC, timers, the
+// harness's trace). Observed up to about 130 KiB. Main's own bookkeeping of
+// the request is in its charge (16 KiB), not in this.
+const RESOLUTION = 256 * 1024;
 
 // The page builds each request: `form` filling `size`, the request's whole
 // size by the walk (its nonce, provider, method and the property names).
@@ -292,7 +292,7 @@ test('every method\'s largest legal request, in each worst form, stays within it
       expect(copies.length, label).toBeGreaterThan(0);
       for (const copy of copies) {
         expect({ label, copy: copy.label, inPlace: copy.inPlace }).toEqual({ label, copy: copy.label, inPlace: true });
-        expect({ label, copy: copy.label, within: copy.used <= copy.charge + NOISE, used: copy.used, charge: copy.charge })
+        expect({ label, copy: copy.label, within: copy.used <= copy.charge + RESOLUTION, used: copy.used, charge: copy.charge })
           .toEqual(expect.objectContaining({ label, copy: copy.label, within: true }));
         if (copy.used - copy.charge > overrun.bytes) overrun = { bytes: copy.used - copy.charge, label, copy: copy.label };
       }
