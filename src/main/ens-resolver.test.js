@@ -3738,10 +3738,16 @@ describe('ens-resolver private-window logging', () => {
       throw new Error('endpoint unavailable');
     });
 
-    await handlerFor(channel)(privateEvent, payload);
-    const fromPrivate = seen.splice(0);
-    clearEnsResolutionCaches();
-    await handlerFor(channel)(normalEvent, payload);
+    let fromPrivate;
+    try {
+      await handlerFor(channel)(privateEvent, payload);
+      fromPrivate = seen.splice(0);
+      clearEnsResolutionCaches();
+      await handlerFor(channel)(normalEvent, payload);
+    } finally {
+      // clearAllMocks keeps implementations: don't leak the throwing one.
+      read.mockReset();
+    }
 
     expect(fromPrivate.length).toBeGreaterThan(0);
     expect(fromPrivate).not.toContain(false);
