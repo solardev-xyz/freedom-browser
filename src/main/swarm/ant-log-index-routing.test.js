@@ -36,6 +36,7 @@ const {
   LOG_SCAN_ROUTER_OPTIONS,
   antErrorReply,
   antShrinksLogScanOn,
+  logScanQuorumMissing,
 } = require('./ant-chain-bridge');
 
 const XBZZ = '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da';
@@ -773,8 +774,14 @@ describe("Blockscout's label follows its quorum's (#1094)", () => {
     );
     for (let scan = 0; scan < 2; scan += 1) {
       const got = await bridgeGetLogs(FROM, HEAD);
-      expect(got.error).toContain('RPC quorum needs 2 endpoints');
+      expect(got.error).toContain(
+        'RPC quorum needs 2 endpoints at distinct providers (2 listed, from 1 distinct provider)'
+      );
       expect(got.source).toBeUndefined();
+      // The router's own text still reads, to the bridge, as a missing
+      // quorum (its once-per-start warning) and not as a range refusal.
+      expect(logScanQuorumMissing(got.cause)).toBe(true);
+      expect(got.shrinks).toBe(false);
     }
     expect(blockscout.calls).toHaveLength(0);
     expect(requests).toEqual([]);

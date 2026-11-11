@@ -456,17 +456,36 @@ function sourceVerifies(source, chainId) {
   return source === 'myotis' || source === 'colibri' || source === 'quorum';
 }
 
-// The chain's RPC endpoints, each provider once, at its first place in
-// registry order (#1094; endpoint-identity.js says when two URLs are one
-// provider). Every endpoint is a quorum member of its own, so one provider
-// listed twice (with a trailing slash, on two paths, with two API keys, or
-// as `localhost` and `127.0.0.1`) agreed with itself and reached m = 2
-// alone. The quorum, Blockscout's pair, Direct and Direct's fee quote all
-// take this list, as freedom-core's router takes main's references. A user
-// source sorts ahead of every builtin, so a provider the user added keeps
-// the user's URL and its `user-configured` trust.
-function rpcEndpoints(chainId) {
+// The chain's RPC endpoints as quorum members: each provider once, at its
+// first place in registry order (#1094; endpoint-identity.js says when two
+// URLs are one provider). Every member is counted on its own, so one
+// provider listed twice (with a trailing slash, on two paths, with two API
+// keys, or as `localhost` and `127.0.0.1`) agreed with itself and reached
+// m = 2 alone. The quorum and Blockscout's pair take this list. Direct and
+// its fee quote don't: they make no verification claim, so they keep every
+// listed URL and fail over to a same-provider alias (a second local node,
+// a second key, DRPC's public host behind an expired key). A user source
+// sorts ahead of every builtin, so a provider the user added keeps the
+// user's URL and its `user-configured` trust.
+function quorumEndpoints(chainId) {
   return distinctEndpoints(registry.getEndpoints(chainId, 'rpc'));
+}
+
+// The error a quorum read gets when the chain lists fewer providers than
+// the quorum needs. Ant's logScanQuorumMissing matches its opening words
+// ("RPC quorum needs <m> endpoints"); the rest says that listed URLs at one
+// provider count once, so a user who sees two URLs in Settings knows why
+// two aren't enough. Counts only, never URLs: this reaches Ant and dApps,
+// and a URL can carry an API key.
+function quorumShortError(chainId, m, distinct) {
+  const listed = registry.getEndpoints(chainId, 'rpc').length;
+  const detail =
+    listed === distinct
+      ? `${listed} listed`
+      : `${listed} listed, from ${distinct} distinct provider${distinct === 1 ? '' : 's'}`;
+  return new SourceUnavailableError(
+    `RPC quorum needs ${m} endpoints at distinct providers (${detail})`
+  );
 }
 
 // The two-second budget is a *fall-through* allowance, not a global ceiling.
@@ -1577,12 +1596,12 @@ function requestQuorumRound(
 
 async function requestQuorum(chainId, method, params, options = {}) {
   const { k, m } = quorumSize(chainId);
-  const endpoints = rpcEndpoints(chainId);
+  const endpoints = quorumEndpoints(chainId);
   const { logRange = null, keeper = createErrorKeeper(null) } = options;
   const askQuorum = (urls) =>
     requestQuorumRound(chainId, method, params, { ...options, keeper, urls });
 
-  if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
+  if (endpoints.length < m) throw quorumShortError(chainId, m, endpoints.length);
   if (!logRange) return askQuorum(endpoints.slice(0, k));
 
   // A range-capped log scan asks the first k endpoints able to serve its span.
@@ -1666,8 +1685,8 @@ async function requestLogIndex(chainId, method, params, options = {}) {
     throw new SourceUnavailableError('Blockscout is left alone for a while after its last failure');
   }
   const { m } = quorumSize(chainId);
-  const endpoints = rpcEndpoints(chainId);
-  if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
+  const endpoints = quorumEndpoints(chainId);
+  if (endpoints.length < m) throw quorumShortError(chainId, m, endpoints.length);
   const quorumSpan = quorumLogSpan(chainId, endpoints, m, now);
   if (quorumSpan >= logRange.span) {
     throw new SourceUnavailableError('the RPC quorum can verify this span itself');
@@ -1875,7 +1894,7 @@ async function requestDirect(
 ) {
   const configuredTimeoutMs = configuredDirectTimeoutMs(chainId);
   const timeoutMs = directUrlTimeoutMs(chainId, requestedTimeoutMs);
-  const urls = rpcEndpoints(chainId);
+  const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   if (directFallback && urls.includes(directFallback.url) &&
       Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
@@ -1920,7 +1939,7 @@ async function requestDirect(
 async function requestDirectFeeQuote(chainId) {
   const network = registry.getNetwork(chainId) || {};
   const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
-  const urls = rpcEndpoints(chainId);
+  const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
   let lastError;
   let legacyFallback = null;

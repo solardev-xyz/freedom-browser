@@ -2684,6 +2684,55 @@ describe('ens-resolver', () => {
       ]);
     });
 
+    // #1097 R1-M1: the pool keeps every URL, and only the quorum counts
+    // providers once. So a second URL at a provider whose first is down
+    // (a second key, a second local node) stands in for it once the first
+    // is quarantined, instead of the provider dropping out of the pool.
+    test("a quarantined URL's same-provider alias stands in for it", async () => {
+      const alias = 'https://test-a.example.com/second-key';
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], alias, TEST_PROVIDERS[1], TEST_PROVIDERS[2]],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999; // no shuffle: the first URL is test-a's own
+      try {
+        invalidateCachedProvider();
+        const down = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        mockProviderAnchorMap = new Map([[TEST_PROVIDERS[0], { headNumber: down }]]);
+        const data = { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) };
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: down }],
+          [alias, data],
+          [TEST_PROVIDERS[1], data],
+          [TEST_PROVIDERS[2], data],
+        ]));
+
+        // The anchor asks each provider once; test-a's first URL is down,
+        // so only two heads come back and this read is unverified.
+        const first = await resolveEnsContent('alias-standin-1.eth');
+        expect(first.trust.level).toBe('unverified');
+
+        // Its URL is quarantined now, and the alias makes test-a a member.
+        const second = await resolveEnsContent('alias-standin-2.eth');
+        expect(second.trust.level).toBe('verified');
+        expect([...second.trust.queried].sort()).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
     // Even when K=2 providers would naturally agree on current-head
     // state, an attacker claiming a head within the safety-depth window
     // should not force a "verified" stale answer. Structural downgrade

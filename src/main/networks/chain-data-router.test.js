@@ -2352,17 +2352,60 @@ describe('chain-data-router', () => {
       expect(fetchedUrls().sort()).toEqual([...urls].sort());
     });
 
-    test('Direct walks providers: a failed URL\'s repeat is skipped for the next provider', async () => {
-      useEndpoints(['https://a.example', 'https://a.example/v2', 'https://b.example'], ['direct']);
-      global.fetch = jest.fn().mockImplementation(async (url) => {
-        if (url.startsWith('https://a.example')) throw new TypeError('fetch failed');
-        return { ok: true, url, json: async () => ({ result: '0x42' }) };
+    // Direct and its fee quote make no verification claim, so they keep
+    // every listed URL (#1097 R1-M1): a second URL at a provider whose first
+    // is down or rate-limited still answers.
+    test.each(ALIASES)(
+      "Direct fails over to %s's second URL when the first is down",
+      async (_name, urls) => {
+        useEndpoints(urls, ['quorum', 'direct']);
+        global.fetch = jest.fn().mockImplementation(async (url) => {
+          if (url === urls[0]) throw new TypeError('fetch failed');
+          return { ok: true, url, json: async () => ({ result: '0x42' }) };
+        });
+        await expect(request(100, 'eth_blockNumber', [], { includeTrust: true })).resolves.toMatchObject({
+          result: '0x42',
+          source: 'direct',
+          verified: false,
+          trust: { level: 'unverified', method: 'direct' },
+        });
+        expect(fetchedUrls()).toEqual([urls[0], urls[1]]);
+      }
+    );
+
+    test("Direct's fee quote fails over to a same-provider alias", async () => {
+      const urls = ['https://lb.drpc.live/ethereum/expired-key', 'https://eth.drpc.org'];
+      useEndpoints(urls, ['quorum', 'direct']);
+      global.fetch = jest.fn().mockImplementation(async (url, options) => {
+        if (url === urls[0]) return { ok: false, status: 401, url, json: async () => ({}) };
+        const { method } = JSON.parse(options.body);
+        const answers = { eth_gasPrice: '0x3b9aca00', eth_maxPriorityFeePerGas: '0x2faf080' };
+        return { ok: true, url, json: async () => ({ result: answers[method] }) };
       });
-      await expect(request(100, 'eth_blockNumber', [])).resolves.toMatchObject({
-        result: '0x42',
-        source: 'direct',
-      });
-      expect(fetchedUrls()).toEqual(['https://a.example', 'https://b.example']);
+      await expect(getFeeQuote(100)).resolves.toMatchObject({ source: 'direct', verified: false });
+      expect(fetchedUrls()).toContain(urls[1]);
+    });
+
+    // R1-M2: the quorum-short error says why two listed URLs aren't two
+    // members, and keeps the opening words Ant's bridge matches.
+    test.each([
+      [
+        'URLs at one provider',
+        ['https://a.example', 'https://a.example/', 'http://127.0.0.1:8545'],
+        { k: 3, m: 3, timeoutMs: 1000 },
+        'RPC quorum needs 3 endpoints at distinct providers (3 listed, from 2 distinct providers)',
+      ],
+      [
+        'too few URLs',
+        ['https://a.example'],
+        { k: 3, m: 2, timeoutMs: 1000 },
+        'RPC quorum needs 2 endpoints at distinct providers (1 listed)',
+      ],
+    ])('a quorum short of providers: %s', async (_name, urls, quorum, message) => {
+      useEndpoints(urls, ['quorum'], quorum);
+      answerEverywhere('0x42');
+      await expect(request(100, 'eth_blockNumber', [])).rejects.toThrow(message);
+      expect(global.fetch).not.toHaveBeenCalled();
     });
 
     // The Safe E2E lists its anvil fork and a forwarder in front of it, two
