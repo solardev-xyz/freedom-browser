@@ -2,10 +2,12 @@
  * The check of Ledger records no device has matched yet (#1065).
  *
  * Records added before main read the address back from the device took
- * the chrome's word for it. The first time a Ledger is connected (account
- * discovery: the Connect Hardware Wallet screen, the Safe board's
- * detection), main also reads the address at each such record's path from
- * it. A match makes the record `matched`. Otherwise it is `mismatched`:
+ * the chrome's word for it. When Connect Hardware Wallet loads its first
+ * page of accounts (`ledger:get-accounts` with `checkRecords: true`), main
+ * also reads the address at each such record's path from the device. The
+ * Safe board's Ledger detection and "Load more" pages don't ask for this
+ * check, so they leave records as they are. A match makes the record
+ * `matched`. Otherwise it is `mismatched`:
  * kept, shown as such, and unable to own a Safe until a Ledger that holds
  * it is connected. Signing checks the device on every signature anyway.
  */
