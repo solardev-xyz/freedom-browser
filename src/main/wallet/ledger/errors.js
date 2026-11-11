@@ -18,6 +18,7 @@ const LEDGER_ERROR_CODES = {
   BUSY: 'LEDGER_BUSY',
   WRONG_DEVICE: 'LEDGER_WRONG_DEVICE',
   BLIND_SIGNING_REQUIRED: 'LEDGER_BLIND_SIGNING_REQUIRED',
+  TYPED_DATA_UNSUPPORTED: 'LEDGER_TYPED_DATA_UNSUPPORTED',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -32,6 +33,8 @@ const MESSAGES = {
     'This Ledger does not hold the selected account. Connect the device this account was added from.',
   [LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED]:
     'Ledger cannot display this contract call. Enable "Blind signing" (called "Contract data" on older app versions) in the Ethereum app settings, then try again.',
+  [LEDGER_ERROR_CODES.TYPED_DATA_UNSUPPORTED]:
+    "This signature request can't be sent to a Ledger intact, so Freedom didn't send it to the device.",
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 

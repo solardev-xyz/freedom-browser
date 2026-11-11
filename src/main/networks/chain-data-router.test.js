@@ -1,4 +1,5 @@
 const { execFileSync } = require('node:child_process');
+const { proverOutageError } = require('../../../test/helpers/colibri-prover-outage');
 const mockRegistry = {
   getNetwork: jest.fn(),
   getEndpoints: jest.fn(),
@@ -141,14 +142,19 @@ describe('chain-data-router', () => {
     });
   });
 
+  // Colibri ties an account read to no block but `latest` (#1060), so a
+  // read at another block comes from an RPC, and is labelled as one.
   test.each([
     ['eth_getCode', ['0xabc', 'finalized']],
     ['eth_getStorageAt', ['0xabc', '0x0', '0x10']],
   ])('sends %s at a non-latest block to a source that honours the tag', async (method, params) => {
     mockRequestViaColibri.mockResolvedValue('0x');
-    await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri' });
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x' }) }));
+    await expect(request(1, method, params)).resolves.toEqual({ result: '0x', source: 'direct', verified: false });
     expect(mockMyotis.getCode).not.toHaveBeenCalled();
     expect(mockMyotis.getStorageAt).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({ method, params });
   });
 
   test.each(['eth_call', 'eth_estimateGas'])('preserves verified %s revert data without another source', async (method) => {
@@ -160,10 +166,15 @@ describe('chain-data-router', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  // Colibri serves no call (#1046), so the call falls through to Direct.
   test.each([{ status: 'unavailable', reason: 'cancelled' }, { error: 'deadline exceeded' }])('falls through unavailable read shapes: %s', async (payload) => {
     mockMyotis.ethCallTx.mockResolvedValue(payload);
-    mockRequestViaColibri.mockResolvedValue('0xfallback');
-    await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({ source: 'colibri', result: '0xfallback' });
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0xfallback' }) }));
+    await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toEqual({
+      result: '0xfallback', source: 'direct', verified: false,
+    });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   // ABI 36: nothing was sent, so this is neither uncertain nor worth a second
@@ -197,67 +208,83 @@ describe('chain-data-router', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  // Neither Myotis nor Colibri can prove a read at `pending` (#1046), so the
+  // nonce a new transaction needs comes from an RPC, and is labelled as one.
   test('sends pending nonce reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, nonce: 3 });
     mockRequestViaColibri.mockResolvedValue('0x5');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x6' }) }));
 
     await expect(
       request(100, 'eth_getTransactionCount', ['0xabc', 'pending'])
     ).resolves.toEqual({
-      result: '0x5',
-      source: 'colibri',
-      verified: true,
+      result: '0x6',
+      source: 'direct',
+      verified: false,
     });
     expect(mockMyotis.getAccount).not.toHaveBeenCalled();
-    expect(mockRequestViaColibri).toHaveBeenCalledWith(100, 'eth_getTransactionCount', [
-      '0xabc',
-      'pending',
-    ], { deadlineMs: expect.any(Number) });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({
+      method: 'eth_getTransactionCount',
+      params: ['0xabc', 'pending'],
+    });
   });
 
+  // Nor does Colibri tie a read at a block number to that block (#1060).
   test('sends historical balance reads to a source that honours the block tag', async () => {
     mockMyotis.getAccount.mockResolvedValue({ verifyMethod: 'headerChain', exists: true, balanceWei: '42' });
     mockRequestViaColibri.mockResolvedValue('0x1');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x2' }) }));
 
-    await expect(request(100, 'eth_getBalance', ['0xabc', '0x1234'])).resolves.toMatchObject({
-      result: '0x1',
-      source: 'colibri',
+    await expect(request(100, 'eth_getBalance', ['0xabc', '0x1234'])).resolves.toEqual({
+      result: '0x2',
+      source: 'direct',
+      verified: false,
     });
     expect(mockMyotis.getAccount).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends non-latest gas estimates to a source that honours the block tag', async () => {
     mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     mockRequestViaColibri.mockResolvedValue('0x5208');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x5209' }) }));
 
     await expect(
-      request(100, 'eth_estimateGas', [{ to: '0xabc' }, 'pending'])
-    ).resolves.toMatchObject({ source: 'colibri' });
+      request(100, 'eth_estimateGas', [{ to: '0xabc' }, '0x10d4f00'])
+    ).resolves.toEqual({ result: '0x5209', source: 'direct', verified: false });
     expect(mockMyotis.estimateGas).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends historical eth_call to a source that honours the block tag', async () => {
     mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0xhead' });
-    mockRequestViaColibri.mockResolvedValue('0xhistoric');
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0xhistoric' }) }));
 
     await expect(
       request(100, 'eth_call', [{ to: '0xabc', data: '0x70a08231' }, '0x10d4f00'])
-    ).resolves.toEqual({ result: '0xhistoric', source: 'colibri', verified: true });
+    ).resolves.toEqual({ result: '0xhistoric', source: 'direct', verified: false });
     expect(mockMyotis.ethCallTx).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends eth_call state overrides to a source that can apply them', async () => {
     mockMyotis.ethCallTx.mockResolvedValue({ resultHex: '0xhead' });
-    mockRequestViaColibri.mockResolvedValue('0xsimulated');
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0xsimulated' }) }));
+    const params = [
+      { to: '0xabc', data: '0x70a08231' },
+      'latest',
+      { '0xabc': { balance: '0x1' } },
+    ];
 
-    await expect(
-      request(100, 'eth_call', [
-        { to: '0xabc', data: '0x70a08231' },
-        'latest',
-        { '0xabc': { balance: '0x1' } },
-      ])
-    ).resolves.toMatchObject({ result: '0xsimulated', source: 'colibri' });
+    await expect(request(100, 'eth_call', params)).resolves.toEqual({
+      result: '0xsimulated', source: 'direct', verified: false,
+    });
     expect(mockMyotis.ethCallTx).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({ method: 'eth_call', params });
   });
 
   // ABI 34/35: the engine applies or refuses every field, so a call carrying
@@ -337,18 +364,22 @@ describe('chain-data-router', () => {
     'the call ran out of this node\'s 30000000-gas call budget, below the 50000000 gas it allows',
   ])('falls back on a capability refusal: %s', async (error) => {
     mockMyotis.ethCallTx.mockResolvedValue({ error, code: -32602 });
-    mockRequestViaColibri.mockResolvedValue('0xelsewhere');
+    mockRequestViaColibri.mockResolvedValue('0xcolibri');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0xelsewhere' }) }));
     await expect(request(1, 'eth_call', [{ to: '0xabc' }])).resolves.toMatchObject({
-      result: '0xelsewhere', source: 'colibri',
+      result: '0xelsewhere', source: 'direct',
     });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('sends blob transactions to another source instead of a Myotis refusal', async () => {
     mockRequestViaColibri.mockResolvedValue('0x5208');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x5208' }) }));
     await expect(request(1, 'eth_estimateGas', [{
       to: '0xabc', blobVersionedHashes: ['0x01' + '00'.repeat(31)], maxFeePerBlobGas: '0x1',
-    }])).resolves.toMatchObject({ source: 'colibri' });
+    }])).resolves.toMatchObject({ source: 'direct' });
     expect(mockMyotis.estimateGas).not.toHaveBeenCalled();
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
     // An empty blob list is not a blob transaction.
     mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas: 21000 });
     await expect(request(1, 'eth_estimateGas', [{ to: '0xabc', blobVersionedHashes: [] }]))
@@ -442,6 +473,63 @@ describe('chain-data-router', () => {
     ], { deadlineMs: expect.any(Number) });
   });
 
+  // PRIVATE MODE GUARD (Colibri store, #1058): Colibri picks a private
+  // window's in-memory store from the async context the caller marked (the
+  // onchain-app handler of a private session). The router passes no flag of
+  // its own, so the mark must reach Colibri through it. The read is one
+  // Colibri still proves (an account read at `latest`, or with `latest`
+  // appended): eth_call never reaches Colibri (#1046), private or not.
+  test('a read in a private window’s context reaches Colibri in that context', async () => {
+    const { runWithPrivateLogContext, isPrivateLogContext } =
+      jest.requireActual('../private/private-log-context');
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 7000 },
+    });
+    global.fetch = jest.fn();
+    const seen = [];
+    mockRequestViaColibri.mockImplementation(async (chainId, method, params) => {
+      seen.push([method, params, isPrivateLogContext()]);
+      return '0x6000';
+    });
+    const read = (method, params) =>
+      request(100, method, params, {
+        routingContext: { origin: 'https://app.example' },
+      });
+
+    await expect(runWithPrivateLogContext(true, () => read('eth_getCode', ['0x01', 'latest'])))
+      .resolves.toEqual({ result: '0x6000', source: 'colibri', verified: true });
+    await runWithPrivateLogContext(true, () => read('eth_getBalance', ['0x02']));
+    await read('eth_getCode', ['0x03', 'latest']);
+    expect(seen).toEqual([
+      ['eth_getCode', ['0x01', 'latest'], true],
+      ['eth_getBalance', ['0x02', 'latest'], true],
+      ['eth_getCode', ['0x03', 'latest'], false],
+    ]);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  // A private window's eth_call skips Colibri like any other: the private
+  // context changes which Colibri store a read uses, not what Colibri may
+  // be asked, so the answer is Direct's, unverified.
+  test('a private window’s eth_call still skips Colibri (#1046, #1058)', async () => {
+    const { runWithPrivateLogContext } =
+      jest.requireActual('../private/private-log-context');
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 7000 },
+    });
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x2a' }) }));
+
+    await expect(runWithPrivateLogContext(true, () =>
+      request(100, 'eth_call', [{ to: '0xabc', data: '0x01' }, 'latest'], {
+        routingContext: { origin: 'https://app.example' },
+      })
+    )).resolves.toEqual({ result: '0x2a', source: 'direct', verified: false });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   // The worker host terminates a Colibri worker still verifying past this
   // deadline (#495), so it must be the same budget the caller waits for.
   test('hands Colibri the same deadline the caller waits on', async () => {
@@ -450,15 +538,15 @@ describe('chain-data-router', () => {
       quorum: { timeoutMs: 7000 },
     });
     mockRequestViaColibri.mockResolvedValue('0x1');
-    await request(100, 'eth_call', [{ to: '0xabc', data: '0x' }, 'latest']);
+    await request(100, 'eth_getBalance', ['0xabc', 'latest']);
     expect(mockRequestViaColibri).toHaveBeenLastCalledWith(
-      100, 'eth_call', expect.any(Array), { deadlineMs: 7000 }
+      100, 'eth_getBalance', expect.any(Array), { deadlineMs: 7000 }
     );
-    await request(100, 'eth_call', [{ to: '0xabc', data: '0x01' }, 'latest'], {
+    await request(100, 'eth_getBalance', ['0xdef', 'latest'], {
       routingContext: { origin: 'https://app.example' },
     });
     expect(mockRequestViaColibri).toHaveBeenLastCalledWith(
-      100, 'eth_call', expect.any(Array), { deadlineMs: 2000 }
+      100, 'eth_getBalance', expect.any(Array), { deadlineMs: 2000 }
     );
   });
 
@@ -555,17 +643,18 @@ describe('chain-data-router', () => {
       expect(BigInt(quote.maxFeePerGas)).toBeGreaterThan(139083121n + MIN_TIP);
     });
 
-    test('prices an inconsistent Colibri quote from its own verified latest block', async () => {
-      // Measured against mainnet's prover on 2026-10-19: Colibri verifies
-      // eth_maxPriorityFeePerGas as 1 gwei while eth_gasPrice is ~0.12 gwei,
-      // so the hint is larger than the price and cannot form a type-2 quote.
-      // This is why #749's quotes were all legacy.
-      onlySource('colibri');
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => ({
+    test('prices an inconsistent quorum quote from its own latest block', async () => {
+      // The shape measured on mainnet on 2026-10-19 (then from Colibri): a
+      // priority hint of 1 gwei while eth_gasPrice is ~0.12 gwei, so the
+      // hint is larger than the price and cannot form a type-2 quote. This
+      // is why #749's quotes were all legacy.
+      onlySource('quorum');
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example', 'https://c.example']);
+      fakeRpc({
         eth_gasPrice: hex(120_664_785n),
         eth_maxPriorityFeePerGas: hex(GWEI),
         eth_getBlockByNumber: { number: '0x1903a1b', baseFeePerGas: hex(125_664_220n) },
-      })[method]);
+      });
 
       await expect(getFeeQuote(1)).resolves.toEqual({
         type: 'eip1559',
@@ -575,26 +664,23 @@ describe('chain-data-router', () => {
         maxPriorityFeePerGas: MIN_TIP.toString(),
         maxFeePerGas: (125_664_220n * 2n + MIN_TIP).toString(),
         effectiveGasPrice: (125_664_220n + MIN_TIP).toString(),
-        source: 'colibri',
+        source: 'quorum',
         verified: true,
       });
-      expect(mockRequestViaColibri.mock.calls.map(([, method, params]) => [method, params])).toEqual([
-        ['eth_gasPrice', []],
-        ['eth_maxPriorityFeePerGas', []],
-        ['eth_getBlockByNumber', ['latest', false]],
+      expect([...new Set(fetchedMethods().map(([, method]) => method))]).toEqual([
+        'eth_gasPrice',
+        'eth_maxPriorityFeePerGas',
+        'eth_getBlockByNumber',
       ]);
     });
 
     test('prices a source without eth_maxPriorityFeePerGas from its latest block', async () => {
-      onlySource('colibri');
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => {
-        if (method === 'eth_maxPriorityFeePerGas') {
-          throw Object.assign(new Error('Method not supported'), { code: 4200 });
-        }
-        return {
-          eth_gasPrice: hex(12n * GWEI),
-          eth_getBlockByNumber: { baseFeePerGas: hex(10n * GWEI) },
-        }[method];
+      onlySource('quorum');
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example', 'https://c.example']);
+      fakeRpc({
+        eth_gasPrice: hex(12n * GWEI),
+        eth_maxPriorityFeePerGas: new Error('the method eth_maxPriorityFeePerGas does not exist'),
+        eth_getBlockByNumber: { baseFeePerGas: hex(10n * GWEI) },
       });
 
       await expect(getFeeQuote(1)).resolves.toMatchObject({
@@ -604,7 +690,8 @@ describe('chain-data-router', () => {
         maxPriorityFeePerGas: (2n * GWEI).toString(),
         maxFeePerGas: (22n * GWEI).toString(),
         effectiveGasPrice: (12n * GWEI).toString(),
-        source: 'colibri',
+        source: 'quorum',
+        verified: true,
       });
     });
 
@@ -714,16 +801,19 @@ describe('chain-data-router', () => {
 
     test('prefers a later source\'s type-2 quote over a legacy one whose block failed', async () => {
       mockRegistry.getNetwork.mockReturnValue({
-        access: { readOrder: ['colibri', 'direct'] },
+        access: { readOrder: ['myotis', 'direct'] },
         quorum: { k: 3, m: 2, timeoutMs: 1000 },
       });
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => {
-        if (method === 'eth_getBlockByNumber') throw new Error('proof failed');
-        return { eth_gasPrice: hex(GWEI), eth_maxPriorityFeePerGas: hex(2n * GWEI) }[method];
+      // Myotis's hint can't price a type-2 quote, and the block that would
+      // price it fails: its quote is the legacy last resort.
+      mockMyotis.feeEstimate.mockResolvedValue({
+        gasPriceWei: GWEI.toString(),
+        maxPriorityFeePerGasWei: (2n * GWEI).toString(),
       });
       fakeRpc({
         eth_gasPrice: hex(3n * GWEI),
         eth_maxPriorityFeePerGas: hex(GWEI),
+        eth_getBlockByNumber: new Error('header not found'),
       });
 
       await expect(getFeeQuote(1)).resolves.toMatchObject({
@@ -734,18 +824,19 @@ describe('chain-data-router', () => {
     });
 
     test('falls back to a headroomed legacy quote when no source can read a block', async () => {
-      onlySource('colibri');
-      mockRequestViaColibri.mockImplementation(async (_chainId, method) => {
-        if (method === 'eth_getBlockByNumber') throw new Error('proof failed');
-        if (method === 'eth_maxPriorityFeePerGas') throw new Error('proof failed');
-        return hex(4n * GWEI);
+      onlySource('quorum');
+      mockRegistry.getEndpoints.mockReturnValue(['https://a.example', 'https://b.example', 'https://c.example']);
+      fakeRpc({
+        eth_gasPrice: hex(4n * GWEI),
+        eth_maxPriorityFeePerGas: new Error('the method eth_maxPriorityFeePerGas does not exist'),
+        eth_getBlockByNumber: new Error('header not found'),
       });
 
       await expect(getFeeQuote(1)).resolves.toEqual({
         type: 'legacy',
         gasPrice: (5n * GWEI + MIN_TIP).toString(),
         effectiveGasPrice: (5n * GWEI + MIN_TIP).toString(),
-        source: 'colibri',
+        source: 'quorum',
         verified: true,
       });
     });
@@ -885,12 +976,14 @@ describe('chain-data-router', () => {
     ['a negative number', -1],
   ])('refuses %s gas estimate from Myotis and uses another source', async (_label, gas) => {
     mockMyotis.estimateGas.mockResolvedValue({ status: 'ok', gas });
-    mockRequestViaColibri.mockResolvedValue('0x5208');
+    mockRequestViaColibri.mockResolvedValue('0x5209');
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x5208' }) }));
 
     await expect(request(1, 'eth_estimateGas', [{ to: '0xabc' }])).resolves.toMatchObject({
       result: '0x5208',
-      source: 'colibri',
+      source: 'direct',
     });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
   });
 
   test('executes the standardized "input" calldata alias on the Myotis path', async () => {
@@ -1028,14 +1121,14 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const params = ['0xabc', 'latest'];
     const options = { routingContext: { origin: 'https://swap.example' } };
 
-    const first = request(1, 'eth_call', params, options);
+    const first = request(1, 'eth_getBalance', params, options);
     await jest.advanceTimersByTimeAsync(2000);
     await expect(first).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
 
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', params, options)).resolves.toMatchObject({
       result: '0xrpc',
       source: 'direct',
     });
@@ -1054,11 +1147,11 @@ describe('chain-data-router', () => {
     });
 
     await expect(
-      request(100, 'eth_call', [{}, 'latest'], { excludeSources: ['colibri'] })
+      request(100, 'eth_getBalance', ['0xabc', 'latest'], { excludeSources: ['colibri'] })
     ).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
     expect(mockRequestViaColibri).not.toHaveBeenCalled();
 
-    await expect(request(100, 'eth_call', [{}, 'latest'])).resolves.toMatchObject({
+    await expect(request(100, 'eth_getBalance', ['0xabc', 'latest'])).resolves.toMatchObject({
       result: '0xcolibri',
       source: 'colibri',
     });
@@ -1335,11 +1428,11 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const params = ['0xabc', 'latest'];
     const options = { routingContext: { origin: 'https://swap.example' } };
 
     const timeOutAttempt = async (attempt) => {
-      const response = request(1, 'eth_call', params, options);
+      const response = request(1, 'eth_getBalance', params, options);
       await jest.advanceTimersByTimeAsync(2000);
       await expect(response).resolves.toMatchObject({ source: 'direct' });
       hanging[attempt].resolve('0xlate');
@@ -1347,32 +1440,34 @@ describe('chain-data-router', () => {
     };
 
     await timeOutAttempt(0);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_getBalance', params, options)).resolves.toMatchObject({ source: 'direct' });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
 
     await jest.advanceTimersByTimeAsync(15_000);
     await timeOutAttempt(1);
     await jest.advanceTimersByTimeAsync(29_999);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_getBalance', params, options)).resolves.toMatchObject({ source: 'direct' });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
 
     await jest.advanceTimersByTimeAsync(1);
     await timeOutAttempt(2);
     await jest.advanceTimersByTimeAsync(59_999);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    await expect(request(1, 'eth_getBalance', params, options)).resolves.toMatchObject({ source: 'direct' });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
 
     await jest.advanceTimersByTimeAsync(1);
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', params, options)).resolves.toMatchObject({
       result: '0xverified',
       source: 'colibri',
     });
-    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', params, options)).resolves.toMatchObject({
       source: 'colibri',
     });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(5);
   });
 
+  // Colibri runs no call since #1046, but the demotion is the route's,
+  // whatever the method: an account read carries it here.
   test('demotes deterministic Colibri execution limits only for the matching app and target', async () => {
     mockRegistry.getNetwork.mockReturnValue({
       access: { readOrder: ['colibri', 'direct'] },
@@ -1383,27 +1478,21 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const firstTarget = [{
-      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      data: '0x1234',
-    }, 'latest'];
-    const secondTarget = [{
-      to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      data: '0x1234',
-    }, 'latest'];
+    const firstTarget = ['0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'latest'];
+    const secondTarget = ['0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'latest'];
     const firstApp = { routingContext: { origin: 'https://swap.example' } };
     const secondApp = { routingContext: { origin: 'https://other.example' } };
 
-    await expect(request(1, 'eth_call', firstTarget, firstApp)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', firstTarget, firstApp)).resolves.toMatchObject({
       source: 'direct',
     });
-    await expect(request(1, 'eth_call', firstTarget, firstApp)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', firstTarget, firstApp)).resolves.toMatchObject({
       source: 'direct',
     });
-    await expect(request(1, 'eth_call', secondTarget, firstApp)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', secondTarget, firstApp)).resolves.toMatchObject({
       source: 'direct',
     });
-    await expect(request(1, 'eth_call', firstTarget, secondApp)).resolves.toMatchObject({
+    await expect(request(1, 'eth_getBalance', firstTarget, secondApp)).resolves.toMatchObject({
       source: 'direct',
     });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
@@ -1420,12 +1509,12 @@ describe('chain-data-router', () => {
       ok: true,
       json: async () => ({ result: '0xrpc' }),
     });
-    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const params = ['0xabc', 'latest'];
     const options = { routingContext: { origin: 'https://swap.example' } };
 
-    const first = request(1, 'eth_call', params, options);
-    const second = request(1, 'eth_call', params, options);
-    await expect(request(1, 'eth_call', params, options))
+    const first = request(1, 'eth_getBalance', params, options);
+    const second = request(1, 'eth_getBalance', params, options);
+    await expect(request(1, 'eth_getBalance', params, options))
       .resolves.toMatchObject({ source: 'direct' });
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
 
@@ -1534,7 +1623,7 @@ describe('chain-data-router', () => {
       }));
     mockRequestViaColibri.mockResolvedValue('0xverified');
 
-    const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest'], {
+    const response = request(1, 'eth_getBalance', ['0xabc', 'latest'], {
       routingContext: { origin: 'https://swap.example' },
     });
     await jest.advanceTimersByTimeAsync(2000);
@@ -1625,7 +1714,7 @@ describe('chain-data-router', () => {
     const slowProver = deferred();
     mockRequestViaColibri.mockReturnValue(slowProver.promise);
 
-    const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest'], {
+    const response = request(1, 'eth_getBalance', ['0xabc', 'latest'], {
       routingContext: { origin: 'https://swap.example' },
     });
     await jest.advanceTimersByTimeAsync(3000);
@@ -1804,6 +1893,93 @@ describe('chain-data-router', () => {
       expect(mockRequestViaColibri).toHaveBeenCalledWith(1, method, ['0xmined'], { deadlineMs: 1000 });
     });
 
+    // R1-F1 (#1060): in privacy mode Colibri proves the receipt at the index
+    // the prover's unauthenticated tx_cache names, without comparing its hash.
+    test.each([
+      ['eth_getTransactionReceipt', MINED_RECEIPT, { ...MINED_RECEIPT, transactionHash: '0xother', status: '0x0' }],
+      ['eth_getTransactionReceipt', MINED_RECEIPT, { ...MINED_RECEIPT, transactionHash: undefined }],
+      ['eth_getTransactionReceipt', MINED_RECEIPT, '0xmined'],
+      ['eth_getTransactionByHash', MINED_TX, { ...MINED_TX, hash: '0xother' }],
+    ])('keeps the RPC’s %s when Colibri’s proven answer is another transaction’s', async (method, answer, proven) => {
+      rpcAnswers({ [method]: answer });
+      mockRequestViaColibri.mockResolvedValue(proven);
+      await expect(request(1, method, ['0xmined'], { includeTrust: true })).resolves.toEqual({
+        result: answer, source: 'direct', verified: false, trust: expect.anything(),
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('takes Colibri’s proven receipt whatever the case of its hash', async () => {
+      rpcAnswers({ eth_getTransactionReceipt: { ...MINED_RECEIPT, transactionHash: '0xAB' } });
+      mockRequestViaColibri.mockResolvedValue({ ...MINED_RECEIPT, transactionHash: '0xab', proven: true });
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xAb'])).resolves.toMatchObject({
+        result: { transactionHash: '0xab', proven: true }, source: 'colibri', verified: true,
+      });
+    });
+
+    test.each([
+      ['eth_getTransactionReceipt', MINED_RECEIPT, null],
+      ['eth_getTransactionByHash', MINED_TX, null],
+      ['eth_getTransactionByHash', MINED_TX, { hash: '0xmined', blockNumber: null, blockHash: null }],
+    ])('keeps the RPC’s mined %s when Colibri reports it unknown or pending', async (method, answer, proven) => {
+      rpcAnswers({ [method]: answer });
+      mockRequestViaColibri.mockResolvedValue(proven);
+      await expect(request(1, method, ['0xmined'])).resolves.toEqual({
+        result: answer, source: 'direct', verified: false,
+      });
+    });
+
+    // R2-M1: nothing proves an absence, whatever else answered. Colibri 3.0.3
+    // answers a hash its prover holds as pending with success and no data.
+    test.each([
+      ['eth_getTransactionReceipt', null],
+      ['eth_getTransactionByHash', null],
+      ['eth_getTransactionByHash', { ...PENDING_TX, hash: '0xf7aa' }],
+    ])('labels Colibri’s %s %j unverified in a Colibri-only order', async (method, answer) => {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
+      global.fetch = jest.fn();
+      mockRequestViaColibri.mockResolvedValue(answer);
+      await expect(request(1, method, ['0xf7aa'], { includeTrust: true })).resolves.toEqual({
+        result: answer, source: 'colibri', verified: false,
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['eth_getTransactionReceipt', null],
+      ['eth_getTransactionByHash', { ...PENDING_TX, hash: '0xf7aa' }],
+    ])('labels Colibri’s %s %j unverified when every later source failed', async (method, answer) => {
+      global.fetch = jest.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+      mockRequestViaColibri.mockResolvedValue(answer);
+      await expect(request(1, method, ['0xf7aa'])).resolves.toEqual({
+        result: answer, source: 'colibri', verified: false,
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+    });
+
+    test('an unproven Colibri absence is no Colibri failure: a page’s next lookup still asks it', async () => {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
+      global.fetch = jest.fn();
+      const routingContext = { origin: 'https://app.example' };
+      mockRequestViaColibri.mockResolvedValueOnce(null);
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'], { routingContext }))
+        .resolves.toEqual({ result: null, source: 'colibri', verified: false });
+      mockRequestViaColibri.mockResolvedValueOnce(MINED_RECEIPT);
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'], { routingContext }))
+        .resolves.toEqual({ result: MINED_RECEIPT, source: 'colibri', verified: true });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
+    });
+
+    test('fails a Colibri-only lookup whose proven receipt is another transaction’s', async () => {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
+      global.fetch = jest.fn();
+      mockRequestViaColibri.mockResolvedValue({ ...MINED_RECEIPT, transactionHash: '0xother' });
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'])).rejects.toThrow(
+        /Colibri's proven eth_getTransactionReceipt answer is not for the requested transaction/
+      );
+    });
+
     test('serves the RPC’s answer, without asking it again, when Colibri cannot prove a mined one', async () => {
       rpcAnswers({ eth_getTransactionReceipt: MINED_RECEIPT });
       mockRequestViaColibri.mockRejectedValue(trapError());
@@ -1937,13 +2113,13 @@ describe('chain-data-router', () => {
 
     test('backs Colibri off a method on a chain after repeated verifier faults, escalating', async () => {
       jest.useFakeTimers();
-      rpcAnswers({ eth_call: '0xrpc', eth_getBalance: '0x1' });
-      const call = (chainId = 1) => request(chainId, 'eth_call', [{ to: '0xabc', data: '0x' }, 'latest']);
+      rpcAnswers({ eth_getCode: '0xrpc', eth_getBalance: '0x1' });
+      const call = (chainId = 1) => request(chainId, 'eth_getCode', ['0xabc', 'latest']);
       mockRequestViaColibri.mockRejectedValueOnce(trapError()).mockRejectedValueOnce(replacedError());
       await expect(call()).resolves.toMatchObject({ source: 'direct' });
       await expect(call()).resolves.toMatchObject({ source: 'direct' });
       expect(mockLog.warn).toHaveBeenCalledWith(
-        '[chain-data] chain 1 eth_call: the Colibri verifier faulted 2 times within 60s; ' +
+        '[chain-data] chain 1 eth_getCode: the Colibri verifier faulted 2 times within 60s; ' +
         'not asking Colibri for it for 60s'
       );
       expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
@@ -1970,8 +2146,8 @@ describe('chain-data-router', () => {
 
     test('only verifier faults count, and a Colibri answer clears them', async () => {
       jest.useFakeTimers();
-      rpcAnswers({ eth_call: '0xrpc' });
-      const call = () => request(1, 'eth_call', [{ to: '0xabc', data: '0x' }, 'latest']);
+      rpcAnswers({ eth_getCode: '0xrpc' });
+      const call = () => request(1, 'eth_getCode', ['0xabc', 'latest']);
       const transport = Object.assign(new Error('Request to https://p failed: fetch failed'), { code: -32603 });
       mockRequestViaColibri
         .mockRejectedValueOnce(transport)
@@ -1994,10 +2170,10 @@ describe('chain-data-router', () => {
 
     test('a bystander the worker host marked is no fault of its own method', async () => {
       jest.useFakeTimers();
-      rpcAnswers({ eth_call: '0xrpc' });
-      const call = () => request(1, 'eth_call', [{ to: '0xabc', data: '0x' }, 'latest']);
-      // An eth_call failed only because another request overran (or trapped)
-      // on its worker (colibri-worker-host.js).
+      rpcAnswers({ eth_getCode: '0xrpc' });
+      const call = () => request(1, 'eth_getCode', ['0xabc', 'latest']);
+      // A read failed only because another request overran (or trapped) on
+      // its worker (colibri-worker-host.js).
       const bystander = () => Object.assign(replacedError(), { colibriBystander: true });
       const refused = () => Object.assign(
         new Error('Colibri WASM runtime was retired after a trap; refusing execute()'),
@@ -2015,10 +2191,10 @@ describe('chain-data-router', () => {
 
     // The router stops waiting at its deadline; the worker host settles the
     // request later, when it kills the stuck worker. That still counts. (Two
-    // contracts: the app's own per-route timeout cooldown is not under test.)
+    // accounts: the app's own per-route timeout cooldown is not under test.)
     test('a fault landing after the caller’s deadline still counts', async () => {
       jest.useFakeTimers();
-      rpcAnswers({ eth_call: '0xrpc' });
+      rpcAnswers({ eth_getCode: '0xrpc' });
       const late = [deferred(), deferred()];
       mockRequestViaColibri
         .mockReturnValueOnce(late[0].promise)
@@ -2026,13 +2202,13 @@ describe('chain-data-router', () => {
         .mockResolvedValue('0xproven');
       const routingContext = { origin: 'https://app.example' };
       for (const [index, pending] of late.entries()) {
-        const answer = request(1, 'eth_call', [{ to: `0x${String(index).repeat(40)}`, data: '0x' }, 'latest'], { routingContext });
+        const answer = request(1, 'eth_getCode', [`0x${String(index).repeat(40)}`, 'latest'], { routingContext });
         await jest.advanceTimersByTimeAsync(2000);
         await expect(answer).resolves.toMatchObject({ source: 'direct' });
         pending.reject(replacedError());
         await jest.advanceTimersByTimeAsync(0);
       }
-      await expect(request(1, 'eth_call', [{ to: '0xdef', data: '0x' }, 'latest']))
+      await expect(request(1, 'eth_getCode', ['0xdef', 'latest']))
         .resolves.toMatchObject({ source: 'direct' });
       expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
     });
@@ -2049,8 +2225,8 @@ describe('chain-data-router', () => {
     // ProviderRpcError.createError wraps it with its catch-all -32603.
     function transportError(code = -32603) {
       const err = new Error(
-        'Error in rpc call eth_call[{"to":"0xabc","data":"0x1234"},"latest"] : ' +
-        `Request to ${PROVER}/proof with payload {"method":"eth_call"} failed: fetch failed`
+        'Error in rpc call eth_getBalance["0xabc","latest"] : ' +
+        `Request to ${PROVER}/proof with payload {"method":"eth_getBalance"} failed: fetch failed`
       );
       err.name = 'ProviderRpcError';
       if (code !== null) err.code = code;
@@ -2085,9 +2261,7 @@ describe('chain-data-router', () => {
       onlyColibri(['direct']);
       mockRequestViaColibri.mockRejectedValue(transportError(code));
 
-      const err = await rejection(
-        request(1, 'eth_call', [{ to: '0xabc', data: '0x1234' }, 'latest'])
-      );
+      const err = await rejection(request(1, 'eth_getBalance', ['0xabc', 'latest']));
 
       expect(err.message).toBe('Colibri request failed');
       expect(err.code).toBe(code === null ? undefined : code);
@@ -2098,7 +2272,7 @@ describe('chain-data-router', () => {
       // verbose detail keeps the shape but none of the URL or its secret.
       expect(mockLog.warn).not.toHaveBeenCalled();
       expect(mockLog.verbose).toHaveBeenCalledWith(
-        expect.stringContaining('colibri error replaced for the caller: Error in rpc call eth_call')
+        expect.stringContaining('colibri error replaced for the caller: Error in rpc call eth_getBalance')
       );
       expect(mockLog.verbose).toHaveBeenCalledWith(expect.stringContaining('Request to <url> with'));
       expect(logged()).not.toMatch(/secret|user:|prover\.example|https?:/);
@@ -2110,7 +2284,7 @@ describe('chain-data-router', () => {
       huge.message += ` ${'calldata '.repeat(2000)}0x${'ab'.repeat(5000)}`;
       mockRequestViaColibri.mockRejectedValue(huge);
 
-      await rejection(request(1, 'eth_call', [{ to: '0xabc' }, 'latest']));
+      await rejection(request(1, 'eth_getBalance', ['0xabc', 'latest']));
 
       const line = mockLog.verbose.mock.calls
         .map(([text]) => text)
@@ -2173,13 +2347,24 @@ describe('chain-data-router', () => {
       expect(err).toMatchObject({ message: 'Colibri request failed', code: 4900 });
     });
 
-    test('replaces it in a fee quote too', async () => {
+    // A fee quote asks Colibri only for the block that prices a Myotis
+    // quote: it can't prove eth_gasPrice (#1046).
+    test('replaces it in a fee quote\'s block read too', async () => {
       onlyColibri();
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['myotis', 'colibri'] },
+        quorum: { k: 3, m: 2, timeoutMs: 1000 },
+      });
+      mockMyotis.feeEstimate.mockResolvedValue({ gasPriceWei: '3000000000' });
       mockRequestViaColibri.mockRejectedValue(transportError());
 
-      const err = await rejection(getFeeQuote(1));
+      await expect(getFeeQuote(1)).resolves.toMatchObject({ type: 'legacy', source: 'myotis' });
 
-      expect(err.message).toBe('Colibri request failed');
+      expect(mockRequestViaColibri.mock.calls.map(([, method]) => method)).toEqual(['eth_getBlockByNumber']);
+      expect(mockLog.verbose).toHaveBeenCalledWith(
+        expect.stringContaining('its latest block failed: Colibri request failed')
+      );
+      expect(logged()).not.toMatch(/secret|user:|prover\.example|https?:/);
     });
 
     test.each([
@@ -2188,16 +2373,18 @@ describe('chain-data-router', () => {
       ['an unsupported method (4200)', () =>
         Object.assign(new Error('Method eth_foo is not supported'), { code: 4200 })],
       ['a node error carrying revert data under the catch-all code', () =>
-        Object.assign(new Error('Error in rpc call eth_call[] : execution reverted'), {
+        Object.assign(new Error('Error in rpc call eth_getBalance[] : execution reverted'), {
           code: -32603,
           data: '0x556f1830',
         })],
+    // The rule is the error's shape, whatever the method: Colibri runs no
+    // call since #1046, and an account read carries it here.
     ])('passes %s through unchanged', async (_label, makeError) => {
       onlyColibri(['direct']);
       const coded = makeError();
       mockRequestViaColibri.mockRejectedValue(coded);
 
-      const err = await rejection(request(1, 'eth_call', [{ to: '0xabc' }, 'latest']));
+      const err = await rejection(request(1, 'eth_getBalance', ['0xabc', 'latest']));
 
       expect(err).toBe(coded);
       expect(mockLog.verbose).not.toHaveBeenCalledWith(
@@ -2215,15 +2402,49 @@ describe('chain-data-router', () => {
         ok: true,
         json: async () => ({ result: '0xrpc' }),
       });
-      const target = [{ to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', data: '0x1234' }, 'latest'];
+      const target = ['0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'latest'];
       const app = { routingContext: { origin: 'https://swap.example' } };
 
-      await expect(request(1, 'eth_call', target, app)).resolves.toMatchObject({ source: 'direct' });
-      await expect(request(1, 'eth_call', target, app)).resolves.toMatchObject({ source: 'direct' });
+      await expect(request(1, 'eth_getBalance', target, app)).resolves.toMatchObject({ source: 'direct' });
+      await expect(request(1, 'eth_getBalance', target, app)).resolves.toMatchObject({ source: 'direct' });
 
       expect(mockLog.verbose).toHaveBeenCalledWith(expect.stringContaining('Out of gas'));
       expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // Colibri no longer proves a read itself when the prover is down, so the
+  // prover's error is its whole answer, and the read moves on.
+  describe('a failed remote proof (#1059)', () => {
+    test('falls through to the next source, labelled as that source', async () => {
+      const outage = proverOutageError();
+      expect(outage).toMatchObject({
+        code: 4900,
+        message: expect.stringContaining(
+          'remote proof failed (no local proving): HTTP error! Status: 503'
+        ),
+      });
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: ['colibri', 'direct'] },
+        quorum: { timeoutMs: 5000 },
+      });
+      mockRequestViaColibri.mockRejectedValue(outage);
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x7' }),
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        await expect(request(1, 'eth_getBalance', ['0xabc', 'latest'])).resolves.toEqual({
+          result: '0x7',
+          source: 'direct',
+          verified: false,
+        });
+      }
+      // A prover outage is no verifier fault: Colibri isn't backed off for it.
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
+      expect(mockLog.warn).not.toHaveBeenCalled();
+    }, 60_000);
   });
 });
 
@@ -2456,9 +2677,537 @@ describe('Ant bridge cancellation', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
+  // Colibri 3.0.3 answers eth_gasPrice, eth_feeHistory and any read at a
+  // `pending` or `earliest` block from one of its default public RPC hosts,
+  // unproven, as a success (#1046). It runs eth_call and eth_estimateGas
+  // locally on contract code from one of them, unchecked, and a call that
+  // reads no storage fetches no proof. It is never asked any of them, and
+  // the answer is labelled as the source that gave it.
+  describe("Colibri's unproven and unbound answers (#1046, #1060)", () => {
+    const CALL = { to: '0xabc', data: '0x70a08231' };
+    const HASH = '0x' + '22'.repeat(32);
+    // Each read method with a block parameter Colibri reads, its params with
+    // `block` in that place, and its params without it.
+    const TAGGED = [
+      ['eth_getBalance', (block) => ['0xabc', block], ['0xabc']],
+      ['eth_getCode', (block) => ['0xabc', block], ['0xabc']],
+      ['eth_getTransactionCount', (block) => ['0xabc', block], ['0xabc']],
+      ['eth_getStorageAt', (block) => ['0xabc', '0x0', block], ['0xabc', '0x0']],
+      ['eth_getBlockByNumber', (block) => [block, false], []],
+    ];
+    // The account reads, which Colibri ties to `latest` only.
+    const LATEST_ONLY = TAGGED.filter(([method]) => method !== 'eth_getBlockByNumber');
+    // The calls, which Colibri never serves, in the same form.
+    const CALLS = [
+      ['eth_call', (block) => [CALL, block], [CALL]],
+      ['eth_estimateGas', (block) => [CALL, block], [CALL]],
+    ];
+    const NOT_A_STRING = "at a block that isn't a string";
+    // Each form of block, and whether Colibri ties eth_getBlockByNumber's
+    // answer to it: it compares a number or a hash with the proven block,
+    // and holds `latest` to its freshness gate.
+    const BLOCKS = [
+      ['a block number', '0x10d4f00', true],
+      ['an upper-case block number', '0x10D4F00', true],
+      ['a block number of 16 digits', '0x1' + '0'.repeat(15), true],
+      ['a block hash', HASH, true],
+      ['"latest"', 'latest', true],
+      ['"safe"', 'safe', false],
+      ['"finalized"', 'finalized', false],
+      ['"justified"', 'justified', false],
+      ['"pending"', 'pending', false],
+      ['"earliest"', 'earliest', false],
+      // Colibri's validator passes these, and it compares only a string that
+      // starts with `0x`: it would match them with any proven block.
+      ['a number after "0X"', '0X10d4f00', false],
+      ['a number after "1x"', '1x10d4f00', false],
+      ['a hash after "0X"', '0X' + '22'.repeat(32), false],
+      // Colibri compares neither: its validator refuses a leading zero, and
+      // its 64-bit number holds 16 digits.
+      ['a block number with a leading zero', '0x010d4f00', false],
+      ['a block number of 17 digits', '0x1' + '0'.repeat(16), false],
+      ['an EIP-1898 block hash', { blockHash: '0x' + '11'.repeat(32), requireCanonical: true }, false],
+      ['an EIP-1898 block number', { blockNumber: '0x10d4f00' }, false],
+    ];
+    // The other values that aren't strings.
+    const NON_STRINGS = [['null', null], ['a number', 16], ['a boolean', true], ['an array', ['latest']], ['undefined', undefined]];
+    const refusalAt = (block) => (typeof block === 'string' ? `at block "${block}"` : NOT_A_STRING);
+    // Every method at every block, with how Colibri's refusal names it, or
+    // null where Colibri is asked.
+    const CASES = TAGGED.flatMap(([method, params]) => BLOCKS.map(([label, block, byNumber]) => {
+      const served = method === 'eth_getBlockByNumber' ? byNumber : block === 'latest';
+      return [method, label, params(block), served ? null : refusalAt(block)];
+    }));
+    const SERVED = CASES.filter((c) => c[3] === null).map(([method, label, params]) => [method, label, params]);
+    const REFUSED = CASES.filter((c) => c[3] !== null);
+
+    function readOrder(order) {
+      mockRegistry.getNetwork.mockReturnValue({
+        access: { readOrder: order },
+        quorum: { k: 3, m: 2, timeoutMs: 1000 },
+      });
+      mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+        role === 'prover'
+          ? ['https://prover.example']
+          : ['https://a.example', 'https://b.example', 'https://c.example']
+      );
+    }
+
+    // Every RPC endpoint answers `rpc:<method>`.
+    function rpcAnswers() {
+      global.fetch = jest.fn(async (_url, options) => {
+        const { method } = JSON.parse(options.body);
+        return { ok: true, json: async () => ({ result: `rpc:${method}` }) };
+      });
+    }
+    const asked = () => global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+    const colibriAsked = (method, params) =>
+      expect(mockRequestViaColibri.mock.calls).toEqual([[1, method, params, { deadlineMs: expect.any(Number) }]]);
+
+    test.each(SERVED)('%s at %s is asked of Colibri as sent, verified', async (method, _label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: 'colibri:proven',
+        source: 'colibri',
+        verified: true,
+      });
+      colibriAsked(method, params);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each(REFUSED)('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(asked()).toEqual([expect.objectContaining({ method, params })]);
+    });
+
+    test.each(REFUSED)('%s at %s skips Colibri for the quorum, which labels it', async (method, _label, params) => {
+      readOrder(['myotis', 'colibri', 'quorum', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'quorum',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test.each(REFUSED)('%s at %s is refused by a Colibri-only read order', async (method, _label, params, refusal) => {
+      readOrder(['colibri']);
+      global.fetch = jest.fn();
+
+      await expect(request(1, method, params)).rejects.toThrow(
+        `All chain sources failed for ${method} ` +
+          `(colibri: Colibri cannot prove ${method} ${refusal})`
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    // Any other value there that isn't a string goes elsewhere too, a
+    // present `undefined` included (it is sent as null).
+    test.each(TAGGED.flatMap(([method, params]) =>
+      NON_STRINGS.map(([label, block]) => [method, label, params(block)])
+    ))('%s at %s skips Colibri for Direct, unverified', async (method, _label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // Without its block parameter an account read or a call is read at
+    // `latest`, and Colibri is asked with `latest` appended: left out,
+    // Colibri would hold the proof to no freshness gate.
+    test.each(LATEST_ONLY.map(([method, , bare]) => [method, bare]))(
+      '%s without its block parameter %j is asked of Colibri at "latest", verified',
+      async (method, params) => {
+        readOrder(['colibri', 'direct']);
+        rpcAnswers();
+        mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+        await expect(request(1, method, params)).resolves.toEqual({
+          result: 'colibri:proven',
+          source: 'colibri',
+          verified: true,
+        });
+        colibriAsked(method, [...params, 'latest']);
+        expect(global.fetch).not.toHaveBeenCalled();
+      }
+    );
+
+    // The appended `latest` is Colibri's alone.
+    test.each(LATEST_ONLY.map(([method, , bare]) => [method, bare]))(
+      '%s without its block parameter goes to Direct as sent when Colibri fails',
+      async (method, params) => {
+        readOrder(['colibri', 'direct']);
+        rpcAnswers();
+        mockRequestViaColibri.mockRejectedValue(new Error('prover down'));
+        const sent = [...params];
+
+        await expect(request(1, method, params)).resolves.toEqual({
+          result: `rpc:${method}`,
+          source: 'direct',
+          verified: false,
+        });
+        colibriAsked(method, [...params, 'latest']);
+        expect(asked()).toEqual([expect.objectContaining({ method, params: sent })]);
+        expect(params).toEqual(sent);
+      }
+    );
+
+    // Colibri reads eth_getBlockByNumber without a block as `latest`, and
+    // gates it: asked as sent.
+    test.each([[[]], [null]])('eth_getBlockByNumber without its block parameter (%j) is asked of Colibri as sent, verified', async (params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      await expect(request(1, 'eth_getBlockByNumber', params)).resolves.toMatchObject({
+        source: 'colibri',
+        verified: true,
+      });
+      colibriAsked('eth_getBlockByNumber', params);
+    });
+
+    // Params Colibri can't take a block from: too short for `latest` to be
+    // appended in its place, an account read with params after its block
+    // (Colibri would read the last one as the block), params that aren't an
+    // array.
+    test.each([
+      ['eth_getBalance', [], 'with params of length 0'],
+      ['eth_getStorageAt', ['0xabc'], 'with params of length 1'],
+      ['eth_getBalance', ['0xabc', 'latest', '0x1'], 'with params of length 3'],
+      ['eth_getCode', ['0xabc', 'latest', 'latest'], 'with params of length 3'],
+      ['eth_getTransactionCount', ['0xabc', 'latest', null], 'with params of length 3'],
+      ['eth_getStorageAt', ['0xabc', '0x0', 'latest', '0x1'], 'with params of length 4'],
+      ['eth_getBalance', { address: '0xabc' }, "with params that aren't an array"],
+      // Colibri would read it as `['safe']`.
+      ['eth_getBlockByNumber', 'safe', "with params that aren't an array"],
+    ])('%s with params %j skips Colibri', async (method, params, refusal) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unbound');
+
+      await expect(request(1, method, params)).resolves.toMatchObject({ source: 'direct', verified: false });
+      readOrder(['colibri']);
+      await expect(request(1, method, params)).rejects.toThrow(
+        `(colibri: Colibri cannot prove ${method} ${refusal})`
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // eth_getBlockByHash is Colibri's at a 32-byte hash, which it compares
+    // with the proven block. Any other string it would read as a tag or a
+    // number, and no params as `latest`.
+    test.each([
+      ['a 32-byte hash', [HASH, false], null],
+      ['an upper-case 32-byte hash', ['0x' + 'AB'.repeat(32), true], null],
+      ['a 31-byte hash', ['0x' + '22'.repeat(31), false], `at block "0x${'22'.repeat(31)}"`],
+      ['a block number', ['0x10d4f00', false], 'at block "0x10d4f00"'],
+      ['"latest"', ['latest', false], 'at block "latest"'],
+      ['"safe"', ['safe', false], 'at block "safe"'],
+      ['"finalized"', ['finalized', false], 'at block "finalized"'],
+      ['"justified"', ['justified', false], 'at block "justified"'],
+      ['a hash after "0X"', ['0X' + '22'.repeat(32), false], `at block "0X${'22'.repeat(32)}"`],
+      ['an EIP-1898 object', [{ blockHash: HASH }, false], NOT_A_STRING],
+      ['no params', [], 'without a block hash'],
+    ])('eth_getBlockByHash at %s', async (_label, params, refusal) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      if (refusal === null) {
+        await expect(request(1, 'eth_getBlockByHash', params)).resolves.toMatchObject({
+          source: 'colibri',
+          verified: true,
+        });
+        colibriAsked('eth_getBlockByHash', params);
+        return;
+      }
+      await expect(request(1, 'eth_getBlockByHash', params)).resolves.toEqual({
+        result: 'rpc:eth_getBlockByHash',
+        source: 'direct',
+        verified: false,
+      });
+      readOrder(['colibri']);
+      await expect(request(1, 'eth_getBlockByHash', params)).rejects.toThrow(
+        `(colibri: Colibri cannot prove eth_getBlockByHash ${refusal})`
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // The block is read where the method takes it, nowhere else.
+    test.each([
+      ['eth_getStorageAt', ['0xabc', 'pending', 'latest'], ['0xabc', 'pending', 'latest']],
+      ['eth_getBalance', ['pending'], ['pending', 'latest']],
+      ['eth_getBlockByNumber', ['latest', 'pending'], ['latest', 'pending']],
+      ['eth_getBlockByHash', [HASH, 'pending'], [HASH, 'pending']],
+    ])('%s with a tag outside its block parameter %j is still asked of Colibri', async (method, params, sent) => {
+      readOrder(['colibri']);
+      mockRequestViaColibri.mockResolvedValue('colibri:proven');
+
+      await expect(request(1, method, params)).resolves.toMatchObject({ source: 'colibri', verified: true });
+      colibriAsked(method, sent);
+    });
+
+    // Neither call method is Colibri's, at `latest`, without a block, or at
+    // any other form: the next source answers, labelled as itself.
+    const CALL_CASES = CALLS.flatMap(([method, params, bare]) => [
+      ...BLOCKS.map(([label, block]) => [method, label, params(block)]),
+      ...NON_STRINGS.map(([label, block]) => [method, label, params(block)]),
+      [method, 'no block', bare],
+      [method, '"latest" with state overrides', [CALL, 'latest', { '0xabc': { balance: '0x1' } }]],
+      [method, 'no params', []],
+      [method, 'params that aren\'t an array', CALL],
+    ]);
+    // What the RPC is sent: the params as the caller gave them (a present
+    // `undefined` travels as null).
+    const sentAs = (params) => JSON.parse(JSON.stringify(params));
+
+    test.each(CALL_CASES)('%s at %s is never asked of Colibri: Direct answers, unverified', async (method, _label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      if (Array.isArray(params)) {
+        expect(asked()).toEqual([expect.objectContaining({ method, params: sentAs(params) })]);
+      }
+    });
+
+    test.each(CALL_CASES)('%s at %s is never asked of Colibri: the quorum answers, verified', async (method, _label, params) => {
+      readOrder(['colibri', 'quorum', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'quorum',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test.each(CALL_CASES)('%s at %s has no source in a Colibri-only read order', async (method, _label, params) => {
+      readOrder(['colibri']);
+      global.fetch = jest.fn();
+
+      await expect(request(1, method, params)).rejects.toThrow(
+        `No chain source left for ${method} on chain 1: read order [colibri], ` +
+          'excluded for this request: colibri'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    // eth_blockNumber takes no params. Colibri 3.0.3 skips its freshness gate
+    // for any args[0] but `latest` and matches a tag like `finalized` with any
+    // proven block (verify_block.c:260-261), so a stale number would read as
+    // verified. Only a params-less read is Colibri's (R3-M1).
+    test.each([
+      ['no params', [], []],
+      ['null params', null, null],
+      ['params left out', undefined, []],
+    ])('eth_blockNumber with %s is asked of Colibri, verified', async (_label, params, sent) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('0x10');
+
+      await expect(request(1, 'eth_blockNumber', params)).resolves.toEqual({
+        result: '0x10',
+        source: 'colibri',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+      expect(mockRequestViaColibri.mock.calls[0][2]).toEqual(sent);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['finalized', ['finalized']],
+      ['safe', ['safe']],
+      ['earliest', ['earliest']],
+      ['latest', ['latest']],
+      ['a number', ['0x10']],
+      ['an object', [{ blockTag: 'finalized' }]],
+      ['params that aren\'t an array', 'finalized'],
+    ])('eth_blockNumber at %s skips Colibri for Direct, unverified', async (_label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('0x1');
+
+      await expect(request(1, 'eth_blockNumber', params)).resolves.toEqual({
+        result: 'rpc:eth_blockNumber',
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      readOrder(['colibri']);
+      await expect(request(1, 'eth_blockNumber', params)).rejects.toThrow(
+        '(colibri: Colibri cannot prove eth_blockNumber with params)'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test.each(['eth_gasPrice', 'eth_feeHistory', 'eth_maxPriorityFeePerGas'])('%s is never asked of Colibri', async (method) => {
+      const params = method === 'eth_feeHistory' ? ['0x4', 'latest', [25, 75]] : [];
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('colibri:unproven');
+
+      await expect(request(1, method, params)).resolves.toEqual({
+        result: `rpc:${method}`,
+        source: 'direct',
+        verified: false,
+      });
+      readOrder(['colibri']);
+      await expect(request(1, method, params)).rejects.toThrow(
+        `No chain source left for ${method} on chain 1: read order [colibri], ` +
+          'excluded for this request: colibri'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('a fee quote skips Colibri for the quorum, labelled verified', async () => {
+      readOrder(['colibri', 'quorum', 'direct']);
+      global.fetch = jest.fn(async (_url, options) => {
+        const { method } = JSON.parse(options.body);
+        const result = {
+          eth_gasPrice: '0x3b9aca00',
+          eth_maxPriorityFeePerGas: '0x5f5e100',
+        }[method];
+        return { ok: true, json: async () => ({ result }) };
+      });
+      mockRequestViaColibri.mockResolvedValue('0x1');
+
+      await expect(getFeeQuote(1)).resolves.toMatchObject({
+        type: 'eip1559',
+        baseFee: '900000000',
+        maxPriorityFeePerGas: '100000000',
+        source: 'quorum',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('a fee quote skips Colibri for Direct, labelled unverified', async () => {
+      readOrder(['colibri', 'direct']);
+      global.fetch = jest.fn(async (_url, options) => {
+        const { method } = JSON.parse(options.body);
+        const result = {
+          eth_gasPrice: '0x3b9aca00',
+          eth_maxPriorityFeePerGas: '0x5f5e100',
+        }[method];
+        return { ok: true, json: async () => ({ result }) };
+      });
+      mockRequestViaColibri.mockResolvedValue('0x1');
+
+      await expect(getFeeQuote(1)).resolves.toMatchObject({
+        type: 'eip1559',
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test('a Colibri-only read order has no fee quote', async () => {
+      readOrder(['colibri']);
+      mockRequestViaColibri.mockResolvedValue('0x3b9aca00');
+
+      await expect(getFeeQuote(1)).rejects.toThrow(
+        'All chain sources failed for fee quote (colibri: Colibri does not support eth_gasPrice)'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    // The trust panel (navigation-utils' buildTrustRows) renders the trust a
+    // read carries: for an onchain app's call, at `latest` or `pending`, it
+    // is the RPC's, never Colibri's proof.
+    test('the trust panel shows the answering source\'s label', async () => {
+      const originalWindow = global.window;
+      global.window = { location: { href: 'file:///app/index.html' }, internalPages: { routable: {} } };
+      try {
+        const { buildTrustRows } = await import('../../renderer/lib/navigation-utils.js');
+        const panel = (trust) => buildTrustRows({
+          trust,
+          level: trust.level,
+          onchainProvenance: {
+            chainId: 1, network: 'Ethereum', contract: '0xabc', htmlHash: '0x' + '00'.repeat(32), trust,
+          },
+        });
+        readOrder(['colibri', 'direct']);
+        mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+          role === 'prover' ? ['https://prover.example'] : ['https://rpc.example']
+        );
+        rpcAnswers();
+        mockRequestViaColibri.mockResolvedValue('0x2a');
+
+        for (const block of ['latest', 'pending']) {
+          const read = await request(1, 'eth_call', [CALL, block], { includeTrust: true });
+          expect(read).toMatchObject({
+            source: 'direct',
+            verified: false,
+            trust: { level: 'unverified', method: 'direct', queried: ['rpc.example'] },
+          });
+          const shown = panel(read.trust);
+          expect(shown.status).toBe('Onchain application retrieval not verified');
+          expect(JSON.stringify(shown.trustRows)).not.toMatch(/sync-committee|prover\.example/i);
+        }
+        expect(mockRequestViaColibri).not.toHaveBeenCalled();
+
+        // An account read at `latest` is Colibri's, and is shown as its proof.
+        const code = await request(1, 'eth_getCode', ['0xabc', 'latest'], { includeTrust: true });
+        expect(code).toMatchObject({
+          source: 'colibri',
+          verified: true,
+          trust: { level: 'verified', method: 'colibri', prover: 'prover.example', proof: 'ZK sync-committee proof' },
+        });
+        expect(panel(code.trust).status).toBe('Onchain application retrieval verified');
+      } finally {
+        global.window = originalWindow;
+      }
+    });
+  });
+
   describe('source capabilities (#497)', () => {
     test('each source declares what it never serves', () => {
       expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_getLogs')).toBe(true);
+      // Colibri answers these from a public RPC, unproven (#1046), or runs
+      // them on code from one, unchecked.
+      // Its eth_maxPriorityFeePerGas is a hard-coded 1 gwei (verify_block.c).
+      for (const method of [
+        'eth_gasPrice',
+        'eth_feeHistory',
+        'eth_call',
+        'eth_estimateGas',
+        'eth_maxPriorityFeePerGas',
+      ]) {
+        expect(SOURCE_CAPABILITIES.colibri.unsupported.has(method)).toBe(true);
+      }
       for (const source of ['myotis', 'colibri', 'quorum']) {
         expect(SOURCE_CAPABILITIES[source].unsupported.has('eth_newFilter')).toBe(true);
         expect(SOURCE_CAPABILITIES[source].unsupported.has('web3_clientVersion')).toBe(true);
