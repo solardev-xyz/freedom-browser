@@ -74,6 +74,13 @@ const EXTRA_RESOURCES = {
     noticeMatch: /^freedom-ipfsd \(IPFS service\)$/m,
     pin: { file: 'scripts/fetch-freedom-ipfsd.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
   },
+  'freedom-radicled-bin/${os}-${arch}/': {
+    thirdParty: true,
+    label: 'freedom-radicled',
+    auditName: 'freedom-radicled',
+    noticeMatch: /^freedom-radicled \(Radicle service\)$/m,
+    pin: { file: 'scripts/fetch-freedom-radicled.js', re: /PINNED_RELEASE_TAG = '([^']+)'/ },
+  },
   'out/dictation-runtime/${os}-${arch}/': {
     thirdParty: true, label: 'whisper.cpp', auditName: 'whisper.cpp',
     noticeMatch: /^whisper\.cpp$/m,
@@ -705,6 +712,9 @@ describe('copyleft', () => {
       'ipfsd-v0.2.1': [['attohttpc', '0.30.1']],
       'ipfsd-v0.3.0': [['attohttpc', '0.30.1']],
       'ipfsd-v0.4.0': [['attohttpc', '0.30.1']],
+    },
+    'freedom-radicled-bin/${os}-${arch}/': {
+      'radicled-v0.1.0': [['colored', '2.2.0']],
     },
   };
 

@@ -84,6 +84,7 @@
     "ant:download": "node scripts/fetch-ant.js",
     "core:download": "node scripts/fetch-freedom-cored.js",
     "ipfsd:download": "node scripts/fetch-freedom-ipfsd.js",
+    "radicled:download": "node scripts/fetch-freedom-radicled.js",
     "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
     "myotis:download": "node scripts/fetch-myotis.js",
     "myotis:smoke": "node scripts/smoke-myotis.js",
@@ -159,6 +160,7 @@
         "Contents/Resources/myotis-node/myotis-supervisor",
         "Contents/Resources/freedom-cored/freedom-cored",
         "Contents/Resources/freedom-ipfsd/freedom-ipfsd",
+        "Contents/Resources/freedom-radicled/freedom-radicled",
         "Contents/Resources/dictation-runtime/whisper-cli"
       ],
       "gatekeeperAssess": false,
@@ -372,6 +374,16 @@
         "filter": [
           "freedom-ipfsd",
           "freedom-ipfsd.exe",
+          "THIRD-PARTY-NOTICES",
+          "THIRD-PARTY-NOTICES-rust-std.html"
+        ]
+      },
+      {
+        "from": "freedom-radicled-bin/${os}-${arch}/",
+        "to": "freedom-radicled",
+        "filter": [
+          "freedom-radicled",
+          "freedom-radicled.exe",
           "THIRD-PARTY-NOTICES",
           "THIRD-PARTY-NOTICES-rust-std.html"
         ]

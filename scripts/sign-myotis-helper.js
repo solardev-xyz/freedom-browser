@@ -9,6 +9,7 @@ const RESTRICTED_HELPERS = {
   // The Rust core's service processes share the Myotis supervisor's empty set.
   'Contents/Resources/freedom-cored/freedom-cored': '../config/entitlements.myotis-supervisor.plist',
   'Contents/Resources/freedom-ipfsd/freedom-ipfsd': '../config/entitlements.myotis-supervisor.plist',
+  'Contents/Resources/freedom-radicled/freedom-radicled': '../config/entitlements.myotis-supervisor.plist',
   'Contents/Resources/dictation-runtime/whisper-cli': '../config/entitlements.dictation-runtime.plist',
 };
 

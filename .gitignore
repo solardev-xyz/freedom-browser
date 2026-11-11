@@ -20,6 +20,7 @@ tmp/
 ant-bin/
 freedom-cored-bin/
 freedom-ipfsd-bin/
+freedom-radicled-bin/
 myotis-bin/
 ant-data/
 assets/adblock/

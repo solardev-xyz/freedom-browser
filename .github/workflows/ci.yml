@@ -816,6 +816,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # Nothing runs freedom-radicled yet (freedom-core design 0008, step 6
+      # on): this is the one per-PR run of its real fetch on all three OSes,
+      # Windows' ZIP path included, with the pinned digest and build
+      # provenance checked as release.yml checks them.
+      - name: Download freedom-radicled binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-radicled.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Download IPFS native addon
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npm run ipfs:download
