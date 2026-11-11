@@ -374,6 +374,16 @@ describe('sendPss', () => {
     expect(err.status).toBe(answer().status);
   });
 
+  test('a 2xx whose body read fails still counts as sent', async () => {
+    const response = new Response(null, { status: 201, statusText: 'Created' });
+    jest.spyOn(response, 'arrayBuffer').mockRejectedValue(new TypeError('terminated'));
+    fetchMock.mockResolvedValue(response);
+    await expect(
+      sendPss({ topic: 't', targets: 'aa', recipient: RECIPIENT, data: 'x' })
+    ).resolves.toBeUndefined();
+    expect(response.arrayBuffer).toHaveBeenCalledTimes(1);
+  });
+
   test('no answer fails in bee-js wording', async () => {
     const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1633'), { code: 'ECONNREFUSED' });
     fetchMock.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause }));

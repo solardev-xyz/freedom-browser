@@ -300,15 +300,22 @@ async function postPssSend(baseUrl, { batchId, topicHex, targets, recipient, dat
       },
       body: data,
     });
-    if (response.ok) {
-      // Ant answers 201 with no body; read it so the connection is reused.
-      await response.arrayBuffer();
-      return;
-    }
   } catch (err) {
     // bee-js's wording for a request that got no answer (toBeeError).
     const message = err?.cause?.message ? `${err.message}: ${err.cause.message}` : err?.message;
     throw new BeeResponseError(method, url, message);
+  }
+  if (response.ok) {
+    // Ant answers 201 with no body; read it so the connection is reused. The
+    // node has accepted the message by now, so a failure reading that empty
+    // body is not a failed send: reporting it as one could make the page
+    // send the message twice.
+    try {
+      await response.arrayBuffer();
+    } catch (err) {
+      log.warn(`[MessagingService] PSS send accepted (${response.status}), body read failed: ${err?.message}`);
+    }
+    return;
   }
   throw await pssSendHttpError(method, url, response);
 }
