@@ -3,9 +3,9 @@
 // webview-preload.js. Like that hello it makes 16 random bytes and sends them
 // to main as soon as the document's preload runs, before any page script.
 // It then sends one request with the same nonce once the document has
-// loaded. Both go out on test channels that only the spec listens to, on the
-// guest's own `ipc-message` event: the IPC sender policy has no tier for them,
-// and nothing in the app handles them.
+// loaded, and another whenever main asks. They go out on test channels that
+// only the spec listens to, on the guest's own `ipc-message` event: the IPC
+// sender policy has no tier for them, and nothing in the app handles them.
 const { ipcRenderer } = require('electron');
 
 const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
@@ -15,5 +15,8 @@ const href = globalThis.location.href;
 
 ipcRenderer.send('page-documents-test:hello', { nonce, href, top });
 globalThis.addEventListener('DOMContentLoaded', () => {
+  ipcRenderer.send('page-documents-test:request', { nonce, href, top });
+});
+ipcRenderer.on('page-documents-test:ask', () => {
   ipcRenderer.send('page-documents-test:request', { nonce, href, top });
 });

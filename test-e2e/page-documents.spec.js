@@ -12,8 +12,9 @@
 // cross-process one, a reload, and back and forward. It also records whether a
 // back/forward traversal restored a page from the back/forward cache (which
 // would keep the old preload and send no hello), that a sub-frame's hello and
-// request are refused, from the real `senderFrame`, and that an error page,
-// which Electron commits without a `did-frame-navigate`, ends the document.
+// request are refused, from the real `senderFrame`, that a cancelled load
+// keeps the document, and that an error page, which Electron commits without a
+// `did-frame-navigate`, ends it.
 //
 // The app's preload sends no hello yet (PRQ-2 adds it), so a test-only session
 // preload (page-documents-hello-preload.js) sends one, at the same point a
@@ -169,12 +170,38 @@ test('main sees each new document\'s commit before its hello (0011 PRQ-1)', asyn
   entries = await step(electronApp, guestId, `${B}/`, ({ webContents }, { id }) => {
     webContents.fromId(id).navigationHistory.goForward();
   });
-  expectBound(entries, `${B}/`, back);
+  const forward = expectBound(entries, `${B}/`, back);
   expect(await inPage(win, 'window.__persisted'), 'forward was not a back/forward cache restore').toBe(false);
 
   // No top-frame hello in the whole run was refused: none landed before its commit.
   const refused = (await readLog(electronApp)).filter((e) => e.kind === 'hello' && e.top && !e.result.ok);
   expect(refused).toEqual([]);
+
+  // A load cancelled before it commits keeps the document: its next request
+  // still attests under the same number.
+  await harness.setContentFixture(`${A}/slow`, { ...html('slow'), delayMs: 10_000 });
+  const beforeStop = (await readLog(electronApp)).length;
+  await electronApp.evaluate(load, { id: guestId, url: `${A}/slow` });
+  await win.waitForTimeout(500);
+  await electronApp.evaluate(({ webContents }, { id }) => {
+    const guest = webContents.fromId(id);
+    guest.stop();
+    guest.mainFrame.send('page-documents-test:ask');
+  }, { id: guestId });
+  await expect
+    .poll(async () => (await readLog(electronApp)).slice(beforeStop).some((e) => e.kind === 'request' && e.result), {
+      message: 'the current document answered after the cancelled load',
+      timeout: 10_000,
+    })
+    .toBe(true);
+  entries = (await readLog(electronApp)).slice(beforeStop);
+  expect(entries.filter((e) => e.kind === 'commit' || e.kind === 'error-page')).toEqual([]);
+  expect(entries.find((e) => e.kind === 'request').result).toEqual({
+    ok: true,
+    navigation: forward.navigation,
+    key: B,
+    url: `${B}/`,
+  });
 
   // An error page replaces the document with no `did-frame-navigate`: Electron
   // reports `did-fail-provisional-load` instead, and the error page's own

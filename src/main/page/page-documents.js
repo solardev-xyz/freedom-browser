@@ -49,6 +49,10 @@ const ENDED_NONCES_KEPT = 8;
 
 const PREVIEW_SCHEME = 'freedom-preview:';
 
+// net::ERR_ABORTED: a load cancelled (a stop, a superseding navigation, a
+// download, a 204), which never installs an error page.
+const ERR_ABORTED = -3;
+
 // The schemes whose URLs have a key, and the shape today's rule gives it.
 // http(s), and a blob: URL an http(s) page made, are keyed on their origin.
 // Every other URL is opaque to main (`data:`, `about:`, `view-source:`,
@@ -149,6 +153,22 @@ function urlOf(read) {
   return typeof url === 'string' ? url : '';
 }
 
+/**
+ * True when a main-frame `did-fail-provisional-load` means an error page
+ * replaced the document: not a cancelled load, the event names the frame the
+ * error page committed in, and that frame is now the main frame, showing the
+ * failed URL. A load that failed without committing leaves the old document,
+ * which still shows its own URL.
+ */
+function replacedByErrorPage(contents, code, url, processId, routingId) {
+  if (code === ERR_ABORTED) return false;
+  return safely(() => {
+    const frame = contents.mainFrame;
+    return Boolean(frame) && !frame.detached && Number.isInteger(processId) && processId >= 0 &&
+      frame.processId === processId && frame.routingId === routingId && frame.url === url;
+  }, false);
+}
+
 const refuse = (reason) => ({ ok: false, reason });
 
 /**
@@ -163,8 +183,17 @@ function createPageDocuments(deps = {}) {
     resolveEnsContent,
   } = { ...defaultDependencies(), ...deps };
 
-  // guest id -> { current, endedNonces, pendingBind, binding }
+  // guest id -> { current, endedNonces, pendingBind, binding, nameRunning, nameWaiting }
   const guests = new Map();
+
+  // A document's name check is over: requests waiting on it go on, and are
+  // checked again.
+  function settleNaming(doc) {
+    const naming = doc.naming;
+    if (!naming?.pending) return;
+    naming.pending = false;
+    naming.finish();
+  }
 
   function endCurrent(state) {
     const doc = state.current;
@@ -174,25 +203,50 @@ function createPageDocuments(deps = {}) {
       state.endedNonces.push(doc.nonce);
       if (state.endedNonces.length > ENDED_NONCES_KEPT) state.endedNonces.shift();
     }
+    if (state.nameWaiting === doc) state.nameWaiting = null;
+    settleNaming(doc);
     state.current = null;
   }
 
-  function startNameCheck(state, doc, binding) {
-    const naming = { pending: true, settled: null };
-    naming.settled = nameServesIpnsKey(resolveEnsContent, binding.name, binding.key).then((serves) => {
-      naming.pending = false;
-      if (doc.ended) return;
-      if (serves) {
-        doc.key = binding.name;
-      } else {
-        // The document keeps its transport key, and the binding ends: a
-        // later commit binds again only through a fresh `bindName`.
-        doc.key = doc.transportKey;
-        if (state.binding === binding) state.binding = null;
-      }
-      doc.topKey = doc.key;
+  // Name checks run one at a time per guest. A document committed while one
+  // runs waits for a check of its own, started once the running one settles,
+  // so each document is checked after its commit. Only the guest's current
+  // document can wait, so a page that reloads faster than its name resolves
+  // holds at most one check and two documents.
+  function queueNameCheck(state, doc, binding) {
+    let finish;
+    const settled = new Promise((resolve) => {
+      finish = resolve;
     });
-    return naming;
+    doc.naming = { pending: true, settled, finish, binding };
+    state.nameWaiting = doc;
+    if (!state.nameRunning) runNameCheck(state);
+  }
+
+  function runNameCheck(state) {
+    const doc = state.nameWaiting;
+    state.nameWaiting = null;
+    if (!doc) return;
+    const { binding } = doc.naming;
+    state.nameRunning = true;
+    nameServesIpnsKey(resolveEnsContent, binding.name, binding.key).then((serves) => {
+      state.nameRunning = false;
+      // A check answers only for its own document: one that has ended
+      // decides nothing, not even the binding.
+      if (!doc.ended) {
+        if (serves) {
+          doc.key = binding.name;
+        } else {
+          // The document keeps its transport key, and the binding ends: a
+          // later commit binds again only through a fresh `bindName`.
+          doc.key = doc.transportKey;
+          if (state.binding === binding) state.binding = null;
+        }
+        doc.topKey = doc.key;
+      }
+      settleNaming(doc);
+      runNameCheck(state);
+    });
   }
 
   function commit(contents, state, url) {
@@ -221,8 +275,8 @@ function createPageDocuments(deps = {}) {
       naming: null,
       ended: false,
     };
-    if (binding) doc.naming = startNameCheck(state, doc, binding);
     state.current = doc;
+    if (binding) queueNameCheck(state, doc, binding);
   }
 
   /**
@@ -231,18 +285,30 @@ function createPageDocuments(deps = {}) {
    * fragment, `pushState`) keep it. An error page that replaces the document
    * commits with `did-fail-provisional-load` instead of
    * `did-frame-navigate`; it ends the document and starts none, so the error
-   * page's hello finds no document.
+   * page's hello finds no document. A cancelled or uncommitted load keeps
+   * the document.
    */
   function track(contents) {
     if (!contents || !Number.isInteger(contents.id) || guests.has(contents.id)) return;
-    const state = { current: null, endedNonces: [], pendingBind: null, binding: null };
+    const state = {
+      current: null,
+      endedNonces: [],
+      pendingBind: null,
+      binding: null,
+      nameRunning: false,
+      nameWaiting: null,
+    };
     guests.set(contents.id, state);
     contents.on('did-frame-navigate', (_event, url, _code, _status, isMainFrame) => {
       if (isMainFrame === true && guests.get(contents.id) === state) commit(contents, state, url);
     });
-    contents.on('did-fail-provisional-load', (_event, _code, _description, _url, isMainFrame) => {
-      if (isMainFrame === true && guests.get(contents.id) === state) endCurrent(state);
-    });
+    contents.on(
+      'did-fail-provisional-load',
+      (_event, code, _description, url, isMainFrame, processId, routingId) => {
+        if (isMainFrame !== true || guests.get(contents.id) !== state) return;
+        if (replacedByErrorPage(contents, code, url, processId, routingId)) endCurrent(state);
+      }
+    );
     contents.once('destroyed', () => {
       endCurrent(state);
       if (guests.get(contents.id) === state) guests.delete(contents.id);
@@ -318,17 +384,19 @@ function createPageDocuments(deps = {}) {
   /**
    * Bind the hello's nonce to the sender's current document: the first
    * hello for the current number, from the main frame, and no later one.
-   * The hello passes the steps a request does, but step 5, which it sets up.
+   * The hello passes the steps a request does, in the same order, but step
+   * 5, which it sets up: the document must have no nonce yet, and the
+   * hello's must be well formed.
    *
    * @returns {{ok: true, navigation: number} | {ok: false, reason: string}}
    */
   function hello(event, payload) {
-    const nonce = payload?.nonce;
-    if (typeof nonce !== 'string' || !NONCE.test(nonce)) return refuse('bad-nonce');
     const step = checkFrame(event);
     if (!step.ok) return step;
     const { sender, frame, doc } = step;
     if (doc.nonce) return refuse('already-bound');
+    const nonce = payload?.nonce;
+    if (typeof nonce !== 'string' || !NONCE.test(nonce)) return refuse('bad-nonce');
     if (!onTransportKey(frame, doc)) return refuse('off-key');
     doc.nonce = nonce;
     doc.agent = safely(() => isAgentPage(sender) === true);

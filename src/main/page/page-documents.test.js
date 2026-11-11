@@ -13,10 +13,14 @@ const ADDRESS = '0x' + 'ab'.repeat(20);
 let nextId = 1;
 let nextNonce = 1;
 const nonce = () => (nextNonce++).toString(16).padStart(32, '0');
+let nextRoutingId = 1;
 
-function frame(url, frameTreeNodeId) {
-  return { url, frameTreeNodeId, detached: false };
+function frame(url, frameTreeNodeId, processId = 1) {
+  return { url, frameTreeNodeId, processId, routingId: nextRoutingId++, detached: false };
 }
+
+// Let settled promises run their callbacks.
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 const chromeHost = () => ({
   isDestroyed: () => false,
@@ -59,14 +63,28 @@ class Guest extends EventEmitter {
     } else {
       this.mainFrame.url = url;
     }
-    this.emit('did-frame-navigate', {}, url, 200, 'OK', true, 1, 1);
+    const { processId, routingId } = this.mainFrame;
+    this.emit('did-frame-navigate', {}, url, 200, 'OK', true, processId, routingId);
   }
 
-  /** An error page replaces the document: no `did-frame-navigate`. */
-  commitErrorPage(url) {
-    this.mainFrame.detached = true;
-    this.mainFrame = frame(url, this.mainFrame.frameTreeNodeId);
-    this.emit('did-fail-provisional-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', url, true, 1, 1);
+  /**
+   * An error page replaces the document, in a frame of its own that shows
+   * the failed URL: `did-fail-provisional-load`, no `did-frame-navigate`.
+   */
+  commitErrorPage(url, { code = -105, newFrame = true } = {}) {
+    if (newFrame) {
+      this.mainFrame.detached = true;
+      this.mainFrame = frame(url, this.mainFrame.frameTreeNodeId, 2);
+    } else {
+      this.mainFrame.url = url;
+    }
+    const { processId, routingId } = this.mainFrame;
+    this.emit('did-fail-provisional-load', {}, code, 'ERR_NAME_NOT_RESOLVED', url, true, processId, routingId);
+  }
+
+  /** A load that fails without replacing the document, which stays committed. */
+  failLoad(url, { code, processId = -1, routingId = -1 }) {
+    this.emit('did-fail-provisional-load', {}, code, 'ERR', url, true, processId, routingId);
   }
 
   destroy() {
@@ -311,6 +329,26 @@ describe('the attested requester refuses', () => {
     expect(await documents.attest(eventFrom(guest), third)).toEqual({ ok: false, reason: 'navigated' });
   });
 
+  test('navigated: the latest eight replaced documents\' nonces; an older one is a wrong nonce', async () => {
+    const { documents } = setup();
+    const { guest, nonce: first } = open(documents);
+    const ended = [first];
+    for (let i = 1; i <= 8; i += 1) {
+      guest.commit(`${DAPP}page-${i}`);
+      const n = nonce();
+      expect(documents.hello(eventFrom(guest), { nonce: n }).ok).toBe(true);
+      ended.push(n);
+    }
+    guest.commit(`${DAPP}last`);
+    expect(documents.hello(eventFrom(guest), { nonce: nonce() }).ok).toBe(true);
+    // Nine documents have ended: the oldest has dropped out of the window.
+    expect(ended).toHaveLength(9);
+    expect(await documents.attest(eventFrom(guest), ended[0])).toEqual({ ok: false, reason: 'wrong-nonce' });
+    for (const n of ended.slice(1)) {
+      expect(await documents.attest(eventFrom(guest), n)).toEqual({ ok: false, reason: 'navigated' });
+    }
+  });
+
   test('off its transport key: a frame URL that keys elsewhere than the commit', async () => {
     const { documents } = setup();
     const { guest, nonce: n } = open(documents);
@@ -318,6 +356,39 @@ describe('the attested requester refuses', () => {
     expect(await documents.attest(eventFrom(guest), n)).toEqual({ ok: false, reason: 'off-key' });
     guest.mainFrame.url = `${DAPP}a/path?q#f`;
     expect((await documents.attest(eventFrom(guest), n)).ok).toBe(true);
+  });
+
+  test('a malformed hello gets the refusal of the first step before the nonce that fails', () => {
+    const { documents, privateContents } = setup();
+    const malformed = [undefined, {}, { nonce: 'ab' }, { nonce: 7 }];
+    const expectHello = (event, reason) => {
+      for (const payload of malformed) expect(documents.hello(event, payload)).toEqual({ ok: false, reason });
+    };
+    expectHello({ sender: null }, 'not-a-tab');
+    const window = new Guest({ type: 'window' });
+    documents.track(window);
+    window.commit(DAPP);
+    expectHello(eventFrom(window), 'not-a-tab');
+
+    const fresh = new Guest();
+    documents.track(fresh);
+    expectHello(eventFrom(fresh), 'no-document');
+
+    const { guest } = open(documents);
+    expectHello(eventFrom(guest), 'already-bound');
+    expectHello(eventFrom(guest, frame(DAPP, 5000)), 'sub-frame');
+    expectHello(eventFrom(guest, null), 'detached');
+    privateContents.add(guest);
+    expectHello(eventFrom(guest), 'private');
+    privateContents.delete(guest);
+
+    const preview = new Guest();
+    documents.track(preview);
+    preview.commit('freedom-preview://workspace/');
+    expectHello(eventFrom(preview), 'preview');
+
+    guest.commit(`${DAPP}next`);
+    expectHello(eventFrom(guest), 'bad-nonce');
   });
 
   test('in the design\'s order: the first step that fails names the refusal', async () => {
@@ -415,6 +486,29 @@ describe('documents', () => {
     const next = open(documents, DAPP, guest);
     guest.emit('did-fail-provisional-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', 'https://ads.example/', false, 2, 2);
     expect((await documents.attest(eventFrom(guest), next.nonce)).ok).toBe(true);
+    // An error page in the same frame ends it too.
+    guest.commitErrorPage(`${DAPP}gone`, { newFrame: false });
+    expect(await documents.attest(eventFrom(guest), next.nonce)).toEqual({ ok: false, reason: 'no-document' });
+  });
+
+  test('a load that is cancelled, or fails without committing, keeps the document', async () => {
+    const { documents } = setup();
+    const { guest, nonce: n } = open(documents);
+    const { processId, routingId } = guest.mainFrame;
+    // ERR_ABORTED never installs an error page, even when the event names
+    // the live main frame and the failed URL is the page's own (a reload).
+    guest.failLoad(DAPP, { code: -3, processId, routingId });
+    guest.failLoad('https://other.example/', { code: -3 });
+    // A failure that committed no frame.
+    guest.failLoad('https://other.example/', { code: -105 });
+    // One that names the live main frame, which still shows its own URL.
+    guest.failLoad('https://other.example/', { code: -105, processId, routingId });
+    // One that names a frame that is not the main frame.
+    guest.failLoad(DAPP, { code: -105, processId: 9, routingId: 9 });
+    const result = await documents.attest(eventFrom(guest), n);
+    expect(result.ok).toBe(true);
+    expect(documents.isCurrent(result.requester)).toBe(true);
+    expect(documents.hello(eventFrom(guest), { nonce: nonce() })).toEqual({ ok: false, reason: 'already-bound' });
   });
 
   test('isCurrent: until the document is replaced or its guest destroyed', async () => {
@@ -566,7 +660,7 @@ describe('names over IPNS', () => {
     const { documents, guest, nonce: n } = bound({ resolveEnsContent });
     const pending = documents.attest(eventFrom(guest), n);
     guest.commit(`ipns://${IPNS_KEY}/two`, { newFrame: false });
-    answer(0);
+    // The replaced document's request is refused at once, its check still running.
     expect(await pending).toEqual({ ok: false, reason: 'navigated' });
 
     // Under a new RenderFrameHost the old frame is gone first.
@@ -574,9 +668,95 @@ describe('names over IPNS', () => {
     expect(documents.hello(eventFrom(guest), { nonce: next }).ok).toBe(true);
     const waiting = documents.attest(eventFrom(guest), next);
     guest.commit(`ipns://${IPNS_KEY}/three`);
-    answer(1);
     expect(await waiting).toEqual({ ok: false, reason: 'detached' });
-    expect(resolveEnsContent).toHaveBeenCalledTimes(3);
+
+    // The first check answers for a document that has gone; only the latest
+    // document gets the next one.
+    answer(0);
+    await flush();
+    expect(resolveEnsContent).toHaveBeenCalledTimes(2);
+  });
+
+  test('one check at a time: reloads while the name is slow keep one check running and the latest document waiting', async () => {
+    const answers = [];
+    const answer = (i, decoded = IPNS_B58) => answers[i]({ type: 'ok', protocol: 'ipns', decoded });
+    const resolveEnsContent = jest.fn(() => new Promise((resolve) => answers.push(resolve)));
+    const { documents, guest } = bound({ resolveEnsContent });
+    const refused = [];
+    let latest;
+    for (let i = 0; i < 50; i += 1) {
+      guest.commit(`ipns://${IPNS_KEY}/`);
+      latest = nonce();
+      expect(documents.hello(eventFrom(guest), { nonce: latest }).ok).toBe(true);
+      refused.push(documents.attest(eventFrom(guest), latest));
+    }
+    const current = refused.pop();
+    // Every replaced document's request was refused without waiting for a
+    // name check: its frame was replaced with it.
+    for (const result of await Promise.all(refused)) {
+      expect(result).toEqual({ ok: false, reason: 'detached' });
+    }
+    expect(resolveEnsContent).toHaveBeenCalledTimes(1);
+
+    // The running check answers for a document that has gone. The latest
+    // document then gets a check of its own, started after its commit.
+    answer(0);
+    await flush();
+    expect(resolveEnsContent).toHaveBeenCalledTimes(2);
+    let settled = false;
+    current.then(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+    answer(1);
+    expect((await current).requester).toMatchObject({ nonce: latest, key: 'example.com' });
+    expect(resolveEnsContent).toHaveBeenCalledTimes(2);
+  });
+
+  test('a check that answers for a document that has gone decides nothing, not even the binding', async () => {
+    const answers = [];
+    const resolveEnsContent = jest.fn(() => new Promise((resolve) => answers.push(resolve)));
+    const { documents, guest } = bound({ resolveEnsContent });
+    guest.commit(`ipns://${IPNS_KEY}/two`);
+    const two = nonce();
+    documents.hello(eventFrom(guest), { nonce: two });
+    const pending = documents.attest(eventFrom(guest), two);
+    // The first document's name moved off the key, but that document is gone.
+    answers[0]({ type: 'not_found' });
+    await flush();
+    answers[1]({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+    expect((await pending).requester.key).toBe('example.com');
+    // The binding is still there for the next commit.
+    guest.commit(`ipns://${IPNS_KEY}/three`);
+    const three = nonce();
+    documents.hello(eventFrom(guest), { nonce: three });
+    const later = documents.attest(eventFrom(guest), three);
+    await flush();
+    answers[2]({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+    expect((await later).requester.key).toBe('example.com');
+  });
+
+  test('a document that ends while waiting for its check is dropped, and a destroyed guest starts none', async () => {
+    const answers = [];
+    const resolveEnsContent = jest.fn(() => new Promise((resolve) => answers.push(resolve)));
+    const { documents, guest } = bound({ resolveEnsContent });
+    guest.commit(`ipns://${IPNS_KEY}/two`);
+    const two = nonce();
+    documents.hello(eventFrom(guest), { nonce: two });
+    const pending = documents.attest(eventFrom(guest), two);
+    guest.commit('https://elsewhere.example/');
+    expect(await pending).toEqual({ ok: false, reason: 'detached' });
+    answers[0]({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+    await flush();
+    expect(resolveEnsContent).toHaveBeenCalledTimes(1);
+
+    const other = bound({ resolveEnsContent });
+    other.guest.commit(`ipns://${IPNS_KEY}/two`);
+    other.guest.destroy();
+    answers[1]({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+    await flush();
+    expect(resolveEnsContent).toHaveBeenCalledTimes(2);
   });
 
   test('a request waits for the check, and acts under the name once it answers', async () => {
