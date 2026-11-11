@@ -12,6 +12,7 @@ const { PrivateKey, Topic, EthAddress, BeeResponseError, Bytes, Identifier, Feed
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { dataSizeFromSpan } = require('./chunk-service');
 const { noUsableBatchError } = require('./batch-errors');
+const { currentVaultEpoch, assertVaultEpoch } = require('../identity/vault-epoch');
 const log = require('electron-log');
 
 // ---------------------------------------------------------------------------
@@ -25,13 +26,23 @@ const writeLocks = new Map();
  * are fully parallel. The lock chains via .then(fn, fn) so a failed write
  * does not block subsequent writes.
  *
+ * A queued write holds its signer's key until its turn. It runs only if the
+ * vault epoch is still the one its key was read in (`epoch`, taken when it
+ * was queued unless the caller read the key earlier): a lock meanwhile ends
+ * the key's use (K-1).
+ *
  * @param {string} topicHex - Topic hex string used as the lock key
  * @param {Function} fn - Async function to execute under the lock
+ * @param {number} [epoch] - Vault epoch the signer key was read in
  * @returns {Promise<*>} Result of fn
  */
-async function withWriteLock(topicHex, fn) {
+async function withWriteLock(topicHex, fn, epoch = currentVaultEpoch()) {
   const prev = writeLocks.get(topicHex) || Promise.resolve();
-  const next = prev.then(fn, fn);
+  const guarded = () => {
+    assertVaultEpoch(epoch);
+    return fn();
+  };
+  const next = prev.then(guarded, guarded);
   writeLocks.set(topicHex, next);
   try {
     return await next;
@@ -509,11 +520,14 @@ async function createFeed(signerPrivateKey, topicString, batchId) {
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} contentReference - Swarm reference to point the feed at
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
- * @param {{ minIndex?: number }} [options] - minIndex: write at this index or
- *   later, for a caller that knows the feed already reached minIndex - 1.
+ * @param {{ minIndex?: number, epoch?: number }} [options] - minIndex: write at
+ *   this index or later, for a caller that knows the feed already reached
+ *   minIndex - 1. epoch: the vault epoch the key was read in (K-1); the
+ *   write stops if the vault was locked since.
  * @returns {Promise<{ index: number }>}
  */
 async function updateFeed(signerPrivateKey, topicString, contentReference, batchId, options = {}) {
+  const epoch = Number.isSafeInteger(options.epoch) ? options.epoch : currentVaultEpoch();
   const minIndex = Number.isSafeInteger(options.minIndex) && options.minIndex > 0 ? options.minIndex : 0;
   const bee = getBee();
   const privateKey = new PrivateKey(signerPrivateKey);
@@ -529,9 +543,10 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
   const result = await withWriteLock(topicHex, async () => {
     const writer = bee.feed.makeWriter(topic, privateKey);
     const nextIndex = await resolveNextIndex(writer, bee, privateKey.publicKey().address(), topic, minIndex);
+    assertVaultEpoch(epoch); // the index lookup awaited the network
     await writer.uploadReference(resolvedBatchId, contentReference, { index: nextIndex });
     return { index: nextIndex };
-  });
+  }, epoch);
 
   log.info(`[FeedService] Feed updated: topic=${topicString}, ref=${contentReference}, index=${result.index}`);
 
@@ -565,11 +580,13 @@ function unwritablePayloadError() {
  * @param {string} signerPrivateKey - 0x-prefixed hex private key
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string|Buffer|Uint8Array} data - Payload to write
- * @param {{ batchId?: string, index?: number }} [options]
+ * @param {{ batchId?: string, index?: number, epoch?: number }} [options] -
+ *   epoch: the vault epoch the key was read in (K-1)
  * @returns {Promise<{ index: number }>}
  */
 async function writeFeedPayload(signerPrivateKey, topicString, data, options = {}) {
   const { batchId, index } = options;
+  const epoch = Number.isSafeInteger(options.epoch) ? options.epoch : currentVaultEpoch();
   const bee = getBee();
   const privateKey = new PrivateKey(signerPrivateKey);
   const topic = Topic.fromString(topicString);
@@ -600,9 +617,10 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
     }
 
     if (dataSize === 0) throw unwritablePayloadError();
+    assertVaultEpoch(epoch); // the index checks awaited the network
     await writer.uploadPayload(resolvedBatchId, data, { index: writeIndex });
     return { index: writeIndex };
-  });
+  }, epoch);
 
   log.info(`[FeedService] Feed payload written: topic=${topicString}, index=${result.index}`);
 
