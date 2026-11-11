@@ -3636,9 +3636,12 @@ freedomAPI.onSettingsUpdated?.((settings) => {
   ].map((method) => ({ ...method, ...NETWORK_SOURCE_COPY[method.id] }));
   const METHOD_IDS = new Set(METHODS.map((method) => method.id));
   // Colibri answers no name lookup (#1076): its proofs don't cover the
-  // contract code a lookup runs. The resolver skips it wherever the order
-  // puts it, so its row here says so instead of offering verified answers.
-  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. The local node, then several servers, answer in its place.";
+  // contract code a lookup runs. The resolver doesn't drop its slot: it
+  // puts the quorum there, and Myotis too when this list enables it
+  // (`colibriNameSubstitute` in ens-resolver.js), each answering with its
+  // own label. One already earlier in the order keeps its earlier place.
+  // So the row says it is substituted instead of offering verified answers.
+  const COLIBRI_NAMES_HELP = "Skipped for names: its proofs don't cover them yet. Several servers, and the local node if it's enabled here, take its place unless they come earlier.";
 
   let config = { networks: {}, sources: [] };
   let enabledOrder = ['myotis', 'colibri', 'quorum'];

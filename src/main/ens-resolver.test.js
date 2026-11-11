@@ -3144,7 +3144,8 @@ describe('ens-resolver', () => {
   // `eth_call` on contract code from one of its public RPCs, unchecked
   // against the proven code hash, and proves nothing for a call that reads
   // no storage, so that RPC could choose the answer. An order that names
-  // Colibri skips it, and the next method answers with its own label. The
+  // Colibri gets the quorum (and Myotis, if the order enables it) in its
+  // place, each answering with its own label. The
   // Colibri mock answers with forgeries (beforeEach): asking it would show.
   describe('Colibri answers no name lookup (#1076)', () => {
     const IPFS_V0 = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
@@ -3253,8 +3254,8 @@ describe('ens-resolver', () => {
     });
 
     test('with Direct after Colibri, the quorum answers before Direct', async () => {
-      // Colibri's slot becomes Myotis and the quorum, as for Colibri alone,
-      // so a kept Direct fallback doesn't turn every lookup unverified.
+      // Colibri's slot becomes the quorum, as for Colibri alone, so a kept
+      // Direct fallback doesn't turn every lookup unverified.
       withOrder({ ensResolutionOrder: ['colibri', 'direct'] });
       mockUrResolve.mockResolvedValue(urReturnsAddress(REAL));
 
@@ -3266,11 +3267,16 @@ describe('ens-resolver', () => {
     });
 
     test.each([
-      [['colibri', 'direct'], '[myotis,quorum,direct]'],
-      [['direct', 'colibri'], '[direct,myotis,quorum]'],
-      [['quorum', 'colibri'], '[quorum,myotis]'],
-      [['colibri'], '[myotis,quorum]'],
+      // Without Myotis in the saved order (its toggle is off), Colibri's
+      // slot is the quorum alone: the substitution must not turn Myotis on.
+      [['colibri', 'direct'], '[quorum,direct]'],
+      [['direct', 'colibri'], '[direct,quorum]'],
+      [['quorum', 'colibri'], '[quorum]'],
+      [['colibri'], '[quorum]'],
+      // With Myotis on, the slot gets Myotis and then the quorum.
       [['myotis', 'colibri', 'quorum'], '[myotis,quorum]'],
+      [['colibri', 'myotis', 'direct'], '[myotis,quorum,direct]'],
+      [['direct', 'colibri', 'myotis'], '[direct,myotis,quorum]'],
       [['direct'], '[direct]'],
     ])('a saved order %j resolves as %s', async (order, expected) => {
       withOrder({ ensResolutionOrder: order });
@@ -3286,16 +3292,35 @@ describe('ens-resolver', () => {
       }
     });
 
-    test('with Colibri alone, Myotis answers first when it is ready', async () => {
-      withOrder({ ensResolutionMethod: 'colibri', ensResolutionOrder: ['colibri'] });
+    const myotisReadyWith = (dataHex) => {
       mockMyotisIsEnabled.mockImplementation(() => true);
       mockMyotisIsReady.mockImplementation(() => true);
       mockMyotisResolveEnsRecord.mockResolvedValue({
         status: 'ok',
         verified: true,
         blockNumber: 23456789,
-        dataHex: ipfsContenthashFor(IPFS_V0),
+        dataHex,
       });
+    };
+
+    test('with Colibri alone, a ready Myotis stays unasked: its toggle is off', async () => {
+      // A saved order without Myotis is the Settings toggle switched off.
+      // Colibri's slot must not switch it back on behind that toggle.
+      withOrder({ ensResolutionMethod: 'colibri', ensResolutionOrder: ['colibri'] });
+      myotisReadyWith(ipfsContenthashFor(IPFS_V0));
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+
+      const result = await resolveEnsContent('local.eth');
+
+      expect(result).toMatchObject({ type: 'ok', uri: `ipfs://${IPFS_V0}`, trust: quorumTrust });
+      expect(mockMyotisResolveEnsRecord).not.toHaveBeenCalled();
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
+      expectNoColibri(result);
+    });
+
+    test('with Colibri before an enabled Myotis, Myotis answers first when it is ready', async () => {
+      withOrder({ ensResolutionOrder: ['colibri', 'myotis'] });
+      myotisReadyWith(ipfsContenthashFor(IPFS_V0));
 
       const result = await resolveEnsContent('local.eth');
 

@@ -1642,23 +1642,28 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
 // one of its public `eth_rpc` servers without checking it against the
 // proven code hash, and a call that reads no storage gets no proof at all.
 // So one of those servers could answer any address, name or revert, and it
-// would pass as verified. An order that names Colibri gets Myotis and the
-// quorum in its place, each answering with its own label. Colibri can come
-// back once a release binds the code it runs, and the whole call, to proven
-// state.
+// would pass as verified. An order that names Colibri gets the quorum, and
+// Myotis if the order enables it, in Colibri's place, each answering with
+// its own label. Colibri can come back once a release binds the code it
+// runs, and the whole call, to proven state.
 const RESOLUTION_METHOD_IDS = new Set(['myotis', 'quorum', 'direct']);
 
-// What a saved Colibri slot becomes: the verified methods the legacy
-// Colibri default gets, in the same place in the order. Without this a
-// saved `colibri, direct` would drop to Direct alone and answer unverified,
-// while `colibri` alone answers from Myotis or the quorum.
-const COLIBRI_NAME_SUBSTITUTE = ['myotis', 'quorum'];
+// What a saved Colibri slot becomes: verified methods, in the same place in
+// the order. Without this a saved `colibri, direct` would drop to Direct
+// alone and answer unverified, while `colibri` alone answers from the
+// quorum. The quorum always takes the slot; Myotis comes in
+// only when the saved order enables it itself: an order without it is the
+// user's Myotis toggle switched off, and the slot must not switch it back on.
+function colibriNameSubstitute(order) {
+  return order.includes('myotis') ? ['myotis', 'quorum'] : ['quorum'];
+}
 
 function resolutionPolicy(network) {
   const verification = network?.verification || {};
-  const configured = Array.isArray(verification.order)
-    ? verification.order
-        .flatMap((method) => (method === 'colibri' ? COLIBRI_NAME_SUBSTITUTE : [method]))
+  const saved = Array.isArray(verification.order) ? verification.order : null;
+  const configured = saved
+    ? saved
+        .flatMap((method) => (method === 'colibri' ? colibriNameSubstitute(saved) : [method]))
         .filter((method, index, all) =>
           RESOLUTION_METHOD_IDS.has(method) && all.indexOf(method) === index
         )
