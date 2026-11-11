@@ -1835,6 +1835,52 @@ describe('chain-data-router', () => {
       expect(mockRequestViaColibri).toHaveBeenCalledWith(1, method, ['0xmined'], { deadlineMs: 1000 });
     });
 
+    // R1-F1 (#1060): in privacy mode Colibri proves the receipt at the index
+    // the prover's unauthenticated tx_cache names, without comparing its hash.
+    test.each([
+      ['eth_getTransactionReceipt', MINED_RECEIPT, { ...MINED_RECEIPT, transactionHash: '0xother', status: '0x0' }],
+      ['eth_getTransactionReceipt', MINED_RECEIPT, { ...MINED_RECEIPT, transactionHash: undefined }],
+      ['eth_getTransactionReceipt', MINED_RECEIPT, '0xmined'],
+      ['eth_getTransactionByHash', MINED_TX, { ...MINED_TX, hash: '0xother' }],
+    ])('keeps the RPC’s %s when Colibri’s proven answer is another transaction’s', async (method, answer, proven) => {
+      rpcAnswers({ [method]: answer });
+      mockRequestViaColibri.mockResolvedValue(proven);
+      await expect(request(1, method, ['0xmined'], { includeTrust: true })).resolves.toEqual({
+        result: answer, source: 'direct', verified: false, trust: expect.anything(),
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('takes Colibri’s proven receipt whatever the case of its hash', async () => {
+      rpcAnswers({ eth_getTransactionReceipt: { ...MINED_RECEIPT, transactionHash: '0xAB' } });
+      mockRequestViaColibri.mockResolvedValue({ ...MINED_RECEIPT, transactionHash: '0xab', proven: true });
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xAb'])).resolves.toMatchObject({
+        result: { transactionHash: '0xab', proven: true }, source: 'colibri', verified: true,
+      });
+    });
+
+    test.each([
+      ['eth_getTransactionReceipt', MINED_RECEIPT, null],
+      ['eth_getTransactionByHash', MINED_TX, null],
+      ['eth_getTransactionByHash', MINED_TX, { hash: '0xmined', blockNumber: null, blockHash: null }],
+    ])('keeps the RPC’s mined %s when Colibri reports it unknown or pending', async (method, answer, proven) => {
+      rpcAnswers({ [method]: answer });
+      mockRequestViaColibri.mockResolvedValue(proven);
+      await expect(request(1, method, ['0xmined'])).resolves.toEqual({
+        result: answer, source: 'direct', verified: false,
+      });
+    });
+
+    test('fails a Colibri-only lookup whose proven receipt is another transaction’s', async () => {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
+      global.fetch = jest.fn();
+      mockRequestViaColibri.mockResolvedValue({ ...MINED_RECEIPT, transactionHash: '0xother' });
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'])).rejects.toThrow(
+        /Colibri's proven eth_getTransactionReceipt answer is not for the requested transaction/
+      );
+    });
+
     test('serves the RPC’s answer, without asking it again, when Colibri cannot prove a mined one', async () => {
       rpcAnswers({ eth_getTransactionReceipt: MINED_RECEIPT });
       mockRequestViaColibri.mockRejectedValue(trapError());
@@ -2782,7 +2828,6 @@ describe('Ant bridge cancellation', () => {
       ['eth_getBalance', ['pending'], ['pending', 'latest']],
       ['eth_getBlockByNumber', ['latest', 'pending'], ['latest', 'pending']],
       ['eth_getBlockByHash', [HASH, 'pending'], [HASH, 'pending']],
-      ['eth_getTransactionReceipt', ['pending'], ['pending']],
       ['eth_blockNumber', ['earliest'], ['earliest']],
     ])('%s with a tag outside its block parameter %j is still asked of Colibri', async (method, params, sent) => {
       readOrder(['colibri']);

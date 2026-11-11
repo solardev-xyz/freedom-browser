@@ -313,6 +313,21 @@ const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
 // transaction they report as mined goes on to Colibri for its proof (see
 // txLookupNeedsProof and request()).
 const TX_LOOKUP_METHODS = new Set(['eth_getTransactionReceipt', 'eth_getTransactionByHash']);
+// The field of a transaction lookup's answer that names its transaction.
+// Colibri 3.0.3's privacy-mode receipt lookup (verify_pap_tx.c,
+// pap_tx_receipt) takes the block and index from the prover's tx_cache, which
+// nothing authenticates, and proves the receipt at that index without
+// comparing its transaction hash with the requested one (#1060). A lying
+// prover can so hand back another transaction's genuinely proven receipt: a
+// reverted send would read as confirmed. The receipt's transactionHash is the
+// keccak of the proven transaction's bytes (eth_tx.c,
+// c4_write_receipt_data_from_raw), so comparing it with the requested hash
+// binds the answer to the request. pap_tx_by_hash already compares; the
+// router checks both lookups the same way.
+const TX_LOOKUP_HASH_FIELD = {
+  eth_getTransactionReceipt: 'transactionHash',
+  eth_getTransactionByHash: 'hash',
+};
 // Per (chain, method) backoff from the verifier itself faulting (a WASM trap,
 // or its worker replaced under the request), whoever asked: wallet-internal
 // reads carry no routing context, so the per-app adaptive state above never
@@ -1385,7 +1400,27 @@ async function requestColibri(chainId, method, params, routeKey = null, deadline
   // still waiting on the prover), so the request settles; keep it tracked
   // until then so repeated page calls cannot accumulate background work.
   requestPromise.then(release, release);
-  return withSourceDeadline(requestPromise, 'Colibri', budgetMs);
+  const result = await withSourceDeadline(requestPromise, 'Colibri', budgetMs);
+  const unbound = colibriTxLookupUnbound(method, params, result);
+  if (unbound) throw new Error(unbound);
+  return result;
+}
+
+// Why a transaction lookup's answer from Colibri isn't the requested
+// transaction's (see TX_LOOKUP_HASH_FIELD), or null when it is, or when it is
+// no transaction lookup or no transaction (null).
+function colibriTxLookupUnbound(method, params, result) {
+  const field = TX_LOOKUP_HASH_FIELD[method];
+  if (!field || result === null || result === undefined) return null;
+  const requested = Array.isArray(params) ? params[0] : undefined;
+  const answered = typeof result === 'object' ? result[field] : undefined;
+  if (
+    typeof requested === 'string' && typeof answered === 'string' &&
+    requested.toLowerCase() === answered.toLowerCase()
+  ) {
+    return null;
+  }
+  return `Colibri's proven ${method} answer is not for the requested transaction`;
 }
 
 async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
@@ -2355,6 +2390,12 @@ async function request(
       });
       signal?.throwIfAborted();
       const result = includeTrust ? sourceResult.result : sourceResult;
+      if (source === 'colibri' && txLookup.unverified && !txLookupNeedsProof(method, result)) {
+        // Asked to prove a transaction a source reported as mined, Colibri
+        // reports it unknown or pending. Nothing proves an absence: the
+        // mined answer in hand stands, labelled as its source's.
+        throw new Error(`Colibri proved no mined transaction for ${method}`);
+      }
       if (
         txLookup.colibriDeferred && source !== 'colibri' &&
         txLookupNeedsProof(method, result)
