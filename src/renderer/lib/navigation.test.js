@@ -2592,6 +2592,22 @@ describe('navigation', () => {
       expect(loadedUrl).toContain('rad-browser.html?rid=zrepo123');
     });
 
+    test.each([
+      ['pubky://KEY/pub/app/index.html', 'pubky://KEY/pub/app/index.html'],
+      ['pubkyKEY/pub/a.txt', 'pubky://KEY/pub/a.txt'],
+      ['pubky://KEY', 'pubky://KEY/pub/'],
+    ])('Pubky: %s loads %s', async (input, expected) => {
+      const key = 'gujx6qd8ksydh1makdphd3bxu351d9b8waqka8hfg6q7hnqkxexo';
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(input.replace('KEY', key.toUpperCase()));
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toBe(expected.replace('KEY', key));
+    });
+
     test('IPNS: error page carries protocol=ipns', async () => {
       const ctx = await loadNavigationModule({ registry: { ipfs: { mode: 'disabled' } } });
       await ctx.mod.initNavigation();

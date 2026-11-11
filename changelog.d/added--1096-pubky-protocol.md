@@ -1,0 +1,1 @@
+- Open public files on Pubky homeservers with `pubky://<public-key>/pub/<path>` ([#1096](https://github.com/solardev-xyz/freedom-browser/issues/1096))
