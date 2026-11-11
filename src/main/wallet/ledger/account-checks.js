@@ -16,7 +16,7 @@ const { readAddresses } = require('./transport');
 const {
   getLedgerRecordsToCheck,
   recordLedgerAddressCheck,
-  LEDGER_ADDRESS_CHECK,
+  ADDRESS_CHECK,
 } = require('../../identity-manager');
 
 /**
@@ -45,7 +45,7 @@ async function checkLedgerAccounts() {
     const matched = typeof onDevice === 'string' && onDevice.toLowerCase() === record.address.toLowerCase();
     const state = recordLedgerAddressCheck(record.index, matched);
     if (state && state !== record.addressCheck) updated = true;
-    if (state === LEDGER_ADDRESS_CHECK.MISMATCHED) {
+    if (state === ADDRESS_CHECK.MISMATCHED) {
       mismatched.push({ index: record.index, name: record.name, address: record.address, path: record.path });
     }
   });

@@ -1,4 +1,9 @@
-const { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError } = require('./errors');
+const {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  createAccountUncheckedError,
+  mapRemoteRpcError,
+} = require('./errors');
 
 describe('remote errors', () => {
   test('createRemoteError mints code + user-facing message from the registry', () => {
@@ -11,6 +16,19 @@ describe('remote errors', () => {
     const err = createRemoteError(REMOTE_ERROR_CODES.UNKNOWN, 'gas too low');
     expect(err.code).toBe('REMOTE_UNKNOWN');
     expect(err.message).toBe('gas too low');
+  });
+
+  test('createAccountUncheckedError names the account, unchecked vs mismatched', () => {
+    const unchecked = createAccountUncheckedError('Old Phone');
+    expect(unchecked.code).toBe(REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED);
+    expect(unchecked.message).toMatch(
+      /^"Old Phone" can't own a Safe until it has been checked on your phone/
+    );
+    const mismatched = createAccountUncheckedError('Old Phone', { mismatched: true });
+    expect(mismatched.code).toBe(REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED);
+    expect(mismatched.message).toMatch(
+      /^"Old Phone" can't own a Safe: your phone last answered from a different account/
+    );
   });
 
   test('maps EIP-1193 user rejection (4001) with our neutral message', () => {

@@ -112,17 +112,29 @@ function eligibleOwners() {
 }
 
 /**
- * A Ledger account no device has matched can't own a Safe (#1065): main
- * refuses it, and the list says why before the user tries.
+ * A device account its device hasn't shown it holds can't own a Safe:
+ * a Ledger account no device has matched (#1065), or a phone account its
+ * phone hasn't answered for (#1078). Main refuses it, and the list says
+ * why before the user tries.
  */
-function ownerSubLabel(wallet) {
+const OWNER_CHECK_LABELS = {
+  ledger: {
+    mismatched: 'not on the Ledger last connected',
+    unchecked: 'not checked on its Ledger yet',
+  },
+  remote: {
+    mismatched: 'your phone answered from another account',
+    unchecked: 'not checked on your phone yet',
+  },
+};
+
+export function ownerSubLabel(wallet) {
   const address = truncateAddress(wallet.address);
-  if (wallet.type !== 'ledger' || !wallet.addressCheck || wallet.addressCheck === 'matched') {
+  const labels = OWNER_CHECK_LABELS[wallet.type];
+  if (!labels || !wallet.addressCheck || wallet.addressCheck === 'matched') {
     return address;
   }
-  return wallet.addressCheck === 'mismatched'
-    ? `${address} · not on the Ledger last connected`
-    : `${address} · not checked on its Ledger yet`;
+  return `${address} · ${wallet.addressCheck === 'mismatched' ? labels.mismatched : labels.unchecked}`;
 }
 
 function renderOwnerList() {

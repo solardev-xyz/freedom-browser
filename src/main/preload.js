@@ -886,8 +886,11 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   // The request is being handed to the phone: from now on a timeout or
   // cancel cannot prove the phone did not act on it.
   delivered: (payload) => ipcRenderer.send('remote-signer:delivered', payload),
-  // Persist a phone account discovered via eth_requestAccounts.
+  // Persist a phone account discovered via eth_requestAccounts. Main has
+  // the phone sign a check as the account first (#1078).
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
+  // Check an existing phone account on the phone (#1078).
+  checkAccount: (index) => ipcRenderer.invoke('wallet:check-remote-wallet', index),
 });
 
 contextBridge.exposeInMainWorld('swarmNode', {

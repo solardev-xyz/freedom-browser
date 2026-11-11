@@ -1,0 +1,3 @@
+- A page's `window.swarm` feed reads are charged to its read budget before the entry is downloaded ([#1051](https://github.com/solardev-xyz/freedom-browser/issues/1051))
+  - Any page could make Freedom download and hold a feed entry of any size, many at once
+  - An entry larger than the budget is refused with `data_too_large`, as `readData` refuses a blob
