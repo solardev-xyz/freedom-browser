@@ -28,8 +28,9 @@
  *    detecting endpoints — and need to fail fast so the page can render
  *    its own fallback rather than stalling for ~50 s per missing asset.
  *  - Every other method gets 405: `bzz:` is read-only, like `rad:`
- *    (security audit O-2, #429). Request headers are allowlisted and a
- *    path with an encoded `/` or `\` is refused — see below.
+ *    (security audit O-2, #429). Request headers are allowlisted, and a
+ *    path with an encoded `/` or `\`, a `\`, or a dot segment hidden in
+ *    escapes is refused — see below and `lib/gateway-path.js`.
  *  - Every outgoing request carries `Swarm-Chunk-Retrieval-Timeout`,
  *    `Swarm-Redundancy-Strategy`, and `Swarm-Redundancy-Fallback-Mode`
  *    so Bee gets extra server-side runway per chunk. These are ignored
@@ -48,6 +49,7 @@ const {
 } = require('../content-name-resolver');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { rewriteGatewayLocation } = require('../lib/gateway-location');
+const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
   PAGE_STATE_RESPONSE_HEADERS,
   stripPageStateHeaders,
@@ -57,6 +59,7 @@ const {
   redactForLog,
   redactUrlForLog,
   redactedFailure,
+  errorCodeForLog,
 } = require('../private/private-log-context');
 
 // Per-attempt retry schedule. First entry is the delay BEFORE the 2nd
@@ -121,14 +124,18 @@ function sanitizeRequestHeaders(requestHeaders) {
 // node's router can be steered out of `/bzz/` with one
 // (`bzz://<ref>/..%2F..%2Fstamps`) is unconfirmed (O-2); it is not worth
 // finding out, since a manifest path never needs either. Case-insensitive.
-const ENCODED_SEPARATOR_RE = /%(?:2f|5c)/i;
-
-function hasEncodedSeparator(bzzUrl) {
+// A literal `\` is refused too: undici reads it as `/`, so
+// `bzz://<ref>/a/..\..\..\stamps` would reach the node's own `/stamps`.
+// Chromium rewrites a page's `\` before it gets here; a direct caller of the
+// handler doesn't.
+function hasUnsafePath(bzzUrl) {
+  let pathname;
   try {
-    return ENCODED_SEPARATOR_RE.test(new URL(bzzUrl).pathname);
+    ({ pathname } = new URL(bzzUrl));
   } catch {
     return false;
   }
+  return !isContainedPath(pathname, { encodedSeparators: false });
 }
 
 /**
@@ -144,7 +151,7 @@ function hasEncodedSeparator(bzzUrl) {
  *    than the resolved hash.
  *
  * Returns one of:
- *  - `{ ok: true, url }`              — usable Bee gateway URL.
+ *  - `{ ok: true, url, base }`        — usable Bee gateway URL and the node base it extends.
  *  - `{ ok: false, status, message, logMessage }` — semantic failure (404
  *    mismatch / no contenthash, 415 unsupported codec, 502 resolver
  *    conflict/error). `message` goes to the page, `logMessage` to the
@@ -170,6 +177,7 @@ async function buildGatewayUrl(bzzUrl) {
 
     return {
       ok: true,
+      base: antApiUrl,
       url: `${antApiUrl}/bzz/${host}${parsed.pathname}${parsed.search}`,
     };
   }
@@ -239,6 +247,7 @@ async function resolveEnsToGatewayUrl(host, parsed, antApiUrl) {
     }
     return {
       ok: true,
+      base: antApiUrl,
       url: `${antApiUrl}/bzz/${result.decoded}${joinPublishedPath(result.basePath, parsed.pathname)}${parsed.search}`,
     };
   }
@@ -470,7 +479,10 @@ async function handleBzzRequest(
   if (!IDEMPOTENT_METHODS.has(method)) {
     return jsonErrorResponse(405, 'method not allowed');
   }
-  if (hasEncodedSeparator(request.url)) {
+  if (hasUnsafePath(request.url)) {
+    log.info(
+      `[bzz-protocol] 400 for ${redactUrlForLog(request.url)}: path leaves its content root`
+    );
     return jsonErrorResponse(400, 'invalid bzz path');
   }
   const built = await buildGatewayUrl(request.url);
@@ -489,6 +501,15 @@ async function handleBzzRequest(
     return jsonErrorResponse(built.status, built.message);
   }
   const gatewayUrl = built.url;
+  // The target as undici will send it, whatever supplied its path (a name's
+  // record can carry one), stays beneath `/bzz/<ref>/` under the node's own
+  // base, which for an external node can carry a path prefix.
+  if (!isContainedTarget(gatewayUrl, ['bzz'], { encodedSeparators: false, base: built.base })) {
+    log.info(
+      `[bzz-protocol] 502 for ${redactUrlForLog(request.url)}: target leaves its content root`
+    );
+    return jsonErrorResponse(502, 'bzz target leaves its content root');
+  }
 
   const headers = sanitizeRequestHeaders(request.headers);
 
@@ -501,11 +522,11 @@ async function handleBzzRequest(
     );
     return withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl));
   } catch (err) {
-    const code = err?.cause?.code || err?.code || '';
+    const code = errorCodeForLog(err);
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';
+    // The code only: an error's text can name the URL or path asked for.
     log.warn(
-      `[bzz-protocol] fetch failed for ${redactUrlForLog(gatewayUrl)}: ${err?.message || err}` +
-        (code ? ` (${code})` : '')
+      `[bzz-protocol] fetch failed for ${redactUrlForLog(gatewayUrl)}` + (code ? ` (${code})` : '')
     );
     return jsonErrorResponse(
       isConnRefused ? 503 : 502,

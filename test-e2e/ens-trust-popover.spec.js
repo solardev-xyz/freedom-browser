@@ -115,6 +115,44 @@ const LEVELS = {
       { label: 'CID', value: 'QmUnverifiedTrust', copy: 'QmUnverifiedTrust' },
     ],
   },
+  // Unverified but not single-source: fewer agreeing RPCs than the quorum's
+  // M (here, a reduced second wave of two). The summary must count them
+  // rather than read "A single public RPC" above two numbered RPC rows.
+  'unverified-below-quorum': {
+    level: 'unverified',
+    name: 'below-quorum-trust.eth',
+    fixture: {
+      type: 'ok',
+      protocol: 'ipfs',
+      decoded: 'QmBelowQuorumTrust',
+      uri: 'ipfs://QmBelowQuorumTrust',
+      trust: {
+        level: 'unverified',
+        system: 'ens',
+        block: { number: 21000004 },
+        queried: ['test-d.rpc.test', 'test-e.rpc.test'],
+        agreed: ['test-d.rpc.test', 'test-e.rpc.test'],
+        dissented: [],
+      },
+    },
+    shieldLabel: 'Ethereum name resolution trust: unverified',
+    status: 'ENS resolution not verified',
+    trustRows: [
+      { label: 'Resolved by', value: '2 public RPCs', copy: null },
+      {
+        label: 'Evidence',
+        value: 'Matching responses, below quorum (not verified)',
+        copy: null,
+      },
+      { label: 'Block', value: '21000004', copy: '21000004' },
+      { label: 'RPC 1', value: 'test-d.rpc.test', copy: 'test-d.rpc.test' },
+      { label: 'RPC 2', value: 'test-e.rpc.test', copy: 'test-e.rpc.test' },
+    ],
+    contentRows: [
+      { label: 'Network', value: 'IPFS', copy: null },
+      { label: 'CID', value: 'QmBelowQuorumTrust', copy: 'QmBelowQuorumTrust' },
+    ],
+  },
   conflict: {
     name: 'conflict-trust.eth',
     fixture: {
@@ -179,8 +217,9 @@ const navigateTo = async (window, value) => {
 // (whose address bar keeps the bare name, which is what carries the shield).
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const loadLevel = async (window, harness, level) => {
-  const { name, fixture } = LEVELS[level];
+const loadLevel = async (window, harness, key) => {
+  const { name, fixture } = LEVELS[key];
+  const level = LEVELS[key].level || key;
   await harness.setEnsFixture(name, fixture);
   if (fixture.uri) {
     await harness.setContentFixture(`ipfs://${name}/`, {
@@ -261,13 +300,14 @@ const menuState = (window) =>
     expanded: document.getElementById('trust-shield')?.getAttribute('aria-expanded'),
   }));
 
-for (const level of Object.keys(LEVELS)) {
-  test(`the ${level} shield opens a popover with its status and row sequences`, async ({
+for (const key of Object.keys(LEVELS)) {
+  test(`the ${key} shield opens a popover with its status and row sequences`, async ({
     window,
     harness,
   }, testInfo) => {
-    const expected = LEVELS[level];
-    const shield = await loadLevel(window, harness, level);
+    const expected = LEVELS[key];
+    const level = expected.level || key;
+    const shield = await loadLevel(window, harness, key);
     await expect(shield).toHaveAttribute('aria-label', expected.shieldLabel);
 
     await clickOverGuest(shield);
@@ -297,7 +337,7 @@ for (const level of Object.keys(LEVELS)) {
       expect(row.uncopyable).toBe(row.copy === null);
     }
 
-    await window.screenshot({ path: testInfo.outputPath(`${level}-popover.png`) });
+    await window.screenshot({ path: testInfo.outputPath(`${key}-popover.png`) });
 
     // A second click on the shield is the toggle's other half.
     await shield.click();
