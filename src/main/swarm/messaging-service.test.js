@@ -389,6 +389,14 @@ describe('openSubscriptionSocket', () => {
     expect(sockets[1].url).toBe(`ws://127.0.0.1:1633/pss/subscribe/${'cd'.repeat(32)}`);
   });
 
+  test('asks the node for its PSS mailbox only for a pss history socket (#1157)', () => {
+    openSubscriptionSocket({ kind: 'pss', key: 'cd'.repeat(32), history: true }, { onMessage: jest.fn() }).cancel();
+    openSubscriptionSocket({ kind: 'gsoc', key: 'ab'.repeat(32), history: true }, { onMessage: jest.fn() }).cancel();
+
+    expect(sockets[0].url).toBe(`ws://127.0.0.1:1633/pss/subscribe/${'cd'.repeat(32)}?history=true`);
+    expect(sockets[1].url).toBe(`ws://127.0.0.1:1633/gsoc/subscribe/${'ab'.repeat(32)}`);
+  });
+
   test('establishes after the socket stays open through the grace window', async () => {
     const handle = openSubscriptionSocket({ kind: 'gsoc', key: 'ab'.repeat(32) }, { onMessage: jest.fn() });
 

@@ -176,6 +176,100 @@ describe('subscription-registry', () => {
     expect(openSocket).toHaveBeenCalledTimes(2);
   });
 
+  describe('PSS history (#1157)', () => {
+    const PSS_KEY = 'cd'.repeat(32);
+
+    test('a history subscription gets its own socket, even next to a live one', async () => {
+      await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: PSS_KEY });
+      const { subscriptionId } = await subscribeEstablished({
+        origin: 'b.eth', webContentsId: 2, kind: 'pss', key: PSS_KEY, history: true,
+      });
+      await subscribeEstablished({ origin: 'c.eth', webContentsId: 3, kind: 'pss', key: PSS_KEY, history: true });
+
+      expect(openSocket).toHaveBeenCalledTimes(3);
+      expect(opened[0].target).toEqual({ kind: 'pss', key: PSS_KEY });
+      expect(opened[1].target).toEqual({ kind: 'pss', key: PSS_KEY, history: true });
+      expect(opened[2].target).toEqual({ kind: 'pss', key: PSS_KEY, history: true });
+
+      // Its socket feeds only it, and closes with it.
+      opened[1].handlers.onMessage(Buffer.from('backlog'));
+      expect(deliver).toHaveBeenCalledTimes(1);
+      expect(deliver.mock.calls[0][0].id).toBe(subscriptionId);
+      registry.unsubscribe('b.eth', subscriptionId);
+      expect(opened[1].cancel).toHaveBeenCalledTimes(1);
+      expect(opened[0].cancel).not.toHaveBeenCalled();
+      expect(opened[2].cancel).not.toHaveBeenCalled();
+    });
+
+    test('the backlog that arrives while it establishes is delivered, in order, once established', async () => {
+      const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: PSS_KEY, history: true });
+      opened[0].handlers.onMessage(Buffer.from('one'));
+      opened[0].handlers.onMessage(Buffer.from('two'));
+      expect(deliver).not.toHaveBeenCalled();
+
+      opened[0].resolveEstablished();
+      const { subscriptionId } = await promise;
+      opened[0].handlers.onMessage(Buffer.from('three'));
+
+      expect(deliver.mock.calls.map(([sub, payload]) => [sub.id, payload.toString()])).toEqual([
+        [subscriptionId, 'one'],
+        [subscriptionId, 'two'],
+        [subscriptionId, 'three'],
+      ]);
+    });
+
+    test('held messages are bounded and dropped if establishment fails', async () => {
+      const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: PSS_KEY, history: true });
+      for (let i = 0; i < 300; i += 1) opened[0].handlers.onMessage(Buffer.from(String(i)));
+      opened[0].rejectEstablished(Object.assign(new Error('full'), { reason: 'node_subscription_limit' }));
+      await expect(promise).rejects.toMatchObject({ reason: 'node_subscription_limit' });
+      expect(deliver).not.toHaveBeenCalled();
+      expect(opened[0].cancel).toHaveBeenCalled();
+
+      const bounded = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: PSS_KEY, history: true });
+      for (let i = 0; i < 300; i += 1) opened[1].handlers.onMessage(Buffer.from(String(i)));
+      opened[1].resolveEstablished();
+      await bounded;
+      expect(deliver).toHaveBeenCalledTimes(256);
+    });
+
+    test('a live subscription still drops what arrives before it establishes', async () => {
+      const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: PSS_KEY });
+      opened[0].handlers.onMessage(Buffer.from('early'));
+      opened[0].resolveEstablished();
+      await promise;
+      expect(deliver).not.toHaveBeenCalled();
+    });
+
+    test('history sockets close with their page, their origin and an establishment timeout', async () => {
+      await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: PSS_KEY, history: true });
+      await subscribeEstablished({ origin: 'b.eth', webContentsId: 2, kind: 'pss', key: PSS_KEY, history: true });
+      registry.cancelByWebContents(1);
+      expect(opened[0].cancel).toHaveBeenCalledTimes(1);
+      registry.cancelByOrigin('b.eth');
+      expect(opened[1].cancel).toHaveBeenCalledTimes(1);
+
+      jest.useFakeTimers();
+      try {
+        registry.configure({ openSocket, deliver, maxSubscriptionsPerOrigin: 3, establishTimeoutMs: 100 });
+        const stuck = registry.subscribe({ origin: 'c.eth', webContentsId: 3, kind: 'pss', key: PSS_KEY, history: true });
+        jest.advanceTimersByTime(101);
+        await expect(stuck).rejects.toMatchObject({ reason: 'establish_timeout' });
+        expect(opened[2].cancel).toHaveBeenCalledTimes(1);
+        expect(registry.countByOrigin('c.eth')).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('history is ignored for gsoc, which shares its socket as before', async () => {
+      await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+      await registry.subscribe({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: GSOC_KEY, history: true });
+      expect(openSocket).toHaveBeenCalledTimes(1);
+      expect(opened[0].target).toEqual({ kind: 'gsoc', key: GSOC_KEY });
+    });
+  });
+
   test('unsubscribe is origin-scoped and closes the socket with its last subscription', async () => {
     const { subscriptionId } = await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
     const { subscriptionId: other } = await registry.subscribe({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: GSOC_KEY });

@@ -1,0 +1,2 @@
+- In `window.swarm`, unsubscribing always succeeds ([#1157](https://github.com/solardev-xyz/freedom-browser/issues/1157))
+  - Unsubscribing an id that is already closed used to fail with `subscription_not_found`

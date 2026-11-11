@@ -74,6 +74,12 @@ const SETUP_REASONS = new Set([
   'no-usable-stamps',
 ]);
 
+const PSS_HISTORY_UNAVAILABLE = {
+  code: -32602,
+  message: 'history is not available on this node',
+  data: { reason: 'unsupported_option', option: 'history' },
+};
+
 const PUBLIC_METHODS = new Set([
   'swarm_getCapabilities',
   'swarm_readFeedEntry',
@@ -176,6 +182,17 @@ async function handleSwarmRequest(webview, request) {
 
   try {
     let result;
+
+    // A PSS mailbox request on a node without the mailbox is refused before
+    // any sheet or prompt, so it can't leave a grant behind; main refuses it
+    // too (#1157). If the capabilities can't be read, main decides.
+    if (method === 'swarm_subscribe' && params?.kind === 'pss' && params?.history === true) {
+      const capabilities = await forwardToMain('swarm_getCapabilities', {}, permissionKey).catch(() => null);
+      // The asking document is gone: nothing more may run on its behalf (a
+      // manifest check would read the new document's navigation key).
+      if (getNavigationGeneration(webview) !== generation) return;
+      if (capabilities?.extensions?.pssHistory === false) throw PSS_HISTORY_UNAVAILABLE;
+    }
 
     if (!PUBLIC_METHODS.has(method)) {
       await ensureManifestFresh(webview, displayUrl, permissionKey, method === 'swarm_requestAccess');
