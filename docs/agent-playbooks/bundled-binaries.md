@@ -119,7 +119,7 @@ offered, since a restart starts the scan over. A scan that has read no block
 for `SCAN_STALL_MAX_MS` (30 min) of `retrying` (antd flips to `scanning` for
 each attempt, so only an advancing `scannedThrough` resets the clock) is
 released: the plans show, with a warning that the check did not finish and to
-check the Gnosis RPC (a set short of a quorum fails every `eth_getLogs`). The probe reads `/health` before `/stamps`, so the list it
+check the Gnosis RPC (a read order with neither `direct` nor a quorum's worth of endpoints fails every `eth_getLogs`). The probe reads `/health` before `/stamps`, so the list it
 releases with already has what the scan found. A node wallet whose
 `eth_getTransactionCount` is 0 is never held: rediscovery only finds batches the
 wallet paid for itself, and a brand-new wallet would otherwise wait for a scan of
@@ -141,15 +141,17 @@ Bee is not held. The log matching that #522 used is gone: v0.5.59 logs
 `WalletScanState` for new states. A state Freedom doesn't know falls back to the
 bounded hold instead of being treated as finished.
 
-Freedom does **not** pass ant#143's `--gnosis-unverified-logs-rpc-url`: every
-log Ant receives is one two independent providers agreed on (#493). For a
-first scan wider than the RPC quorum can verify, the chain bridge pairs
-Blockscout's log index with one full-history RPC
-([#529](https://github.com/solardev-xyz/freedom-browser/issues/529); see
-`docs/ant-chain-bridge.md`), so the scan reaches `done` in a few requests. When
-Blockscout is down or disagrees, the scan reads window by window as before and
-shows its progress. Serving Ant an explicitly unverified source remains a
-separate, open decision.
+Freedom does **not** pass ant#143's `--gnosis-unverified-logs-rpc-url`. The
+chain bridge verifies every log span the RPC quorum can (#493); a first scan
+wider than that, or a catch-up after more than about 14 hours offline, is
+answered by one full-history RPC through the router's Direct tier, unverified
+([#596](https://github.com/solardev-xyz/freedom-browser/issues/596); see
+`docs/ant-chain-bridge.md`), so the scan reaches `done` in seconds. Ant takes
+that answer as its logs source and never reports `confirming` for it. A Gnosis
+read order without `direct` (only by editing `network-config.json`: Settings
+reorders sources but cannot remove one) keeps every scan verified, window by
+window, and shows its progress. (Blockscout's log index was the second full-history source
+from #529 until it began refusing scripted clients on 2026-11-06.)
 
 Ports matter when you are judging evidence:
 

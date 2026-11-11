@@ -1,7 +1,6 @@
 const log = require('../logger');
 const registry = require('./network-registry');
 const myotis = require('../myotis/myotis-manager');
-const blockscoutLogs = require('./blockscout-logs');
 
 const READ_METHODS = new Set([
   'eth_blockNumber',
@@ -44,7 +43,7 @@ READ_METHODS.add('web3_sha3');
 //   router leaves the source out of such a request up front, alongside the
 //   caller's own excludeSources (both are named in the error as "excluded for
 //   this request"). excludeSources stays the caller's policy (Ant's log scans
-//   ask the quorum only); this is the source's capability. A source not
+//   leave out Myotis and Colibri); this is the source's capability. A source not
 //   listed here serves the method as far as the router knows, and its adapter
 //   still refuses what depends on the request (Myotis: which methods its addon
 //   version serves, block tags other than `latest`, state overrides, blob
@@ -54,8 +53,9 @@ READ_METHODS.add('web3_sha3');
 // - logSpan: the widest eth_getLogs block span the source serves.
 //   'learned-per-endpoint' means each RPC endpoint's cap is learned from its
 //   range-limit replies and the source asks only endpoints whose cap covers
-//   the span (logRangeState; applied to range-capped log scans, i.e. callers
-//   that pass rangeCapOf). null means no limit is tracked.
+//   the span (logRangeState, shared by the quorum and Direct; applied to
+//   range-capped log scans, i.e. callers that pass rangeCapOf). null means no
+//   limit is tracked.
 // - logResults: 'may-truncate' when the source's answer can come back
 //   incomplete without an error once the result set is large. Public Gnosis
 //   RPCs (rpc.gnosischain.com and gateway.fm alike, measured 2026-10-04 for
@@ -68,31 +68,19 @@ READ_METHODS.add('web3_sha3');
 //   (Ant's polling) take it only when idle and never queue (Myotis).
 //   'proof': a proof fetched from the prover and verified in a worker thread,
 //   with a bounded number in flight (Colibri). 'fanout': k RPC requests per
-//   read (quorum). 'single': one RPC request at a time (direct). 'paired':
-//   one log-index read (a page per 50 transfers) plus one RPC request, and a
-//   quorum read for the newest blocks (blockscout).
-// - optIn: the source is in no read order. Only a caller that names it in
-//   includeSources is routed to it, right before the quorum, and only while
-//   the configured read order keeps the quorum.
+//   read (quorum). 'single': one RPC request at a time (direct).
 //
-// blockscout (#529) is Blockscout's Gnosis log index, paired with one RPC
-// endpoint. It serves only range-capped log scans (callers passing
-// rangeCapOf, i.e. Ant's eth_getLogs through its bridge) whose filter is an
-// xBZZ Transfer scan by sender or recipient (blockscout-logs.js
-// logIndexFilter), and only a span wider than the RPC quorum can verify now:
-// the scan Ant would otherwise read window by window. Blockscout's answer
-// alone settles nothing. It is accepted only when an RPC endpoint able to
-// serve the span (in practice a full-history one, all of which share one
-// backend) returns the identical logs: two independent providers agreeing,
-// as the quorum asks of two RPCs. The newest blocks of the span go to the
-// quorum itself, so a Blockscout a few blocks behind the head does not
-// disagree with the RPC (requestLogIndex).
-//   logSpan 'full-history': it serves any span in one answer.
-//   logResults 'paged': Blockscout lists a wallet's transfers 50 to a page,
-//   read on until the span is covered or the list ends. The RPC half of the
-//   pair may cut a large answer short (#496); disagreeing with Blockscout's
-//   complete one then fails the pair, so neither half is checked by
-//   checkLogTruncation.
+// A range-capped log scan wider than any quorum can verify (#596): only one
+// keyless Gnosis RPC serves the full history in one query (rpc.gnosischain.com,
+// Tenderly), and the independent ones stop at 10,000 blocks or fewer, so no
+// two can agree on a wallet's first scan. When Direct follows the quorum in
+// the read order, such a span goes to Direct, which asks only endpoints whose
+// cap covers it and reuses a quorum member's answer when there is one; the
+// answer is labelled unverified like any Direct read. Narrower spans (every
+// later scan) are verified by the quorum as before. A read order without
+// Direct keeps such scans to verified windows, which the caller reads one by
+// one. (Blockscout's log index used to be the second full-history source,
+// #529; it has refused scripted clients since 2026-11-06.)
 //
 // Colibri never serves eth_getLogs, whoever asks: its inclusion proofs show
 // that each returned log is real, not that none is missing, so a log answer
@@ -106,12 +94,8 @@ const COST = Object.freeze({
   PROOF: 'proof',
   FANOUT: 'fanout',
   SINGLE: 'single',
-  PAIRED: 'paired',
 });
 const NO_METHODS = new Set();
-const LOG_SCAN_ONLY = new Set(
-  [...READ_METHODS, ...SINGLE_NODE_METHODS].filter((method) => method !== 'eth_getLogs')
-);
 const SOURCE_CAPABILITIES = Object.freeze({
   myotis: Object.freeze({
     unsupported: SINGLE_NODE_METHODS,
@@ -135,16 +119,9 @@ const SOURCE_CAPABILITIES = Object.freeze({
   }),
   direct: Object.freeze({
     unsupported: NO_METHODS,
-    logSpan: null,
+    logSpan: 'learned-per-endpoint',
     logResults: 'may-truncate',
     cost: COST.SINGLE,
-  }),
-  blockscout: Object.freeze({
-    unsupported: LOG_SCAN_ONLY,
-    logSpan: 'full-history',
-    logResults: 'paged',
-    cost: COST.PAIRED,
-    optIn: true,
   }),
 });
 
@@ -203,7 +180,8 @@ const colibriInFlightByRoute = new Map();
 // `${chainId} ${method}` -> { faults: [timestamps], strikes, coolUntil }
 const colibriFaults = new Map();
 // What each RPC endpoint can serve for a range-capped log scan (callers that
-// pass rangeCapOf, i.e. the bundled Ant node's eth_getLogs through its bridge):
+// pass rangeCapOf, i.e. the bundled Ant node's eth_getLogs through its bridge),
+// learned from the quorum's and Direct's requests alike:
 // `${chainId} ${url}` -> { refusedFrom, capUntil, slowFrom, slowUntil,
 // coolUntil }. refusedFrom is the smallest block span the endpoint refused as
 // a range limit, null while none was, and counts until capUntil. slowFrom is
@@ -220,30 +198,12 @@ const LOG_RANGE_CAP_TTL_MS = 30 * 60_000;
 // connection, throttled or failed some other way that does not depend on the
 // requested range, and how long a span its upstream timed out on bounds it.
 const LOG_SCAN_COOLDOWN_MS = 30_000;
-// Quorum rounds per log scan: the first, and one with the endpoints left
-// after the first round's failures were taken out.
-const LOG_SCAN_QUORUM_ROUNDS = 2;
-// The newest blocks of a scan the blockscout source leaves to the RPC quorum
-// (at most what the quorum can verify), so a log index a little behind the
-// chain head (about 83 minutes of Gnosis blocks) still agrees with the RPC.
-const LOG_INDEX_TAIL_BLOCKS = 1000;
-// How long the blockscout source is left alone after its answer disagreed
-// with the RPC's. Its other failures name their own cooldown (a rate limit's
-// reset, at least a minute).
-const LOG_INDEX_DISAGREEMENT_COOLDOWN_MS = 5 * 60_000;
-// How long it is left alone after the caller gave up while it was still
-// reading (as long as a failure that names no cooldown of its own).
-const LOG_INDEX_ABORT_COOLDOWN_MS = 60_000;
-// chainId -> time until which the blockscout source is not asked.
-const logIndexCoolUntil = new Map();
-// How long an RPC endpoint is not asked to be Blockscout's pair after it
-// answered a span with an entry not in the exact shape Ant reads: every wide
-// window would otherwise re-spend a full-span eth_getLogs on it only to fall
-// through to the quorum again.
-const LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS = 30 * 60_000;
-// `${chainId}|${url}` -> time until which that endpoint is not a pair.
-const logIndexPairCoolUntil = new Map();
-const logIndexPairKey = (chainId, url) => `${chainId}|${url}`;
+// A log scan's quorum takes as many rounds as it needs, each asking at least
+// one endpoint no earlier round asked, until a quorum agrees or no endpoint
+// is left to ask (#596: before Direct may answer, every quorum that could
+// verify the span is tried). Together the rounds get this many times the
+// scan's quorum budget: one round with an endpoint hanging uses one budget.
+const LOG_SCAN_QUORUM_BUDGETS = 2;
 
 class SourceUnavailableError extends Error {
   constructor(message, failureKind = null) {
@@ -345,11 +305,17 @@ const ERROR_RANK = Object.freeze({
 // quorum's 5 s cut), so its budget is what the caller and logs should see.
 // Only a REQUEST-ranked failure is final. Without rankError nothing is kept and the
 // router reports failures exactly as before (wallet reads, broadcasts).
+//
+// `endpointCap`: the refusal taught the router this endpoint's block-range cap
+// (noteLogRangeFailure). That is the endpoint's limit, not the request's:
+// another endpoint may serve the span, so it ranks at most HINT and does not
+// end the request. When no endpoint can, the router's own range refusal
+// (logRangeRefusal), which ranks REQUEST, ends it.
 function createErrorKeeper(rankError) {
   let kept = null;
   let keptRank = -1;
   return {
-    note(error) {
+    note(error, { endpointCap = false } = {}) {
       if (typeof rankError !== 'function' || !error) return;
       let rank;
       try {
@@ -358,6 +324,7 @@ function createErrorKeeper(rankError) {
         rank = ERROR_RANK.ENDPOINT;
       }
       if (!Number.isFinite(rank)) rank = ERROR_RANK.ENDPOINT;
+      if (endpointCap) rank = Math.min(rank, ERROR_RANK.HINT);
       if (rank > keptRank || (rank === keptRank && rank === ERROR_RANK.TIMEOUT)) {
         kept = error;
         keptRank = rank;
@@ -471,8 +438,6 @@ function clearAdaptiveRoutingForTest() {
   colibriInFlightByRoute.clear();
   colibriFaults.clear();
   logRangeState.clear();
-  logIndexCoolUntil.clear();
-  logIndexPairCoolUntil.clear();
 }
 
 function blockNumberOf(value) {
@@ -590,12 +555,13 @@ function noteLogRangeAnswer(chainId, url, span) {
 // depend on the range (a hang, refused connection, throttle, missing method,
 // lagging node) cools it down instead. Anything else (a reply that may be a
 // throttle, or a result-count cap, which depends on the filter rather than
-// the endpoint's range) is not learned from.
+// the endpoint's range) is not learned from. Returns true when the reply
+// taught the endpoint's block-range cap (see createErrorKeeper's endpointCap).
 function noteLogRangeFailure(chainId, url, span, error, { capOf, rank, learn = true }, now) {
   // A truncation check (checkLogTruncation) is the router's own query, not
   // the caller's: its failure is swallowed, and must not cool endpoints down
   // or bound them for the caller's next window either.
-  if (!learn) return;
+  if (!learn) return false;
   const key = logRangeKey(chainId, url);
   const entry = logRangeState.get(key) || {
     refusedFrom: null,
@@ -623,6 +589,8 @@ function noteLogRangeFailure(chainId, url, span, error, { capOf, rank, learn = t
         ? cap + 1
         : Math.min(entry.refusedFrom, cap + 1);
     entry.capUntil = now + LOG_RANGE_CAP_TTL_MS;
+    logRangeState.set(key, entry);
+    return true;
   } else if (!clientTimeout && errorRank === ERROR_RANK.TIMEOUT) {
     entry.slowFrom =
       entry.slowFrom === null || entry.slowUntil <= now ? span : Math.min(entry.slowFrom, span);
@@ -630,14 +598,22 @@ function noteLogRangeFailure(chainId, url, span, error, { capOf, rank, learn = t
   } else if (clientTimeout || !(errorRank > ERROR_RANK.ENDPOINT)) {
     entry.coolUntil = now + LOG_SCAN_COOLDOWN_MS;
   } else {
-    return;
+    return false;
   }
   logRangeState.set(key, entry);
+  return false;
 }
 
-// What a range-capped log scan gets when no quorum can serve its span: a
-// range limit naming the widest span one can, so the caller (Ant) narrows
-// its window to it. Ranked REQUEST by the bridge, so it ends the request.
+// The widest span any one of `urls` can serve now: what Direct can still
+// answer. 0 when every one cools down.
+function widestLogSpan(chainId, urls, now) {
+  return Math.max(0, ...urls.map((url) => servableLogSpan(chainId, url, now)));
+}
+
+// What a range-capped log scan gets when no source can serve its span: a
+// range limit naming the widest span one can (a quorum, or with Direct in the
+// order a single endpoint), so the caller (Ant) narrows its window to it.
+// Ranked REQUEST by the bridge, so it ends the request.
 function logRangeRefusal(span) {
   const error = new Error(`query exceeds max block range ${span}`);
   error.code = -32005;
@@ -1367,8 +1343,17 @@ function requestQuorumRound(
     keeper = createErrorKeeper(null),
     quorumTimeoutMs = null,
     logRange = null,
+    // Answers earlier rounds of the same range-capped log scan got
+    // ({ url, result }): they count as votes, so an endpoint asked now can
+    // agree with one asked before without asking that one again. The
+    // endpoints those rounds asked (priorQueried) join the trust evidence.
+    priorAnswers = [],
+    priorQueried = [],
   }
 ) {
+  // What this round's evidence names: every endpoint asked in the scan so far.
+  const queriedUrls = [...new Set([...priorQueried, ...urls])];
+  const priorAnsweredUrls = priorAnswers.map(({ url }) => url);
   const network = registry.getNetwork(chainId) || {};
   const quorum = network.quorum || {};
   const k = Math.max(1, Number(quorum.k) || 3);
@@ -1381,7 +1366,11 @@ function requestQuorumRound(
     ? Math.max(configuredTimeoutMs, quorumTimeoutMs)
     : configuredTimeoutMs;
   const timeoutMs = deadlineMs && deadlineMs < configuredTimeoutMs ? deadlineMs : budgetMs;
-  const endpointTimeoutMs = allowDirectFallback ? configuredTimeoutMs : timeoutMs;
+  // Members are cut at the configured timeout when Direct follows, so a
+  // widened Direct can retry the ones that did not answer. A range-capped log
+  // scan keeps the whole budget: Direct reuses a lone answer rather than
+  // asking again, and its filter leaves out an endpoint the quorum timed out.
+  const endpointTimeoutMs = allowDirectFallback && !logRange ? configuredTimeoutMs : timeoutMs;
 
   return new Promise((resolve, reject) => {
     const controllers = urls.map(() => new AbortController());
@@ -1389,6 +1378,14 @@ function requestQuorumRound(
     const fulfilledUrls = [];
     const directCandidates = [];
     const errors = [];
+    priorAnswers.forEach(({ url, result }, index) => {
+      directCandidates.push({ index: index - priorAnswers.length, url, result });
+      const key = stableValue(result);
+      const group = groups.get(key) || { count: 0, value: result, urls: [] };
+      group.count += 1;
+      group.urls.push(url);
+      groups.set(key, group);
+    });
     // Per member: whether it answered at all (a result or an RPC-level error,
     // as opposed to timing out or still being in flight when quorum gave up).
     const answered = new Array(urls.length).fill(false);
@@ -1421,12 +1418,12 @@ function requestQuorumRound(
           method: 'quorum',
           block: null,
           agreed: group.urls.map(endpointHost).filter(Boolean),
-          dissented: fulfilledUrls
+          dissented: [...priorAnsweredUrls, ...fulfilledUrls]
             .filter((url) => !agreedUrls.has(url))
             .map(endpointHost)
             .filter(Boolean),
-          queried: urls.map(endpointHost).filter(Boolean),
-          quorum: { k: urls.length, m, achieved: true },
+          queried: queriedUrls.map(endpointHost).filter(Boolean),
+          quorum: { k: queriedUrls.length, m, achieved: true },
         },
       });
     };
@@ -1474,11 +1471,15 @@ function requestQuorumRound(
           dissentedUrls: directCandidates
             .filter((candidate) => stableValue(candidate.result) !== fallbackKey)
             .map((candidate) => candidate.url),
-          queriedUrls: urls,
-          quorum: { k: urls.length, m, achieved: false },
+          queriedUrls,
+          quorum: { k: queriedUrls.length, m, achieved: false },
         };
       }
       error.directAttemptedUrls = urls;
+      // Every answer so far, earlier rounds' first, for the next round.
+      error.answers = directCandidates
+        .sort((a, b) => a.index - b.index)
+        .map(({ url, result }) => ({ url, result }));
       reject(error);
     };
     const rejectIfImpossible = () => {
@@ -1527,10 +1528,10 @@ function requestQuorumRound(
           if (finished) return;
           pending -= 1;
           errors.push(error);
-          keeper.note(error);
-          if (logRange) {
-            noteLogRangeFailure(chainId, url, logRange.span, error, logRange, Date.now());
-          }
+          const endpointCap = logRange
+            ? noteLogRangeFailure(chainId, url, logRange.span, error, logRange, Date.now())
+            : false;
+          keeper.note(error, { endpointCap });
           if (failureKind(error) !== 'timeout') answered[index] = true;
           rejectIfImpossible();
         }
@@ -1552,241 +1553,96 @@ async function requestQuorum(chainId, method, params, options = {}) {
   if (!logRange) return askQuorum(endpoints.slice(0, k));
 
   // A range-capped log scan asks the first k endpoints able to serve its span.
-  // A round whose members failed has just taken them out (capped or cooling);
-  // if another quorum can serve the same span, it is asked straight away.
-  // When none can, the caller is told the widest span a quorum can still
-  // verify, so it narrows to it instead of giving up (one full-range endpoint
-  // down shrinks the scan to windows the capped ones serve). Only when no
-  // quorum can serve any span does the caller get no quorum.
+  // A round whose members failed has just taken them out (capped, cooling, or
+  // failed in this scan); while another quorum with an endpoint not asked yet
+  // can serve the same span, it is asked straight away, within the scan's
+  // quorum budget (LOG_SCAN_QUORUM_BUDGETS). When none can and Direct follows in the read order, the span goes on to
+  // Direct (#596), with the first answer a member gave, so Direct need not
+  // ask that endpoint again. Without Direct, the caller is told the widest
+  // span a quorum can still verify, so it narrows to it instead of giving up
+  // (one full-range endpoint down shrinks the scan to windows the capped ones
+  // serve). Only when no quorum can serve any span does the caller get no
+  // quorum.
+  const { allowDirectFallback = false } = options;
+  let directFallback = null;
+  const directAttempted = new Set();
+  const directUnanswered = new Set();
+  const handOff = (error) => {
+    if (!allowDirectFallback) return error;
+    if (directFallback && !error.directFallback) error.directFallback = directFallback;
+    error.directAttemptedUrls = [...directAttempted];
+    error.directUnansweredUrls = [...directUnanswered];
+    return error;
+  };
   const noQuorum = (lastError) => {
     const servable = quorumLogSpan(chainId, endpoints, m, Date.now());
     if (servable > 0 && servable < logRange.span) {
+      if (allowDirectFallback) {
+        return handOff(
+          new SourceUnavailableError(`No RPC quorum can verify ${logRange.span} blocks`)
+        );
+      }
       const refusal = logRangeRefusal(servable);
       keeper.note(refusal);
       return refusal;
     }
-    return lastError || new SourceUnavailableError(`No RPC quorum available for ${method}`);
+    return handOff(
+      lastError || new SourceUnavailableError(`No RPC quorum available for ${method}`)
+    );
   };
-  // `endsAt` (a Date.now() instant) caps the rounds together rather than
-  // each: a later round runs only on what is left of it, and not at all once
-  // less than the configured quorum timeout is left (requestQuorumRound never
-  // runs a round shorter than that).
-  const { endsAt = null } = options;
-  let asked = null;
+  // The rounds share one deadline: a later round runs only on what is left of
+  // it, and not at all once less than the configured quorum timeout is left
+  // (requestQuorumRound never runs a round shorter than that).
+  const configuredMs = configuredSourceTimeoutMs(chainId);
+  const roundBudgetMs = Math.max(configuredMs, Number(options.quorumTimeoutMs) || 0);
+  const endsAt = Date.now() + LOG_SCAN_QUORUM_BUDGETS * roundBudgetMs;
+  // Endpoints that answered an earlier round, with a result or an error: not
+  // asked again in this scan. Their results stay votes (priorAnswers). One
+  // still in flight when its round gave up, or cut at its deadline, may be.
+  const asked = new Set();
+  const queried = [];
+  let answers = [];
   let lastError = null;
-  for (let round = 1; round <= LOG_SCAN_QUORUM_ROUNDS; round += 1) {
+  for (let round = 1; round <= endpoints.length; round += 1) {
     const now = Date.now();
     const urls = endpoints
-      .filter((url) => servableLogSpan(chainId, url, now) >= logRange.span)
+      .filter((url) => !asked.has(url) && servableLogSpan(chainId, url, now) >= logRange.span)
       .slice(0, k);
-    if (urls.length < m || (asked && urls.every((url) => asked.includes(url)))) break;
+    const votes = new Map();
+    for (const { result } of answers) {
+      const key = stableValue(result);
+      votes.set(key, (votes.get(key) || 0) + 1);
+    }
+    const leading = Math.max(0, ...votes.values());
+    if (urls.length === 0 || leading + urls.length < m) break;
     let roundOptions = options;
-    if (endsAt !== null && round > 1) {
+    if (round > 1) {
       const leftMs = endsAt - now;
-      if (leftMs < configuredSourceTimeoutMs(chainId)) break;
+      if (leftMs < configuredMs) break;
       roundOptions = { ...options, quorumTimeoutMs: leftMs };
     }
     try {
-      return await requestQuorumRound(chainId, method, params, { ...roundOptions, keeper, urls });
+      return await requestQuorumRound(chainId, method, params, {
+        ...roundOptions,
+        keeper,
+        urls,
+        priorAnswers: answers,
+        priorQueried: queried,
+      });
     } catch (err) {
-      asked = urls;
+      for (const url of urls) if (!queried.includes(url)) queried.push(url);
+      const unanswered = new Set(err.directUnansweredUrls || []);
+      for (const url of urls) if (!unanswered.has(url)) asked.add(url);
+      if (Array.isArray(err.answers)) answers = err.answers;
       lastError = err;
+      // Each round's fallback carries every answer and endpoint so far: keep
+      // the latest, whose evidence names them all.
+      if (err.directFallback) directFallback = err.directFallback;
+      for (const url of err.directAttemptedUrls || []) directAttempted.add(url);
+      for (const url of err.directUnansweredUrls || []) directUnanswered.add(url);
     }
   }
   throw noQuorum(lastError);
-}
-
-const blockHex = (block) => `0x${block.toString(16)}`;
-
-// The blockscout source (#529; see SOURCE_CAPABILITIES): answers a
-// range-capped xBZZ Transfer scan wider than the RPC quorum can verify with
-// two independent providers that agree, instead of the quorum's range refusal
-// that has Ant read the span window by window.
-//
-// The span [from, to] is split. [from, to - tail] is read from one RPC
-// endpoint whose cap covers it (in registry order; a failure is learned from
-// as a quorum member's is, and the next one is asked) and then, once one has
-// answered, from Blockscout. The two must list the same logs, identical in every field
-// Blockscout reports (blockscout-logs.js logsAgree); the RPC's entries, cut
-// to exactly those fields (agreedRpcLogs: no transaction index, which
-// Blockscout does not report), are what the caller gets. The newest `tail`
-// blocks (at most LOG_INDEX_TAIL_BLOCKS, and never more than the quorum can
-// verify) are read from the RPC quorum as an ordinary range-capped scan. Any failure is a
-// SourceUnavailableError and the request goes on to the quorum exactly as
-// without this source: Blockscout down, rate limited or disagreeing (then it
-// is left alone for a while: logIndexCoolUntil), no endpoint to pair it with,
-// or the quorum failing the newest blocks. Its failures are not ranked for
-// the caller (request() leaves them out of the error keeper): they say
-// nothing about the caller's query, and the quorum that follows explains
-// itself.
-async function requestLogIndex(chainId, method, params, options = {}) {
-  const { includeTrust = false, logRange = null, signal, quorumTimeoutMs = null } = options;
-  const filter = method === 'eth_getLogs' ? blockscoutLogs.logIndexFilter(chainId, params) : null;
-  if (!logRange || !filter) {
-    throw new SourceUnavailableError(
-      'Blockscout serves only range-capped xBZZ Transfer scans by sender or recipient'
-    );
-  }
-  const now = Date.now();
-  if ((logIndexCoolUntil.get(chainId) || 0) > now) {
-    throw new SourceUnavailableError('Blockscout is left alone for a while after its last failure');
-  }
-  const network = registry.getNetwork(chainId) || {};
-  const k = Math.max(1, Number(network.quorum?.k) || 3);
-  const m = Math.max(1, Math.min(k, Number(network.quorum?.m) || 2));
-  const endpoints = registry.getEndpoints(chainId, 'rpc');
-  if (endpoints.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
-  const quorumSpan = quorumLogSpan(chainId, endpoints, m, now);
-  if (quorumSpan >= logRange.span) {
-    throw new SourceUnavailableError('the RPC quorum can verify this span itself');
-  }
-  if (quorumSpan < 1) {
-    throw new SourceUnavailableError('no RPC quorum can verify the newest blocks');
-  }
-  const tail = Math.min(quorumSpan, LOG_INDEX_TAIL_BLOCKS);
-  const pairTo = filter.toBlock - tail;
-  const pairSpan = pairTo - filter.fromBlock + 1;
-  const pairUrls = endpoints.filter(
-    (url) =>
-      servableLogSpan(chainId, url, now) >= pairSpan &&
-      (logIndexPairCoolUntil.get(logIndexPairKey(chainId, url)) || 0) <= now
-  );
-  if (!pairUrls.length) {
-    throw new SourceUnavailableError('no RPC endpoint serves this span to compare Blockscout with');
-  }
-  const pairParams = [{ ...params[0], toBlock: blockHex(pairTo) }];
-  // One budget (the caller's widened quorum budget) covers the whole source:
-  // the pair (the RPC, then every Blockscout page) runs inside it less the
-  // configured quorum timeout, which is held back for the newest blocks'
-  // quorum (requestQuorum never runs one shorter than that), and that quorum's
-  // rounds share what is left (endsAt). So the source costs at most one
-  // quorum budget before the quorum after it is asked, inside the bridge's own
-  // deadline.
-  const configuredMs = configuredSourceTimeoutMs(chainId);
-  const budgetMs = Math.max(configuredMs, Number(quorumTimeoutMs) || 0);
-  const startedAt = Date.now();
-  const leftMs = () => budgetMs - (Date.now() - startedAt);
-  const remainingMs = () => {
-    const left = leftMs() - configuredMs;
-    if (left < 1000) throw new SourceUnavailableError('Blockscout pairing ran out of time');
-    return left;
-  };
-  // The RPC's entries (cut by agreedRpcLogs) are what Ant gets: an answer
-  // with one not in the exact shape Ant reads is not taken (nor credited as
-  // covering the span); that endpoint is not asked to pair again for a while
-  // (LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS) and the next one is tried. No
-  // Blockscout request is spent on it, and Blockscout, not at fault, is not
-  // left alone for it.
-  const askPairRpc = async () => {
-    let lastError;
-    for (const url of pairUrls) {
-      signal?.throwIfAborted();
-      let result;
-      try {
-        result = await requestRpcUrl(url, method, pairParams, remainingMs(), { signal });
-      } catch (err) {
-        signal?.throwIfAborted();
-        if (err instanceof SourceUnavailableError) throw err;
-        lastError = err;
-        noteLogRangeFailure(chainId, url, pairSpan, err, logRange, Date.now());
-        continue;
-      }
-      if (!blockscoutLogs.rpcTransferLogsWellFormed(result)) {
-        logIndexPairCoolUntil.set(
-          logIndexPairKey(chainId, url),
-          Date.now() + LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS
-        );
-        lastError = new Error(`${endpointHost(url)} answered the span with a malformed log entry`);
-        continue;
-      }
-      noteLogRangeAnswer(chainId, url, pairSpan);
-      return { url, result };
-    }
-    throw lastError;
-  };
-  // The RPC first: Blockscout's keyless rate limit is shared by every page of
-  // its answer, so it is spent only on a span an RPC has already answered.
-  let rpc;
-  try {
-    rpc = await askPairRpc();
-  } catch (err) {
-    signal?.throwIfAborted();
-    throw new SourceUnavailableError(
-      `no RPC endpoint answered the span to compare Blockscout with: ${safeErrorMessage(err)}`
-    );
-  }
-  let indexed;
-  try {
-    indexed = await blockscoutLogs.fetchBlockscoutTransferLogs(filter, pairTo, {
-      signal,
-      timeoutMs: remainingMs(),
-    });
-  } catch (err) {
-    // The caller gave up while Blockscout was still reading: it was too slow
-    // for this scan, so the next window does not wait on it again.
-    if (signal?.aborted) {
-      logIndexCoolUntil.set(chainId, Date.now() + LOG_INDEX_ABORT_COOLDOWN_MS);
-    }
-    signal?.throwIfAborted();
-    if (err instanceof SourceUnavailableError) throw err;
-    const coolMs = Number(err?.coolMs);
-    if (Number.isFinite(coolMs) && coolMs > 0) logIndexCoolUntil.set(chainId, Date.now() + coolMs);
-    throw new SourceUnavailableError(`Blockscout: ${safeErrorMessage(err)}`);
-  }
-  if (!blockscoutLogs.logsAgree(indexed, rpc.result)) {
-    logIndexCoolUntil.set(chainId, Date.now() + LOG_INDEX_DISAGREEMENT_COOLDOWN_MS);
-    const count = Array.isArray(rpc.result) ? rpc.result.length : 'no';
-    throw new SourceUnavailableError(
-      `Blockscout (${indexed.length} logs) and ${endpointHost(rpc.url)} (${count} logs) disagree`
-    );
-  }
-  let newest;
-  try {
-    newest = await requestQuorum(
-      chainId,
-      method,
-      [{ ...params[0], fromBlock: blockHex(pairTo + 1) }],
-      {
-        quorumTimeoutMs: Math.max(configuredMs, leftMs()),
-        endsAt: startedAt + budgetMs,
-        keeper: createErrorKeeper(logRange.rank),
-        logRange: { ...logRange, span: tail },
-      }
-    );
-  } catch (err) {
-    signal?.throwIfAborted();
-    throw new SourceUnavailableError(
-      `RPC quorum did not verify the newest ${tail} blocks: ${safeErrorMessage(err)}`
-    );
-  }
-  signal?.throwIfAborted();
-  if (!Array.isArray(newest)) {
-    throw new SourceUnavailableError('RPC quorum answered the newest blocks without a log list');
-  }
-  // The quorum's entries reach Ant too, and agreement alone does not make
-  // them well formed: they meet the same shape as the pair's.
-  if (!blockscoutLogs.rpcTransferLogsWellFormed(newest)) {
-    throw new SourceUnavailableError(
-      `RPC quorum answered the newest ${tail} blocks with a malformed log entry`
-    );
-  }
-  // Only what the pair compared is delivered as verified; the quorum's
-  // entries were compared whole by its members.
-  const result = [...blockscoutLogs.agreedRpcLogs(rpc.result), ...newest];
-  if (!includeTrust) return result;
-  const agreed = [blockscoutLogs.logIndexHost(chainId), endpointHost(rpc.url)].filter(Boolean);
-  return {
-    result,
-    trust: {
-      level: 'verified',
-      method: 'blockscout',
-      block: null,
-      agreed,
-      dissented: [],
-      queried: agreed,
-      quorum: { k: 2, m: 2, achieved: true },
-    },
-  };
 }
 
 function directResponse(chainId, url, result, includeTrust, evidence = null) {
@@ -1839,6 +1695,10 @@ async function requestDirect(
     // Optional sink: set to { url } of the endpoint whose answer is returned,
     // so a follow-up query (checkLogTruncation) can go back to that endpoint.
     answeredBy = null,
+    // A range-capped log scan (request()'s rangeCapOf): ask only endpoints
+    // whose learned cap covers the span, and learn from each reply as the
+    // quorum does (logRangeState).
+    logRange = null,
   } = {}
 ) {
   const configuredTimeoutMs = configuredDirectTimeoutMs(chainId);
@@ -1868,18 +1728,33 @@ async function requestDirect(
   const retried = timeoutMs > configuredTimeoutMs ? new Set(unansweredUrls) : new Set();
   const untried = urls.filter((url) => !attempted.has(url));
   const retries = urls.filter((url) => attempted.has(url) && retried.has(url));
+  const serves = (url) => !logRange || servableLogSpan(chainId, url, Date.now()) >= logRange.span;
   let lastError;
-  for (const url of [...untried, ...retries]) {
+  for (const url of [...untried, ...retries].filter(serves)) {
     signal?.throwIfAborted();
     try {
       const result = await requestRpcUrl(url, method, params, timeoutMs, { signal });
+      if (logRange) noteLogRangeAnswer(chainId, url, logRange.span);
       if (answeredBy) answeredBy.url = url;
       return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       signal?.throwIfAborted();
       lastError = err;
-      keeper.note(err);
+      const endpointCap = logRange
+        ? noteLogRangeFailure(chainId, url, logRange.span, err, logRange, Date.now())
+        : false;
+      keeper.note(err, { endpointCap });
       if (keeper.final) throw keeper.error;
+    }
+  }
+  if (logRange) {
+    // No endpoint serves the span: tell the caller the widest one does, as
+    // the quorum does for its own spans, so it narrows instead of giving up.
+    const widest = widestLogSpan(chainId, urls, Date.now());
+    if (widest > 0 && widest < logRange.span) {
+      const refusal = logRangeRefusal(widest);
+      keeper.note(refusal);
+      throw refusal;
     }
   }
   throw lastError || new SourceUnavailableError('All RPC endpoints failed');
@@ -1959,14 +1834,6 @@ async function requestSource(
       logRange,
     });
   }
-  if (source === 'blockscout') {
-    return requestLogIndex(chainId, method, params, {
-      includeTrust,
-      logRange,
-      signal,
-      quorumTimeoutMs,
-    });
-  }
   if (source === 'direct') {
     return requestDirect(chainId, method, params, {
       includeTrust,
@@ -1977,6 +1844,7 @@ async function requestSource(
       signal,
       timeoutMs: directTimeoutMs,
       answeredBy: directAnsweredBy,
+      logRange,
     });
   }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
@@ -2093,18 +1961,17 @@ async function request(
     // failure across every tier and retry is kept and reported, and a
     // REQUEST-ranked one ends the request (see createErrorKeeper).
     rankError = null,
-    // Sources this caller must never be routed to, e.g. everything but the
-    // RPC quorum for Ant's log scans.
+    // Sources this caller must never be routed to, e.g. Myotis and Colibri
+    // for Ant's log scans.
     excludeSources = [],
-    // Opt-in sources (SOURCE_CAPABILITIES optIn) this caller may be routed
-    // to, right before the quorum: Ant's log scans name 'blockscout'.
-    includeSources = [],
     // Optional (error, span) -> the widest block span the refusing endpoint
     // serves (a cap it named, or span - 1 for a range limit without one), or
     // null when the reply is no block-range limit (a result-count cap, a
     // throttle). With rankError, it makes an eth_getLogs over a numeric block
-    // range a range-capped log scan: the quorum learns each endpoint's cap
-    // and asks only endpoints that can serve the span (see logRangeState).
+    // range a range-capped log scan: the quorum and Direct learn each
+    // endpoint's cap and ask only endpoints that can serve the span (see
+    // logRangeState), and a span no quorum can verify goes on to Direct when
+    // it follows the quorum in the read order.
     rangeCapOf = null,
   } = {}
 ) {
@@ -2120,18 +1987,7 @@ async function request(
       ? logQuerySpan(method, params)
       : null;
   const logRange = span === null ? null : { span, capOf: rangeCapOf, rank: rankError };
-  // An opt-in source joins only a request it can serve at all, so one it
-  // never could does not show up among the failures.
-  const optIn = [...new Set(includeSources)].filter(
-    (source) =>
-      SOURCE_CAPABILITIES[source]?.optIn &&
-      !readOrder.includes(source) &&
-      (source !== 'blockscout' ||
-        (logRange !== null && blockscoutLogs.logIndexFilter(chainId, params) !== null))
-  );
-  const configuredOrder = readOrder.flatMap((source) =>
-    source === 'quorum' ? [...optIn, source] : [source]
-  );
+  const configuredOrder = readOrder;
   // The caller's policy and each source's capability (SOURCE_CAPABILITIES)
   // both take a source out before it is tried.
   const excluded = new Set(excludeSources);
@@ -2191,11 +2047,7 @@ async function request(
         background,
         directTimeoutMs,
         quorumTimeoutMs,
-        logRange: ['learned-per-endpoint', 'full-history'].includes(
-          SOURCE_CAPABILITIES[source]?.logSpan
-        )
-          ? logRange
-          : null,
+        logRange: SOURCE_CAPABILITIES[source]?.logSpan === 'learned-per-endpoint' ? logRange : null,
         includeTrust,
         routeKey,
         directFallback: source === 'direct' ? directFallback : null,
@@ -2225,7 +2077,7 @@ async function request(
         txLookup.unverified = {
           result,
           source,
-          verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+          verified: ['myotis', 'colibri', 'quorum'].includes(source),
           ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
         };
         sourceIndex = order.length - 2;
@@ -2250,7 +2102,7 @@ async function request(
       return {
         result,
         source,
-        verified: ['myotis', 'colibri', 'quorum', 'blockscout'].includes(source),
+        verified: ['myotis', 'colibri', 'quorum'].includes(source),
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
@@ -2280,10 +2132,9 @@ async function request(
         lastRpcError = err;
       }
       // Quorum already reported each member's failure; its own aggregate is
-      // not an upstream error. The blockscout source's failures say nothing
-      // about the caller's query (requestLogIndex): the quorum after it
-      // answers or explains.
-      if (source !== 'quorum' && source !== 'blockscout') keeper.note(err);
+      // not an upstream error. Direct reports its endpoints' failures itself
+      // too, and its own range refusal is already noted.
+      if (source !== 'quorum' && source !== 'direct') keeper.note(err);
       log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
       // A truncated answer depends on how many logs the query matches, not on
       // the source: the RPCs behind every later source cut it the same way.
@@ -2439,8 +2290,5 @@ module.exports = {
   LOG_TRUNCATION_MIN_SPAN,
   LOG_RANGE_CAP_TTL_MS,
   LOG_SCAN_COOLDOWN_MS,
-  LOG_INDEX_TAIL_BLOCKS,
-  LOG_INDEX_DISAGREEMENT_COOLDOWN_MS,
-  LOG_INDEX_PAIR_MALFORMED_COOLDOWN_MS,
   clearAdaptiveRoutingForTest,
 };

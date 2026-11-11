@@ -149,14 +149,14 @@ test('range-limit and timeout failures keep wording Ant shrinks its log scan on'
   expect(antShrinks(timedOut.body.error.message)).toBe(true);
 });
 
-test('Ant reads are background work, and only the RPC quorum answers its log scans', async () => {
+test('Ant reads are background work, and its log scans skip Myotis and Colibri', async () => {
   await post(bridge.url, rpc('eth_getLogs', [{}]));
   expect(router.request).toHaveBeenLastCalledWith(100, 'eth_getLogs', [{}], {
     signal: expect.any(AbortSignal),
     background: true,
-    excludeSources: ['myotis', 'colibri', 'direct'],
-    includeSources: ['blockscout'],
+    excludeSources: ['myotis', 'colibri'],
     quorumTimeoutMs: 30000,
+    directTimeoutMs: 30000,
     rankError: rankLogScanError,
     rangeCapOf: logScanRangeCap,
   });
@@ -442,26 +442,36 @@ test('a window too wide is logged quietly; other log scan failures still warn (#
   expect(log.verbose).toHaveBeenCalledTimes(2);
 });
 
-test('says once why log scans fail when no RPC quorum is configured (R1-M3)', async () => {
+test('says once why log scans fail when no source is configured (R1-M3)', async () => {
   const filter = [{ fromBlock: '0x1', toBlock: '0x2' }];
   router.request.mockRejectedValue(new Error('No RPC quorum available for eth_getLogs'));
   await post(bridge.url, rpc('eth_getLogs', filter));
   // Endpoints down for now: no configuration warning.
-  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
+  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('has no source');
+  // A quorum short of endpoints is no configuration problem while Direct
+  // follows it: Direct failing is endpoints being down.
   router.request.mockRejectedValue(
     new Error(
       'All chain sources failed for eth_getLogs (quorum: RPC quorum needs 2 endpoints; ' +
-        'excluded for this request: myotis, colibri, direct)'
+        'direct: fetch failed; excluded for this request: myotis, colibri)'
+    )
+  );
+  await post(bridge.url, rpc('eth_getLogs', filter));
+  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('has no source');
+  router.request.mockRejectedValue(
+    new Error(
+      'All chain sources failed for eth_getLogs (quorum: RPC quorum needs 2 endpoints; ' +
+        'excluded for this request: myotis, colibri)'
     )
   );
   const response = await post(bridge.url, rpc('eth_getLogs', filter));
   expect(antShrinksLogScanOn(response.body.error.message)).toBe(false);
   await post(bridge.url, rpc('eth_getLogs', filter));
   router.request.mockRejectedValue(
-    new Error('No chain source left for eth_getLogs on chain 100: read order [direct]')
+    new Error('No chain source left for eth_getLogs on chain 100: read order [myotis, colibri]')
   );
   await post(bridge.url, rpc('eth_getLogs', filter));
-  const warned = log.warn.mock.calls.filter(([line]) => line.includes('none is configured'));
+  const warned = log.warn.mock.calls.filter(([line]) => line.includes('has no source'));
   expect(warned).toHaveLength(1);
   expect(warned[0][0]).toContain('postage batches or chequebook');
   // Other methods failing the same way do not warn about log scans.
@@ -470,7 +480,7 @@ test('says once why log scans fail when no RPC quorum is configured (R1-M3)', as
   bridge = await startAntChainBridge({ router, log });
   router.request.mockRejectedValue(new Error('RPC quorum needs 2 endpoints'));
   await post(bridge.url, rpc());
-  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('none is configured');
+  expect(log.warn.mock.calls.flat().join('\n')).not.toContain('has no source');
 });
 
 test("Ant's shrink needles match v0.5.77 is_range_limit_error", () => {

@@ -190,31 +190,43 @@ function logScanRangeCap(error, span = null) {
   return null;
 }
 
-// Router options for Ant's eth_getLogs (window-halving) scans. Only two
-// independent providers that agree answer them: the RPC quorum, or, for a
-// span wider than the quorum can verify, Blockscout's log index paired with
-// one RPC endpoint (#529, the router's blockscout source). A log Ant does not
-// receive is the one failure Ant cannot detect (it re-reads every batch and
-// chequebook it finds), so a scan takes no single endpoint's word for a
-// range, and there is no Direct tier. Myotis serves no logs. Colibri proves
-// only the logs it returns, not that none are missing, and answers a range
-// its RPC refuses ("Block range 32059916 exceeds the maximum of 10000
-// blocks") with only the most recent blocks' logs, so Ant would read a
-// whole-history scan as empty (#496).
+// Router options for Ant's eth_getLogs (window-halving) scans. They follow
+// the Gnosis read order like every other read, without Myotis and Colibri:
+// Myotis serves no logs, and Colibri proves only the logs it returns, not
+// that none are missing, and answers a range its RPC refuses ("Block range
+// 32059916 exceeds the maximum of 10000 blocks") with only the most recent
+// blocks' logs, so Ant would read a whole-history scan as empty (#496).
+//
+// The RPC quorum verifies every span it can (each endpoint within its learned
+// cap). A wider one, a wallet's first scan or a catch-up after more than
+// about 14 hours offline, goes to Direct (#596): one endpoint, in practice
+// rpc.gnosischain.com, the only keyless Gnosis RPC that serves the full
+// history in one query, so Ant reads it in seconds rather than window by
+// window for most of an hour. That answer is unverified: a log the endpoint
+// leaves out is the one failure Ant cannot detect (it re-reads every batch
+// and chequebook it finds through verified reads, so an added one is caught).
+// Blockscout's log index was the second full-history source that let two
+// providers agree on such a span (#529) until it began refusing scripted
+// clients (2026-11-06). A read order without Direct keeps these scans
+// verified, window by window.
 const LOG_SCAN_ROUTER_OPTIONS = Object.freeze({
-  excludeSources: Object.freeze(['myotis', 'colibri', 'direct']),
-  includeSources: Object.freeze(['blockscout']),
+  excludeSources: Object.freeze(['myotis', 'colibri']),
   quorumTimeoutMs: LOG_SCAN_QUORUM_TIMEOUT_MS,
+  directTimeoutMs: LOG_SCAN_QUORUM_TIMEOUT_MS,
   rankError: rankLogScanError,
   rangeCapOf: logScanRangeCap,
 });
 
-// Whether a failed log scan failed because the configuration leaves no RPC
-// quorum at all (fewer endpoints than the quorum size, or no quorum in the
-// read order), rather than because endpoints are down for now.
+// Whether a failed log scan failed because the configuration leaves it no
+// source at all (neither "quorum" nor "direct" in the read order, or a quorum
+// short of endpoints with no Direct after it), rather than because endpoints
+// are down for now.
 function logScanQuorumMissing(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
-  return /RPC quorum needs \d+ endpoints|No chain source left for eth_getLogs/.test(message);
+  return (
+    /No chain source left for eth_getLogs/.test(message) ||
+    (/RPC quorum needs \d+ endpoints/.test(message) && !/\bdirect: /.test(message))
+  );
 }
 
 // The JSON-RPC error Ant receives for a failed routed request. This is the
@@ -467,7 +479,7 @@ async function startAntChainBridge({
         return;
       }
       // No addresses, calldata, signed transactions, URLs or upstream messages.
-      const source = ['myotis', 'colibri', 'quorum', 'blockscout', 'direct'].includes(answer.source)
+      const source = ['myotis', 'colibri', 'quorum', 'direct'].includes(answer.source)
         ? answer.source
         : 'unknown';
       // One line per Ant chain read (hundreds during a startup scan): verbose
@@ -524,9 +536,9 @@ async function startAntChainBridge({
           // are not being found.
           warnedNoLogQuorum = true;
           log.warn(
-            '[Ant chain] eth_getLogs is answered by the RPC quorum only, and none is configured ' +
-              'for Gnosis: add RPC endpoints (at least the quorum size, m) and keep "quorum" in ' +
-              "the read order, or Ant cannot find its postage batches or chequebook"
+            '[Ant chain] eth_getLogs has no source for Gnosis: keep "direct", or "quorum" with ' +
+              'at least the quorum size (m) of RPC endpoints, in the read order, or Ant cannot ' +
+              'find its postage batches or chequebook'
           );
         }
       }

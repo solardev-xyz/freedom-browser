@@ -1,0 +1,3 @@
+- Looking for your existing Swarm storage takes seconds again for a wallet with history, instead of most of an hour ([#596](https://github.com/solardev-xyz/freedom-browser/issues/596))
+  - Blockscout, which let two independent sources agree on a wallet's whole history, has blocked automated clients since 2026-11-06, so Freedom no longer uses it
+  - The whole history now comes from one Gnosis Chain server, unverified; later searches of recent blocks are still verified by several servers that must agree
