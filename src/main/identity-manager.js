@@ -1299,7 +1299,6 @@ const DEVICE_LABELS = {
 };
 
 /**
-/**
  * Whether a device record's device has shown that it holds the record's
  * address.
  *
