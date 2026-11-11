@@ -294,12 +294,29 @@ export const buildTrustRows = ({
     trustRows.push({ label: 'Resolved by', display: 'Your configured RPC', copy: '' });
     trustRows.push({ label: 'Evidence', display: 'Trusted endpoint response', copy: '' });
   } else if (level === 'unverified') {
-    trustRows.push({ label: 'Resolved by', display: 'A single public RPC', copy: '' });
-    trustRows.push({
-      label: 'Evidence',
-      display: 'Single response (not independently verified)',
-      copy: '',
-    });
+    // Unverified is not always one endpoint: an agreement among fewer RPCs
+    // than the configured quorum M (a reduced second wave, or a first wave
+    // smaller than M) is labelled unverified too. Say how many answered so
+    // the summary matches the numbered RPC rows listed below it.
+    if (agreed.length > 1) {
+      trustRows.push({
+        label: 'Resolved by',
+        display: `${agreed.length} public RPCs`,
+        copy: '',
+      });
+      trustRows.push({
+        label: 'Evidence',
+        display: 'Matching responses, below quorum (not verified)',
+        copy: '',
+      });
+    } else {
+      trustRows.push({ label: 'Resolved by', display: 'A single public RPC', copy: '' });
+      trustRows.push({
+        label: 'Evidence',
+        display: 'Single response (not independently verified)',
+        copy: '',
+      });
+    }
   } else if (level === 'conflict') {
     const rpcNoun = queried.length === 1 ? 'public RPC' : 'public RPCs';
     trustRows.push({

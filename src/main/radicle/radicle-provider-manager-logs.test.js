@@ -326,8 +326,43 @@ describe('the manager and tracker lines, in any private log context (#1073)', ()
   });
 });
 
+// A private window's seed, unseed and sync are refused before the manager is
+// reached, and its seed-status read is a snapshot with no listener (R-9,
+// #955). For those lines the private side checks that, and the public side
+// still checks the line's detail.
+const PRIVATE_REFUSED = new Set(['radicle_seed', 'radicle_unseed', 'radicle_sync']);
+const reachedPrivately = (entry) =>
+  !PRIVATE_REFUSED.has(entry.method) && entry.method !== 'radicle_getSeedStatus';
+
 describe('the manager and tracker lines, through window.radicle (#1073)', () => {
-  test.each(CASES)(
+  test.each(CASES.filter((entry) => !reachedPrivately(entry)))(
+    '$label, under $home: a private window does not reach it, a normal one logs the detail',
+    async (entry) => {
+      // A refused call sets no failure up: nothing would consume it.
+      const privateReply = PRIVATE_REFUSED.has(entry.method)
+        ? await execute(privateChrome, entry.method, entry.params)
+        : await run(entry, () => execute(privateChrome, entry.method, entry.params));
+      if (PRIVATE_REFUSED.has(entry.method)) {
+        expect(privateReply).toEqual({
+          error: expect.objectContaining({ data: { reason: 'private_window' } }),
+        });
+        expect(loggedLines()).toEqual([]);
+      } else {
+        expect(privateReply.result).toBeDefined();
+        expect(loggedLines()).not.toContainEqual(entry.line('<private>', '<private>'));
+        expect(loggedLines()).not.toContainEqual(entry.line(RID, entry.text));
+      }
+
+      jest.clearAllMocks();
+      mockSend.mockReset();
+      seedStatus._reset();
+      cob.clearIdentityCache();
+      await run(entry, () => execute(publicChrome, entry.method, entry.params));
+      expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
+    }
+  );
+
+  test.each(CASES.filter(reachedPrivately))(
     '$label, under $home: a private window logs <private>, a normal one the detail',
     async (entry) => {
       const privateReply = await run(entry, () =>

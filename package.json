@@ -25,7 +25,7 @@
     "test": "npm run test:unit",
     "test:unit": "jest",
     "test:coverage": "jest --coverage --runInBand --forceExit",
-    "test:migration": "jest --runInBand src/main/migrate-user-data.test.js src/main/__tests__/integration/v08-upgrade.test.js src/main/profile-resolver.test.js src/main/profile-paths.test.js src/main/profile-catalog.test.js src/main/identity/__tests__/integration/postage-publisher-continuity.test.js",
+    "test:migration": "jest --runInBand src/main/migrate-user-data.test.js src/main/__tests__/integration/v08-upgrade.test.js src/main/profile-resolver.test.js src/main/profile-paths.test.js src/main/profile-catalog.test.js src/main/identity/__tests__/integration/postage-publisher-continuity.test.js src/main/private-files.test.js",
     "test:e2e": "playwright test --project=harness",
     "test:e2e:agent:codex": "playwright test --project=live test-e2e/live/agent-codex-*.spec.js",
     "test:e2e:agent:ollama": "dotenv -e .env.agent-tests.local -- playwright test --project=harness test-e2e/agent-ollama-live.spec.js",
