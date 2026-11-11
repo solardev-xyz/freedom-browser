@@ -11,6 +11,13 @@
  * then asks for an on-device confirmation. Errors surface with stable
  * LEDGER_* codes (see ./errors.js) — user rejection included.
  *
+ * The device's answer is never trusted: every signature must recover to
+ * the account's address over exactly what was asked — the transaction
+ * the caller built, the message's EIP-191 hash, the typed data's EIP-712
+ * hash — before it leaves this module. Anything else (a mis-encoded
+ * request, a confused device, a faulty transport) is LEDGER_BAD_SIGNATURE,
+ * so nothing is journaled, broadcast or handed to a site.
+ *
  * Transactions and typed data are signed WITHOUT @ledgerhq's hosted
  * clear-signing resolution: resolving token/plugin/EIP-712 metadata posts
  * the transaction contents (or the typed-data schema hash, chain id and
@@ -25,12 +32,34 @@
  * later — that decision belongs to the user, not this module.
  */
 
-const { Transaction, Signature, TypedDataEncoder } = require('ethers');
+const { Transaction, Signature, TypedDataEncoder, verifyMessage, verifyTypedData } = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
 const { assertLedgerCanSendTypedData } = require('./eip712-limits');
 const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
+
+function badSignature(cause) {
+  const err = createLedgerError(LEDGER_ERROR_CODES.BAD_SIGNATURE);
+  if (cause) err.cause = cause;
+  return err;
+}
+
+/**
+ * Run `recover` and require the account's address. A signature that
+ * can't be parsed or recovered at all is as bad as one from another key.
+ */
+function requireSigner(record, recover) {
+  let recovered;
+  try {
+    recovered = recover();
+  } catch (err) {
+    throw badSignature(err);
+  }
+  if (typeof recovered !== 'string' || recovered.toLowerCase() !== record.address.toLowerCase()) {
+    throw badSignature();
+  }
+}
 
 /** hw-app-eth returns r/s as bare hex and v as hex string or number. */
 function toEthersSignature(sig) {
@@ -41,20 +70,46 @@ function toEthersSignature(sig) {
   });
 }
 
+/** The device's answer as a serialized signature, refused unless it's the account's. */
+function checkedSignature(record, sig, recover) {
+  let serialized;
+  try {
+    serialized = toEthersSignature(sig).serialized;
+  } catch (err) {
+    throw badSignature(err);
+  }
+  requireSigner(record, () => recover(serialized));
+  return serialized;
+}
+
 /**
  * @param {{address: string, path: string}} record - Ledger wallet record from vault-meta
+ * @param {{onAddressCheck?: (matched: boolean) => void}} [options]
+ *   `onAddressCheck` hears whether the device derived the record's address
+ *   at its path, so the record's check state (#1065) can be kept.
  * @returns {import('../signers').Signer}
  */
-function createLedgerBackend(record) {
+function createLedgerBackend(record, { onAddressCheck } = {}) {
   /**
    * Run a device task after verifying the attached Ledger derives this
    * account's address at the stored path — signing with a different
    * device/seed must fail, not silently produce a foreign signature.
+   * This is also the check of a record added before main read addresses
+   * back from the device: it can't sign until a device matches it.
    */
   const withVerifiedDevice = (task) =>
     withEthApp(async (eth) => {
       const { address } = await eth.getAddress(record.path, false);
-      if (address.toLowerCase() !== record.address.toLowerCase()) {
+      const matched = address.toLowerCase() === record.address.toLowerCase();
+      if (onAddressCheck) {
+        try {
+          onAddressCheck(matched);
+        } catch (err) {
+          // Keeping the state is best effort; the device answered either way.
+          console.warn('[LedgerSigner] Could not record the address check:', err.message);
+        }
+      }
+      if (!matched) {
         throw createLedgerError(LEDGER_ERROR_CODES.WRONG_DEVICE);
       }
       return task(eth);
@@ -71,23 +126,36 @@ function createLedgerBackend(record) {
 
       return withVerifiedDevice(async (eth) => {
         const sig = await eth.signTransaction(record.path, rawHex, null);
-        unsigned.signature = toEthersSignature(sig);
-        return unsigned.serialized;
+        let raw;
+        let signed;
+        try {
+          unsigned.signature = toEthersSignature(sig);
+          raw = unsigned.serialized;
+          // Parse the exact bytes the caller will journal and broadcast.
+          signed = Transaction.from(raw);
+        } catch (err) {
+          // A v for another chain, or an r/s that isn't a signature.
+          throw badSignature(err);
+        }
+        // Its sender, recovered over its own unsigned hash.
+        requireSigner(record, () => signed.from);
+        return raw;
       });
     },
 
     signMessage: async (message) => {
-      const messageHex = messageToBytes(message).toString('hex');
+      const bytes = messageToBytes(message);
+      const messageHex = bytes.toString('hex');
 
       return withVerifiedDevice(async (eth) => {
         const sig = await eth.signPersonalMessage(record.path, messageHex);
-        return toEthersSignature(sig).serialized;
+        return checkedSignature(record, sig, (serialized) => verifyMessage(bytes, serialized));
       });
     },
 
     signTypedData: async (typedData) => {
       // The device wants the full EIP-712 wire payload.
-      const { strippedTypes, payload } = getEip712WirePayload(typedData);
+      const { domain, strippedTypes, payload } = getEip712WirePayload(typedData);
 
       return withVerifiedDevice(async (eth) => {
         // hw-app-eth sends some typed data wrongly to an Ethereum app that
@@ -107,7 +175,10 @@ function createLedgerBackend(record) {
           const structHash = TypedDataEncoder.from(strippedTypes).hash(typedData.message);
           sig = await eth.signEIP712HashedMessage(record.path, domainSeparator.slice(2), structHash.slice(2));
         }
-        return toEthersSignature(sig).serialized;
+        // Recovered over the EIP-712 hash of the typed data itself, never
+        // over what was sent to the device: either path must sign it.
+        return checkedSignature(record, sig, (serialized) =>
+          verifyTypedData(domain, strippedTypes, typedData.message, serialized));
       });
     },
   };
