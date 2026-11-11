@@ -476,7 +476,9 @@ describe('chain-data-router', () => {
   // PRIVATE MODE GUARD (Colibri store, #1058): Colibri picks a private
   // window's in-memory store from the async context the caller marked (the
   // onchain-app handler of a private session). The router passes no flag of
-  // its own, so the mark must reach Colibri through it.
+  // its own, so the mark must reach Colibri through it. The read is one
+  // Colibri still proves (an account read at `latest`, or with `latest`
+  // appended): eth_call never reaches Colibri (#1046), private or not.
   test('a read in a private window’s context reaches Colibri in that context', async () => {
     const { runWithPrivateLogContext, isPrivateLogContext } =
       jest.requireActual('../private/private-log-context');
@@ -484,19 +486,48 @@ describe('chain-data-router', () => {
       access: { readOrder: ['colibri', 'direct'] },
       quorum: { timeoutMs: 7000 },
     });
+    global.fetch = jest.fn();
     const seen = [];
-    mockRequestViaColibri.mockImplementation(async () => {
-      seen.push(isPrivateLogContext());
-      return '0x1';
+    mockRequestViaColibri.mockImplementation(async (chainId, method, params) => {
+      seen.push([method, params, isPrivateLogContext()]);
+      return '0x6000';
     });
-    const read = (data) =>
-      request(100, 'eth_call', [{ to: '0xabc', data }, 'latest'], {
+    const read = (method, params) =>
+      request(100, method, params, {
         routingContext: { origin: 'https://app.example' },
       });
 
-    await runWithPrivateLogContext(true, () => read('0x01'));
-    await read('0x02');
-    expect(seen).toEqual([true, false]);
+    await expect(runWithPrivateLogContext(true, () => read('eth_getCode', ['0x01', 'latest'])))
+      .resolves.toEqual({ result: '0x6000', source: 'colibri', verified: true });
+    await runWithPrivateLogContext(true, () => read('eth_getBalance', ['0x02']));
+    await read('eth_getCode', ['0x03', 'latest']);
+    expect(seen).toEqual([
+      ['eth_getCode', ['0x01', 'latest'], true],
+      ['eth_getBalance', ['0x02', 'latest'], true],
+      ['eth_getCode', ['0x03', 'latest'], false],
+    ]);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  // A private window's eth_call skips Colibri like any other: the private
+  // context changes which Colibri store a read uses, not what Colibri may
+  // be asked, so the answer is Direct's, unverified.
+  test('a private window’s eth_call still skips Colibri (#1046, #1058)', async () => {
+    const { runWithPrivateLogContext } =
+      jest.requireActual('../private/private-log-context');
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 7000 },
+    });
+    global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ result: '0x2a' }) }));
+
+    await expect(runWithPrivateLogContext(true, () =>
+      request(100, 'eth_call', [{ to: '0xabc', data: '0x01' }, 'latest'], {
+        routingContext: { origin: 'https://app.example' },
+      })
+    )).resolves.toEqual({ result: '0x2a', source: 'direct', verified: false });
+    expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   // The worker host terminates a Colibri worker still verifying past this
