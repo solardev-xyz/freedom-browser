@@ -112,7 +112,7 @@ function revokePermission(origin, { source = 'user' } = {}) {
     delete permissions[key];
     permissionsCache = permissions;
     savePermissions();
-    notifyRevokeListeners(key);
+    notifyRevokeListeners(key, 'connection');
     if (source === 'user') notifyManifestMutation(key, 'connection');
     console.log('[SwarmPermissions] Revoked permission for:', key);
     return true;
@@ -145,10 +145,12 @@ function notifyManifestMutation(origin, projectionKey) {
   manifestMutationListener?.(origin, projectionKey);
 }
 
-function notifyRevokeListeners(origin) {
+// `scope` says what was revoked: 'connection' (the origin is disconnected,
+// every tier with it) or 'messaging' (only that tier; still connected).
+function notifyRevokeListeners(origin, scope) {
   for (const listener of revokeListeners) {
     try {
-      listener(origin);
+      listener(origin, { scope });
     } catch (err) {
       console.error('[SwarmPermissions] Revoke listener failed:', err);
     }
@@ -260,7 +262,7 @@ function revokeMessaging(origin, { source = 'user' } = {}) {
   if (permissions[key].autoApprove) permissions[key].autoApprove.messaging = false;
   permissionsCache = permissions;
   savePermissions();
-  notifyRevokeListeners(key);
+  notifyRevokeListeners(key, 'messaging');
   if (source === 'user') notifyManifestMutation(key, 'messagingGrant');
   return true;
 }

@@ -9,7 +9,7 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { formatBytes } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getPermissionKey, getActiveWebview, getActivePageUrl } from '../dapp-provider.js';
+import { getPermissionKey, getActivePageUrl } from '../dapp-provider.js';
 import { showSwarmPermissions } from './permission-manage.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
 import {
@@ -342,7 +342,7 @@ function closeSwarmConnect() {
 }
 
 async function approveSwarmConnect(pending) {
-  const { permissionKey, resolve, webview } = pending;
+  const { permissionKey, resolve } = pending;
 
   try {
     await window.swarmPermissions.grantPermission(permissionKey);
@@ -353,14 +353,8 @@ async function approveSwarmConnect(pending) {
       throw response.error;
     }
 
+    // swarm-provider.js announces `connect` to the page once this resolves.
     resolve(response.result);
-
-    if (webview && webview.send) {
-      webview.send('swarm:provider-event', {
-        event: 'connect',
-        data: { origin: permissionKey },
-      });
-    }
 
     console.log('[SwarmConnect] Approved:', permissionKey);
     updateSwarmConnectionBanner(permissionKey);
@@ -431,17 +425,9 @@ export async function disconnectSwarmApp(permissionKey = null) {
       await window.swarmPermissions.revokePermission(key);
       await window.swarmFeedStore?.revokeFeedAccess?.(key);
     }
+    // Main tells every window, and each sends `disconnect` to its pages of
+    // this site (swarm-provider.js notifySiteDisconnected).
     console.log('[SwarmConnect] Disconnected:', key);
-
-    // Only the visible page can be told — and only when it is the site
-    // that was disconnected.
-    const webview = getActiveWebview();
-    if (webview && webview.send && getPermissionKey(getActivePageUrl()) === key) {
-      webview.send('swarm:provider-event', {
-        event: 'disconnect',
-        data: { origin: key },
-      });
-    }
 
     // Only the banner of the site that was revoked: a key from the
     // permissions list can name a site in another tab.

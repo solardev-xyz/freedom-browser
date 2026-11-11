@@ -1,0 +1,2 @@
+- Swarm apps hear `connect` when their permission manifest connects them, and `disconnect` in every open tab of the site, however it was disconnected ([#1158](https://github.com/solardev-xyz/freedom-browser/issues/1158))
+  - Before, `disconnect` reached only the tab in front, and only when you disconnected from the banner

@@ -2222,6 +2222,23 @@ async function checkSwarmPreFlight() {
 }
 
 /**
+ * Tell every browser window that `origin` lost its connection, so each can
+ * send `disconnect` to its own pages of that site (#1158). Only the chrome
+ * can map a page to its address-bar origin, and only the chrome hears this:
+ * the origin a user disconnected is not for other sites' pages.
+ */
+function notifyChromeOfDisconnect(origin) {
+  const { isChromeIndexUrl } = require('../ipc-sender-policy');
+  for (const wc of webContents?.getAllWebContents?.() || []) {
+    try {
+      if (isChromeIndexUrl(wc.getURL())) wc.send(IPC.SWARM_ORIGIN_DISCONNECTED, { origin });
+    } catch {
+      // webContents may be destroyed mid-iteration
+    }
+  }
+}
+
+/**
  * Register the swarm:provider-execute IPC handler.
  */
 function registerSwarmProviderIpc() {
@@ -2233,6 +2250,12 @@ function registerSwarmProviderIpc() {
 
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
+  // Every route that revokes a connection (the banner, Settings, a manifest
+  // that withdraws it) ends here, so this is where every window is told.
+  // Revoking only the messaging tier leaves the origin connected: no event.
+  onRevoke((origin, { scope } = {}) => {
+    if (scope === 'connection') notifyChromeOfDisconnect(origin);
+  });
 
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};

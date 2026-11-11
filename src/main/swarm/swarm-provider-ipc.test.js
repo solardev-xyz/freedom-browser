@@ -1,5 +1,6 @@
 const ipcHandlers = {};
 const mockWebContentsFromId = jest.fn();
+const mockGetAllWebContents = jest.fn(() => []);
 jest.mock('electron', () => ({
   ipcMain: {
     handle: (channel, handler) => {
@@ -9,6 +10,7 @@ jest.mock('electron', () => ({
   },
   webContents: {
     fromId: mockWebContentsFromId,
+    getAllWebContents: mockGetAllWebContents,
   },
 }));
 
@@ -2849,6 +2851,34 @@ describe('swarm-provider-ipc', () => {
         const result = await invokeProvider('swarm_unsubscribe', { subscriptionId: 'nope' }, ORIGIN);
         expect(result.error.code).toBe(-32602);
         expect(result.error.data.reason).toBe('subscription_not_found');
+      });
+    });
+
+    describe('disconnect broadcast (#1158)', () => {
+      test("a revoked connection is announced to every chrome window, never to a page", () => {
+        registerSwarmProviderIpc();
+        const listeners = mockOnRevoke.mock.calls.map(([listener]) => listener);
+        const chromeUrl = require('url').pathToFileURL(
+          require('path').resolve(__dirname, '..', '..', 'renderer', 'index.html')
+        ).href;
+        const firstWindow = { getURL: () => chromeUrl, send: jest.fn() };
+        const secondWindow = { getURL: () => chromeUrl, send: jest.fn() };
+        const page = { getURL: () => 'bzz://other.eth/', send: jest.fn() };
+        const destroyed = { getURL: () => { throw new Error('destroyed'); }, send: jest.fn() };
+        mockGetAllWebContents.mockReturnValue([firstWindow, page, destroyed, secondWindow]);
+
+        // Revoking only the messaging tier leaves the origin connected.
+        for (const listener of listeners) listener(ORIGIN, { scope: 'messaging' });
+        expect(firstWindow.send).not.toHaveBeenCalled();
+
+        for (const listener of listeners) listener(ORIGIN, { scope: 'connection' });
+
+        for (const window of [firstWindow, secondWindow]) {
+          expect(window.send).toHaveBeenCalledTimes(1);
+          expect(window.send).toHaveBeenCalledWith('swarm:origin-disconnected', { origin: ORIGIN });
+        }
+        expect(page.send).not.toHaveBeenCalled();
+        expect(destroyed.send).not.toHaveBeenCalled();
       });
     });
 
