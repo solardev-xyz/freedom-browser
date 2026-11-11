@@ -2869,7 +2869,6 @@ describe('Ant bridge cancellation', () => {
       ['eth_getBalance', ['pending'], ['pending', 'latest']],
       ['eth_getBlockByNumber', ['latest', 'pending'], ['latest', 'pending']],
       ['eth_getBlockByHash', [HASH, 'pending'], [HASH, 'pending']],
-      ['eth_blockNumber', ['earliest'], ['earliest']],
     ])('%s with a tag outside its block parameter %j is still asked of Colibri', async (method, params, sent) => {
       readOrder(['colibri']);
       mockRequestViaColibri.mockResolvedValue('colibri:proven');
@@ -2933,7 +2932,56 @@ describe('Ant bridge cancellation', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    test.each(['eth_gasPrice', 'eth_feeHistory'])('%s is never asked of Colibri', async (method) => {
+    // eth_blockNumber takes no params. Colibri 3.0.3 skips its freshness gate
+    // for any args[0] but `latest` and matches a tag like `finalized` with any
+    // proven block (verify_block.c:260-261), so a stale number would read as
+    // verified. Only a params-less read is Colibri's (R3-M1).
+    test.each([
+      ['no params', [], []],
+      ['null params', null, null],
+      ['params left out', undefined, []],
+    ])('eth_blockNumber with %s is asked of Colibri, verified', async (_label, params, sent) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('0x10');
+
+      await expect(request(1, 'eth_blockNumber', params)).resolves.toEqual({
+        result: '0x10',
+        source: 'colibri',
+        verified: true,
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+      expect(mockRequestViaColibri.mock.calls[0][2]).toEqual(sent);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['finalized', ['finalized']],
+      ['safe', ['safe']],
+      ['earliest', ['earliest']],
+      ['latest', ['latest']],
+      ['a number', ['0x10']],
+      ['an object', [{ blockTag: 'finalized' }]],
+      ['params that aren\'t an array', 'finalized'],
+    ])('eth_blockNumber at %s skips Colibri for Direct, unverified', async (_label, params) => {
+      readOrder(['colibri', 'direct']);
+      rpcAnswers();
+      mockRequestViaColibri.mockResolvedValue('0x1');
+
+      await expect(request(1, 'eth_blockNumber', params)).resolves.toEqual({
+        result: 'rpc:eth_blockNumber',
+        source: 'direct',
+        verified: false,
+      });
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+      readOrder(['colibri']);
+      await expect(request(1, 'eth_blockNumber', params)).rejects.toThrow(
+        '(colibri: Colibri cannot prove eth_blockNumber with params)'
+      );
+      expect(mockRequestViaColibri).not.toHaveBeenCalled();
+    });
+
+    test.each(['eth_gasPrice', 'eth_feeHistory', 'eth_maxPriorityFeePerGas'])('%s is never asked of Colibri', async (method) => {
       const params = method === 'eth_feeHistory' ? ['0x4', 'latest', [25, 75]] : [];
       readOrder(['colibri', 'direct']);
       rpcAnswers();
@@ -3058,10 +3106,16 @@ describe('Ant bridge cancellation', () => {
       expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_getLogs')).toBe(true);
       // Colibri answers these from a public RPC, unproven (#1046), or runs
       // them on code from one, unchecked.
-      for (const method of ['eth_gasPrice', 'eth_feeHistory', 'eth_call', 'eth_estimateGas']) {
+      // Its eth_maxPriorityFeePerGas is a hard-coded 1 gwei (verify_block.c).
+      for (const method of [
+        'eth_gasPrice',
+        'eth_feeHistory',
+        'eth_call',
+        'eth_estimateGas',
+        'eth_maxPriorityFeePerGas',
+      ]) {
         expect(SOURCE_CAPABILITIES.colibri.unsupported.has(method)).toBe(true);
       }
-      expect(SOURCE_CAPABILITIES.colibri.unsupported.has('eth_maxPriorityFeePerGas')).toBe(false);
       for (const source of ['myotis', 'colibri', 'quorum']) {
         expect(SOURCE_CAPABILITIES[source].unsupported.has('eth_newFilter')).toBe(true);
         expect(SOURCE_CAPABILITIES[source].unsupported.has('web3_clientVersion')).toBe(true);

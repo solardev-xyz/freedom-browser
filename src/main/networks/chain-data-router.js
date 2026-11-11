@@ -125,6 +125,10 @@ READ_METHODS.add('web3_sha3');
 // accepted (verify_call.c's verify_call_result_and_finish). So a call's
 // answer can be one public RPC's code, run locally with no proof behind it:
 // both are `unsupported` below.
+// Nor does it serve eth_maxPriorityFeePerGas: Colibri 3.0.3 answers it with a
+// hard-coded 1 gwei (verify_block.c's eth_set_block_data), attached to a
+// proven header but not derived from it, so the "verified" tip says nothing
+// about the market. `unsupported` below.
 // Nor does it answer a read whose proof isn't tied to the requested block
 // (#1060). Colibri proves such an answer from *some* authenticated block, so
 // a lying prover could answer from another one, and it would be labelled
@@ -164,6 +168,7 @@ const SOURCE_CAPABILITIES = Object.freeze({
       'eth_feeHistory',
       'eth_call',
       'eth_estimateGas',
+      'eth_maxPriorityFeePerGas',
     ]),
     // Its upstream refuses more than 10,000 blocks per log query, then retries
     // another node (#496). Not consulted while eth_getLogs is unsupported.
@@ -254,10 +259,22 @@ const COLIBRI_NOT_A_STRING = 'at a block that isn\'t a string';
 // - eth_getBlockByNumber at `latest`, a number, a hash or no block at all
 //   (null params included), which verify_block.c compares with the proven
 //   block or holds to the freshness gate;
-// - eth_getBlockByHash at a 32-byte hash.
+// - eth_getBlockByHash at a 32-byte hash;
+// - eth_blockNumber with no params, which the freshness gate holds to a
+//   minute.
 // A block that isn't a string (an EIP-1898 object, null, a number) is never
 // Colibri's: no verifier compares one.
 function colibriRequestParams(method, params) {
+  if (method === 'eth_blockNumber') {
+    // eth_blockNumber takes no params, and every RPC answers the head.
+    // Colibri 3.0.3 holds its proven header to the freshness gate only when
+    // args are empty or args[0] is `latest`, and matches any other args[0]
+    // (`finalized`, say) with any proven block (verify_block.c:260-261), so
+    // a lying prover's stale number would be labelled verified. Colibri is
+    // asked only with no params (null, which it reads as `[]`, included).
+    if (params == null || (Array.isArray(params) && params.length === 0)) return { params };
+    return { refusal: 'with params' };
+  }
   if (method === 'eth_getBlockByHash') {
     if (!Array.isArray(params) || params.length === 0) return { refusal: 'without a block hash' };
     if (typeof params[0] !== 'string') return { refusal: COLIBRI_NOT_A_STRING };
