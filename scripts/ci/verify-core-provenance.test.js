@@ -19,6 +19,7 @@ jest.mock('child_process', () => ({ execFileSync: jest.fn() }));
 const envKeys = [
   'GITHUB_ACTIONS',
   'FREEDOM_IPFSD_RELEASE_TAG',
+  'FREEDOM_RADICLED_RELEASE_TAG',
   'FREEDOM_CORE_RELEASE_TAG',
   'FREEDOM_CORE_REPO',
   'GITHUB_TOKEN',
@@ -46,7 +47,7 @@ function load(tag = TEST_TAG) {
   execFileSync.mockImplementation((command, args, options) => {
     if (command === 'gh') return gh(args);
     for (const member of args.slice(2)) {
-      const body = member.startsWith('freedom-ipfsd') ? 'verified-binary' : `notice ${member}`;
+      const body = member.startsWith('freedom-') ? 'verified-binary' : `notice ${member}`;
       fs.writeFileSync(path.join(options.cwd, member), body);
     }
     return undefined;
@@ -79,10 +80,10 @@ function mockResponses(responses) {
 
 const hash = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
-function releaseFixture(tag = TEST_TAG) {
+function releaseFixture(tag = TEST_TAG, binary = 'freedom-ipfsd') {
   const downloads = fetcher.TARGETS.map((target) => {
-    const version = tag.replace(/^ipfsd-/, '');
-    const name = `freedom-ipfsd-${version}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
+    const version = tag.replace(/^(?:ipfsd|radicled)-/, '');
+    const name = `${binary}-${version}-${target.keywords.join('-')}.${target.exe ? 'zip' : 'tar.gz'}`;
     return {
       name,
       browser_download_url: `https://assets.example/${name}`,
@@ -150,6 +151,7 @@ describe('in CI, a fetch verifies the build provenance of what it installs', () 
   test('each binary names the workflow that attests its releases', () => {
     expect(require('../fetch-freedom-cored').provenanceWorkflow).toBe('release.yml');
     expect(fetcher.provenanceWorkflow).toBe('release-ipfsd.yml');
+    expect(require('../fetch-freedom-radicled').provenanceWorkflow).toBe('release-radicled.yml');
   });
 
   test('SHA256SUMS and each archive are verified, each before anything is extracted', async () => {
@@ -290,6 +292,31 @@ describe('verify-core-provenance, for a bump', () => {
     await verifier.main(['ipfsd'], { workDir: dir });
     expect(process.exitCode).toBeUndefined();
     expect(gh).toHaveBeenCalledTimes(1 + fixture.downloads.length);
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  test('checks a radicled-v release against the Radicle service workflow', async () => {
+    process.env.GH_TOKEN = 'test-token';
+    process.env.FREEDOM_RADICLED_RELEASE_TAG = 'radicled-v0.1.0-test';
+    const fixture = releaseFixture('radicled-v0.1.0-test', 'freedom-radicled');
+    serve(fixture);
+    await require('./verify-core-provenance').main(['radicled'], { workDir: dir });
+    expect(process.exitCode).toBeUndefined();
+    expect(commands()).toEqual([
+      'gh SHA256SUMS',
+      ...fixture.downloads.flatMap((a) => [`gh ${a.name}`, `extract ${a.name}`]),
+    ]);
+    for (const [args] of gh.mock.calls) {
+      expect(args.slice(3)).toEqual([
+        '--repo',
+        'solardev-xyz/freedom-core',
+        '--signer-workflow',
+        'solardev-xyz/freedom-core/.github/workflows/release-radicled.yml',
+        '--source-ref',
+        'refs/tags/radicled-v0.1.0-test',
+        '--deny-self-hosted-runners',
+      ]);
+    }
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 

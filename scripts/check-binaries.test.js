@@ -206,6 +206,52 @@ describe('freedom-ipfsd build inputs', () => {
   });
 });
 
+describe('freedom-radicled build inputs', () => {
+  test.each([
+    ['mac', 'x64'],
+    ['mac', 'arm64'],
+    ['linux', 'x64'],
+    ['linux', 'arm64'],
+    ['win', 'x64'],
+    ['win', 'arm64'],
+  ])('requires the Radicle service binary and its notices for %s-%s', (os, arch) => {
+    fs.existsSync.mockImplementation((target) => !target.includes('freedom-radicled-bin'));
+    expect(checkBinaries([{ os, arch }])).toEqual([
+      expect.stringContaining(`freedom-radicled binary for ${os}-${arch}`),
+      expect.stringContaining(`freedom-radicled THIRD-PARTY-NOTICES for ${os}-${arch}`),
+      expect.stringContaining(
+        `freedom-radicled THIRD-PARTY-NOTICES-rust-std.html for ${os}-${arch}`
+      ),
+    ]);
+    expect(fs.existsSync).toHaveBeenCalledWith(
+      path.join(
+        __dirname,
+        '..',
+        'freedom-radicled-bin',
+        `${os}-${arch}`,
+        `freedom-radicled${os === 'win' ? '.exe' : ''}`
+      )
+    );
+  });
+
+  test('packages the executable with its notices and explicitly signs it on macOS', () => {
+    expect(packageJson.build.extraResources.find(({ to }) => to === 'freedom-radicled')).toEqual({
+      from: 'freedom-radicled-bin/${os}-${arch}/',
+      to: 'freedom-radicled',
+      filter: [
+        'freedom-radicled',
+        'freedom-radicled.exe',
+        'THIRD-PARTY-NOTICES',
+        'THIRD-PARTY-NOTICES-rust-std.html',
+      ],
+    });
+    expect(packageJson.build.mac.binaries).toContain(
+      'Contents/Resources/freedom-radicled/freedom-radicled'
+    );
+    expect(packageJson.scripts['radicled:download']).toBe('node scripts/fetch-freedom-radicled.js');
+  });
+});
+
 // Arti is optional everywhere (it is compiled, not downloaded), but every
 // target we ship packages it the same way — including Windows since #337.
 describe('Arti (Tor) build inputs', () => {
