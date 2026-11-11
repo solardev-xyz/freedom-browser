@@ -22,7 +22,12 @@
 const { Wallet, computeAddress } = require('ethers');
 
 const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
-const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
+const {
+  getWalletRecord,
+  isHardwareWalletIndex,
+  recordRemoteAddressCheck,
+  WALLET_TYPES,
+} = require('../identity-manager');
 const { createLedgerBackend } = require('./ledger/signer');
 const { createRemoteBackend } = require('./remote/signer');
 const { normalizeMessage, normalizeTypedData, withoutDomainType } = require('./signing-utils');
@@ -115,7 +120,11 @@ function getSigner(walletIndex) {
   if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record);
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
-    backend = createRemoteBackend(record);
+    backend = createRemoteBackend(record, {
+      // What the phone's answer showed about the record (#1078): kept on
+      // it, so a record added before the phone check gets checked.
+      onAddressCheck: (matched) => recordRemoteAddressCheck(walletIndex, matched),
+    });
   } else {
     backend = createVaultBackend(walletIndex);
   }

@@ -168,8 +168,10 @@ const test = base.extend({
         activeWalletIndex: 0,
         derivedWallets: [
           { index: 0, name: 'Main Wallet', address: keys.userWallet.address },
-          { index: 1, name: 'E2E Phone', address: phoneWallet.address, type: 'remote' },
-          { index: 2, name: 'Dead Phone', address: DEAD_PHONE_ADDRESS, type: 'remote' },
+          // Both stand for phone accounts added through the phone check
+          // (#1078): only a checked phone account can own a Safe.
+          { index: 1, name: 'E2E Phone', address: phoneWallet.address, type: 'remote', addressCheck: 'matched' },
+          { index: 2, name: 'Dead Phone', address: DEAD_PHONE_ADDRESS, type: 'remote', addressCheck: 'matched' },
         ],
       }),
       'utf-8'

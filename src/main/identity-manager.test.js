@@ -71,6 +71,25 @@ function makeRestartIdentityMock() {
   };
 }
 
+// Anvil/Hardhat-default test keys — well-known, never funded on mainnet.
+const PHONE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+const STRANGER_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+
+/**
+ * A fake phone: adding a phone account has the phone sign a check as the
+ * account (#1078). `phone.wallet` is the key it signs with; a test swaps
+ * `phone.answer` to answer otherwise.
+ */
+function makePhone() {
+  const { Wallet, getBytes } = require('ethers');
+  const phone = {
+    wallet: new Wallet(PHONE_KEY),
+    answer: ({ params }) => phone.wallet.signMessage(getBytes(params[0])),
+    requestRemoteSignature: jest.fn(async (job) => phone.answer(job)),
+  };
+  return phone;
+}
+
 describe('identity-manager profile paths', () => {
   let tempDirs = [];
   let envSnapshot;
@@ -282,24 +301,32 @@ describe('identity-manager ledger accounts', () => {
   let tmpDir;
   let envSnapshot;
   let identityManager;
+  let phone;
 
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
   const LEDGER_PATH = "44'/60'/0'/0/0";
   const HARDWARE_INDEX_BASE = 1000000;
 
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-ledger-'));
-    envSnapshot = snapshotEnv();
-    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
-    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+  const loadIdentityManager = () =>
+    loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => null), // vault locked — ledger ops must not need it
           isUnlocked: jest.fn(() => false),
         }),
+        [require.resolve('./wallet/remote/bridge')]: () => ({
+          requestRemoteSignature: phone.requestRemoteSignature,
+        }),
       },
-    }).mod;
+    });
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-ledger-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    phone = makePhone();
+    identityManager = loadIdentityManager().mod;
   });
 
   afterEach(() => {
@@ -411,15 +438,102 @@ describe('identity-manager ledger accounts', () => {
   test('addRemoteWallet appends a pathless typed record and auto-names', async () => {
     seedMainWallet();
 
-    const wallet = await identityManager.addRemoteWallet('', LEDGER_ADDRESS);
+    const wallet = await identityManager.addRemoteWallet('', phone.wallet.address);
 
     expect(wallet).toEqual({
       index: HARDWARE_INDEX_BASE,
       name: 'Phone 1',
-      address: LEDGER_ADDRESS,
+      address: phone.wallet.address,
       type: 'remote',
+      addressCheck: 'matched',
     });
     expect(readVaultMeta().derivedWallets[1]).toEqual(wallet);
+  });
+
+  test('addRemoteWallet has the phone sign a fresh check as the account first (#1078)', async () => {
+    seedMainWallet();
+
+    await identityManager.addRemoteWallet('My Phone', phone.wallet.address);
+
+    expect(phone.requestRemoteSignature).toHaveBeenCalledTimes(1);
+    const [job] = phone.requestRemoteSignature.mock.calls[0];
+    expect(job).toMatchObject({
+      method: 'personal_sign',
+      address: phone.wallet.address,
+      purpose: 'account-check',
+    });
+    expect(job.params[1]).toBe(phone.wallet.address);
+    const challenge = Buffer.from(job.params[0].slice(2), 'hex').toString('utf8');
+    expect(challenge).toContain(phone.wallet.address);
+    expect(challenge).toMatch(/Nonce: [0-9a-f]{64}$/);
+  });
+
+  test('addRemoteWallet refuses an address the phone does not sign as (#1078)', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    // The chrome names an address; the phone behind the session holds another.
+    const { Wallet } = require('ethers');
+    phone.wallet = new Wallet(STRANGER_KEY);
+
+    await expect(identityManager.addRemoteWallet('Planted', new Wallet(PHONE_KEY).address))
+      .rejects.toMatchObject({
+        code: 'REMOTE_ADDRESS_MISMATCH',
+        message: "Your phone answered from a different account than the one you picked. The account wasn't added.",
+      });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('addRemoteWallet refuses a phone that says the account is not its own (EIP-1193 4100)', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    phone.answer = async () => {
+      throw Object.assign(new Error('Unauthorized'), { code: 'REMOTE_WRONG_ACCOUNT' });
+    };
+
+    await expect(identityManager.addRemoteWallet('Planted', phone.wallet.address))
+      .rejects.toMatchObject({ code: 'REMOTE_ADDRESS_MISMATCH' });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test.each([
+    ['no answer in time', () => Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' })],
+    ['the user cancels', () => Object.assign(new Error('cancelled'), { code: 'REMOTE_USER_CANCELLED' })],
+    ['a rejection on the phone', () => Object.assign(new Error('rejected'), { code: 'REMOTE_USER_REJECTED' })],
+  ])('addRemoteWallet adds nothing on %s (#1078)', async (_label, makeError) => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    phone.answer = async () => {
+      throw makeError();
+    };
+
+    const refusal = identityManager.addRemoteWallet('My Phone', phone.wallet.address);
+    await expect(refusal).rejects.toMatchObject({
+      code: 'REMOTE_ADDRESS_UNPROVEN',
+      message: expect.stringMatching(/didn't confirm that it holds this account, so it wasn't added/),
+    });
+    await expect(refusal).rejects.toHaveProperty('cause.code', makeError().code);
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('addRemoteWallet adds nothing for a malformed answer', async () => {
+    seedMainWallet();
+    const before = readVaultMeta();
+    phone.answer = async () => 'not-a-signature';
+
+    await expect(identityManager.addRemoteWallet('My Phone', phone.wallet.address))
+      .rejects.toMatchObject({ code: 'REMOTE_ADDRESS_UNPROVEN' });
+    expect(readVaultMeta()).toEqual(before);
+  });
+
+  test('the add IPC answers a refusal with its code', async () => {
+    seedMainWallet();
+    const { mod, ipcMain } = loadIdentityManager();
+    mod.registerIdentityIpc();
+    const { Wallet } = require('ethers');
+    phone.wallet = new Wallet(STRANGER_KEY);
+
+    await expect(ipcMain.invoke('wallet:add-remote-wallet', 'Planted', new Wallet(PHONE_KEY).address))
+      .resolves.toMatchObject({ success: false, code: 'REMOTE_ADDRESS_MISMATCH' });
   });
 
   test('addRemoteWallet rejects bad addresses and duplicates across account types', async () => {
@@ -431,24 +545,133 @@ describe('identity-manager ledger accounts', () => {
     // The same address already added as a Ledger account is still a duplicate.
     await expect(identityManager.addRemoteWallet('Again', LEDGER_ADDRESS.toLowerCase()))
       .rejects.toThrow(/already in your wallet list/);
+    // Neither asks the phone.
+    expect(phone.requestRemoteSignature).not.toHaveBeenCalled();
   });
 
   test('remote accounts behave like device accounts across the record seams', async () => {
     seedMainWallet();
-    const wallet = await identityManager.addRemoteWallet('My Phone', LEDGER_ADDRESS);
+    const address = phone.wallet.address;
+    const wallet = await identityManager.addRemoteWallet('My Phone', address);
 
     expect(identityManager.getWalletRecord(wallet.index)).toMatchObject({
       type: 'remote',
-      address: LEDGER_ADDRESS,
+      address,
+      addressCheck: 'matched',
     });
     await expect(identityManager.getUserWalletKey(wallet.index))
       .rejects.toThrow('This account has no derivable private key');
 
     await identityManager.setActiveWalletIndex(wallet.index);
-    await expect(identityManager.getActiveWalletAddress()).resolves.toBe(LEDGER_ADDRESS);
+    await expect(identityManager.getActiveWalletAddress()).resolves.toBe(address);
 
     const wallets = await identityManager.getDerivedWallets();
-    expect(wallets[1]).toMatchObject({ type: 'remote', address: LEDGER_ADDRESS });
+    expect(wallets[1]).toMatchObject({ type: 'remote', address, addressCheck: 'matched' });
+  });
+
+  describe('a phone record added before the check (#1078)', () => {
+    const seedOldPhone = (extra = {}) =>
+      writeVaultMeta({
+        activeWalletIndex: 0,
+        addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+        derivedWallets: [
+          { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+          { index: HARDWARE_INDEX_BASE, name: 'Old Phone', address: phone.wallet.address, type: 'remote', ...extra },
+        ],
+        nextHardwareWalletIndex: HARDWARE_INDEX_BASE + 1,
+      });
+
+    test('starts unchecked, becomes mismatched and then matched, and is never deleted', () => {
+      seedOldPhone();
+
+      expect(identityManager.getWalletRecord(HARDWARE_INDEX_BASE)).toMatchObject({ addressCheck: 'unchecked' });
+
+      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('mismatched');
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({
+        address: phone.wallet.address,
+        addressCheck: 'mismatched',
+      });
+
+      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, true)).toBe('matched');
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
+
+      // A matched record stays matched: a later answer from another account
+      // is the phone on another account.
+      expect(identityManager.recordRemoteAddressCheck(HARDWARE_INDEX_BASE, false)).toBe('matched');
+      expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+      // Only phone records carry the state.
+      expect(identityManager.recordRemoteAddressCheck(0, true)).toBeNull();
+      expect(readVaultMeta().derivedWallets[0]).not.toHaveProperty('addressCheck');
+    });
+
+    test('checkRemoteWallet keeps a match', async () => {
+      seedOldPhone();
+
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+        index: HARDWARE_INDEX_BASE,
+        addressCheck: 'matched',
+      });
+      expect(phone.requestRemoteSignature).toHaveBeenCalledWith(
+        expect.objectContaining({ walletIndex: HARDWARE_INDEX_BASE, purpose: 'account-check' })
+      );
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({ addressCheck: 'matched' });
+    });
+
+    test('checkRemoteWallet marks a phone on another account mismatched, and keeps the record', async () => {
+      seedOldPhone();
+      const { Wallet } = require('ethers');
+      phone.wallet = new Wallet(STRANGER_KEY);
+      const oldAddress = new Wallet(PHONE_KEY).address;
+
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+        addressCheck: 'mismatched',
+      });
+      expect(readVaultMeta().derivedWallets[1]).toMatchObject({
+        name: 'Old Phone',
+        address: oldAddress,
+        addressCheck: 'mismatched',
+      });
+    });
+
+    test('checkRemoteWallet leaves the record as it was when no answer comes', async () => {
+      seedOldPhone();
+      const before = readVaultMeta();
+      phone.answer = async () => {
+        throw Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' });
+      };
+
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE))
+        .rejects.toMatchObject({ code: 'REMOTE_TIMEOUT' });
+      expect(readVaultMeta()).toEqual(before);
+    });
+
+    test('checkRemoteWallet only checks phone records', async () => {
+      seedOldPhone();
+      await expect(identityManager.checkRemoteWallet(0)).rejects.toThrow(/not a phone account/);
+      await expect(identityManager.checkRemoteWallet(HARDWARE_INDEX_BASE + 5)).rejects.toThrow(/not a phone account/);
+      expect(phone.requestRemoteSignature).not.toHaveBeenCalled();
+    });
+
+    test('the check IPC answers with the state, or the failure and its code', async () => {
+      seedOldPhone();
+      const { mod, ipcMain } = loadIdentityManager();
+      mod.registerIdentityIpc();
+
+      await expect(ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)).resolves.toMatchObject({
+        success: true,
+        wallet: { index: HARDWARE_INDEX_BASE, addressCheck: 'matched' },
+      });
+
+      phone.answer = async () => {
+        throw Object.assign(new Error('Request cancelled.'), { code: 'REMOTE_USER_CANCELLED' });
+      };
+      await expect(ipcMain.invoke('wallet:check-remote-wallet', HARDWARE_INDEX_BASE)).resolves.toEqual({
+        success: false,
+        error: 'Request cancelled.',
+        code: 'REMOTE_USER_CANCELLED',
+      });
+    });
   });
 });
 
@@ -457,6 +680,7 @@ describe('identity-manager safe accounts', () => {
   let envSnapshot;
   let identityManager;
   let ownerIndexes;
+  let phone;
 
   const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
@@ -466,12 +690,16 @@ describe('identity-manager safe accounts', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-safe-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    phone = makePhone();
     identityManager = loadMainModule(require.resolve('./identity-manager'), {
       userDataDir: tmpDir,
       extraMocks: {
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => null), // vault locked — safe ops must not need it
           isUnlocked: jest.fn(() => false),
+        }),
+        [require.resolve('./wallet/remote/bridge')]: () => ({
+          requestRemoteSignature: phone.requestRemoteSignature,
         }),
       },
     }).mod;
@@ -535,6 +763,46 @@ describe('identity-manager safe accounts', () => {
       owners: ownerIndexes,
       threshold: 1,
       saltNonce: SALT,
+    });
+  });
+
+  test('addSafeWallet refuses a phone owner its phone has not shown it holds, until it has (#1078)', async () => {
+    // A phone record from before the phone check: the chrome's word.
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+        { index: 1000000, name: 'Old Phone', address: phone.wallet.address, type: 'remote' },
+      ],
+      nextHardwareWalletIndex: 1000001,
+    });
+    ownerIndexes = [0, 1000000];
+
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'REMOTE_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/"Old Phone" can't own a Safe until it has been checked on your phone/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    identityManager.recordRemoteAddressCheck(1000000, false);
+    await expect(addSafe()).rejects.toMatchObject({
+      code: 'REMOTE_ACCOUNT_UNCHECKED',
+      message: expect.stringMatching(/your phone last answered from a different account/),
+    });
+    expect(readVaultMeta().derivedWallets).toHaveLength(2);
+
+    // Checked on the phone: it can own the Safe now.
+    await identityManager.checkRemoteWallet(1000000);
+    await expect(addSafe()).resolves.toMatchObject({ type: 'safe', owners: [0, 1000000] });
+  });
+
+  test('addSafeWallet takes a phone owner added through the phone check', async () => {
+    await seedOwners();
+    const added = await identityManager.addRemoteWallet('My Phone', phone.wallet.address);
+
+    await expect(addSafe('Joint', { owners: [0, added.index] })).resolves.toMatchObject({
+      owners: [0, added.index],
     });
   });
 

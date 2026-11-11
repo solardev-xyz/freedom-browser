@@ -212,3 +212,62 @@ describe('sendTransaction', () => {
     });
   });
 });
+
+describe("what the phone's answer shows about the record (#1078)", () => {
+  const onAddressCheck = jest.fn();
+  const reporting = createRemoteBackend(RECORD, { onAddressCheck });
+
+  beforeEach(() => {
+    onAddressCheck.mockReset();
+  });
+
+  test('a signature as the account, message or typed data, reports a match', async () => {
+    mockRequestRemoteSignature.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    await reporting.signMessage('hello');
+    expect(onAddressCheck).toHaveBeenLastCalledWith(true);
+
+    mockRequestRemoteSignature.mockImplementation(async () =>
+      phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
+    await reporting.signTypedData(TYPED_DATA);
+    expect(onAddressCheck).toHaveBeenLastCalledWith(true);
+    expect(onAddressCheck).toHaveBeenCalledTimes(2);
+  });
+
+  test('a signature from another account reports a mismatch, and is refused', async () => {
+    mockRequestRemoteSignature.mockImplementation(async () => strangerWallet.signMessage('hello'));
+    await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_WRONG_ACCOUNT' });
+    expect(onAddressCheck).toHaveBeenCalledWith(false);
+
+    onAddressCheck.mockReset();
+    mockRequestRemoteSignature.mockImplementation(async () =>
+      strangerWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
+    await expect(reporting.signTypedData(TYPED_DATA)).rejects.toMatchObject({ code: 'REMOTE_WRONG_ACCOUNT' });
+    expect(onAddressCheck).toHaveBeenCalledWith(false);
+  });
+
+  test("the phone's own refusal of the account (EIP-1193 4100) reports a mismatch", async () => {
+    mockRequestRemoteSignature.mockRejectedValue(
+      Object.assign(new Error('Unauthorized'), { code: 'REMOTE_WRONG_ACCOUNT' })
+    );
+    await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_WRONG_ACCOUNT' });
+    expect(onAddressCheck).toHaveBeenCalledWith(false);
+  });
+
+  test('no answer, or a malformed one, reports nothing', async () => {
+    mockRequestRemoteSignature.mockRejectedValue(Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' }));
+    await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_TIMEOUT' });
+    mockRequestRemoteSignature.mockResolvedValue('not-a-signature');
+    await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_BAD_RESPONSE' });
+    expect(onAddressCheck).not.toHaveBeenCalled();
+  });
+
+  test('a failure to keep the result does not fail the signature', async () => {
+    onAddressCheck.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockRequestRemoteSignature.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    await expect(reporting.signMessage('hello')).resolves.toMatch(/^0x/);
+    console.warn.mockRestore();
+  });
+});
