@@ -534,6 +534,22 @@ const NODE_FAILURE_MESSAGE =
 // Execution outcomes by code, whatever the message: Geth's revert (3) and
 // the OpenEthereum/Nethermind "VM execution error" (-32015).
 const EXECUTION_CODES = new Set([3, -32015]);
+// A node that couldn't answer in time, in its own error message. No HTTP
+// status is read from that text: the node's message can echo calldata, an
+// address or a gas figure, and a status comes from the answer's own status
+// (SERVER_ERROR). freedom-core design 0004, classification rule 7.
+const NODE_UNANSWERED_MESSAGE = /no response|timeout/i;
+
+// Socket- and TLS-level failures below ethers carry Node's own error code
+// (ethers' Node fetch rejects with the request's own error, unwrapped).
+const SOCKET_ERROR_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN',
+  'ETIMEDOUT', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN',
+  'EADDRNOTAVAIL', 'EPROTO',
+  'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+]);
 
 // Revert evidence: return data as even-length hex, or a legacy
 // "Reverted 0x…" text. A diagnostic object attached to a node failure is
@@ -544,60 +560,62 @@ function isRevertData(data) {
   return hex.length % 2 === 0 && /^0x[0-9a-f]*$/i.test(hex);
 }
 
-// A JSON-RPC error with no revert evidence in either place ethers keeps
-// data (err.data, or the envelope's own for legacy formats), no mention of a
-// revert, and a node-failure code or message.
-function isNodeFailure(err, rpcError) {
-  if (!rpcError || EXECUTION_CODES.has(rpcError.code)) return false;
-  if (isRevertData(err.data) || isRevertData(rpcError.data)) return false;
-  const message = String(rpcError.message || '');
-  if (/revert/i.test(message)) return false;
-  return NODE_FAILURE_CODES.has(rpcError.code) || NODE_FAILURE_MESSAGE.test(message);
+// The node says the call executed and reverted: an execution code, revert
+// data in either place ethers keeps it (err.data, or the envelope's own for
+// legacy formats), or a message that says so.
+function hasRevertEvidence(err, rpcError) {
+  if (EXECUTION_CODES.has(rpcError.code)) return true;
+  if (isRevertData(err.data) || isRevertData(rpcError.data)) return true;
+  return /revert/i.test(String(rpcError.message || ''));
 }
 
-const HTTP_FAILURE_MESSAGE = /(?<!\d)(?:502|503|504|429)(?!\d)|timeout|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i;
-
-function stripHexRuns(text) {
-  return String(text).replace(/0x[0-9a-f]*/gi, '0x');
+// A JSON-RPC error that names a node failure by code or by the node's own
+// message. Only asked once hasRevertEvidence has said no.
+function isNodeFailure(rpcError) {
+  return NODE_FAILURE_CODES.has(rpcError.code) || NODE_FAILURE_MESSAGE.test(String(rpcError.message || ''));
 }
 
+// Codes decide, not text: ethers' messages, short ones included, can embed
+// the request (a call's data, the name being encoded) and a revert's reason,
+// so a name or a contract could make an honest endpoint look broken and get
+// it quarantined. The one text matched is the node's own error message, and
+// only when nothing says the call reverted.
 function isProviderError(err) {
-  const message = err.message || '';
   const code = err.code || '';
 
   // ethers.js error codes for network/server issues
   if (code === 'SERVER_ERROR' || code === 'NETWORK_ERROR' || code === 'TIMEOUT') {
     return true;
   }
+  if (SOCKET_ERROR_CODES.has(code)) return true;
+  if (Array.isArray(err.errors) && err.errors.some((inner) => SOCKET_ERROR_CODES.has(inner?.code))) {
+    return true;
+  }
+  // The JSON-RPC answer held no response for the request: a protocol
+  // failure (ethers' own message), unlike an ABI decoding BAD_DATA.
+  if (code === 'BAD_DATA' && err.shortMessage === 'missing response for request') return true;
+  // An HTTP 200 whose body isn't JSON (a captive portal, a CDN challenge
+  // page): ethers' FetchResponse.bodyJson names itself in the structured
+  // `operation` field, so no message text is read.
+  if (code === 'UNSUPPORTED_OPERATION' && err.operation === 'bodyJson') return true;
 
-  // CALL_EXCEPTION can mean contract reverted OR RPC provider failed.
-  // Check for RPC internal errors (-32603) which indicate provider issues.
+  // CALL_EXCEPTION can mean contract reverted OR RPC provider failed:
+  // ethers turns every JSON-RPC error of an eth_call into one.
   if (code === 'CALL_EXCEPTION') {
     const rpcError = err.info?.error;
-    const rpcErrorCode = rpcError?.code;
-    const rpcErrorMsg = rpcError?.message || '';
-    // -32603 = JSON-RPC internal error, "no response" = provider didn't respond
-    if (rpcErrorCode === -32603 || /no response/i.test(rpcErrorMsg)) {
-      return true;
-    }
+    if (!rpcError) return false;
+    // -32603 = JSON-RPC internal error
+    if (rpcError.code === -32603) return true;
+    // An execution outcome (a revert with or without data, out of gas, an
+    // invalid opcode, a legacy "VM execution error" envelope) stays a
+    // semantic answer, and never quarantines an honest endpoint.
+    if (hasRevertEvidence(err, rpcError)) return false;
     // The node failing, not the contract answering: it couldn't run the call
     // against the pinned state, or refused it. Counting these as
     // NO_CONTENTHASH let two such failures agree into a verified not-found
-    // for a name that has content. Only known node failures qualify: an
-    // execution outcome (a revert with or without data, out of gas, an
-    // invalid opcode, a legacy "VM execution error" envelope) stays a
-    // semantic answer, and never quarantines an honest endpoint.
-    if (isNodeFailure(err, rpcError)) {
-      return true;
-    }
-  }
-
-  // Common HTTP error patterns, matched on the message with hex runs
-  // removed: ethers' CALL_EXCEPTION message embeds the request's calldata
-  // and address, and a name whose calldata happens to contain "429" or
-  // "503" must not turn an honest data-less revert into a provider error.
-  if (HTTP_FAILURE_MESSAGE.test(stripHexRuns(message))) {
-    return true;
+    // for a name that has content.
+    if (isNodeFailure(rpcError)) return true;
+    return NODE_UNANSWERED_MESSAGE.test(String(rpcError.message || ''));
   }
 
   return false;
@@ -1672,6 +1690,15 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
     m: wave.mUsed,
     block,
   });
+  // `verified` takes the configured M of distinct agreeing endpoints, and
+  // at least 2, in either wave. A wave's own threshold drops to the
+  // endpoints it has: a second wave of one endpoint after the first all
+  // errored (m 1), two under K = M = 3, or a first wave of three under
+  // K = M = 4. Such an agreement is still the answer, labelled (and cached)
+  // `unverified`, as a single source's is. freedom-core design 0004,
+  // deviation reduced-quorum-wave.
+  const agreedLevel = (agreedUrls) =>
+    (new Set(agreedUrls).size >= Math.max(desiredM, 2) ? 'verified' : 'unverified');
 
   if (wave.outcome.kind === 'agreed_data') {
     const agreedUrls = wave.outcome.urls;
@@ -1680,7 +1707,7 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
       outcome: 'data',
       resolvedData: winningLeg.resolvedData,
       resolverAddress: winningLeg.resolverAddress,
-      trust: trustFor('verified', agreedUrls.map(hostOf)),
+      trust: trustFor(agreedLevel(agreedUrls), agreedUrls.map(hostOf)),
       block,
     };
   }
@@ -1692,7 +1719,7 @@ async function resolveViaQuorum(normalizedName, callData, kind = 'content', opti
       outcome: 'not_found',
       reason: wave.outcome.reason,
       error: firstAgreer?.error?.message,
-      trust: trustFor('verified', agreedUrls.map(hostOf)),
+      trust: trustFor(agreedLevel(agreedUrls), agreedUrls.map(hostOf)),
       block,
     };
   }
