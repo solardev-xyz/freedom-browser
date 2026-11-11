@@ -347,6 +347,10 @@ module.exports = {
   WALLET_SEND_TRANSACTION: 'wallet:send-transaction',
   WALLET_GET_TRANSACTION_STATUS: 'wallet:get-transaction-status',
   WALLET_WAIT_FOR_TRANSACTION: 'wallet:wait-for-transaction',
+  // Main→chrome broadcast: a stored wallet record changed outside a
+  // renderer-driven call (a Ledger sign turned a record `matched`,
+  // #1065). Receivers just re-query the wallet list.
+  WALLET_RECORDS_CHANGED: 'wallet:records-changed',
 
   // x402 — payment interstitial (renderer ↔ main)
   X402_GET_DETAILS: 'x402:get-details',

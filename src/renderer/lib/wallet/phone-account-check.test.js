@@ -150,7 +150,8 @@ describe('the wallet list and the Safe screen', () => {
 
   const stubWalletModules = (elementsById = {}) => {
     jest.resetModules();
-    global.window = {};
+    // The wallet list repaints on main's records-changed event (#1065).
+    global.window = { addEventListener: jest.fn() };
     global.document = createDocument({ elementsById });
     const renderDeviceAccountList = jest.fn();
     jest.doMock('./wallet-state.js', () => ({
@@ -220,8 +221,10 @@ describe('the wallet list and the Safe screen', () => {
       '0x8335…2913 · your phone answered from another account',
       '0x2096…287C',
     ]);
-    // Only phone accounts carry the state.
+    // Only device accounts carry the state: a Ledger one says so in its
+    // own words (#1065), a vault account never does.
     expect(ownerSubLabel({ index: 2, address: PHONE.address, type: 'ledger', addressCheck: 'unchecked' }))
-      .toBe('0x7099…79C8');
+      .toBe('0x7099…79C8 · not checked on its Ledger yet');
+    expect(ownerSubLabel({ index: 0, address: PHONE.address, addressCheck: 'unchecked' })).toBe('0x7099…79C8');
   });
 });
