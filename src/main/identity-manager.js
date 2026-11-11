@@ -1529,7 +1529,8 @@ async function getDerivedWallets() {
  *
  * @returns {Promise<{ addresses: Set<string>, complete: boolean }>}
  *   lower-case bare-hex addresses; `complete` is false when an account's
- *   address is not known (a locked vault with an older record).
+ *   address is not known (a locked vault with an older record, or a vault
+ *   whose vault-meta.json is missing or unreadable).
  */
 async function getFreedomSigningAddresses() {
   const addresses = new Set();
@@ -1538,13 +1539,18 @@ async function getFreedomSigningAddresses() {
       addresses.add(address.replace(/^0x/i, '').toLowerCase());
     }
   };
-  const meta = getVaultMeta();
-  if (!meta) return { addresses, complete: true };
-
-  let complete = true;
   const keys = getDerivedKeys();
   add(keys?.beeWallet?.address);
   add(keys?.userWallet?.address);
+
+  const meta = getVaultMeta();
+  if (!meta) {
+    // No vault holds no identity. A vault whose meta is missing or
+    // unreadable lists accounts nowhere else, so the list is not complete.
+    return { addresses, complete: !(await hasVault()) };
+  }
+
+  let complete = true;
   add(meta.addresses?.beeWallet);
   add(meta.addresses?.userWallet);
   if (!keys && !meta.addresses?.beeWallet) complete = false;

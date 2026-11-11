@@ -301,8 +301,9 @@ async function writeSingleOwnerChunk(signerPrivateKey, identifier, data, options
 async function publishSignedSingleOwnerChunk({ owner, identifier, signature, data, span, onVerified }) {
   const bee = getBee();
   const signatureBytes = Buffer.from(String(signature).replace(/^0x/, ''), 'hex');
-  // Bee and Ant read the recovery byte as 27/28 only; the library maps any
-  // other value to 28, which would accept a chunk the node then refuses.
+  // An Ethereum signature's recovery byte is 27 or 28. bee-js treats every
+  // value but 27 as 28, so a 0/1-style or junk byte would pass here under an
+  // owner the node may recover differently; refuse it instead.
   const v = signatureBytes[64];
   if (signatureBytes.length !== 65 || (v !== 27 && v !== 28)) {
     throw makeSemanticError('invalid_signature', 'signature must end in a recovery byte of 27 or 28');

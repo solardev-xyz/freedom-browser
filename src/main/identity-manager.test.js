@@ -316,6 +316,7 @@ describe('identity-manager ledger accounts', () => {
   let device;
   let phone;
 
+  let vaultPresent = false;
   const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
   const LEDGER_PATH = "44'/60'/0'/0/0";
   const HARDWARE_INDEX_BASE = 1000000;
@@ -327,6 +328,7 @@ describe('identity-manager ledger accounts', () => {
         [require.resolve('./identity')]: () => ({
           getMnemonic: jest.fn(() => null), // vault locked — ledger ops must not need it
           isUnlocked: jest.fn(() => false),
+          vaultExists: jest.fn(async () => vaultPresent),
         }),
         [require.resolve('./wallet/ledger/transport')]: () => ({ readAddresses: device.readAddresses }),
         [require.resolve('./wallet/remote/bridge')]: () => ({
@@ -339,6 +341,7 @@ describe('identity-manager ledger accounts', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-ledger-'));
     envSnapshot = snapshotEnv();
     process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    vaultPresent = false;
     device = makeLedgerDevice(LEDGER_ADDRESS);
     phone = makePhone();
     identityManager = loadIdentityManager().mod;
@@ -502,8 +505,15 @@ describe('identity-manager ledger accounts', () => {
   });
 
   test('getFreedomSigningAddresses lists the Ant key and every account with the vault locked (#647)', async () => {
+    vaultPresent = false;
     expect(await identityManager.getFreedomSigningAddresses())
       .toEqual({ addresses: new Set(), complete: true });
+    // A vault whose meta is missing or unreadable cannot vouch for its
+    // accounts: the owner check fails closed rather than passing.
+    vaultPresent = true;
+    expect((await identityManager.getFreedomSigningAddresses()).complete).toBe(false);
+    fs.writeFileSync(path.join(tmpDir, 'vault-meta.json'), '{ not json', 'utf-8');
+    expect((await identityManager.getFreedomSigningAddresses()).complete).toBe(false);
 
     writeVaultMeta({
       activeWalletIndex: 0,
