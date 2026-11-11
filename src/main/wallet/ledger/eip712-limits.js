@@ -20,6 +20,10 @@
  * - A base-type field named "__proto__" loses its value in ethers' payload.
  * - hw-transport refuses a message of 256 bytes or more, which a long name
  *   produces.
+ * - A string (a value, or a struct name) is encoded with Buffer.from, which
+ *   turns an unpaired surrogate into U+FFFD (EF BF BD), while ethers hashes a
+ *   lone low surrogate as its own three bytes (ED B0 80). Ethers refuses a
+ *   lone high surrogate itself.
  *
  * The Ledger then refuses the request, or reads a different message from the
  * one Freedom showed for approval. Refusing first keeps the two in agreement
@@ -42,6 +46,9 @@ const LEDGER_BASE_TYPES = new Set(['INT', 'UINT', 'ADDRESS', 'BOOL', 'STRING', '
 const ARRAY_SUFFIX = /\[(\d*)\]$/;
 
 const isAscii = (text) => Buffer.byteLength(text, 'utf8') === text.length;
+// A UTF-16 surrogate without its partner, which UTF-8 encoders disagree on.
+const UNPAIRED_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const hasUnpairedSurrogate = (text) => UNPAIRED_SURROGATE.test(text);
 
 /** True when hw-app-eth's pieces carry every byte of a value this long, with its two-byte length. */
 function sendsWholeValue(length) {
@@ -86,6 +93,8 @@ function findDefinitionProblem(types, typeName, fields) {
   if (/^(address|bool|string|bytes\d*|u?int\d*)$/.test(typeName) || ARRAY_SUFFIX.test(typeName)) {
     return `struct ${typeName} has the name of another type`;
   }
+  if (hasUnpairedSurrogate(typeName))
+    return `struct ${JSON.stringify(typeName)} has an unpaired surrogate`;
   // A struct's own name goes out as plain UTF-8; only a field's reference to it has a length.
   const nameLength = Buffer.byteLength(typeName, 'utf8');
   if (nameLength > MAX_MESSAGE_DATA) return `a struct name is ${nameLength} bytes`;
@@ -164,7 +173,10 @@ function findValueProblem(types, type, value, path, nested) {
     return null;
   }
   let length = null;
-  if (type === 'string') length = Buffer.byteLength(value, 'utf8');
+  if (type === 'string') {
+    if (hasUnpairedSurrogate(value)) return `${path} has an unpaired surrogate`;
+    length = Buffer.byteLength(value, 'utf8');
+  }
   if (type === 'bytes') length = getBytes(value).length;
   if (length !== null && !sendsWholeValue(length)) return `${path} is ${length} bytes`;
   return null;

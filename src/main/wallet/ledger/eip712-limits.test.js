@@ -7,10 +7,13 @@
 
 const Transport = require('@ledgerhq/hw-transport').default;
 const Eth = require('@ledgerhq/hw-app-eth').default;
-// Value encodings aren't in question here, so the reference uses hw-app-eth's own.
+// Value encodings aren't in question here, so the reference uses hw-app-eth's own,
+// except for text: names and strings are UTF-8 as ethers hashes them.
 const { EIP712_TYPE_ENCODERS } = require('@ledgerhq/hw-app-eth/lib/modules/EIP712/utils');
 
-const { getBigInt } = require('ethers');
+const { getBigInt, toUtf8Bytes } = require('ethers');
+
+const utf8 = (text) => [...toUtf8Bytes(text)];
 
 const { getEip712WirePayload } = require('../signing-utils');
 const { LEDGER_ERROR_CODES } = require('./errors');
@@ -128,18 +131,18 @@ function correctEncoding(payload) {
   try {
     const sent = [];
     for (const typeName of Object.keys(types).sort()) {
-      sent.push(['name', apduData([...Buffer.from(typeName)])]);
+      sent.push(['name', apduData(utf8(typeName))]);
       for (const { name, type } of types[typeName]) {
         const { base, sizes } = splitArrays(type);
         const d = describe712(types, base);
         const bytes = [(sizes.length ? 0x80 : 0) | (d.typeSize !== undefined ? 0x40 : 0) | d.key];
-        if (d.key === 0) bytes.push(...withLength([...Buffer.from(base)]));
+        if (d.key === 0) bytes.push(...withLength(utf8(base)));
         if (d.typeSize !== undefined) bytes.push(d.typeSize);
         if (sizes.length) {
           bytes.push(...oneByte(sizes.length));
           for (const size of sizes) bytes.push(...(size === null ? [0] : [1, ...oneByte(size)]));
         }
-        bytes.push(...withLength([...Buffer.from(name)]));
+        bytes.push(...withLength(utf8(name)));
         sent.push(['definition', apduData(bytes)]);
       }
     }
@@ -154,7 +157,10 @@ function correctEncoding(payload) {
         const d = describe712(types, type);
         // An integer means its number, however the site wrote it ("0x0001" is 1).
         const canonical = d.encoder.endsWith('int') ? getBigInt(v).toString() : v;
-        const encoded = EIP712_TYPE_ENCODERS[d.encoder.toUpperCase()](canonical, d.bits);
+        const encoded =
+          d.encoder === 'string'
+            ? Buffer.from(toUtf8Bytes(v))
+            : EIP712_TYPE_ENCODERS[d.encoder.toUpperCase()](canonical, d.bits);
         if (encoded.length > 0xffff) throw new Unencodable();
         sent.push([
           'value',
@@ -165,9 +171,9 @@ function correctEncoding(payload) {
         ]);
       }
     };
-    sent.push(['root', apduData([...Buffer.from('EIP712Domain')])]);
+    sent.push(['root', apduData(utf8('EIP712Domain'))]);
     walk('EIP712Domain', domain);
-    sent.push(['root', apduData([...Buffer.from(primaryType)])]);
+    sent.push(['root', apduData(utf8(primaryType))]);
     walk(primaryType, msg);
     return sent;
   } catch (err) {
@@ -216,11 +222,11 @@ const nested = (innerFields, inner) =>
   payloadOf({ Outer: [{ name: 'inner', type: 'Inner' }], Inner: innerFields }, { inner });
 
 const withString = (text) => payloadOf({ Note: [{ name: 'text', type: 'string' }] }, { text });
-const withDomainName = (length) =>
+const withDomainName = (length, text = '') =>
   payloadOf(
     { Note: [{ name: 'text', type: 'string' }] },
     { text: 'x' },
-    { ...DOMAIN, name: 'd'.repeat(length) }
+    { ...DOMAIN, name: 'd'.repeat(length) + text }
   );
 const withBytes = (length) =>
   payloadOf({ Blob: [{ name: 'data', type: 'bytes' }] }, { data: '0x' + 'ab'.repeat(length) });
@@ -457,6 +463,18 @@ describe('findLedgerTypedDataProblem', () => {
     cases.push(['string of 253 inside an array of structs', deep('s'.repeat(253))]);
     cases.push(['string of 254 inside an array of structs', deep('s'.repeat(254))]);
 
+    // Ethers hashes a lone low surrogate as ED B0 80; hw-app-eth sends U+FFFD.
+    for (const [label, text] of [
+      ['lone low surrogate', 'a\udc00b'],
+      ['lone low surrogate at the end', 'a\udc00'],
+      ['surrogate pair', 'a\ud83d\ude42b'],
+    ]) {
+      cases.push([`string with a ${label}`, withString(text)]);
+      cases.push([`domain name with a ${label}`, withDomainName(0, text)]);
+      cases.push([`struct named with a ${label}`, withStruct(`N${text}`)]);
+      cases.push([`primary type named with a ${label}`, asPrimaryType(`N${text}`)]);
+    }
+
     const disagreements = [];
     for (const [label, payload] of cases) {
       const intact = await arrivesIntact(payload);
@@ -497,6 +515,18 @@ describe('findLedgerTypedDataProblem', () => {
 
   test('looks at the domain as well as the message', () => {
     expect(findLedgerTypedDataProblem(withDomainName(254))).toBe('domain.name is 254 bytes');
+  });
+
+  test('refuses text with an unpaired surrogate, which hw-app-eth sends as U+FFFD', () => {
+    expect(findLedgerTypedDataProblem(withString('a\udc00b'))).toBe(
+      'message.text has an unpaired surrogate'
+    );
+    expect(findLedgerTypedDataProblem(withDomainName(1, '\udc00'))).toBe(
+      'domain.name has an unpaired surrogate'
+    );
+    expect(passes(withStruct('N\udc00'))).toBe(false);
+    expect(findLedgerTypedDataProblem(asPrimaryType('N\udc00'))).toMatch(/unpaired surrogate/);
+    expect(passes(withString('a\ud83d\ude42b'))).toBe(true);
   });
 });
 
