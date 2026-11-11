@@ -2871,3 +2871,174 @@ describe('webview-preload digit-row zoom report', () => {
     expect(reports(ipcRenderer)).toHaveLength(1);
   });
 });
+
+// freedom-core design 0011, PRQ-2: the hello, the request path to main, and
+// the nonce on every event. No method takes the path in the app yet; the
+// E2E harness's boot-switch routes stand in for a moved method.
+describe('page requests', () => {
+  let consoleLogSpy;
+  let consoleErrorSpy;
+  beforeEach(() => {
+    consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.MutationObserver = originalMutationObserver;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+  });
+
+  const DAPP = { href: 'https://dapp.example/', protocol: 'https:', pathname: '/' };
+  const bootArg = (boot) =>
+    '--freedom-webview-boot=' + Buffer.from(JSON.stringify(boot), 'utf-8').toString('base64');
+  const boot = (extra = {}) => ({
+    isPrivate: false,
+    internalPages,
+    ethereum: { info: { name: 'Freedom', icon: '', rdns: 'baby.freedom.browser' }, source: '/* eth */' },
+    ...extra,
+  });
+  const ROUTES = ['ethereum:eth_blockNumber', 'swarm:swarm_readChunk', 'radicle:radicle_getCapabilities'];
+
+  function load(options = {}) {
+    const loaded = loadWebviewPreloadModule({ location: DAPP, ...options });
+    global.window.postMessage = jest.fn();
+    return loaded;
+  }
+  const helloCalls = (ipcRenderer) => ipcRenderer.send.mock.calls.filter(([channel]) => channel === 'page:hello');
+  const nonceOf = (ipcRenderer) => helloCalls(ipcRenderer)[0][1].nonce;
+  const fromPage = (data) => {
+    for (const [event, handler] of global.window.addEventListener.mock.calls) {
+      if (event === 'message') handler({ source: global.window, data });
+    }
+  };
+  const posted = () => global.window.postMessage.mock.calls.map(([message]) => message);
+
+  test('the hello carries 16 random bytes, and goes before any provider is injected', () => {
+    const { ipcRenderer, contextBridge } = load({ argv: ['electron', bootArg(boot())] });
+    expect(helloCalls(ipcRenderer)).toHaveLength(1);
+    const nonce = nonceOf(ipcRenderer);
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(helloCalls(ipcRenderer)[0][1]).toEqual({ nonce });
+    const helloOrder = ipcRenderer.send.mock.invocationCallOrder[
+      ipcRenderer.send.mock.calls.findIndex(([channel]) => channel === 'page:hello')
+    ];
+    const injections = contextBridge.executeInMainWorld.mock.invocationCallOrder;
+    expect(injections).toHaveLength(3);
+    for (const order of injections) expect(helloOrder).toBeLessThan(order);
+
+    const other = load({ argv: ['electron', bootArg(boot())] });
+    expect(nonceOf(other.ipcRenderer)).not.toBe(nonce);
+  });
+
+  test('no hello, and no event listener, in a private window, a preview, an internal page or a sub-frame', () => {
+    const cases = [
+      { argv: ['electron', bootArg({ isPrivate: true, internalPages })] },
+      { isPrivateWindow: true },
+      {
+        location: { href: `freedom-preview://${'a'.repeat(40)}/`, protocol: 'freedom-preview:', pathname: '/' },
+        argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))],
+      },
+      { location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' } },
+      { subframe: true, argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))] },
+    ];
+    for (const options of cases) {
+      const { ipcRenderer } = load(options);
+      expect(helloCalls(ipcRenderer)).toEqual([]);
+      expect(ipcRenderer.on.mock.calls.map(([channel]) => channel)).not.toContain('page:event');
+      expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
+    }
+  });
+
+  test('without the harness\'s routes, every request still goes through the chrome', () => {
+    const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 1, method: 'eth_blockNumber', params: [] });
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_readChunk', params: {} });
+    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
+    expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
+    expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual([
+      'dapp:provider-request',
+      'swarm:provider-request',
+      'radicle:provider-request',
+    ]);
+  });
+
+  test('a routed method goes to main with the nonce, and main\'s answer to the page under its id', async () => {
+    const answers = {
+      eth_blockNumber: { result: '0x10' },
+      swarm_readChunk: { error: { code: 4100, message: 'Unauthorized', data: { reason: 'navigated' } } },
+      radicle_getCapabilities: { result: { canSeed: false } },
+    };
+    const { ipcRenderer } = load({
+      argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))],
+      invokeResponses: {},
+    });
+    ipcRenderer.invoke.mockImplementation(async (channel, request) =>
+      channel === 'page:request' ? answers[request.method] : undefined
+    );
+    const nonce = nonceOf(ipcRenderer);
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 11, method: 'eth_blockNumber', params: [] });
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 12, method: 'swarm_readChunk', params: { reference: 'ab' } });
+    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 13, method: 'radicle_getCapabilities', params: {} });
+    // An unrouted method keeps today's path.
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 14, method: 'swarm_publishData', params: {} });
+    await flushMicrotasks();
+
+    expect(ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request')).toEqual([
+      ['page:request', { nonce, provider: 'ethereum', method: 'eth_blockNumber', params: [] }],
+      ['page:request', { nonce, provider: 'swarm', method: 'swarm_readChunk', params: { reference: 'ab' } }],
+      ['page:request', { nonce, provider: 'radicle', method: 'radicle_getCapabilities', params: {} }],
+    ]);
+    expect(ipcRenderer.sendToHost.mock.calls).toEqual([
+      ['swarm:provider-request', { id: 14, method: 'swarm_publishData', params: {} }],
+    ]);
+    expect(posted()).toEqual([
+      { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 11, result: '0x10', error: undefined },
+      { type: 'FREEDOM_SWARM_RESPONSE', id: 12, result: undefined, error: answers.swarm_readChunk.error },
+      { type: 'FREEDOM_RADICLE_RESPONSE', id: 13, result: { canSeed: false }, error: undefined },
+    ]);
+  });
+
+  test('an answer for a document that has gone is dropped, and a refused invoke is an internal error', async () => {
+    const { ipcRenderer } = load({ argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))] });
+    ipcRenderer.invoke.mockImplementation(async (channel, request) => {
+      if (channel !== 'page:request') return undefined;
+      if (request.method === 'swarm_readChunk') return { gone: true };
+      throw new Error('IPC channel "page:request" is not available to this sender');
+    });
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 1, method: 'swarm_readChunk', params: {} });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 2, method: 'eth_blockNumber', params: [] });
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(posted()).toEqual([
+      { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 2, error: { code: -32603, message: 'Internal error' } },
+    ]);
+  });
+
+  test('an event from main reaches the page only with this document\'s nonce', () => {
+    const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
+    const nonce = nonceOf(ipcRenderer);
+    // Another document's nonce (a frame that committed a new document after
+    // main's check), none at all (the chrome's own webview.send, which has
+    // no nonce to give), and malformed messages: all dropped.
+    ipcRenderer.emit('page:event', { nonce: 'f'.repeat(32), provider: 'swarm', event: 'message', data: 1 });
+    ipcRenderer.emit('page:event', { provider: 'swarm', event: 'message', data: 2 });
+    ipcRenderer.emit('page:event', null);
+    ipcRenderer.emit('page:event', 'not an object');
+    ipcRenderer.emit('page:event', { nonce, provider: '__proto__', event: 'message', data: 3 });
+    ipcRenderer.emit('page:event', { nonce, provider: 'toString', event: 'message', data: 4 });
+    expect(posted()).toEqual([]);
+
+    ipcRenderer.emit('page:event', { nonce, provider: 'swarm', event: 'message', data: { hi: 1 } });
+    ipcRenderer.emit('page:event', { nonce, provider: 'ethereum', event: 'chainChanged', data: '0x64' });
+    ipcRenderer.emit('page:event', { nonce, provider: 'radicle', event: 'seedStatus', data: { rid: 'x' } });
+    expect(posted()).toEqual([
+      { type: 'FREEDOM_SWARM_EVENT', event: 'message', data: { hi: 1 } },
+      { type: 'FREEDOM_ETHEREUM_EVENT', event: 'chainChanged', data: '0x64' },
+      { type: 'FREEDOM_RADICLE_EVENT', event: 'seedStatus', data: { rid: 'x' } },
+    ]);
+  });
+});
