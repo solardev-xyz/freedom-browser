@@ -2232,7 +2232,9 @@ async function checkLogTruncation(source, chainId, method, params, result, optio
 // with the source that gave it. A mined transaction is then asked of Colibri,
 // whose proof replaces that answer; if Colibri fails, the answer already in
 // hand is returned instead of asking the later sources a second time. When
-// every later source failed, Colibri is simply the last source left.
+// every later source failed, Colibri is simply the last source left; its null
+// or pending answer then is served `verified: false`, as is one in a
+// Colibri-only order: it proves nothing either.
 //
 // Trust model (#750): before, Colibri answered first and a null it could not
 // prove fell through to the RPCs anyway (after a 4-10 s trap). A null or
@@ -2390,11 +2392,21 @@ async function request(
       });
       signal?.throwIfAborted();
       const result = includeTrust ? sourceResult.result : sourceResult;
-      if (source === 'colibri' && txLookup.unverified && !txLookupNeedsProof(method, result)) {
-        // Asked to prove a transaction a source reported as mined, Colibri
-        // reports it unknown or pending. Nothing proves an absence: the
-        // mined answer in hand stands, labelled as its source's.
-        throw new Error(`Colibri proved no mined transaction for ${method}`);
+      if (
+        source === 'colibri' && TX_LOOKUP_METHODS.has(method) &&
+        !txLookupNeedsProof(method, result)
+      ) {
+        // Colibri reports the transaction unknown or pending. Nothing proves
+        // an absence (Colibri 3.0.3's verify_pap_tx.c answers success with
+        // no data for a hash its prover holds as pending): asked to prove a
+        // transaction a source reported as mined, the mined answer in hand
+        // stands, labelled as its source's. With none in hand (every later
+        // source failed, or a Colibri-only order), Colibri's answer is
+        // served as the unproven word it is: `verified: false`, without its
+        // proof's trust. Either way this is an answer, not a Colibri failure,
+        // so no adaptive failure is recorded for it.
+        if (txLookup.unverified) return txLookup.unverified;
+        return { result, source, verified: false };
       }
       if (
         txLookup.colibriDeferred && source !== 'colibri' &&

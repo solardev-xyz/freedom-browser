@@ -1872,6 +1872,47 @@ describe('chain-data-router', () => {
       });
     });
 
+    // R2-M1: nothing proves an absence, whatever else answered. Colibri 3.0.3
+    // answers a hash its prover holds as pending with success and no data.
+    test.each([
+      ['eth_getTransactionReceipt', null],
+      ['eth_getTransactionByHash', null],
+      ['eth_getTransactionByHash', { ...PENDING_TX, hash: '0xf7aa' }],
+    ])('labels Colibri’s %s %j unverified in a Colibri-only order', async (method, answer) => {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
+      global.fetch = jest.fn();
+      mockRequestViaColibri.mockResolvedValue(answer);
+      await expect(request(1, method, ['0xf7aa'], { includeTrust: true })).resolves.toEqual({
+        result: answer, source: 'colibri', verified: false,
+      });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test.each([
+      ['eth_getTransactionReceipt', null],
+      ['eth_getTransactionByHash', { ...PENDING_TX, hash: '0xf7aa' }],
+    ])('labels Colibri’s %s %j unverified when every later source failed', async (method, answer) => {
+      global.fetch = jest.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+      mockRequestViaColibri.mockResolvedValue(answer);
+      await expect(request(1, method, ['0xf7aa'])).resolves.toEqual({
+        result: answer, source: 'colibri', verified: false,
+      });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+    });
+
+    test('an unproven Colibri absence is no Colibri failure: a page’s next lookup still asks it', async () => {
+      mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
+      global.fetch = jest.fn();
+      const routingContext = { origin: 'https://app.example' };
+      mockRequestViaColibri.mockResolvedValueOnce(null);
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'], { routingContext }))
+        .resolves.toEqual({ result: null, source: 'colibri', verified: false });
+      mockRequestViaColibri.mockResolvedValueOnce(MINED_RECEIPT);
+      await expect(request(1, 'eth_getTransactionReceipt', ['0xmined'], { routingContext }))
+        .resolves.toEqual({ result: MINED_RECEIPT, source: 'colibri', verified: true });
+      expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
+    });
+
     test('fails a Colibri-only lookup whose proven receipt is another transaction’s', async () => {
       mockRegistry.getNetwork.mockReturnValue({ access: { readOrder: ['colibri'] }, quorum: { timeoutMs: 1000 } });
       global.fetch = jest.fn();
