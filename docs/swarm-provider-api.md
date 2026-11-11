@@ -396,10 +396,10 @@ Not reported there:
   `swarm_readFeedEntry` is one request too, and its bytes are paid for
   before they are held, in the same way: the entry's single-owner chunk is
   charged once read, and a larger entry's size, from the span of the chunk
-  it wraps, is reserved before the node joins it; the latest entry is
-  reserved from the length the node declares, or piece by piece as it
-  streams. An entry that does not fit is refused there and the rest of it is
-  never downloaded.
+  it wraps, is reserved before the node joins it. The latest entry is read
+  the same way, at the index the node names; when the node can't name one,
+  the update chunks read to find it are charged too. An entry that does not
+  fit is refused there and the rest of it is never downloaded.
 - **New GSOC topics**: 16 per origin per 60 s (only topics that have to be
   mined count; cached topics are free). Exceeding it is `-32602 rate_limited`
   with `retryAfterMs`.
@@ -566,8 +566,10 @@ written.
 
 #### `swarm_updateFeed { feedId, reference }` → `{ feedId, reference, bzzUrl, index }` (feeds tier)
 
-Points the feed at a Swarm `reference` by writing the next entry. Signed with
-the identity that created the feed. Errors: `invalid_reference`,
+Points the feed at a Swarm `reference` by writing the next entry: the Unix
+time in seconds (8 bytes, big-endian), then the reference, the layout Bee
+resolves for `bzz://` feed manifests. Signed with the identity that created
+the feed. Errors: `invalid_reference`,
 `feed_not_found`.
 
 #### `swarm_writeFeedEntry { name, data, index? }` → `{ index }` (feeds tier)
@@ -593,11 +595,18 @@ Pass exactly one of:
   if there is none).
 - `topic` (64 hex) and `owner` (required): any feed on Swarm.
 
+`data` is the bytes the entry holds, the same whether it is read as the
+latest entry or at its `index`. An entry that points the feed at a
+reference, as `swarm_updateFeed` and bee-js's `uploadReference` write them,
+is 40 bytes: the Unix time in seconds (8 bytes, big-endian), then the
+32-byte reference. Read the content it points to with `swarm_readData`.
+
 Without `index`, returns the latest entry, and `nextIndex` is the index the
-next write would use as reported by the node, or `null` if the node did not
-report one. With `index`, `nextIndex` is always `index + 1`, whether or not
+next write would use. A feed whose latest entry points at content that is no
+longer on Swarm still returns that entry. With `index`, `nextIndex` is always `index + 1`, whether or not
 that slot is taken; it is **not** the next free index (reading index 0 of a
-ten-entry feed returns `nextIndex: 1`). To append, use `swarm_writeFeedEntry`
+ten-entry feed returns `nextIndex: 1`). `nextIndex` is `null` where it would
+pass `Number.MAX_SAFE_INTEGER`. To append, use `swarm_writeFeedEntry`
 without `index`, or read without `index` first. The read is charged to the
 permission-free read budget before the entry is downloaded
 ([Limits](#limits)): an entry larger than the origin's byte budget is

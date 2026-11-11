@@ -776,25 +776,33 @@ describe('feed-service', () => {
         return chunkPresent(ref);
       });
       await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
-      // Mid-bracket too: a 500 at index 4 must not end the probe at 3.
+      // Mid-bracket too: a 500 at index 3 must not end the probe at 1.
       mockDownloadChunk.mockImplementation(async ref => {
-        if (ref.index === 4) throw new MockBeeResponseError(500, 'read chunk failed');
+        if (ref.index === 3) throw new MockBeeResponseError(500, 'read chunk failed');
         return chunkPresent(ref);
       });
       await expect(readFeedState(MOCK_OWNER, 'topic')).rejects.toBeInstanceOf(MockBeeResponseError);
     });
 
-    test('the probe assumes contiguous updates: a gap or a missing index 0 reads the head low', async () => {
-      // Documented limit (see probeFeedHead): the writer's minIndex and the
-      // controller's read-back cover it.
+    test('the probe steps as the node does, so a gap reads as the node reads it', async () => {
+      // From the highest index found: 1, 2, 4, ... past it (indexes 1, 3, 7,
+      // 15), then bisect. A gap stepped over is passed; one stepped on ends
+      // the walk below it. Documented limit (see probeFeedHead): the writer's
+      // minIndex and the controller's read-back cover it.
       mockMakeFeedReader.mockReturnValue(createMockReader());
-      mockFeedChunksUpTo(9);
+      const probed = mockFeedChunksUpTo(9);
       const chunkPresent = mockDownloadChunk.getMockImplementation();
       mockDownloadChunk.mockImplementation(async ref => {
         if (ref.index === 2) throw make404();
         return chunkPresent(ref);
       });
-      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 1 });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 9 });
+      expect(probed).toEqual([0, 1, 3, 7, 15, 11, 9, 10]);
+      mockDownloadChunk.mockImplementation(async ref => {
+        if (ref.index === 1) throw make404();
+        return chunkPresent(ref);
+      });
+      await expect(readFeedState(MOCK_OWNER, 'topic')).resolves.toEqual({ exists: true, index: 0 });
       mockDownloadChunk.mockImplementation(async ref => {
         if (ref.index === 0) throw make404();
         return chunkPresent(ref);
