@@ -175,10 +175,11 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   const BUILT_IN = [...defaults['1'].rpcs, ...defaults['1'].beacon_apis, ...defaults['1'].checkpointz];
 
   // Answers every request itself: the prover as `proverAnswers` says (a 503,
-  // or eight bytes), anything else with a 503. `unguarded` swaps
-  // colibri-runtime's provider for upstream's own WASM runtime, without the
-  // stop.
-  function probe({ reads, proverAnswers = 'down', unguarded = false }) {
+  // a 503 whose text names a failed zk sync proof, or eight bytes), anything
+  // else with a 503. `unguarded` swaps colibri-runtime's provider for
+  // upstream's own WASM runtime, without the stop. `zkProof` is the worker
+  // config flag; the shipped default for mainnet is on (colibri-resolver.js).
+  function probe({ reads, proverAnswers = 'down', unguarded = false, zkProof = false }) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'colibri-no-local-'));
     const source = `
       const runtime = require(${JSON.stringify(RUNTIME)});
@@ -193,15 +194,16 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
       globalThis.fetch = async (url, init = {}) => {
         current.fetched.push({ url: String(url), method: init.method, body: init.body ? JSON.parse(init.body) : null });
         if (String(url) !== prover) return new Response('down', { status: 503 });
-        return ${JSON.stringify(proverAnswers)} === 'down'
-          ? new Response('prover down', { status: 503 })
-          : new Response(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), { status: 200 });
+        const answer = ${JSON.stringify(proverAnswers)};
+        if (answer === 'down') return new Response('prover down', { status: 503 });
+        if (answer === 'zk-sync-down') return new Response('zk sync proof unavailable', { status: 503 });
+        return new Response(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), { status: 200 });
       };
       const posted = [];
       const service = createColibriService({
         runtime, storageDir: ${JSON.stringify(dir)}, post: (message) => posted.push(message),
       });
-      const config = { chainId: 1, proverUrl: prover, zkProof: false };
+      const config = { chainId: 1, proverUrl: prover, zkProof: ${zkProof} };
       (async () => {
         await service.init();
         for (const [id, [method, params]] of ${JSON.stringify(reads)}.entries()) {
@@ -240,13 +242,21 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   ];
   const builtIn = (fetched) => fetched.filter(({ url }) => BUILT_IN.some((host) => url.startsWith(host)));
 
-  test('asks only the configured prover, once, and fails the read with its error', () => {
+  // Both settings of the worker's zk flag: mainnet ships with it on, and it
+  // changes what the prover is asked (`zk_proof` in the request body), so the
+  // stop has to hold on that path too, not only on the plain one.
+  test.each([
+    ['without', false],
+    ['with', true],
+  ])('asks only the configured prover, once, and fails the read with its error (%s zk proofs)', (_label, zkProof) => {
     expect(BUILT_IN.length).toBeGreaterThan(0);
-    const reads = probe({ reads: PROOFABLE_READS });
+    const reads = probe({ reads: PROOFABLE_READS, zkProof });
     expect(reads).toHaveLength(PROOFABLE_READS.length);
     for (const { method, fetched, posted } of reads) {
       expect({ method, fetched: fetched.map(({ url, method: verb }) => `${verb} ${url}`) })
         .toEqual({ method, fetched: [`POST ${PROVER}`] });
+      // The zk path really was the one taken.
+      expect(fetched[0].body.zk_proof === true).toBe(zkProof);
       expect(builtIn(fetched)).toEqual([]);
       // A plain failure: no `retry`, so the host doesn't resend it to a
       // fresh worker, and the router or ENS moves on to its next source.
@@ -268,14 +278,37 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   // Pins the upstream behavior the stop exists for. If this fails after a
   // bump, re-read `rpc_handle_remote_proof`: the fallback may be gone (drop
   // the stop) or moved (move it).
-  test('without the stop, the same outage reaches the built-in hosts', () => {
-    const reads = probe({ reads: PROOFABLE_READS.slice(0, 1), unguarded: true });
+  test.each([
+    ['without', false],
+    ['with', true],
+  ])('without the stop, the same outage reaches the built-in hosts (%s zk proofs)', (_label, zkProof) => {
+    const reads = probe({ reads: PROOFABLE_READS.slice(0, 1), unguarded: true, zkProof });
     expect(builtIn(reads[0].fetched).length).toBeGreaterThan(0);
     expect(reads[0].posted.error.message).not.toContain(NO_LOCAL_PROVING_ERROR);
   }, 60_000);
 
-  test('hands a proof the prover sends to the verifier', () => {
-    const [{ fetched, posted }] = probe({ reads: PROOFABLE_READS.slice(0, 1), proverAnswers: 'bytes' });
+  // Upstream's `rpc()` retries a read without zk proofs, in a fresh context,
+  // when the error names a failed "zk sync proof". That retry is a second
+  // remote proof the stop has to catch on its own; here the prover's error
+  // text carries the phrase, so the stop's own error triggers it.
+  test('stops the retry without zk proofs as well as the first zk request', () => {
+    const [{ fetched, posted }] = probe({
+      reads: PROOFABLE_READS.slice(0, 1),
+      zkProof: true,
+      proverAnswers: 'zk-sync-down',
+    });
+    expect(fetched.map(({ url }) => url)).toEqual([PROVER, PROVER]);
+    expect(fetched.map(({ body }) => body.zk_proof === true)).toEqual([true, false]);
+    expect(builtIn(fetched)).toEqual([]);
+    expect(posted.ok).toBe(false);
+    expect(posted.error.message).toContain(`${NO_LOCAL_PROVING_ERROR}: HTTP error! Status: 503`);
+  }, 60_000);
+
+  test.each([
+    ['without', false],
+    ['with', true],
+  ])('hands a proof the prover sends to the verifier (%s zk proofs)', (_label, zkProof) => {
+    const [{ fetched, posted }] = probe({ reads: PROOFABLE_READS.slice(0, 1), proverAnswers: 'bytes', zkProof });
     expect(fetched.map(({ url }) => url)).toEqual([PROVER]);
     // Eight bytes aren't a proof: the verifier's own verdict.
     expect(posted.ok).toBe(false);
