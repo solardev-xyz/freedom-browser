@@ -3081,6 +3081,59 @@ describe('ens-resolver', () => {
       }
     });
 
+    // #1097 R2-M1: the second wave excludes the *providers* the first wave
+    // asked, not just their URLs. With test-a listed under three keys, a
+    // URL-only filter would leave test-a's other two keys as the second
+    // wave; they'd agree with each other at m=2 and label one provider's
+    // answer verified, the #1094 bug one wave later.
+    test('second wave never re-asks a first-wave provider under another URL', async () => {
+      const keyTwo = 'https://test-a.example.com/key-2';
+      const keyThree = 'https://test-a.example.com/key-3';
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], keyTwo, keyThree, TEST_PROVIDERS[1], TEST_PROVIDERS[2]],
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999; // no shuffle: the first wave is [test-a, test-b, test-c]
+      try {
+        invalidateCachedProvider();
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+          [keyTwo, { kind: 'data', payload: goodPayload }],
+          [keyThree, { kind: 'data', payload: goodPayload }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+        ]));
+
+        const contractsBefore = ethers.Contract.mock.calls.length;
+        const result = await resolveEnsContent('second-wave-same-provider.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('unverified');
+        // No second wave ran: the first wave's evidence is what's reported.
+        expect(result.trust.queried).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+        const asked = ethers.Contract.mock.calls.slice(contractsBefore).map((args) => args[2]?.url);
+        expect(asked).toContain(TEST_PROVIDERS[0]);
+        expect(asked).not.toContain(keyTwo);
+        expect(asked).not.toContain(keyThree);
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
     test('second wave also unverified → keep first-wave evidence (no downgrade)', async () => {
       const { restore } = fivePoolWithDeterministicOrder();
       try {
