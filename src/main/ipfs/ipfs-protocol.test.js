@@ -1352,3 +1352,35 @@ describe('extensionless IPFS text navigation', () => {
     expect(await result.text()).toBe(fixture);
   });
 });
+
+// A node that serves a `.md` file as octet-stream would have Chromium
+// download it; a navigation to one opens as Markdown instead (#1035).
+describe('Markdown file navigation', () => {
+  const NAVIGATION_ACCEPT = 'text/html,application/xhtml+xml,*/*;q=0.8';
+  const serve = (path, body, headers) =>
+    handleRequest(
+      'ipfs',
+      new Request(`ipfs://${CIDV1_BASE32}/${path}`, { headers: { accept: NAVIGATION_ACCEPT } }),
+      {
+        requestImpl: async () =>
+          new Response(new TextEncoder().encode(body), {
+            headers: { 'content-length': String(Buffer.byteLength(body)), ...headers },
+          }),
+      }
+    );
+
+  test.each([
+    ['a small file', '# Notes\n'],
+    ['one past the small-text limit', `# Notes\n${'a'.repeat(5000)}`],
+  ])('%s served as octet-stream is text/markdown, not plain text', async (_label, body) => {
+    const result = await serve('README.md', body, { 'content-type': 'application/octet-stream' });
+    expect(result.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
+    expect(result.headers.get('x-content-type-options')).toBeNull();
+    expect(await result.text()).toBe(body);
+  });
+
+  test('a .md file the node typed as text keeps its type and gains UTF-8', async () => {
+    const result = await serve('notes.md', 'Hi', { 'content-type': 'text/plain' });
+    expect(result.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+  });
+});

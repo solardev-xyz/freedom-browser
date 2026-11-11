@@ -1,0 +1,126 @@
+/* Markdown button (#1035), shown while the active tab holds a Markdown file
+   rendered as a page (markdown-view-ui.js). On the formatted page it is the
+   Markdown mark in the accent colour; while the source shows, an outlined
+   pill that says "Source".
+
+   It sits left of every other address-bar button. Each one that is showing
+   adds its 30px step to the offset below, so none of them moves for it. The
+   gateway pill drops its label next to it (as in a narrow window), which
+   makes it one 30px step as well. */
+
+.address-wrapper {
+  --markdown-toggle-width: 32px;
+  --markdown-toggle-right: calc(
+    36px + var(--markdown-step-bridge, 0px) + var(--markdown-step-permission, 0px) +
+      var(--markdown-step-popup, 0px) + var(--markdown-step-gateway, 0px)
+  );
+}
+
+.address-wrapper:has(.github-bridge-btn:not(.hidden)) {
+  --markdown-step-bridge: 30px;
+}
+
+.address-wrapper:has(.permission-indicator:not(.hidden)) {
+  --markdown-step-permission: 30px;
+}
+
+.address-wrapper:has(.popup-blocked-indicator:not(.hidden)) {
+  --markdown-step-popup: 30px;
+}
+
+.address-wrapper:has(.gateway-offer-pill:not(.hidden)) {
+  --markdown-step-gateway: 30px;
+}
+
+.address-wrapper:has(.markdown-toggle-btn[aria-pressed='true']) {
+  --markdown-toggle-width: 80px;
+}
+
+.markdown-toggle-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  right: var(--markdown-toggle-right);
+  width: var(--markdown-toggle-width);
+  height: 24px;
+  margin: 0;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: default;
+  z-index: 2;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.markdown-toggle-btn.hidden {
+  display: none;
+}
+
+.markdown-toggle-btn svg {
+  width: 18px;
+  height: 11px;
+  flex-shrink: 0;
+}
+
+.markdown-toggle-label {
+  display: none;
+}
+
+/* Showing the source: the outlined pill, in the text colour. */
+.markdown-toggle-btn[aria-pressed='true'] {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.markdown-toggle-btn[aria-pressed='true'] .markdown-toggle-label {
+  display: inline;
+}
+
+.markdown-toggle-btn:hover {
+  /* theme-literal: neutral hover tint; the light override is the rule below */
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='light'] .markdown-toggle-btn:hover {
+  /* theme-literal: the light half of the pair above */
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* The gateway pill as its icon alone (its tooltip still names the
+   destination), one step to the button's right. */
+.address-wrapper:has(.markdown-toggle-btn:not(.hidden)) .gateway-offer-pill {
+  padding: 0 5px;
+}
+
+.address-wrapper:has(.markdown-toggle-btn:not(.hidden)) .gateway-offer-pill-label {
+  display: none;
+}
+
+/* Keep the URL text clear of the button and everything right of it. */
+.address-wrapper:has(.markdown-toggle-btn:not(.hidden)) .address-input {
+  padding-right: calc(var(--markdown-toggle-right) + var(--markdown-toggle-width) + 6px);
+}
+
+/* A narrow window keeps the source pill to the mark alone; the outline still
+   tells the two views apart, and the tooltip says what a click does. */
+@media (max-width: 560px) {
+  .address-wrapper:has(.markdown-toggle-btn[aria-pressed='true']) {
+    --markdown-toggle-width: 32px;
+  }
+
+  .markdown-toggle-btn[aria-pressed='true'] .markdown-toggle-label {
+    display: none;
+  }
+}

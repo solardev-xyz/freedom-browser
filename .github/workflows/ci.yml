@@ -1212,6 +1212,9 @@ jobs:
       # eth.limo/eth.link/bzz.link pages: the URL is never rewritten, the popover
       # opens the native address with path/query/fragment, and the opt-in
       # "always" redirect leaves a gateway page reached by Back alone.
+      # `markdown-view.spec.js` (#1035) opens Markdown files in a real tab: the
+      # page rendered in place with nothing able to run, and the address bar's
+      # Markdown button switching to the source and back.
       - name: Run address-bar + ENSv2 + name-interstitial E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -1223,7 +1226,8 @@ jobs:
             test-e2e/tez-unverified.spec.js \
             test-e2e/tez-head-conflict.spec.js \
             test-e2e/ens-trust-popover.spec.js \
-            test-e2e/gateway-offer.spec.js
+            test-e2e/gateway-offer.spec.js \
+            test-e2e/markdown-view.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

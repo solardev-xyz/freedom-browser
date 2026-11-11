@@ -53,6 +53,7 @@ const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
   PAGE_STATE_RESPONSE_HEADERS,
   stripPageStateHeaders,
+  labelMarkdownDocument,
 } = require('../lib/gateway-response-headers');
 const {
   runWithPrivateLogContext,
@@ -520,7 +521,10 @@ async function handleBzzRequest(
       fetchImpl,
       attemptTimeoutMs
     );
-    return withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl));
+    return labelMarkdownDocument(
+      withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl)),
+      request
+    );
   } catch (err) {
     const code = errorCodeForLog(err);
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';

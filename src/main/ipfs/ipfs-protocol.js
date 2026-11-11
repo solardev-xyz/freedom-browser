@@ -52,6 +52,7 @@ const {
   resolveContentName,
 } = require('../content-name-resolver');
 const { serveNativeGatewayRequest } = require('../ipfs-manager');
+const { isDocumentRequest, labelMarkdownDocument } = require('../lib/gateway-response-headers');
 const { isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
 const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
@@ -539,22 +540,6 @@ function jsonErrorResponse(status, message) {
   });
 }
 
-// Is this request a document load (top-level or frame navigation) rather
-// than a subresource fetch? `protocol.handle` gives us no `Sec-Fetch-Dest`
-// (Chromium does not send the Sec-Fetch-* family for custom schemes) and
-// both `Request.destination` and `Request.mode` are useless here —
-// empirically, on the Electron we ship, `destination` is always `''` and
-// `mode` is always `'cors'`, for navigations and subresources alike. What
-// does survive is Chromium's fixed navigation `Accept` header, whose first
-// media type is `text/html`; every subresource sends its own type-specific
-// Accept instead (`*/*` for scripts and fetch/XHR, `text/css,*/*;q=0.1`
-// for stylesheets, `image/…` for images). So Accept is the navigation
-// signal available, and it is the one used here.
-function isDocumentRequest(request) {
-  const accept = request?.headers?.get('accept') || '';
-  return accept.split(',')[0].trim().toLowerCase() === 'text/html';
-}
-
 // A bare UnixFS file has no filename from which the native gateway can
 // infer MIME. Render small UTF-8 text files as text, including ENS's gateway
 // checker fixture, without promoting any response to executable HTML.
@@ -739,7 +724,11 @@ async function handleRequest(
         headers,
         signal: request.signal,
       });
-      return await renderSmallTextResponse(response, method, request);
+      return await renderSmallTextResponse(
+        labelMarkdownDocument(response, request),
+        method,
+        request
+      );
     } catch (err) {
       // The code only: an error's text can name the path asked for.
       const code = errorCodeForLog(err);
@@ -769,7 +758,11 @@ async function handleRequest(
   const init = { method, headers, signal: attemptCtl.signal, redirect: 'follow' };
 
   try {
-    return await renderSmallTextResponse(await fetchImpl(built.url, init), method, request);
+    return await renderSmallTextResponse(
+      labelMarkdownDocument(await fetchImpl(built.url, init), request),
+      method,
+      request
+    );
   } catch (err) {
     // Translate our attempt-level abort into a 504 with a useful message
     // (rather than letting the raw AbortError surface as a 502). If the
