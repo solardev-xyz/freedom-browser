@@ -16,7 +16,11 @@
  *
  * A default identity is chosen when an origin first receives feed access:
  *   - 'bee-wallet': uses the Bee node wallet key for signing
- *   - 'app-scoped': uses a dedicated publisher key derived at m/44'/73406'/{index}'/0/0
+ *   - 'app-scoped': uses a dedicated publisher key. New ones are derived per
+ *     site (#1155): m/44'/73406'/{a}'/{b}'/{c}'/{n}' from the site and the
+ *     site's identity number n, stored as `siteKey: { site, index: n }`, so
+ *     restoring the recovery phrase restores them. Identities created before
+ *     keep a counter-numbered key, m/44'/73406'/{publisherKeyIndex}'/0/0.
  *   - 'ethereum-wallet': uses one of the browser's Ethereum wallet accounts
  *
  * Survives permission revocation — revoking Swarm connection does not
@@ -32,6 +36,7 @@ const { withOriginLock } = require('./origin-mutation-lock');
 const {
   getDerivedKeys,
   getPublisherKey,
+  getSitePublisherKey,
   getDerivedWallets,
   WALLET_TYPES,
 } = require('../identity-manager');
@@ -43,6 +48,7 @@ const MAX_IDENTITY_LABEL_BYTES = 80;
 
 const VALID_IDENTITY_MODES = ['bee-wallet', 'app-scoped', 'ethereum-wallet'];
 const BEE_WALLET_IDENTITY_ID = 'bee-wallet';
+const SITE_KEY_IDENTITY_ID_PREFIX = 'app-scoped:site:';
 const ETHEREUM_WALLET_ID_PREFIX = 'ethereum-wallet';
 
 let feedsCache = null;
@@ -147,6 +153,57 @@ function normalizeIdentityLabel(label, fallback) {
   return trimmed;
 }
 
+function isSiteKey(siteKey) {
+  return isPlainObject(siteKey)
+    && typeof siteKey.site === 'string'
+    && siteKey.site.length > 0
+    && Number.isInteger(siteKey.index)
+    && siteKey.index >= 0;
+}
+
+/**
+ * An app-scoped identity whose key follows from the site and its number
+ * (#1155). `site` is stored with it, so the key never depends on how a later
+ * version normalizes the origin.
+ */
+function createSiteKeyIdentity(site, index, createdAt = Date.now(), label = null) {
+  return {
+    id: `${SITE_KEY_IDENTITY_ID_PREFIX}${index}`,
+    mode: 'app-scoped',
+    publisherKeyIndex: null,
+    siteKey: { site, index },
+    walletIndex: null,
+    label: normalizeIdentityLabel(label, `App-scoped identity ${index + 1}`),
+    createdAt,
+    lastUsedAt: null,
+  };
+}
+
+// The next unused identity number for a site. On a device restored from the
+// recovery phrase, a site starts again at 0 and gets its first key back.
+function nextSiteKeyIndex(entry) {
+  let next = 0;
+  for (const identity of Object.values(entry?.identities || {})) {
+    if (isSiteKey(identity?.siteKey)) next = Math.max(next, identity.siteKey.index + 1);
+  }
+  return next;
+}
+
+/**
+ * The publisher key of an app-scoped identity, either kind. Vault must be
+ * unlocked.
+ * @returns {Promise<Object>} { privateKey, publicKey, address, path }
+ */
+async function getAppScopedKey(identity) {
+  if (typeof identity?.publisherKeyIndex === 'number') {
+    return getPublisherKey(identity.publisherKeyIndex);
+  }
+  if (isSiteKey(identity?.siteKey)) {
+    return getSitePublisherKey(identity.siteKey.site, identity.siteKey.index);
+  }
+  throw new Error('App-scoped identity is missing a publisher key index');
+}
+
 function createIdentity(identityMode, publisherKeyIndex = null, createdAt = Date.now(), label = null, walletIndex = null) {
   if (!VALID_IDENTITY_MODES.includes(identityMode)) {
     throw new Error(`Invalid identity mode: ${identityMode}`);
@@ -202,6 +259,7 @@ function decorateOriginEntry(entry) {
     feeds: copyFeeds(entry.feeds),
     identityMode: activeIdentity?.mode || null,
     publisherKeyIndex: activeIdentity?.publisherKeyIndex ?? null,
+    siteKey: activeIdentity?.siteKey ?? null,
     walletIndex: activeIdentity?.walletIndex ?? null,
   };
 }
@@ -436,10 +494,10 @@ function setOriginEntry(origin, data) {
   const existing = store.origins[key] || {};
   let publisherKeyIndex = data.publisherKeyIndex ?? null;
   let walletIndex = data.walletIndex ?? null;
-  if (data.identityMode === 'app-scoped' && publisherKeyIndex === null) {
-    publisherKeyIndex = allocatePublisherKeyIndexInStore(store);
-  }
-  if (data.identityMode === 'app-scoped') {
+  // A new app-scoped identity follows the site recipe (#1155); an explicit
+  // counter index names an identity created before it.
+  const newSiteKey = data.identityMode === 'app-scoped' && publisherKeyIndex === null;
+  if (data.identityMode === 'app-scoped' && !newSiteKey) {
     updateNextPublisherKeyIndex(store, publisherKeyIndex);
   }
   if (data.identityMode === 'ethereum-wallet') {
@@ -450,13 +508,15 @@ function setOriginEntry(origin, data) {
   } else {
     walletIndex = null;
   }
-  const identity = createIdentity(
-    data.identityMode,
-    publisherKeyIndex,
-    existing.grantedAt || Date.now(),
-    null,
-    walletIndex
-  );
+  const identity = newSiteKey
+    ? createSiteKeyIdentity(key, nextSiteKeyIndex(existing), existing.grantedAt || Date.now())
+    : createIdentity(
+      data.identityMode,
+      publisherKeyIndex,
+      existing.grantedAt || Date.now(),
+      null,
+      walletIndex
+    );
   const identities = {
     ...(existing.identities || {}),
     [identity.id]: identity,
@@ -519,6 +579,7 @@ function getOriginIdentityState(origin) {
     activeIdentityId: entry.activeIdentityId,
     identityMode: entry.identityMode,
     publisherKeyIndex: entry.publisherKeyIndex,
+    siteKey: entry.siteKey,
     walletIndex: entry.walletIndex,
     identities: Object.values(entry.identities || {})
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)),
@@ -543,10 +604,7 @@ async function enrichIdentityOwner(identity, options = {}) {
   }
 
   if (identity.mode === 'app-scoped') {
-    if (typeof identity.publisherKeyIndex !== 'number') {
-      throw new Error('App-scoped identity is missing a publisher key index');
-    }
-    const publisherKey = await getPublisherKey(identity.publisherKeyIndex);
+    const publisherKey = await getAppScopedKey(identity);
     return {
       ...identity,
       owner: publisherKey.address,
@@ -592,8 +650,23 @@ async function enrichIdentityOwner(identity, options = {}) {
 function isIdentitySharedWithOtherOrigins(origin, identity) {
   const mode = identity?.mode || identity?.identityMode || null;
   if (mode !== 'app-scoped') return true;
-  if (typeof identity.publisherKeyIndex !== 'number') return true;
   const key = normalizeOrigin(origin);
+  // A site-derived key (#1155) is shared only if another origin holds the
+  // same one: same site, same number. Checked in the order the signer picks
+  // the key (getAppScopedKey), so a record with both fields is judged by the
+  // key it actually signs with.
+  if (typeof identity.publisherKeyIndex !== 'number' && isSiteKey(identity.siteKey)) {
+    const { site, index } = identity.siteKey;
+    return Object.entries(loadFeeds().origins).some(([otherOrigin, entry]) => (
+      otherOrigin !== key && isPlainObject(entry?.identities) && Object.values(entry.identities).some((other) => (
+        other?.mode === 'app-scoped'
+        && typeof other.publisherKeyIndex !== 'number'
+        && other.siteKey?.site === site
+        && other.siteKey?.index === index
+      ))
+    ));
+  }
+  if (typeof identity.publisherKeyIndex !== 'number') return true;
   for (const [otherOrigin, entry] of Object.entries(loadFeeds().origins)) {
     if (otherOrigin === key || !isPlainObject(entry?.identities)) continue;
     for (const other of Object.values(entry.identities)) {
@@ -611,6 +684,7 @@ async function getOriginIdentityStateWithOwners(origin) {
     activeIdentityId: null,
     identityMode: null,
     publisherKeyIndex: null,
+    siteKey: null,
     walletIndex: null,
     identities: [],
     feedGranted: false,
@@ -661,13 +735,13 @@ async function getOriginIdentityStateWithOwners(origin) {
 
 async function previewAppScopedIdentity(origin, options = {}) {
   const store = loadFeeds();
-  const publisherKeyIndex = store.nextPublisherKeyIndex;
-  const identity = createIdentity('app-scoped', publisherKeyIndex, Date.now(), options.label);
+  const key = normalizeOrigin(origin);
+  const identity = createSiteKeyIdentity(key, nextSiteKeyIndex(store.origins[key]), Date.now(), options.label);
   const enriched = await enrichIdentityOwner(identity, { stored: false });
   return {
     ...enriched,
     preview: true,
-    // The next unallocated publisher key index: no site holds it yet.
+    // The site's next unused key: no site holds it yet.
     shared: false,
     origin: normalizeOrigin(origin),
   };
@@ -689,8 +763,7 @@ function createAppScopedIdentity(origin, options = {}) {
   const key = normalizeOrigin(origin);
   const entry = store.origins[key] || createOriginShell();
   const previousActiveId = entry.activeIdentityId;
-  const publisherKeyIndex = allocatePublisherKeyIndexInStore(store);
-  const identity = createIdentity('app-scoped', publisherKeyIndex, Date.now(), options.label);
+  const identity = createSiteKeyIdentity(key, nextSiteKeyIndex(entry), Date.now(), options.label);
 
   entry.identities = {
     ...(entry.identities || {}),
@@ -1120,6 +1193,7 @@ module.exports = {
   getOriginIdentityStateWithOwners,
   previewAppScopedIdentity,
   createAppScopedIdentity,
+  getAppScopedKey,
   ensureAntWalletIdentity,
   ensureEthereumWalletIdentity,
   activateIdentity,

@@ -312,7 +312,7 @@ change in Settings. Three kinds exist (`identityMode`):
 
 | `identityMode`    | Key                                                                                                                                                            | Linkable across origins?                      |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `app-scoped`      | A dedicated key derived from the user's vault at `m/44'/73406'/{index}'/0/0`, one index per identity                                                           | No                                            |
+| `app-scoped`      | A dedicated key derived from the vault's recovery phrase for this site (see below)                                                                             | No                                            |
 | `bee-wallet`      | The Swarm node's wallet key                                                                                                                                    | Yes: every origin using it shares the address |
 | `ethereum-wallet` | One of the user's Ethereum accounts derived from the vault's recovery phrase (Ledger, phone and Safe accounts cannot be used, since they never hand out a key) | Yes: it is the user's public wallet address   |
 
@@ -330,6 +330,21 @@ change in Settings. Three kinds exist (`identityMode`):
   page could write another site's feed entries (`keccak256(topic || index)`).
   Feeds and `swarm_getSigningIdentity` work under every identity, since feed
   topics are namespaced by origin.
+
+**App-scoped keys.** A site's app-scoped identities are numbered `n = 0, 1,
+2, …`, and each key is derived from the recovery phrase and the site, the
+recipe the Swarm provider SWIP specifies: path `m/44'/73406'/{a}'/{b}'/{c}'/{n}'`,
+where `a`, `b` and `c` are the first three big-endian 32-bit words of
+`SHA-256("swarm-provider/publisher-key/v1\n" + permissionKey)`, each with its
+top bit cleared. Restoring the recovery phrase (on another device, or after
+reinstalling without the profile) gives a site the same keys again, so its
+feeds can still be updated and others still see the same author. Each such
+identity stores its site and number (`siteKey: { site, index }`), so the key
+does not depend on how a later version normalizes the address. Identities
+created before this recipe keep their counter-numbered keys
+(`m/44'/73406'/{publisherKeyIndex}'/0/0`); those can't be restored from the
+phrase alone. Like the site encryption key, these keys follow the permission
+key, so a redeployed `bzz://<ref>` site gets new ones.
 
 Messaging is different: PSS decrypts with the **node's** key, so
 `swarm_getMessagingIdentity` always reports `identityMode: 'bee-wallet'`, and

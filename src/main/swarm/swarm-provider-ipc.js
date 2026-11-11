@@ -68,6 +68,7 @@ const { isNoUsableBatchError } = require('./batch-errors');
 const {
   getDerivedKeys,
   getPublisherKey,
+  getSitePublisherKey,
   getSiteEncryptionKey,
   getUserWalletKey,
 } = require('../identity-manager');
@@ -1222,6 +1223,7 @@ function getActiveOriginIdentity(originEntry) {
       id: originEntry.activeIdentityId || null,
       mode: originEntry.identityMode,
       publisherKeyIndex: originEntry.publisherKeyIndex ?? null,
+      siteKey: originEntry.siteKey ?? null,
     };
   }
   return null;
@@ -1262,11 +1264,15 @@ async function resolveSignerKey(identity) {
   }
 
   if (identityMode === 'app-scoped') {
-    if (typeof identity.publisherKeyIndex !== 'number') {
-      throw new Error('App-scoped identity is missing a publisher key index');
+    // Either kind: counter-numbered, or derived from the site (#1155).
+    if (typeof identity.publisherKeyIndex === 'number') {
+      return (await getPublisherKey(identity.publisherKeyIndex)).privateKey;
     }
-    const publisherKey = await getPublisherKey(identity.publisherKeyIndex);
-    return publisherKey.privateKey;
+    const siteKey = identity.siteKey;
+    if (typeof siteKey?.site === 'string' && Number.isInteger(siteKey.index)) {
+      return (await getSitePublisherKey(siteKey.site, siteKey.index)).privateKey;
+    }
+    throw new Error('App-scoped identity is missing a publisher key index');
   }
 
   if (identityMode === 'ethereum-wallet') {

@@ -437,6 +437,24 @@ async function getPublisherKey(originIndex) {
 }
 
 /**
+ * Derive a site's publisher key number `index` (identity/derivation.js
+ * deriveSitePublisherKey, #1155). Vault must be unlocked; derived on demand.
+ * @param {string} site - The site's permission key
+ * @param {number} index - The site's identity number
+ * @returns {Promise<Object>} { privateKey, publicKey, address, path }
+ */
+async function getSitePublisherKey(site, index) {
+  const identity = await loadIdentityModule();
+  const mnemonic = identity.getMnemonic();
+
+  if (!mnemonic) {
+    throw new Error('Vault must be unlocked to derive publisher keys');
+  }
+
+  return identity.deriveSitePublisherKey(mnemonic, site, index);
+}
+
+/**
  * Derive a site's encryption key (key agreement only, see
  * identity/derivation.js deriveSiteEncryptionKey). Vault must be unlocked.
  * Derived on demand, like publisher keys, so nothing outlives a lock.
@@ -2232,6 +2250,7 @@ module.exports = {
   // Key operations
   getDerivedKeys,
   getPublisherKey,
+  getSitePublisherKey,
   getSiteEncryptionKey,
   getUserWalletKey,
 

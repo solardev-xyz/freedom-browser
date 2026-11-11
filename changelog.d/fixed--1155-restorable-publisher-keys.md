@@ -1,0 +1,2 @@
+- A site's new publisher identity can be restored from your recovery phrase, so after a reinstall or on another device the site signs with the same key and can still update its feeds ([#1155](https://github.com/solardev-xyz/freedom-browser/issues/1155))
+  - Identities created before keep their keys, which can't be restored from the phrase alone
