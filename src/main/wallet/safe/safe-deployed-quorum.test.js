@@ -7,7 +7,9 @@
  * the real router, with one dishonest RPC endpoint configured in the two
  * ways that used to make its word a verified quorum: its URL listed twice,
  * and a quorum with m = 1. Neither writes the mark. Two distinct endpoints
- * that agree still do.
+ * that agree still do. Colibri's word counts only where the router's own
+ * rules (#1048) label it verified: its unproven "no such receipt" leaves an
+ * endpoint's mined receipt unverified, while its proven receipt marks.
  */
 
 const { ownerWallet } = require('./__tests__/helpers/test-owners');
@@ -97,9 +99,12 @@ const mockRegistry = {
 };
 jest.mock('../../networks/network-registry', () => mockRegistry);
 jest.mock('../../myotis/myotis-manager', () => ({ NETWORKS: new Map(), isReady: () => false }));
+// Colibri is unavailable unless a test gives it an answer.
+const mockColibri = { answer: null };
 jest.mock('../../ens/colibri-resolver', () => ({
-  requestViaColibri: async () => {
-    throw new Error('Colibri is not available');
+  requestViaColibri: async (_chainId, method, params) => {
+    if (!mockColibri.answer) throw new Error('Colibri is not available');
+    return mockColibri.answer(method, params);
   },
 }));
 jest.mock('../../logger', () => ({ verbose: jest.fn(), warn: jest.fn() }));
@@ -129,7 +134,9 @@ function useEndpoints(endpoints, quorum = {}) {
     access: { readOrder: ['quorum', 'direct'] },
     quorum: { timeoutMs: 1000, ...quorum },
   });
-  mockRegistry.getEndpoints.mockImplementation((_chainId, role) => (role === 'rpc' ? endpoints : []));
+  mockRegistry.getEndpoints.mockImplementation((_chainId, role) =>
+    role === 'rpc' ? endpoints : []
+  );
   global.fetch = jest.fn(async (url, init) => {
     const { method } = JSON.parse(init.body);
     return { ok: true, json: async () => ({ result: answer(url, method) }) };
@@ -143,6 +150,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   clearAdaptiveRoutingForTest();
   mockChain.sent = false;
+  mockColibri.answer = null;
   mockWalletRecords[5].deployed = {};
   warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -200,10 +208,67 @@ describe('two distinct endpoints that agree', () => {
   test('their receipt for the activation marks the Safe deployed', async () => {
     useEndpoints(HONEST);
 
-    await expect(activateSafe(5)).resolves.toEqual({ safeAddress: SAFE_ADDRESS, hash: DEPLOY_HASH });
+    await expect(activateSafe(5)).resolves.toEqual({
+      safeAddress: SAFE_ADDRESS,
+      hash: DEPLOY_HASH,
+    });
     expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
     // The receipt marked it: no eth_getCode after the activation.
     const methods = global.fetch.mock.calls.map(([, init]) => JSON.parse(init.body).method);
-    expect(methods.lastIndexOf('eth_getCode')).toBeLessThan(methods.indexOf('eth_getTransactionReceipt'));
+    expect(methods.lastIndexOf('eth_getCode')).toBeLessThan(
+      methods.indexOf('eth_getTransactionReceipt')
+    );
+  });
+});
+
+// Gnosis read from Colibri, then one dishonest endpoint. The router asks
+// Colibri last for a transaction lookup, to prove what the endpoint reported.
+function useColibriThenForger() {
+  mockRegistry.getNetwork.mockReturnValue({
+    access: { readOrder: ['colibri', 'direct'] },
+    quorum: { timeoutMs: 1000 },
+  });
+  mockRegistry.getEndpoints.mockImplementation((_chainId, role) => {
+    if (role === 'rpc') return [FORGER];
+    if (role === 'prover') return ['https://prover.example'];
+    return [];
+  });
+  // The forger answers "no code" until the activation is sent, then a
+  // successful receipt and the Safe's code.
+  global.fetch = jest.fn(async (url, init) => {
+    const { method } = JSON.parse(init.body);
+    const result = method === 'eth_getCode' && !mockChain.sent ? '0x' : answer(url, method);
+    return { ok: true, json: async () => ({ result }) };
+  });
+}
+
+describe("Colibri's answer counts only where the router labels it verified", () => {
+  test('its unproven absence leaves the endpoint receipt unverified: no mark', async () => {
+    useColibriThenForger();
+    // Colibri reports the transaction unknown (#1048: an absence is never
+    // proven) and serves no eth_getCode here.
+    mockColibri.answer = (method) => {
+      if (method === 'eth_getTransactionReceipt') return null;
+      throw new Error(`Colibri does not serve ${method} here`);
+    };
+
+    await expect(activateSafe(5)).rejects.toMatchObject({ code: 'SAFE_UNVERIFIED' });
+    expect(mockDeploySafe).toHaveBeenCalledTimes(1);
+    expect(mockMarkSafeDeployed).not.toHaveBeenCalled();
+    expect(mockWalletRecords[5].deployed).toEqual({});
+  });
+
+  test('its proven receipt for the activation marks the Safe deployed', async () => {
+    useColibriThenForger();
+    mockColibri.answer = (method, params) => {
+      if (method === 'eth_getTransactionReceipt' && params[0] === DEPLOY_HASH) return MINED_RECEIPT;
+      throw new Error(`Colibri does not serve ${method} here`);
+    };
+
+    await expect(activateSafe(5)).resolves.toEqual({
+      safeAddress: SAFE_ADDRESS,
+      hash: DEPLOY_HASH,
+    });
+    expect(mockMarkSafeDeployed).toHaveBeenCalledWith(5, DEPLOY_CHAIN_ID);
   });
 });
