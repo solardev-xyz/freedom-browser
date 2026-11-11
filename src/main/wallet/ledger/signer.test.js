@@ -205,6 +205,51 @@ describe('createLedgerBackend / signTypedData', () => {
     await expect(backend.signTypedData({ domain, types, message })).rejects.toMatchObject({ statusCode: 0x6985 });
     expect(mockEth.signEIP712HashedMessage).not.toHaveBeenCalled();
   });
+
+  describe('typed data hw-app-eth would send wrongly (#1064)', () => {
+    // hw-app-eth would drop the last byte of a 254-byte value.
+    const blobTypes = { Blob: [{ name: 'data', type: 'bytes' }] };
+    const blobMessage = { data: '0x' + 'ab'.repeat(254) };
+
+    afterEach(() => {
+      delete mockEth.transport;
+    });
+
+    test('is refused without sending any of it to the device', async () => {
+      mockEth.transport = { deviceModel: { id: 'nanoX' } };
+      const backend = createLedgerBackend(RECORD);
+
+      await expect(
+        backend.signTypedData({ domain, types: blobTypes, message: blobMessage })
+      ).rejects.toMatchObject({
+        code: 'LEDGER_TYPED_DATA_UNSUPPORTED',
+        detail: 'message.data is 254 bytes',
+      });
+      expect(mockEth.signEIP712Message).not.toHaveBeenCalled();
+      expect(mockEth.signEIP712HashedMessage).not.toHaveBeenCalled();
+    });
+
+    test('is still signed by hash on the original Nano S, which never reads it field by field', async () => {
+      mockEth.transport = { deviceModel: { id: 'nanoS' } };
+      const noFullSupport = new Error('INS not supported');
+      noFullSupport.statusCode = 0x6d00;
+      mockEth.signEIP712Message.mockRejectedValue(noFullSupport);
+      mockEth.signEIP712HashedMessage.mockResolvedValue(
+        toDeviceSig(
+          deviceWallet.signingKey.sign(TypedDataEncoder.hash(domain, blobTypes, blobMessage))
+        )
+      );
+
+      const backend = createLedgerBackend(RECORD);
+      const signature = await backend.signTypedData({
+        domain,
+        types: blobTypes,
+        message: blobMessage,
+      });
+      expect(verifyTypedData(domain, blobTypes, blobMessage, signature)).toBe(deviceWallet.address);
+      expect(mockEth.signEIP712HashedMessage).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 /**

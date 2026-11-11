@@ -25,6 +25,7 @@ const LEDGER_ERROR_CODES = {
   ADDRESS_MISMATCH: 'LEDGER_ADDRESS_MISMATCH',
   // An account no Ledger has yet shown to hold its address at its path.
   ACCOUNT_UNCHECKED: 'LEDGER_ACCOUNT_UNCHECKED',
+  TYPED_DATA_UNSUPPORTED: 'LEDGER_TYPED_DATA_UNSUPPORTED',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -45,6 +46,8 @@ const MESSAGES = {
     "This Ledger holds a different address at that path. The account wasn't added.",
   [LEDGER_ERROR_CODES.ACCOUNT_UNCHECKED]:
     "This Ledger account hasn't been checked on its Ledger yet. Connect that Ledger and open Connect Hardware Wallet, then try again.",
+  [LEDGER_ERROR_CODES.TYPED_DATA_UNSUPPORTED]:
+    "This signature request can't be sent to a Ledger intact, so Freedom didn't send it to the device.",
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 

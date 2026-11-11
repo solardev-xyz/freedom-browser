@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const IPC = require('../shared/ipc-channels');
 const {
   createTempUserDataDir,
   loadMainModule,
@@ -33,6 +34,7 @@ function makeProfileIdentityMock() {
   return {
     createVault: jest.fn().mockResolvedValue('test mnemonic'),
     unlockVault: jest.fn().mockResolvedValue(undefined),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0xuser-private' },
       beeWallet: { address: '0xbee', privateKey: '0xbee-private' },
@@ -54,7 +56,7 @@ function makeRestartIdentityMock() {
     createVault: jest.fn(async () => 'test test test test test test test test test test test about'),
     unlockVault: jest.fn(async () => {}),
     vaultExists: jest.fn(async () => true),
-    isUnlocked: jest.fn(async () => true),
+    isUnlocked: jest.fn(() => true),
     deriveAllKeys: jest.fn(() => ({
       userWallet: { address: '0xuser', privateKey: '0x01' },
       beeWallet: { address: '0xbee', privateKey: '0x02' },
@@ -150,7 +152,8 @@ describe('identity-manager profile paths', () => {
     expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
       antDir,
       '0xbee-private',
-      expect.any(String)
+      expect.any(String),
+      { beforeWrite: expect.any(Function) }
     );
     expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
       antDir,
@@ -1038,7 +1041,7 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     fs.writeFileSync(path.join(dataDirs.radicle, 'keys', 'radicle'), 'key');
   }
 
-  test('force reinjection reports Radicle but NOT Bee/IPFS for restart', async () => {
+  test('force reinjection reports no node for restart: both restart themselves (R-8)', async () => {
     // Bee/Radicle are injected. A stale IPFS identity metadata file from older
     // builds must be ignored because native freedom-ipfs now reports ephemeral
     // identity mode instead of a prepared durable PeerID.
@@ -1051,16 +1054,225 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
 
     const results = await mgr.injectAllIdentities('FreedomBrowser', true);
 
-    expect(results.needsRestart).not.toContain('bee');
-    expect(results.needsRestart).not.toContain('ipfs');
-    expect(results.needsRestart).toEqual(expect.arrayContaining(['radicle']));
+    expect(results.needsRestart).toEqual([]);
     expect(results.bee.reinjected).toBe(true);
+    expect(results.radicle.reinjected).toBe(true);
     expect(results.ipfs).toMatchObject({
       mode: 'ephemeral',
       active: false,
       peerId: null,
       stableIdentitySupported: false,
     });
+  });
+
+  test('a Radicle re-key wipes and writes the key inside the stopped-node section (R-8)', async () => {
+    seedRadicleInjected();
+    const storage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(storage, { recursive: true });
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+
+    const steps = [];
+    let finishStop;
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        steps.push('stop requested');
+        await new Promise((resolve) => {
+          finishStop = resolve;
+        });
+        steps.push('stopped');
+        try {
+          return await work();
+        } finally {
+          steps.push(`restarted (storage ${fs.existsSync(storage) ? 'kept' : 'wiped'})`);
+        }
+      },
+    });
+
+    const injecting = mgr.injectRadicleIdentity('Alias');
+    for (let i = 0; i < 50 && !finishStop; i += 1) await new Promise((r) => setImmediate(r));
+    // The node has not stopped yet: nothing is wiped.
+    expect(fs.existsSync(storage)).toBe(true);
+    finishStop();
+    const { did } = await injecting;
+    expect(did).toMatch(/^did:key:/);
+    expect(steps).toEqual(['stop requested', 'stopped', 'restarted (storage wiped)']);
+  });
+
+  test('a Radicle re-key whose node will not stop wipes nothing (R-8)', async () => {
+    seedRadicleInjected();
+    const storage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(storage, { recursive: true });
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    const keyBefore = fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null;
+    mgr.setRadicleLifecycle({
+      withStopped: async () => {
+        throw new Error('shutdown failed');
+      },
+    });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('shutdown failed');
+    expect(fs.existsSync(storage)).toBe(true);
+    expect(fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null).toBe(keyBefore);
+  });
+
+  test('a revocation inside the stopped-node section refuses the new key (R-8)', async () => {
+    seedRadicleInjected();
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    const keyBefore = fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null;
+    let sawError = null;
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        // The vault's authority ends (as on quit) once the node is stopped.
+        mgr.closeVaultAuthority();
+        try {
+          return await work();
+        } catch (err) {
+          sawError = err;
+          throw err;
+        }
+      },
+    });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow();
+    expect(sawError).not.toBeNull();
+    expect(fs.existsSync(keyPath) ? fs.readFileSync(keyPath, 'utf8') : null).toBe(keyBefore);
+  });
+
+  // Review note 2b: Ant was re-keyed before Radicle, so a Radicle stop that
+  // failed left Ant on the new identity and Radicle on the old one, and the
+  // user saw only "Setup failed".
+  function notStopped(message) {
+    return Object.assign(new Error(message), { code: 'RADICLE_NOT_STOPPED' });
+  }
+
+  test('a forced re-key changes Ant only once Radicle is proved stopped (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const steps = [];
+    mgr.setBeeLifecycle({
+      stop: async () => {
+        steps.push('ant stopped for its re-key');
+        return false;
+      },
+    });
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        steps.push('radicle stopped');
+        const did = await work();
+        steps.push('radicle re-keyed');
+        return did;
+      },
+    });
+
+    const results = await mgr.injectAllIdentities('FreedomBrowser', true);
+    expect(steps).toEqual(['radicle stopped', 'ant stopped for its re-key', 'radicle re-keyed']);
+    expect(results.bee.reinjected).toBe(true);
+    expect(results.radicle.reinjected).toBe(true);
+  });
+
+  test('a Radicle stop that fails re-keys no node and says so (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    const mgr = loadIdentityManager(dataDirs);
+    await mgr.createNewVault('password-123');
+    const beeStop = jest.fn(async () => false);
+    mgr.setBeeLifecycle({ stop: beeStop });
+    mgr.setRadicleLifecycle({
+      withStopped: async () => {
+        throw notStopped('The Radicle node did not answer its shutdown within 30s');
+      },
+    });
+    const swarmKey = path.join(dataDirs.bee, 'keys', 'swarm.key');
+
+    const err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.code).toBe('RADICLE_NOT_STOPPED');
+    expect(err.message).toMatch(/Radicle node could not be stopped, so no node was given the new identity/);
+    expect(err.message).toMatch(/within 30s/);
+    expect(err.message).toMatch(/Ant and Radicle keep their current identities/);
+    expect(err.message).toMatch(/run identity setup again/);
+    // Ant was never touched.
+    expect(beeStop).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKey, 'utf8')).toBe('{}');
+  });
+
+  test('a Radicle failure after Ant was re-keyed names which node has which identity (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    const radicleStorage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(radicleStorage, { recursive: true });
+    fs.mkdirSync(path.join(dataDirs.bee, 'statestore'), { recursive: true });
+    const keyPath = path.join(dataDirs.radicle, 'keys', 'radicle');
+    // Ant's wipe works; Radicle's own wipe, inside its section, fails.
+    const actual = jest.requireActual('./fs-offload');
+    let err;
+    try {
+      const mgr = loadIdentityManager(dataDirs, {
+        removePath: async (target, opts) => {
+          if (target.startsWith(dataDirs.radicle)) {
+            throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+          }
+          return actual.removePath(target, opts);
+        },
+      });
+      await mgr.createNewVault('password-123');
+      const beeStop = jest.fn(async () => false);
+      mgr.setBeeLifecycle({ stop: beeStop });
+      mgr.setRadicleLifecycle({ withStopped: async (work) => work() });
+      err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+      expect(beeStop).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Radicle was not given the new identity: permission denied/);
+    expect(err.message).toMatch(/Ant already uses the new identity; Radicle keeps its old one/);
+    expect(err.message).toMatch(/Run identity setup again/);
+    // Ant's state was reset for its new key; Radicle's key and data were not.
+    expect(fs.existsSync(path.join(dataDirs.bee, 'statestore'))).toBe(false);
+    expect(fs.readFileSync(keyPath, 'utf8')).toBe('key');
+    expect(fs.existsSync(radicleStorage)).toBe(true);
+  });
+
+  test('an Ant failure inside Radicle\'s section is reported as it is (R-8)', async () => {
+    seedBeeInjected();
+    seedRadicleInjected();
+    // Ant's wipe fails (its first stale directory cannot be removed).
+    const mgr = loadIdentityManager(dataDirs, {
+      removePath: async () => {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      },
+    });
+    await mgr.createNewVault('password-123');
+    mgr.setBeeLifecycle({ stop: async () => false });
+    fs.mkdirSync(path.join(dataDirs.bee, 'statestore'), { recursive: true });
+    const radicleStorage = path.join(dataDirs.radicle, 'storage');
+    fs.mkdirSync(radicleStorage, { recursive: true });
+    const sections = [];
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        sections.push('radicle stopped');
+        return work();
+      },
+    });
+    let err;
+    try {
+      err = await mgr.injectAllIdentities('FreedomBrowser', true).catch((e) => e);
+    } finally {
+      jest.dontMock(require.resolve('./fs-offload'));
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe('permission denied');
+    // Radicle's own wipe never ran.
+    expect(fs.existsSync(radicleStorage)).toBe(true);
+    expect(sections).toEqual(['radicle stopped']);
   });
 
   test('first-time injection reports nothing for restart', async () => {
@@ -1218,5 +1430,667 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       jest.useRealTimers();
     }
     expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
+  });
+});
+
+describe('Swarm keystore password (K-3)', () => {
+  let root;
+  let envSnapshot;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-keystore-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = path.join(root, 'identity');
+    process.env.FREEDOM_ANT_DATA = path.join(root, 'ant');
+    process.env.FREEDOM_IPFS_DATA = path.join(root, 'ipfs');
+    process.env.FREEDOM_RADICLE_DATA = path.join(root, 'radicle');
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // The vault's derived Swarm account, and another identity's.
+  const VAULT_BEE = '0x' + 'b2'.repeat(20);
+  const OTHER_BEE = '0x' + 'a1'.repeat(20);
+  const antDir = () => path.join(root, 'ant');
+  const swarmKeyPath = () => path.join(antDir(), 'keys', 'swarm.key');
+  // A Web3 v3 keystore's unencrypted `address` (no 0x, lowercase); the
+  // password it was "encrypted" with is recorded so a test can check the
+  // pair on disk.
+  const writeKeystore = (address, password = 'lost-password') => {
+    fs.mkdirSync(path.dirname(swarmKeyPath()), { recursive: true });
+    fs.writeFileSync(
+      swarmKeyPath(),
+      JSON.stringify({ address: address.slice(2).toLowerCase(), version: 3, password })
+    );
+  };
+  const keystoreOnDisk = () => JSON.parse(fs.readFileSync(swarmKeyPath(), 'utf8'));
+
+  function load(safeStorage) {
+    const identityMock = {
+      ...makeRestartIdentityMock(),
+      getMnemonic: jest.fn(() => 'test test test test test test test test test test test about'),
+    };
+    identityMock.deriveAllKeys = jest.fn(() => ({
+      userWallet: { address: '0xuser', privateKey: '0x01' },
+      beeWallet: { address: VAULT_BEE, privateKey: '0x02' },
+      ipfsKey: { privateKey: '0x03', publicKey: '0x04' },
+      radicleKey: { privateKey: '0x05', publicKey: '0x06' },
+    }));
+    identityMock.injectBeeKey = jest.fn(async (dataDir, privateKey, password) => {
+      expect(privateKey).toBe('0x02');
+      writeKeystore(VAULT_BEE, password);
+    });
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: path.join(root, 'identity'),
+      electronOverrides: { safeStorage },
+      extraMocks: { [require.resolve('./identity')]: () => identityMock },
+    });
+    return { mod, identityMock, keystore: require('./swarm/ant-keystore-password') };
+  }
+
+  const keychain = () => ({
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async (text) => Buffer.from(`v11${text}`),
+    decryptStringAsync: async (buffer) => ({
+      result: buffer.toString().slice(3),
+      shouldReEncrypt: false,
+    }),
+  });
+
+  test('injection seals the keystore password and leaves it out of config.yaml', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    await mod.createNewVault('password123');
+    await mod.injectBeeIdentity();
+
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      null,
+      expect.any(Number),
+      expect.any(Number)
+    );
+    expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
+  });
+
+  test('without a keyring injection keeps the password in config.yaml, sealing nothing', async () => {
+    const { mod, identityMock, keystore } = load({
+      ...keychain(),
+      isAsyncEncryptionAvailable: async () => false,
+    });
+    await mod.createNewVault('password123');
+    await mod.injectBeeIdentity();
+
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(identityMock.createBeeConfig).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      password,
+      expect.any(Number),
+      expect.any(Number)
+    );
+    expect(keystore.hasSealedPassword(path.join(root, 'ant'))).toBe(false);
+  });
+
+  test('an unlock re-encrypts the keystore the node could not open, then starts it', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const start = jest.fn(async () => {
+      needed = false;
+    });
+    let needed = true;
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
+
+    await mod.unlockVault('password123');
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Same derived key, a new password, sealed; the node starts again.
+    expect(identityMock.injectBeeKey).toHaveBeenCalledWith(
+      path.join(root, 'ant'),
+      '0x02',
+      expect.stringMatching(/^[0-9a-f]{64}$/),
+      expect.objectContaining({ beforeWrite: expect.any(Function) })
+    );
+    const password = identityMock.injectBeeKey.mock.calls[0][2];
+    expect(await keystore.unsealPassword(path.join(root, 'ant'))).toBe(password);
+    expect(start).toHaveBeenCalledTimes(1);
+
+    // Nothing to do on an unlock when the node opened its keystore.
+    needed = false;
+    await mod.unlockVault('password123');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+  });
+
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  // The Ant side of the pairing (ant-manager createAntLifecycle): a start
+  // that stops for re-injection sets the flag and tells the subscriber.
+  function antSide({ startFails = () => false } = {}) {
+    const side = { needed: false, listener: null };
+    side.stopForReinjection = () => {
+      side.needed = true;
+      side.listener?.();
+    };
+    side.hooks = {
+      start: jest.fn(async () => {
+        if (startFails()) side.stopForReinjection();
+        else side.needed = false;
+      }),
+      needsKeyReinjection: () => side.needed,
+      refuseKeyReinjection: jest.fn(() => {
+        side.needed = false;
+      }),
+      onKeyReinjectionNeeded: (listener) => {
+        side.listener = listener;
+      },
+    };
+    return side;
+  }
+
+  test('a start that fails while the vault is unlocked recovers without a lock and unlock', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+
+    // The sealed password stops decrypting at a later start (a reset keychain).
+    ant.stopForReinjection();
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+    expect(ant.needed).toBe(false);
+  });
+
+  test('a start that fails while the vault is locked waits for the unlock', async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+
+    ant.stopForReinjection();
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+
+    await mod.unlockVault('password123');
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery's own start that fails again is not recovered in a loop", async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(VAULT_BEE);
+    const ant = antSide({ startFails: () => true });
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.stopForReinjection();
+    await settle();
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+    // Still asked for: the next unlock tries again.
+    expect(ant.needed).toBe(true);
+  });
+
+  // K-1 x K-3: a recovery holds no key across an await. A lock while it
+  // waits for the keystore lock stops it before any key is read, and the
+  // next unlock runs its own recovery rather than joining the stale one.
+  test('a lock while a recovery waits for the keystore lock stops it; the next unlock recovers', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    identityMock.lockVault = jest.fn();
+    writeKeystore(VAULT_BEE);
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    let release;
+    const held = keystore.withKeystoreLock(antDir(), () => new Promise((r) => (release = r)));
+    const stale = mod.reencryptBeeKeystore();
+    await settle();
+    await mod.lockVault();
+    // Unlocked again while the stale recovery still waits: this unlock's
+    // own recovery queues behind it instead of joining it.
+    ant.needed = true;
+    await mod.unlockVault('password123');
+    release();
+    await held;
+    await expect(stale).rejects.toThrow(/locked/i);
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(ant.hooks.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('a lock while a recovery builds the keystore stops it before the write', async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    identityMock.lockVault = jest.fn();
+    writeKeystore(VAULT_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    let built;
+    identityMock.injectBeeKey = jest.fn(async (dataDir, privateKey, password, opts) => {
+      await new Promise((r) => (built = r));
+      opts.beforeWrite();
+      writeKeystore(VAULT_BEE, password);
+    });
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.needed = true;
+    const recovery = mod.reencryptBeeKeystore();
+    await settle();
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    await mod.lockVault();
+    built();
+    await expect(recovery).rejects.toThrow(/locked/i);
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(keystore.hasSealedPassword(antDir())).toBe(false);
+    expect(ant.hooks.start).not.toHaveBeenCalled();
+  });
+
+  test("a start that fails while unlocked still never overwrites another identity's keystore", async () => {
+    const { mod, identityMock } = load(keychain());
+    writeKeystore(OTHER_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    const ant = antSide();
+    mod.setBeeLifecycle(ant.hooks);
+    await mod.unlockVault('password123');
+    await settle();
+
+    ant.stopForReinjection();
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(ant.hooks.refuseKeyReinjection).toHaveBeenCalledTimes(1);
+    expect(ant.hooks.start).not.toHaveBeenCalled();
+  });
+
+  test('an Ant data directory Freedom refuses fails the recovery, not the unlock', async () => {
+    const { mod, identityMock } = load(keychain());
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, antDir());
+    const ant = antSide();
+    ant.needed = true;
+    mod.setBeeLifecycle(ant.hooks);
+
+    await expect(mod.unlockVault('password123')).resolves.toBeUndefined();
+    await settle();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    await expect(mod.reencryptBeeKeystore()).rejects.toThrow(/symbolic link/);
+  });
+
+  // The K-3 review's reproduction: a keystore for account A, its sealed
+  // password lost, and a vault that derives account B. Recovery must keep
+  // A's keystore, the only encrypted copy of A's key, not write B's over it.
+  test("recovery never overwrites another identity's keystore", async () => {
+    const { mod, identityMock, keystore } = load(keychain());
+    writeKeystore(OTHER_BEE);
+    const before = fs.readFileSync(swarmKeyPath(), 'utf8');
+    const start = jest.fn(async () => {});
+    const refuseKeyReinjection = jest.fn();
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => true, refuseKeyReinjection });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(fs.readFileSync(swarmKeyPath(), 'utf8')).toBe(before);
+    expect(keystore.hasSealedPassword(antDir())).toBe(false);
+    expect(start).not.toHaveBeenCalled();
+    expect(refuseKeyReinjection).toHaveBeenCalledWith(
+      'Swarm keystore belongs to a different identity: re-inject manually'
+    );
+    await expect(mod.reencryptBeeKeystore()).rejects.toThrow(keystore.IDENTITY_MISMATCH_MESSAGE);
+  });
+
+  test('recovery refuses a keystore whose identity it cannot read', async () => {
+    const { mod, identityMock } = load(keychain());
+    fs.mkdirSync(path.dirname(swarmKeyPath()), { recursive: true });
+    fs.writeFileSync(swarmKeyPath(), JSON.stringify({ version: 3, crypto: {} }));
+    const refuseKeyReinjection = jest.fn();
+    mod.setBeeLifecycle({ start: jest.fn(), needsKeyReinjection: () => true, refuseKeyReinjection });
+
+    await mod.unlockVault('password123');
+    await settle();
+
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(refuseKeyReinjection).toHaveBeenCalledTimes(1);
+  });
+
+  // The K-3 review's reordering: recovery A held at its sealing call after
+  // writing its keystore, a second unlock meanwhile, then A released. One
+  // recovery runs, and the keystore on disk opens with the sealed password.
+  test('overlapping unlocks run one recovery, ending with a matching pair', async () => {
+    const storage = keychain();
+    let releaseSeal;
+    const held = new Promise((resolve) => (releaseSeal = resolve));
+    const encrypt = storage.encryptStringAsync;
+    storage.encryptStringAsync = jest.fn(async (text) => {
+      if (storage.encryptStringAsync.mock.calls.length === 1) await held;
+      return encrypt(text);
+    });
+    const { mod, identityMock, keystore } = load(storage);
+    writeKeystore(VAULT_BEE);
+    let needed = true;
+    const start = jest.fn(async () => {
+      needed = false;
+    });
+    mod.setBeeLifecycle({ start, needsKeyReinjection: () => needed });
+
+    await mod.unlockVault('password123');
+    await settle();
+    expect(storage.encryptStringAsync).toHaveBeenCalledTimes(1);
+    const second = mod.reencryptBeeKeystore();
+    await mod.unlockVault('password123');
+    await settle();
+    releaseSeal();
+    await second;
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+  });
+
+  test('an injection during a recovery waits, and the last pair written matches', async () => {
+    const storage = keychain();
+    let releaseSeal;
+    const held = new Promise((resolve) => (releaseSeal = resolve));
+    const encrypt = storage.encryptStringAsync;
+    storage.encryptStringAsync = jest.fn(async (text) => {
+      if (storage.encryptStringAsync.mock.calls.length === 1) await held;
+      return encrypt(text);
+    });
+    const { mod, identityMock, keystore } = load(storage);
+    writeKeystore(VAULT_BEE);
+    mod.setBeeLifecycle({ start: jest.fn(async () => {}), needsKeyReinjection: () => true });
+
+    await mod.unlockVault('password123');
+    await settle();
+    const injection = mod.injectBeeIdentity();
+    // Long enough for an unserialized injection to reach its own write.
+    for (let i = 0; i < 20 && identityMock.injectBeeKey.mock.calls.length < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // The injection has not written its keystore while the recovery holds the lock.
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(1);
+    releaseSeal();
+    await injection;
+    await settle();
+
+    expect(identityMock.injectBeeKey).toHaveBeenCalledTimes(2);
+    expect(await keystore.unsealPassword(antDir())).toBe(keystoreOnDisk().password);
+    expect(keystoreOnDisk().password).toBe(identityMock.injectBeeKey.mock.calls[1][2]);
+  });
+});
+
+describe('identity file repair at startup (K-3)', () => {
+  const posixTest = process.platform === 'win32' ? test.skip : test;
+  let root;
+  let envSnapshot;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-repair-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = path.join(root, 'identity');
+    fs.mkdirSync(process.env.FREEDOM_IDENTITY_DATA);
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  posixTest('narrows an older 0644 vault and credential, and leaves a planted link alone', () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    const vaultPath = path.join(dir, 'identity-vault.json');
+    fs.writeFileSync(vaultPath, '{"version":1}');
+    fs.chmodSync(vaultPath, 0o644);
+    const outside = path.join(root, 'outside.txt');
+    fs.writeFileSync(outside, 'x');
+    fs.chmodSync(outside, 0o644);
+    fs.symlinkSync(outside, path.join(dir, 'quick-unlock.dat'));
+
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    mod.repairIdentityFiles();
+
+    expect(fs.statSync(vaultPath).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(outside).mode & 0o777).toBe(0o644);
+  });
+  posixTest('an identity folder that is a link: the IPC handlers answer with the refusal, not a throw', async () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    const real = path.join(root, 'moved-identity');
+    fs.renameSync(dir, real);
+    fs.symlinkSync(real, dir);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    // get-status prepares the Radicle home first; an override skips the
+    // control-socket length check a long temp root (macOS) would trip.
+    process.env.FREEDOM_RADICLE_DATA = path.join(root, 'radicle');
+
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    expect(() => mod.registerIdentityIpc()).not.toThrow();
+
+    const explained = `Freedom will not use ${dir} because it is a symbolic link.`;
+    await expect(ipcMain.invoke('identity:get-vault-meta')).resolves.toBeNull();
+    await expect(ipcMain.invoke(IPC.IDENTITY_HAS_VAULT)).resolves.toEqual({
+      hasVault: false,
+      error: expect.stringContaining(explained),
+    });
+    await expect(ipcMain.invoke(IPC.IDENTITY_GET_STATUS)).resolves.toEqual({
+      error: expect.stringContaining(explained),
+    });
+    // Followed nowhere: the folder behind the link is left as it was.
+    expect(fs.lstatSync(dir).isSymbolicLink()).toBe(true);
+  });
+  posixTest('a linked Radicle or Ant home costs only that node: get-status still reports the vault', async () => {
+    const dir = process.env.FREEDOM_IDENTITY_DATA;
+    fs.writeFileSync(path.join(dir, 'identity-vault.json'), '{"version":1}');
+    fs.writeFileSync(
+      path.join(dir, 'vault-meta.json'),
+      JSON.stringify({ addresses: { userWallet: '0xabc', beeWallet: '0xdef' } })
+    );
+    for (const [env, name] of [
+      ['FREEDOM_RADICLE_DATA', 'radicle'],
+      ['FREEDOM_ANT_DATA', 'ant'],
+    ]) {
+      const real = path.join(root, `moved-${name}`);
+      fs.mkdirSync(real);
+      fs.symlinkSync(real, path.join(root, name));
+      process.env[env] = path.join(root, name);
+    }
+
+    const { mod, ipcMain } = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: root,
+    });
+    mod.registerIdentityIpc();
+
+    const status = await ipcMain.invoke(IPC.IDENTITY_GET_STATUS);
+    expect(status.error).toBeUndefined();
+    expect(status).toMatchObject({
+      hasVault: true,
+      beeInjected: false,
+      radicleInjected: false,
+      addresses: { userWallet: '0xabc', beeWallet: '0xdef', radicleDid: null },
+    });
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Radicle data folder unavailable:',
+      expect.stringContaining('symbolic link')
+    );
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Ant data folder unavailable:',
+      expect.stringContaining('symbolic link')
+    );
+  });
+
+  // A linked node home used to fail injectAllIdentities outright, after the
+  // vault (and, in quick setup, Touch ID) already existed, so onboarding
+  // never reached its last step. Each node is now injected on its own.
+  function linkHome(env, name) {
+    const real = path.join(root, `moved-${name}`);
+    fs.mkdirSync(real);
+    fs.symlinkSync(real, path.join(root, name));
+    process.env[env] = path.join(root, name);
+    return real;
+  }
+  function realHome(env, name) {
+    const dir = path.join(root, name);
+    fs.mkdirSync(dir);
+    process.env[env] = dir;
+    return dir;
+  }
+  function loadWithMockIdentity() {
+    const identityMock = makeRestartIdentityMock();
+    const { mod } = loadMainModule(require.resolve('./identity-manager'), {
+      extraMocks: {
+        [require.resolve('./identity')]: () => identityMock,
+        // An earlier suite's fs-offload stub (a dir that stays busy) is still
+        // registered; these tests want the real deletes.
+        [require.resolve('./fs-offload')]: () => jest.requireActual('./fs-offload'),
+        // Likewise the #513 suite's profile-paths stub, whose
+        // prepareRadicleDataDir answers that suite's own Radicle home.
+        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
+      },
+      userDataDir: root,
+    });
+    return { mod, identityMock };
+  }
+
+  posixTest('a linked Radicle home: injectAll still sets up Ant and reports Radicle refused', async () => {
+    const real = linkHome('FREEDOM_RADICLE_DATA', 'radicle');
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', false);
+
+    expect(results.bee).toMatchObject({ address: '0xbee' });
+    expect(identityMock.injectBeeKey).toHaveBeenCalled();
+    expect(results.radicle).toEqual({
+      refused: true,
+      error: expect.stringContaining('because it is a symbolic link'),
+    });
+    expect(results.needsRestart).toEqual([]);
+    expect(identityMock.injectRadicleKey).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      '[IdentityManager] Radicle identity not injected:',
+      expect.stringContaining('symbolic link')
+    );
+    // Followed nowhere: nothing was written behind the link.
+    expect(fs.readdirSync(real)).toEqual([]);
+  });
+
+  posixTest('a linked Ant home: injectAll still sets up Radicle and reports Ant refused', async () => {
+    const real = linkHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', true);
+
+    expect(results.bee).toEqual({
+      refused: true,
+      error: expect.stringContaining('because it is a symbolic link'),
+    });
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(results.radicle).toMatchObject({ did: 'did:key:zTest' });
+    expect(identityMock.injectRadicleKey).toHaveBeenCalled();
+    expect(fs.readdirSync(real)).toEqual([]);
+  });
+
+  // A real home whose keys/ is a link used to be refused only by the key
+  // write, after the stale-state wipe (and, for Ant, after the running node
+  // was stopped and never restarted). It is now refused before either.
+  function linkKeysDir(home, name) {
+    const outside = path.join(root, `outside-${name}-keys`);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(home, 'keys'));
+    return outside;
+  }
+
+  posixTest('a linked keys/ in a real Ant home: refused before Ant is stopped or wiped', async () => {
+    const home = realHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    fs.mkdirSync(path.join(home, 'statestore'));
+    fs.writeFileSync(path.join(home, 'identity.json'), '{}');
+    const outside = linkKeysDir(home, 'ant');
+    const { mod, identityMock } = loadWithMockIdentity();
+    const stop = jest.fn(async () => true);
+    const start = jest.fn(async () => {});
+    mod.setBeeLifecycle({ stop, start });
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', true);
+
+    expect(results.bee).toEqual({
+      refused: true,
+      error: expect.stringContaining('symbolic link'),
+    });
+    expect(stop).not.toHaveBeenCalled();
+    expect(identityMock.injectBeeKey).not.toHaveBeenCalled();
+    expect(identityMock.createBeeConfig).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(home, 'statestore'))).toBe(true);
+    expect(fs.existsSync(path.join(home, 'identity.json'))).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(results.radicle).toMatchObject({ did: 'did:key:zTest' });
+  });
+
+  posixTest('a linked keys/ in a real Radicle home: refused before node/cobs/storage are wiped', async () => {
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    const home = realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    for (const dir of ['node', 'cobs', 'storage']) fs.mkdirSync(path.join(home, dir));
+    const outside = linkKeysDir(home, 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    await mod.createNewVault('password-123');
+
+    const results = await mod.injectAllIdentities('FreedomBrowser', false);
+
+    expect(results.radicle).toEqual({
+      refused: true,
+      error: expect.stringContaining('symbolic link'),
+    });
+    expect(identityMock.injectRadicleKey).not.toHaveBeenCalled();
+    for (const dir of ['node', 'cobs', 'storage']) {
+      expect(fs.existsSync(path.join(home, dir))).toBe(true);
+    }
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(results.bee).toMatchObject({ address: '0xbee' });
+  });
+
+  test('a node failure that is not a refused link still fails injectAll', async () => {
+    realHome('FREEDOM_ANT_DATA', 'ant');
+    realHome('FREEDOM_RADICLE_DATA', 'radicle');
+    const { mod, identityMock } = loadWithMockIdentity();
+    identityMock.injectRadicleKey.mockImplementation(() => {
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    await mod.createNewVault('password-123');
+
+    await expect(mod.injectAllIdentities('FreedomBrowser', false)).rejects.toThrow('disk full');
   });
 });

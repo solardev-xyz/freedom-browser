@@ -1,0 +1,1 @@
+- Web pages can no longer tell whether your Radicle node holds a private repository ([#956](https://github.com/solardev-xyz/freedom-browser/issues/956))

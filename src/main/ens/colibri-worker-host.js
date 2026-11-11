@@ -46,6 +46,21 @@
 // by the retired instance with no deadline left) carries `colibriBystander`
 // on its error: the router's per-method verifier-fault backoff must not count
 // a fault another request caused against the bystander's own method.
+//
+// Private windows have workers of their own (#1058). Colibri saves more than
+// headers in its store: `tx_cache_<chain>`, `code_<hash>`, and a
+// `call_<chain>_<address>` record for every contract called, so a shared
+// `<userData>/colibri` kept a private window's reads on disk after it closed.
+// A client created with `private: true` therefore runs on the chain's
+// private worker, which gets no storage dir and keeps the verifier's state
+// in its own memory (colibri-worker.js). All private windows share that one
+// worker per chain, so the count stays bounded: at most one normal and one
+// private worker per chain, besides a worker still draining after a trap.
+// `endPrivateSession()`, once the last private window has closed, terminates
+// every private worker, its store with it. What was still pending on one
+// fails as a bystander (it was nobody's fault), and a private client created
+// before the end is refused from then on: a late request from a closed
+// window never starts the next private session's store.
 const path = require('node:path');
 const { Worker } = require('node:worker_threads');
 const log = require('../logger');
@@ -69,10 +84,25 @@ class ColibriWorkerError extends Error {
   }
 }
 
+// Live workers by lane (`laneKey`): one normal and one private per chain.
 const workers = new Map();
+// Every private worker not yet terminated, including one retired after a
+// trap that is still draining: `endPrivateSession` must reach them all.
+const privateEntries = new Set();
+// Counts private sessions: a private client belongs to the one it was
+// created in, and is refused once that session has ended.
+let privateSession = 0;
 let nextRequestId = 1;
 let nextClientId = 1;
 let storageDirOverride = null;
+
+function laneKey(chainId, privateLane) {
+  return privateLane ? `${chainId}:private` : String(chainId);
+}
+
+function laneName(entry) {
+  return entry.privateLane ? `chain ${entry.chainId} (private)` : `chain ${entry.chainId}`;
+}
 
 function storageDir() {
   if (storageDirOverride) return storageDirOverride;
@@ -100,7 +130,8 @@ function settle(entry, id, fn) {
 function terminate(entry) {
   if (entry.terminated) return;
   entry.terminated = true;
-  if (workers.get(entry.chainId) === entry) workers.delete(entry.chainId);
+  if (workers.get(entry.lane) === entry) workers.delete(entry.lane);
+  privateEntries.delete(entry);
   for (const timer of entry.probes.values()) clearTimeout(timer);
   entry.probes.clear();
   try {
@@ -159,14 +190,16 @@ function replace(entry, reason, {
     request.reject(unattributed || (culpritId !== null && id !== culpritId) ? bystanderError(err) : err);
   }
   if (wasLive && pending.length) {
-    log.warn(`[colibri] chain ${entry.chainId} worker replaced (${reason}); ` +
+    log.warn(`[colibri] ${laneName(entry)} worker replaced (${reason}); ` +
       `${failed} request(s) failed` + (resent ? `, ${resent} sent to the new worker` : ''));
   }
 }
 
-function spawn(chainId) {
+function spawn(chainId, privateLane) {
   const entry = {
     chainId,
+    privateLane,
+    lane: laneKey(chainId, privateLane),
     worker: null,
     pending: new Map(),
     probes: new Map(),
@@ -182,10 +215,12 @@ function spawn(chainId) {
   // Callers that never await `ready` (a replaced worker) must not leave an
   // unhandled rejection behind.
   entry.ready.catch(() => {});
-  workers.set(chainId, entry);
+  workers.set(entry.lane, entry);
+  if (privateLane) privateEntries.add(entry);
   try {
     entry.worker = new Worker(WORKER_PATH, {
-      workerData: { storageDir: storageDir() },
+      // A private worker gets no storage dir: its store is in memory only.
+      workerData: { storageDir: privateLane ? null : storageDir() },
       execArgv: [],
       env: { C4_DISABLE_NATIVE: '1' },
       resourceLimits: RESOURCE_LIMITS,
@@ -195,7 +230,8 @@ function spawn(chainId) {
     });
   } catch (err) {
     entry.terminated = true;
-    workers.delete(chainId);
+    workers.delete(entry.lane);
+    privateEntries.delete(entry);
     entry.readyReject(new ColibriWorkerError(`Colibri worker failed to start: ${err.message}`));
     return entry;
   }
@@ -226,7 +262,7 @@ function spawn(chainId) {
         return;
       }
       case 'trap':
-        log.warn(`[colibri] chain ${chainId} WASM verifier trapped (${message.message}); ` +
+        log.warn(`[colibri] ${laneName(entry)} WASM verifier trapped (${message.message}); ` +
           'replacing the worker');
         retire(entry);
         return;
@@ -245,20 +281,29 @@ function spawn(chainId) {
 
 function retire(entry) {
   entry.retiring = true;
-  if (workers.get(entry.chainId) === entry) workers.delete(entry.chainId);
+  if (workers.get(entry.lane) === entry) workers.delete(entry.lane);
   if (entry.pending.size === 0) terminate(entry);
 }
 
-function liveEntry(chainId) {
+function liveEntry(chainId, privateLane = false) {
   const id = Number(chainId);
-  const entry = workers.get(id);
+  const entry = workers.get(laneKey(id, privateLane));
   if (entry && !entry.retiring && !entry.terminated) return entry;
-  return spawn(id);
+  return spawn(id, privateLane);
 }
 
-// Resolves once the chain's worker has its storage registered.
-function ensureWorker(chainId) {
-  return liveEntry(chainId).ready.then(() => undefined);
+// Resolves once the chain's worker (its private one with `private: true`)
+// has its storage registered.
+function ensureWorker(chainId, { private: privateLane = false } = {}) {
+  return liveEntry(chainId, privateLane === true).ready.then(() => undefined);
+}
+
+// A private client from a session that has ended is refused, as a
+// bystander: the request did nothing wrong.
+function assertSessionLive(client) {
+  if (client.privateLane && client.privateSession !== privateSession) {
+    throw bystanderError(new ColibriWorkerError('Colibri private session ended'));
+  }
 }
 
 // The request to blame for a stuck worker, or null when it cannot be told.
@@ -313,8 +358,15 @@ function onDeadline(entry, id) {
 // promise settles once, through request.resolve/reject.
 async function dispatch(request) {
   const { client } = request;
-  const entry = await liveEntry(client.chainId).ready;
+  assertSessionLive(client);
+  // A private worker that the session's end stopped before it was ready
+  // fails its waiters with the same bystander error.
+  const entry = await liveEntry(client.chainId, client.privateLane).ready.catch((err) => {
+    assertSessionLive(client);
+    throw err;
+  });
   if (client.destroyed) throw new ColibriWorkerError('Colibri client was destroyed');
+  assertSessionLive(client);
   // The deadline runs from the first time a worker is ready for the request,
   // as it always has; a resend keeps what is left of it.
   if (request.deadlineAt === null) request.deadlineAt = Date.now() + request.deadlineMs;
@@ -359,12 +411,15 @@ function sendRequest(client, method, params, deadlineMs) {
   });
 }
 
-// A Colibri client living in the chain's worker. `request` is EIP-1193, plus an
-// optional `{ deadlineMs }` the caller will wait at most (see `onDeadline`).
-function createClient({ chainId, proverUrl, zkProof }) {
+// A Colibri client living in the chain's worker, or with `private: true` in
+// its private one. `request` is EIP-1193, plus an optional `{ deadlineMs }`
+// the caller will wait at most (see `onDeadline`).
+function createClient({ chainId, proverUrl, zkProof, private: privateLane = false }) {
   const client = {
     id: nextClientId++,
     chainId: Number(chainId),
+    privateLane: privateLane === true,
+    privateSession,
     config: { chainId: Number(chainId), proverUrl, zkProof: zkProof !== false },
     destroyed: false,
     workers: new Set(),
@@ -386,15 +441,28 @@ function createClient({ chainId, proverUrl, zkProof }) {
   };
 }
 
+// The last private window has closed: every private worker is terminated
+// with its in-memory store, and the private clients created so far are
+// refused from now on. The next private read starts a fresh, empty worker.
+// Normal workers are untouched.
+function endPrivateSession() {
+  privateSession += 1;
+  for (const entry of [...privateEntries]) {
+    replace(entry, 'private session ended', { unattributed: true });
+  }
+}
+
 function resetForTest({ storageDir: dir = null } = {}) {
-  for (const entry of [...workers.values()]) replace(entry, 'test reset');
+  for (const entry of [...workers.values(), ...privateEntries]) replace(entry, 'test reset');
   workers.clear();
+  privateEntries.clear();
   storageDirOverride = dir;
 }
 
 module.exports = {
   createClient,
   ensureWorker,
+  endPrivateSession,
   ColibriWorkerError,
   resetForTest,
   DEFAULT_DEADLINE_MS,

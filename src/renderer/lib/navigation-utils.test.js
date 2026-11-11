@@ -364,6 +364,67 @@ describe('navigation-utils', () => {
       });
     });
 
+    test('unverified from one RPC says a single public RPC', async () => {
+      const { buildTrustRows } = await loadNavigationUtils();
+
+      const result = buildTrustRows({
+        level: 'unverified',
+        trust: {
+          agreed: ['solo.example.com'],
+          queried: ['solo.example.com'],
+          block: { number: 25038025 },
+        },
+        uri: 'ipfs://QmHash',
+      });
+
+      expect(result.status).toBe('ENS resolution not verified');
+      expect(result.trustRows.slice(0, 2)).toEqual([
+        { label: 'Resolved by', display: 'A single public RPC', copy: '' },
+        {
+          label: 'Evidence',
+          display: 'Single response (not independently verified)',
+          copy: '',
+        },
+      ]);
+    });
+
+    test('unverified below-quorum agreement names every agreeing RPC', async () => {
+      // K = M = 3, first wave all errored, a second wave of two fresh
+      // endpoints agreed: below M, so unverified, but not a single source.
+      // The summary must not say "single" above two numbered RPC rows.
+      const { buildTrustRows } = await loadNavigationUtils();
+
+      const result = buildTrustRows({
+        level: 'unverified',
+        trust: {
+          agreed: ['test-d.example.com', 'test-e.example.com'],
+          queried: ['test-d.example.com', 'test-e.example.com'],
+          block: { number: 25038025 },
+        },
+        uri: 'ipfs://QmHash',
+      });
+
+      expect(result.status).toBe('ENS resolution not verified');
+      expect(result.trustRows.map((r) => r.label)).toEqual([
+        'Resolved by',
+        'Evidence',
+        'Block',
+        'RPC 1',
+        'RPC 2',
+      ]);
+      expect(result.trustRows[0]).toEqual({
+        label: 'Resolved by',
+        display: '2 public RPCs',
+        copy: '',
+      });
+      expect(result.trustRows[1]).toEqual({
+        label: 'Evidence',
+        display: 'Matching responses, below quorum (not verified)',
+        copy: '',
+      });
+      expect(result.trustRows.map((r) => r.display).join(' ')).not.toMatch(/single/i);
+    });
+
     test('WNS trust uses WNS-specific status copy', async () => {
       const { buildTrustRows } = await loadNavigationUtils();
 
