@@ -2234,7 +2234,9 @@ describe('chain-data-router', () => {
       const outage = proverOutageError();
       expect(outage).toMatchObject({
         code: 4900,
-        message: expect.stringContaining('remote proof failed (no local proving): HTTP error! Status: 503'),
+        message: expect.stringContaining(
+          'remote proof failed (no local proving): HTTP error! Status: 503'
+        ),
       });
       mockRegistry.getNetwork.mockReturnValue({
         access: { readOrder: ['colibri', 'direct'] },
@@ -2248,7 +2250,9 @@ describe('chain-data-router', () => {
 
       for (let i = 0; i < 3; i += 1) {
         await expect(request(1, 'eth_getBalance', ['0xabc', 'latest'])).resolves.toEqual({
-          result: '0x7', source: 'direct', verified: false,
+          result: '0x7',
+          source: 'direct',
+          verified: false,
         });
       }
       // A prover outage is no verifier fault: Colibri isn't backed off for it.
