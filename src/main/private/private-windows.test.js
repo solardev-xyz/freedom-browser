@@ -264,4 +264,48 @@ describe('private-windows', () => {
     createdWindows[0].emit('closed');
     expect(mod.classifyWebContents(privateChrome)).toBe('private');
   });
+
+  // #1058: the private session runs from the first private window to the
+  // last one's close, which ends it before the cleanup hooks run.
+  test('the last private window to close ends the private session, before the hooks', async () => {
+    const { mod, createdWindows } = loadWithWindowFactory();
+    const logContext = require('./private-log-context');
+    // Work entered in a private context, which reports whether its session
+    // is live each time it is released.
+    const releases = [];
+    const answers = [];
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    const ask = async () => {
+      releases.shift()();
+      await tick();
+      return answers.at(-1);
+    };
+    mod.createPrivateWindow();
+    mod.createPrivateWindow();
+    logContext.runWithPrivateLogContext(true, async () => {
+      for (let i = 0; i < 4; i += 1) {
+        await new Promise((resolve) => releases.push(resolve));
+        answers.push(logContext.privateSessionLive());
+      }
+    });
+    const seenByHook = [];
+    // Whether the session is still open when a hook runs.
+    mod.registerPrivateCleanup(() =>
+      seenByHook.push(logContext.runWithPrivateLogContext(true, () => logContext.privateSessionLive()))
+    );
+
+    expect(await ask()).toBe(true);
+    createdWindows[0].emit('closed');
+    expect(await ask()).toBe(true);
+    createdWindows[1].emit('closed');
+    expect(await ask()).toBe(false);
+    expect(seenByHook).toEqual([true, false]);
+
+    // A new private window opens a new session; the old context stays ended.
+    mod.createPrivateWindow();
+    expect(await ask()).toBe(false);
+    logContext.runWithPrivateLogContext(true, () =>
+      expect(logContext.privateSessionLive()).toBe(true)
+    );
+  });
 });
