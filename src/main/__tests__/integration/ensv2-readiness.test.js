@@ -49,7 +49,9 @@ const cases = [
       const result = await resolver.resolveEnsAddress(name, chainId);
       if (!result.success) throw new Error(JSON.stringify(result));
       expect(result.address.toLowerCase()).toBe(address.toLowerCase());
-      if (method === 'colibri') expect(result.trust.method).toBe('colibri');
+      // Colibri answers no name (#1076): an order of Colibri alone falls
+      // back to Myotis and the quorum.
+      if (method === 'colibri') expect(result.trust.method).not.toBe('colibri');
       if (method === 'quorum') expect(result.trust.quorum.achieved).toBe(true);
     },
     120000

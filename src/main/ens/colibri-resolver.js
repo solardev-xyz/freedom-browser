@@ -1,5 +1,3 @@
-const { ethers } = require('ethers');
-const { ccipReadFetch } = require('./ccip-fetch');
 // Colibri itself runs in a per-chain worker thread (#495): proof verification
 // is synchronous WASM and must never block Electron's main process. The worker
 // owns the package (via colibri-runtime), its disk storage and trap recovery.
@@ -7,7 +5,7 @@ const workerHost = require('./colibri-worker-host');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
 const { isPrivateLogContext, privateSessionLive } = require('../private/private-log-context');
-const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');
+const { hostOf } = require('../ens-resolver');
 
 // PRIVATE MODE GUARD (Colibri store, #1058). Colibri's store names every
 // contract a read touched (`call_<chain>_<address>`), so a private window's
@@ -19,9 +17,9 @@ const { universalResolverCall, universalResolverReverse, hostOf } = require('../
 // lane is the async context's: the entry points that know the window (the
 // ENS IPC handlers and the dweb, onchain-app and gateway-offer handlers of a
 // private session) mark their whole subtree private
-// (private/private-log-context.js), and every path down to here, ENS and
-// chain data alike, runs inside it. Clients, builds and their generations
-// are kept per lane.
+// (private/private-log-context.js), and every path down to here runs
+// inside it. Only chain data reaches here: names no longer ask Colibri
+// (#1076). Clients, builds and their generations are kept per lane.
 //
 // A private read must also belong to the private session that is still
 // open (`privateSessionLive`). A lookup that waited on Myotis, the network or
@@ -66,7 +64,7 @@ function retireClient(client) {
   destroyClient(client);
 }
 
-// Obtain a live client + its provider with a reference already held, closing
+// Obtain a live client with a reference already held, closing
 // the use-after-destroy window: retainClient only ran inside the old
 // useClient, i.e. after `await getClient` resolved, and in that microtask gap a
 // concurrent request's failure path could release the last ref and destroy the
@@ -100,7 +98,7 @@ async function acquireClient(chainId, privateLane = false) {
     retainClient(client);
     const cached = clients.get(lane);
     if (cached?.client === client && !retiredClients.has(client)) {
-      return { client, provider: cached.provider };
+      return { client };
     }
     // Evicted or rebuilt during the acquire gap — drop our ref and retry.
     releaseClient(client);
@@ -209,16 +207,7 @@ async function buildClient({ chainId, privateLane, key, proverUrl, zkProof, gene
   }
 
   const previousClient = clients.get(lane)?.client;
-  // Co-locate the provider with its client in one entry so acquireClient
-  // captures the {client, provider} pair atomically — a separate providers
-  // map can return undefined mid-rebuild or a provider from another
-  // generation.
-  const provider = new ethers.BrowserProvider(client);
-  // Colibri pins EVM reads internally, so ethers sees "latest" and follows
-  // OffchainLookup automatically. Its inherited gateway fetch has no body
-  // cap and a 300s timeout; use the same bounds as Myotis and pinned RPCs.
-  provider.ccipReadFetch = ccipReadFetch;
-  clients.set(lane, { client, key, provider });
+  clients.set(lane, { client, key });
   retireClient(previousClient);
   log.info(
     `[colibri] chain ${chainId}${privateLane ? ' (private)' : ''} client ready ` +
@@ -265,31 +254,10 @@ async function getClient(chainId = 1, privateLane = false) {
   }
 }
 
-// Drop-in for what a single `consensusResolve` leg does today, but the
-// answer is cryptographically verified by Colibri rather than corroborated
-// across multiple public RPCs. No blockTag override — Colibri's verifier
-// pins to head − 1 by construction (sync committee signatures for block N
-// live in block N+1).
-async function resolveCallViaColibri(name, callData, callResolver = universalResolverCall) {
-  return withColibriClientRetry(1, ({ provider }) =>
-    callResolver(provider, name, callData)
-  );
-}
-
-async function resolveViaColibri(name, callData) {
-  return resolveCallViaColibri(name, callData, universalResolverCall);
-}
-
-// Reverse counterpart: cryptographically-verified `ur.reverse` for an
-// address. Returns { name } on a successful (forward-verified) lookup.
-// Throws on revert (UR's ResolverNotFound / ReverseAddressMismatch) or
-// network/verification failure — the orchestrator classifies.
-async function resolveReverseViaColibri(addressBytes, coinType = 60n) {
-  return withColibriClientRetry(1, ({ provider }) =>
-    universalResolverReverse(provider, addressBytes, {}, coinType)
-  );
-}
-
+// The chain-data router's reads. ENS, reverse and NameNFT lookups don't use
+// Colibri (#1076): it runs their `eth_call` on contract code from a public
+// RPC, unchecked against the proven code hash.
+//
 // `deadlineMs` is how long the caller will wait: past it, a worker still
 // verifying this request is terminated rather than left running.
 async function requestViaColibri(chainId, method, params = [], { deadlineMs } = {}) {
@@ -345,9 +313,6 @@ function clearColibriClientForTest() {
 }
 
 module.exports = {
-  resolveCallViaColibri,
-  resolveViaColibri,
-  resolveReverseViaColibri,
   requestViaColibri,
   endPrivateColibriSession,
   registerColibriPrivateCleanup,
