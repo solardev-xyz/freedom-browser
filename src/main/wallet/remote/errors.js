@@ -21,7 +21,9 @@ const REMOTE_ERROR_CODES = {
   // another account, or gave no answer that proves it holds the account.
   ADDRESS_MISMATCH: 'REMOTE_ADDRESS_MISMATCH',
   ADDRESS_UNPROVEN: 'REMOTE_ADDRESS_UNPROVEN',
-  // An account no phone has yet shown to hold.
+  // An account no phone has yet shown to hold. Minted only through
+  // createAccountUncheckedError, which names the account; it has no
+  // generic MESSAGES entry.
   ACCOUNT_UNCHECKED: 'REMOTE_ACCOUNT_UNCHECKED',
   UNKNOWN: 'REMOTE_UNKNOWN',
 };
@@ -39,8 +41,6 @@ const MESSAGES = {
     "Your phone answered from a different account than the one you picked. The account wasn't added.",
   [REMOTE_ERROR_CODES.ADDRESS_UNPROVEN]:
     "Your phone didn't confirm that it holds this account, so it wasn't added. Try again, and sign the check on your phone.",
-  [REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED]:
-    "This phone account hasn't been checked on your phone yet. Open its Wallet Settings and choose Check on Phone, then try again.",
   [REMOTE_ERROR_CODES.UNKNOWN]: 'Phone signing failed. Try again.',
 };
 
@@ -56,6 +56,27 @@ function createRemoteError(code, message) {
   const err = new Error(message || MESSAGES[code] || MESSAGES[REMOTE_ERROR_CODES.UNKNOWN]);
   err.code = code;
   return err;
+}
+
+/**
+ * Refuse to let a phone account own a Safe until the phone has proven it
+ * holds the account (#1078). The text names the account, so it is built
+ * here rather than kept as a generic MESSAGES entry.
+ *
+ * @param {string} name - The account's display name
+ * @param {{mismatched?: boolean}} [opts] - The phone last answered from
+ *   another account (otherwise: never checked)
+ * @returns {Error & {code: string}}
+ */
+function createAccountUncheckedError(name, { mismatched = false } = {}) {
+  return createRemoteError(
+    REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED,
+    mismatched
+      ? `"${name}" can't own a Safe: your phone last answered from a different account. ` +
+          'Select this account on your phone, check it again from Wallet Settings, then try again.'
+      : `"${name}" can't own a Safe until it has been checked on your phone. ` +
+          'Select it, open Wallet Settings and choose Check on Phone, then try again.'
+  );
 }
 
 // EIP-1193 provider error codes a phone wallet may return.
@@ -81,7 +102,10 @@ function mapRemoteRpcError(rpcError) {
       : undefined;
   // User rejection keeps our neutral message; other failures surface the
   // phone wallet's own text since it names the actual problem.
-  return createRemoteError(code, code === REMOTE_ERROR_CODES.USER_REJECTED ? undefined : phoneMessage);
+  return createRemoteError(
+    code,
+    code === REMOTE_ERROR_CODES.USER_REJECTED ? undefined : phoneMessage
+  );
 }
 
 // Refusals that are only ever produced without the phone acting on the
@@ -114,4 +138,10 @@ function isRemoteSendProvablyUnsent(err) {
   return UNSENT_CODES.has(err.code) && err.otherAttemptDelivered === false;
 }
 
-module.exports = { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError, isRemoteSendProvablyUnsent };
+module.exports = {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  createAccountUncheckedError,
+  mapRemoteRpcError,
+  isRemoteSendProvablyUnsent,
+};

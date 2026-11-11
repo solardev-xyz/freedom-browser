@@ -23,7 +23,11 @@ const {
 } = require('./profile-paths');
 const { getActiveProfile } = require('./profile-resolver');
 const { VAULT_LOCKED_MESSAGE } = require('./wallet/vault-errors');
-const { REMOTE_ERROR_CODES, createRemoteError } = require('./wallet/remote/errors');
+const {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  createAccountUncheckedError,
+} = require('./wallet/remote/errors');
 
 // Identity module - loaded lazily
 let identityModule = null;
@@ -1225,35 +1229,23 @@ function recordRemoteAddressCheck(index, matched) {
 /**
  * Safe owners whose address their device must have proven (#1078): in a
  * 1-of-2 Safe an owner address planted by the chrome would control the
- * funds alone. Each entry gives the refusal's code and text for a record
- * that is `unchecked` or `mismatched`.
+ * funds alone. Each entry builds the refusal for a record that is
+ * `unchecked` or `mismatched`.
  */
 const SAFE_OWNER_ADDRESS_CHECKS = {
-  [WALLET_TYPES.REMOTE]: {
-    code: REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED,
-    unchecked: (name) =>
-      `"${name}" can't own a Safe until it has been checked on your phone. ` +
-      'Select it, open Wallet Settings and choose Check on Phone, then try again.',
-    mismatched: (name) =>
-      `"${name}" can't own a Safe: your phone last answered from a different account. ` +
-      'Select this account on your phone, check it again from Wallet Settings, then try again.',
-  },
+  [WALLET_TYPES.REMOTE]: createAccountUncheckedError,
 };
 
 function assertSafeOwnerAddressChecked(record) {
-  const check = SAFE_OWNER_ADDRESS_CHECKS[record.type];
-  if (!check) {
+  const refuse = SAFE_OWNER_ADDRESS_CHECKS[record.type];
+  if (!refuse) {
     return;
   }
   const state = addressCheckOf(record);
   if (state === ADDRESS_CHECK.MATCHED) {
     return;
   }
-  const err = new Error(
-    state === ADDRESS_CHECK.MISMATCHED ? check.mismatched(record.name) : check.unchecked(record.name)
-  );
-  err.code = check.code;
-  throw err;
+  throw refuse(record.name, { mismatched: state === ADDRESS_CHECK.MISMATCHED });
 }
 
 /**
