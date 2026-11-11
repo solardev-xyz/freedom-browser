@@ -57,6 +57,7 @@ function loadWithWindowFactory() {
 
   return {
     mod: ctx.mod,
+    fromWebContents,
     createMainWindow,
     createdWindows,
     fromPartition,
@@ -204,5 +205,63 @@ describe('private-windows', () => {
     expect(okCleanup).toHaveBeenCalledTimes(1);
     const privateSession = sessionsByPartition.get(win.options.privatePartition);
     expect(privateSession.clearStorageData).toHaveBeenCalledTimes(1);
+  });
+
+  // R-9 review: a sender main cannot place in a known window is unknown,
+  // never public, so a fail-closed guard can refuse it.
+  test('classifyWebContents tells private, public and unknown apart', () => {
+    const { mod, createdWindows, fromWebContents, sessionsByPartition } = loadWithWindowFactory();
+    const privateWin = mod.createPrivateWindow();
+    const privateChrome = createdWindows[0].webContents;
+    const privateSession = sessionsByPartition.get(privateWin.options.privatePartition);
+    const publicWin = { id: 42, isDestroyed: () => false };
+    const publicChrome = { id: 4200, isDestroyed: () => false };
+    const lookup = { mode: 'registry' };
+    fromWebContents.mockImplementation((contents) => {
+      if (lookup.mode === 'throw') throw new Error('webContents destroyed mid-lookup');
+      if (lookup.mode === 'null') return null;
+      if (contents === publicChrome) return publicWin;
+      return createdWindows.find((w) => w.webContents === contents) || null;
+    });
+
+    expect(mod.classifyWebContents(privateChrome)).toBe('private');
+    expect(mod.classifyWebContents({ hostWebContents: privateChrome })).toBe('private');
+    expect(mod.classifyWebContents({ session: privateSession })).toBe('private');
+    expect(mod.classifyWebContents(publicChrome)).toBe('public');
+    expect(mod.classifyWebContents({ hostWebContents: publicChrome })).toBe('public');
+
+    for (const contents of [
+      null,
+      undefined,
+      { isDestroyed: () => true },
+      { hostWebContents: { isDestroyed: () => true } },
+      { id: 7 }, // no window main can find
+      {
+        get session() {
+          throw new Error('destroyed');
+        },
+      },
+    ]) {
+      expect(mod.classifyWebContents(contents)).toBe('unknown');
+    }
+    expect(mod.classifyWebContents({ hostWebContents: publicChrome, isDestroyed: () => true })).toBe(
+      'unknown'
+    );
+    // A public window being destroyed.
+    publicWin.isDestroyed = () => true;
+    expect(mod.classifyWebContents(publicChrome)).toBe('unknown');
+    publicWin.isDestroyed = () => false;
+
+    // A null or throwing window lookup: unknown, even for a sender that
+    // would otherwise be public. isPrivateWebContents still says false.
+    for (const mode of ['null', 'throw']) {
+      lookup.mode = mode;
+      expect(mod.classifyWebContents(publicChrome)).toBe('unknown');
+      expect(mod.isPrivateWebContents(publicChrome)).toBe(false);
+    }
+    // A private window's chrome stays private once its window has closed.
+    lookup.mode = 'registry';
+    createdWindows[0].emit('closed');
+    expect(mod.classifyWebContents(privateChrome)).toBe('private');
   });
 });

@@ -48,35 +48,26 @@ const RID_RE = /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/;
 const REPO_LIST_CONCURRENCY = 2;
 const REVISION_RE = /^[0-9a-f]{40}$/;
 const MISSING_RE = /not found|does not exist|NotFound/i;
-// What `rad:` answers for a repository that isn't stored here.
+// What `rad:` answers for a repository it will not serve, private or absent.
 const REPO_NOT_FOUND = Object.freeze({ error: 'repository not found' });
 const ALLOWED_METHODS = new Set(['GET', 'HEAD']);
 
-// What `rad:` answers for any other add-on error: a fixed text for its
-// category, never the add-on's own. libradicle's text for a repository that
-// isn't stored names its storage path, `<radicle home>/storage/<rid>`, under
-// the user's profile, and its storage and git errors can name files there
-// too (#1050). The status is still decided on the add-on's text: 404 for
-// MISSING_RE, 500 for the rest. The texts are freedom-radicled's where it
-// has one (`not found`, `the read failed`).
+// What `rad:`'s final catch answers for an add-on error: a fixed text,
+// never the add-on's own. libradicle's text for a repository that isn't
+// stored names its storage path, `<radicle home>/storage/<rid>`, under the
+// user's profile, and its storage and git errors can name files there too
+// (#1050). The status is still decided on the add-on's text: 404 for
+// MISSING_RE, 500 for the rest. The texts are freedom-radicled's (`not
+// found`, `the read failed`). An ended read and an over-cap reply are
+// answered before this, by their typed errors (R-3), and a repoInfo
+// failure by the preflight (R-2).
 const PUBLIC_READ_ERRORS = Object.freeze({
   missing: Object.freeze({ error: 'not found' }),
-  tooLarge: Object.freeze({ error: 'repository data too large to serve here' }),
-  cancelled: Object.freeze({ error: 'request cancelled' }),
   failed: Object.freeze({ error: 'the read failed' }),
 });
-// libradicle's texts for a read past one of its bounds (`TooLarge`,
-// `TooDeep`), and for a cancelled one (`Cancelled`; `clone cancelled` in
-// older add-ons).
-const TOO_LARGE_RE =
-  /^(?:\d+ bytes is over the limit of \d+|the tree is nested deeper than \d+ levels)$/;
-const CANCELLED_RE = /^(?:clone )?cancelled$/;
 
-function publicReadError(message, missing) {
-  if (missing) return PUBLIC_READ_ERRORS.missing;
-  if (TOO_LARGE_RE.test(message)) return PUBLIC_READ_ERRORS.tooLarge;
-  if (CANCELLED_RE.test(message)) return PUBLIC_READ_ERRORS.cancelled;
-  return PUBLIC_READ_ERRORS.failed;
+function publicReadError(missing) {
+  return missing ? PUBLIC_READ_ERRORS.missing : PUBLIC_READ_ERRORS.failed;
 }
 
 // The one page allowed to reach `radapi:`. Unlike `rad:` — public repo
@@ -146,6 +137,82 @@ async function mapWithConcurrency(items, limit, fn) {
   return results;
 }
 
+const OVER_CAP = Symbol('over the cap');
+
+/**
+ * `JSON.stringify(value)` for the JSON data serveRepoApi replies with,
+ * stopping once the text would pass `maxChars`: null then, before the rest
+ * is built. A string is measured before it is escaped (its JSON form is at
+ * least its length + 2), so one huge string never gets copied either.
+ * Without a cap it is JSON.stringify.
+ */
+function boundedStringify(value, maxChars) {
+  if (maxChars === null || maxChars === undefined) return JSON.stringify(value);
+  const parts = [];
+  let length = 0;
+  const push = (text) => {
+    length += text.length;
+    if (length > maxChars) throw OVER_CAP;
+    parts.push(text);
+  };
+  // A string's JSON form is at least its length + 2: refuse it unescaped.
+  const quote = (text) => {
+    if (length + text.length + 2 > maxChars) throw OVER_CAP;
+    return JSON.stringify(text);
+  };
+  const resolve = (item, key) =>
+    item !== null && typeof item === 'object' && typeof item.toJSON === 'function'
+      ? item.toJSON(key)
+      : item;
+  // What JSON.stringify leaves out of an object, and writes as null in an array.
+  const omitted = (item) =>
+    item === undefined || typeof item === 'function' || typeof item === 'symbol';
+  const write = (item) => {
+    if (item === null) return push('null');
+    switch (typeof item) {
+      case 'string':
+        return push(quote(item));
+      case 'number':
+        return push(Number.isFinite(item) ? String(item) : 'null');
+      case 'boolean':
+        return push(item ? 'true' : 'false');
+      case 'bigint':
+        return push(JSON.stringify(item)); // throws, as JSON.stringify does
+      default:
+        break;
+    }
+    if (Array.isArray(item)) {
+      push('[');
+      for (let index = 0; index < item.length; index += 1) {
+        if (index > 0) push(',');
+        const element = resolve(item[index], String(index));
+        if (omitted(element)) push('null');
+        else write(element);
+      }
+      return push(']');
+    }
+    push('{');
+    let first = true;
+    for (const name of Object.keys(item)) {
+      const member = resolve(item[name], name);
+      if (omitted(member)) continue;
+      push(`${first ? '' : ','}${quote(name)}:`);
+      first = false;
+      write(member);
+    }
+    return push('}');
+  };
+  const top = resolve(value, '');
+  if (omitted(top)) return undefined;
+  try {
+    write(top);
+  } catch (err) {
+    if (err === OVER_CAP) return null;
+    throw err;
+  }
+  return parts.join('');
+}
+
 function withoutBody(response) {
   return new Response(null, {
     status: response.status,
@@ -158,16 +225,24 @@ async function serveNodeApi(pathname) {
   try {
     const status = await embedded.status();
     if (pathname === '/') {
-      return json({
-        version: status?.version || 'embedded',
-        mode: 'embedded',
-      }, 200, { cors: false });
+      return json(
+        {
+          version: status?.version || 'embedded',
+          mode: 'embedded',
+        },
+        200,
+        { cors: false }
+      );
     }
     const repos = await embedded.listRepos();
-    return json({
-      repos: { total: repos.length },
-      peers: { connected: status?.connectedPeers ?? 0 },
-    }, 200, { cors: false });
+    return json(
+      {
+        repos: { total: repos.length },
+        peers: { connected: status?.connectedPeers ?? 0 },
+      },
+      200,
+      { cors: false }
+    );
   } catch (err) {
     // PRIVATE MODE GUARD: a private session's registration marks this, and
     // the add-on's text can name its storage path (#1050).
@@ -207,7 +282,9 @@ function decodeRepoApiPath(apiPath) {
 
 function paginate(items, searchParams) {
   const params =
-    searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams || '');
+    searchParams instanceof URLSearchParams
+      ? searchParams
+      : new URLSearchParams(searchParams || '');
   const status = params.get('status');
   const filtered = status ? items.filter((item) => item?.state?.status === status) : items;
   const page = Math.max(0, Number.parseInt(params.get('page') || '0', 10) || 0);
@@ -220,16 +297,12 @@ function paginate(items, searchParams) {
 
 function pageParams(searchParams) {
   const params =
-    searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams || '');
+    searchParams instanceof URLSearchParams
+      ? searchParams
+      : new URLSearchParams(searchParams || '');
   return {
-    page: Math.min(
-      1_000_000,
-      Math.max(0, Number.parseInt(params.get('page') || '0', 10) || 0)
-    ),
-    perPage: Math.min(
-      100,
-      Math.max(1, Number.parseInt(params.get('perPage') || '30', 10) || 30)
-    ),
+    page: Math.min(1_000_000, Math.max(0, Number.parseInt(params.get('page') || '0', 10) || 0)),
+    perPage: Math.min(100, Math.max(1, Number.parseInt(params.get('perPage') || '30', 10) || 30)),
   };
 }
 
@@ -243,7 +316,17 @@ function pageParams(searchParams) {
 async function serveRepoApi(
   rid,
   apiPath,
-  { method = 'GET', search = '', allowPrivate = false } = {}
+  { method = 'GET', search = '', allowPrivate = false, maxResponseChars = null, signal = null } = {}
+) {
+  return embedded.withReadBounds({ signal, maxReplyChars: maxResponseChars }, () =>
+    serveBoundedRepoApi(rid, apiPath, { method, search, allowPrivate, maxResponseChars, signal })
+  );
+}
+
+async function serveBoundedRepoApi(
+  rid,
+  apiPath,
+  { method, search, allowPrivate, maxResponseChars, signal }
 ) {
   // `rad:` (public repos only, served to any dweb page) keeps the wildcard
   // ACAO; `radapi:` (allowPrivate: node-level and private-repo data, internal
@@ -251,10 +334,27 @@ async function serveRepoApi(
   // Chromium does not enforce CORS on custom schemes — but a private
   // response should not advertise itself as readable by any origin either
   // (docs/security-audit-electron.md, O-12).
-  const reply = (payload, status = 200) => json(payload, status, { cors: !allowPrivate });
+  // `rad:` caps what it hands a page (R-3). An addon reply over the cap is
+  // refused before it is parsed (radicle-embedded's read bounds), and a
+  // composed reply stops serializing at the cap: either is a 502. The
+  // add-on has already built its own string by then; R-18 bounds that.
+  const tooLarge = (text) => maxResponseChars !== null && text.length > maxResponseChars;
+  const tooLargeReply = () =>
+    json({ error: 'repository data too large to serve here' }, 502, { cors: !allowPrivate });
+  // The read has ended for its caller (R-3: gone, or out of time), who
+  // reads nothing more: no serialization, no further addon call.
+  const endedReply = () => json({ error: 'request cancelled' }, 503, { cors: !allowPrivate });
+  const reply = (payload, status = 200) => {
+    if (signal?.aborted) return endedReply();
+    const text = boundedStringify(payload, maxResponseChars);
+    return text === null ? tooLargeReply() : jsonText(text, status, { cors: !allowPrivate });
+  };
   // Blob, readme, tree and commit reads are forwarded as the addon's JSON
   // text: a big file or diff is not parsed and re-stringified on main.
-  const replyText = (text) => jsonText(text, 200, { cors: !allowPrivate });
+  const replyText = (text) => {
+    if (signal?.aborted) return endedReply();
+    return tooLarge(text) ? tooLargeReply() : jsonText(text, 200, { cors: !allowPrivate });
+  };
   if (!RID_RE.test(rid)) {
     return reply({ error: 'invalid RID' }, 400);
   }
@@ -265,17 +365,45 @@ async function serveRepoApi(
 
   try {
     if (!allowPrivate) {
+      // A private repository answers exactly as one that is not stored: the
+      // same status and body. A 403 for private beside a 404 for absent let
+      // any page test whether a private RID is on this node (R-2). Every
+      // repoInfo failure answers the same way, not only "not found": a
+      // stored private repo whose identity doc is unreadable (corrupt,
+      // storage locked) would otherwise surface as a 500 carrying the add-on
+      // text, which an absent RID never produces. Only the response is
+      // equalised, not its timing: a stored RID opens the repo and reads its
+      // identity doc, an absent one fails at the storage lookup.
       let info;
       try {
         info = await embedded.repoInfo(rid);
       } catch (err) {
-        if (MISSING_RE.test(err.message)) return reply(REPO_NOT_FOUND, 404);
-        throw err;
+        // The read ended for its caller (gone, or out of time): that is the
+        // read's state, not the repository's, so it answers as any ended
+        // read does. Every other failure here, an over-cap identity reply
+        // (R-3) included, stays the absent repository's 404: a 502 for a
+        // stored private repo would tell it apart from an absent one.
+        if (err instanceof embedded.ReadEnded) return endedReply();
+        if (!MISSING_RE.test(err.message)) {
+          // Same private-window redaction as the shared log site below.
+          log.warn(
+            '[rad]',
+            redactForLog(rid),
+            redactForLog(apiPath),
+            '→',
+            redactForLog(err.message)
+          );
+        }
+        return reply(REPO_NOT_FOUND, 404);
       }
       if (info?.visibility?.type !== 'public') {
-        return reply({ error: 'repository is not public' }, 403);
+        return reply(REPO_NOT_FOUND, 404);
       }
     }
+    // Every addon call checks the read's signal first (withReadBounds);
+    // this one makes the visibility read's end the read's end too, before
+    // any section's call.
+    if (signal?.aborted) return endedReply();
     let response;
     if (!section) {
       response = reply(await embedded.buildRepoMeta(rid));
@@ -311,9 +439,7 @@ async function serveRepoApi(
               : reply({ error: 'invalid revision' }, 400);
           } else {
             const params =
-              search instanceof URLSearchParams
-                ? search
-                : new URLSearchParams(search || '');
+              search instanceof URLSearchParams ? search : new URLSearchParams(search || '');
             const parent = params.get('parent');
             if (!REVISION_RE.test(parent || '')) {
               response = reply({ error: 'missing parent revision' }, 400);
@@ -351,17 +477,27 @@ async function serveRepoApi(
     }
     return method === 'HEAD' ? withoutBody(response) : response;
   } catch (err) {
+    if (err instanceof embedded.ReadEnded) return endedReply();
+    if (err instanceof embedded.ReplyTooLarge) {
+      return method === 'HEAD' ? withoutBody(tooLargeReply()) : tooLargeReply();
+    }
     const missing = MISSING_RE.test(err.message);
     if (!missing) {
       // PRIVATE MODE GUARD: this core serves both `rad:` and `radapi:`, and
       // both registrations mark private sessions — the RID, the repo path
       // and the error text (which quotes them) must never reach main.log
       // for a private window.
-      log.warn('[radapi]', redactForLog(rid), redactForLog(apiPath), '→', redactForLog(err.message));
+      log.warn(
+        '[radapi]',
+        redactForLog(rid),
+        redactForLog(apiPath),
+        '→',
+        redactForLog(err.message)
+      );
     }
     // `radapi:` keeps the add-on's text: its replies reach the internal
     // viewer only (guardRadicleApiRequest). `rad:` replies to any page.
-    const body = allowPrivate ? { error: err.message } : publicReadError(err.message, missing);
+    const body = allowPrivate ? { error: err.message } : publicReadError(missing);
     return reply(body, missing ? 404 : 500);
   }
 }
@@ -473,5 +609,6 @@ module.exports = {
   serveRepoApi,
   decodeRepoApiPath,
   mapWithConcurrency,
+  boundedStringify,
   REPO_LIST_CONCURRENCY,
 };
