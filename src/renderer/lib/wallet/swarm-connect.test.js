@@ -626,6 +626,18 @@ describe('Single Owner Chunk prompt under a shared identity (SW-1)', () => {
     );
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
   });
+
+  test("the encryption key's prompt keeps its own warning under a shared identity (#991)", async () => {
+    for (const method of ['swarm_getEncryptionKey', 'swarm_deriveSharedSecrets']) {
+      const ctx = await showSigning(method, [
+        { id: 'bee-wallet', mode: 'bee-wallet', label: 'Ant wallet identity', shared: true },
+      ]);
+      expect(ctx.elements['swarm-feed-warning'].textContent).toBe(
+        'This key belongs to this site only. Using it lets the site read what others encrypted to it.'
+      );
+      expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
+    }
+  });
 });
 
 describe('disconnectSwarmApp', () => {

@@ -1844,6 +1844,8 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_writeFeedEntry' ||
             method === 'swarm_writeSingleOwnerChunk' ||
             method === 'swarm_getSigningIdentity' ||
+            method === 'swarm_getEncryptionKey' ||
+            method === 'swarm_deriveSharedSecrets' ||
             method === 'swarm_getMessagingIdentity' ||
             method === 'swarm_subscribe' ||
             // A blob of up to 5 MiB joined from the network can outlast 60s.
@@ -1876,6 +1878,8 @@ const SWARM_INJECT_SOURCE = `
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
       readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
       getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+      getEncryptionKey() { return this.request({ method: 'swarm_getEncryptionKey' }); },
+      deriveSharedSecrets(params) { return this.request({ method: 'swarm_deriveSharedSecrets', params: params }); },
       getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
       subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
       unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },

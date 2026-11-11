@@ -6,6 +6,7 @@
  * - Ed25519 keys via SLIP-0010
  */
 
+const { createHash } = require('crypto');
 const { mnemonicToSeedSync, validateMnemonic, generateMnemonic } = require('@scure/bip39');
 const { wordlist } = require('@scure/bip39/wordlists/english.js');
 const { HDNodeWallet, Mnemonic } = require('ethers');
@@ -30,7 +31,21 @@ const PATHS = {
   // Swarm publisher keys (secp256k1) - dedicated namespace for feed signing
   // One key per origin index: m/44'/73406'/{originIndex}'/0/0
   SWARM_PUBLISHER: "m/44'/73406'",       // base path (without trailing segments)
+
+  // Page encryption keys (secp256k1) - one per site, for key agreement only.
+  // m/44'/73407'/{a}'/{b}'/{c}', where a, b, c come from the site's
+  // permission key (see siteEncryptionKeyPath)
+  SWARM_ENCRYPTION: "m/44'/73407'",      // base path (without trailing segments)
 };
+
+// Domain separation for the hash that turns a site into its key path. The
+// path, and so the key, must never change for a site: anything encrypted to
+// the key would become unreadable. Changing this string, the hash, or the
+// way the permission key is formed is therefore a breaking change. The label
+// is vendor-neutral on purpose: the Swarm provider API's encryption
+// extension (SWIP) specifies this recipe, so every browser that follows it
+// derives the same key for a site from the same recovery phrase.
+const SITE_ENCRYPTION_KEY_DOMAIN = 'swarm-provider/encryption-key/v1\n';
 
 /**
  * Generate a new BIP-39 mnemonic
@@ -170,6 +185,40 @@ function derivePublisherKey(mnemonic, originIndex) {
 }
 
 /**
+ * The derivation path of a site's encryption key. Three hardened indexes
+ * (93 bits) taken from a SHA-256 of the site's permission key, so that two
+ * sites practically never share a key, and the same recovery phrase gives
+ * the same key for a site on any device, with no stored index.
+ * @param {string} site - The site's permission key (e.g. 'myapp.eth')
+ * @returns {string} m/44'/73407'/{a}'/{b}'/{c}'
+ */
+function siteEncryptionKeyPath(site) {
+  if (typeof site !== 'string' || site.length === 0) {
+    throw new Error('Site must be a non-empty string');
+  }
+  const digest = createHash('sha256')
+    .update(SITE_ENCRYPTION_KEY_DOMAIN + site, 'utf8')
+    .digest();
+  const indexes = [0, 4, 8].map((offset) => digest.readUInt32BE(offset) & 0x7fffffff);
+  return `${PATHS.SWARM_ENCRYPTION}/${indexes.map((index) => `${index}'`).join('/')}`;
+}
+
+/**
+ * Derive a site's encryption key: a secp256k1 key used only for key
+ * agreement (ECDH) on behalf of that site, never for signing.
+ * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {string} site - The site's permission key
+ * @returns {Object} { privateKey, publicKey, path }
+ */
+function deriveSiteEncryptionKey(mnemonic, site) {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  const { privateKey, publicKey, path } = deriveEthereumKey(mnemonic, siteEncryptionKeyPath(site));
+  return { privateKey, publicKey, path };
+}
+
+/**
  * Get the seed from a mnemonic (for direct use with SLIP-0010)
  * @param {string} mnemonic - BIP-39 mnemonic
  * @returns {Uint8Array} 64-byte seed
@@ -189,6 +238,8 @@ module.exports = {
   deriveEd25519Key,
   deriveUserWallet,
   derivePublisherKey,
+  siteEncryptionKeyPath,
+  deriveSiteEncryptionKey,
   getSeed,
   PATHS,
 };

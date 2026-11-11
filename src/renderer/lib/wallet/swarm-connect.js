@@ -131,6 +131,9 @@ function sharedIdentityBlocksFeedRequest() {
 function syncFeedSharedIdentityNotice() {
   const current = swarmFeedQueue.current;
   if (!current || current.autoApproveType !== 'signing' || !swarmFeedWarning) return;
+  // The encryption key is the site's own whatever identity it signs with, so
+  // its prompt keeps its own warning.
+  if (ENCRYPTION_METHODS.has(current.method)) return;
   const active = getActivePublisherIdentity(swarmFeedIdentityState);
   if (active?.shared !== true) {
     swarmFeedWarning.textContent = SIGNING_WARNING;
@@ -834,16 +837,23 @@ function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, meth
   checkFeedUnlockStatus();
 }
 
+// The site's own encryption key shares the signing grant and its
+// auto-approve rule (swarm-provider.js), but gets its own wording.
+const ENCRYPTION_METHODS = new Set(['swarm_getEncryptionKey', 'swarm_deriveSharedSecrets']);
+
 function applyFeedPromptCopy(method, params, autoApproveType) {
   const signing = autoApproveType === 'signing';
+  const encryption = signing && ENCRYPTION_METHODS.has(method);
 
   if (swarmFeedTitle) {
-    swarmFeedTitle.textContent = signing ? 'Publisher Signing' : 'Feed Access';
+    swarmFeedTitle.textContent = encryption
+      ? 'Encryption Key'
+      : (signing ? 'Publisher Signing' : 'Feed Access');
   }
   if (swarmFeedWants) {
-    swarmFeedWants.textContent = signing
-      ? 'wants to use your publisher identity'
-      : 'wants to create and manage feeds';
+    swarmFeedWants.textContent = encryption
+      ? 'wants to use its encryption key'
+      : (signing ? 'wants to use your publisher identity' : 'wants to create and manage feeds');
   }
   if (swarmFeedDetailLabel) {
     swarmFeedDetailLabel.textContent = signing ? 'Request' : 'Feed name';
@@ -854,15 +864,26 @@ function applyFeedPromptCopy(method, params, autoApproveType) {
       : (params?.name || params?.feedId || params?.identifier || 'Feed operation');
   }
   if (swarmFeedWarning) {
-    swarmFeedWarning.textContent = signing
-      ? SIGNING_WARNING
-      : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
+    if (encryption) {
+      swarmFeedWarning.textContent =
+        'This key belongs to this site only. Using it lets the site read what others encrypted to it.';
+    } else {
+      swarmFeedWarning.textContent = signing
+        ? SIGNING_WARNING
+        : 'Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.';
+    }
   }
   if (swarmFeedAutoApproveLabel) {
+    // One rule covers signing and the encryption key, so both prompts say so.
     swarmFeedAutoApproveLabel.textContent = signing
-      ? 'Always allow this site to use this publisher identity without asking'
+      ? 'Always allow this site to sign and use its encryption key without asking'
       : 'Always allow this site to manage feeds without asking';
   }
+}
+
+function shortPublicKey(value) {
+  const hex = typeof value === 'string' ? value.replace(/^0x/, '') : '';
+  return hex.length > 12 ? `${hex.slice(0, 6)}…${hex.slice(-4)}` : hex || 'a public key';
 }
 
 function signingRequestLabel(method, params) {
@@ -871,6 +892,15 @@ function signingRequestLabel(method, params) {
   }
   if (method === 'swarm_getSigningIdentity') {
     return 'Signing identity';
+  }
+  if (method === 'swarm_getEncryptionKey') {
+    return 'Encryption public key';
+  }
+  if (method === 'swarm_deriveSharedSecrets') {
+    const keys = Array.isArray(params?.publicKeys) ? params.publicKeys : [];
+    return keys.length === 1
+      ? `Shared key with ${shortPublicKey(keys[0])}`
+      : `Shared keys with ${keys.length} public keys`;
   }
   return 'Publisher signing';
 }
