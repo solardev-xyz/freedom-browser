@@ -45,29 +45,36 @@ describe('refuseLocalProving', () => {
   test.each([
     ['remote', REMOTE],
     ['proxy', PROXY],
-  ])('ends a %s proof whose request failed with that error, before the C core can prove it locally', (_label, mode) => {
-    const raw = scriptedRuntime();
-    const runtime = refuseLocalProving(raw);
+  ])(
+    'ends a %s proof whose request failed with that error, before the C core can prove it locally',
+    (_label, mode) => {
+      const raw = scriptedRuntime();
+      const runtime = refuseLocalProving(raw);
 
-    const ctx = runtime.createRpcCtx(...BALANCE, mode);
-    // The same question the C core asks when it starts the context.
-    expect(raw.getMethodType).toHaveBeenCalledWith(1n, 'eth_getBalance', '["0xabc","latest"]', 2);
-    const pending = runtime.executeRpcCtx(ctx);
-    expect(pending).toEqual({ status: 'pending', requests: [REMOTE_REQUEST] });
+      const ctx = runtime.createRpcCtx(...BALANCE, mode);
+      // The same question the C core asks when it starts the context.
+      expect(raw.getMethodType).toHaveBeenCalledWith(1n, 'eth_getBalance', '["0xabc","latest"]', 2);
+      const pending = runtime.executeRpcCtx(ctx);
+      expect(pending).toEqual({ status: 'pending', requests: [REMOTE_REQUEST] });
 
-    runtime.reqSetError(pending.requests[0], 'HTTP error! Status: 503, Details: down', 0);
-    expect(raw.reqSetError).toHaveBeenCalledWith(REMOTE_REQUEST, 'HTTP error! Status: 503, Details: down', 0);
+      runtime.reqSetError(pending.requests[0], 'HTTP error! Status: 503, Details: down', 0);
+      expect(raw.reqSetError).toHaveBeenCalledWith(
+        REMOTE_REQUEST,
+        'HTTP error! Status: 503, Details: down',
+        0
+      );
 
-    expect(runtime.executeRpcCtx(ctx)).toEqual({
-      status: 'error',
-      error: `${NO_LOCAL_PROVING_ERROR}: HTTP error! Status: 503, Details: down`,
-    });
-    // The execute that would have created the local prover never ran.
-    expect(raw.executeRpcCtx).toHaveBeenCalledTimes(1);
+      expect(runtime.executeRpcCtx(ctx)).toEqual({
+        status: 'error',
+        error: `${NO_LOCAL_PROVING_ERROR}: HTTP error! Status: 503, Details: down`,
+      });
+      // The execute that would have created the local prover never ran.
+      expect(raw.executeRpcCtx).toHaveBeenCalledTimes(1);
 
-    runtime.freeRpcCtx(ctx);
-    expect(raw.freeRpcCtx).toHaveBeenCalledWith(CTX);
-  });
+      runtime.freeRpcCtx(ctx);
+      expect(raw.freeRpcCtx).toHaveBeenCalledWith(CTX);
+    }
+  );
 
   test('hands an answered remote proof to the verifier, and its later requests too', () => {
     const raw = scriptedRuntime();
@@ -105,14 +112,20 @@ describe('refuseLocalProving', () => {
     const ctx = runtime.createRpcCtx(...BALANCE, mode);
     runtime.executeRpcCtx(ctx);
     runtime.reqSetError(REMOTE_REQUEST, 'HTTP error! Status: 503', 0);
-    raw.executeRpcCtx.mockReturnValueOnce({ status: 'error', error: 'the core\'s own' });
-    expect(runtime.executeRpcCtx(ctx)).toEqual({ status: 'error', error: 'the core\'s own' });
+    raw.executeRpcCtx.mockReturnValueOnce({ status: 'error', error: "the core's own" });
+    expect(runtime.executeRpcCtx(ctx)).toEqual({ status: 'error', error: "the core's own" });
     expect(raw.executeRpcCtx).toHaveBeenCalledTimes(2);
   });
 
   test.each([
-    ['two requests', { status: 'pending', requests: [REMOTE_REQUEST, { req_ptr: 0x6200, type: 'beacon_api' }] }],
-    ['a request of another type', { status: 'pending', requests: [{ ...REMOTE_REQUEST, type: 'eth_rpc' }] }],
+    [
+      'two requests',
+      { status: 'pending', requests: [REMOTE_REQUEST, { req_ptr: 0x6200, type: 'beacon_api' }] },
+    ],
+    [
+      'a request of another type',
+      { status: 'pending', requests: [{ ...REMOTE_REQUEST, type: 'eth_rpc' }] },
+    ],
     ['an answer', { status: 'success', result: '0x1' }],
   ])('tracks nothing when the first execute returns %s', (_label, first) => {
     const raw = scriptedRuntime();
@@ -172,7 +185,11 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   // Hosts the package uses for chain 1 when the client isn't given its own,
   // as the worker doesn't: these are the ones the fallback reached.
   const { default_config: defaults } = require(path.join(PKG_CJS, 'chains.js'));
-  const BUILT_IN = [...defaults['1'].rpcs, ...defaults['1'].beacon_apis, ...defaults['1'].checkpointz];
+  const BUILT_IN = [
+    ...defaults['1'].rpcs,
+    ...defaults['1'].beacon_apis,
+    ...defaults['1'].checkpointz,
+  ];
 
   // Answers every request itself: the prover as `proverAnswers` says (a 503,
   // a 503 whose text names a failed zk sync proof, or eight bytes), anything
@@ -240,7 +257,8 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
     ['eth_blockNumber', []],
     ['eth_getBlockByNumber', ['latest', false]],
   ];
-  const builtIn = (fetched) => fetched.filter(({ url }) => BUILT_IN.some((host) => url.startsWith(host)));
+  const builtIn = (fetched) =>
+    fetched.filter(({ url }) => BUILT_IN.some((host) => url.startsWith(host)));
 
   // Both settings of the worker's zk flag: mainnet ships with it on, and it
   // changes what the prover is asked (`zk_proof` in the request body), so the
@@ -248,32 +266,38 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   test.each([
     ['without', false],
     ['with', true],
-  ])('asks only the configured prover, once, and fails the read with its error (%s zk proofs)', (_label, zkProof) => {
-    expect(BUILT_IN.length).toBeGreaterThan(0);
-    const reads = probe({ reads: PROOFABLE_READS, zkProof });
-    expect(reads).toHaveLength(PROOFABLE_READS.length);
-    for (const { method, fetched, posted } of reads) {
-      expect({ method, fetched: fetched.map(({ url, method: verb }) => `${verb} ${url}`) })
-        .toEqual({ method, fetched: [`POST ${PROVER}`] });
-      // The zk path really was the one taken.
-      expect(fetched[0].body.zk_proof === true).toBe(zkProof);
-      expect(builtIn(fetched)).toEqual([]);
-      // A plain failure: no `retry`, so the host doesn't resend it to a
-      // fresh worker, and the router or ENS moves on to its next source.
-      expect(posted).toEqual({
-        type: 'result',
-        id: expect.any(Number),
-        ok: false,
-        error: {
-          name: 'ProviderRpcError',
-          code: 4900,
-          message: expect.stringContaining(
-            `: ${NO_LOCAL_PROVING_ERROR}: HTTP error! Status: 503, Details: prover down`
-          ),
-        },
-      });
-    }
-  }, 60_000);
+  ])(
+    'asks only the configured prover, once, and fails the read with its error (%s zk proofs)',
+    (_label, zkProof) => {
+      expect(BUILT_IN.length).toBeGreaterThan(0);
+      const reads = probe({ reads: PROOFABLE_READS, zkProof });
+      expect(reads).toHaveLength(PROOFABLE_READS.length);
+      for (const { method, fetched, posted } of reads) {
+        expect({
+          method,
+          fetched: fetched.map(({ url, method: verb }) => `${verb} ${url}`),
+        }).toEqual({ method, fetched: [`POST ${PROVER}`] });
+        // The zk path really was the one taken.
+        expect(fetched[0].body.zk_proof === true).toBe(zkProof);
+        expect(builtIn(fetched)).toEqual([]);
+        // A plain failure: no `retry`, so the host doesn't resend it to a
+        // fresh worker, and the router or ENS moves on to its next source.
+        expect(posted).toEqual({
+          type: 'result',
+          id: expect.any(Number),
+          ok: false,
+          error: {
+            name: 'ProviderRpcError',
+            code: 4900,
+            message: expect.stringContaining(
+              `: ${NO_LOCAL_PROVING_ERROR}: HTTP error! Status: 503, Details: prover down`
+            ),
+          },
+        });
+      }
+    },
+    60_000
+  );
 
   // Pins the upstream behavior the stop exists for. If this fails after a
   // bump, re-read `rpc_handle_remote_proof`: the fallback may be gone (drop
@@ -281,11 +305,15 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   test.each([
     ['without', false],
     ['with', true],
-  ])('without the stop, the same outage reaches the built-in hosts (%s zk proofs)', (_label, zkProof) => {
-    const reads = probe({ reads: PROOFABLE_READS.slice(0, 1), unguarded: true, zkProof });
-    expect(builtIn(reads[0].fetched).length).toBeGreaterThan(0);
-    expect(reads[0].posted.error.message).not.toContain(NO_LOCAL_PROVING_ERROR);
-  }, 60_000);
+  ])(
+    'without the stop, the same outage reaches the built-in hosts (%s zk proofs)',
+    (_label, zkProof) => {
+      const reads = probe({ reads: PROOFABLE_READS.slice(0, 1), unguarded: true, zkProof });
+      expect(builtIn(reads[0].fetched).length).toBeGreaterThan(0);
+      expect(reads[0].posted.error.message).not.toContain(NO_LOCAL_PROVING_ERROR);
+    },
+    60_000
+  );
 
   // Upstream's `rpc()` retries a read without zk proofs, in a fresh context,
   // when the error names a failed "zk sync proof". That retry is a second
@@ -307,20 +335,33 @@ describe('the real Colibri client with a prover that fails (#1059)', () => {
   test.each([
     ['without', false],
     ['with', true],
-  ])('hands a proof the prover sends to the verifier (%s zk proofs)', (_label, zkProof) => {
-    const [{ fetched, posted }] = probe({ reads: PROOFABLE_READS.slice(0, 1), proverAnswers: 'bytes', zkProof });
-    expect(fetched.map(({ url }) => url)).toEqual([PROVER]);
-    // Eight bytes aren't a proof: the verifier's own verdict.
-    expect(posted.ok).toBe(false);
-    expect(posted.error.message).not.toContain(NO_LOCAL_PROVING_ERROR);
-    expect(posted.error.message).toMatch(/Invalid offset|invalid|proof/i);
-  }, 60_000);
+  ])(
+    'hands a proof the prover sends to the verifier (%s zk proofs)',
+    (_label, zkProof) => {
+      const [{ fetched, posted }] = probe({
+        reads: PROOFABLE_READS.slice(0, 1),
+        proverAnswers: 'bytes',
+        zkProof,
+      });
+      expect(fetched.map(({ url }) => url)).toEqual([PROVER]);
+      // Eight bytes aren't a proof: the verifier's own verdict.
+      expect(posted.ok).toBe(false);
+      expect(posted.error.message).not.toContain(NO_LOCAL_PROVING_ERROR);
+      expect(posted.error.message).toMatch(/Invalid offset|invalid|proof/i);
+    },
+    60_000
+  );
 
   // A contract call runs in the verifier (PAP), which reads code from the
   // `eth_rpc` hosts itself: refusing that server type would break it.
-  test('leaves the verifier\'s own requests alone', () => {
+  test("leaves the verifier's own requests alone", () => {
     const [{ fetched, posted }] = probe({
-      reads: [['eth_call', [{ to: '0xce01f8eee7e479c928f8919abd53e553a36cef67', data: '0x01ffc9a7' }, 'latest']]],
+      reads: [
+        [
+          'eth_call',
+          [{ to: '0xce01f8eee7e479c928f8919abd53e553a36cef67', data: '0x01ffc9a7' }, 'latest'],
+        ],
+      ],
     });
     expect(fetched.some(({ body }) => body?.method === 'eth_getCode')).toBe(true);
     expect(posted.ok).toBe(false);

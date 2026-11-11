@@ -188,7 +188,14 @@ function refuseLocalProving(runtime) {
   return {
     ...runtime,
     createRpcCtx(method, paramsJson, chainId, proverFlags, verifyFlags, proverMode) {
-      const ctx = runtime.createRpcCtx(method, paramsJson, chainId, proverFlags, verifyFlags, proverMode);
+      const ctx = runtime.createRpcCtx(
+        method,
+        paramsJson,
+        chainId,
+        proverFlags,
+        verifyFlags,
+        proverMode
+      );
       if (
         ctx &&
         (proverMode === PROVER_MODE_REMOTE || proverMode === PROVER_MODE_PROXY) &&
@@ -208,7 +215,8 @@ function refuseLocalProving(runtime) {
       if (proof?.answered) forget(ctx);
       const state = runtime.executeRpcCtx(ctx);
       if (proof && proof.reqPtr === undefined) {
-        const requests = state?.status === 'pending' && Array.isArray(state.requests) ? state.requests : [];
+        const requests =
+          state?.status === 'pending' && Array.isArray(state.requests) ? state.requests : [];
         if (requests.length === 1 && requests[0]?.type === 'prover') {
           proof.reqPtr = requests[0].req_ptr;
           byRequest.set(proof.reqPtr, proof);
