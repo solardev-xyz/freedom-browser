@@ -175,6 +175,31 @@ function isLoopbackHost(hostname) {
   );
 }
 
+// A v3 onion service (RFC 7686): 56 base32 characters that encode the
+// service's own public key, so reaching the name over Tor reaches that
+// service and no other. Subdomains of it are the same service.
+const ONION_SERVICE_HOST = /(?:^|\.)[a-z2-7]{56}\.onion$/;
+
+function isOnionServiceHost(hostname) {
+  return ONION_SERVICE_HOST.test(String(hostname).toLowerCase());
+}
+
+/**
+ * Whether a sign-in on `requestUrl` is safe only over Tor: a plain-HTTP
+ * onion service. The caller checks how the request was routed and tells
+ * bindChallenge (`overTor`).
+ * @param {string} requestUrl
+ * @returns {boolean}
+ */
+function needsTorRoute(requestUrl) {
+  try {
+    const url = new URL(requestUrl);
+    return url.protocol === 'http:' && isOnionServiceHost(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function parseTime(text) {
   if (!RFC3339.test(text)) return null;
   const time = Date.parse(text);
@@ -187,18 +212,28 @@ function parseTime(text) {
  * @param {Object<string, string>} params - the challenge's auth-params
  * @param {string} requestUrl - the URL Freedom loaded
  * @param {number} [now]
+ * @param {{ overTor?: boolean }} [route] - `overTor`: the request went
+ *   through Freedom's Tor proxy (needed for a plain-HTTP onion service)
  * @returns {{ ok: true, challenge: Object } | { ok: false, reason: string }}
  */
-function bindChallenge(params, requestUrl, now = Date.now()) {
+function bindChallenge(params, requestUrl, now = Date.now(), { overTor = false } = {}) {
   let url;
   try {
     url = new URL(requestUrl);
   } catch {
     return { ok: false, reason: 'invalid_url' };
   }
-  // Signing in hands the site an identity: only over HTTPS, or plain HTTP
+  // Signing in hands the site an identity, so only over a connection that
+  // proves which site answers and that nobody on the way can read or change
+  // the exchange: HTTPS; an onion service reached over Tor, whose address is
+  // its key and whose traffic Tor encrypts end to end (#1152); or plain HTTP
   // to this machine for development.
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+  if (url.protocol === 'http:' && isOnionServiceHost(url.hostname)) {
+    if (!overTor) return { ok: false, reason: 'onion_not_over_tor' };
+  } else if (
+    url.protocol !== 'https:' &&
+    !(url.protocol === 'http:' && isLoopbackHost(url.hostname))
+  ) {
     return { ok: false, reason: 'insecure_origin' };
   }
   const domain = url.host.toLowerCase();
@@ -289,4 +324,6 @@ module.exports = {
   findSiweChallenge,
   bindChallenge,
   isLoopbackHost,
+  isOnionServiceHost,
+  needsTorRoute,
 };

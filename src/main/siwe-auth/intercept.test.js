@@ -38,6 +38,12 @@ jest.mock('../identity-manager', () => ({
   getDerivedWallets: async () => mockWallets,
 }));
 
+// The SOCKS endpoint Freedom routes `.onion` through, or null with Tor off.
+let mockOnionEndpoint = null;
+jest.mock('../tor-manager', () => ({
+  getOnionRoutingEndpoint: () => mockOnionEndpoint,
+}));
+
 const IPC = require('../../shared/ipc-channels');
 const siwe = require('./intercept');
 
@@ -81,6 +87,7 @@ function sentChallenge(tab) {
 let tab;
 
 beforeEach(() => {
+  mockOnionEndpoint = null;
   siwe._resetForTests();
   mockTabs.clear();
   mockAgentPages.clear();
@@ -438,5 +445,193 @@ describe('prepare and complete', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+// An onion service without HTTPS: its address is its key and Tor encrypts
+// the traffic, so it is as safe as HTTPS, but only if the load really went
+// over Tor (#1152).
+describe('a plain-HTTP onion service', () => {
+  const ONION = '2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion';
+  const ONION_URL = `http://${ONION}/members`;
+  const ONION_CHALLENGE = `SIWE realm="${ONION}", nonce=abc12345xyz, chain-id=1`;
+  const TOR = '127.0.0.1:9150';
+  const viaProxy = (proxy) => ({ session: { resolveProxy: jest.fn(async () => proxy) } });
+  const onionResponse = (overrides = {}) =>
+    response({
+      url: ONION_URL,
+      responseHeaders: { 'WWW-Authenticate': [ONION_CHALLENGE] },
+      ...overrides,
+    });
+
+  beforeEach(() => {
+    tab = makeTab(TAB, ONION_URL);
+  });
+
+  test('asks the user when the page came over Freedom\'s Tor proxy', async () => {
+    mockOnionEndpoint = TOR;
+    const context = viaProxy(`SOCKS5 ${TOR}`);
+
+    await expect(siwe.detectHandler(onionResponse(), context)).resolves.toBeNull();
+    expect(context.session.resolveProxy).toHaveBeenCalledWith(ONION_URL);
+    expect(sentChallenge(tab)).toMatchObject({ origin: `http://${ONION}` });
+
+    const { id } = sentChallenge(tab);
+    const { message } = await siwe.prepare({ id, walletIndex: 0 });
+    // The http scheme is part of what the user signs.
+    expect(message.startsWith(`http://${ONION} wants you to sign in`)).toBe(true);
+  });
+
+  test.each([
+    ['Tor is off', null, 'DIRECT'],
+    ['the session sends it DIRECT', TOR, 'DIRECT'],
+    ['another SOCKS proxy routes it', TOR, 'SOCKS5 10.0.0.1:1080'],
+  ])('ignores the challenge when %s', async (_why, endpoint, proxy) => {
+    mockOnionEndpoint = endpoint;
+    await siwe.detectHandler(onionResponse(), viaProxy(proxy));
+    expect(sentChallenge(tab)).toBeUndefined();
+  });
+
+  test('trusts Tor on this machine only, never a SOCKS proxy elsewhere on the network', async () => {
+    for (const [endpoint, trusted] of [
+      ['192.168.1.20:9050', false],
+      ['tor.example:9050', false],
+      ['localhost:9050', true],
+      ['[::1]:9050', true],
+    ]) {
+      siwe._resetForTests();
+      tab.hostWebContents.send.mockClear();
+      mockOnionEndpoint = endpoint;
+      await siwe.detectHandler(onionResponse(), viaProxy(`SOCKS5 ${endpoint}`));
+      expect([endpoint, Boolean(sentChallenge(tab))]).toEqual([endpoint, trusted]);
+    }
+  });
+
+  test('a navigation during the lookup makes its answer stale', async () => {
+    mockOnionEndpoint = TOR;
+    let answer;
+    const context = {
+      session: { resolveProxy: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+    };
+    const detecting = siwe.detectHandler(onionResponse(), context);
+    // The user goes to an HTTPS page that asks to sign in too.
+    tab.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    siwe.detectHandler(response({ id: 103 }));
+    const newer = sentChallenge(tab);
+    expect(newer).toMatchObject({ origin: 'https://club.example' });
+
+    answer(`SOCKS5 ${TOR}`);
+    await detecting;
+    // The newer challenge stays; the onion card never opens.
+    expect(siwe.getChallenge({ id: newer.id })).not.toBeNull();
+    const challenges = tab.hostWebContents.send.mock.calls.filter(
+      ([channel]) => channel === IPC.SIWE_CHALLENGE
+    );
+    expect(challenges).toHaveLength(1);
+    expect(tab.listenerCount('did-start-navigation')).toBe(1); // only the newer card's watch
+  });
+
+  test('a same-document navigation during the lookup does not', async () => {
+    mockOnionEndpoint = TOR;
+    let answer;
+    const context = {
+      session: { resolveProxy: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+    };
+    const detecting = siwe.detectHandler(onionResponse(), context);
+    tab.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    answer(`SOCKS5 ${TOR}`);
+    await detecting;
+    expect(sentChallenge(tab)).toMatchObject({ origin: `http://${ONION}` });
+  });
+
+  test('the Agent taking the tab during the lookup ends the sign-in', async () => {
+    mockOnionEndpoint = TOR;
+    let answer;
+    const context = {
+      session: { resolveProxy: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+    };
+    const detecting = siwe.detectHandler(onionResponse(), context);
+    mockAgentPages.add(TAB);
+    answer(`SOCKS5 ${TOR}`);
+    await detecting;
+    expect(sentChallenge(tab)).toBeUndefined();
+  });
+
+  test.each([
+    ['Tor stops', null],
+    ['Tor moves to a proxy elsewhere', '192.168.1.20:9050'],
+  ])('an answer is stale if %s while the session answers', async (_why, after) => {
+    mockOnionEndpoint = TOR;
+    let answer;
+    const lookup = () => ({
+      session: { resolveProxy: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+    });
+    const detecting = siwe.detectHandler(onionResponse(), lookup());
+    mockOnionEndpoint = after;
+    answer(`SOCKS5 ${TOR}`);
+    await detecting;
+    expect(sentChallenge(tab)).toBeUndefined();
+  });
+
+  test('ignores it when the session cannot say how it routes the page', async () => {
+    mockOnionEndpoint = TOR;
+    await siwe.detectHandler(onionResponse(), {
+      session: { resolveProxy: jest.fn(async () => Promise.reject(new Error('gone'))) },
+    });
+    await siwe.detectHandler(onionResponse({ id: 102 }), {});
+    expect(sentChallenge(tab)).toBeUndefined();
+  });
+
+  async function signedIn() {
+    mockOnionEndpoint = TOR;
+    await siwe.detectHandler(onionResponse(), viaProxy(`SOCKS5 ${TOR}`));
+    const { id } = sentChallenge(tab);
+    const { message } = await siwe.prepare({ id, walletIndex: 0 });
+    const signature = await signer.signMessage(message);
+    expect(await siwe.complete({ id, walletIndex: 0, signature })).toEqual({ success: true });
+    return {
+      id: 201,
+      url: ONION_URL,
+      resourceType: 'mainFrame',
+      webContentsId: TAB,
+      requestHeaders: {},
+    };
+  }
+
+  test('sends the signed header on the reload while Tor still routes it', async () => {
+    const request = await signedIn();
+    const injected = await siwe.injectHandler(request, viaProxy(`SOCKS5 ${TOR}`));
+    expect(injected.requestHeaders.Authorization).toMatch(/^SIWE result="/);
+  });
+
+  test('no signed header if the Agent takes the tab while the route is checked', async () => {
+    const request = await signedIn();
+    let answer;
+    const injecting = siwe.injectHandler(request, {
+      session: { resolveProxy: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+    });
+    mockAgentPages.add(TAB);
+    answer(`SOCKS5 ${TOR}`);
+    await expect(injecting).resolves.toBeNull();
+  });
+
+  test('no signed header if Tor stops while the route is checked', async () => {
+    const request = await signedIn();
+    let answer;
+    const injecting = siwe.injectHandler(request, {
+      session: { resolveProxy: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+    });
+    mockOnionEndpoint = null;
+    answer(`SOCKS5 ${TOR}`);
+    await expect(injecting).resolves.toBeNull();
+  });
+
+  test('drops the signed header if Tor stopped before the reload', async () => {
+    const request = await signedIn();
+    mockOnionEndpoint = null;
+    await expect(siwe.injectHandler(request, viaProxy('DIRECT'))).resolves.toBeNull();
+    // Gone for good: a later request does not get it either.
+    mockOnionEndpoint = TOR;
+    expect(siwe.injectHandler({ ...request, id: 202 }, viaProxy(`SOCKS5 ${TOR}`))).toBeNull();
   });
 });

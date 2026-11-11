@@ -11,6 +11,8 @@ they choose, and loads the page again with the signed message in an
 This page is the specification as Freedom implements it (#1152). It is meant
 to become an EIP. A complete server is in
 [`scripts/siwe-reference-server.js`](../../scripts/siwe-reference-server.js).
+It serves plain HTTP and takes its origin from the `Host` header, so it also
+works unchanged behind a Tor onion service.
 
 ## Exchange
 
@@ -62,8 +64,8 @@ host or origin makes the browser ignore the challenge and show the 401 page.
 
 The browser builds the ERC-4361 message itself, exactly as the ERC lays it
 out, with the chosen account's EIP-55 address and the current time as
-`Issued At`. For `http` pages (only to `localhost`, see below) the first line
-carries the `http://` scheme prefix. It signs with EIP-191 `personal_sign`
+`Issued At`. For `http` pages (onion services and `localhost`, see below)
+the first line carries the `http://` scheme prefix. It signs with EIP-191 `personal_sign`
 and sends the same request again with:
 
 ```text
@@ -89,13 +91,31 @@ Everything ERC-4361 asks of a verifier:
 A refused sign-in is answered with `401` again. The browser then shows that
 page and does not ask again for that load.
 
+An onion service on plain HTTP must leave `Secure` off its session cookie.
+Freedom, like Chromium, does not count `http://….onion` as a secure origin,
+so it drops a `Secure` cookie set there and the user is never signed in.
+Tor keeps the cookie private on the way regardless.
+
 ## What Freedom does
 
 - **Only top-level page loads (GET).** A 401 on an image, a fetch or a form
   POST reaches the page untouched.
-- **Only HTTPS**, or plain HTTP to `localhost`, `*.localhost`, `127.0.0.1`
-  and `[::1]` for development. Not on `bzz://`, `ipfs://` and other dweb
-  pages, not in private windows, and not in a tab the Agent is driving.
+- **Only over a connection that proves which site answers and keeps the
+  exchange private:**
+  - HTTPS;
+  - an onion service over plain HTTP (`http://<v3 address>.onion`), when
+    Freedom routes it through Tor. A v3 onion address is the service's
+    public key and Tor encrypts the traffic end to end, so it gives what
+    HTTPS gives, without a certificate (whose issuance would publish the
+    address in the Certificate Transparency logs). Freedom asks the tab's
+    session how it routes the page, when the 401 arrives and again before
+    the signed header goes out; with Tor off the challenge is ignored;
+  - plain HTTP to `localhost`, `*.localhost`, `127.0.0.1` and `[::1]` for
+    development.
+
+  Not on `bzz://`, `ipfs://` and other dweb pages, not in private windows,
+  and not in a tab the Agent is driving.
+
 - **Always asks.** The sign-in card shows the site, the account (the one
   used last on that site is preselected), and the full message. There is no
   "always allow". The card shows only while its tab is active.

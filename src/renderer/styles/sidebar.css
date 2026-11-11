@@ -6465,6 +6465,14 @@
   margin-bottom: 0;
 }
 
+/* An onion address is 62 characters with no place to break. */
+#sidebar-siwe-signin .dapp-sign-site,
+#siwe-signin-note {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .siwe-checked {
   display: flex;
   align-items: center;

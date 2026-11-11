@@ -42,7 +42,8 @@ const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const { isGatewayTransportRequest } = require('../ipfs/gateway-transport');
 const { getDerivedWallets } = require('../identity-manager');
 const { isAgentPageId } = require('../wallet/agent-tab-custody');
-const { findSiweChallenge, bindChallenge } = require('./challenge');
+const { parseSocksEndpoint } = require('../../shared/socks-endpoint');
+const { findSiweChallenge, bindChallenge, needsTorRoute } = require('./challenge');
 const { buildSiweMessage, authorizationValue } = require('./message');
 
 // A challenge the user hasn't answered expires after this (or at its own
@@ -213,7 +214,7 @@ function sweepArmed(now = Date.now()) {
   }
 }
 
-function detectHandler(details) {
+function detectHandler(details, context) {
   if (details.statusCode !== 401) return null;
   if (details.resourceType !== 'mainFrame') return null;
   if (!details.webContentsId) return null;
@@ -233,7 +234,31 @@ function detectHandler(details) {
   if (!found) return null;
   if ((details.method || 'GET').toUpperCase() !== 'GET') return null;
 
-  const bound = bindChallenge(found.params, details.url);
+  // A plain-HTTP onion service is safe to sign in to only if this load went
+  // over Tor: ask the session how it routes the page. A navigation started
+  // meanwhile (another page, a newer challenge) makes this answer stale.
+  if (needsTorRoute(details.url)) {
+    const tab = webContents.fromId(details.webContentsId);
+    if (!tab || tab.isDestroyed()) return null;
+    let navigated = false;
+    const onStart = (event, legacyUrl, legacyInPlace, legacyMainFrame) => {
+      const isMainFrame = event?.isMainFrame ?? legacyMainFrame;
+      const isSameDocument = event?.isSameDocument ?? legacyInPlace;
+      if (isMainFrame && !isSameDocument) navigated = true;
+    };
+    tab.on('did-start-navigation', onStart);
+    return routedOverTor(context?.session, details.url).then((overTor) => {
+      if (!tab.isDestroyed()) tab.removeListener('did-start-navigation', onStart);
+      return navigated ? null : openDetection(details, found, overTor);
+    });
+  }
+  return openDetection(details, found, false);
+}
+
+function openDetection(details, found, overTor) {
+  // Checked again here: the Agent may have taken the tab during a lookup.
+  if (isAgentPageId(details.webContentsId)) return null;
+  const bound = bindChallenge(found.params, details.url, Date.now(), { overTor });
   if (!bound.ok) {
     log.warn(`[SIWE] ignoring the challenge from ${sanitizeUrl(details.url)}: ${bound.reason}`);
     return null;
@@ -263,7 +288,7 @@ function detectHandler(details) {
   return null;
 }
 
-function injectHandler(details) {
+function injectHandler(details, context) {
   if (details.resourceType !== 'mainFrame') return null;
   const pending = pendingAuth.get(details.webContentsId);
   if (!pending) return null;
@@ -275,6 +300,21 @@ function injectHandler(details) {
   // another page the tab goes to instead.
   if (pending.url !== details.url || (details.method || 'GET').toUpperCase() !== 'GET') return null;
   pendingAuth.delete(details.webContentsId);
+  // Tor may have stopped since the challenge: then the onion name would go
+  // to the system's DNS, and the signed sign-in to whoever answers there.
+  if (needsTorRoute(details.url)) {
+    return routedOverTor(context?.session, details.url).then((overTor) => {
+      // The Agent may have taken the tab during the lookup.
+      if (isAgentPageId(details.webContentsId)) return null;
+      if (overTor) return attachAuthorization(details, pending);
+      log.warn(`[SIWE] not signing in to ${sanitizeUrl(details.url)}: Tor no longer routes it`);
+      return null;
+    });
+  }
+  return attachAuthorization(details, pending);
+}
+
+function attachAuthorization(details, pending) {
   sweepArmed();
   armedRequests.set(details.id, Date.now());
   const requestHeaders = { ...details.requestHeaders };
@@ -283,6 +323,39 @@ function injectHandler(details) {
   }
   requestHeaders.Authorization = pending.value;
   return { requestHeaders };
+}
+
+/**
+ * Tor on this machine only: the bundled Arti, or a Tor the user runs
+ * locally. A SOCKS endpoint elsewhere on the network would carry the signed
+ * sign-in there in the clear before Tor ever saw it.
+ */
+function isLoopbackSocks(endpoint) {
+  const host = parseSocksEndpoint(endpoint)?.host?.toLowerCase() || '';
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+
+/**
+ * Whether `session` sends `url` through Freedom's own Tor proxy (the PAC
+ * tor-proxy.js installs while Tor runs), rather than DIRECT, where an onion
+ * name would go to the system's DNS. Asks the session itself, so a session
+ * without the PAC answers false.
+ * @returns {Promise<boolean>}
+ */
+async function routedOverTor(session, url) {
+  const tor = require('../tor-manager');
+  const endpoint = tor.getOnionRoutingEndpoint();
+  if (!endpoint || !isLoopbackSocks(endpoint)) return false;
+  if (typeof session?.resolveProxy !== 'function') return false;
+  let proxy;
+  try {
+    proxy = String(await session.resolveProxy(url)).trim();
+  } catch {
+    return false;
+  }
+  // Tor may have stopped, or moved to another proxy, while the session
+  // answered: the answer counts only for the routing still in force.
+  return proxy === `SOCKS5 ${endpoint}` && tor.getOnionRoutingEndpoint() === endpoint;
 }
 
 function installSiweInterception() {
