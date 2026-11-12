@@ -1092,7 +1092,7 @@ class Guest extends EventEmitter {
   }
 }
 
-function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null, promptBudgets = null } = {}) {
+function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null, promptBudgets = null, randomHex = null } = {}) {
   const env = setup();
   const guests = new Map();
   const toChrome = [];
@@ -1131,6 +1131,7 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null, un
     approvals: flag ? env.docs : null,
     ...(unlockVault ? { unlockVault } : {}),
     ...(promptBudgets ? { promptBudgets } : {}),
+    ...(randomHex ? { randomHex } : {}),
   });
   env.decide.mockImplementation((windowId, payload) => requests.decideInWindow(windowId, payload));
 
@@ -1756,6 +1757,36 @@ describe('the prompt budget, through wallet:confirm-signing and a page\'s prompt
     env.tab().ask(VIEW);
     await flush();
     expect(env.requests.promptUsage().count).toBe(1);
+  });
+  test('a throw while a prompt opens leaves no charge, handle or prompt behind, a page\'s or the window\'s own', async () => {
+    // The handle's random bytes fail for a while: each prompt that opens
+    // then throws on its way, after its charge was taken.
+    let failing = true;
+    const randomHex = (bytes) => {
+      if (failing) throw new Error('no random bytes');
+      return require('crypto').randomBytes(bytes).toString('hex');
+    };
+    const env = withPageRequests({ randomHex });
+    attached(env);
+    const empty = { count: 0, bytes: 0, windows: {} };
+    // A window's own prompt: the throw reaches its caller, and nothing stays.
+    for (let i = 0; i < 3; i += 1) {
+      expect(() => env.requests.walletPrompt(1, { kind: 'wallet.send', view: VIEW })).toThrow('no random bytes');
+    }
+    expect(env.requests.promptUsage()).toEqual(empty);
+    expect(env.requests.promptState()[1]?.open ?? []).toHaveLength(0);
+    // A page's prompt: the page is answered with an error, and nothing stays.
+    const answer = await env.tab().ask(VIEW);
+    expect(answer).toEqual({ error: expect.objectContaining({ code: expect.any(Number) }) });
+    expect(env.requests.promptUsage()).toEqual(empty);
+    expect(env.requests.stats().handles).toBe(0);
+    expect(env.chromeChannels()).not.toContain('page:prompt-pending');
+    // The bytes come back: both kinds open, each charged once.
+    failing = false;
+    env.requests.walletPrompt(1, { kind: 'wallet.send', view: VIEW });
+    env.tab().ask(VIEW);
+    await flush();
+    expect(env.requests.promptUsage()).toMatchObject({ count: 2, windows: { 1: { count: 2 } } });
   });
 });
 

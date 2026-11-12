@@ -708,6 +708,16 @@ contextBridge.exposeInMainWorld('radicle', {
     ipcRenderer.invoke('radicle:getStatus').then(callback);
     return () => ipcRenderer.removeListener('radicle:statusUpdate', handler);
   },
+  // Radicle's repair under the service: "still repairing", and Remove for a
+  // quarantined repository main showed, with the qid it showed.
+  getRepair: () => ipcRenderer.invoke('radicle:getRepair'),
+  removeQuarantined: (rid, qid) => ipcRenderer.invoke('radicle:removeQuarantined', rid, qid),
+  onRepairUpdate: (callback) => {
+    const handler = (_event, value) => callback(value);
+    ipcRenderer.on('radicle:repairUpdate', handler);
+    ipcRenderer.invoke('radicle:getRepair').then(callback);
+    return () => ipcRenderer.removeListener('radicle:repairUpdate', handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('tor', {

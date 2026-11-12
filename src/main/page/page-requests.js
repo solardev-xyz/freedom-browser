@@ -861,25 +861,34 @@ function createPageRequests({
       trace({ kind: 'prompt-refused', id: record.id, reason: 'budget' });
       return { error: { ...PROMPT_LIMIT_EXCEEDED } };
     }
-    const handle = openHandle(record);
-    if (!handle) {
-      prompts.release(charge);
-      return { closed: CLOSED.CANCELLED };
+    // The charge passes to the prompt once `add` holds it; until then it is
+    // ours, and a throw on the way (the handle's random bytes, say) lets it
+    // go and closes a handle that opened, so no charge outlives its prompt.
+    let handle = null;
+    let entry = null;
+    try {
+      handle = openHandle(record);
+      if (!handle) return { closed: CLOSED.CANCELLED };
+      const { requester } = record;
+      entry = prompts.add({
+        handle,
+        record,
+        window: record.window,
+        guest: requester.guest,
+        document: record.key,
+        kind,
+        site: { key: requester.key, label: requester.key },
+        view,
+        choices,
+        released,
+        charge,
+      });
+    } finally {
+      if (!entry) {
+        prompts.release(charge);
+        if (handle) closeHandle(record, CLOSED.CANCELLED);
+      }
     }
-    const { requester } = record;
-    const entry = prompts.add({
-      handle,
-      record,
-      window: record.window,
-      guest: requester.guest,
-      document: record.key,
-      kind,
-      site: { key: requester.key, label: requester.key },
-      view,
-      choices,
-      released,
-      charge,
-    });
     return entry.decision;
   }
 
@@ -911,21 +920,31 @@ function createPageRequests({
       trace({ kind: 'wallet-prompt-refused', window: windowId, prompt: kind, reason: 'budget' });
       return Promise.resolve({ error: { ...PROMPT_LIMIT_EXCEEDED } });
     }
-    const handle = randomHex(HANDLE_BYTES);
-    trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
-    const entry = prompts.add({
-      handle,
-      record: null,
-      window: windowId,
-      guest: null,
-      document: null,
-      kind,
-      site: WALLET_SITE,
-      view,
-      choices,
-      released: released instanceof Promise ? released : Promise.resolve(),
-      charge,
-    });
+    // As promptOnce: the charge is ours until `add` holds it.
+    let handle = null;
+    let entry = null;
+    try {
+      handle = randomHex(HANDLE_BYTES);
+      trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
+      entry = prompts.add({
+        handle,
+        record: null,
+        window: windowId,
+        guest: null,
+        document: null,
+        kind,
+        site: WALLET_SITE,
+        view,
+        choices,
+        released: released instanceof Promise ? released : Promise.resolve(),
+        charge,
+      });
+    } finally {
+      if (!entry) {
+        prompts.release(charge);
+        if (handle) prompts.closed(handle, CLOSED.CANCELLED);
+      }
+    }
     return entry.decision;
   }
 

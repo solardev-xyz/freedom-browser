@@ -18,6 +18,11 @@
  * - **ciphertext only through main:** a recorder on both pipes of each
  *   process (main ⇄ freedom-radicled, main ⇄ freedom-cored) and on main's
  *   log never finds the key's 32 bytes, raw, in hex or in base64;
+ * - **an identity change** (0008, "Identity changes"): the core's sealed
+ *   write with `wipe`, as main sends it, answers `lock_held` and touches
+ *   nothing while a running service holds the home's gate; once the service
+ *   has stopped, it wipes `node/`, `cobs/` and `storage/` and removes the key
+ *   files, writes no key, and the next start runs with no switch;
  * - **a locked vault:** nothing is spawned until the core's
  *   `vault.unlocked`, then the node starts, with no switch;
  * - **no vault:** after the vault's deletion, a throwaway key, and no key
@@ -290,6 +295,61 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
         expect(heard.includes(pattern)).toBe(false);
         expect(logged.includes(pattern)).toBe(false);
       }
+    },
+    TEST_MS
+  );
+
+  // 0008, "Identity changes" (the step-5 plan's B12): the core's write that
+  // identity-manager.js sends under the service, against the real core.
+  test(
+    "an identity change: while a service holds the home's gate the core answers lock_held and touches nothing; once it has stopped, the core wipes the node's state and removes the key files, writes no key, and the next start runs as the vault's identity with no switch",
+    async () => {
+      const derived = await vaultBackend.addresses();
+      const change = () =>
+        vaultBackend.writeNodeIdentity(
+          { node: 'radicle', home: home(), alias: ALIAS, custody: 'sealed', wipe: true },
+          crypto.randomUUID()
+        );
+      const state = ['node', 'cobs', 'storage'].map((dir) => path.join(home(), dir));
+      const keys = path.join(home(), 'keys');
+      fs.mkdirSync(path.join(home(), 'cobs'), { recursive: true });
+      fs.writeFileSync(path.join(home(), 'cobs', 'mark'), 'cobs');
+
+      // A running service holds the gate: the core waits its 5 s, then
+      // refuses, and the node runs on.
+      const running = newNode();
+      await expect(running.start()).resolves.toBe(true);
+      for (const dir of state) expect(fs.existsSync(dir)).toBe(true);
+      await expect(change()).rejects.toMatchObject({ code: 'lock_held' });
+      for (const dir of state) expect(fs.existsSync(dir)).toBe(true);
+      expect(running.isUp()).toBe(true);
+
+      // Stopped: its exit frees the gate. An add-on's key pair is back in
+      // keys/ (today's form of the write), for the change to remove.
+      await running.stop();
+      await expect(
+        vaultBackend.writeNodeIdentity(
+          { node: 'radicle', home: home(), alias: ALIAS },
+          crypto.randomUUID()
+        )
+      ).resolves.toMatchObject({ status: 'installed' });
+      expect(fs.existsSync(path.join(keys, 'radicle'))).toBe(true);
+      expect(fs.existsSync(path.join(keys, 'radicle.pub'))).toBe(true);
+
+      await expect(change()).resolves.toEqual({ status: 'installed' });
+      for (const dir of state) expect(fs.existsSync(dir)).toBe(false);
+      expect(fs.existsSync(keys) ? fs.readdirSync(keys) : []).toEqual([]);
+      const config = JSON.parse(fs.readFileSync(path.join(home(), 'config.json'), 'utf8'));
+      expect(config.node).toMatchObject({ alias: ALIAS, connect: [] });
+      expect(guard.nodeBlockReason('radicle')).toBeNull();
+
+      // No key file, so no switch: one process, as the vault's identity.
+      const before = radicledSpawns;
+      const next = newNode();
+      await expect(next.start()).resolves.toBe(true);
+      expect(radicledSpawns).toBe(before + 1);
+      expect(next.activeIdentity()).toMatchObject({ did: derived.radicle.did, ephemeral: false });
+      expect(fs.existsSync(path.join(keys, 'radicle'))).toBe(false);
     },
     TEST_MS
   );

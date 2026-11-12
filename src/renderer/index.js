@@ -6,6 +6,7 @@ import { initAntUi, updateAntStatusLine, updateAntToggleState } from './lib/ant-
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import { initMyotisUi } from './lib/myotis-ui.js';
 import { initRadicleUi, updateRadicleStatusLine } from './lib/radicle-ui.js';
+import { initRadicleRepairUi } from './lib/radicle-repair-ui.js';
 import { initTorUi, updateTorStatusLine } from './lib/tor-ui.js';
 import {
   initMenus,
@@ -893,6 +894,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initIpfsUi();
   initMyotisUi();
   initRadicleUi();
+  initRadicleRepairUi();
   initTorUi();
   initGithubBridgeUi();
   document.getElementById('settings-btn')?.addEventListener('click', () => {

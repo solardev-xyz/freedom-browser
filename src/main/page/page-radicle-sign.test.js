@@ -674,7 +674,11 @@ describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () 
     const managerChannels = [...managerSource.matchAll(/ipcMain\.handle\(IPC\.([A-Z_]+)/g)].map((m) => IPC[m[1]]);
     expect(managerSource).not.toMatch(/radicle-permissions/);
     // Events main sends the chrome, which it never calls.
-    const pushed = [IPC.RADICLE_STATUS_UPDATE, IPC.RADICLE_SEED_STATUS_UPDATE];
+    const pushed = [
+      IPC.RADICLE_STATUS_UPDATE,
+      IPC.RADICLE_SEED_STATUS_UPDATE,
+      IPC.RADICLE_REPAIR_UPDATE,
+    ];
     expect([...registered, ...managerChannels, ...pushed].sort()).toEqual([...declared].sort());
     expect(registered).not.toContain('radicle:provider-execute');
 

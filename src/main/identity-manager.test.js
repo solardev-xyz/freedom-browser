@@ -29,6 +29,7 @@ const ENV_KEYS = [
   'FREEDOM_IPFS_DATA',
   'FREEDOM_RADICLE_DATA',
   'FREEDOM_IDENTITY_DATA',
+  'FREEDOM_RADICLE_BACKEND',
 ];
 
 function snapshotEnv() {
@@ -1656,6 +1657,10 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       expect.objectContaining({ node: 'radicle', alias: 'Alias' }),
       expect.any(String)
     );
+    // The add-on's form, which writes the key it loads (plan B12).
+    const [spec] = backend.writeNodeIdentity.mock.calls[0];
+    expect(spec).not.toHaveProperty('custody');
+    expect(spec).not.toHaveProperty('wipe');
   });
 
   // freedom-core design 0008, "Spawn and lock": the wipe runs under the
@@ -1916,6 +1921,323 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       jest.useRealTimers();
     }
     expect(fs.existsSync(path.join(beeDir, 'statestore'))).toBe(true);
+  });
+});
+
+// freedom-core design 0008, "Identity changes" (the radicled step-5 plan's
+// B12): under FREEDOM_RADICLE_BACKEND=service, an identity change is the
+// core's journaled write with `custody: 'sealed'` and `wipe: true`, between
+// the service's stop and its start. Main removes nothing and writes no key;
+// the core's mock does what the core does (the wipe, the key files'
+// removal, the config) and answers as scripted.
+describe('Radicle identity changes on the service (0008, Identity changes)', () => {
+  let root;
+  let dataDirs;
+  let envSnapshot;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-change-'));
+    dataDirs = {
+      identity: path.join(root, 'identity'),
+      bee: path.join(root, 'bee'),
+      ipfs: path.join(root, 'ipfs'),
+      radicle: path.join(root, 'radicle'),
+    };
+    for (const dir of Object.values(dataDirs)) fs.mkdirSync(dir, { recursive: true });
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = dataDirs.identity;
+    process.env.FREEDOM_ANT_DATA = dataDirs.bee;
+    process.env.FREEDOM_IPFS_DATA = dataDirs.ipfs;
+    process.env.FREEDOM_RADICLE_DATA = dataDirs.radicle;
+    process.env.FREEDOM_RADICLE_BACKEND = 'service';
+    mockRadicleGate.events = [];
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    restoreEnv(envSnapshot);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const home = (...parts) => path.join(dataDirs.radicle, ...parts);
+  const STATE = ['node', 'cobs', 'storage'];
+  const KEY_FILES = [path.join('keys', 'radicle'), path.join('keys', 'radicle.pub')];
+  const lockHeld = () =>
+    Object.assign(new Error('The Radicle home is in use'), { code: 'lock_held' });
+
+  /** A home the node ran on: its state, and an old key pair in keys/. */
+  function seedHome() {
+    for (const dir of STATE) {
+      fs.mkdirSync(home(dir), { recursive: true });
+      fs.writeFileSync(home(dir, 'data'), dir);
+    }
+    fs.mkdirSync(home('keys'), { recursive: true });
+    for (const file of KEY_FILES) fs.writeFileSync(home(file), 'old');
+    fs.writeFileSync(home('config.json'), JSON.stringify({ node: { alias: 'Old' } }));
+  }
+
+  /** What the core's sealed form with `wipe` does to the home, once installed. */
+  function coreInstalls(spec) {
+    for (const dir of STATE) fs.rmSync(path.join(spec.home, dir), { recursive: true, force: true });
+    for (const file of KEY_FILES) fs.rmSync(path.join(spec.home, file), { force: true });
+    fs.writeFileSync(
+      path.join(spec.home, 'config.json'),
+      JSON.stringify({ node: { alias: spec.alias } })
+    );
+    return { status: 'installed' };
+  }
+
+  /**
+   * identity-manager over the core's mock, its vault unlocked, the core's
+   * startup recovery reported clean, and a lifecycle hook that records the
+   * stop, each write (the home's state as the core finds it), and the
+   * restart with the guard's answer at that point. `answers` script the
+   * core's replies to the Radicle writes in turn (a function is called with
+   * the spec; an Error is thrown); past them, the core installs.
+   */
+  async function load(answers = []) {
+    seedHome();
+    const backend = makeVaultBackendMock();
+    const realOffload = jest.requireActual('./fs-offload');
+    const removePath = jest.fn((target, opts) => realOffload.removePath(target, opts));
+    const mgr = loadMainModule(require.resolve('./identity-manager'), {
+      extraMocks: {
+        ...vaultBackendMocks(backend),
+        [require.resolve('./fs-offload')]: () => ({ ...realOffload, removePath }),
+        // The real one: an earlier test's registration outlives resetModules.
+        [require.resolve('./profile-paths')]: () => jest.requireActual('./profile-paths'),
+      },
+      userDataDir: dataDirs.identity,
+    }).mod;
+    mgr._internal.radicleChangeRetry.delaysMs = [0, 0, 0, 0];
+    const guard = require('./core/node-identity-guard');
+    guard.setStartupRecovery(null);
+    await mgr.createNewVault('password-123');
+    backend.writeNodeIdentity.mockClear();
+    const steps = [];
+    const queue = [...answers];
+    backend.writeNodeIdentity.mockImplementation(async (spec) => {
+      if (spec.node !== 'radicle') return { status: 'installed', address: '0xbee' };
+      steps.push({
+        write: STATE.filter((dir) => fs.existsSync(home(dir))).join(','),
+        blocked: guard.nodeBlockReason('radicle'),
+      });
+      const answer = queue.length > 0 ? queue.shift() : coreInstalls;
+      if (answer instanceof Error) throw answer;
+      return typeof answer === 'function' ? answer(spec) : answer;
+    });
+    mgr.setRadicleLifecycle({
+      withStopped: async (work) => {
+        steps.push('stopped');
+        try {
+          return await work();
+        } finally {
+          steps.push({ restart: guard.nodeBlockReason('radicle') });
+        }
+      },
+    });
+    return { mgr, backend, guard, steps, removePath };
+  }
+
+  const SEALED = { node: 'radicle', alias: 'Alias', custody: 'sealed', wipe: true };
+  const writes = (backend) =>
+    backend.writeNodeIdentity.mock.calls.filter(([spec]) => spec.node === 'radicle');
+  const keysLeft = () => (fs.existsSync(home('keys')) ? fs.readdirSync(home('keys')) : []);
+
+  test('stop, then the core wipes node/, cobs/ and storage/ and removes the key files, then start: main removes nothing and writes no key', async () => {
+    const { mgr, backend, steps, removePath } = await load();
+
+    await expect(mgr.injectRadicleIdentity('Alias')).resolves.toEqual({ did: 'did:key:zTest' });
+    expect(steps).toEqual([
+      'stopped',
+      // The core finds the state whole: the wipe is its own.
+      { write: 'node,cobs,storage', blocked: 'Node identity is being updated' },
+      { restart: null },
+    ]);
+    expect(writes(backend)).toEqual([[{ ...SEALED, home: dataDirs.radicle }, expect.any(String)]]);
+    for (const dir of STATE) expect(fs.existsSync(home(dir))).toBe(false);
+    expect(keysLeft()).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(home('config.json'), 'utf8')).node.alias).toBe('Alias');
+    // Main took no gate of its own (the core's write takes it) and removed
+    // nothing: its removals go through fs-offload.
+    expect(mockRadicleGate.events).toEqual([]);
+    expect(removePath).not.toHaveBeenCalled();
+  });
+
+  test('a write that failed partway (pending_recovery) keeps the node stopped and blocked; the retry finishes it, and the node starts', async () => {
+    // The core committed and wiped part of the home, then couldn't finish.
+    const partway = (spec) => {
+      fs.rmSync(path.join(spec.home, 'node'), { recursive: true, force: true });
+      return { status: 'pending_recovery' };
+    };
+    const { mgr, backend, guard, steps } = await load([partway]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).resolves.toEqual({ did: 'did:key:zTest' });
+    expect(steps).toEqual([
+      'stopped',
+      { write: 'node,cobs,storage', blocked: 'Node identity is being updated' },
+      // Still stopped and still blocked when the write is tried again.
+      { write: 'cobs,storage', blocked: 'Node identity is being updated' },
+      { restart: null },
+    ]);
+    expect(writes(backend)).toHaveLength(2);
+    expect(new Set(writes(backend).map(([, opId]) => opId)).size).toBe(2);
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
+    expect(keysLeft()).toEqual([]);
+  });
+
+  test('pending_recovery on every try keeps the node blocked for the restart', async () => {
+    const pending = { status: 'pending_recovery' };
+    const { mgr, backend, steps } = await load([pending, pending, pending, pending, pending]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow(
+      'The Radicle identity write did not finish (pending_recovery); restart Freedom to complete it, or try the change again'
+    );
+    expect(writes(backend)).toHaveLength(5);
+    expect(steps.at(-1)).toEqual({
+      restart: 'Node identity update did not finish; restart Freedom to complete it',
+    });
+  });
+
+  test('lock_held (a service main did not stop holds the gate): the node stays stopped, the write is tried again, and completes once the gate is free', async () => {
+    const { mgr, backend, guard, steps } = await load([lockHeld(), lockHeld()]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).resolves.toEqual({ did: 'did:key:zTest' });
+    expect(steps).toEqual([
+      'stopped',
+      { write: 'node,cobs,storage', blocked: 'Node identity is being updated' },
+      { write: 'node,cobs,storage', blocked: 'Node identity is being updated' },
+      { write: 'node,cobs,storage', blocked: 'Node identity is being updated' },
+      { restart: null },
+    ]);
+    expect(writes(backend)).toHaveLength(3);
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
+  });
+
+  test('lock_held on every try touches nothing and blocks nothing: the node restarts as it was', async () => {
+    const answers = Array.from({ length: 5 }, lockHeld);
+    const { mgr, backend, guard, steps } = await load(answers);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toMatchObject({
+      code: 'lock_held',
+      message: 'The Radicle data is in use by another process. Close it and try again.',
+    });
+    expect(writes(backend)).toHaveLength(5);
+    expect(steps.at(-1)).toEqual({ restart: null });
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
+    for (const dir of STATE) expect(fs.existsSync(home(dir, 'data'))).toBe(true);
+    expect(keysLeft().sort()).toEqual(['radicle', 'radicle.pub']);
+  });
+
+  test("lock_held on every try puts back an earlier write's block, which it does not lift", async () => {
+    const answers = Array.from({ length: 5 }, lockHeld);
+    const { mgr, guard } = await load(answers);
+    guard.blockNode('radicle', 'pending_recovery');
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toMatchObject({ code: 'lock_held' });
+    expect(guard.nodeWriteStatus('radicle')).toBe('pending_recovery');
+  });
+
+  test('lock_held after a write that failed partway keeps the block', async () => {
+    const pending = { status: 'pending_recovery' };
+    const { mgr, guard } = await load([pending, lockHeld(), lockHeld(), lockHeld(), lockHeld()]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toMatchObject({ code: 'lock_held' });
+    expect(guard.nodeBlockReason('radicle')).toBe(
+      'Node identity update did not finish; restart Freedom to complete it'
+    );
+  });
+
+  test('a lost reply keeps the node blocked, and is not tried again', async () => {
+    const lost = Object.assign(new Error('The identity core is not running'), {
+      code: 'core_unavailable',
+    });
+    const { mgr, backend, steps } = await load([lost]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toBe(lost);
+    expect(writes(backend)).toHaveLength(1);
+    expect(steps.at(-1)).toEqual({
+      restart: 'Node identity update did not finish; restart Freedom to complete it',
+    });
+  });
+
+  test('an error reply wrote nothing: not tried again, and no block', async () => {
+    const refused = Object.assign(new Error('storage'), { code: 'storage' });
+    const { mgr, backend, steps } = await load([refused]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toBe(refused);
+    expect(writes(backend)).toHaveLength(1);
+    expect(steps.at(-1)).toEqual({ restart: null });
+  });
+
+  test('corrupt is not tried again, and keeps the node blocked', async () => {
+    const { mgr, backend, steps } = await load([{ status: 'corrupt', reconciled: true }]);
+
+    await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow('(corrupt)');
+    expect(writes(backend)).toHaveLength(1);
+    expect(steps.at(-1).restart).toMatch(/set up node identities again/);
+  });
+
+  test('the retries wait 1 s, 2 s, 4 s and 8 s, the node stopped throughout', async () => {
+    const answers = Array.from({ length: 5 }, lockHeld);
+    const { mgr, backend, steps } = await load(answers);
+    expect(mgr.RADICLE_CHANGE_RETRY_MS).toEqual([1_000, 2_000, 4_000, 8_000]);
+    mgr._internal.radicleChangeRetry.delaysMs = mgr.RADICLE_CHANGE_RETRY_MS;
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    const settle = async () => {
+      for (let i = 0; i < 20; i += 1) await new Promise((r) => setImmediate(r));
+    };
+
+    const changing = mgr.injectRadicleIdentity('Alias');
+    const settled = changing.catch((err) => err);
+    await settle();
+    expect(writes(backend)).toHaveLength(1);
+    for (const [wait, count] of [
+      [1_000, 2],
+      [2_000, 3],
+      [4_000, 4],
+      [8_000, 5],
+    ]) {
+      await jest.advanceTimersByTimeAsync(wait - 1);
+      await settle();
+      expect(writes(backend)).toHaveLength(count - 1);
+      expect(steps.some((step) => step?.restart !== undefined)).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await settle();
+      expect(writes(backend)).toHaveLength(count);
+    }
+    await expect(settled).resolves.toMatchObject({ code: 'lock_held' });
+    expect(steps.at(-1)).toEqual({ restart: null });
+  });
+
+  test('onboarding writes no Radicle identity under the service, and reads no keys/', async () => {
+    const { mgr, backend } = await load();
+    const exists = jest.spyOn(fs, 'existsSync');
+    let results;
+    try {
+      results = await mgr.injectAllIdentities('FreedomBrowser', false);
+    } finally {
+      exists.mockRestore();
+    }
+
+    expect(results.radicle).toEqual({ did: 'did:key:zTest' });
+    expect(writes(backend)).toEqual([]);
+    expect(exists.mock.calls.some(([file]) => String(file).startsWith(home('keys')))).toBe(false);
+    for (const dir of STATE) expect(fs.existsSync(home(dir, 'data'))).toBe(true);
+  });
+
+  test("onboarding's forced re-injection is an identity change under the service", async () => {
+    const { mgr, backend, steps } = await load();
+
+    const results = await mgr.injectAllIdentities('FreedomBrowser', true);
+
+    expect(results.radicle).toEqual({ did: 'did:key:zTest', reinjected: true });
+    expect(results.needsRestart).toEqual([]);
+    expect(writes(backend)).toEqual([
+      [{ ...SEALED, alias: 'FreedomBrowser', home: dataDirs.radicle }, expect.any(String)],
+    ]);
+    expect(steps.at(-1)).toEqual({ restart: null });
+    expect(keysLeft()).toEqual([]);
   });
 });
 
