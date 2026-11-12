@@ -478,6 +478,7 @@ const { registerSwarmProviderIpc } = require('./swarm/swarm-provider-ipc');
 const { registerRadiclePermissionsIpc } = require('./radicle/radicle-permissions');
 const { registerRadicleProviderIpc } = require('./radicle/radicle-provider-ipc');
 const { registerPageRequestsIpc } = require('./page/page-requests');
+const { registerApprovalsIpc } = require('./approvals/approvals-document');
 const { setAgentWalletRoute } = require('./page/page-ethereum');
 const { registerSelectedChainIpc } = require('./wallet/selected-chain');
 const { registerPageEvents } = require('./page/page-events');
@@ -704,6 +705,9 @@ async function bootstrap() {
   // Ethereum reads, and the chain each window's switcher selected, which
   // those reads answer.
   registerPageRequestsIpc();
+  // With FREEDOM_APPROVALS_DOCUMENT=1, each window's approvals document
+  // shows main's prompts and takes the decisions (0011 APS-1).
+  registerApprovalsIpc();
   // A page's connect from a tab the agent holds goes to the agent service,
   // as the chrome's agent route took it before (0011 PRQ-4).
   setAgentWalletRoute(

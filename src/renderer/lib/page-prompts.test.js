@@ -49,12 +49,14 @@ const flush = async () => {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
 };
 
-async function load() {
+async function load({ appBody = null } = {}) {
   jest.resetModules();
   const elements = Object.fromEntries(ELEMENT_IDS.map((id) => [id, createElement('button')]));
   elements['sidebar-dapp-connect'].classList.add('hidden');
   elements['wallet-prompt-count'].classList.add('hidden');
   global.document = createDocument({ elementsById: elements });
+  if (appBody) global.document.querySelector = (selector) => (selector === '.app-body' ? appBody : null);
+  const windowListeners = {};
 
   const listeners = {};
   const decisions = [];
@@ -71,7 +73,9 @@ async function load() {
         decisions.push({ handle, approve, choices });
         return answerDecision(handle, approve, choices);
       }),
+      anchor: jest.fn(),
     },
+    addEventListener: (type, fn) => (windowListeners[type] = fn),
     dappPermissions: { grantPermission, getPermission: jest.fn(async () => null) },
     electronAPI: { getCachedFavicon },
   };
@@ -129,6 +133,7 @@ async function load() {
     identityView.classList.remove('hidden');
   };
   return {
+    windowListeners,
     elements,
     listeners,
     decisions,
@@ -368,5 +373,22 @@ describe('page prompts in the chrome (0011 PRQ-4)', () => {
     jest.advanceTimersByTime(1000);
     expect(screen.show).toHaveBeenCalledTimes(2);
     env.setInFlight(false);
+  });
+});
+
+// With the approvals document's flag on (0011 APS-1), main places the panel
+// below the toolbar: the chrome tells it where its content area starts.
+describe('the content area\'s top, for the approvals panel', () => {
+  test('reported at init and whenever it moves, once per change', async () => {
+    let top = 85.4;
+    const appBody = { getBoundingClientRect: () => ({ top }) };
+    const env = await load({ appBody });
+    const { anchor } = global.window.pagePrompts;
+    expect(anchor.mock.calls).toEqual([[85]]);
+    env.windowListeners.resize();
+    expect(anchor).toHaveBeenCalledTimes(1);
+    top = 113;
+    env.windowListeners.resize();
+    expect(anchor.mock.calls).toEqual([[85], [113]]);
   });
 });

@@ -1,0 +1,35 @@
+<!doctype html>
+<!--
+  The approvals document (freedom-core design 0011, "The approvals document";
+  APS-1). Main serves it from its own partition with a strict CSP and Trusted
+  Types (src/main/approvals/approvals-document.js). Everything a prompt shows
+  is built by approvals.js from fixed templates, as text.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Approvals</title>
+    <link rel="stylesheet" href="../styles/variables.css" />
+    <link rel="stylesheet" href="./approvals.css" />
+  </head>
+  <body>
+    <main id="panel" class="panel" aria-labelledby="heading" hidden>
+      <header class="panel-header">
+        <h1 id="heading" class="panel-heading">Request</h1>
+      </header>
+      <div class="panel-site">
+        <div class="field-label">Site</div>
+        <div id="site" class="field-value site-value"></div>
+      </div>
+      <div id="body" class="panel-body"></div>
+      <p id="error" class="panel-error" role="alert" hidden>
+        Freedom can't show this request. You can only reject it
+      </p>
+      <footer class="panel-actions">
+        <button type="button" id="reject" class="action-reject">Reject</button>
+        <button type="button" id="approve" class="action-approve">Approve</button>
+      </footer>
+    </main>
+    <script src="./approvals.js"></script>
+  </body>
+</html>

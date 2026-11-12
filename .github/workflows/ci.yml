@@ -1641,8 +1641,11 @@ jobs:
       # seeding, whose prompt, guard and seed statuses are main's
       # (`page-radicle-seed`, PRQ-8b), and its signing, whose grant, prompts,
       # rule and guard are main's, with no Radicle route left in the chrome
-      # (`page-radicle-sign`, PRQ-8c).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle + page-radicle-seed + page-radicle-sign E2E
+      # (`page-radicle-sign`, PRQ-8c), and the approvals document behind its
+      # flag, which only the window's own view can drive, under its CSP and
+      # Trusted Types, with its input held for 500 ms and Enter never
+      # approving (`approvals-document`, APS-1).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle + page-radicle-seed + page-radicle-sign + approvals-document E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1670,7 +1673,8 @@ jobs:
             test-e2e/page-swarm-feeds.spec.js \
             test-e2e/page-radicle.spec.js \
             test-e2e/page-radicle-seed.spec.js \
-            test-e2e/page-radicle-sign.spec.js
+            test-e2e/page-radicle-sign.spec.js \
+            test-e2e/approvals-document.spec.js
 
       - name: Upload software rendering profile
         if: always()
