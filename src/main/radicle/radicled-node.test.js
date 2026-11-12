@@ -659,6 +659,43 @@ describe("readiness (0008, Main's side)", () => {
     expect(node.onChange).toHaveBeenLastCalledWith('running', node);
   });
 
+  // Plan B10 (0008, Main's side, "The active identity belongs to the
+  // generation"): the identity is `rad.identity`'s reply, one object for the
+  // generation, and a crash's restart has its own.
+  test("the generation's identity is rad.identity's reply, the same object while it runs, and a restart's is another", async () => {
+    let throwaway = 0;
+    const script = {
+      identity: (message, c) => {
+        throwaway += 1;
+        c.result(message.id, { did: `did:key:z6MkThrowaway${throwaway}`, nid: `z6MkThrowaway${throwaway}`, ephemeral: true });
+      },
+      // rad.start names another DID: the node's stays rad.identity's.
+      start: (message, c) => c.result(message.id, { did: 'did:key:z6MkOther', nid: 'z6MkOther', alias: 'FreedomBrowser' }),
+    };
+    keys.vault.exists = false;
+    keys.vault.unlocked = false;
+    const node = await running(script);
+    const first = node.activeIdentity();
+    expect(first).toEqual({
+      did: 'did:key:z6MkThrowaway1',
+      nid: 'z6MkThrowaway1',
+      alias: 'FreedomBrowser',
+      ephemeral: true,
+    });
+    expect(Object.isFrozen(first)).toBe(true);
+    await clock.advance(HEALTH_INTERVAL_MS);
+    expect(node.activeIdentity()).toBe(first);
+
+    child(0).exit(70);
+    await settle();
+    expect(node.activeIdentity()).toBeNull();
+    await clock.advance(500);
+    expect(node.state).toBe('running');
+    const second = node.activeIdentity();
+    expect(second).not.toBe(first);
+    expect(second).toMatchObject({ did: 'did:key:z6MkThrowaway2', ephemeral: true });
+  });
+
   test("a generation that ended isn't up, and its identity goes with it", async () => {
     const node = await running();
     child(0).exit(70);

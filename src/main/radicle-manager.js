@@ -636,6 +636,49 @@ function stopRadicleAtQuit({ setTimer = setTimeout, clearTimer = clearTimeout } 
   });
 }
 
+// ---- the running generation's identity, and write admission ----
+
+/**
+ * The running node's identity under the service (freedom-core design 0008,
+ * Main's side, "The active identity belongs to the generation"):
+ * `rad.identity`'s reply for the generation that runs now, `{ did, nid,
+ * alias, ephemeral }`, kept and dropped with it (radicle/radicled-node.js).
+ * The same frozen object while that generation runs, so a value kept for it
+ * (cob-service.js's identity) can be told from one kept for another. Null
+ * with no generation running, and under the add-on, whose paths are
+ * today's.
+ */
+function activeRadicleIdentity() {
+  if (!onService()) return null;
+  return serviceNode?.activeIdentity() ?? null;
+}
+
+// What main answers for a COB write or the import while the running
+// generation's key is a throwaway one (0008, "Profiles without a vault",
+// Errors `needs_vault`).
+const NEEDS_VAULT = 'needs_vault';
+const NEEDS_VAULT_MESSAGE =
+  "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.";
+
+/**
+ * Whether main may send a COB write or the import now (0008, Main's side):
+ * `{ reason: 'needs_vault', message }` while the service's running
+ * generation is `ephemeral`, else null. Main refuses such a write before
+ * anything is sent, and the service would refuse it again.
+ *
+ * The running generation alone decides: creating, locking, unlocking or
+ * deleting the vault changes nothing until the next start, so a throwaway
+ * node keeps refusing after a vault is created, and a node with the derived
+ * key keeps admitting after a lock or a delete. With no generation running
+ * the write's own path answers (the node isn't running). Under the add-on,
+ * null: today's paths.
+ */
+function radicleWriteRefusal() {
+  return activeRadicleIdentity()?.ephemeral === true
+    ? { reason: NEEDS_VAULT, message: NEEDS_VAULT_MESSAGE }
+    : null;
+}
+
 function requireRunning() {
   return currentState === STATUS.RUNNING
     ? null
@@ -1106,4 +1149,9 @@ module.exports = {
   STATUS,
   NOT_ON_SERVICE,
   QUIT_REAP_MS,
+  // The running generation's identity, and write admission (plan B10).
+  activeRadicleIdentity,
+  radicleWriteRefusal,
+  NEEDS_VAULT,
+  NEEDS_VAULT_MESSAGE,
 };

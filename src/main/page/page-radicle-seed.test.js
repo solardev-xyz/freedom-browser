@@ -41,6 +41,9 @@ jest.mock('../radicle-manager', () => {
     return { success: true, status };
   };
   return {
+    // The add-on: no service generation, so no write refusal (plan B10).
+    activeRadicleIdentity: jest.fn(() => null),
+    radicleWriteRefusal: jest.fn(() => null),
     isDisabledForProfile: jest.fn(() => false),
     getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
     getConnections: jest.fn(async () => ({ success: true, count: 3 })),
@@ -77,6 +80,7 @@ jest.mock('../radicle/cob-service', () => ({
   getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   clearIdentityCache: jest.fn(),
   CobValidationError: class CobValidationError extends Error {},
+  CobAdmissionError: class CobAdmissionError extends Error {},
 }));
 
 const { EventEmitter } = require('events');

@@ -253,8 +253,9 @@ class RadicledNode {
     // (`deadline`: still repairing, so the manager's start retries).
     this.failureCode = null;
     this.serviceHello = null;
-    // The generation whose `rad.start` succeeded: { gen, did, nid, alias,
-    // ephemeral }. Dropped with the generation.
+    // The generation whose `rad.start` succeeded: { gen, identity }, its
+    // identity `{ did, nid, alias, ephemeral }` one frozen object for the
+    // generation's life. Dropped with the generation.
     this.active = null;
     // The last stats reply, for the `active` it was asked of.
     this.stats = null;
@@ -409,12 +410,12 @@ class RadicledNode {
   }
 
   /** The running generation's identity, `{ did, nid, alias, ephemeral }`,
-   * or null. */
+   * or null (0008, Main's side, "The active identity belongs to the
+   * generation"). One frozen object for each generation, the same at every
+   * call while it runs, so a value kept for it can be told from one kept for
+   * another; a crash's restart has its own. */
   activeIdentity() {
-    const active = this.liveActive();
-    if (!active) return null;
-    const { did, nid, alias, ephemeral } = active;
-    return { did, nid, alias, ephemeral };
+    return this.liveActive()?.identity ?? null;
   }
 
   /** The node's connected peers, as its last stats reply counted them, or
@@ -689,12 +690,17 @@ class RadicledNode {
       return;
     }
     if (!this.carries(client, gen)) return;
+    // The running node's identity is `rad.identity`'s reply (0008, Main's
+    // side): its DID alone is the one main shows for the node, and its
+    // `ephemeral` alone decides write admission. `rad.start` adds the alias.
     this.active = {
       gen,
-      did: typeof started?.did === 'string' ? started.did : identity.did,
-      nid: typeof started?.nid === 'string' ? started.nid : identity.nid,
-      alias: typeof started?.alias === 'string' ? started.alias : null,
-      ephemeral,
+      identity: Object.freeze({
+        did: identity.did,
+        nid: identity.nid,
+        alias: typeof started?.alias === 'string' ? started.alias : null,
+        ephemeral,
+      }),
     };
     this.log.info('[Radicle] freedom-radicled node started', { ephemeral });
     // 7. Running once a stats reply says the node is alive.
