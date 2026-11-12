@@ -96,7 +96,13 @@ async function expectNextAttemptAfter(attempts, count, delay) {
   expect(attempts.calls).toHaveLength(count + 1);
 }
 
-const rangeOrigin = rangeResponder({ content: CONTENT, etag: ETAG, contentType: 'video/mp4' });
+// Answers HEAD the way Ant does: no `Accept-Ranges` (see `withHeadAcceptRanges`).
+const rangeOrigin = rangeResponder({
+  content: CONTENT,
+  etag: ETAG,
+  contentType: 'video/mp4',
+  headAcceptRanges: false,
+});
 
 beforeEach(async () => {
   ant = await startFakeHttpNode();
@@ -212,6 +218,91 @@ describe('bzz: Range and conditional requests over HTTP', () => {
   });
 });
 
+// #169: the read pattern of a lazy page reader such as swarmlite's SQLite VFS
+// — size the file from a 1-byte probe's Content-Range total, then read 4 KiB
+// pages — against an Ant-shaped node, end to end through the handler.
+describe('bzz: the single-range contract (#169) over HTTP', () => {
+  const DB = Buffer.from(Array.from({ length: 64 * 1024 + 123 }, (_, i) => (i * 7) % 253));
+  const PAGE = 4096;
+  const dbOrigin = rangeResponder({
+    content: DB,
+    etag: ETAG,
+    contentType: 'application/vnd.sqlite3',
+    headAcceptRanges: false,
+  });
+
+  const read = (range) => handle(bzz('/db.sqlite', { headers: { Range: range } }));
+
+  test('a 1-byte probe gives the total size, then each page read is its exact slice', async () => {
+    ant.handle(dbOrigin);
+
+    const probe = await read('bytes=0-0');
+    expect(probe.status).toBe(206);
+    expect(probe.headers.get('accept-ranges')).toBe('bytes');
+    const total = Number(probe.headers.get('content-range').match(/^bytes 0-0\/(\d+)$/)[1]);
+    expect(total).toBe(DB.length);
+    expect(Buffer.from(await probe.arrayBuffer())).toEqual(DB.subarray(0, 1));
+
+    // First page, a middle page, and the short last page.
+    const lastPage = Math.floor((total - 1) / PAGE);
+    for (const page of [0, 7, lastPage]) {
+      const start = page * PAGE;
+      const end = Math.min(start + PAGE, total) - 1;
+      const res = await read(`bytes=${start}-${start + PAGE - 1}`);
+      expect(res.status).toBe(206);
+      expect(res.headers.get('content-range')).toBe(`bytes ${start}-${end}/${total}`);
+      expect(res.headers.get('content-length')).toBe(String(end - start + 1));
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(DB.subarray(start, end + 1));
+    }
+    expect(ant.requests.map((r) => r.headers.range)).toEqual([
+      'bytes=0-0',
+      'bytes=0-4095',
+      'bytes=28672-32767',
+      `bytes=${lastPage * PAGE}-${lastPage * PAGE + PAGE - 1}`,
+    ]);
+  });
+
+  test('a ranged read retried after a cold 503 resends the same Range and gets its slice', async () => {
+    ant.handle((req, res, entry) => {
+      if (ant.requests.length === 1) {
+        res.writeHead(503, { 'Content-Type': 'text/plain' });
+        res.end('cold');
+        return;
+      }
+      dbOrigin(req, res, entry);
+    });
+    const attempts = instrumentFetch();
+    useFakeClock();
+
+    const pending = read('bytes=8192-12287');
+    await expectNextAttemptAfter(attempts, 1, RETRY_DELAYS_MS[0]);
+    const res = await pending;
+
+    expect(ant.requests.map((r) => r.headers.range)).toEqual([
+      'bytes=8192-12287',
+      'bytes=8192-12287',
+    ]);
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe(`bytes 8192-12287/${DB.length}`);
+    expect(Buffer.from(await res.arrayBuffer())).toEqual(DB.subarray(8192, 12288));
+  });
+
+  test('a 404 on a ranged read is final, like any other 404', async () => {
+    ant.handle((_req, res) => {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{"code":404,"message":"Not Found"}');
+    });
+    useFakeClock();
+
+    const res = await read('bytes=0-0');
+
+    expect(res.status).toBe(404);
+    expect(ant.requests).toHaveLength(1);
+    expect(jest.getTimerCount()).toBe(0);
+    await res.arrayBuffer();
+  });
+});
+
 describe('bzz: HEAD and redirects over HTTP', () => {
   test('HEAD reaches the node as HEAD and comes back with its headers and no body', async () => {
     ant.handle(rangeOrigin);
@@ -223,6 +314,45 @@ describe('bzz: HEAD and redirects over HTTP', () => {
     expect(res.headers.get('content-length')).toBe('1000');
     expect(res.headers.get('accept-ranges')).toBe('bytes');
     expect(res.headers.get('etag')).toBe(ETAG);
+  });
+
+  test('HEAD with a Range is answered like Ant: the whole 200, never a 206', async () => {
+    ant.handle(rangeOrigin);
+    const res = await handle(
+      bzz('/video.mp4', { method: 'HEAD', headers: { Range: 'bytes=0-0' } })
+    );
+
+    expect(ant.requests[0].headers.range).toBe('bytes=0-0');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-range')).toBeNull();
+    expect(res.headers.get('content-length')).toBe('1000');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+  });
+
+  test("a node's own HEAD Accept-Ranges passes through as the node sent it", async () => {
+    ant.handle((_req, res) => {
+      res.writeHead(200, { 'Accept-Ranges': 'none', 'Content-Length': '1000' });
+      res.end();
+    });
+    const res = await handle(bzz('/video.mp4', { method: 'HEAD' }));
+
+    expect(res.headers.get('accept-ranges')).toBe('none');
+  });
+
+  test.each([
+    ['a GET 200', 'GET', 200],
+    ['a HEAD 404', 'HEAD', 404],
+    ['a HEAD 304', 'HEAD', 304],
+  ])('Accept-Ranges is not added to %s', async (_label, method, status) => {
+    ant.handle((_req, res) => {
+      res.writeHead(status, { 'Content-Type': 'text/plain' });
+      res.end(status === 304 || method === 'HEAD' ? undefined : 'body');
+    });
+    const res = await handle(bzz('/x', { method }));
+
+    expect(res.status).toBe(status);
+    expect(res.headers.get('accept-ranges')).toBeNull();
+    if (res.body) await res.arrayBuffer();
   });
 
   test('canonicalises a directory redirect into bzz: space and drops (cancels) its body', async () => {
