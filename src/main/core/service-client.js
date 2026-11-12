@@ -1218,7 +1218,6 @@ class ServiceClient extends EventEmitter {
       untilResponse = false,
       fence = null,
       stream = false,
-      opens = null,
       onSent = null,
       endsOnError = false,
     } = options || {};
@@ -1292,7 +1291,6 @@ class ServiceClient extends EventEmitter {
     if (stream) {
       entry.stream = true;
       entry.signal = signal;
-      if (opens) entry.opens = opens;
     }
     if (endsOnError) entry.endsOnError = true;
     // Sent for a private window, as its async context says, and in which
@@ -1956,14 +1954,9 @@ class ServiceClient extends EventEmitter {
     }
     let body = null;
     if (gen.streams) {
-      // A head that says `body: true` opens the stream of a stream request,
-      // or one its request's `opens` says opens.
+      // A head that says `body: true` opens the stream of a stream request.
       const opens = Boolean(
-        entry.stream &&
-        hasResult &&
-        (entry.opens
-          ? entry.opens(message.result)
-          : isObject(message.result) && message.result.body === true)
+        entry.stream && hasResult && isObject(message.result) && message.result.body === true
       );
       let replied;
       try {
@@ -1996,10 +1989,7 @@ class ServiceClient extends EventEmitter {
    * been read after `end`, and errors on `abort` (with the abort's code),
    * on the process's end, or on a protocol fault. Its `cancel()`, or
    * `signal` aborting, retires the stream: main sends `cancel` and no more
-   * credit, and drops what is left. Options are `requestTo`'s, and `opens`:
-   * (result) => whether a head with that result opens the body, for a
-   * method whose result always has one but doesn't say so; by default, a
-   * head that says `body: true`.
+   * credit, and drops what is left. Options are `requestTo`'s.
    */
   callStream(method, params = {}, context = { caller: 'shell' }, options = {}) {
     return this.requestStreamTo(this.current, method, params, context, options);
@@ -2008,14 +1998,13 @@ class ServiceClient extends EventEmitter {
   /** `callStream` to the ready process `gen` names, as `requestTo`. */
   requestStreamTo(gen, method, params = {}, context = { caller: 'shell' }, options = {}) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
-    const { watchdogMs = null, signal = null, fence = null, onSent = null, opens = null } = options;
+    const { watchdogMs = null, signal = null, fence = null, onSent = null } = options;
     return this.send(gen, method, params, context, {
       watchdogMs,
       signal,
       fence,
       onSent,
       stream: true,
-      opens,
     });
   }
 

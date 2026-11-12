@@ -4,7 +4,7 @@
  * radicle-embedded.js under `FREEDOM_RADICLE_BACKEND=service`. The node is
  * radicled-node.js's; each read is a `rad.read { op, args }` on its running
  * generation, answered with a head, `{ content_type: "application/json",
- * bytes }`, and the JSON as a body stream.
+ * bytes, body: true }`, and the JSON as a body stream.
  *
  * - **`callStream(op, args, { signal })`** passes a read through: its head
  *   and its body, a byte stream main pulls on demand, holding one 128 KiB

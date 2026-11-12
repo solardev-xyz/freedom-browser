@@ -284,7 +284,7 @@ const SET_SERVICE_NODE =
 function readReply(text) {
   const bytes = Buffer.from(text);
   return {
-    result: { content_type: 'application/json', bytes: bytes.length },
+    result: { content_type: 'application/json', bytes: bytes.length, body: true },
     body: new ReadableStream({
       start(controller) {
         controller.enqueue(bytes);
