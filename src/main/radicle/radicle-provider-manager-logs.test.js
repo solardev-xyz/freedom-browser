@@ -11,10 +11,9 @@
  * so a private window reaches none of them; each line still redacts in any
  * private log context.
  *
- * Runs the real IPC handler, radicle-manager, seed-status tracker,
- * cob-service, private-window registry (only the window lookup is faked),
- * fail-closed sender check and log context. The add-on and the permission
- * store are mocks.
+ * Runs main's real page path (executeRadicleForPage), radicle-manager,
+ * seed-status tracker, cob-service and log context. The add-on and the
+ * permission store are mocks.
  */
 const mockHandlers = new Map();
 const mockSend = jest.fn();
@@ -90,14 +89,12 @@ jest.mock('./radicle-permissions', () => ({
 }));
 
 const fs = require('fs');
-const IPC = require('../../shared/ipc-channels');
 const log = require('../logger');
 const embedded = require('../radicle-embedded');
 const manager = require('../radicle-manager');
 const seedStatus = require('./seed-status');
 const permissions = require('./radicle-permissions');
 const cob = require('./cob-service');
-const privateWindows = require('../private/private-windows');
 const { runWithPrivateLogContext } = require('../private/private-log-context');
 const {
   registerRadicleProviderIpc,
@@ -114,30 +111,11 @@ const ORIGIN = 'https://forge.example';
 const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 const RID_Z = RID.slice('rad:'.length);
 
-const publicChrome = mockFixture.publicSender();
-const privateChrome = mockFixture.privateSender(privateWindows);
-const META = { webContentsId: 9, approval: 'user' };
-const execute = (sender, method, params = {}) =>
-  mockHandlers.get(IPC.RADICLE_PROVIDER_EXECUTE)(sender === undefined ? {} : { sender }, {
-    method,
-    params,
-    origin: ORIGIN,
-    meta: META,
-  });
-
-// A node-status read is main's from PRQ-8a (freedom-core design 0011,
+// Every window.radicle method is main's (freedom-core design 0011, PRQ-8,
 // src/main/page/page-radicle.js): a page's request runs on main's page path,
 // under the attested key. A private window never reaches it (main's
-// attestation refuses one), and the chrome's route refuses the method
-// before anything, so a private window reaches none of these lines now.
+// attestation refuses one), and the chrome has no route (PRQ-8c).
 const pageExecute = (method, params = {}) => executeRadicleForPage(method, params, ORIGIN);
-const PAGE_REQUEST_ONLY = {
-  error: {
-    code: 4100,
-    message: 'The origin is not authorized for this operation',
-    data: { reason: 'page_request_only' },
-  },
-};
 
 // Absolute paths of each kind, as #1050's tests find them.
 const UNIX_PATH = /(?:^|[\s'"(=:,])\/(?!\/)[^\s'"/]/;
@@ -360,77 +338,27 @@ describe('the manager and tracker lines, in any private log context (#1073)', ()
   });
 });
 
-const REACHED = CASES.filter((entry) => entry.method === 'radicle_getNodeStatus');
-const NOT_REACHED = CASES.filter((entry) => entry.method !== 'radicle_getNodeStatus');
-// The add-on calls a seed, sync or unseed makes.
-const SEED_CALLS = [
-  'cloneRepoWithProgress',
-  'cancelClone',
-  'unseedRepo',
-  'listSeededRepos',
-  'seeders',
-];
-
 describe('the manager and tracker lines, through window.radicle (#1073)', () => {
-  // Every method that reaches these lines is main's (PRQ-8a, 8b): the
-  // chrome's route refuses it for any sender before the manager, and a
-  // private window never reaches main's page path.
-  test.each(NOT_REACHED)(
-    '$label, under $home: the chrome route refuses a private window before it; main\'s page path logs the detail',
-    async (entry) => {
-      // Every window send fails, so a listener the request subscribed would
-      // log. The add-on's failure is not set up: nothing reaches the add-on.
-      if (entry.before) await entry.before();
-      jest.clearAllMocks();
-      failSend(entry.text);
-      const privateReply = await execute(privateChrome, entry.method, entry.params);
-      await settle();
-      for (const call of SEED_CALLS) expect(embedded[call]).not.toHaveBeenCalled();
-      mockSend.mockReset();
-      // The fetch started before the request finishes in its own context.
-      if (entry.after) await entry.after();
-      expect(privateReply).toEqual(PAGE_REQUEST_ONLY);
-      expect(loggedLines()).not.toContainEqual(entry.line('<private>', '<private>'));
-      for (const args of loggedLines()) expect(JSON.stringify(args)).not.toContain(RID_Z);
+  // Every method that reaches these lines is main's (freedom-core design
+  // 0011, PRQ-8): a page's request runs on main's page path, which a private
+  // window never reaches, and the chrome has no route (PRQ-8c). Through that
+  // path, each line logs the detail, and <private> in a private log context.
+  test.each(CASES)('$label, under $home: main\'s page path logs the detail, and <private> in a private log context', async (entry) => {
+    const privateReply = await run(entry, () =>
+      runWithPrivateLogContext(true, () => pageExecute(entry.method, entry.params))
+    );
+    expect(loggedLines()).toContainEqual(entry.line('<private>', '<private>'));
+    expectNothingPrivateLogged(entry.path);
 
-      jest.clearAllMocks();
-      mockSend.mockReset();
-      seedStatus._reset();
-      await run(entry, () => pageExecute(entry.method, entry.params));
-      expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
-    }
-  );
-
-  test.each(REACHED)(
-    '$label, under $home: the chrome route refuses a private window before it; main\'s page path logs the detail, and <private> in a private log context',
-    async (entry) => {
-      jest.clearAllMocks();
-      const refused = await execute(privateChrome, entry.method, entry.params);
-      await settle();
-      expect(refused).toEqual(PAGE_REQUEST_ONLY);
-      expect(embedded.listRepos).not.toHaveBeenCalled();
-      expect(loggedLines()).toEqual([]);
-
-      jest.clearAllMocks();
-      mockSend.mockReset();
-      seedStatus._reset();
-      cob.clearIdentityCache();
-      const privateReply = await run(entry, () =>
-        runWithPrivateLogContext(true, () => pageExecute(entry.method, entry.params))
-      );
-      expect(loggedLines()).toContainEqual(entry.line('<private>', '<private>'));
-      expectNothingPrivateLogged(entry.path);
-
-      jest.clearAllMocks();
-      mockSend.mockReset();
-      seedStatus._reset();
-      cob.clearIdentityCache();
-      const publicReply = await run(entry, () => pageExecute(entry.method, entry.params));
-      expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
-      // The reply is the same either way.
-      expect(privateReply).toEqual(publicReply);
-    }
-  );
+    jest.clearAllMocks();
+    mockSend.mockReset();
+    seedStatus._reset();
+    cob.clearIdentityCache();
+    const publicReply = await run(entry, () => pageExecute(entry.method, entry.params));
+    expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
+    // The reply is the same either way.
+    expect(privateReply).toEqual(publicReply);
+  });
 
   test('a node-status read answers with success after its repository count failed', async () => {
     const text = storageError(HOMES[0][1], '/');
@@ -441,16 +369,8 @@ describe('the manager and tracker lines, through window.radicle (#1073)', () => 
     expect(loggedLines()).toEqual([['[Radicle] Could not read seeded repository count:', text]]);
   });
 
-  // A sender main can't place in a known public window counts as private:
-  // the chrome's route refuses the read before anything, as for any sender.
-  test.each([
-    ['no sender', undefined],
-    ['a sender with no window', { id: 77, isDestroyed: () => false }],
-    ['a destroyed sender', { isDestroyed: () => true }],
-    ['a public sender', publicChrome],
-  ])('a node-status read from %s on the chrome route is refused, with nothing logged', async (_label, sender) => {
-    await expect(execute(sender, 'radicle_getNodeStatus')).resolves.toEqual(PAGE_REQUEST_ONLY);
-    expect(embedded.listRepos).not.toHaveBeenCalled();
-    expect(loggedLines()).toEqual([]);
+  test('the provider registers no route for the chrome', () => {
+    expect(mockHandlers.has('radicle:provider-execute')).toBe(false);
   });
 });
+

@@ -146,100 +146,12 @@ test('a site\'s pushed seed progress goes to main\'s sink, never to the chrome w
   }
 });
 
-// PRQ-8b: seeding is main's. Its custody check is the page dispatcher's
-// (page-radicle-seed.test.js); the chrome's route refuses seed and unseed
-// whatever path it reports, before custody or anything else.
-test('the chrome route refuses a seed or an unseed whatever path it reports, with nothing run', async () => {
-  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+// PRQ-8c: every window.radicle method is main's. Custody, the prompts and
+// the rules are the page dispatcher's (page-radicle-seed.test.js,
+// page-radicle-sign.test.js); the provider registers no chrome route.
+test('the provider registers no chrome route, only its alias channels', () => {
   registerRadicleProviderIpc();
-  const executeHandler = mockIpcHandle.mock.calls.find(
-    ([channel]) => channel === 'radicle:provider-execute'
-  )[1];
-  const chrome = { id: 1 };
-  const guest = { isDestroyed: () => false, hostWebContents: chrome };
-  mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
-  for (const custody of [true, false]) {
-    setAgentPageCustody(guest, custody);
-    for (const method of ['radicle_seed', 'radicle_unseed']) {
-      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9, approval: 'user' }, {}]) {
-        const refused = await executeHandler({ sender: chrome }, { method, params: { rid: RID }, origin: ORIGIN, meta });
-        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'page_request_only' } });
-      }
-    }
-  }
-  setAgentPageCustody(guest, false);
-  expect(manager.seedRepository).not.toHaveBeenCalled();
-  expect(manager.unseedRepository).not.toHaveBeenCalled();
-});
-
-test('provider IPC holds signed writes from a tab in Agent custody to a per-write prompt', async () => {
-  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
-  permissions.hasSigningGrant.mockReturnValue(true);
-  registerRadicleProviderIpc();
-  const executeHandler = mockIpcHandle.mock.calls.find(
-    ([channel]) => channel === 'radicle:provider-execute'
-  )[1];
-  const chrome = { id: 1 };
-  const guest = { isDestroyed: () => false, hostWebContents: chrome };
-  mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
-  const writes = {
-    radicle_createIssue: { rid: RID, title: 'Bug', description: 'Steps' },
-    radicle_commentIssue: { rid: RID, issueId: 'a'.repeat(40), body: 'Same here' },
-    radicle_editIssueState: { rid: RID, issueId: 'a'.repeat(40), state: 'closed' },
-    radicle_commentPatch: { rid: RID, patchId: 'b'.repeat(40), body: 'LGTM' },
-  };
-  const call = (method, meta, sender = chrome) =>
-    executeHandler({ sender }, { method, params: writes[method], origin: ORIGIN, meta });
-  const cobCalls = () =>
-    cob.createIssue.mock.calls.length +
-    cob.commentIssue.mock.calls.length +
-    cob.editIssueState.mock.calls.length +
-    cob.commentPatch.mock.calls.length;
-
-  setAgentPageCustody(guest, true);
-  try {
-    // The standing grant answering (named, or no path at all) is refused.
-    for (const method of Object.keys(writes)) {
-      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }, undefined]) {
-        const refused = await call(method, meta);
-        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-      }
-    }
-    expect(cobCalls()).toBe(0);
-    // The user approved this write in its prompt: it signs.
-    for (const method of Object.keys(writes)) {
-      expect((await call(method, { webContentsId: 9, approval: 'user' })).result).toBeDefined();
-    }
-    expect(cobCalls()).toBe(4);
-  } finally {
-    setAgentPageCustody(guest, false);
-  }
-
-  // A tab the user holds: the grant alone does not answer a write (R-6)...
-  for (const method of Object.keys(writes)) {
-    const refused = await call(method, { webContentsId: 9, approval: 'auto' });
-    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'approval_required' } });
-  }
-  expect(cobCalls()).toBe(4);
-  // ...the site's "always allow writes" rule does.
-  permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
-  for (const method of Object.keys(writes)) {
-    expect((await call(method, { webContentsId: 9, approval: 'auto' })).result).toBeDefined();
-  }
-  expect(cobCalls()).toBe(8);
-  // A grant-answered write main cannot tie to a guest of the sending window.
-  for (const [meta, sender] of [
-    [undefined, chrome],
-    [{ approval: 'auto' }, chrome],
-    [{ webContentsId: 10, approval: 'auto' }, chrome],
-    [{ webContentsId: 9, approval: 'auto' }, { id: 2 }],
-  ]) {
-    const refused = await call('radicle_createIssue', meta, sender);
-    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-  }
-  expect(cobCalls()).toBe(8);
-  // Disclosing the identity signs nothing and stays on the grant.
-  expect((await call('radicle_getIdentity', { webContentsId: 9 })).result).toBeDefined();
+  expect(mockIpcHandle.mock.calls.map(([channel]) => channel).sort()).toEqual(['radicle:get-alias', 'radicle:set-alias']);
 });
 
 const expectProviderError = async (promise, code, reason) => {
@@ -620,60 +532,7 @@ describe('signed write approval (R-6)', () => {
 // chrome's route refuses every method main's page dispatcher serves, for any
 // site it names, before anything runs: no grant read, no use recorded, no
 // node call, no revocation.
-describe('the chrome route and the methods main serves (0011 PRQ-8a, 8b)', () => {
-  const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
-
-  test('the chrome route refuses each of main\'s methods for any site, with nothing run', async () => {
-    registerRadicleProviderIpc();
-    const executeHandler = mockIpcHandle.mock.calls.find(([channel]) => channel === 'radicle:provider-execute')[1];
-    expect([...RADICLE_PAGE_METHODS].sort()).toEqual([
-      'radicle_disconnect',
-      'radicle_getCapabilities',
-      'radicle_getNodeStatus',
-      'radicle_getSeedStatus',
-      'radicle_listSeededRepos',
-      'radicle_requestAccess',
-      'radicle_seed',
-      'radicle_sync',
-      'radicle_unseed',
-    ]);
-    for (const origin of [ORIGIN, 'name.eth', 'https://other.example']) {
-      for (const method of RADICLE_PAGE_METHODS) {
-        const answer = await executeHandler(
-          { sender: { id: 1 } },
-          { method, params: {}, origin, meta: { approval: 'user', webContentsId: 9 } }
-        );
-        expect({ origin, method, answer }).toEqual({
-          origin,
-          method,
-          answer: {
-            error: {
-              code: 4100,
-              message: 'The origin is not authorized for this operation',
-              data: { reason: 'page_request_only' },
-            },
-          },
-        });
-      }
-    }
-    expect(permissions.getPermission).not.toHaveBeenCalled();
-    expect(permissions.updateLastUsed).not.toHaveBeenCalled();
-    expect(permissions.revokePermission).not.toHaveBeenCalled();
-    expect(manager.getConnections).not.toHaveBeenCalled();
-    expect(cob.getIdentity).not.toHaveBeenCalled();
-    expect(require('../radicle-embedded').listSeededRepos).not.toHaveBeenCalled();
-    for (const fn of ['seedRepository', 'unseedRepository', 'refetchRepository', 'getSeedFetchStatus']) {
-      expect(manager[fn]).not.toHaveBeenCalled();
-    }
-    // The methods still on its route still run there.
-    permissions.hasSigningGrant.mockReturnValue(true);
-    const identity = await executeHandler(
-      { sender: { id: 1 } },
-      { method: 'radicle_getIdentity', params: {}, origin: ORIGIN }
-    );
-    expect(identity).toEqual({ result: { did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' } });
-  });
-
+describe('main\'s page path (0011 PRQ-8)', () => {
   test('main\'s page path answers { result } or { error }, an add-on failure with its fixed text only', async () => {
     expect(await executeRadicleForPage('radicle_getCapabilities', {}, ORIGIN)).toEqual({
       result: expect.objectContaining({ canUseNode: true, reason: null }),

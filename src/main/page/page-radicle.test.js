@@ -60,6 +60,7 @@ const {
   RADICLE_READ_METHODS,
   RADICLE_CONNECT_METHODS,
   RADICLE_SEED_METHODS,
+  RADICLE_SIGN_METHODS,
   RADICLE_PAGE_METHODS,
   createRadicleDispatchers,
   registerRadiclePageEvents,
@@ -263,15 +264,20 @@ afterAll(() => {
 });
 
 describe('the methods main serves (0011 PRQ-8a)', () => {
-  test('the dispatcher serves the reads, connecting, disconnecting and seeding, each with its row, and the preload routes exactly these', () => {
+  test('the dispatcher serves every window.radicle method, each with its row, and the preload routes exactly these', () => {
     expect(RADICLE_READ_METHODS).toEqual(['radicle_getCapabilities', 'radicle_getNodeStatus', 'radicle_listSeededRepos']);
     expect(RADICLE_CONNECT_METHODS).toEqual(['radicle_requestAccess', 'radicle_disconnect']);
     expect(RADICLE_SEED_METHODS).toEqual(['radicle_seed', 'radicle_unseed', 'radicle_sync', 'radicle_getSeedStatus']);
-    expect(RADICLE_PAGE_METHODS).toEqual([...RADICLE_READ_METHODS, ...RADICLE_CONNECT_METHODS, ...RADICLE_SEED_METHODS]);
-    // Every one is a method main's provider knows.
+    expect(RADICLE_PAGE_METHODS).toEqual([
+      ...RADICLE_READ_METHODS,
+      ...RADICLE_CONNECT_METHODS,
+      ...RADICLE_SEED_METHODS,
+      ...RADICLE_SIGN_METHODS,
+    ]);
+    // Exactly the methods main's provider knows: all of window.radicle.
     const provider = fs.readFileSync(path.join(__dirname, '../radicle/radicle-provider-ipc.js'), 'utf-8');
     const known = [.../const METHOD_TIERS = \{([\s\S]*?)\};/.exec(provider)[1].matchAll(/(radicle_[A-Za-z]+):/g)].map((m) => m[1]);
-    for (const method of RADICLE_PAGE_METHODS) expect(known).toContain(method);
+    expect([...RADICLE_PAGE_METHODS].sort()).toEqual(known.sort());
     expect(Object.keys(createRadicleDispatchers({ execute: jest.fn() })).sort()).toEqual(
       RADICLE_PAGE_METHODS.map((m) => `radicle:${m}`).sort()
     );
