@@ -96,6 +96,7 @@ import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFromPage } from './lib/wallet-ui.js';
+import { initPagePrompts } from './lib/page-prompts.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
@@ -966,6 +967,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initOnboarding(); // Identity onboarding wizard
   initSidebar(); // Identity & wallet sidebar
   initWalletUi(); // Wallet & identity display in sidebar
+  initPagePrompts(); // Main's prompts for page requests, and their badges (0011 PRQ-4)
   initRadicleConsent(); // Radicle provider consent subscreen (sidebar)
   initRadicleAlias(); // Radicle alias display/editing in the Nodes tab
   loadBookmarks();

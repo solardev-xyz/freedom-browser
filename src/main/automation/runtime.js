@@ -567,6 +567,23 @@ function createAutomationRuntime(options = {}) {
     return desktopBindingsByHost.get(hostWebContents)?.get(rendererTabId) || null;
   }
 
+  // The automation tab bound to a desktop guest, by its webContents id: how
+  // main finds the agent's tab for a page request it attested (freedom-core
+  // design 0011, "Agent custody"), with no word from the chrome.
+  function automationTabIdForGuest(guestWebContentsId) {
+    if (!Number.isSafeInteger(guestWebContentsId)) return null;
+    for (const [tabId, binding] of desktopBindingsByAutomationTab) {
+      try {
+        if (binding.guestWebContents?.id === guestWebContentsId && !binding.guestWebContents.isDestroyed?.()) {
+          return tabId;
+        }
+      } catch {
+        // A guest torn down mid-read has no tab.
+      }
+    }
+    return null;
+  }
+
   function desktopBindingForAutomationTab(tabId) {
     const binding = desktopBindingsByAutomationTab.get(tabId);
     if (!binding) return null;
@@ -627,6 +644,7 @@ function createAutomationRuntime(options = {}) {
     registerWebContents,
     attachToHostWebContents,
     automationTabIdForRenderer,
+    automationTabIdForGuest,
     desktopBindingForAutomationTab,
     createDesktopPage,
     createDesktopPageForHost,
@@ -644,6 +662,7 @@ module.exports = {
   registerAutomationWebContents: defaultRuntime.registerWebContents,
   attachAutomationToHostWebContents: defaultRuntime.attachToHostWebContents,
   automationTabIdForRenderer: defaultRuntime.automationTabIdForRenderer,
+  automationTabIdForGuest: defaultRuntime.automationTabIdForGuest,
   desktopBindingForAutomationTab: defaultRuntime.desktopBindingForAutomationTab,
   createDesktopAutomationPage: defaultRuntime.createDesktopPage,
   createDesktopAutomationPageForHost: defaultRuntime.createDesktopPageForHost,

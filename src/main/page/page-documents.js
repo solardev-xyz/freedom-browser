@@ -561,7 +561,24 @@ function createPageDocuments(deps = {}) {
     return currentDocOf(requester) !== null;
   }
 
-  return { track, bindName, hello, attest, attestNow, isCurrent, recheckName, holdsKey, onEnded };
+  /**
+   * Every guest's current document that has said hello and whose name check
+   * is over, as attested records, for the events main sends to every live
+   * document of a key or a window (design 0011, "Events"). A record is
+   * main's word at this moment: whoever sends to one checks it again
+   * (`isCurrent`, and the name for a name-revalidated event).
+   */
+  function liveDocuments() {
+    const out = [];
+    for (const state of guests.values()) {
+      const doc = state.current;
+      if (!doc || doc.ended || !doc.nonce || doc.naming?.pending) continue;
+      out.push(snapshot(doc));
+    }
+    return out;
+  }
+
+  return { track, bindName, hello, attest, attestNow, isCurrent, recheckName, holdsKey, onEnded, liveDocuments };
 }
 
 module.exports = {

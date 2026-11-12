@@ -1726,9 +1726,9 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // the page sees anything: main sends to a frame, and the frame can commit a
 // new document between main's check and the delivery.
 //
-// The Ethereum reads take the new path (PRQ-3, PAGE_ROUTES), and main
-// answers them: their page-world provider arms no timer of its own, and
-// main's deadline answers one that runs too long. Each later step of the
+// The Ethereum reads (PRQ-3) and connecting (PRQ-4) take the new path
+// (PAGE_ROUTES), and main answers them: their page-world provider arms no
+// timer of its own, and main's deadline answers one that runs too long. Each later step of the
 // design moves its own methods. For a test, the E2E harness can route more
 // through main (`testPageRoutes`, which main puts on the boot switch only in
 // test mode).
@@ -1743,9 +1743,12 @@ if (PAGE_REQUESTS_ENABLED) {
 }
 
 // window.ethereum's read methods: `READ_ONLY_METHODS` in the chrome's
-// dapp-provider.js, and `eth_accounts`. page-ethereum.test.js keeps this the
-// list main's Ethereum dispatcher serves (src/main/page/page-ethereum.js).
+// dapp-provider.js, and `eth_accounts`; and connecting, `eth_requestAccounts`
+// and `wallet_switchEthereumChain`. page-ethereum.test.js keeps this the list
+// main's Ethereum dispatcher serves (src/main/page/page-ethereum.js).
 const PAGE_ROUTES = new Set([
+  'ethereum:eth_requestAccounts',
+  'ethereum:wallet_switchEthereumChain',
   'ethereum:eth_chainId',
   'ethereum:net_version',
   'ethereum:eth_accounts',

@@ -78,6 +78,48 @@ describe('Freedom agent runtime', () => {
     expect(unregister).toHaveBeenCalledTimes(1);
   });
 
+  // freedom-core design 0011, PRQ-4: main offers a page's connect from a tab
+  // the agent may hold to the agent service, by the guest it attested.
+  test('a page request main attested reaches the agent service for the tab bound to its guest, only while Agent is on', async () => {
+    const { loadSettings } = require('../settings-store');
+    const service = { handleWalletRequest: jest.fn(async () => ({ handled: true, result: ['0x1'] })), dispose: jest.fn() };
+    FreedomAgentService.mockImplementation(() => service);
+    registerFreedomAgentIpc.mockReturnValue(jest.fn());
+    AgentManagedWorkspaceStore.mockImplementation(() => ({
+      markStaleRunningAsInterrupted: jest.fn(),
+      retryPendingRemovals: jest.fn(async () => 0),
+      close: jest.fn(),
+    }));
+    const automationTabIdForGuest = jest.fn((guestId) => (guestId === 11 ? 'tab_1' : null));
+    const runtime = createFreedomAgentRuntime({
+      profile: { id: 'work', userDataDir: '/profiles/work' },
+      dataDir: '/profiles/work/agent',
+      ipcMain: {},
+      controller: {
+        setWalletController: jest.fn(),
+        setWalletTransferController: jest.fn(),
+        setNodeController: jest.fn(),
+        setNodeRequestController: jest.fn(),
+        setNodeLifecycleController: jest.fn(),
+        setDiagnosticsController: jest.fn(),
+        setPublicationController: jest.fn(),
+      },
+      subscribeTabLifecycle: jest.fn(() => jest.fn()),
+      isTrustedSender: jest.fn(),
+      automationTabIdForGuest,
+    });
+    const request = { method: 'eth_requestAccounts', params: [], chainId: 100 };
+    loadSettings.mockReturnValue({ enableAi: false });
+    expect(await runtime.handlePageWalletRequest(11, request)).toEqual({ handled: false });
+    loadSettings.mockReturnValue({ enableAi: true });
+    expect(await runtime.handlePageWalletRequest(12, request)).toEqual({ handled: false });
+    expect(await runtime.handlePageWalletRequest(11, null)).toEqual({ handled: false });
+    expect(service.handleWalletRequest).not.toHaveBeenCalled();
+    expect(await runtime.handlePageWalletRequest(11, request)).toEqual({ handled: true, result: ['0x1'] });
+    expect(service.handleWalletRequest).toHaveBeenCalledWith('tab_1', request);
+    loadSettings.mockReturnValue({ enableAi: false });
+  });
+
   test('composes one profile-bound runtime and disposes IPC before the service', async () => {
     const calls = [];
     const providerStore = {};

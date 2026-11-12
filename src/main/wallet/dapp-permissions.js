@@ -16,6 +16,7 @@ const { normalizeOrigin } = require('../../shared/origin-utils');
 const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 const PERMISSIONS_FILE = 'dapp-permissions.json';
+const GRANT_REFUSED = 'A dApp connection is granted only from its own prompt';
 const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
 // In-memory cache of permissions
@@ -411,8 +412,13 @@ function registerDappPermissionsIpc() {
     return getPermission(origin);
   });
 
-  ipcMain.handle(IPC.DAPP_GRANT_PERMISSION, (_event, origin, walletIndex, chainId) => {
-    return grantPermission(origin, walletIndex, chainId);
+  // Refused for every site (freedom-core design 0011, "Grants"; PRQ-4): a
+  // connection is written by main itself, for the key it attested, from the
+  // user's decision on the prompt it issued (page/page-ethereum.js). The
+  // chrome named the site here, so a compromised chrome could connect any
+  // site to any account. Revoking stays open: it only narrows.
+  ipcMain.handle(IPC.DAPP_GRANT_PERMISSION, () => {
+    throw new Error(GRANT_REFUSED);
   });
 
   ipcMain.handle(IPC.DAPP_REVOKE_PERMISSION, (_event, origin) => {

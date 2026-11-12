@@ -22,6 +22,27 @@
  *     chrome's error text when the chain has no RPC provider.
  *     Permission-free: the key as it stands, with no resolution.
  *
+ * Connecting (PRQ-4):
+ *
+ *   - `eth_requestAccounts`: a tab the agent holds is answered by the agent
+ *     service, as through the chrome before. A connected site gets its
+ *     account. Otherwise main prompts (`eth.connect`, held while its tab is
+ *     in the background) and, on the user's approval, writes the grant
+ *     itself, for the requester's key: the account the user picked, and the
+ *     chain the page reads. Name-revalidated: the name is resolved again
+ *     before the grant is read and again after the prompt, and the grant is
+ *     written only while the document still holds it (`holdsKey`, just
+ *     before the write). A name that has moved gets no grant.
+ *   - `wallet_switchEthereumChain`: a chain the registry knows and has a
+ *     source for. Main writes the grant's chain, selects the chain for the
+ *     page's window (`wallet/selected-chain.js`, which tells the chrome) and
+ *     sends `chainChanged`, but never to an onchain app, which keeps its own
+ *     chain. Name-revalidated: after the name has moved, it is refused with
+ *     nothing changed.
+ *
+ * A document with no key is refused both, as the chrome refused them:
+ * "This page has no address to connect from yet".
+ *
  * Every method answers `4900` while the Identity & Wallet switch is off,
  * as the chrome did. The chrome's own path for these methods stays until
  * PRQ-9 removes it, but the preload no longer sends pages' requests there.
@@ -35,9 +56,35 @@ const FALLBACK_CHAIN_ID = 100;
 const DISCONNECTED = Object.freeze({ code: 4900, message: 'Disconnected' });
 const INVALID_PARAMS = Object.freeze({ code: -32602, message: 'Invalid parameters' });
 const INTERNAL_ERROR_CODE = -32603;
+const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
+const NO_ADDRESS = Object.freeze({ code: 4100, message: 'This page has no address to connect from yet' });
+const UNSUPPORTED = Object.freeze({ code: 4200, message: 'Method not supported' });
+const CHAIN_NOT_ADDED = Object.freeze({ code: 4902, message: 'Unrecognized chain ID' });
+const GRANT_FAILED = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'Failed to save the connection' });
+const ACCOUNT_GONE = Object.freeze({ code: INTERNAL_ERROR_CODE, message: 'The selected account is no longer available' });
+
+// v1 Safes live on Gnosis: one whose contract isn't there yet can't serve a
+// dApp, and isn't offered (the chrome's `safeNotConnectable`).
+const GNOSIS_CHAIN_ID = 100;
 
 /** The methods this dispatcher serves: PRQ-3's reads. */
 const ETHEREUM_READ_METHODS = Object.freeze(['eth_chainId', 'net_version', 'eth_accounts', ...ETHEREUM_RPC_READS]);
+
+/** And PRQ-4's: connecting. */
+const ETHEREUM_CONNECT_METHODS = Object.freeze(['eth_requestAccounts', 'wallet_switchEthereumChain']);
+
+/** Every method main's Ethereum dispatcher serves, and so the preload routes to main. */
+const ETHEREUM_PAGE_METHODS = Object.freeze([...ETHEREUM_READ_METHODS, ...ETHEREUM_CONNECT_METHODS]);
+
+// How main reaches the agent service for a tab it holds (index.js sets it
+// once the agent runtime exists): `(guestId, request) => ({ handled, result,
+// error })`, `{ handled: false }` for a tab the agent doesn't hold.
+let agentWalletRoute = null;
+
+/** index.js: the agent service's wallet route, for the tabs it holds. */
+function setAgentWalletRoute(route) {
+  agentWalletRoute = typeof route === 'function' ? route : null;
+}
 
 function defaultDependencies() {
   return {
@@ -49,7 +96,23 @@ function defaultDependencies() {
       require('../networks/chain-data').request(chainId, method, params, options),
     isChainAvailable: (chainId) => require('../networks/network-registry').isChainAvailable(chainId),
     chainName: (chainId) => require('../networks/network-registry').getAllNetworks()?.[chainId]?.name,
+    networks: () => require('../networks/network-registry').getAllNetworks() || {},
+    getActiveWalletIndex: () => require('../identity-manager').getActiveWalletIndex(),
+    grantPermission: (key, walletIndex, chainId) =>
+      require('../wallet/dapp-permissions').grantPermission(key, walletIndex, chainId),
+    updateLastUsed: (key, chainId) => require('../wallet/dapp-permissions').updateLastUsed(key, chainId),
+    selectChainForPage: (windowId, chainId) =>
+      require('../wallet/selected-chain').selectChainForPage(windowId, chainId),
+    agentWalletRequest: async (guestId, request) =>
+      (agentWalletRoute ? agentWalletRoute(guestId, request) : { handled: false }),
   };
+}
+
+/** Whether a wallet record can serve a dApp: an undeployed Safe can't. */
+function connectable(wallet) {
+  if (!wallet || !Number.isInteger(wallet.index)) return false;
+  if (wallet.type === 'safe') return Boolean(wallet.deployed?.[GNOSIS_CHAIN_ID]);
+  return true;
 }
 
 /** True for a value the JSON for the core carries at its own size. */
@@ -86,21 +149,41 @@ function createEthereumDispatchers(deps = {}) {
     chainRequest,
     isChainAvailable,
     chainName,
+    networks,
+    getActiveWalletIndex,
+    grantPermission,
+    updateLastUsed,
+    selectChainForPage,
+    agentWalletRequest,
   } = { ...defaultDependencies(), ...deps };
 
-  // The chain this page reads: what the chrome's getCurrentChainId answered.
-  function chainIdOf(requester) {
-    if (Number.isSafeInteger(requester.chain) && requester.chain > 0) return requester.chain;
+  // The chain a window's pages read, but its onchain apps.
+  function windowChainOf(windowId) {
     let selected;
     try {
-      selected = selectedChainOf(requester.window);
+      selected = selectedChainOf(windowId);
     } catch {
       selected = null;
     }
     return Number.isSafeInteger(selected) && selected > 0 ? selected : FALLBACK_CHAIN_ID;
   }
 
+  // The chain this page reads: what the chrome's getCurrentChainId answered.
+  function chainIdOf(requester) {
+    if (Number.isSafeInteger(requester.chain) && requester.chain > 0) return requester.chain;
+    return windowChainOf(requester.window);
+  }
+
   const hex = (chainId) => `0x${chainId.toString(16)}`;
+
+  async function walletList() {
+    try {
+      const listed = await getDerivedWallets();
+      return Array.isArray(listed) ? listed : [];
+    } catch {
+      return [];
+    }
+  }
 
   async function accounts(context) {
     const { requester } = context;
@@ -111,13 +194,7 @@ function createEthereumDispatchers(deps = {}) {
     if (!(await context.nameHolds(keyless))) return [];
     const permission = getPermission(requester.key);
     if (!permission) return [];
-    let wallets;
-    try {
-      const listed = await getDerivedWallets();
-      wallets = Array.isArray(listed) ? listed : [];
-    } catch {
-      wallets = [];
-    }
+    const wallets = await walletList();
     const wallet = wallets.find((candidate) => candidate?.index === permission.walletIndex);
     if (!wallet) return [];
     if (!(await context.nameHolds(keyless))) return [];
@@ -161,6 +238,174 @@ function createEthereumDispatchers(deps = {}) {
     }
   }
 
+  // A tab the agent holds: the agent service answers, with its own
+  // approval, as it did through the chrome (`offerAgentWalletRequest`).
+  // Custody is read live, at this request.
+  async function agentAnswer(context) {
+    const { requester, method, params } = context;
+    let outcome;
+    try {
+      outcome = await agentWalletRequest(requester.guest, {
+        method,
+        params,
+        displayUrl: requester.url,
+        permissionKey: requester.key,
+        chainId: chainIdOf(requester),
+      });
+    } catch {
+      return null;
+    }
+    if (!outcome || typeof outcome !== 'object' || outcome.handled !== true) return null;
+    return outcome.error ? { error: outcome.error } : { result: outcome.result };
+  }
+
+  // The prompt's view: main's own wallet state (design 0011, "What a prompt
+  // shows"). Only accounts that can serve a dApp are offered; the default
+  // is the active one, or the first that can.
+  function connectView(wallets, requester) {
+    const offered = wallets.filter(connectable).map((wallet) => ({
+      index: wallet.index,
+      name: typeof wallet.name === 'string' ? wallet.name : '',
+      address: typeof wallet.address === 'string' ? wallet.address : null,
+      type: typeof wallet.type === 'string' ? wallet.type : 'mnemonic',
+    }));
+    let active;
+    try {
+      active = getActiveWalletIndex();
+    } catch {
+      active = null;
+    }
+    const defaultIndex = offered.some((wallet) => wallet.index === active) ? active : (offered[0]?.index ?? null);
+    const chainId = chainIdOf(requester);
+    let name;
+    try {
+      name = chainName(chainId) || null;
+    } catch {
+      name = null;
+    }
+    return { accounts: offered, defaultIndex, chain: { id: chainId, name } };
+  }
+
+  // The grant's events (today's, from the chrome's connect): the account to
+  // every live document of the key, `connect` to the one that asked.
+  async function announceConnection(context, account, chainId) {
+    const { requester } = context;
+    const others = context
+      .liveDocuments()
+      .filter((doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation));
+    await context.sendEvent(requester, 'accountsChanged', [account]);
+    await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
+    for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
+  }
+
+  async function requestAccounts(context) {
+    const { requester } = context;
+    if (!requester.key) return { error: { ...NO_ADDRESS } };
+    const agent = await agentAnswer(context);
+    if (agent) return agent;
+    // Name-revalidated: before the grant is read, after every wait, and the
+    // document must hold the key at the write itself.
+    const keyless = { keyless: { error: { ...NO_ADDRESS } } };
+    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    const permission = getPermission(requester.key);
+    if (permission) {
+      const wallet = (await walletList()).find((candidate) => candidate?.index === permission.walletIndex);
+      if (!(await context.nameHolds(keyless)) || !context.holdsKey()) return { error: { ...NO_ADDRESS } };
+      updateLastUsed(requester.key);
+      return { result: wallet?.address ? [wallet.address] : [] };
+    }
+    const view = connectView(await walletList(), requester);
+    const offered = new Set(view.accounts.map((wallet) => wallet.index));
+    const decision = await context.prompt({
+      kind: 'eth.connect',
+      view,
+      // The one thing the user picks: which offered account, and nothing
+      // else.
+      choices: (raw) =>
+        Object.keys(raw).every((name) => name === 'walletIndex') &&
+        Number.isInteger(raw.walletIndex) &&
+        offered.has(raw.walletIndex)
+          ? { walletIndex: raw.walletIndex }
+          : null,
+    });
+    if (decision.error) return { error: decision.error };
+    // Closed some other way: main has answered the record already, or
+    // answers nothing to a document that has gone.
+    if (decision.closed || decision.approve !== true) return { error: { ...USER_REJECTED } };
+    const chosen = (await walletList()).find(
+      (wallet) => wallet?.index === decision.choices.walletIndex && connectable(wallet)
+    );
+    if (!chosen?.address) return { error: { ...ACCOUNT_GONE } };
+    if (!(await context.nameHolds(keyless)) || !context.holdsKey()) return { error: { ...NO_ADDRESS } };
+    const chainId = chainIdOf(requester);
+    try {
+      grantPermission(requester.key, chosen.index, chainId);
+    } catch {
+      return { error: { ...GRANT_FAILED } };
+    }
+    context.afterAnswer(() => announceConnection(context, chosen.address, chainId));
+    return { result: [chosen.address] };
+  }
+
+  async function switchChain(context) {
+    const { requester, params } = context;
+    if (!requester.key) return { error: { ...NO_ADDRESS } };
+    // Today's checks and answers (`handleSwitchChain`), in its order.
+    if (!params || !params[0] || !params[0].chainId) return { error: { ...INVALID_PARAMS } };
+    // As the chrome parsed it, but only from a string or a number: an object
+    // from the page names no chain.
+    const raw = params[0].chainId;
+    const requested = typeof raw === 'string' || typeof raw === 'number' ? parseInt(raw, 16) : NaN;
+    const pinned = Number.isSafeInteger(requester.chain) && requester.chain > 0 ? requester.chain : null;
+    if (pinned && requested !== pinned) {
+      return { error: { ...UNSUPPORTED, message: `This onchain application is pinned to chain ${pinned}.` } };
+    }
+    let known;
+    try {
+      known = networks()?.[requested];
+    } catch {
+      known = null;
+    }
+    if (!known) return { error: { ...CHAIN_NOT_ADDED } };
+    let available;
+    try {
+      available = isChainAvailable(requested);
+    } catch {
+      available = false;
+    }
+    if (!available) {
+      return {
+        error: {
+          code: 4902,
+          message: `${known.name} requires an RPC provider. Please configure Alchemy, Infura, or DRPC in Settings.`,
+        },
+      };
+    }
+    // Name-revalidated: nothing changes once the name has moved off its
+    // IPNS key, neither the grant's chain nor the window's.
+    if (!(await context.nameHolds()) || !context.holdsKey()) return { error: { ...NO_ADDRESS } };
+    const previous = windowChainOf(requester.window);
+    if (getPermission(requester.key)) updateLastUsed(requester.key, requested);
+    selectChainForPage(requester.window, requested);
+    // The page that asked hears it first, as from the chrome, unless it is
+    // an onchain app, which keeps its own chain.
+    if (!pinned) await context.sendEvent(requester, 'chainChanged', hex(requested));
+    // The chain changed for every other page of the window too, but the
+    // onchain apps.
+    if (previous !== requested) {
+      const others = context
+        .liveDocuments()
+        .filter(
+          (doc) =>
+            doc.window === requester.window &&
+            !doc.chain &&
+            !(doc.guest === requester.guest && doc.navigation === requester.navigation)
+        );
+      for (const doc of others) await context.sendEvent(doc, 'chainChanged', hex(requested));
+    }
+    return { result: null };
+  }
+
   const serve = (answer) => async (context) => {
     if (!identityWalletEnabled()) return { error: { ...DISCONNECTED } };
     return answer(context);
@@ -170,6 +415,8 @@ function createEthereumDispatchers(deps = {}) {
     'ethereum:eth_chainId': serve(async ({ requester }) => ({ result: hex(chainIdOf(requester)) })),
     'ethereum:net_version': serve(async ({ requester }) => ({ result: String(chainIdOf(requester)) })),
     'ethereum:eth_accounts': serve(async (context) => ({ result: await accounts(context) })),
+    'ethereum:eth_requestAccounts': serve(requestAccounts),
+    'ethereum:wallet_switchEthereumChain': serve(switchChain),
   };
   for (const method of ETHEREUM_RPC_READS) dispatchers[`ethereum:${method}`] = serve(read);
   return dispatchers;
@@ -177,6 +424,9 @@ function createEthereumDispatchers(deps = {}) {
 
 module.exports = {
   ETHEREUM_READ_METHODS,
+  ETHEREUM_CONNECT_METHODS,
+  ETHEREUM_PAGE_METHODS,
   FALLBACK_CHAIN_ID,
   createEthereumDispatchers,
+  setAgentWalletRoute,
 };

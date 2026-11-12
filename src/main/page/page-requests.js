@@ -53,6 +53,14 @@
  * holds the name for the guest's next main-frame commit, which main checks
  * against its own resolution (`page-documents.js`). The chrome may name only
  * a guest it hosts.
+ *
+ * A dispatcher that needs the user opens a prompt (`context.prompt`, PRQ-4):
+ * a handle main issues, held and shown per window by `page-prompts.js`,
+ * which the chrome renders and answers with `page:decide`. The chrome
+ * reports the guest in front with `page:foreground`. One wallet prompt is
+ * pending per document at a time; a second request gets `-32002`. The
+ * prompt carries main's `site`, the request's attested key, and whatever the
+ * user decides, the dispatcher acts on its own record.
  */
 
 const crypto = require('crypto');
@@ -72,6 +80,7 @@ const {
   timeoutError,
 } = require('./page-methods');
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
+const { CHANNELS: PROMPT_CHANNELS, KIND_SET, WALLET_KINDS, createPagePrompts } = require('./page-prompts');
 
 const CHANNELS = Object.freeze({
   HELLO: 'page:hello',
@@ -79,10 +88,12 @@ const CHANNELS = Object.freeze({
   REQUEST: 'page:request',
   EVENT: 'page:event',
   BIND_NAME: 'page:bind-name',
+  ...PROMPT_CHANNELS,
 });
 
 const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
+const FOREGROUND_KEYS = new Set(['guest']);
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
@@ -107,6 +118,8 @@ const LIMIT_EXCEEDED = { code: -32005, message: 'Limit exceeded' };
 const INVALID_REQUEST = { code: -32602, message: 'Invalid parameters' };
 const INTERNAL_ERROR = { code: -32603, message: 'Internal error' };
 const UNAUTHORIZED = { code: 4100, message: 'Unauthorized' };
+// EIP-1193's "request already pending": a document's second wallet prompt.
+const PROMPT_PENDING = { code: -32002, message: 'Another wallet request is already pending' };
 
 /** A refused requester: the attestation's reason, nothing more. */
 const refusal = (reason) => errorOf(UNAUTHORIZED, { reason });
@@ -162,6 +175,28 @@ function isLive(contents) {
   }
 }
 
+// The chrome window `contents` is the chrome of, as main's own record: the
+// sender policy lets only a chrome window's top frame reach the prompt
+// channels, and this names its window.
+function defaultChromeWindowOf(contents) {
+  const { BrowserWindow } = require('electron');
+  const win = BrowserWindow.fromWebContents(contents);
+  if (!win || win.isDestroyed() || win.webContents !== contents) return null;
+  return Number.isInteger(win.id) ? win.id : null;
+}
+
+function defaultSendToWindow(windowId, channel, payload) {
+  const { BrowserWindow } = require('electron');
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  win.webContents.send(channel, payload);
+}
+
+function defaultWatchWindow(windowId, onClosed) {
+  const { BrowserWindow } = require('electron');
+  BrowserWindow.fromId(windowId)?.once('closed', onClosed);
+}
+
 /**
  * @param {object} [options]
  * @param {object} [options.documents] page-documents.js's API.
@@ -170,9 +205,15 @@ function isLive(contents) {
  *   -> `async (context) => ({ result } | { error })`. Empty in the app.
  * @param {object} [options.hooks] test hooks, read at each use: `dispatch`
  *   serves every method with a row, `beforeEventSend(message, target)` may
- *   hold an event between main's check and the send, `onTrace(entry)` hears
- *   what main did, and `onCopy(entry)` hears each copy a dispatcher reports
- *   (`context.copied`), with whether the request's charge is in place.
+ *   hold an event between main's check and the send, `holdRequest(payload)`
+ *   may hold a request's delivery before main takes it, `onTrace(entry)`
+ *   hears what main did, and `onCopy(entry)` hears each copy a dispatcher
+ *   reports (`context.copied`), with whether the request's charge is in
+ *   place.
+ * @param {(contents: object) => number|null} [options.chromeWindowOf] the
+ *   chrome window a sender is the chrome of.
+ * @param {(windowId: number, channel: string, payload: object) => void} [options.sendToWindow]
+ *   to a window's chrome.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -184,6 +225,9 @@ function createPageRequests({
   randomHex = (bytes) => crypto.randomBytes(bytes).toString('hex'),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
+  chromeWindowOf = defaultChromeWindowOf,
+  sendToWindow = defaultSendToWindow,
+  watchWindow = defaultWatchWindow,
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -198,6 +242,14 @@ function createPageRequests({
       // A test hook never changes what main does.
     }
   };
+
+  const prompts = createPagePrompts({
+    send: (windowId, channel, payload) => sendToWindow(windowId, channel, payload),
+    markShown: (entry) => markShown(entry.record),
+    decided: (entry) => closeHandle(entry.record, CLOSED.DECIDED),
+    trace,
+  });
+  const watchedWindows = new Set();
 
   const budgets = createPageBudgets({
     budgets: budgetBounds,
@@ -245,6 +297,8 @@ function createPageRequests({
       // The answer if the document no longer holds its key when main
       // answers (`nameHolds`).
       keyless: undefined,
+      // What runs once the answer has reached the document (`afterAnswer`).
+      after: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -300,7 +354,16 @@ function createPageRequests({
     }
     record.resolve(current ? value : GONE);
     trace({ kind: current ? 'answered' : 'gone', id: record.id, value: current ? value : undefined });
+    const after = record.after;
+    record.after = null;
     release(record);
+    if (current && after && value !== GONE) {
+      try {
+        Promise.resolve(after(value)).catch(() => {});
+      } catch {
+        // What follows an answer never changes it.
+      }
+    }
     return current;
   }
 
@@ -325,6 +388,7 @@ function createPageRequests({
     record.handleClosed = reason;
     const closed = Object.freeze({ handle, window: record.window, guest: record.requester.guest, reason });
     trace({ kind: 'handle-closed', id: record.id, reason });
+    prompts.closed(handle, reason);
     for (const listener of handleListeners) {
       try {
         listener(closed);
@@ -377,10 +441,50 @@ function createPageRequests({
       params,
       isCurrent: () => documents.isCurrent(record.requester),
       nameHolds: (options) => nameHolds(record, options),
+      holdsKey: () => documents.holdsKey(record.requester),
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
+      prompt: (spec) => prompt(record, spec),
+      afterAnswer: (fn) => {
+        if (typeof fn === 'function' && !record.answered) record.after = fn;
+      },
+      liveDocuments: () => documents.liveDocuments(),
+      sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
       copied: (label) => copied(record, label),
     });
+  }
+
+  /**
+   * Ask the user (design 0011, "Requests and handles"): open the record's
+   * handle and hold its prompt in its window, shown while its guest is in
+   * front. `site` is main's, from the record. Settles with the decision,
+   * `{ approve, choices }` (`choices` as `spec.choices` checked them), with
+   * `{ closed: reason }` when the handle closes otherwise, or with
+   * `{ error }`, `-32002`, while the document has another wallet prompt
+   * open.
+   */
+  async function prompt(record, { kind, view = {}, choices } = {}) {
+    if (!KIND_SET.has(kind)) throw new Error(`page-requests: no prompt of kind ${kind}`);
+    if (record.answered) return { closed: CLOSED.CANCELLED };
+    if (WALLET_KINDS.has(kind) && prompts.walletPromptOpen(record.key)) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
+      return { error: { ...PROMPT_PENDING } };
+    }
+    const handle = openHandle(record);
+    if (!handle) return { closed: CLOSED.CANCELLED };
+    const { requester } = record;
+    const entry = prompts.add({
+      handle,
+      record,
+      window: record.window,
+      guest: requester.guest,
+      document: record.key,
+      kind,
+      site: { key: requester.key, label: requester.key },
+      view,
+      choices,
+    });
+    return entry.decision;
   }
 
   // Whether a name-revalidated method may use its document's key now
@@ -417,6 +521,69 @@ function createPageRequests({
       // A test hook never changes what main does.
     }
     return inPlace;
+  }
+
+  /**
+   * `page:decide` from a chrome window: a decision for the handle that
+   * window shows at this moment, and for nothing else. Answers `{ ok: true }`
+   * once the request it decided has been answered (the dispatcher has acted
+   * on it: a grant written, or nothing), or why it was refused.
+   */
+  async function decide(event, payload) {
+    let windowId;
+    try {
+      windowId = chromeWindowOf(event?.sender);
+    } catch {
+      windowId = null;
+    }
+    if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
+    const outcome = prompts.decide(windowId, payload);
+    trace({ kind: 'decide', window: windowId, ok: outcome.ok, reason: outcome.reason });
+    if (!outcome.ok) return outcome;
+    await outcome.entry.record.reply;
+    return { ok: true };
+  }
+
+  /**
+   * `page:foreground { guest }` from a chrome window: the guest now in front
+   * of that window, or `null` for a tab with no page. Only a live guest the
+   * window hosts; anything else is ignored. It only chooses which pending
+   * prompt shows.
+   */
+  function foreground(event, payload) {
+    let windowId;
+    try {
+      windowId = chromeWindowOf(event?.sender);
+    } catch {
+      windowId = null;
+    }
+    if (!Number.isInteger(windowId)) return false;
+    if (!isPlainObject(payload) || !hasOnlyKeys(payload, FOREGROUND_KEYS)) return false;
+    const { guest } = payload;
+    if (guest !== null) {
+      if (!Number.isInteger(guest)) return false;
+      try {
+        const contents = webContentsFromId(guest);
+        if (!isLive(contents) || contents.getType() !== 'webview') return false;
+        const hostId = contents.hostWebContents?.id;
+        if (!Number.isInteger(hostId) || hostId !== event.sender.id) return false;
+      } catch {
+        return false;
+      }
+    }
+    if (!watchedWindows.has(windowId)) {
+      watchedWindows.add(windowId);
+      try {
+        watchWindow(windowId, () => {
+          watchedWindows.delete(windowId);
+          prompts.forgetWindow(windowId);
+        });
+      } catch {
+        // Forgotten with the process, then.
+      }
+    }
+    prompts.foreground(windowId, guest);
+    return true;
   }
 
   async function run(record, dispatch, event, nonce, naming, params) {
@@ -579,9 +746,10 @@ function createPageRequests({
   /**
    * Send `event` to the target document (an attested requester), with its
    * nonce: only an event with a row, only while the document is current,
-   * and only to its guest's main frame. Until main resolves a name again
-   * before an event (`documents.recheckName`, from PRQ-6), a
-   * name-revalidated event never goes to a name-keyed document.
+   * and only to its guest's main frame. A name-revalidated event goes to a
+   * name-keyed document only once main has resolved the name again to the
+   * document's IPNS key (design 0011, "Events"); a name that no longer
+   * answers ends the binding, and the event isn't sent.
    *
    * @returns {Promise<{ok: true} | {ok: false, reason: string}>}
    */
@@ -589,11 +757,16 @@ function createPageRequests({
     const row = eventRow(provider, event);
     if (!row) return { ok: false, reason: 'unlisted' };
     if (!target || !documents.isCurrent(target)) return { ok: false, reason: 'navigated' };
-    if (row.class === CLASS.NAME_REVALIDATED && target.key !== target.transportKey) {
-      return { ok: false, reason: 'name-unchecked' };
+    const named = row.class === CLASS.NAME_REVALIDATED && target.key !== target.transportKey;
+    if (named) {
+      const checked = await documents.recheckName(target);
+      if (!checked.ok || !documents.holdsKey(target) || !documentHolds(target)) {
+        return { ok: false, reason: 'name-moved' };
+      }
     }
     const message = { nonce: target.nonce, provider, event, data };
     if (typeof hooks.beforeEventSend === 'function') await hooks.beforeEventSend(message, target);
+    if (named && !documents.holdsKey(target)) return { ok: false, reason: 'name-moved' };
     const frame = liveMainFrame(target);
     if (!frame) return { ok: false, reason: 'navigated' };
     try {
@@ -632,7 +805,15 @@ function createPageRequests({
       bindName(event, payload);
     });
     ipcMain.handle(CHANNELS.RESERVE, (event, payload) => reserve(event, payload));
-    ipcMain.handle(CHANNELS.REQUEST, (event, payload) => request(event, payload));
+    ipcMain.handle(CHANNELS.REQUEST, async (event, payload) => {
+      // Test only: a request held on its way in, before main takes it.
+      if (typeof hooks.holdRequest === 'function') await hooks.holdRequest(payload);
+      return request(event, payload);
+    });
+    ipcMain.handle(CHANNELS.DECIDE, (event, payload) => decide(event, payload));
+    ipcMain.on(CHANNELS.FOREGROUND, (event, payload) => {
+      foreground(event, payload);
+    });
   }
 
   return {
@@ -644,6 +825,9 @@ function createPageRequests({
     sendEvent,
     findHandle,
     onHandleClosed,
+    decide,
+    foreground,
+    promptState: () => prompts.state(),
     stats,
     register,
   };
@@ -723,6 +907,10 @@ function enablePageRequestTestHooks() {
     setResolveName: (resolve) => {
       sharedHooks.resolveName = typeof resolve === 'function' ? resolve : undefined;
     },
+    setHoldRequest: (hold) => {
+      sharedHooks.holdRequest = typeof hold === 'function' ? hold : undefined;
+    },
+    promptState: () => getPageRequests().promptState(),
     sendEvent: (target, provider, event, data) => getPageRequests().sendEvent(target, provider, event, data),
     stats: () => getPageRequests().stats(),
   };

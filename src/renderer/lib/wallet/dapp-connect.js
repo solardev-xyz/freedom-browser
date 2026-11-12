@@ -2,6 +2,14 @@
  * dApp Connect Module
  *
  * Connection approval, permission management, connection banner.
+ *
+ * A page's eth_requestAccounts is main's from freedom-core design 0011's
+ * PRQ-4: main issues the prompt, holds it while its tab is in the
+ * background, says when this window shows it (`page-prompts.js`), and
+ * writes the grant itself from the decision. Here the screen renders main's
+ * prompt (`showPageConnect`) and answers its handle with the account the
+ * user picked; it names no site and writes no grant. `showDappConnect` is
+ * the old path, kept until PRQ-9 for rollback; main refuses its grant.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -45,6 +53,10 @@ let dappConnectionManage;
 let dappConnectPending = null;
 let dappConnectSelectedWalletIndex = 0;
 let currentBannerPermissionKey = null;
+// While the screen paints a page prompt, the hider it runs is its own.
+let presentingPagePrompt = false;
+// Told when another screen hides a page prompt (`onPageConnectDisplaced`).
+let pageConnectDisplaced = null;
 
 export function initDappConnect() {
   // dApp connect screen elements
@@ -69,8 +81,17 @@ export function initDappConnect() {
   dappAutoApproveBadge = document.getElementById('dapp-auto-approve-badge');
   dappConnectionManage = document.getElementById('dapp-connection-manage');
 
-  // Register screen hider
-  registerScreenHider(() => dappConnectScreen?.classList.add('hidden'));
+  // Register screen hider. A page prompt another screen hides stays main's
+  // shown prompt: it is told, so it can show again once that screen is done.
+  registerScreenHider(() => {
+    dappConnectScreen?.classList.add('hidden');
+    const request = dappConnectPending;
+    if (!presentingPagePrompt && request?.handle && !request.deciding) {
+      dappConnectPending = null;
+      walletState.identityView?.classList.remove('hidden');
+      pageConnectDisplaced?.(request.handle);
+    }
+  });
   // Showing an undecided connection: newcomers wait (dapp-prompt-guard.js).
   registerDappPrompt(
     () => dappConnectPending !== null && Boolean(dappConnectScreen) && !dappConnectScreen.classList.contains('hidden')
@@ -164,15 +185,21 @@ function closeDappConnectWalletDropdown() {
   dappConnectWalletDropdown?.classList.add('hidden');
 }
 
+// The accounts the screen offers: main's own list for a page prompt (its
+// `view`), or, on the old path, the wallet's.
+function offeredAccounts() {
+  if (dappConnectPending?.handle) return dappConnectPending.accounts;
+  // Safe accounts sign via EIP-1271, which needs the contract on chain —
+  // receive-only (undeployed) safes stay out of the list.
+  return walletState.derivedWallets.filter((wallet) => !safeNotConnectable(wallet));
+}
+
 function renderDappConnectWalletList() {
   if (!dappConnectWalletList) return;
 
   dappConnectWalletList.innerHTML = '';
 
-  for (const wallet of walletState.derivedWallets) {
-    // Safe accounts sign via EIP-1271, which needs the contract on
-    // chain — receive-only (undeployed) safes stay out of the list.
-    if (safeNotConnectable(wallet)) continue;
+  for (const wallet of offeredAccounts()) {
     const item = document.createElement('div');
     item.className = 'dapp-connect-wallet-item';
     if (wallet.index === dappConnectSelectedWalletIndex) {
@@ -207,7 +234,7 @@ function safeNotConnectable(wallet) {
 
 function selectDappConnectWallet(index) {
   dappConnectSelectedWalletIndex = index;
-  const wallet = walletState.derivedWallets.find(w => w.index === index);
+  const wallet = offeredAccounts().find(w => w.index === index);
 
   if (wallet) {
     if (dappConnectWalletName) {
@@ -222,9 +249,8 @@ function selectDappConnectWallet(index) {
   }
 
   // Be upfront that a multi-owner account signs as a smart contract.
-  document
-    .getElementById('dapp-connect-safe-note')
-    ?.classList.toggle('hidden', !isSafeAccount(index));
+  const safe = dappConnectPending?.handle ? wallet?.type === 'safe' : isSafeAccount(index);
+  document.getElementById('dapp-connect-safe-note')?.classList.toggle('hidden', !safe);
 
   closeDappConnectWalletDropdown();
 }
@@ -311,6 +337,80 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
   openSidebarPanel();
 }
 
+/** Hear of a page prompt another screen hid before it was decided. */
+export function onPageConnectDisplaced(listener) {
+  pageConnectDisplaced = typeof listener === 'function' ? listener : null;
+}
+
+/**
+ * Render main's connect prompt (`page:prompt`, kind `eth.connect`): the
+ * site main attested, and the accounts main offers. A decision goes back
+ * for this handle alone. A page's favicon isn't shown (design 0011, "What a
+ * prompt shows"). The caller shows it only while nothing else holds the
+ * sidebar (`page-prompts.js`).
+ */
+export function showPageConnect(prompt) {
+  const accounts = Array.isArray(prompt?.view?.accounts) ? prompt.view.accounts : [];
+  const previous = dappConnectPending;
+  dappConnectPending = { handle: prompt.handle, accounts };
+  // An old-path request gives way, as one replaced by a newer request did.
+  if (previous && !previous.handle && !previous.deciding) {
+    previous.reject({ code: 4001, message: 'Replaced by a newer request' });
+  }
+  if (dappConnectSite) dappConnectSite.textContent = prompt?.site?.label || prompt?.site?.key || 'Unknown';
+  if (dappConnectIcon && dappConnectFavicon) {
+    dappConnectFavicon.src = '';
+    dappConnectIcon.classList.remove('has-favicon');
+    dappConnectIcon.classList.add('hidden');
+  }
+  const defaultIndex = accounts.some((wallet) => wallet.index === prompt?.view?.defaultIndex)
+    ? prompt.view.defaultIndex
+    : (accounts[0]?.index ?? 0);
+  selectDappConnectWallet(defaultIndex);
+
+  presentingPagePrompt = true;
+  try {
+    hideAllSubscreens();
+  } finally {
+    presentingPagePrompt = false;
+  }
+  walletState.identityView?.classList.add('hidden');
+  dappConnectScreen?.classList.remove('hidden');
+  openSidebarPanel();
+}
+
+/** Take down main's prompt `handle` (hidden, closed, or refused). */
+export function closePageConnect(handle) {
+  if (!dappConnectPending?.handle || dappConnectPending.handle !== handle) return false;
+  closeDappConnect();
+  return true;
+}
+
+/** The page prompt the screen shows, or null. */
+export function shownPageConnect() {
+  return dappConnectPending?.handle && dappConnectScreen && !dappConnectScreen.classList.contains('hidden')
+    ? dappConnectPending.handle
+    : null;
+}
+
+// Answer main's prompt: the decision counts only for the handle main shows
+// at this moment, and main writes the grant itself. Main answers once the
+// request is done with, so the banner then reads the grant.
+async function decidePageConnect(request, approve) {
+  if (request.deciding) return;
+  const index = dappConnectSelectedWalletIndex;
+  if (approve && !request.accounts.some((wallet) => wallet.index === index)) return;
+  request.deciding = true;
+  try {
+    await window.pagePrompts?.decide?.(request.handle, approve, approve ? { walletIndex: index } : {});
+  } catch (err) {
+    console.error('[WalletUI] The decision did not reach main:', err);
+  }
+  request.deciding = false;
+  if (dappConnectPending === request) closeDappConnect();
+  if (approve) updateConnectionBanner();
+}
+
 function closeDappConnect() {
   dappConnectScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
@@ -320,6 +420,10 @@ function closeDappConnect() {
 
 async function approveDappConnect() {
   if (!dappConnectPending || dappConnectPending.deciding) return;
+  if (dappConnectPending.handle) {
+    await decidePageConnect(dappConnectPending, true);
+    return;
+  }
 
   const request = dappConnectPending;
   const { permissionKey, resolve, reject, webview, pinnedChainId, generation } = request;
@@ -369,6 +473,10 @@ async function approveDappConnect() {
 
 function rejectDappConnect() {
   if (!dappConnectPending) return;
+  if (dappConnectPending.handle) {
+    decidePageConnect(dappConnectPending, false);
+    return;
+  }
 
   const { reject } = dappConnectPending;
   reject({ code: 4001, message: 'User rejected the request' });

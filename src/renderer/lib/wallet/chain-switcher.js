@@ -46,6 +46,13 @@ export function initChainSwitcher() {
   chainSwitcherList = document.getElementById('chain-switcher-list');
 
   setupChainSwitcher();
+
+  // A page's wallet_switchEthereumChain runs in main now (freedom-core
+  // design 0011, PRQ-4), which selected the chain for this window and told
+  // the page: the switcher shows it, and tells no page again.
+  window.wallet?.onPageSelectedChain?.((chainId) => {
+    if (Number.isSafeInteger(chainId) && chainId > 0) setSelectedChainId(chainId);
+  });
 }
 
 function setupChainSwitcher() {

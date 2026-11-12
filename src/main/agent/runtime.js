@@ -208,6 +208,16 @@ function createFreedomAgentRuntime(options = {}) {
   });
 
   return {
+    // A page request main attested, from a tab the agent may hold
+    // (freedom-core design 0011, "Agent custody"): the agent service answers
+    // it, as the chrome's `handleAgentWalletRequest` reached it before, or
+    // `{ handled: false }` for a tab it doesn't hold.
+    async handlePageWalletRequest(guestWebContentsId, request) {
+      if (!isEnabled()) return { handled: false };
+      const tabId = options.automationTabIdForGuest?.(guestWebContentsId);
+      if (!tabId || !request || typeof request !== 'object' || Array.isArray(request)) return { handled: false };
+      return service.handleWalletRequest(tabId, request);
+    },
     providerStore,
     providerResolver,
     historyStore,

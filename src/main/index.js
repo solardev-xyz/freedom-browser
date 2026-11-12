@@ -478,6 +478,7 @@ const { registerSwarmProviderIpc } = require('./swarm/swarm-provider-ipc');
 const { registerRadiclePermissionsIpc } = require('./radicle/radicle-permissions');
 const { registerRadicleProviderIpc } = require('./radicle/radicle-provider-ipc');
 const { registerPageRequestsIpc } = require('./page/page-requests');
+const { setAgentWalletRoute } = require('./page/page-ethereum');
 const { registerSelectedChainIpc } = require('./wallet/selected-chain');
 const { registerFeedStoreIpc } = require('./swarm/feed-store');
 const { registerPermissionManifestIpc } = require('./swarm/permission-manifests');
@@ -513,6 +514,7 @@ const {
 const {
   automationController,
   automationTabIdForRenderer,
+  automationTabIdForGuest,
   desktopBindingForAutomationTab,
   registerAutomationWebContents,
   subscribeAutomationTabLifecycle,
@@ -701,6 +703,11 @@ async function bootstrap() {
   // Ethereum reads, and the chain each window's switcher selected, which
   // those reads answer.
   registerPageRequestsIpc();
+  // A page's connect from a tab the agent holds goes to the agent service,
+  // as the chrome's agent route took it before (0011 PRQ-4).
+  setAgentWalletRoute(
+    (guestId, request) => agentRuntime?.handlePageWalletRequest?.(guestId, request) ?? { handled: false }
+  );
   registerSelectedChainIpc();
   registerFeedStoreIpc();
   registerPermissionManifestIpc();
@@ -726,6 +733,7 @@ async function bootstrap() {
       },
       controller: automationController,
       automationTabIdForRenderer,
+      automationTabIdForGuest,
       createAutomationPageForHost: createDesktopAutomationPageForHost,
       desktopBindingForAutomationTab,
       subscribeTabLifecycle: subscribeAutomationTabLifecycle,

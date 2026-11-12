@@ -93,6 +93,32 @@ describe('preload', () => {
     jest.restoreAllMocks();
   });
 
+  // freedom-core design 0011, PRQ-4: the chrome hears main's prompts and
+  // answers a handle; it names no site.
+  test('the page prompt bridge listens to main and answers a handle only', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const heard = [];
+    const stop = exposures.pagePrompts.onPrompt((message) => heard.push(message));
+    const [channel, handler] = ipcRenderer.on.mock.calls.find(([name]) => name === 'page:prompt');
+    expect(channel).toBe('page:prompt');
+    handler({}, { handle: 'h', guest: 3 });
+    expect(heard).toEqual([{ handle: 'h', guest: 3 }]);
+    stop();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith('page:prompt', handler);
+    for (const [name, expected] of [
+      ['onPending', 'page:prompt-pending'],
+      ['onHidden', 'page:prompt-hidden'],
+      ['onClosed', 'page:prompt-closed'],
+    ]) {
+      exposures.pagePrompts[name](() => {});
+      expect(ipcRenderer.on.mock.calls.map(([name]) => name)).toContain(expected);
+    }
+    await exposures.pagePrompts.decide('h', true, { walletIndex: 1 });
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith('page:decide', { handle: 'h', approve: true, choices: { walletIndex: 1 } });
+    exposures.pagePrompts.foreground(7);
+    expect(ipcRenderer.send).toHaveBeenCalledWith('page:foreground', { guest: 7 });
+  });
+
   test('reads saved helper report pages through the narrow history bridge', async () => {
     const { exposures, ipcRenderer } = loadPreloadModule();
     await exposures.electronAPI.readAgentHelperReport('conversation', 'report_' + 'a'.repeat(64), 16000);
@@ -107,7 +133,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(31);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -132,6 +158,7 @@ describe('preload', () => {
       'tokens',
       'sitePermissions',
       'externalProtocol',
+      'pagePrompts',
       'dappPermissions',
       'swarmPermissions',
       'swarmManifest',

@@ -81,6 +81,11 @@ describe('automation runtime registration', () => {
     expect(duplicateTabId).toBe(hiddenTabId);
     expect(privateTabId).toBeNull();
     expect(runtime.automationTabIdForRenderer(host, 7)).toBe('tab_1');
+    // Main finds the same tab from the guest alone (freedom-core design
+    // 0011, PRQ-4: a page request it attested, with no word from the chrome).
+    expect(runtime.automationTabIdForGuest(11)).toBe('tab_1');
+    expect(runtime.automationTabIdForGuest(12)).toBeNull();
+    expect(runtime.automationTabIdForGuest('11')).toBeNull();
     expect(runtime.desktopBindingForAutomationTab('tab_1')).toEqual({
       hostWebContents: host,
       rendererTabId: 7,
@@ -98,6 +103,7 @@ describe('automation runtime registration', () => {
 
     detach();
     expect(runtime.automationTabIdForRenderer(host, 7)).toBeNull();
+    expect(runtime.automationTabIdForGuest(11)).toBeNull();
     host.emit('did-attach-webview', {}, new FakeWebContents('https://ignored.example/', 14));
     const afterDetach = await runtime.controller.execute(OPERATIONS.LIST_TABS);
     expect(afterDetach.result.tabs).toHaveLength(3);
