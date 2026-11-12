@@ -12,7 +12,7 @@
  *
  * A request's charge is what main may hold for it at once: its size times
  * its method's copies, 128 bytes for each value and each property name, for
- * `swarm_publishFiles` 1 MiB of stream buffers, and 16 KiB for main's own
+ * `swarm_publishFiles` 1 MiB of stream buffers, and 64 KiB for main's own
  * bookkeeping of the request.
  *
  * A request over 1 MiB (only the two Swarm uploads allow one) first reserves
