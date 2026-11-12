@@ -38,6 +38,19 @@
  * reason and a "try again" choice; a SafeTx another transaction superseded
  * offers only its discard.
  *
+ * A send's board is bound to one SafeTx (its hash): the one its page's
+ * request started, or (the wallet's) the one pending when it opens. Each
+ * turn reads that entry's state and SafeTx together, and each step after a
+ * wait (a signature, a discard, an execution) names it, in the same run as
+ * the step (`safe-transactions.js` refuses another). Once another SafeTx,
+ * or none, is pending, the board ends (`gone`): a choice made on one SafeTx
+ * never acts on another.
+ *
+ * The wallet's board lives as long as its window. Closed during a device's
+ * or the unlock's wait, the board ends there: nothing more is asked or
+ * executed. A signature the device returns meanwhile is kept, on the SafeTx
+ * it was made for, which waits (parked) as after Reject.
+ *
  * A board's decision mints nothing (`page-requests.js`): the Safe's request
  * was approved, and its one token minted, before the board opened.
  */
@@ -58,6 +71,8 @@ const DECLINED = new Set(['LEDGER_USER_REJECTED', 'REMOTE_USER_REJECTED']);
 const QUIET = new Set(['REMOTE_USER_CANCELLED']);
 const FEE_CHECK_NEEDS_CONFIRMATION = 'FEE_CHECK_NEEDS_CONFIRMATION';
 const SAFE_NEEDS_FUNDS = 'SAFE_NEEDS_FUNDS';
+// Another SafeTx (or none) pending than the one the step names.
+const SAFE_DISCARDED = 'SAFE_DISCARDED';
 // The most of main's own error message a view carries.
 const MAX_MESSAGE = 300;
 
@@ -100,13 +115,31 @@ function boardChoices(board, view) {
   };
 }
 
+// Whether window `windowId` is open: then `onClosed` runs once it closes,
+// until the returned stop is called. Null for a window already closed.
+function defaultWatchWindow(windowId, onClosed) {
+  const { BrowserWindow } = require('electron');
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return null;
+  win.once('closed', onClosed);
+  return () => {
+    try {
+      win.removeListener('closed', onClosed);
+    } catch {
+      // Gone with its window.
+    }
+  };
+}
+
 /**
  * @param {object} deps
  * @param {() => Promise<object[]>} deps.getDerivedWallets main's wallet list.
  * @param {(chainId: number) => string|null} [deps.chainName]
  * @param {(chainId: number) => string|null} [deps.nativeSymbol]
- * @param {object} deps.sends `{ state(i), sign(i, owner?), execute(i, options), cancel(i), tx(i) }`
- *   (`safe-transactions.js`; `tx` reads the SafeTx main holds).
+ * @param {object} deps.sends `{ state(i), sign(i, owner?, safeTxHash), execute(i, options),
+ *   cancel(i, safeTxHash), tx(i, safeTxHash) }` (`safe-transactions.js`): `state` and `tx` read
+ *   synchronously, `tx` the SafeTx main holds while it is `safeTxHash`'s; `sign`, `cancel` and
+ *   `execute` (`options.safeTxHash`) refuse another SafeTx with SAFE_DISCARDED.
  * @param {object} deps.messages `{ state(i, token), sign(i, owner?, token) }` (`safe-messages.js`).
  * @param {(err: Error) => boolean} [deps.isVaultLocked]
  * @param {(windowId: number, spec: object) => Promise<object>} deps.walletPrompt
@@ -116,6 +149,8 @@ function boardChoices(board, view) {
  * @param {(windowId: number, offer: object) => Promise<object|null>} deps.confirmExecutorFee
  *   the executor's fee asked in the panel: the fee confirmation, or null.
  * @param {(tx: object) => object|null} [deps.transferOf]
+ * @param {(windowId: number, onClosed: Function) => (Function|null)} [deps.watchWindow]
+ *   a window's close heard, until the stop it returns; null for a window closed already.
  */
 function createSafeBoards({
   getDerivedWallets,
@@ -128,6 +163,7 @@ function createSafeBoards({
   walletUnlock,
   confirmExecutorFee,
   transferOf = () => null,
+  watchWindow = defaultWatchWindow,
 }) {
   // The Safes whose wallet board is open: one at a time each.
   const walletBoards = new Set();
@@ -182,13 +218,7 @@ function createSafeBoards({
   }
 
   // The SafeTx main holds, as it executes it.
-  function txOf(safeIndex) {
-    let source;
-    try {
-      source = sends.tx(safeIndex);
-    } catch {
-      source = null;
-    }
+  function txOf(source) {
     const data = typeof source?.data === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(source.data) ? source.data.toLowerCase() : '0x';
     return { to: typeof source?.to === 'string' ? source.to : '', value: decimal(source?.value), data };
   }
@@ -215,7 +245,8 @@ function createSafeBoards({
       view.method = state.display?.method === 'personal_sign' ? 'personal_sign' : 'eth_signTypedData_v4';
       return view;
     }
-    const tx = txOf(safeIndex);
+    // Read with the state, from the same entry (`runBoard`).
+    const tx = txOf(state.tx);
     let transfer;
     try {
       transfer = transferOf(tx) || null;
@@ -236,16 +267,44 @@ function createSafeBoards({
    * asks for the executor's fee. Resolves with the board's outcome:
    * `complete` (a message whose threshold is met), `executed`, `parked`,
    * `discarded`, `rejected` (a message), `closed`, `gone` (nothing left to
-   * show), or `{ error }`.
+   * show, or another SafeTx pending than the board's), or `{ error }`.
+   * `safeTxHash` binds a send's board to that SafeTx; without it, to the
+   * one pending as it opens. `signal`, aborted, ends the board after the
+   * wait it is in (`closed`).
    */
-  async function runBoard(board, { safeIndex, token = null, ask, unlock, confirmFee }) {
+  async function runBoard(board, { safeIndex, safeTxHash = null, token = null, ask, unlock, confirmFee, signal = null }) {
+    // The SafeTx a send's board shows and acts on, once known.
+    let bound = board === 'message' || typeof safeTxHash !== 'string' ? null : safeTxHash;
+    // A send's state and the SafeTx it shows, read in one run from the
+    // board's entry: null once another one, or none, is pending.
+    const sendState = () => {
+      const state = sends.state(safeIndex);
+      if (!state || typeof state.safeTxHash !== 'string') return null;
+      if (bound === null) bound = state.safeTxHash;
+      if (state.safeTxHash !== bound) return null;
+      const tx = sends.tx(safeIndex, bound);
+      return tx ? { ...state, tx } : null;
+    };
     const api =
       board === 'message'
         ? {
             state: () => messages.state(safeIndex, token),
             sign: (owner) => messages.sign(safeIndex, owner, token),
           }
-        : { state: () => sends.state(safeIndex), sign: (owner) => sends.sign(safeIndex, owner) };
+        : { state: sendState, sign: (owner) => sends.sign(safeIndex, owner, bound) };
+    // After each wait: the window closed (the wallet's board), or the
+    // board's SafeTx no longer the one pending, ends the board.
+    const ended = () => {
+      if (signal?.aborted === true) return { outcome: 'closed', reason: 'closed' };
+      if (board === 'message') return null;
+      let current;
+      try {
+        current = sends.state(safeIndex)?.safeTxHash;
+      } catch {
+        current = null;
+      }
+      return bound !== null && current === bound ? null : { outcome: 'gone' };
+    };
     const notes = new Map(); // owner index -> { note, message }
     let error = null; // { code, message }: why the last execution didn't land
     let confirming = false; // a send's discard, asked again
@@ -272,9 +331,14 @@ function createSafeBoards({
           await api.sign(owner);
           return;
         } catch (err) {
+          // Not the board's SafeTx: the next turn ends the board.
+          if (err?.code === SAFE_DISCARDED) return;
           if (attempt === 0 && isVaultLocked(err)) {
             releasePrevious();
-            if (await unlock('sign')) continue;
+            if (await unlock('sign')) {
+              if (ended()) return;
+              continue;
+            }
             notes.set(owner, { note: 'locked', message: null });
             return;
           }
@@ -288,12 +352,19 @@ function createSafeBoards({
     // A send's execution: its outcome, or null to show the board again.
     async function execute() {
       releasePrevious();
+      // The board's SafeTx, named in the same run as its execution.
+      const end = ended();
+      if (end) return end;
       const confirmation = feeConfirmation;
       feeConfirmation = null;
       let result;
       try {
-        result = await sends.execute(safeIndex, confirmation ? { feeConfirmation: confirmation } : {});
+        result = await sends.execute(safeIndex, {
+          ...(confirmation ? { feeConfirmation: confirmation } : {}),
+          safeTxHash: bound,
+        });
       } catch (err) {
+        if (err?.code === SAFE_DISCARDED) return { outcome: 'gone' };
         if (isVaultLocked(err)) {
           if (!(await unlock('send'))) error = { code: 'locked', message: null };
           return null;
@@ -337,6 +408,9 @@ function createSafeBoards({
         }
       }
       for (;;) {
+        // The window closed during the last wait (a device's, the unlock's,
+        // the fee's): nothing more is asked or executed.
+        if (signal?.aborted === true) return { outcome: 'closed', reason: 'closed' };
         state = await readState();
         if (!state) return { outcome: 'gone' };
         const superseded = board !== 'message' && state.status === 'superseded';
@@ -354,6 +428,8 @@ function createSafeBoards({
               ? STEPS.RETRY
               : STEPS.COLLECT;
         const view = await viewOf(board, safeIndex, state, { step, notes, error });
+        const stale = ended();
+        if (stale) return stale;
         let releaseThis;
         const released = new Promise((resolve) => {
           releaseThis = resolve;
@@ -366,6 +442,9 @@ function createSafeBoards({
         const decision = await pending;
         if (decision?.error) return { error: decision.error };
         if (decision?.closed) return { outcome: 'closed', reason: decision.closed };
+        // A choice on the SafeTx shown, and only while it is still pending.
+        const end = ended();
+        if (end) return end;
         if (!approved(decision)) {
           if (confirming) {
             // "Keep": back to the board.
@@ -382,12 +461,13 @@ function createSafeBoards({
           }
           confirming = false;
           try {
-            sends.cancel(safeIndex);
+            sends.cancel(safeIndex, bound);
           } catch (err) {
+            if (err?.code === SAFE_DISCARDED) return { outcome: 'gone' };
             error = { code: 'failed', message: messageOf(err) };
             continue;
           }
-          return { outcome: 'discarded', safeTxHash: state.safeTxHash ?? null };
+          return { outcome: 'discarded', safeTxHash: bound };
         }
         confirming = false;
         if (choice.action === 'retry') {
@@ -420,10 +500,14 @@ function createSafeBoards({
     });
   }
 
-  /** A page's Safe send: `executed`, `parked` or `discarded`, among others. */
-  function runSendBoard(context, { safeIndex }) {
+  /**
+   * A page's Safe send, the SafeTx `safeTxHash` its request started:
+   * `executed`, `parked` or `discarded`, among others.
+   */
+  function runSendBoard(context, { safeIndex, safeTxHash }) {
     return runBoard('send', {
       safeIndex,
+      safeTxHash,
       ask: ({ view, choices, released }) => context.prompt({ kind: BOARD_KINDS.SEND, view, choices, released }),
       unlock: unlockWith((spec) => context.prompt(spec)),
       confirmFee: (offer) => confirmExecutorFee(context.requester?.window, offer),
@@ -433,16 +517,26 @@ function createSafeBoards({
   /**
    * The wallet's own board for the Safe's pending SafeTx, in window
    * `windowId`'s panel: a window prompt, shown whichever tab is in front.
-   * One at a time per Safe (`open` for another while it runs).
+   * One at a time per Safe (`open` for another while it runs). It ends
+   * when its window closes, whatever wait it is in.
    */
   async function openWalletBoard(windowId, safeIndex) {
     if (!Number.isInteger(windowId)) return { outcome: 'no-window' };
     if (!Number.isSafeInteger(safeIndex) || safeIndex < 0) return { outcome: 'gone' };
     if (walletBoards.has(safeIndex)) return { outcome: 'open' };
+    const lifetime = new AbortController();
+    let unwatch;
+    try {
+      unwatch = watchWindow(windowId, () => lifetime.abort());
+    } catch {
+      unwatch = null;
+    }
+    if (typeof unwatch !== 'function') return { outcome: 'no-window' };
     walletBoards.add(safeIndex);
     try {
       return await runBoard('send', {
         safeIndex,
+        signal: lifetime.signal,
         ask: ({ view, choices, released }) =>
           walletPrompt(windowId, { kind: BOARD_KINDS.WALLET, view, choices, released }),
         unlock: async (reason) => {
@@ -456,6 +550,7 @@ function createSafeBoards({
       });
     } finally {
       walletBoards.delete(safeIndex);
+      unwatch();
     }
   }
 
@@ -511,10 +606,13 @@ function getSafeBoards() {
       },
       sends: {
         state: (safeIndex) => transactions().getSafeSendState(safeIndex),
-        sign: (safeIndex, owner) => transactions().signSafePending(safeIndex, owner),
+        sign: (safeIndex, owner, safeTxHash) => transactions().signSafePending(safeIndex, owner, { safeTxHash }),
         execute: (safeIndex, options) => transactions().executeSafePending(safeIndex, options),
-        cancel: (safeIndex) => transactions().cancelSafeSend(safeIndex),
-        tx: (safeIndex) => require('../wallet/safe/pending-store').getPending(safeIndex)?.safeTxData ?? null,
+        cancel: (safeIndex, safeTxHash) => transactions().cancelSafeSend(safeIndex, { safeTxHash }),
+        tx: (safeIndex, safeTxHash) => {
+          const pending = require('../wallet/safe/pending-store').getPending(safeIndex);
+          return pending && pending.safeTxHash === safeTxHash ? (pending.safeTxData ?? null) : null;
+        },
       },
       messages: {
         state: (safeIndex, token) => safeMessages().getSafeMessageState(safeIndex, token),
