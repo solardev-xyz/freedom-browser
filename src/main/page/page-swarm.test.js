@@ -270,11 +270,10 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     expect(env.resolutions).toEqual([NAME]);
     // The binding has ended: the document is keyless now.
     for (const method of UNDER_KEY) {
-      expect({ method, answer: await page.ask(method, { name: 'chat', topic: 'c'.repeat(64) }) }).toEqual({
-        method,
-        answer: NO_ADDRESS,
-      });
+      expect({ method, answer: await page.ask(method, { name: 'chat' }) }).toEqual({ method, answer: NO_ADDRESS });
     }
+    // One class per method, whatever its params: a feed read by topic too.
+    expect(await page.ask('swarm_readFeedEntry', { topic: 'c'.repeat(64), owner: 'ab'.repeat(20) })).toEqual(NO_ADDRESS);
     expect(env.execute).not.toHaveBeenCalled();
     // The permission-free reads answer on, on the keyless bucket, and
     // resolve nothing.
