@@ -1172,6 +1172,38 @@ describe('reservations and tickets', () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
 
+  test('a ticket on a malformed container is burnt too: refused, its charge and turn freed, never presented again', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ok' }));
+    const env = setup({ dispatch });
+    const page = large(env);
+    const event = eventFrom(page.guest);
+    const containers = [
+      // An array keeps an own `ticket` through Electron's IPC serialization.
+      (ticket) => Object.assign([{ nonce: page.nonce, provider: 'swarm', method: page.method, params: page.params }], { ticket }),
+      (ticket) => Object.assign(new Map(), { ticket }),
+      (ticket) => Object.assign(Object.create({ inherited: true }), { nonce: page.nonce, provider: 'swarm', method: page.method, params: page.params, ticket }),
+      (ticket) => Object.assign(new Date(), { ticket }),
+      (ticket) => Object.assign(new Uint8Array(4), { ticket }),
+    ];
+    for (const make of containers) {
+      const { ticket } = await page.reserve(page.method, page.size);
+      expect(ticket).toMatch(TICKET);
+      expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 1, tickets: 1 }));
+      expect(await env.requests.request(event, make(ticket))).toEqual({ error: { code: -32602, message: 'Invalid parameters' } });
+      expect(env.requests.stats()).toEqual(
+        expect.objectContaining({ turns: 0, tickets: 0, browser: { requests: 0, bytes: 0 } })
+      );
+      // Presented again, in a request that is otherwise sound: it is gone.
+      expect(await page.upload(ticket)).toEqual(LIMIT);
+    }
+    // An inherited `ticket` is not one presented.
+    const { ticket } = await page.reserve(page.method, page.size);
+    expect(await env.requests.request(event, Object.create({ ticket }))).toEqual({ error: { code: -32602, message: 'Invalid parameters' } });
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 1, tickets: 1 }));
+    expect(await page.upload(ticket)).toEqual({ result: 'ok' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
   test('an entry that doesn\'t fit keeps its place while a later one that fits is granted', async () => {
     const held = heldDispatcher();
     const env = setup({ dispatch: held.dispatch });
