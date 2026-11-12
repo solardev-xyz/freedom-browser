@@ -441,3 +441,51 @@ describe('permission-manage: Swarm messaging can only be revoked here (0011 PRQ-
     expect(toggle.disabled).toBe(true);
   });
 });
+
+// Publishing's rule is turned on only by "Always allow" on main's publish
+// prompt (freedom-core design 0011, PRQ-7c): the site's screen only turns
+// it off.
+describe('the Swarm publish auto-approve toggle', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  async function showSwarm(ctx, publish) {
+    Object.assign(global.window.swarmPermissions, {
+      getPermission: jest.fn().mockResolvedValue({ origin: 'bzz://aaaa', autoApprove: { publish } }),
+      hasMessagingGrant: jest.fn().mockResolvedValue(false),
+      setAutoApprove: jest.fn().mockResolvedValue(true),
+    });
+    global.window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
+    global.window.swarmFeedStore = {
+      getOriginIdentities: jest.fn().mockResolvedValue({ activeIdentityId: 'a', identities: [{ id: 'a', mode: 'app-scoped', stored: true }] }),
+      previewAppScopedIdentity: jest.fn(),
+    };
+    await ctx.mod.showSwarmPermissions('bzz://aaaa');
+    return ctx.elements['swarm-perms-publish-toggle'];
+  }
+
+  test('off shows disabled, and turning it on asks main for nothing', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = await showSwarm(ctx, false);
+    expect(toggle.checked).toBe(false);
+    expect(toggle.disabled).toBe(true);
+    toggle.checked = true;
+    await toggle.fire('change');
+    expect(toggle.checked).toBe(false);
+    expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
+  });
+
+  test('on can be turned off, and then shows disabled', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = await showSwarm(ctx, true);
+    expect(toggle.checked).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    toggle.checked = false;
+    await toggle.fire('change');
+    expect(global.window.swarmPermissions.setAutoApprove).toHaveBeenCalledWith('bzz://aaaa', 'publish', false);
+    expect(toggle.disabled).toBe(true);
+  });
+});

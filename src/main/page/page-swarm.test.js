@@ -8,6 +8,7 @@ const {
   SWARM_READ_METHODS,
   SWARM_CONNECT_METHODS,
   SWARM_MESSAGING_METHODS,
+  SWARM_PUBLISH_METHODS,
   SWARM_PAGE_METHODS,
   createSwarmDispatchers,
 } = require('./page-swarm');
@@ -189,7 +190,19 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
       .match(/'swarm_[A-Za-z]+'/g)
       .map((m) => m.slice(1, -1));
     expect([...SWARM_MESSAGING_METHODS].sort()).toEqual(messagingMethods.sort());
-    expect(SWARM_PAGE_METHODS).toEqual([...SWARM_READ_METHODS, ...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS]);
+    // And PRQ-7c's: the methods the chrome ran with its publish prompt, and
+    // swarm_getUploadStatus, the one its catch-all branch ran.
+    const publishMethods = /method === 'swarm_publishData' \|\| method === 'swarm_publishFiles' \|\| method === 'swarm_publishChunk'/
+      .exec(source)[0]
+      .match(/'swarm_[A-Za-z]+'/g)
+      .map((m) => m.slice(1, -1));
+    expect([...SWARM_PUBLISH_METHODS].sort()).toEqual([...publishMethods, 'swarm_getUploadStatus'].sort());
+    expect(SWARM_PAGE_METHODS).toEqual([
+      ...SWARM_READ_METHODS,
+      ...SWARM_CONNECT_METHODS,
+      ...SWARM_MESSAGING_METHODS,
+      ...SWARM_PUBLISH_METHODS,
+    ]);
     expect(Object.keys(createSwarmDispatchers({ identityWalletEnabled: () => true, execute: jest.fn() })).sort()).toEqual(
       SWARM_PAGE_METHODS.map((m) => `swarm:${m}`).sort()
     );
@@ -203,7 +216,7 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     // Each has its row, of the class the design gives it.
     for (const method of PERMISSION_FREE) expect(methodRow('swarm', method).class).toBe(CLASS.PERMISSION_FREE);
     for (const method of UNDER_KEY) expect(methodRow('swarm', method).class).toBe(CLASS.NAME_REVALIDATED);
-    for (const method of [...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS]) {
+    for (const method of [...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS, ...SWARM_PUBLISH_METHODS]) {
       expect({ method, class: methodRow('swarm', method).class }).toEqual({
         method,
         class: method === 'swarm_unsubscribe' ? CLASS.EXEMPT : CLASS.NAME_REVALIDATED,

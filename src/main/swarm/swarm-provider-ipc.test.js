@@ -74,8 +74,9 @@ jest.mock('./publish-setup-service', () => ({
 const mockPublishData = jest.fn();
 const mockPublishFilesFromContent = jest.fn();
 const mockGetUploadStatus = jest.fn();
+// A page's data goes up through publishPageData (PRQ-7c, page-upload.js).
 jest.mock('./publish-service', () => ({
-  publishData: mockPublishData,
+  publishPageData: mockPublishData,
   publishFilesFromContent: mockPublishFilesFromContent,
   getUploadStatus: mockGetUploadStatus,
 }));
@@ -287,12 +288,26 @@ describe('swarm-provider-ipc', () => {
       'swarm_unsubscribe',
       'swarm_sendPss',
       'swarm_sendGsoc',
+      'swarm_publishData',
+      'swarm_publishFiles',
+      'swarm_publishChunk',
+      'swarm_getUploadStatus',
     ]);
     for (const origin of ['myapp.eth', 'https://app.example', `bzz://${'a'.repeat(64)}`]) {
       for (const method of SWARM_PAGE_METHODS) {
         const answer = await handler({}, {
           method,
-          params: { reference: 'a'.repeat(64), name: 'chat', kind: 'pss', topic: 'room', subscriptionId: 'x' },
+          params: {
+            reference: 'a'.repeat(64),
+            name: 'chat',
+            kind: 'pss',
+            topic: 'room',
+            subscriptionId: 'x',
+            data: 'hello',
+            contentType: 'text/plain',
+            files: [{ path: 'index.html', bytes: Buffer.from('x') }],
+            tagUid: 7,
+          },
           origin,
           meta: { webContentsId: 9, approval: 'user' },
         });
@@ -323,10 +338,15 @@ describe('swarm-provider-ipc', () => {
     expect(mockSendPss).not.toHaveBeenCalled();
     expect(mockSendGsoc).not.toHaveBeenCalled();
     expect(mockGetMessagingIdentity).not.toHaveBeenCalled();
+    expect(mockPublishData).not.toHaveBeenCalled();
+    expect(mockPublishFilesFromContent).not.toHaveBeenCalled();
+    expect(mockPublishChunk).not.toHaveBeenCalled();
+    expect(mockGetUploadStatus).not.toHaveBeenCalled();
+    expect(mockAddEntry).not.toHaveBeenCalled();
     // A method still on the chrome's route keeps it.
-    expect((await handler({}, { method: 'swarm_getUploadStatus', params: {}, origin: 'myapp.eth' })).error).toMatchObject({
+    expect((await handler({}, { method: 'swarm_createFeed', params: {}, origin: 'myapp.eth' })).error).toMatchObject({
       code: -32602,
-      message: 'tagUid must be a positive integer',
+      message: 'Feed name must be a non-empty string',
     });
   });
 
@@ -466,47 +486,50 @@ describe('swarm-provider-ipc', () => {
       mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
 
-    test('Agent custody refuses an auto-approved write; a prompted one runs', async () => {
+    test('Agent custody refuses an auto-approved write on the chrome\'s route; a prompted one runs', async () => {
+      // Publishing is main's own (PRQ-7c, page-swarm-publish.test.js); the
+      // chrome's route keeps its custody check for the feed writes still on it.
       const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
       const chrome = { id: 1 };
       const guest = { ...fakeWebContents(), hostWebContents: chrome };
       mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
-      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { publish: true } });
-      mockPublishData.mockResolvedValue({ reference: 'abc', bzzUrl: 'bzz://abc', tagUid: null, batchIdUsed: 'b' });
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { feeds: true } });
+      mockHasFeedGrant.mockReturnValue(true);
+      mockGetOriginEntry.mockReturnValue({ activeIdentityId: 'app-scoped:1', identities: {}, feeds: {} });
+      const existing = { owner: 'ab'.repeat(20), topic: 'c'.repeat(64), manifestReference: 'd'.repeat(64) };
+      mockGetFeed.mockReturnValue(existing);
       const handler = ipcHandlers['swarm:provider-execute'];
-      const call = (method, meta) => handler(
+      const call = (meta) => handler(
         { sender: chrome },
-        { method, params: { data: 'x', contentType: 'text/plain' }, origin: 'myapp.eth', meta }
+        { method: 'swarm_createFeed', params: { name: 'chat' }, origin: 'myapp.eth', meta }
       );
       setAgentPageCustody(guest, true);
       try {
         for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
-          const refused = await call('swarm_publishData', meta);
+          const refused = await call(meta);
           expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
         }
-        expect(mockPublishData).not.toHaveBeenCalled();
+        expect(mockGetFeed).not.toHaveBeenCalled();
 
-        mockPreFlightOk();
-        const prompted = await call('swarm_publishData', { webContentsId: 9, approval: 'user' });
-        expect(prompted.result).toEqual({ reference: 'abc', bzzUrl: 'bzz://abc' });
+        const prompted = await call({ webContentsId: 9, approval: 'user' });
+        expect(prompted.result).toMatchObject({ feedId: 'chat', owner: existing.owner });
       } finally {
         setAgentPageCustody(guest, false);
       }
 
-      mockPreFlightOk();
-      const owned = await call('swarm_publishData', { webContentsId: 9, approval: 'auto' });
-      expect(owned.result).toEqual({ reference: 'abc', bzzUrl: 'bzz://abc' });
+      const owned = await call({ webContentsId: 9, approval: 'auto' });
+      expect(owned.result).toMatchObject({ feedId: 'chat' });
       // An automatic request main cannot tie to a guest of this window is refused.
       for (const meta of [{ approval: 'auto' }, { webContentsId: 10, approval: 'auto' }]) {
-        const refused = await call('swarm_publishData', meta);
+        const refused = await call(meta);
         expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
       }
       const otherWindow = await handler(
         { sender: { id: 2 } },
-        { method: 'swarm_publishData', params: { data: 'x' }, origin: 'myapp.eth', meta: { webContentsId: 9, approval: 'auto' } }
+        { method: 'swarm_createFeed', params: { name: 'chat' }, origin: 'myapp.eth', meta: { webContentsId: 9, approval: 'auto' } }
       );
       expect(otherWindow.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-      expect(mockPublishData).toHaveBeenCalledTimes(2);
+      expect(mockGetFeed).toHaveBeenCalledTimes(2);
     });
 
     test('a batch the network does not know yet is node-not-ready, not an internal error', async () => {
@@ -573,6 +596,8 @@ describe('swarm-provider-ipc', () => {
       expect(mockPublishData).toHaveBeenCalledWith('Hello world', {
         contentType: 'text/plain',
         name: 'greeting',
+        onSend: expect.any(Function),
+        guard: expect.any(Function),
       });
       expect(mockAddEntry).toHaveBeenCalledWith({
         type: 'data',
@@ -605,6 +630,8 @@ describe('swarm-provider-ipc', () => {
       expect(mockPublishData).toHaveBeenCalledWith(binaryData, {
         contentType: 'image/png',
         name: 'test.png',
+        onSend: expect.any(Function),
+        guard: expect.any(Function),
       });
     });
 
@@ -755,7 +782,7 @@ describe('swarm-provider-ipc', () => {
           expect.objectContaining({ path: 'index.html' }),
           expect.objectContaining({ path: 'style.css' }),
         ]),
-        { indexDocument: 'index.html' }
+        { indexDocument: 'index.html', onSend: expect.any(Function), guard: expect.any(Function) }
       );
     });
 
@@ -1021,7 +1048,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_publishChunk', { data: 'hello' }, 'myapp.eth');
 
       expect(result.result).toEqual({ reference: VALID_REF });
-      expect(mockPublishChunk).toHaveBeenCalledWith(Buffer.from('hello'), { span: undefined });
+      expect(mockPublishChunk).toHaveBeenCalledWith(Buffer.from('hello'), { span: undefined, guard: expect.any(Function) });
       expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
         type: 'chunk',
         name: 'CAC chunk',

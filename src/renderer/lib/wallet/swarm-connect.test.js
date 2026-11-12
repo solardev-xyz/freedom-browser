@@ -771,4 +771,54 @@ describe('main\'s Swarm prompts in the chrome', () => {
     await ctx.elements['swarm-messaging-confirm'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenLastCalledWith('m2', true, {});
   });
+
+  test('swarm.publish: main\'s view shows (a files upload\'s count, size and paths, a data upload\'s type, size and name); Publish answers the handle with "always allow", writing no rule', async () => {
+    const ctx = await loadSwarmConnect();
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.publish');
+    renderer.show({
+      handle: 'p1',
+      guest: 7,
+      kind: 'swarm.publish',
+      site: SITE,
+      view: { method: 'swarm_publishFiles', kind: 'files', count: 5, size: 2048, paths: ['index.html', 'a.js', 'b.css'] },
+    });
+    expect(ctx.elements['sidebar-swarm-publish-approve'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-publish-site'].textContent).toBe('bzz://aaaa');
+    expect(ctx.elements['swarm-publish-type'].textContent).toBe('5 files');
+    expect(ctx.elements['swarm-publish-size'].textContent).toContain('2');
+    expect(ctx.elements['swarm-publish-paths'].textContent).toBe('index.html, a.js, b.css \u2026and 2 more');
+    expect(ctx.elements['swarm-publish-paths-row'].classList.contains('hidden')).toBe(false);
+    expect(renderer.isShowing()).toBe('p1');
+    ctx.elements['swarm-publish-auto-approve'].checked = true;
+    await armPrompt();
+    await ctx.elements['swarm-publish-confirm'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('p1', true, { alwaysAllow: true });
+    expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
+    expect(global.window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(renderer.isShowing()).toBe(null);
+
+    renderer.show({
+      handle: 'p2',
+      guest: 7,
+      kind: 'swarm.publish',
+      site: SITE,
+      view: { method: 'swarm_publishData', kind: 'data', size: 5, contentType: 'text/plain', name: 'note.txt' },
+    });
+    // A new prompt starts with "always allow" off.
+    expect(ctx.elements['swarm-publish-auto-approve'].checked).toBe(false);
+    expect(ctx.elements['swarm-publish-type'].textContent).toBe('text/plain');
+    expect(ctx.elements['swarm-publish-name'].textContent).toBe('note.txt');
+    expect(ctx.elements['swarm-publish-name-row'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-publish-paths-row'].classList.contains('hidden')).toBe(true);
+    await armPrompt();
+    await ctx.elements['swarm-publish-reject'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenLastCalledWith('p2', false, {});
+
+    renderer.show({ handle: 'p3', guest: 7, kind: 'swarm.publish', site: SITE, view: { method: 'swarm_publishChunk', kind: 'chunk', size: 40 } });
+    expect(ctx.elements['swarm-publish-type'].textContent).toBe('Swarm chunk');
+    expect(ctx.elements['swarm-publish-name-row'].classList.contains('hidden')).toBe(true);
+    renderer.close('p3');
+    expect(ctx.elements['sidebar-swarm-publish-approve'].classList.contains('hidden')).toBe(true);
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledTimes(2);
+  });
 });

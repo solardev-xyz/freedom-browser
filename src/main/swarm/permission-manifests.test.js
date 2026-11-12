@@ -797,7 +797,7 @@ describe('permission manifests: the chrome\'s flow and main\'s page consents kep
   });
 
   test('the chrome can\'t obtain or decide a page\'s consent, and a page can\'t decide the chrome\'s', async () => {
-    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ feeds: { why: 'Update the app feed' } })));
     const page = await pageCheck('app.eth');
     const chrome = await check('app.eth');
     expect(page.kind).toBe('consent');
@@ -807,21 +807,23 @@ describe('permission manifests: the chrome\'s flow and main\'s page consents kep
     expect(chrome.token).not.toBe(page.token);
     await expect(decide(page.token, 'allow')).rejects.toThrow('Manifest consent expired');
     expect(mockPermissionState['app.eth']).toBeUndefined();
+    expect(mockFeedState['app.eth']).toBeUndefined();
     await expect(pageDecide('app.eth', chrome.token, 'allow')).rejects.toThrow('Manifest consent expired');
     // Nor for another key.
     await expect(pageDecide('other.eth', page.token, 'allow')).rejects.toThrow('Manifest consent expired');
     expect(mockPermissionState['app.eth']).toBeUndefined();
     expect(await pageDecide('app.eth', page.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    expect(mockPermissionState['app.eth']).toMatchObject({ autoApprove: { publish: true } });
+    expect(mockPermissionState['app.eth']).toMatchObject({ autoApprove: { feeds: true } });
+    expect(mockFeedState['app.eth']).toEqual({ identity: true, granted: true });
   });
 
-  test('the chrome\'s allow writes none of the connection, the messaging grant or its rule; main\'s check asks for messaging after', async () => {
+  test('the chrome\'s allow writes none of the connection, the messaging grant, messaging\'s rule or publishing\'s; main\'s check asks for them after', async () => {
     mockHandleBzzRequest.mockImplementation(async () =>
-      responseFor(manifest({ publish: { why: 'Publish releases' }, messaging: { why: 'Chat' } }))
+      responseFor(manifest({ publish: { why: 'Publish releases' }, feeds: { why: 'Update the app feed' }, messaging: { why: 'Chat' } }))
     );
     const chrome = await check('app.eth');
-    // The chrome's sheet doesn't ask for messaging.
-    expect(chrome.model.changed.map((row) => row.key)).toEqual(['publish']);
+    // The chrome's sheet asks for neither messaging nor publishing (PRQ-7c).
+    expect(chrome.model.changed.map((row) => row.key)).toEqual(['feeds']);
     expect(await decide(chrome.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
     expect(mockPermissionState['app.eth']).toBeUndefined();
 
@@ -835,31 +837,37 @@ describe('permission manifests: the chrome\'s flow and main\'s page consents kep
     expect(mockPermissionState['app.eth'].messaging).toBeUndefined();
     const record = getRecord('app.eth');
     expect(record.acknowledged.messaging).toBeUndefined();
-    for (const projection of ['connection', 'messagingGrant', 'autoApprove.messaging']) {
+    expect(record.acknowledged.publish).toBeUndefined();
+    for (const projection of ['connection', 'messagingGrant', 'autoApprove.messaging', 'autoApprove.publish']) {
       expect({ projection, managed: record.managed?.[projection] }).toEqual({ projection, managed: undefined });
     }
-    // Main's own check asks for messaging, and its allow grants it.
+    // Main's own check asks for them, and its allow grants them.
     const page = await pageCheck('app.eth');
-    expect(page.model.changed.map((row) => row.key)).toEqual(['messaging']);
+    expect(page.model.changed.map((row) => row.key)).toEqual(['publish', 'messaging']);
     expect(await pageDecide('app.eth', page.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    expect(mockPermissionState['app.eth']).toMatchObject({ messaging: true, autoApprove: { messaging: true } });
+    expect(mockPermissionState['app.eth']).toMatchObject({ messaging: true, autoApprove: { messaging: true, publish: true } });
   });
 
-  test('a messaging-only manifest asks the chrome nothing', async () => {
+  test('a manifest of only what main grants (messaging, publishing) asks the chrome nothing', async () => {
     mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ messaging: { why: 'Chat' } })));
     expect(await check('chat.eth')).toEqual({ kind: 'ready' });
     expect(mockPermissionState['chat.eth']).toBeUndefined();
     expect((await pageCheck('chat.eth')).kind).toBe('consent');
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    expect(await check('pub.eth')).toEqual({ kind: 'ready' });
+    expect(mockPermissionState['pub.eth']).toBeUndefined();
+    expect((await pageCheck('pub.eth')).kind).toBe('consent');
   });
 
   test('two sheets for one consent, the chrome\'s and a page\'s or two pages\': the later answer fails as stale, never silently', async () => {
-    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ feeds: { why: 'Update the app feed' } })));
     // A page's first, then the chrome's.
     let page = await pageCheck('a.eth');
     let chrome = await check('a.eth');
     expect(await pageDecide('a.eth', page.token, 'individual')).toEqual({ allowed: true, mode: 'individual' });
     await expect(decide(chrome.token, 'allow')).rejects.toThrow('Manifest consent is stale');
-    expect(mockPermissionState['a.eth']?.autoApprove?.publish).not.toBe(true);
+    expect(mockPermissionState['a.eth']?.autoApprove?.feeds).not.toBe(true);
+    expect(mockFeedState['a.eth']?.granted).not.toBe(true);
 
     // The chrome's first, then a page's.
     page = await pageCheck('b.eth');
