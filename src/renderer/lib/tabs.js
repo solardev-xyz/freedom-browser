@@ -103,6 +103,9 @@ const agentCustodyByTabId = new Map();
 let walletPromptCounts = new Map();
 // The guest this window last reported in front (`reportForeground`).
 let frontGuest = null;
+// Whether main shows this window's prompt here rather than in the approvals
+// document: a Safe board, which the chrome still renders (page-prompts.js).
+let chromePromptShown = false;
 
 // The guest webContents id of a tab's webview, or null while it isn't
 // attached (Electron throws until then).
@@ -137,8 +140,14 @@ const reportForeground = (tab) => {
 const renderApprovalsSpace = () => {
   if (window.pagePrompts?.approvalsDocument !== true) return;
   const space = document.getElementById('approvals-space');
-  const open = frontGuest !== null && (walletPromptCounts.get(frontGuest) || 0) > 0;
+  const open = !chromePromptShown && frontGuest !== null && (walletPromptCounts.get(frontGuest) || 0) > 0;
   space?.classList.toggle('open', open);
+};
+
+/** A prompt main shows in the chrome itself (a Safe board) is up, or down. */
+export const setChromePromptShown = (shown) => {
+  chromePromptShown = shown === true;
+  renderApprovalsSpace();
 };
 let onAgentTabClaim = null;
 const agentCustodyListeners = new Set();

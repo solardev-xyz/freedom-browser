@@ -159,6 +159,11 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     });
   }
 
+  /** The open prompt's kind, or null. */
+  function kindOf(handle) {
+    return open.get(handle)?.kind ?? null;
+  }
+
   /** Whether the document already has an open wallet prompt. */
   function walletPromptOpen(documentKey) {
     for (const entry of open.values()) {
@@ -298,7 +303,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     return out;
   }
 
-  return { add, update, closed, foreground, decide, walletPromptOpen, forgetWindow, state };
+  return { add, update, closed, foreground, decide, kindOf, walletPromptOpen, forgetWindow, state };
 }
 
 module.exports = {

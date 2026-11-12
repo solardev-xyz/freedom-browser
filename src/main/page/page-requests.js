@@ -128,6 +128,15 @@ const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
 const FOREGROUND_KEYS = new Set(['guest']);
 const PASSWORD_KEYS = new Set(['password']);
+// The Safe signing boards stay in the chrome with the approvals document on
+// (APS-2). They collect the owners' signatures through device steps only
+// the chrome runs (a Ledger, a phone's QR, the board's execution), after
+// the user approved the Safe's request in the document (`eth.sign`,
+// `eth.send`), whose approval minted its one token. A board's decision
+// mints nothing: a message's completes only once its owners have signed,
+// and a send's only says the board was left. The wallet's own Safe flow
+// moves in APS-3.
+const CHROME_KINDS = new Set(['eth.safe_message', 'eth.safe_send']);
 // The longest vault password a decision may carry.
 const MAX_PASSWORD_LENGTH = 1024;
 
@@ -316,7 +325,13 @@ function createPageRequests({
   function sendPromptMessage(windowId, channel, payload) {
     if (!approvals) return toChrome(windowId, channel, payload);
     if (channel === PROMPT_CHANNELS.PENDING) return toChrome(windowId, channel, payload);
-    if (channel === PROMPT_CHANNELS.CLOSED) toChrome(windowId, channel, payload);
+    if (channel === PROMPT_CHANNELS.CLOSED) {
+      toChrome(windowId, channel, payload);
+      return toApprovals(windowId, channel, payload);
+    }
+    // A Safe board: the chrome renders it (`CHROME_KINDS`).
+    const kind = channel === PROMPT_CHANNELS.PROMPT ? payload?.kind : prompts.kindOf(payload?.handle);
+    if (CHROME_KINDS.has(kind)) return toChrome(windowId, channel, payload);
     toApprovals(windowId, channel, payload);
   }
 
@@ -598,6 +613,10 @@ function createPageRequests({
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       prompt: (spec) => prompt(record, spec),
+      // Whether the window's approvals document decides (APS-2): a vault
+      // account's prompt then asks for the vault unlocked first, which the
+      // chrome's own screens did in place.
+      approvalsDocument: Boolean(approvals),
       // The open prompt's content changed: it shows again with this view.
       updatePrompt: (view) =>
         Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
@@ -902,8 +921,9 @@ function createPageRequests({
       windowId = null;
     }
     if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
-    // With the approvals document's flag on, only it decides (APS-1).
-    if (approvals) {
+    // With the approvals document's flag on, only it decides (APS-1), but
+    // for the Safe boards the chrome still renders (`CHROME_KINDS`).
+    if (approvals && !CHROME_KINDS.has(prompts.kindOf(isPlainObject(payload) ? payload.handle : undefined))) {
       trace({ kind: 'decide', window: windowId, ok: false, reason: 'approvals-document' });
       return { ok: false, reason: 'approvals-document' };
     }
