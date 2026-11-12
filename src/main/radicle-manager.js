@@ -242,6 +242,8 @@ async function startRadicleInternal({ signal = null } = {}) {
 
   updateState(STATUS.STARTING);
   try {
+    // A legacy home's carry-over, if one is due, runs under the gate of its
+    // own (profile-paths.js) and is done by now.
     const radHome = await prepareRadicleDataDir();
     // The home's gate, before anything here reads or writes the home's
     // files (0008, Rollback): the add-on is a writer the gate excludes, as

@@ -55,6 +55,11 @@ function loadModule(relModulePath, userDataDir, { isPackaged = true } = {}) {
     app: createAppMock({ isPackaged, userDataDir }),
     extraMocks: {
       [require.resolve('../../logger')]: () => silentLogger(),
+      // The Radicle home's gate, which the carry-over to the short home takes
+      // (freedom-core design 0008): held at once.
+      [require.resolve('../../radicle/radicled-gate')]: () => ({
+        withRadicleGate: async (_home, fn) => fn({ gated: true, held: () => true }),
+      }),
     },
   });
 }
