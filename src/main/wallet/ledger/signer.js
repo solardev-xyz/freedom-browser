@@ -37,7 +37,7 @@ const { Transaction, Signature, TypedDataEncoder, verifyMessage, verifyTypedData
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
 const { assertLedgerCanSendTypedData } = require('./eip712-limits');
-const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
+const { getEip712WirePayload, messageToBytes, normalizeMessage } = require('../signing-utils');
 
 function badSignature(cause) {
   const err = createLedgerError(LEDGER_ERROR_CODES.BAD_SIGNATURE);
@@ -144,7 +144,13 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
     },
 
     signMessage: async (message) => {
-      const bytes = messageToBytes(message);
+      if (!message) {
+        throw createLedgerError(LEDGER_ERROR_CODES.EMPTY_MESSAGE);
+      }
+      const bytes = messageToBytes(normalizeMessage(message));
+      if (bytes.length === 0) {
+        throw createLedgerError(LEDGER_ERROR_CODES.EMPTY_MESSAGE);
+      }
       const messageHex = bytes.toString('hex');
 
       return withVerifiedDevice(async (eth) => {

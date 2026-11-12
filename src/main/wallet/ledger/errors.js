@@ -26,6 +26,7 @@ const LEDGER_ERROR_CODES = {
   // An account no Ledger has yet shown to hold its address at its path.
   ACCOUNT_UNCHECKED: 'LEDGER_ACCOUNT_UNCHECKED',
   TYPED_DATA_UNSUPPORTED: 'LEDGER_TYPED_DATA_UNSUPPORTED',
+  EMPTY_MESSAGE: 'LEDGER_EMPTY_MESSAGE',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -48,6 +49,7 @@ const MESSAGES = {
     "This Ledger account hasn't been checked on its Ledger yet. Connect that Ledger and open Connect Hardware Wallet, then try again.",
   [LEDGER_ERROR_CODES.TYPED_DATA_UNSUPPORTED]:
     "This signature request can't be sent to a Ledger intact, so Freedom didn't send it to the device.",
+  [LEDGER_ERROR_CODES.EMPTY_MESSAGE]: 'Ledger cannot sign an empty message.',
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 
@@ -116,6 +118,9 @@ function classifyLedgerError(err) {
   }
   if (/disconnected/i.test(message)) {
     return LEDGER_ERROR_CODES.DISCONNECTED;
+  }
+  if (err instanceof TypeError && /reading ['"]?0['"]?/i.test(message)) {
+    return LEDGER_ERROR_CODES.EMPTY_MESSAGE;
   }
   return LEDGER_ERROR_CODES.UNKNOWN;
 }
