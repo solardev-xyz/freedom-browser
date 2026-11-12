@@ -474,6 +474,58 @@ test('sync restarts the fetch for an already-seeded repository', async () => {
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
+// A page's sync (freedom-core design 0011, PRQ-8b): main's guard runs after
+// the policy's read, the last wait before the fetch, and owns the fetch.
+test('sync starts the fetch only through a page\'s guard, after the policy\'s read', async () => {
+  const rid = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+  let releasePolicies;
+  const policies = new Promise((resolve) => {
+    releasePolicies = resolve;
+  });
+  const ctx = loadManager({
+    embedded: {
+      listSeededRepos: jest.fn(async () => {
+        await policies;
+        return [{ rid }];
+      }),
+    },
+  });
+  await ctx.mod.startRadicle();
+  const order = [];
+  // A guard that refuses: nothing is fetched.
+  const refusing = ctx.mod.refetchRepository(rid, undefined, {
+    guard: async () => {
+      order.push('guard');
+      return null;
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(order).toEqual([]);
+  releasePolicies();
+  await expect(refusing).resolves.toMatchObject({ success: false, error: { code: 'REFUSED' } });
+  expect(order).toEqual(['guard']);
+  expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+  // A guard that passes starts it, in its own run.
+  await expect(
+    ctx.mod.refetchRepository(rid, undefined, {
+      guard: async (start) => {
+        const started = start();
+        expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+        return started;
+      },
+    })
+  ).resolves.toMatchObject({ success: true, status: { rid, state: 'fetching' } });
+  // A repository it doesn't seed never reaches the guard.
+  const guard = jest.fn();
+  await expect(
+    ctx.mod.refetchRepository('rad:z4V1sjrXqjvFdnCUbxPFqd5p4DtH5', undefined, { guard })
+  ).resolves.toMatchObject({ success: false, error: { code: 'NOT_SEEDED' } });
+  expect(guard).not.toHaveBeenCalled();
+
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
 test('sync fails closed when the seeding policies cannot be read', async () => {
   const ctx = loadManager({
     embedded: {

@@ -360,10 +360,44 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
     await expect(old).rejects.toEqual({ code: 4001, message: 'User rejected the request' });
   });
 
+  // PRQ-8b: a seed or an unseed, naming its repository as main checked it.
+  test('radicle.node shows the seed or unseed copy with main\'s repository id, and answers the handle alone', async () => {
+    const rid = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.node');
+    expect(renderer).toBeDefined();
+    renderer.show({ ...PROMPT, kind: 'radicle.node', view: { method: 'radicle_seed', rid } });
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Seed this repository?');
+    expect(elementsById['radicle-consent-wants'].textContent).toBe(`asks your node to seed ${rid}`);
+    expect(elementsById['radicle-consent-site'].textContent).toBe('name.eth');
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenCalledWith(PROMPT.handle, true, {});
+
+    const unseed = { ...PROMPT, handle: 'u'.repeat(64), kind: 'radicle.node', view: { method: 'radicle_unseed', rid } };
+    renderer.show(unseed);
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Stop seeding this repository?');
+    expect(elementsById['radicle-consent-approve'].textContent).toBe('Stop seeding');
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-reject'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenLastCalledWith(unseed.handle, false, {});
+  });
+
+  test('a radicle.node view off its form shows nothing', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.node');
+    for (const view of [{}, { method: 'radicle_seed' }, { method: 'radicle_sync', rid: 'rad:z1' }, { method: 'radicle_seed', rid: 42 }]) {
+      renderer.show({ ...PROMPT, kind: 'radicle.node', view });
+      expect({ view, hidden: elementsById['sidebar-radicle-consent'].classList.contains('hidden') }).toEqual({ view, hidden: true });
+      expect(renderer.isShowing()).toBeNull();
+    }
+  });
+
   test('a kind it doesn\'t render shows nothing', async () => {
     const { elementsById, renderers } = await loadConsent();
-    expect(renderers.pagePromptRenderer('radicle.node')).toBeUndefined();
-    renderers.pagePromptRenderer('radicle.connect').show({ ...PROMPT, kind: 'radicle.node' });
+    expect(renderers.pagePromptRenderer('radicle.sign')).toBeUndefined();
+    renderers.pagePromptRenderer('radicle.connect').show({ ...PROMPT, kind: 'radicle.sign' });
     expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(true);
   });
 });
