@@ -917,3 +917,346 @@ describe('hard links whose names are all inside the grants', () => {
     expect(grantContentRefusal([second])).toBe(OUTSIDE);
   });
 });
+
+// freedom-radicled's grants (design 0010, step 7, "Radicle"; design 0008,
+// "Spawn and lock"): the Radicle home and the service's own HOME,
+// `<userData>/radicled-home`, checked and walked together.
+describe('freedom-radicled: the Radicle home with its HOME', () => {
+  const { execFileSync, spawnSync } = require('child_process');
+  const OUTSIDE = 'the grant holds a hard link to a file with a name outside it';
+  const SPECIAL =
+    'the grant holds a special file (a FIFO, a socket or a device), a channel outside it';
+  const PACKAGED = { packaged: true };
+  const DEV = { packaged: false, checkoutHash: 'abcd1234' };
+
+  /** The service's HOME of the profile kept in `dir`. */
+  const ownHome = (dir) => path.join(dir, 'radicled-home');
+
+  /** The layouts 0010 names: packaged, with the default profile at the app
+   * root, and a development build, with the short homes beside it. */
+  function layout(build) {
+    if (build === 'packaged') {
+      const appRoot = path.join(tempRoot, 'Freedom');
+      const records = catalog(appRoot, ['default', 'work', 'home'], PACKAGED);
+      const homes = path.join(appRoot, 'R');
+      return { appRoot, records, homes, options: PACKAGED };
+    }
+    const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcd1234');
+    const records = catalog(appRoot, ['default', 'work', 'home'], DEV);
+    const homes = path.join(tempRoot, 'Freedom Dev', 'R', 'abcd1234');
+    return { appRoot, records, homes, options: DEV };
+  }
+
+  /** A Radicle home as the service leaves it, with its HOME made. */
+  function populate(home, own) {
+    fs.mkdirSync(path.join(home, 'storage', 'rad', 'objects', 'ab'), { recursive: true });
+    fs.mkdirSync(path.join(home, 'node'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'config.json'), '{}');
+    fs.writeFileSync(path.join(home, 'node', 'node.db'), 'db');
+    fs.writeFileSync(path.join(home, 'node', 'node.db-wal'), 'wal');
+    fs.writeFileSync(path.join(home, 'storage', 'rad', 'objects', 'ab', 'cdef'), 'object');
+    fs.mkdirSync(own, { recursive: true });
+  }
+
+  describe.each([
+    ['packaged', 'work', 'a named profile'],
+    ['packaged', 'default', 'the default profile, at the app root'],
+    ['development', 'work', 'a named profile'],
+    ['development', 'default', 'the default profile'],
+  ])('%s build, %s in use (%s)', (build, id) => {
+    let appRoot;
+    let records;
+    let homes;
+    let grant;
+    let me;
+
+    beforeEach(() => {
+      let options;
+      ({ appRoot, records, homes, options } = layout(build));
+      me = records[id];
+      grant = loadGrant(activeProfile(appRoot, me, options));
+    });
+
+    test('<appRoot>/R/<slot> and <userData>/radicle-data pass, with the service HOME, before and once made', () => {
+      const shortHome = path.join(homes, String(me.slot));
+      const legacy = path.join(me.dir, 'radicle-data');
+      expect(grant.radicleGrantRefusal(shortHome, ownHome(me.dir))).toBeNull();
+      expect(grant.radicleGrantRefusal(legacy, ownHome(me.dir))).toBeNull();
+      populate(shortHome, ownHome(me.dir));
+      populate(legacy, ownHome(me.dir));
+      expect(grant.radicleGrantRefusal(shortHome, ownHome(me.dir))).toBeNull();
+      expect(grant.radicleGrantRefusal(legacy, ownHome(me.dir))).toBeNull();
+      // freedom-ipfsd's own directory still passes beside them.
+      expect(grant.ipfsGrantRefusal(path.join(me.dir, 'ipfs-data', 'freedom-ipfs'))).toBeNull();
+    });
+
+    test("another profile's Radicle home, short or in its directory, and its HOME are refused", () => {
+      const other = records[id === 'work' ? 'home' : 'work'];
+      const own = ownHome(me.dir);
+      expect(grant.radicleGrantRefusal(path.join(homes, String(other.slot)), own)).toBe(
+        "the grant is another profile's Radicle home"
+      );
+      expect(grant.radicleGrantRefusal(path.join(homes, String(other.slot), 'x'), own)).toBe(
+        "the grant lies inside another profile's Radicle home"
+      );
+      expect(grant.radicleGrantRefusal(path.join(other.dir, 'radicle-data'), own)).toBe(
+        "the grant lies inside another profile's directory"
+      );
+      expect(grant.radicleGrantRefusal(ownHome(other.dir), own)).toBe(
+        "the grant lies inside another profile's directory"
+      );
+      // The directory of the short homes holds every profile's.
+      expect(grant.radicleGrantRefusal(homes, own)).toMatch(/^the grant contains /);
+    });
+
+    test('the app root, this profile directory, its other components and the lock directory are refused', () => {
+      const own = ownHome(me.dir);
+      expect(grant.radicleGrantRefusal(appRoot, own)).toMatch(/^the grant contains /);
+      expect(grant.radicleGrantRefusal(me.dir, own)).toMatch(/^the grant contains /);
+      expect(grant.radicleGrantRefusal(path.join(me.dir, 'identity'), own)).toBe(
+        "the grant is this profile's identity directory"
+      );
+      expect(grant.radicleGrantRefusal(path.join(me.dir, 'ipfs-data'), own)).toBe(
+        "the grant is this profile's IPFS data directory"
+      );
+      expect(grant.radicleGrantRefusal(path.join(me.dir, 'IndexedDB', 'x'), own)).toBe(
+        "the grant lies inside this profile's browser storage"
+      );
+      const locks = path.join(tempRoot, 'AppData', 'Freedom', 'locks');
+      expect(grant.radicleGrantRefusal(path.join(locks, 'radicle'), own)).toBe(
+        'the grant lies inside the lock directory'
+      );
+      // The HOME is checked as a grant of its own.
+      const home = path.join(homes, String(me.slot));
+      expect(grant.radicleGrantRefusal(home, path.join(me.dir, 'identity'))).toBe(
+        "the grant is this profile's identity directory"
+      );
+    });
+  });
+
+  describe('a packaged build, a named profile in use', () => {
+    let appRoot;
+    let records;
+    let grant;
+    let home;
+    let own;
+
+    beforeEach(() => {
+      ({ appRoot, records } = layout('packaged'));
+      grant = loadGrant(activeProfile(appRoot, records.work, PACKAGED));
+      home = path.join(appRoot, 'R', String(records.work.slot));
+      own = ownHome(records.work.dir);
+    });
+
+    test("the default profile's Radicle data and its HOME are refused, present or not yet made", () => {
+      expect(grant.radicleGrantRefusal(path.join(appRoot, 'radicle-data'), own)).toBe(
+        "the grant is another profile's Radicle data directory"
+      );
+      expect(grant.radicleGrantRefusal(path.join(appRoot, 'radicled-home'), own)).toBe(
+        "the grant is another profile's Radicle service home"
+      );
+      fs.mkdirSync(path.join(appRoot, 'radicled-home'));
+      expect(grant.radicleGrantRefusal(path.join(appRoot, 'radicled-home', 'x'), own)).toBe(
+        "the grant lies inside another profile's Radicle service home"
+      );
+      expect(grant.radicleGrantRefusal(path.join(appRoot, 'Local Storage'), own)).toBe(
+        "the grant is another profile's browser storage"
+      );
+    });
+
+    test("freedom-ipfsd's roots are what they were: either HOME, once made, is a profile's data to it", () => {
+      fs.mkdirSync(own);
+      fs.mkdirSync(path.join(appRoot, 'radicled-home'));
+      expect(grant.ipfsGrantRefusal(own)).toBe("the grant is this profile's data");
+      expect(grant.ipfsGrantRefusal(path.join(appRoot, 'radicled-home'))).toBe(
+        "the grant is another profile's data"
+      );
+      // Nothing of the service's HOME is named among freedom-ipfsd's roots,
+      // and nothing of this profile's is exempted from them.
+      const ipfsRoots = grant.protectedRoots({ own: ['ipfs'] });
+      expect(ipfsRoots.some((root) => /Radicle service home/.test(root.name))).toBe(false);
+      expect(ipfsRoots).toContainEqual({ name: "this profile's data", dir: own });
+      expect(grant.protectedRoots({ own: ['radicle', 'radicledHome'] })).not.toContainEqual(
+        expect.objectContaining({ dir: own })
+      );
+    });
+
+    test('FREEDOM_RADICLE_DATA inside or containing a protected root is refused, through a symlink and a case alias', () => {
+      const identity = path.join(records.work.dir, 'identity');
+      fs.mkdirSync(identity, { recursive: true });
+      const check = (override, options) => {
+        process.env.FREEDOM_RADICLE_DATA = override;
+        return loadGrant(activeProfile(appRoot, records.work, PACKAGED)).radicleGrantRefusal(
+          path.resolve(override),
+          own,
+          options
+        );
+      };
+      expect(check(path.join(identity, 'radicle'))).toBe(
+        "the grant lies inside this profile's identity directory"
+      );
+      expect(check(records.work.dir)).toMatch(/^the grant contains this profile's/);
+      expect(check(path.join(tempRoot, 'AppData'))).toBe('the grant contains the lock directory');
+      expect(check(path.join(appRoot, 'R', String(records.home.slot), 'radicle'))).toBe(
+        "the grant lies inside another profile's Radicle home"
+      );
+      expect(check(path.join(appRoot, 'IndexedDB'))).toBe(
+        "the grant is another profile's browser storage"
+      );
+      fs.symlinkSync(identity, path.join(tempRoot, 'innocent'));
+      expect(check(path.join(tempRoot, 'innocent', 'radicle'))).toBe(
+        "the grant lies inside this profile's identity directory"
+      );
+      fs.symlinkSync(path.join(appRoot, 'R'), path.join(tempRoot, 'homes'));
+      expect(check(path.join(tempRoot, 'homes', String(records.home.slot)))).toBe(
+        "the grant is another profile's Radicle home"
+      );
+      // On a case-insensitive volume (folded, as on macOS and Windows).
+      expect(check(path.join(records.work.dir, 'IDENTITY', 'radicle'), { foldCase: true })).toBe(
+        "the grant lies inside this profile's identity directory"
+      );
+      // An override elsewhere passes: it is the profile's Radicle home.
+      expect(check(path.join(tempRoot, 'elsewhere', 'radicle'))).toBeNull();
+    });
+
+    test('a home or a HOME that is a symlink into a protected root is refused', () => {
+      fs.mkdirSync(path.join(appRoot, 'R'), { recursive: true });
+      fs.symlinkSync(path.join(appRoot, 'identity'), home);
+      expect(grant.radicleGrantRefusal(home, own)).toBe(
+        "the grant is another profile's identity directory"
+      );
+      fs.unlinkSync(home);
+      fs.mkdirSync(path.join(records.home.dir, 'identity'), { recursive: true });
+      fs.symlinkSync(path.join(records.home.dir, 'identity'), own);
+      expect(grant.radicleGrantRefusal(home, own)).toBe(
+        "the grant lies inside another profile's directory"
+      );
+      // This profile's own default directories exempt nothing through a
+      // link: one into another profile is refused even with the grants
+      // elsewhere.
+      fs.unlinkSync(own);
+      fs.symlinkSync(records.home.dir, path.join(records.work.dir, 'radicle-data'));
+      expect(grant.radicleGrantRefusal(home, own)).toBe(
+        "the service's own default directory resolves into a protected root (is another profile's directory)"
+      );
+    });
+  });
+
+  test('a --profile-dir or test profile: <userData>/radicle-data passes with its HOME', () => {
+    for (const source of ['profile-dir', 'test-user-data']) {
+      const userDataDir = path.join(tempRoot, source);
+      fs.mkdirSync(path.join(userDataDir, 'Local Storage'), { recursive: true });
+      const grant = loadGrant({ source, appRoot: userDataDir, userDataDir });
+      const home = path.join(userDataDir, 'radicle-data');
+      populate(home, ownHome(userDataDir));
+      expect(grant.radicleGrantRefusal(home, ownHome(userDataDir))).toBeNull();
+      expect(grant.radicleGrantRefusal(path.join(userDataDir, 'Local Storage'), home)).toBe(
+        "the grant is this profile's browser storage"
+      );
+    }
+  });
+
+  describe('what the grants hold', () => {
+    let userDataDir;
+    let home;
+    let own;
+    let grant;
+
+    beforeEach(() => {
+      userDataDir = path.join(tempRoot, 'Elsewhere');
+      home = path.join(userDataDir, 'radicle-data');
+      own = ownHome(userDataDir);
+      populate(home, own);
+      fs.mkdirSync(path.join(userDataDir, 'identity'));
+      fs.writeFileSync(path.join(userDataDir, 'identity', 'vault.json'), '{"vault":true}');
+      grant = loadGrant({ source: 'profile-dir', appRoot: userDataDir, userDataDir });
+    });
+
+    test('a hard link out of either grant is refused; one name in each passes', () => {
+      const vault = path.join(userDataDir, 'identity', 'vault.json');
+      fs.linkSync(vault, path.join(home, 'storage', 'vault'));
+      expect(grant.radicleGrantRefusal(home, own)).toBe(OUTSIDE);
+      fs.unlinkSync(path.join(home, 'storage', 'vault'));
+      fs.linkSync(vault, path.join(own, '.gitconfig'));
+      expect(grant.radicleGrantRefusal(home, own)).toBe(OUTSIDE);
+      fs.unlinkSync(path.join(own, '.gitconfig'));
+      // Names counted across both grants.
+      fs.linkSync(path.join(home, 'config.json'), path.join(own, 'config.json'));
+      expect(grant.radicleGrantRefusal(home, own)).toBeNull();
+    });
+
+    test('what libgit2 leaves when it is killed between link and unlink passes', () => {
+      const objects = path.join(home, 'storage', 'rad', 'objects');
+      const tmp = path.join(objects, 'tmp_object_git2_a1B2c3');
+      fs.writeFileSync(tmp, 'blob');
+      fs.linkSync(tmp, path.join(objects, 'ab', '0123456789'));
+      expect(grant.radicleGrantRefusal(home, own)).toBeNull();
+    });
+
+    test("a FIFO in the HOME, or a socket at the node's control socket, is refused", async () => {
+      execFileSync('mkfifo', [path.join(own, 'channel')]);
+      expect(grant.radicleGrantRefusal(home, own)).toBe(SPECIAL);
+      fs.unlinkSync(path.join(own, 'channel'));
+      expect(grant.radicleGrantRefusal(home, own)).toBeNull();
+      // The add-on's node listens at `node/control.sock`; the service's
+      // doesn't. A socket file there, live or left by a crash, is refused.
+      const server = require('net').createServer();
+      await new Promise((resolve) =>
+        server.listen(path.join(home, 'node', 'control.sock'), resolve)
+      );
+      try {
+        expect(grant.radicleGrantRefusal(home, own)).toBe(SPECIAL);
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
+    // git's local clone (`git clone <path>`, and libgit2's `git_clone` of a
+    // local path) hard-links the source's objects on one filesystem: the
+    // walk refuses a home with one, in either direction.
+    const hasGit = spawnSync('git', ['--version']).status === 0;
+    const gitTest = hasGit ? test : test.skip;
+    const git = (...args) =>
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@example.com',
+          '-c',
+          'init.defaultBranch=main',
+          ...args,
+        ],
+        {
+          env: { ...process.env, HOME: tempRoot, GIT_CONFIG_NOSYSTEM: '1' },
+          stdio: 'ignore',
+        }
+      );
+    function repository(dir) {
+      git('init', '-q', dir);
+      fs.writeFileSync(path.join(dir, 'README'), 'readme');
+      git('-C', dir, 'add', 'README');
+      git('-C', dir, 'commit', '-q', '-m', 'first');
+    }
+
+    gitTest("git's local clone into the home is refused; one with --no-hardlinks passes", () => {
+      const source = path.join(tempRoot, 'working-copy');
+      repository(source);
+      const clone = path.join(home, 'storage', 'clone');
+      git('clone', '-q', '--bare', source, clone);
+      expect(grant.radicleGrantRefusal(home, own)).toBe(OUTSIDE);
+      fs.rmSync(clone, { recursive: true });
+      git('clone', '-q', '--bare', '--no-hardlinks', source, clone);
+      expect(grant.radicleGrantRefusal(home, own)).toBeNull();
+    });
+
+    gitTest("git's local clone out of the home's storage is refused too", () => {
+      const stored = path.join(home, 'storage', 'repo');
+      repository(stored);
+      expect(grant.radicleGrantRefusal(home, own)).toBeNull();
+      git('clone', '-q', stored, path.join(tempRoot, 'checkout'));
+      expect(grant.radicleGrantRefusal(home, own)).toBe(OUTSIDE);
+    });
+  });
+});

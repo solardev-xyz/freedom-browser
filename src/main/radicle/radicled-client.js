@@ -20,6 +20,13 @@
  *   or `USERPROFILE`, never reaches it, nor does anything heartwood, libgit2
  *   or an SSH agent would read (`RAD_*`, `GIT_*`, `SSH_AUTH_SOCK`, …), all of
  *   which the service refuses to start with (64).
+ * - **Main's check of the grant** (design 0010, step 7) runs before every
+ *   spawn, a crash's restart and a new policy's process included
+ *   (`beforeSpawn`): the Radicle home and the service's `HOME`, its grants,
+ *   may not be, contain or lie inside a protected root, nor hold a special
+ *   file or a hard link out of them (`radicleGrantRefusal`). A refusal, or
+ *   a check that throws, spawns nothing and fails the client; why is kept
+ *   in `grantRefusal`, fixed text, never a path.
  * - **The handshake** is `rad.hello`: protocol 1, the shell's version and
  *   `frames: ["stream"]`, within 10 s. A valid result names the release
  *   main expects (`expectedServiceVersion`), the libradicle build it links,
@@ -50,6 +57,7 @@ const { JSON_KINDS } = require('../core/frame');
 const { ensurePrivateDir } = require('../private-files');
 const { networkArg, reportsPolicy } = require('../ipfs/ipfs-network');
 const { validConfinement } = require('../ipfs/ipfsd-client');
+const { radicleGrantRefusal } = require('../service-grant');
 const { getRadicledBinaryPath } = require('./radicled-binary');
 const { PINNED_RADICLED_VERSION } = require('./radicled-pin');
 
@@ -241,6 +249,8 @@ class RadicledClient extends ServiceClient {
    *   by default
    * @param {string|null} [options.serviceVersion] - the release hello must
    *   report (`expectedServiceVersion()`), or null for any
+   * @param {Function} [options.beforeSpawn] - ServiceClient's, asked after
+   *   the grant check passes
    */
   constructor(options) {
     const network = options.network ?? DIRECT;
@@ -261,6 +271,29 @@ class RadicledClient extends ServiceClient {
     });
     this.network = network;
     this.serviceVersion = serviceVersion;
+    this.home = options.home;
+    this.ownHome = ownHome;
+    // Why the last check refused the grant, or null.
+    this.grantRefusal = null;
+    const after = options.beforeSpawn ?? null;
+    this.beforeSpawn = () => this.grantRefused() ?? after?.() ?? null;
+  }
+
+  /**
+   * Main's check before a spawn (design 0010, step 7): null, or why the
+   * Radicle home with the service's `HOME` may not be granted, which
+   * spawns nothing and fails the client. A check that throws refuses too.
+   */
+  grantRefused() {
+    let refused;
+    try {
+      refused = radicleGrantRefusal(this.home, this.ownHome) ?? null;
+    } catch (err) {
+      refused = `the check failed: ${err?.code || err?.name || 'error'}`;
+    }
+    this.grantRefusal = refused;
+    if (refused) this.log.error(`${this.label} Radicle home refused`, { reason: refused });
+    return refused;
   }
 
   /**

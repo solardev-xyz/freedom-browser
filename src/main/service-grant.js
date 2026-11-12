@@ -22,7 +22,9 @@
  *   identity and node directories protected, and the `Profiles` directory
  *   that holds the profile in use has every other profile in it protected.
  *   This profile's own userData directory gives up only the service's own
- *   default directory (`ipfs-data` for freedom-ipfsd).
+ *   default directories (`ipfs-data` for freedom-ipfsd; for freedom-radicled
+ *   the Radicle home, `radicle-data` or the short one, and its `HOME`,
+ *   `radicled-home`).
  * - **Whatever the profile's source:** this profile's userData directory and
  *   its browser storage are protected for a catalog profile, a
  *   `--profile-dir` one and a test's (`FREEDOM_TEST_USER_DATA`) alike. Only
@@ -87,6 +89,12 @@
  *   refused.
  * - **A directory that can't be listed** while it is split throws: the
  *   caller refuses the grant (fails closed).
+ * - **freedom-radicled's grants** (`radicleGrantRefusal`) are the Radicle
+ *   home and the empty directory it gets as its `HOME` (design 0008, "Spawn
+ *   and lock"), checked and walked together. That `HOME` is no component's
+ *   data directory (`SERVICE_DIRS`): only freedom-radicled has another
+ *   profile's protected before it exists, so freedom-ipfsd's roots are what
+ *   they were.
  *
  * A refusal names the root's kind, never a path.
  */
@@ -95,6 +103,7 @@ const fs = require('fs');
 const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
 const {
+  RADICLED_HOME_DIR,
   getComponentDataDirs,
   getDataDirOverrides,
   getProfileUserDataDir,
@@ -358,9 +367,28 @@ const BROWSER_STORAGE = Object.freeze([
 /** The names that may not exist yet at a profile's root. */
 const PROFILE_ENTRIES = Object.freeze([...ENTRY_NAMES.keys(), ...BROWSER_STORAGE]);
 
-/** How a refusal names a profile's entry `entry`. */
-function entryName(entry) {
+// A service's own directories that are no component's data directory
+// (`getComponentDataDirs`), by the service's name for each in `own`: its
+// entry at a profile's root, and how a refusal names it. freedom-radicled's
+// `HOME` (`getRadicledHomeDir`) is granted beside its Radicle home. Only
+// the service that owns one has it protected in another profile before it
+// exists, and gives it up in this one; to any other service it is a
+// profile's entry like any other, so freedom-ipfsd's roots are unchanged.
+const SERVICE_DIRS = Object.freeze({
+  radicledHome: [RADICLED_HOME_DIR, 'Radicle service home'],
+});
+
+/** The service's own directories in `SERVICE_DIRS`, for `own`: each entry
+ * at a profile's root, and its name. */
+function serviceEntries(own) {
+  return new Map(own.map((component) => SERVICE_DIRS[component]).filter(Boolean));
+}
+
+/** How a refusal names a profile's entry `entry`; `extra` names the
+ * service's own (`serviceEntries`). */
+function entryName(entry, extra = new Map()) {
   if (ENTRY_NAMES.has(entry)) return ENTRY_NAMES.get(entry);
+  if (extra.has(entry)) return extra.get(entry);
   return BROWSER_STORAGE.includes(entry) ? 'browser storage' : 'data';
 }
 
@@ -402,7 +430,10 @@ function splitRoots(dir, { whole, nameOf, keep, known = [], foldCase = FOLD_CASE
 }
 
 /** Names a split profile's entries as `owner`'s. */
-const entriesOf = (owner) => (entry) => `${owner} ${entryName(entry)}`;
+const entriesOf =
+  (owner, extra = new Map()) =>
+  (entry) =>
+    `${owner} ${entryName(entry, extra)}`;
 
 /** A profile's component directories as roots `<label> <component>`,
  * without those in `except`. */
@@ -419,13 +450,17 @@ function componentRoots(dirs, label, except = []) {
 }
 
 /**
- * The service's own directories where the profile keeps them by default,
- * from `defaults` (`getComponentDataDirs(userDataDir, { slot })`): the
- * containers that are split, never protected whole.
+ * The service's own directories where the profile `mine` keeps them by
+ * default, from `defaults` (`getComponentDataDirs(mine, { slot })`) and
+ * `SERVICE_DIRS`: the containers that are split, never protected whole.
  */
-function ownDefaults(defaults, own) {
+function ownDefaults(defaults, own, mine) {
   const dirs = [];
   for (const component of own) {
+    if (SERVICE_DIRS[component]) {
+      dirs.push(path.join(mine, SERVICE_DIRS[component][0]));
+      continue;
+    }
     dirs.push(defaults[component]);
     if (component === 'radicle') dirs.push(defaults.radicleHome);
   }
@@ -442,7 +477,7 @@ function thisProfile(own) {
   const defaults = getComponentDataDirs(mine, {
     slot: catalog ? (active.metadata?.slot ?? null) : null,
   });
-  return { active, mine, catalog, defaults, ownDirs: ownDefaults(defaults, own) };
+  return { active, mine, catalog, defaults, ownDirs: ownDefaults(defaults, own, mine) };
 }
 
 /**
@@ -451,6 +486,7 @@ function thisProfile(own) {
  */
 function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
   const { active, mine, catalog, defaults, ownDirs } = thisProfile(own);
+  const extra = serviceEntries(own);
   const ownKeys = ownDirs.map((dir) => layout(dir, foldCase));
   const mineKey = layout(mine, foldCase);
   // What a split leaves out, by layout: this profile, and the service's own
@@ -473,14 +509,15 @@ function protectedRoots({ own = [], foldCase = FOLD_CASE } = {}) {
     });
   }
   // Each other profile's userData directory: whole where it holds nothing
-  // of this profile's, first, then those split around it.
+  // of this profile's, first, then those split around it, with the
+  // service's own directories there before they exist.
   const split = [];
   for (const { dir } of others) {
     const parts = splitRoots(dir, {
       whole: "another profile's directory",
-      nameOf: entriesOf("another profile's"),
+      nameOf: entriesOf("another profile's", extra),
       keep,
-      known: PROFILE_ENTRIES,
+      known: [...PROFILE_ENTRIES, ...extra.keys()],
       foldCase,
     });
     if (parts.length === 1 && parts[0].name === "another profile's directory") roots.push(...parts);
@@ -680,6 +717,20 @@ function ipfsGrantRefusal(dataDir, options = {}) {
   return serviceGrantRefusal([dataDir], { ...options, own: ['ipfs'] });
 }
 
+/**
+ * Why freedom-radicled may not be given `home`, the profile's Radicle home
+ * (`getRadicleDataDir()`: `<appRoot>/R/<slot>`, `<userData>/radicle-data`
+ * or `FREEDOM_RADICLE_DATA`), with `ownHome`, the directory it gets as its
+ * `HOME` (`getRadicledHomeDir()`), or null (design 0010, step 7). Both are
+ * its grants: each is checked against the protected roots, and they are
+ * walked together, so a file with one name in each passes. This profile's
+ * Radicle home, wherever the profile keeps it by default, and its
+ * `radicled-home` are its own.
+ */
+function radicleGrantRefusal(home, ownHome, options = {}) {
+  return serviceGrantRefusal([home, ownHome], { ...options, own: ['radicle', 'radicledHome'] });
+}
+
 module.exports = {
   BROWSER_STORAGE,
   canonical,
@@ -689,6 +740,7 @@ module.exports = {
   serviceGrantRefusal,
   grantContentRefusal,
   ipfsGrantRefusal,
+  radicleGrantRefusal,
   win32DriveRelative,
   win32Uncomparable,
   win32MixedRoots,

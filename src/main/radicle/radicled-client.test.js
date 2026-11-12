@@ -3,8 +3,10 @@
  * "Errors" and Bounds), against an in-process fake service on the design's
  * frames (`test/helpers/fake-radicled.js`) and a manual clock: the binary
  * and the serve process's arguments, the environment it gets, the
- * handshake and what it accepts, each hang watchdog, and each exit code's
- * restart rule. The supervision itself is ServiceClient's
+ * handshake and what it accepts, each hang watchdog, each exit code's
+ * restart rule, and main's grant check before each spawn (service-grant's
+ * `radicleGrantRefusal`, stubbed here: service-grant.test.js checks it on
+ * real directories). The supervision itself is ServiceClient's
  * (service-client.test.js, core-client.test.js); a real binary answers the
  * handshake in radicled-client.integration.test.js.
  */
@@ -14,6 +16,7 @@ const os = require('os');
 const path = require('path');
 
 jest.mock('electron', () => ({ app: { isPackaged: false } }), { virtual: true });
+jest.mock('../service-grant', () => ({ radicleGrantRefusal: jest.fn(() => null) }));
 
 const {
   RadicledClient,
@@ -32,6 +35,7 @@ const {
 const { getRadicledBinaryPath } = require('./radicled-binary');
 const { PINNED_RADICLED_VERSION } = require('./radicled-pin');
 const { ServiceClient, scrubbedEnv } = require('../core/service-client');
+const { radicleGrantRefusal } = require('../service-grant');
 const {
   fakeRadicled,
   envRefusal,
@@ -114,6 +118,8 @@ beforeEach(() => {
   ownHome = path.join(root, 'radicled-home');
   clock = manualClock();
   log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  radicleGrantRefusal.mockReset();
+  radicleGrantRefusal.mockReturnValue(null);
 });
 
 afterEach(async () => {
@@ -285,6 +291,107 @@ describe("the service's environment", () => {
     expect(envRefusal({})).toBe('home');
     expect(envRefusal({ HOME: 'relative' })).toBe('home');
     expect(envRefusal({ HOME: path.join(root, 'missing') })).toBe('home');
+  });
+});
+
+describe("main's grant check before every spawn (design 0010, step 7)", () => {
+  const REFUSED = "the grant lies inside this profile's identity directory";
+
+  test('the Radicle home and the service HOME, exactly as the service is given them', async () => {
+    await ready();
+    expect(radicleGrantRefusal).toHaveBeenCalledTimes(1);
+    expect(radicleGrantRefusal).toHaveBeenCalledWith(HOME, ownHome);
+    const { args, options } = service.spawned[0];
+    expect(args[args.indexOf('--home') + 1]).toBe(HOME);
+    expect(options.env.HOME).toBe(ownHome);
+    expect(client.grantRefusal).toBeNull();
+  });
+
+  test('a refusal spawns nothing and fails the client, saying why without a path', async () => {
+    radicleGrantRefusal.mockReturnValue(REFUSED);
+    newClient();
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    await expect(client.start()).rejects.toBeTruthy();
+    await expect(failed).resolves.toBe('spawn refused');
+    expect(service.spawned).toHaveLength(0);
+    expect(client.state).toBe('failed');
+    expect(client.grantRefusal).toBe(REFUSED);
+    expect(log.error).toHaveBeenCalledWith('[radicled] Radicle home refused', {
+      reason: REFUSED,
+    });
+    // The service's HOME isn't made for a process that isn't spawned.
+    expect(fs.existsSync(ownHome)).toBe(false);
+  });
+
+  test('a check that throws refuses too, naming only the error code', async () => {
+    radicleGrantRefusal.mockImplementation(() => {
+      throw Object.assign(new Error(`EACCES: ${root}`), { code: 'EACCES' });
+    });
+    newClient();
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    await expect(client.start()).rejects.toBeTruthy();
+    await expect(failed).resolves.toBe('spawn refused');
+    expect(service.spawned).toHaveLength(0);
+    expect(client.grantRefusal).toBe('the check failed: EACCES');
+    expect(JSON.stringify(log.error.mock.calls)).not.toContain(root);
+  });
+
+  test("a crash's restart is checked again, and a refusal there spawns nothing", async () => {
+    await ready();
+    radicleGrantRefusal.mockReturnValue(
+      'the grant holds a hard link to a file with a name outside it'
+    );
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    child(0).exit(70);
+    await settle();
+    await clock.advance(500);
+    await expect(failed).resolves.toBe('spawn refused');
+    expect(radicleGrantRefusal).toHaveBeenCalledTimes(2);
+    expect(service.children).toHaveLength(1);
+    expect(client.state).toBe('failed');
+    await clock.advance(60_000);
+    expect(service.children).toHaveLength(1);
+  });
+
+  test('each restart, and a later start, runs it once', async () => {
+    await ready();
+    for (let n = 2; n <= 3; n++) {
+      child(-1).exit(70);
+      await settle();
+      await clock.advance(10_000);
+      expect(service.children).toHaveLength(n);
+      expect(radicleGrantRefusal).toHaveBeenCalledTimes(n);
+    }
+    await client.stop();
+    await client.start();
+    expect(radicleGrantRefusal).toHaveBeenCalledTimes(4);
+    expect(service.children).toHaveLength(4);
+  });
+
+  test("a process under another policy is a new client's, checked before its spawn", async () => {
+    await ready();
+    const first = client;
+    first.removeAllListeners();
+    await first.stop();
+    newClient({}, { network: SOCKS5 });
+    await client.start();
+    expect(radicleGrantRefusal).toHaveBeenCalledTimes(2);
+    expect(service.spawned[0].args).toContain('socks5:127.0.0.1:9150');
+  });
+
+  test("a caller's beforeSpawn is asked only once the grant passes", async () => {
+    const beforeSpawn = jest.fn(() => null);
+    radicleGrantRefusal.mockReturnValue(REFUSED);
+    newClient({}, { beforeSpawn });
+    await expect(client.start()).rejects.toBeTruthy();
+    expect(beforeSpawn).not.toHaveBeenCalled();
+    radicleGrantRefusal.mockReturnValue(null);
+    beforeSpawn.mockReturnValue('not yet');
+    newClient({}, { beforeSpawn });
+    await expect(client.start()).rejects.toBeTruthy();
+    expect(beforeSpawn).toHaveBeenCalledTimes(1);
+    expect(client.grantRefusal).toBeNull();
+    expect(service.spawned).toHaveLength(0);
   });
 });
 
