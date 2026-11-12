@@ -757,7 +757,7 @@ class Guest extends EventEmitter {
   }
 }
 
-function withPageRequests({ flag = true, testPrompts = true, dispatch = null } = {}) {
+function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null } = {}) {
   const env = setup();
   const guests = new Map();
   const toChrome = [];
@@ -794,6 +794,7 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null } =
       return true;
     },
     approvals: flag ? env.docs : null,
+    ...(unlockVault ? { unlockVault } : {}),
   });
   env.decide.mockImplementation((windowId, payload) => requests.decideInWindow(windowId, payload));
 
@@ -921,47 +922,17 @@ describe('no room for the panel, with page-requests', () => {
   });
 });
 
-describe('APS-2: the Safe boards stay in the chrome, and page tokens come only from the document', () => {
+describe('APS-3b: the Safe boards show in the document, the chrome decides none, and page tokens come only from it', () => {
   const signingConfirmation = require('../wallet/signing-confirmation');
 
-  test('a Safe board goes to the chrome, which may decide it alone; the dispatcher knows the document is on', async () => {
+  test('both board kinds go to the document; the chrome\'s decision is refused for each; the dispatcher knows the document is on', async () => {
     const seen = [];
+    const decisions = [];
     const env = withPageRequests({
       dispatch: async (context) => {
         seen.push(context.approvalsDocument);
-        const decision = await context.prompt({ kind: 'eth.safe_message', view: { safeIndex: 1000, state: {} } });
-        return decision.approve === true ? { result: 'completed' } : { error: { code: 4001, message: 'User rejected the request' } };
-      },
-    });
-    const { contents } = attached(env);
-    const answer = env.tab().ask(VIEW);
-    await flush();
-    expect(seen).toEqual([true]);
-    expect(env.chromeChannels()).toEqual(['page:prompt-pending', 'page:prompt']);
-    expect(contents.sent).toEqual([]);
-    expect(env.docs.state()[1].shown).toBeNull();
-    const handle = env.toChrome[1][2].handle;
-    // The document can't decide it: it isn't shown there.
-    expect(await env.docs.decide(eventFrom(contents), { handle, approve: true })).toEqual({ ok: false, reason: 'not-shown' });
-    expect(await env.requests.decide({ sender: { id: 501 } }, { handle, approve: true })).toEqual({ ok: true });
-    expect(await answer).toEqual({ result: 'completed' });
-  });
-
-  test('a board\'s approval mints no page token: only the document\'s approval does', async () => {
-    const minted = [];
-    const env = withPageRequests({
-      dispatch: async (context) => {
-        const board = await context.prompt({ kind: 'eth.safe_send', view: {} });
-        try {
-          minted.push(['board', board.approve, context.confirm('sign-message', 0, { method: 'personal_sign', params: ['0x00'] })]);
-        } catch (err) {
-          minted.push(['board', board.approve, err.code]);
-        }
-        const sign = await context.prompt({ kind: 'test.prompt', view: VIEW });
-        try {
-          minted.push(['document', sign.approve, typeof context.confirm('sign-message', 0, { method: 'personal_sign', params: ['0x00'] })]);
-        } catch (err) {
-          minted.push(['document', sign.approve, err.code]);
+        for (const kind of ['eth.safe_message', 'eth.safe_send']) {
+          decisions.push([kind, await context.prompt({ kind, view: { step: 'collect' } })]);
         }
         return { result: 'done' };
       },
@@ -969,17 +940,62 @@ describe('APS-2: the Safe boards stay in the chrome, and page tokens come only f
     const { contents } = attached(env);
     const answer = env.tab().ask(VIEW);
     await flush();
-    const board = env.toChrome.find(([, channel]) => channel === 'page:prompt')[2].handle;
-    env.requests.decide({ sender: { id: 501 } }, { handle: board, approve: true });
+    expect(seen).toEqual([true]);
+    const pending = [];
+    for (const kind of ['eth.safe_message', 'eth.safe_send']) {
+      const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
+      expect(shown.kind).toBe(kind);
+      // Nothing of it reaches the chrome but its badge.
+      expect(env.chromeChannels().filter((c) => c === 'page:prompt' || c === 'page:prompt-hidden')).toEqual([]);
+      expect(await env.requests.decide({ sender: { id: 501 } }, { handle: shown.handle, approve: true })).toEqual({
+        ok: false,
+        reason: 'approvals-document',
+      });
+      env.docs.shown(eventFrom(contents), { handle: shown.handle });
+      env.advance(INPUT_DELAY_MS);
+      // Answered once the request is (no `released` here).
+      pending.push(env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false }));
+      await flush();
+    }
+    expect(await answer).toEqual({ result: 'done' });
+    expect(await Promise.all(pending)).toEqual([{ ok: true }, { ok: true }]);
+    expect(decisions.map(([kind, decision]) => [kind, decision.approve, decision.from])).toEqual([
+      ['eth.safe_message', false, 'approvals'],
+      ['eth.safe_send', false, 'approvals'],
+    ]);
+  });
+
+  test('a board\'s approval in the document mints no page token: only the request\'s own approval does', async () => {
+    const minted = [];
+    const mint = (context) => context.confirm('sign-message', 0, { method: 'personal_sign', params: ['0x00'] });
+    const env = withPageRequests({
+      dispatch: async (context) => {
+        for (const kind of ['eth.safe_message', 'eth.safe_send', 'test.prompt']) {
+          const decision = await context.prompt({ kind, view: kind === 'test.prompt' ? VIEW : { step: 'collect' } });
+          try {
+            minted.push([kind, decision.approve, typeof mint(context)]);
+          } catch (err) {
+            minted.push([kind, decision.approve, err.code]);
+          }
+        }
+        return { result: 'done' };
+      },
+    });
+    const { contents } = attached(env);
+    const answer = env.tab().ask(VIEW);
     await flush();
-    const shown = contents.sent.find(([channel]) => channel === CHANNELS.PROMPT)[1].handle;
-    env.docs.shown(eventFrom(contents), { handle: shown });
-    env.advance(INPUT_DELAY_MS);
-    env.docs.decide(eventFrom(contents), { handle: shown, approve: true });
+    for (let i = 0; i < 3; i += 1) {
+      const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1].handle;
+      env.docs.shown(eventFrom(contents), { handle: shown });
+      env.advance(INPUT_DELAY_MS);
+      env.docs.decide(eventFrom(contents), { handle: shown, approve: true });
+      await flush();
+    }
     expect(await answer).toEqual({ result: 'done' });
     expect(minted).toEqual([
-      ['board', true, signingConfirmation.NOT_CONFIRMED],
-      ['document', true, 'string'],
+      ['eth.safe_message', true, signingConfirmation.NOT_CONFIRMED],
+      ['eth.safe_send', true, signingConfirmation.NOT_CONFIRMED],
+      ['test.prompt', true, 'string'],
     ]);
   });
 });
@@ -1224,5 +1240,75 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
       expect(contents.sent).toEqual([]);
       expect(env.requests.promptState()[1]).toBeUndefined();
     }
+  });
+});
+
+describe('APS-3b: a board\'s approval to sign with a device owner keeps the panel up while main signs', () => {
+  const owners = [
+    { index: 1, type: 'ledger', signed: false },
+    { index: 2, type: 'mnemonic', signed: false },
+    { index: 3, type: 'remote', signed: false },
+    { index: 4, type: 'ledger', signed: true },
+  ];
+  const board = (kind) => ({ handle: HANDLE, guest: kind.startsWith('wallet.') ? null : 7, kind, site: SITE, view: { owners } });
+
+  test.each([
+    ['eth.safe_message', { action: 'sign', owner: 1 }, 'ledger'],
+    ['eth.safe_send', { action: 'sign', owner: 3 }, 'remote'],
+    ['wallet.safe_board', { action: 'sign', owner: 1 }, 'ledger'],
+    ['eth.safe_send', { action: 'sign', owner: 2 }, null],
+    // An owner who has signed is no device to wait on.
+    ['eth.safe_send', { action: 'sign', owner: 4 }, null],
+    ['wallet.safe_board', { action: 'discard' }, null],
+    ['wallet.safe_board', undefined, null],
+  ])('%s with %j waits on %s', async (kind, choices, device) => {
+    const env = setup();
+    const { contents, view } = attached(env);
+    let answer;
+    env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    env.docs.send(1, CHANNELS.PROMPT, board(kind));
+    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.advance(INPUT_DELAY_MS);
+    const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true, ...(choices ? { choices } : {}) });
+    expect(env.docs.state()[1].waiting).toBe(device);
+    env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
+    expect(view.visible).toBe(device !== null);
+    answer({ ok: true });
+    expect(await decided).toEqual({ ok: true });
+    expect(view.visible).toBe(false);
+  });
+});
+
+describe('APS-3b: a window\'s own vault unlock, for the wallet\'s Safe board', () => {
+  test('the password in the document; a wrong one shown again, saying so; open, an approval with no choices', async () => {
+    const attempts = [];
+    const env = withPageRequests({
+      unlockVault: async (password) => {
+        attempts.push(password);
+        if (password !== 'right') throw new Error('Incorrect password');
+      },
+    });
+    const { contents } = attached(env);
+    const unlocked = env.requests.walletUnlock(1, { reason: 'send' });
+    const decideShown = async (choices) => {
+      const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
+      env.docs.shown(eventFrom(contents), { handle: shown.handle });
+      env.advance(INPUT_DELAY_MS);
+      const answer = await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true, choices });
+      await flush();
+      return { shown, answer };
+    };
+    await flush();
+    const first = await decideShown({ password: 'wrong' });
+    expect(first.shown).toMatchObject({ kind: 'wallet.vault_unlock', guest: null, site: { key: 'freedom:wallet' }, view: { reason: 'send' } });
+    expect(first.answer).toEqual({ ok: true });
+    const second = await decideShown({ password: 'right' });
+    expect(second.shown.view).toEqual({ reason: 'send', failed: true });
+    expect(await unlocked).toEqual({ approve: true, choices: {}, from: 'approvals' });
+    expect(attempts).toEqual(['wrong', 'right']);
+    // Nothing of it reached the chrome but its badge.
+    expect(env.chromeChannels().filter((c) => c === 'page:prompt')).toEqual([]);
+    // Off: nothing asked.
+    expect(await withPageRequests({ flag: false }).requests.walletUnlock(1, { reason: 'send' })).toEqual({ closed: 'cancelled' });
   });
 });

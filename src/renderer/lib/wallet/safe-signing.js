@@ -37,6 +37,13 @@
  * itself and answers the page with the execution's hash, or a rejection
  * when it is discarded. Leaving the board parks the SafeTx, as before: it
  * answers the handle, and main keeps the page waiting for the outcome.
+ *
+ * With the approvals document on (freedom-core design 0011, APS-3b), main
+ * runs every board in the window's approvals panel instead: a page's two,
+ * which no longer reach the chrome, and the wallet's own, which
+ * openSafeSigningBoard asks main for (`wallet.safeBoard`). The chrome keeps
+ * what decides nothing: the summary with the explorer link once a send has
+ * executed, the balances, and the DOM events below.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -263,9 +270,59 @@ function abandonMessageSession() {
  * pending item (its start call already swept the free signatures).
  */
 export async function openSafeSigningBoard(safeIndex, initialState = null) {
+  if (window.pagePrompts?.approvalsDocument === true) {
+    // Main's board, in the panel; the caller goes on at once.
+    openPanelBoard(safeIndex);
+    return;
+  }
   abandonMessageSession();
   boardKind = 'send';
   await openBoard(safeIndex, initialState);
+}
+
+/**
+ * The wallet's own board in the approvals panel (APS-3b): main runs it, and
+ * answers once it ends. An executed send shows its summary here, with the
+ * explorer link; every end tells the listeners, as the chrome's board did.
+ */
+async function openPanelBoard(safeIndex) {
+  let result;
+  try {
+    result = await window.wallet.safeBoard(safeIndex);
+  } catch (err) {
+    result = { success: false, error: err?.message };
+  }
+  const outcome = result?.success ? result.outcome : null;
+  if (!result?.success) console.error('[SafeSigning] The board did not open:', result?.error);
+  if (outcome?.outcome === 'executed' && typeof outcome.executed?.hash === 'string') {
+    abandonMessageSession();
+    boardEpoch += 1;
+    boardKind = 'send';
+    boardSafeIndex = safeIndex;
+    pageBoard = null;
+    signingIndex = null;
+    executeError = null;
+    feeAsk = null;
+    state = { display: outcome.display || {}, safeTxHash: outcome.safeTxHash };
+    executed = { hash: outcome.executed.hash, explorerUrl: outcome.executed.explorerUrl || null };
+    phase = 'success';
+    hideAllSubscreens();
+    walletState.identityView?.classList.add('hidden');
+    screen?.classList.remove('hidden');
+    render();
+    window.dispatchEvent(
+      new CustomEvent('wallet:safe-executed', {
+        detail: { safeIndex, safeTxHash: outcome.safeTxHash, hash: executed.hash },
+      })
+    );
+    return;
+  }
+  if (outcome?.outcome === 'discarded') {
+    window.dispatchEvent(
+      new CustomEvent('wallet:safe-discarded', { detail: { safeIndex, safeTxHash: outcome.safeTxHash } })
+    );
+  }
+  window.dispatchEvent(new CustomEvent('wallet:safe-signing-closed'));
 }
 
 async function openBoard(safeIndex, initialState) {

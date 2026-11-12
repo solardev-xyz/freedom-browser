@@ -492,3 +492,71 @@ describe("safe signing board — a page's Safe send (0011 PRQ-5b)", () => {
     expect(decisions).toEqual([{ handle: 'h2', approve: false, choices: {} }]);
   });
 });
+
+describe('safe signing board — main runs it in the approvals panel (0011 APS-3b)', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+    jest.restoreAllMocks();
+  });
+
+  async function loadPanelBoard(answer) {
+    const env = await loadBoard();
+    global.window.pagePrompts = { approvalsDocument: true, decide: jest.fn() };
+    const reply = deferred();
+    Object.assign(env.walletMocks, {
+      safeBoard: jest.fn(() => reply.promise),
+      safeState: jest.fn(),
+      safeSign: jest.fn(),
+      safeExecute: jest.fn(),
+      safeCancelPending: jest.fn(),
+    });
+    return { ...env, reply, answer };
+  }
+
+  const events = () => global.window.dispatchEvent.mock.calls.map(([event]) => [event.type, event.detail]);
+
+  test('the opener asks main and goes on at once; the chrome signs, executes and discards nothing itself', async () => {
+    const env = await loadPanelBoard();
+    await env.mod.openSafeSigningBoard(5, { status: 'awaiting' });
+    expect(env.walletMocks.safeBoard).toHaveBeenCalledWith(5);
+    for (const call of ['safeState', 'safeSign', 'safeExecute', 'safeCancelPending']) expect(env.walletMocks[call]).not.toHaveBeenCalled();
+    expect(env.screen.classList.contains('hidden')).toBe(true);
+    // Left in the panel: the listeners hear the board is closed.
+    env.reply.resolve({ success: true, outcome: { outcome: 'parked' } });
+    await flushMicrotasks();
+    expect(events()).toEqual([['wallet:safe-signing-closed', undefined]]);
+    expect(env.screen.classList.contains('hidden')).toBe(true);
+  });
+
+  test('executed in the panel: the summary with the explorer link, and the event the listeners wait on', async () => {
+    const env = await loadPanelBoard();
+    await env.mod.openSafeSigningBoard(5);
+    env.reply.resolve({
+      success: true,
+      outcome: {
+        outcome: 'executed',
+        safeTxHash: '0xsafetx',
+        display: { toAddress: '0xabc', formattedAmount: '1', symbol: 'xDAI' },
+        executed: { hash: '0xexec', explorerUrl: 'https://gnosisscan.io/tx/0xexec' },
+      },
+    });
+    await flushMicrotasks();
+    expect(env.screen.classList.contains('hidden')).toBe(false);
+    expect(global.document.getElementById('safe-signing-title').textContent).toBe('Transaction sent');
+    expect(global.document.getElementById('safe-signing-content').innerHTML).toContain('https://gnosisscan.io/tx/0xexec');
+    expect(events()).toEqual([['wallet:safe-executed', { safeIndex: 5, safeTxHash: '0xsafetx', hash: '0xexec' }]]);
+  });
+
+  test('discarded in the panel: the discard event, then closed', async () => {
+    const env = await loadPanelBoard();
+    await env.mod.openSafeSigningBoard(5);
+    env.reply.resolve({ success: true, outcome: { outcome: 'discarded', safeTxHash: '0xsafetx' } });
+    await flushMicrotasks();
+    expect(events()).toEqual([
+      ['wallet:safe-discarded', { safeIndex: 5, safeTxHash: '0xsafetx' }],
+      ['wallet:safe-signing-closed', undefined],
+    ]);
+  });
+});

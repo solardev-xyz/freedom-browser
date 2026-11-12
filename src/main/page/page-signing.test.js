@@ -199,6 +199,8 @@ function backends() {
       cancelSafeMessage: jest.fn((safeIndex, token) => {
         state.safe.cancelled.push([safeIndex, token]);
       }),
+      // The boards main runs in the approvals document (APS-3b), when a test sets them.
+      safeBoards: () => state.safeBoards || null,
     },
   };
   return { state, deps, signer };
@@ -1635,5 +1637,107 @@ describe('with the approvals document on (0011 APS-2)', () => {
     env.tab().ask('personal_sign', [MESSAGE, ACCOUNT]);
     await flush();
     expect(env.prompts().map((p) => p.kind)).toEqual(['eth.sign']);
+  });
+});
+
+describe('APS-3b: with the approvals document on, main runs the Safe message\'s board in the panel', () => {
+  const { createSafeBoards } = require('../approvals/safe-boards');
+
+  // A 2-of-2 Safe's session: the vault owner signed as it opened; a Ledger
+  // owner still to sign. Its token is main's.
+  function withBoards(env) {
+    const board = { signed: new Set([0]), signs: [] };
+    env.state.safeBoards = createSafeBoards({
+      getDerivedWallets: async () => env.state.wallets,
+      messages: {
+        state: (safeIndex, token) =>
+          token === 'session-1'
+            ? {
+                safeIndex,
+                kind: 'message',
+                token,
+                threshold: 2,
+                collected: board.signed.size,
+                owners: [
+                  { index: 0, address: ACCOUNT, type: 'mnemonic', signed: board.signed.has(0) },
+                  { index: 5, address: LEDGER, type: 'ledger', signed: board.signed.has(5) },
+                ],
+                display: { kind: 'message', site: KEY_A, method: 'personal_sign' },
+                complete: board.signed.size >= 2,
+              }
+            : null,
+        sign: async (safeIndex, owner, token) => {
+          board.signs.push([owner, token]);
+          if (owner !== undefined) board.signed.add(owner);
+        },
+      },
+      sends: {},
+    });
+    return board;
+  }
+
+  test('the board shows in the document, without the session\'s token; the owner picked signs; main completes it', async () => {
+    const env = setup({ approvalsDocument: true });
+    const board = withBoards(env);
+    env.connect(KEY_A, SAFE_INDEX);
+    env.state.safe.complete = false;
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    const shown = env.lastPrompt();
+    expect(shown.kind).toBe('eth.safe_message');
+    expect(shown.view).toMatchObject({ safe: { index: SAFE_INDEX }, threshold: 2, collected: 1, method: 'personal_sign', step: 'collect' });
+    expect(JSON.stringify(shown)).not.toContain('session-1');
+    expect(await env.requests.decide({ sender: { id: 501 } }, { handle: shown.handle, approve: true, choices: { action: 'sign', owner: 5 } })).toEqual({
+      ok: false,
+      reason: 'approvals-document',
+    });
+    expect(env.state.safe.completed).toEqual([]);
+    const signed = env.decide(shown.handle, true, { action: 'sign', owner: 5 });
+    expect(await answer).toEqual({ result: '0xsafesig' });
+    expect(await signed).toEqual({ ok: true });
+    expect(board.signs).toEqual([
+      [undefined, 'session-1'],
+      [5, 'session-1'],
+    ]);
+    expect(env.state.safe.completed).toEqual([[SAFE_INDEX, 'session-1']]);
+    expect(env.state.safe.cancelled).toEqual([]);
+    // The one token is the Safe message's own.
+    expect(env.minted()).toEqual([expect.objectContaining({ token: 'safe-message' })]);
+  });
+
+  test('Reject in the panel cancels the session, and answers 4001', async () => {
+    const env = setup({ approvalsDocument: true });
+    withBoards(env);
+    env.connect(KEY_A, SAFE_INDEX);
+    env.state.safe.complete = false;
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+    expect(env.state.safe.cancelled).toEqual([[SAFE_INDEX, 'session-1']]);
+    expect(env.state.safe.completed).toEqual([]);
+  });
+
+  test('a document that navigates while the board shows: the session is cancelled, nothing completed', async () => {
+    const env = setup({ approvalsDocument: true });
+    withBoards(env);
+    env.connect(KEY_A, SAFE_INDEX);
+    env.state.safe.complete = false;
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    page.guest.commit(`${KEY_A}/next`);
+    expect(await answer).toBe(GONE);
+    await flush();
+    expect(env.state.safe.cancelled).toEqual([[SAFE_INDEX, 'session-1']]);
+    expect(env.state.safe.completed).toEqual([]);
   });
 });

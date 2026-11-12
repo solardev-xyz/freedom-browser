@@ -39,6 +39,7 @@ const { getPending, setPending, clearPending, listPendingIndexes } = require('./
 const {
   codedError,
   SAFE_BUSY,
+  SAFE_DISCARDED,
   SAFE_PENDING_EXISTS,
   SAFE_NEEDS_FUNDS,
   SAFE_SITE_WITHDRAWN,
@@ -56,6 +57,20 @@ const {
 // The signature-collection store over the persisted pending-SafeTx
 // entries; the SafeTx hash is the entry's identity.
 const store = { get: getPending, set: setPending, idOf: (entry) => entry.safeTxHash };
+
+/**
+ * The pending SafeTx, refused (SAFE_DISCARDED, nothing done) when the caller
+ * names another one: a board's step acts only on the SafeTx it showed
+ * (`approvals/safe-boards.js`), never on one that replaced it meanwhile.
+ * Read in the same run as the step it guards.
+ */
+function pendingNamed(safeIndex, safeTxHash) {
+  const pending = getPending(safeIndex);
+  if (safeTxHash != null && pending?.safeTxHash !== safeTxHash) {
+    throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+  }
+  return pending;
+}
 
 // Who hears a pending SafeTx's outcome (onSafeSendSettled).
 const settledListeners = new Set();
@@ -272,13 +287,18 @@ async function startSafeSend({ safeIndex, tx, display, chainId }) {
  * (unsigned mnemonic owners, vault unlocked) — the board runs this on
  * open to cover a vault that was locked when the SafeTx was created.
  *
+ * With `safeTxHash`, only that SafeTx is signed: another one pending is
+ * refused (SAFE_DISCARDED), and so is a signature whose SafeTx was replaced
+ * while it was made.
+ *
  * @param {number} safeIndex
  * @param {number} [ownerIndex]
+ * @param {{ safeTxHash?: string }} [options]
  * @returns {Promise<Object>} SafeSendState
  */
-async function signSafePending(safeIndex, ownerIndex) {
+async function signSafePending(safeIndex, ownerIndex, { safeTxHash = null } = {}) {
   const record = getSafeRecord(safeIndex);
-  const pending = getPending(safeIndex);
+  const pending = pendingNamed(safeIndex, safeTxHash);
   if (!pending) {
     throw new Error('No pending transaction for this account');
   }
@@ -286,7 +306,7 @@ async function signSafePending(safeIndex, ownerIndex) {
     throw new Error('This transaction can no longer be signed — discard it');
   }
 
-  await signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes: record.owners });
+  await signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes: record.owners, expectedId: pending.safeTxHash });
   return getSafeSendState(safeIndex);
 }
 
@@ -301,14 +321,17 @@ async function signSafePending(safeIndex, ownerIndex) {
  * signed and the SafeTx kept (FEE_CHECK_NEEDS_CONFIRMATION); it runs again
  * with `feeConfirmation`, the user's confirmation of that fee.
  *
+ * With `safeTxHash`, only that SafeTx is executed: another one pending is
+ * refused (SAFE_DISCARDED), nothing executed.
+ *
  * @param {number} safeIndex
- * @param {{ feeConfirmation?: Object }} [options]
+ * @param {{ feeConfirmation?: Object, safeTxHash?: string }} [options]
  * @returns {Promise<Object>} SafeSendState; on success carries
  *   `executed: {hash, explorerUrl}` (and the pending entry is cleared)
  */
-async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
+async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHash = null } = {}) {
   const record = getSafeRecord(safeIndex);
-  const pending = getPending(safeIndex);
+  const pending = pendingNamed(safeIndex, safeTxHash);
   if (!pending) {
     throw new Error('No pending transaction for this account');
   }
@@ -413,13 +436,15 @@ function getAllSafeSendStates() {
 
 /**
  * Discard the pending SafeTx (collected signatures are thrown away).
- * Refused while a signature ceremony or the execution is live.
+ * Refused while a signature ceremony or the execution is live. With
+ * `safeTxHash`, only that SafeTx is discarded: another one pending, or none,
+ * is refused (SAFE_DISCARDED), nothing discarded.
  */
-function cancelSafeSend(safeIndex) {
+function cancelSafeSend(safeIndex, { safeTxHash = null } = {}) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
-  const pending = getPending(safeIndex);
+  const pending = pendingNamed(safeIndex, safeTxHash);
   clearPending(safeIndex);
   if (pending) settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'discarded' });
 }

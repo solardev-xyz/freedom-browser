@@ -95,10 +95,11 @@
     ledger: 'Confirm on your Ledger…',
     remote: 'Confirm on your phone: its code is in the sidebar…',
   });
-  // A page's prompt only: the wallet's own is answered once its token is
-  // minted, and the chrome's screen says where to confirm after that.
-  const deviceOf = (prompt) => {
-    const device = kinds.deviceOf(prompt);
+  // A page's prompt, or a Safe board's owner (APS-3b): the wallet's other
+  // prompts are answered once their token is minted, and the chrome's screen
+  // says where to confirm after that.
+  const deviceOf = (prompt, choices) => {
+    const device = kinds.deviceOf(prompt, choices);
     return device !== null && Object.prototype.hasOwnProperty.call(WAITING_COPY, device) ? device : null;
   };
 
@@ -120,10 +121,19 @@
       const kind = kinds.KINDS[prompt.kind];
       el.heading.textContent = kind.heading(prompt.view);
       el.approve.textContent = kind.approve(prompt.view);
+      el.reject.textContent = typeof kind.reject === 'function' ? kind.reject(prompt.view) : 'Reject';
       form = kind.render(prompt.view, ui, el.body) || null;
+      // A board's choice names what Approve does (APS-3b): its label follows.
+      if (form && typeof form.watch === 'function') {
+        const handle = prompt.handle;
+        form.watch((label) => {
+          if (current?.handle === handle && typeof label === 'string') el.approve.textContent = label;
+        });
+      }
     } else {
       el.heading.textContent = 'Request';
       el.approve.textContent = 'Approve';
+      el.reject.textContent = 'Reject';
     }
     el.panel.hidden = false;
     setButtons();
@@ -162,7 +172,7 @@
     const handle = current.handle;
     deciding = true;
     setButtons();
-    const device = approve ? deviceOf(current) : null;
+    const device = approve ? deviceOf(current, choices) : null;
     if (device) {
       waiting = { handle, closed: false };
       el.waiting.textContent = WAITING_COPY[device];

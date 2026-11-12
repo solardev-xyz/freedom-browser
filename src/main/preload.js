@@ -886,6 +886,9 @@ contextBridge.exposeInMainWorld('wallet', {
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
   safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
   safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),
+  // With the approvals document on (0011 APS-3b): main runs the Safe's board
+  // in the window's panel; resolves with how it ended.
+  safeBoard: (safeIndex) => ipcRenderer.invoke('wallet:safe-board', safeIndex),
   // SafeMessage sessions (dApp message signing via EIP-1271). Main opens
   // one for a page's request and completes it (freedom-core design 0011);
   // the board collects its owners' signatures with the session's token.
