@@ -361,7 +361,9 @@ const blobVectors = vectors['radicle-blob.json'];
       expect(bounded.map((c) => c.id).length).toBeGreaterThan(0);
     });
 
-    test.each(readsVectors.cases.map((c) => [c.id, c]))(
+    // describe.skip still runs this callback, so the table can't read a
+    // missing radicle-reads.json.
+    test.each(readsVectors ? readsVectors.cases.map((c) => [c.id, c]) : [['(no radicle-reads.json)', null]])(
       '%s: the radapi answer, from one rad.read',
       async (_id, c) => {
         const replay = await harness.runServiceRead(main, c);
