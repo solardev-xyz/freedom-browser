@@ -110,7 +110,7 @@
       "issues": [
         {
           "kind": "missing-license",
-          "details": "freedom-radicled is released from freedom-core, which has no license yet (the maintainer's decision). Every build ships it, but none runs it yet: Radicle still runs on the libradicle add-on until main moves onto the service (freedom-core design 0008, step 6 on). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
+          "details": "freedom-radicled is released from freedom-core, which has no license yet (the maintainer's decision). Every build ships it, and main runs only its hold-lock subcommand, the Radicle home's gate: Radicle still runs on the libradicle add-on until main moves onto the service (freedom-core design 0008, step 6 on). The notices of the third-party code it statically links ship beside the binary (THIRD-PARTY-NOTICES, THIRD-PARTY-NOTICES-rust-std.html).",
           "recommended_fix": "Choose freedom-core's license, then ship a release that carries it."
         },
         {

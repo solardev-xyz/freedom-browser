@@ -9,7 +9,11 @@
  *   radicle:download`), loaded by the production `radicle-embedded.js` from
  *   `radicle-bin/<platform>/`, and driven through the production
  *   `radicle-manager.js`, `radicle-api-protocol.js` and
- *   `radicle/rad-protocol.js`.
+ *   `radicle/rad-protocol.js`. With freedom-radicled downloaded too (`npm
+ *   run radicled:download`, or `FREEDOM_RADICLED_PATH`), it runs under the
+ *   binary's `hold-lock` on its home (design 0008, Rollback), as a
+ *   development build does, its gate in a lock directory of the run's own;
+ *   without it, ungated, with the warning such a build logs.
  * - `radicled` (design 0008 step 7): the freedom-radicled service. Not
  *   written yet; it gets an entry here, and the suite stays as it is.
  *
@@ -53,6 +57,8 @@
  *     envelopes main received, each exactly as encoded on the wire.
  */
 
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { loadMainModule } = require('./main-process-test-utils');
 
@@ -131,9 +137,14 @@ const notDialled = () => new Error('network operations are not part of the contr
 
 async function loadAddonBackend({ home }) {
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  // The home's gate, where the binary is there, goes in a lock directory of
+  // the run's own, outside the home: made once the add-on is known to be
+  // there (below), and removed by close().
+  let lockDir = null;
   const { mod: manager } = loadMainModule(path.join(SRC, 'radicle-manager.js'), {
     extraMocks: {
       [path.join(SRC, 'logger.js')]: () => log,
+      [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
       [path.join(SRC, 'profile-paths.js')]: () => ({
         getRadicleDataDir: () => home,
         prepareRadicleDataDir: async () => home,
@@ -154,6 +165,7 @@ async function loadAddonBackend({ home }) {
       'FREEDOM_RADICLE_CONTRACT_BACKEND=addon needs the add-on: run npm run radicle:download'
     );
   }
+  lockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicle-contract-locks-'));
   embedded.connectSeeds = async () => ({ connected: 0, attempted: 0, targetReached: false });
   embedded.cloneRepo = async () => {
     throw notDialled();
@@ -198,6 +210,7 @@ async function loadAddonBackend({ home }) {
   return {
     name: 'addon',
     home,
+    lockDir,
     manager,
     embedded,
     api,
@@ -234,6 +247,7 @@ async function loadAddonBackend({ home }) {
     },
     async close() {
       await manager.stopRadicle();
+      fs.rmSync(lockDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     },
   };
 }

@@ -493,13 +493,15 @@ function validateProfileDeletionForActiveApp(profileId, expectedDisplayName) {
 }
 
 // `withCoreGate(dir, fn)` holds the profile's core gate for the whole delete
-// (freedom-core design 0001, "Lifetime lock"; core/core-gate.js), and
+// (freedom-core design 0001, "Lifetime lock"; core/core-gate.js),
 // `withIpfsGate(dir, fn)` its IPFS data gate while its data is removed
-// (design 0007, "Lifetime lock"; ipfs/ipfsd-gate.js).
+// (design 0007, "Lifetime lock"; ipfs/ipfsd-gate.js), and
+// `withRadicleGate(dir, fn)` its Radicle home's gate while the home is
+// removed (design 0008, "Spawn and lock"; radicle/radicled-gate.js).
 async function deleteProfileForActiveApp(
   profileId,
   expectedDisplayName,
-  { withCoreGate, withIpfsGate } = {}
+  { withCoreGate, withIpfsGate, withRadicleGate } = {}
 ) {
   if (!activeProfile || activeProfile.source !== 'catalog') {
     return null;
@@ -513,6 +515,7 @@ async function deleteProfileForActiveApp(
     ...getProfileCatalogOptions(),
     withCoreGate,
     withIpfsGate,
+    withRadicleGate,
     isProfileLocked: (record) =>
       isProfileLocked({
         id: record.id,
