@@ -338,18 +338,16 @@ class RadicledClient extends ServiceClient {
 
   /**
    * `rad.read { op, args }` on `gen`: its head and its JSON body (see
-   * `callStream`), watched for 60 s + 15 s to the head. Every result of
-   * `rad.read` is a head with a body (0008, Methods), and freedom-radicled
-   * opens the stream whatever its head says. Its head, `{ content_type,
-   * bytes }`, doesn't say `body: true`, so any result opens the body here:
-   * without that, its data frames would be a protocol fault.
+   * `callStream`), watched for 60 s + 15 s to the head. Its head, `{
+   * content_type, bytes, body: true }`, says the body follows (0008,
+   * Methods), as every head says whether one does; a head that doesn't say
+   * `body: true` opens no body, and data after it is a protocol fault.
    */
   read(gen, op, args, { signal = null, fence = null } = {}) {
     return this.requestStreamTo(gen, 'rad.read', { op, args }, CONTEXT, {
       watchdogMs: WATCHDOG_MS['rad.read'],
       signal,
       fence,
-      opens: isObject,
     });
   }
 

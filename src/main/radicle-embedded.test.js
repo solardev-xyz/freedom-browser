@@ -542,7 +542,7 @@ describe('on the freedom-radicled service', () => {
       reads.push({ op, args });
       const bytes = Buffer.from(JSON.stringify({ op, args }));
       return {
-        result: { content_type: 'application/json', bytes: bytes.length },
+        result: { content_type: 'application/json', bytes: bytes.length, body: true },
         body: new ReadableStream({
           start(controller) {
             controller.enqueue(bytes);
@@ -586,7 +586,7 @@ describe('on the freedom-radicled service', () => {
     node.read.mockImplementationOnce(async () => {
       const bytes = Buffer.from(JSON.stringify(big));
       return {
-        result: { content_type: 'application/json', bytes: bytes.length },
+        result: { content_type: 'application/json', bytes: bytes.length, body: true },
         body: new ReadableStream({
           start(controller) {
             controller.enqueue(bytes);

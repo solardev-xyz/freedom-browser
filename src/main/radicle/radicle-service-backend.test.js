@@ -4,8 +4,8 @@
  * step-5 plan's B7), main's side of 0008 §Tests first, "JSON results":
  * a real RadicledNode on an in-process fake service (fake-radicled.js),
  * whose `rad.read` replies are freedom-radicled's (a head of `{
- * content_type, bytes }` that opens its stream without saying `body: true`,
- * then the JSON under 0007's credit), and a manual clock for main's waits.
+ * content_type, bytes, body: true }`, then the JSON under 0007's credit),
+ * and a manual clock for main's waits.
  *
  * - four maximum-size bodies with slow consumers: main holds one ring per
  *   stream, and nothing of them is collected;
@@ -643,6 +643,39 @@ describe('other callers: 64 outstanding at the service, 64 waiting in main', () 
     await settle(60);
     expect(waiting.slice(1).every((state) => state.value)).toBe(true);
     for (const state of waiting.slice(1)) await state.value.body.cancel();
+    await settle(60);
+    expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
+  }, 30_000);
+
+  test("an admitted read (a handler's, in its request's dweb slot) takes none of their slots", async () => {
+    const { child, backend } = await running((m, c) => c.readReply(m.id, '{"connectedPeers":0}'));
+    const bodies = [];
+    for (let i = 0; i < MAX_OUTSTANDING; i++) {
+      bodies.push((await backend.callStream('status', {})).body);
+    }
+    const waiting = Array.from({ length: MAX_WAITING }, () =>
+      backend.callStream('status', {}).catch((err) => err)
+    );
+    await settle();
+    expect(backend.callers()).toEqual({ outstanding: 64, waiting: 64 });
+    await expect(backend.callStream('status', {})).rejects.toMatchObject({ code: 'busy' });
+
+    // Streamed and collected alike, it reads at once, and leaves the count.
+    const { head, body } = await backend.callStream('status', {}, { admitted: true });
+    expect(head.bytes).toBe(20);
+    expect(backend.callers()).toEqual({ outstanding: 64, waiting: 64 });
+    expect(await new Response(body).text()).toBe('{"connectedPeers":0}');
+    expect(
+      await backend.callScoped('status', {}, async (value) => value.connectedPeers, {
+        admitted: true,
+      })
+    ).toBe(0);
+    expect(backend.callers()).toEqual({ outstanding: 64, waiting: 64 });
+    expect(reads(child)).toHaveLength(66);
+
+    for (const stream of bodies) await stream.cancel();
+    await settle(60);
+    for (const result of await Promise.all(waiting)) await result.body.cancel();
     await settle(60);
     expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
   }, 30_000);

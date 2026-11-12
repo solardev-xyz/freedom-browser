@@ -4,7 +4,7 @@
  * radicle-embedded.js under `FREEDOM_RADICLE_BACKEND=service`. The node is
  * radicled-node.js's; each read is a `rad.read { op, args }` on its running
  * generation, answered with a head, `{ content_type: "application/json",
- * bytes }`, and the JSON as a body stream.
+ * bytes, body: true }`, and the JSON as a body stream.
  *
  * - **`callStream(op, args, { signal })`** passes a read through: its head
  *   and its body, a byte stream main pulls on demand, holding one 128 KiB
@@ -41,10 +41,14 @@
  *     allowance isn't reused while it may still hold the value.
  * - **Other callers** (the manager, cob-service.js, the provider, the
  *   GitHub bridge) aren't admitted by main's dweb admission, which the
- *   handlers' reads will take. Together they hold at most 64 requests
+ *   handlers' reads take. Together they hold at most 64 requests
  *   outstanding at the service, with 64 more waiting in main for one to
  *   end; a call past that fails `busy`. A request is outstanding until its
  *   body ends: read to its end, cancelled or failed.
+ * - **The handlers' reads** (`rad:` and `radapi:`, radicle-api-protocol.js)
+ *   hold a slot of main's dweb admission (dweb/fetch-admission.js) for
+ *   their request's whole life, its body included, and say so with
+ *   `admitted: true`: they take none of the other callers' slots.
  *
  * Every failure carries the service's code, or main's: `stopped` with no
  * node running, `busy`, `too_large`, `cancelled`, and `internal` for a
@@ -353,9 +357,11 @@ class RadicleServiceBackend {
    * A read passed through: `{ head: { content_type, bytes }, body }`, `body`
    * a byte stream of exactly `bytes` bytes of JSON. Until the body is over
    * (read to its end, cancelled or failed), the read holds one of the other
-   * callers' slots.
+   * callers' slots, unless it is `admitted`: a handler's read, whose request
+   * holds a slot of main's dweb admission instead.
    */
-  async callStream(op, args = {}, { signal = null } = {}) {
+  async callStream(op, args = {}, { signal = null, admitted = false } = {}) {
+    if (admitted) return this.read(op, args, signal);
     const release = await this.slots.take({ signal });
     let read;
     try {
@@ -395,10 +401,11 @@ class RadicleServiceBackend {
   /**
    * A collected result, parsed in a scope: resolves to what `scope(value,
    * { signal })` resolves to. Only the ops in COLLECTED_CAPS, each under
-   * its cap; see the module's doc for the budget and ownership.
+   * its cap; see the module's doc for the budget and ownership. `admitted`
+   * is callStream's: a handler's read, in its request's dweb slot.
    */
-  async callScoped(op, args, scope, { signal = null } = {}) {
-    return this.scoped(op, args, scope, { signal, leaves: false });
+  async callScoped(op, args, scope, { signal = null, admitted = false } = {}) {
+    return this.scoped(op, args, scope, { signal, admitted, leaves: false });
   }
 
   /**
@@ -426,7 +433,7 @@ class RadicleServiceBackend {
   }
 
   /** callScoped's work; `leaves` lets the value itself out (`keep`). */
-  async scoped(op, args, scope, { signal, leaves }) {
+  async scoped(op, args, scope, { signal, admitted = false, leaves }) {
     const cap = Object.hasOwn(COLLECTED_CAPS, op) ? COLLECTED_CAPS[op] : null;
     if (cap === null) {
       throw new CoreError('invalid_argument', `${op} isn't a collected result: stream it`);
@@ -437,7 +444,7 @@ class RadicleServiceBackend {
     let bytes;
     let reader = null;
     try {
-      const { head, body } = await this.callStream(op, args, { signal });
+      const { head, body } = await this.callStream(op, args, { signal, admitted });
       reader = body.getReader();
       bytes = head.bytes;
       if (bytes > cap) throw tooLarge(op, cap);

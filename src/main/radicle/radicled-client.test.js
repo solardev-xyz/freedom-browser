@@ -634,7 +634,7 @@ describe('hang watchdogs: the deadline + 15 s', () => {
     expect(JSON.parse(text)).toEqual({ ok: true });
   });
 
-  test("rad.read's head opens its body though it doesn't say body: true, as freedom-radicled writes it", async () => {
+  test("rad.read's head says body: true and opens its body, as freedom-radicled writes it", async () => {
     const reads = [];
     const gen = await ready({ read: (m) => reads.push(m) });
     const text = '{"rid":"rad:z1","name":"reads"}';
@@ -643,7 +643,7 @@ describe('hang watchdogs: the deadline + 15 s', () => {
     expect(reads[0].params).toEqual({ op: 'repo_info', args: { rid: RID } });
     child(0).readReply(reads[0].id, text);
     const { result, body } = await head;
-    expect(result).toEqual({ content_type: 'application/json', bytes: text.length });
+    expect(result).toEqual({ content_type: 'application/json', bytes: text.length, body: true });
     expect(await new Response(body).text()).toBe(text);
     // An error reply opens nothing.
     const failed = client.read(gen, 'repo_info', { rid: RID });
@@ -661,6 +661,22 @@ describe('hang watchdogs: the deadline + 15 s', () => {
     await settle();
     expect(client.serves(gen)).toBe(true);
     expect(client.streamStats(gen)).toMatchObject({ bodies: 0, ringBytes: 0 });
+  });
+
+  test("a rad.read head that doesn't say body: true opens no body, and the data after it is a protocol fault", async () => {
+    const reads = [];
+    const gen = await ready({ read: (m) => reads.push(m) });
+    const text = '{"rid":"rad:z1","name":"reads"}';
+    const head = client.read(gen, 'repo_info', { rid: RID });
+    await settle();
+    // freedom-radicled 0.1.0's head: no `body`, its stream opened all the same.
+    child(0).readReply(reads[0].id, text, { says: false });
+    const { result, body } = await head;
+    expect(result).toEqual({ content_type: 'application/json', bytes: text.length });
+    expect(body).toBeNull();
+    await settle();
+    expect(log.error).toHaveBeenCalledWith('[radicled] protocol error', expect.any(Object));
+    expect(client.serves(gen)).toBe(false);
   });
 
   test("a network call's watchdog: its timeout_ms + 45 s, within what a timer holds", async () => {

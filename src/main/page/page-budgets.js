@@ -12,7 +12,7 @@
  *
  * A request's charge is what main may hold for it at once: its size times
  * its method's copies, 128 bytes for each value and each property name, for
- * `swarm_publishFiles` 1 MiB of stream buffers, and 16 KiB for main's own
+ * `swarm_publishFiles` 1 MiB of stream buffers, and 64 KiB for main's own
  * bookkeeping of the request.
  *
  * A request over 1 MiB (only the two Swarm uploads allow one) first reserves
@@ -57,8 +57,9 @@ const VALUE_BYTES = 128;
 // Main's own bookkeeping of every request while it holds it: the record, the
 // dispatcher's context and its promises, and the IPC event the request
 // keeps. The two uploads' copies are counted exactly, so without it their
-// measured peaks passed their charges by a few KiB.
-const REQUEST_BYTES = 16 * 1024;
+// measured peaks passed their charges by a few KiB. 16 KiB left about 7 KiB
+// of spare locally, and CI runs measured up to 20 KiB over it, so it is 64 KiB.
+const REQUEST_BYTES = 64 * 1024;
 
 // Large requests (design 0011, "The numbers", proposed).
 const TICKETS = Object.freeze({ turns: 2, waiting: 16, unusedMs: 30_000, bytes: 32 });
