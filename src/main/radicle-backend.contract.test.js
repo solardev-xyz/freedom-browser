@@ -272,13 +272,56 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
   });
 
   describe('handlers, byte for byte', () => {
+    const deviations = BACKEND && fx ? BACKENDS[BACKEND].handlerDeviations(fx) : {};
+    test("every handler deviation names a handler vector, the design's deviation and why", () => {
+      for (const [name, deviation] of Object.entries(deviations)) {
+        expect(VECTORS.handlers).toHaveProperty([name]);
+        expect(deviation.deviation).toEqual(expect.any(String));
+        expect(deviation.reason).toEqual(expect.any(String));
+      }
+    });
+
     for (const [name, expected] of Object.entries(VECTORS?.handlers || {})) {
       // The manager's answers are its own; the rest are the handlers'.
       const part = name.startsWith('manager ') ? null : 'handlers';
       partTest(part, name, async () => {
-        expect(await cases.get(name).run(backend)).toEqual(expected);
+        const record = await cases.get(name).run(backend);
+        const deviation = deviations[name];
+        if (!deviation) {
+          expect(record).toEqual(expected);
+          return;
+        }
+        // By design: it differs from the vector as described, and no other
+        // way (the record is shown when it doesn't).
+        expect(record).not.toEqual(expected);
+        expect(deviation.differs(record, expected) || record).toBe(true);
       });
     }
+
+    pendingTest(
+      'call-stream',
+      "the handlers let go of what they hold: a HEAD's body and a cancelled body are cancelled, and no slot or stream is left",
+      async () => {
+        const base = `rad://${fx.rid.slice('rad:'.length)}`;
+        const head = await backend.rad.handleRadRequest(
+          new Request(`${base}/tree/${fx.commits.second}`, { method: 'HEAD' })
+        );
+        expect(head.status).toBe(200);
+        expect(head.body).toBeNull();
+        const res = await backend.rad.handleRadRequest(
+          new Request(`${base}/commits/${fx.commits.first}`)
+        );
+        expect(res.status).toBe(200);
+        await res.body.cancel();
+        await waitUntil(() => backend.admission.dwebFetchStats().active === 0);
+        expect(backend.admission.dwebFetchStats()).toEqual({ active: 0, waiting: 0 });
+        expect(backend.embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
+        // The node reads on.
+        expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
+          VECTORS.reads.repo_info.body
+        );
+      }
+    );
   });
 
   // radicle-embedded.js's exports keep their shapes, whatever serves them.
@@ -700,27 +743,46 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
   describe('caps and text', () => {
     pendingTest(
       'size-caps',
-      'a blob over 64 MiB is too_large: refused by the read, 413 at both handlers',
+      "a blob over 64 MiB is too_large: refused by the read, 413 at rad:'s and radapi:'s /blob/",
       async () => {
         const args = { rid: fx.rid, revision: fx.commits.second, path: 'big.bin' };
         await expect(backend.readText('blob_at', args)).rejects.toMatchObject({
           code: 'too_large',
         });
-        for (const [route, method] of [
-          [`/blob/${fx.commits.second}/big.bin`, 'GET'],
-          [`/raw/${fx.commits.second}/big.bin`, 'GET'],
-          [`/raw/${fx.commits.second}/big.bin`, 'HEAD'],
-        ]) {
+        const route = `/blob/${fx.commits.second}/big.bin`;
+        for (const method of ['GET', 'HEAD']) {
           const res = await backend.rad.handleRadRequest(
             new Request(`rad://${fx.rid.slice('rad:'.length)}${route}`, { method })
           );
           expect(res.status).toBe(413);
           await res.arrayBuffer();
         }
+        const res = await backend.api.handleRadicleApiRequest(
+          new Request(`radapi://local/api/v1/repos/${encodeURIComponent(fx.rid)}${route}`)
+        );
+        expect(res.status).toBe(413);
+        expect(JSON.parse(await res.text())).toEqual({ error: expect.any(String) });
         // The rest of the repository reads as before.
         expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
           VECTORS.reads.repo_info.body
         );
+      },
+      60_000
+    );
+
+    pendingTest(
+      'blob-api',
+      'a blob over 64 MiB is too_large at /raw/ too: 413 for GET and HEAD',
+      async () => {
+        for (const method of ['GET', 'HEAD']) {
+          const res = await backend.rad.handleRadRequest(
+            new Request(`rad://${fx.rid.slice('rad:'.length)}/raw/${fx.commits.second}/big.bin`, {
+              method,
+            })
+          );
+          expect(res.status).toBe(413);
+          await res.arrayBuffer();
+        }
       },
       60_000
     );
