@@ -50,9 +50,9 @@
  *
  * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
  * narrows what the chrome can do, so packaged builds honour it too. It
- * stays off by default until the panel's gaps close (Touch ID, a device's
- * feedback after the press, views over 256 KiB) and the page specs drive
- * it; the default flips in its own pull request.
+ * stays off by default until the panel's gaps close (the Safe signing
+ * boards, still in the chrome; views over 256 KiB) and the page and wallet
+ * specs drive it; the default flips in its own pull request.
  */
 
 const fs = require('fs');

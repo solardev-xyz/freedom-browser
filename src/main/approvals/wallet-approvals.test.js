@@ -53,7 +53,7 @@ function setup({ verdict = BELOW, atPress = [] } = {}) {
 }
 
 const chrome = { id: 501 };
-const message = (kind, view) => ({ handle: 'c'.repeat(64), guest: 4, kind, site: { key: 'freedom:wallet', label: 'Your wallet' }, view });
+const message = (kind, view) => ({ handle: 'c'.repeat(64), guest: null, kind, site: { key: 'freedom:wallet', label: 'Your wallet' }, view });
 
 describe('the six wallet kinds ask in the window\'s panel', () => {
   test.each(Object.keys(PAYLOADS))('%s: main\'s view fits its template\'s schema, and an approval says yes', async (kind) => {

@@ -101,7 +101,7 @@ function createWalletApprovals({
   checkAtApproval,
 }) {
   async function accountOf({ index = null, address = null } = {}) {
-    let wallets = [];
+    let wallets;
     try {
       wallets = (await getDerivedWallets()) || [];
     } catch {
@@ -121,8 +121,8 @@ function createWalletApprovals({
   }
 
   function chainOf(chainId) {
-    let name = null;
-    let symbol = null;
+    let name;
+    let symbol;
     try {
       name = chainName(chainId) || null;
     } catch {
@@ -215,7 +215,7 @@ function createWalletApprovals({
   async function confirm({ sender, kind, index, payload, feeChecked }) {
     const promptKind = PROMPT_KINDS[kind];
     if (!promptKind) throw new Error(`wallet-approvals: not a wallet kind: ${kind}`);
-    let windowId = null;
+    let windowId;
     try {
       windowId = chromeWindowOf(sender);
     } catch {

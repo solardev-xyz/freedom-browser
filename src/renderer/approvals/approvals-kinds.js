@@ -1025,7 +1025,8 @@
       kind !== null &&
       keys.length === MESSAGE_KEYS.length &&
       keys.every((key) => MESSAGE_KEYS.includes(key)) &&
-      Number.isInteger(message.guest) &&
+      // A page's prompt names its tab's guest; the wallet's own, none.
+      (kind.startsWith('wallet.') ? message.guest === null : Number.isInteger(message.guest)) &&
       conforms(message.site, SITE) &&
       viewBytes(message.view) <= MAX_VIEW_BYTES &&
       conforms(message.view, KINDS[kind].schema);

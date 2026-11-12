@@ -69,7 +69,13 @@ const OTHER = '0x2222222222222222222222222222222222222222';
 const SAFE = '0x3333333333333333333333333333333333333333';
 const ACCOUNT = { index: 0, name: 'Main Wallet', address: ADDRESS, type: 'mnemonic' };
 const CHAIN = { id: 100, name: 'Gnosis Chain' };
-const message = (kind, view) => ({ handle: 'a'.repeat(64), guest: 4, kind, site: { key: 'bzz://x', label: 'bzz://x' }, view });
+const message = (kind, view) => ({
+  handle: 'a'.repeat(64),
+  guest: kind.startsWith('wallet.') ? null : 4,
+  kind,
+  site: { key: 'bzz://x', label: 'bzz://x' },
+  view,
+});
 
 const TYPED_VIEW = {
   types: {
@@ -506,7 +512,9 @@ describe('the wallet\'s own kinds', () => {
     expect(render('wallet.intent_replace', WALLET['wallet.intent_replace']).body.textContent).toContain('You confirm this on your Ledger');
   });
 
-  test('off its schema: an unknown field, a bad hash, a page\'s choice in the account', () => {
+  test('off its schema: an unknown field, a bad hash, a page\'s choice in the account, a guest named', () => {
+    expect(checkMessage({ ...message('wallet.send', WALLET['wallet.send']), guest: 4 }).valid).toBe(false);
+    expect(checkMessage({ ...message('eth.connect', VIEWS['eth.connect']), guest: null }).valid).toBe(false);
     for (const [kind, view] of [
       ['wallet.send', { ...WALLET['wallet.send'], memo: 'x' }],
       ['wallet.intent_resend', { ...WALLET['wallet.intent_resend'], hash: '0x12' }],
