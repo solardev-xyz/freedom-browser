@@ -180,6 +180,15 @@ async function subscribe({ origin, webContentsId, document, deliverTo, kind, key
 
 function removeSubscription(subscription) {
   subscriptions.delete(subscription.id);
+  // Whatever waits to be delivered for it goes with it.
+  subscription.closed = true;
+  if (typeof subscription.onClosed === 'function') {
+    try {
+      subscription.onClosed();
+    } catch {
+      // Closing never fails on its listener.
+    }
+  }
   const socket = sockets.get(subscription.socketKey);
   if (!socket) return;
   socket.subIds.delete(subscription.id);

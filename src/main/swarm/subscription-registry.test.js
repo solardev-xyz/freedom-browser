@@ -284,6 +284,23 @@ describe('subscription-registry: subscriptions bound to a document', () => {
     expect(registry.countByOrigin('a.eth')).toBe(0);
   });
 
+  test('a closed subscription is marked closed, and its onClosed hears it once', async () => {
+    const id = await open('7:1');
+    const onClosed = jest.fn();
+    // The registry hands its own object to deliver(); a test reaches it
+    // through a message.
+    let held = null;
+    registry.configure({ openSocket: () => ({ established: Promise.resolve(), cancel: () => {} }), deliver: (sub) => { held = sub; }, maxSubscriptionsPerOrigin: 3 });
+    opened[0].handlers.onMessage(Buffer.from('x'));
+    expect(held.id).toBe(id);
+    held.onClosed = onClosed;
+    registry.cancelByDocument('7:1');
+    expect(held.closed).toBe(true);
+    expect(onClosed).toHaveBeenCalledTimes(1);
+    registry.cancelById(id);
+    expect(onClosed).toHaveBeenCalledTimes(1);
+  });
+
   test('cancelById closes one, if still open', async () => {
     const id = await open('7:1');
     registry.cancelById(id);

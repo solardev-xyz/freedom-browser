@@ -2023,7 +2023,7 @@ function attachWebContentsTeardown(webContentsId) {
 }
 
 // A message's data, as the page-world provider reads it.
-function subscriptionMessage(subscription, payload) {
+function subscriptionMessage(subscription, payload, receivedAt = Date.now()) {
   return {
     type: 'swarm_subscription',
     subscription: subscription.id,
@@ -2032,28 +2032,74 @@ function subscriptionMessage(subscription, payload) {
       key: subscription.key,
       data: payload.toString('base64'),
       encoding: 'base64',
-      receivedAt: Date.now(),
+      receivedAt,
     },
   };
 }
 
+// What may wait to be delivered for one page subscription through main:
+// messages arrive as fast as the node sends them, while each delivery may
+// wait on a DNS name's resolution. Past either bound the subscription is
+// closed (delivery is best effort), and nothing more waits for it.
+const PAGE_DELIVERY_LIMITS = Object.freeze({
+  messages: 64,
+  bytes: 256 * 1024,
+});
+
 /**
  * A page's subscription through main (PRQ-7b) goes to its own document, in
- * the order its messages came: main's `sendEvent` carries the document's
- * nonce, sends only while the document is current, and for a name-keyed
- * document resolves the name again first. One it can't deliver (the
- * document gone, the name moved off its IPNS key) ends the subscription.
+ * the order its messages came, one at a time: main's `sendEvent` carries
+ * the document's nonce, sends only while the document is current, and for a
+ * name-keyed document resolves the name again first. Messages waiting
+ * meanwhile are held as their raw payloads, bounded (PAGE_DELIVERY_LIMITS);
+ * one past the bounds closes the subscription. One that can't be delivered
+ * (the document gone, the name moved off its IPNS key) ends the
+ * subscription, and a subscription that ends drops whatever still waits.
  */
 function deliverToDocument(subscription, payload) {
-  const data = subscriptionMessage(subscription, payload);
-  subscription.delivering = (subscription.delivering || Promise.resolve())
-    .then(() => subscription.deliverTo(data))
-    .then((outcome) => {
-      if (!outcome?.ok) subscriptionRegistry.cancelById(subscription.id);
-    })
-    .catch(() => {
-      subscriptionRegistry.cancelById(subscription.id);
-    });
+  if (subscription.closed) return;
+  let outbox = subscription.outbox;
+  if (!outbox) {
+    outbox = { items: [], bytes: 0, running: false };
+    subscription.outbox = outbox;
+    subscription.onClosed = () => {
+      outbox.items = [];
+      outbox.bytes = 0;
+    };
+  }
+  if (
+    outbox.items.length + 1 > PAGE_DELIVERY_LIMITS.messages ||
+    outbox.bytes + payload.length > PAGE_DELIVERY_LIMITS.bytes
+  ) {
+    log.warn(`[SwarmProvider] subscription ${subscription.kind}:${subscription.key} closed: its page can't keep up`);
+    subscriptionRegistry.cancelById(subscription.id);
+    return;
+  }
+  outbox.items.push({ payload, receivedAt: Date.now() });
+  outbox.bytes += payload.length;
+  if (!outbox.running) drainToDocument(subscription, outbox);
+}
+
+async function drainToDocument(subscription, outbox) {
+  outbox.running = true;
+  try {
+    while (!subscription.closed && outbox.items.length > 0) {
+      const { payload, receivedAt } = outbox.items.shift();
+      outbox.bytes -= payload.length;
+      let outcome;
+      try {
+        outcome = await subscription.deliverTo(subscriptionMessage(subscription, payload, receivedAt));
+      } catch {
+        outcome = null;
+      }
+      if (!outcome?.ok) {
+        subscriptionRegistry.cancelById(subscription.id);
+        break;
+      }
+    }
+  } finally {
+    outbox.running = false;
+  }
 }
 
 function deliverSubscriptionMessage(subscription, payload) {
@@ -2433,6 +2479,7 @@ function endDocumentSubscription(document, subscriptionId) {
 module.exports = {
   registerSwarmProviderIpc,
   executeSwarmMethod,
+  PAGE_DELIVERY_LIMITS,
   endDocumentSubscriptions,
   endDocumentSubscription,
   checkSwarmPreFlight,

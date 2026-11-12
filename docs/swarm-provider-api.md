@@ -675,7 +675,10 @@ once the node accepts the subscription (bounded at 30 s). Errors:
 (`-32602`, 32 per origin); `establish_timeout`, `node_subscription_limit`,
 `subscription_cancelled` (`4900`, retryable). See
 [Origin isolation](#origin-isolation-guarantees) for when subscriptions end on
-their own.
+their own. Delivery is best effort: a subscription whose messages arrive faster
+than Freedom can hand them to the page (more than 64 messages, or 256 KiB,
+waiting) is closed, and the page stops getting its messages; subscribe again to
+resume.
 
 #### `swarm_unsubscribe { subscriptionId }` → `{ unsubscribed: true }` (never prompts; needs no connection)
 

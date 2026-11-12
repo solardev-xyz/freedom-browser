@@ -156,6 +156,8 @@ function setup() {
   const guests = new Map();
   const names = new Map();
   const resolutions = [];
+  // A test may hold every resolution until it lets them go.
+  const gate = { held: null };
   const documents = createPageDocuments({
     isPrivateWebContents: () => false,
     isChromeIndexUrl: (url) => url === CHROME_URL,
@@ -163,6 +165,7 @@ function setup() {
     windowIdOf: (contents) => contents.window,
     resolveEnsContent: async (name) => {
       resolutions.push(name);
+      if (gate.held) await gate.held;
       const key = names.get(name);
       return key ? { type: 'ok', protocol: 'ipns', decoded: key } : { type: 'not_found' };
     },
@@ -258,7 +261,7 @@ function setup() {
     return prompt;
   }
 
-  return { requests, documents, state, sent, trace, tab, greet, named, names, resolutions, prompts, decide, shown, guests, hooks, stopEvents };
+  return { requests, documents, state, sent, trace, tab, greet, named, names, resolutions, gate, prompts, decide, shown, guests, hooks, stopEvents };
 }
 
 const connect = (key) => permissions.grantPermission(key);
@@ -674,6 +677,82 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
     established();
     expect(await answer).toEqual(NO_ADDRESS);
     expect(registry.countByOrigin(NAME)).toBe(0);
+  });
+
+  // Codex round 1 on #1194: a fast producer can't pile up deliveries while
+  // a name's resolution is held, and a teardown drops what waits.
+  test('a fast producer while the name\'s resolution is held: past the bound the subscription closes, and nothing more waits', async () => {
+    const { PAGE_DELIVERY_LIMITS } = require('../swarm/swarm-provider-ipc');
+    const env = setup();
+    connect(NAME);
+    permissions.grantMessaging(NAME);
+    const page = await env.named();
+    const { key } = await subscribed(env, page);
+    const socket = mockNode.sockets.get(`pss:${key}`);
+    let release;
+    env.gate.held = new Promise((resolve) => {
+      release = resolve;
+    });
+    env.resolutions.length = 0;
+    // The first is in flight, waiting on the name; the bound's worth waits
+    // behind it; one more closes the subscription.
+    socket.onMessage(Buffer.from('head'));
+    await flush();
+    expect(env.resolutions).toEqual([NAME]);
+    for (let i = 0; i < PAGE_DELIVERY_LIMITS.messages; i += 1) socket.onMessage(Buffer.from(`m${i}`));
+    expect(socket.cancelled).toBe(false);
+    socket.onMessage(Buffer.from('one too many'));
+    expect(socket.cancelled).toBe(true);
+    expect(registry.countByOrigin(NAME)).toBe(0);
+    env.gate.held = null;
+    release();
+    await flush();
+    // At most the head, already in flight, reaches the page; nothing that
+    // waited behind it is resolved for or sent.
+    expect(page.heard().length).toBeLessThanOrEqual(1);
+    expect(env.resolutions).toEqual([NAME]);
+  });
+
+  test('the bytes waiting are bounded too', async () => {
+    const env = setup();
+    connect(NAME);
+    permissions.grantMessaging(NAME);
+    const page = await env.named();
+    const { key } = await subscribed(env, page);
+    const socket = mockNode.sockets.get(`pss:${key}`);
+    env.gate.held = new Promise(() => {});
+    socket.onMessage(Buffer.from('head'));
+    await flush();
+    socket.onMessage(Buffer.alloc(200 * 1024));
+    expect(socket.cancelled).toBe(false);
+    socket.onMessage(Buffer.alloc(100 * 1024));
+    expect(socket.cancelled).toBe(true);
+  });
+
+  test('a document that ends while its messages wait on the name: what waits is dropped, and nothing is resolved for or sent', async () => {
+    const env = setup();
+    connect(NAME);
+    permissions.grantMessaging(NAME);
+    const page = await env.named();
+    const { key } = await subscribed(env, page);
+    const socket = mockNode.sockets.get(`pss:${key}`);
+    let release;
+    env.gate.held = new Promise((resolve) => {
+      release = resolve;
+    });
+    env.resolutions.length = 0;
+    for (let i = 0; i < 10; i += 1) socket.onMessage(Buffer.from(`m${i}`));
+    await flush();
+    expect(env.resolutions).toEqual([NAME]);
+    // Another site: a commit on the same IPNS key would check the name
+    // again for its own new document.
+    page.guest.commit(`${KEY_A}/`);
+    expect(socket.cancelled).toBe(true);
+    env.gate.held = null;
+    release();
+    await flush();
+    expect(page.guest.delivered).toEqual([]);
+    expect(env.resolutions).toEqual([NAME]);
   });
 
   test('swarm_unsubscribe ends only the document\'s own, and runs with no resolution after the name has moved', async () => {
