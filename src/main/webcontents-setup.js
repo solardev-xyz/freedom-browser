@@ -15,7 +15,7 @@ const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 const { attachTabSwitchKeys } = require('./tab-switch-keys');
 const { isAgentPage } = require('./wallet/agent-tab-custody');
-const { trackPageGuest, testPageRoutes } = require('./page/page-requests');
+const { trackPageGuest } = require('./page/page-requests');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -178,7 +178,7 @@ function attachWebviewBoot(embedder, webPreferences, params) {
     : [];
   webPreferences.additionalArguments = [
     ...existing.filter((arg) => !String(arg).startsWith(WEBVIEW_BOOT_SWITCH)),
-    buildWebviewBootSwitch({ isPrivate, testPageRoutes: testPageRoutes() }),
+    buildWebviewBootSwitch({ isPrivate }),
   ];
 }
 

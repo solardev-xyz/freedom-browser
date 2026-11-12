@@ -5,10 +5,12 @@
 // context with a faked window.ethereum that signs with an ethers test
 // key. Signaling runs over an in-test local MQTT broker; transport is
 // real WebRTC between the two browser stacks. Covers, through the real
-// UI: connecting a phone account (vault locked) and a personal_sign
-// round-trip through the remote signer with on-return verification.
+// UI: connecting a phone account (vault locked), with main's check that the
+// phone signs as the account. A page's personal_sign with a phone account is
+// main's (freedom-core design 0011): the chrome has no signing call of its
+// own since PRQ-9, so the round-trip it once drove from the chrome is gone.
 
-const { Wallet, getBytes, verifyMessage } = require('ethers');
+const { Wallet, getBytes } = require('ethers');
 const { bridgeAvailable } = require('../scripts/serve-bridge');
 const { test, expect } = require('./remote-signing-fixtures');
 
@@ -117,35 +119,6 @@ test('connect a phone account and sign a message through the bridge page', async
 
   const active = await win.evaluate(() => window.wallet.getActiveIndex());
   expect(active.success).toBe(true);
-
-  // --- Sign a message with the phone account ------------------------------
-
-  const message = 'freedom remote-signing e2e';
-  const messageHex = '0x' + Buffer.from(message, 'utf8').toString('hex');
-
-  // Kick off the signature; it stays pending until the phone answers.
-  const signaturePromise = win.evaluate(
-    ({ hex, index }) => window.wallet.signMessage(hex, index),
-    { hex: messageHex, index: active.index }
-  );
-
-  // The signing QR panel appears with a fresh session.
-  await expect(win.locator('#sidebar-remote-signing')).toBeVisible({ timeout: 30_000 });
-  await expect(win.locator('#sidebar-remote-signing')).toHaveAttribute(
-    'data-bridge-url',
-    /#openlv:\/\//
-  );
-  const signUrl = await win.locator('#sidebar-remote-signing').getAttribute('data-bridge-url');
-  expect(signUrl).not.toBe(connectUrl); // per-request session, fresh secret
-
-  await scanQr(phonePage, services.bridgeOrigin, signUrl);
-
-  const result = await signaturePromise;
-  expect(result.success).toBe(true);
-
-  // The signature is real and recovers to the phone account — the same
-  // check main's remote signer already enforced before resolving.
-  expect(verifyMessage(message, result.signature)).toBe(phoneWallet.address);
 
   // The panel cleans up after itself.
   await expect(win.locator('#sidebar-remote-signing')).toBeHidden({ timeout: 10_000 });

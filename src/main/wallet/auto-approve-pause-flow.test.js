@@ -1,5 +1,5 @@
 // D12 through main's real paths: main's own reading of a site's contract rule
-// (the same reading `dapp:is-tx-auto-approved` answers the chrome), a page's
+// (as page/page-sends.js reads it: the rule's match, then the pause), a page's
 // send as main makes it (page/page-sends.js: the silent send a rule answers,
 // and one the user confirmed), and main's dispatcher with its prompt, with
 // the real permissions store, intent store, payment history and transaction
@@ -132,7 +132,7 @@ function start() {
   const { ipcMain } = require('electron');
   ipcMain.handle.mockClear();
   const permissions = require('./dapp-permissions');
-  permissions.registerDappPermissionsIpc();
+  const { transactionAutoApprovePaused } = require('./auto-approve-pause');
   require('./wallet-ipc').registerWalletIpc();
   const handlers = Object.fromEntries(ipcMain.handle.mock.calls);
   const { sendDappPayment, createSendDispatchers } = require('../page/page-sends');
@@ -205,10 +205,11 @@ function start() {
     prompts,
     pageAsks,
     store: require('./intent-store').getIntentStore(),
-    // Main's own reading of the site's rule: true sends silently, false
-    // shows the prompt.
-    autoApproves: (site) =>
-      handlers['dapp:is-tx-auto-approved']({}, site, CONTRACT, SELECTOR, CHAIN),
+    // Main's own reading of the site's rule (page/page-sends.js: its match,
+    // then the pause): true sends silently, false shows the prompt.
+    autoApproves: async (site, { to = CONTRACT, value } = {}) =>
+      permissions.isTransactionAutoApproved(site, to, SELECTOR, CHAIN, value) &&
+      !(await transactionAutoApprovePaused(site)),
     // A send the site's rule answered, as main makes it.
     autoSend: (site) =>
       asHandler(sendDappPayment({ walletIndex: index[site], tx, site, silent: true })),
@@ -528,10 +529,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     });
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
     await expect(running.autoApproves(OTHER)).resolves.toBe(true);
-    // The chrome can neither claim swap's rule nor confirm a send for it.
-    await expect(
-      running.handlers['wallet:dapp-send-transaction']({}, running.tx, 0, { origin: SWAP }, { autoApprove: SWAP })
-    ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    // The chrome can't confirm a send for it.
     await expect(
       running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, { ...running.tx, origin: SWAP })
     ).resolves.toMatchObject({ success: false });
@@ -577,8 +575,7 @@ describe('"Always allow" binds the confirmed send\'s value and site', () => {
     expect(running.prompts).toHaveLength(1);
     await mine(confirmed.result);
 
-    const ask = (value) =>
-      running.handlers['dapp:is-tx-auto-approved']({}, PLAIN, PAYABLE, SELECTOR, CHAIN, value);
+    const ask = (value) => running.autoApproves(PLAIN, { to: PAYABLE, value });
     await expect(ask(CENT)).resolves.toBe(true);
     await expect(ask(TWO_CENTS)).resolves.toBe(false);
 

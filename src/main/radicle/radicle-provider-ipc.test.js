@@ -55,6 +55,9 @@ const mockSeedFetchStatus = {
 };
 
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => false),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   getConnections: jest.fn(async () => ({ success: true, count: 3 })),
@@ -78,6 +81,20 @@ jest.mock('./cob-service', () => {
       this.reason = reason;
     }
   }
+  // A write the running node can't make (plan B10, `needs_vault`).
+  class CobAdmissionError extends Error {
+    constructor(reason, message) {
+      super(message);
+      this.reason = reason;
+    }
+  }
+  // A write the service took and didn't confirm (plan B11, `outcome_unknown`).
+  class CobOutcomeUnknownError extends Error {
+    constructor() {
+      super('The Radicle node stopped before confirming this write; it may have been recorded.');
+      this.reason = 'outcome_unknown';
+    }
+  }
   return {
     createIssue: jest.fn(async () => ({ id: 'a'.repeat(40) })),
     commentIssue: jest.fn(async () => ({ id: 'b'.repeat(40) })),
@@ -85,6 +102,10 @@ jest.mock('./cob-service', () => {
     commentPatch: jest.fn(async () => ({ id: 'd'.repeat(40) })),
     getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
     CobValidationError,
+    CobAdmissionError,
+    CobOutcomeUnknownError,
+    OUTCOME_UNKNOWN_MESSAGE:
+      'The Radicle node stopped before confirming this write; it may have been recorded.',
     LIMITS: { maxTitleBytes: 200, maxBodyBytes: 65536 },
   };
 });
@@ -525,6 +546,62 @@ describe('signed write approval (R-6)', () => {
     await expect(executeRadicleMethod('radicle_getIdentity', {}, ORIGIN)).resolves.toMatchObject({
       did: 'did:key:z6MkTest',
     });
+  });
+
+  // Plan B10 (freedom-core design 0008, `needs_vault`).
+  test('a node running with a throwaway key: every write is refused before the rule counts it, and nothing is sent', async () => {
+    const message = "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.";
+    manager.radicleWriteRefusal.mockReturnValue({ reason: 'needs_vault', message });
+    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const err = await expectProviderError(write('auto'), 4900, 'needs_vault');
+        expect(err.message).toBe(message);
+      }
+      await expectProviderError(write('user'), 4900, 'needs_vault');
+      expect(cob.commentIssue).not.toHaveBeenCalled();
+      await expect(executeRadicleMethod('radicle_getIdentity', {}, ORIGIN)).resolves.toMatchObject({
+        did: 'did:key:z6MkTest',
+      });
+    } finally {
+      manager.radicleWriteRefusal.mockReturnValue(null);
+    }
+    // The node restarted with the derived key: the rule's whole burst is left.
+    for (let i = 0; i < 5; i += 1) await write('auto');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(5);
+  });
+
+  test("cob-service's admission refusal is the provider's 4900 with its reason", async () => {
+    cob.commentIssue.mockRejectedValueOnce(new cob.CobAdmissionError('needs_vault', 'throwaway key'));
+    const err = await expectProviderError(write('user'), 4900, 'needs_vault');
+    expect(err.message).toBe('throwaway key');
+  });
+
+  // A write the service took and didn't confirm (plan B11; freedom-core
+  // design 0008, Writes): -32603 with the design's text, called once.
+  test("cob-service's outcome-unknown error is -32603 with the design's text, the write made once", async () => {
+    cob.commentIssue.mockRejectedValueOnce(new cob.CobOutcomeUnknownError());
+    const err = await expectProviderError(write('user'), -32603, 'outcome_unknown');
+    expect(err.message).toBe(
+      'The Radicle node stopped before confirming this write; it may have been recorded.'
+    );
+    expect(cob.commentIssue).toHaveBeenCalledTimes(1);
+  });
+
+  test("the manager's unseed with its outcome unknown is the same answer", async () => {
+    manager.unseedRepository.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'OUTCOME_UNKNOWN', message: 'unused', details: { rid: RID } },
+    });
+    const err = await expectProviderError(
+      executeRadicleMethod('radicle_unseed', { rid: RID }, ORIGIN),
+      -32603,
+      'outcome_unknown'
+    );
+    expect(err.message).toBe(
+      'The Radicle node stopped before confirming this write; it may have been recorded.'
+    );
+    expect(manager.unseedRepository).toHaveBeenCalledTimes(1);
   });
 });
 

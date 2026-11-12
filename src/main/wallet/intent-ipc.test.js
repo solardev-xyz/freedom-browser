@@ -1,8 +1,8 @@
 // A renderer can't steer the intent path (review of #706, M1): an intent key
 // in a send request's context is dropped at the IPC boundary, so a request
-// sends only what it authorized. Real dApp send handler, confirmations,
+// sends only what it authorized. Real wallet send handler, confirmations,
 // tx-recorder, transaction-service, intent store and Safe executor; mocked
-// permissions, chain data and signers.
+// chain data and signers.
 
 const fs = require('fs');
 const os = require('os');
@@ -11,7 +11,7 @@ const { Wallet, Transaction, keccak256 } = require('ethers');
 
 let mockUserData;
 let mockSigners;
-let mockPermission;
+let mockActiveIndex;
 const mockRequest = jest.fn();
 const mockBroadcast = jest.fn();
 const mockFeeQuote = jest.fn();
@@ -56,7 +56,7 @@ jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'read
 jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
-  getActiveWalletIndex: () => 0,
+  getActiveWalletIndex: () => mockActiveIndex,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
 jest.mock('./provider-manager', () => ({
@@ -66,17 +66,6 @@ jest.mock('./provider-manager', () => ({
   },
 }));
 jest.mock('better-sqlite3', () => require('../../../test/helpers/fake-better-sqlite3-payments'));
-jest.mock('./dapp-permissions', () => ({
-  getPermission: (site) =>
-    site === mockPermission.site ? { walletIndex: mockPermission.walletIndex } : null,
-  isTransactionAutoApproved: (site, to, selector, chainId) =>
-    site === mockPermission.site &&
-    to === mockPermission.to &&
-    selector === mockPermission.selector &&
-    chainId === mockPermission.chainId,
-  addTransactionAutoApprove: jest.fn(),
-  getSigningAutoApprove: () => false,
-}));
 
 jest.setTimeout(20000);
 
@@ -95,6 +84,7 @@ const broadcasts = () => mockBroadcast.mock.calls.map(([, raw]) => Transaction.f
 beforeEach(() => {
   mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-ipc-'));
   mockSigners = { 0: signerFor(ALICE), 1: signerFor(BOB) };
+  mockActiveIndex = 0;
   mockRequest.mockReset().mockImplementation(async (_chainId, method) => {
     if (method === 'eth_getTransactionReceipt') {
       return { result: { status: '0x1', blockNumber: '0x1', gasUsed: '0x5208' }, source: 'direct' };
@@ -130,9 +120,6 @@ function start() {
   require('./wallet-ipc').registerWalletIpc();
   const handlers = Object.fromEntries(ipcMain.handle.mock.calls);
   return {
-    // Sent by the chrome window (#764 checks the requesting guest is its own).
-    dappSend: (_event, ...args) =>
-      handlers['wallet:dapp-send-transaction']({ sender: { id: 1 } }, ...args),
     walletSend: handlers['wallet:send-transaction'],
     store: require('./intent-store').getIntentStore(),
     safe: require('./safe/safe-executor'),
@@ -162,25 +149,13 @@ async function heldDeployment(running, safeAddress = '0x' + '5a'.repeat(20)) {
   return { key, held };
 }
 
-// A dApp send's confirmation binds the site it is for, as the approval's
-// does. From freedom-core design 0011 PRQ-5b a page's send is main's
-// (page/page-sends.js), which builds its record context itself and names no
-// intent key; the chrome's route, kept until PRQ-9, takes no rule claim, and
-// still drops a context key for a confirmation minted directly here.
+// A wallet send's confirmation binds the account active when it was
+// confirmed. A dApp's send is main's (freedom-core design 0011,
+// page/page-sends.js), which builds its record context itself and names no
+// intent key: the wallet's own send is the renderer's route left.
 function authorize(running, walletIndex, tx) {
-  mockPermission = {
-    site: SITE,
-    walletIndex,
-    to: tx.to,
-    selector: tx.data.slice(0, 10),
-    chainId: tx.chainId,
-  };
-  return {
-    confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, {
-      ...tx,
-      origin: SITE,
-    }).token,
-  };
+  mockActiveIndex = walletIndex;
+  return { confirmation: running.confirmations.issueConfirmation('wallet-send', walletIndex, tx).token };
 }
 
 const call = (chainId) => ({
@@ -192,88 +167,67 @@ const call = (chainId) => ({
   gasPrice: '1000000000',
 });
 
-describe.each(['confirmed'])(
-  'a %s dApp send whose context names an intent key',
-  () => {
-    test("another account's request sends its own transaction, not the held one", async () => {
-      // The review's probe: Bob's call on chain 1, naming Alice's deployment.
-      const running = start();
-      const { key, held } = await heldDeployment(running);
-      const tx = call(1);
-      const reply = await running.dappSend(
-        {},
-        tx,
-        1,
-        { intentKey: key, origin: SITE },
-        authorize(running, 1, tx)
-      );
+describe('a wallet send whose context names an intent key', () => {
+  test("another account's request sends its own transaction, not the held one", async () => {
+    // The review's probe: Bob's call on chain 1, naming Alice's deployment.
+    const running = start();
+    const { key, held } = await heldDeployment(running);
+    const tx = call(1);
+    const reply = await running.walletSend({}, tx, { intentKey: key }, authorize(running, 1, tx));
 
-      expect(reply).toMatchObject({ success: true, chainId: 1, from: BOB.address });
-      expect(reply.intentId).not.toBe(held.intentId);
-      const sent = broadcasts().at(-1);
-      expect({ from: sent.from, chainId: sent.chainId, to: sent.to }).toEqual({
-        from: BOB.address,
-        chainId: 1n,
-        to: CONTRACT,
-      });
-      expect(mockSigners[1].signTransaction).toHaveBeenCalledTimes(1);
-      // Alice's deployment was not sent again.
-      expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
-      expect(mockBroadcast).toHaveBeenCalledTimes(2);
+    expect(reply).toMatchObject({ success: true, chainId: 1, from: BOB.address });
+    expect(reply.intentId).not.toBe(held.intentId);
+    const sent = broadcasts().at(-1);
+    expect({ from: sent.from, chainId: sent.chainId, to: sent.to }).toEqual({
+      from: BOB.address,
+      chainId: 1n,
+      to: CONTRACT,
     });
+    expect(mockSigners[1].signTransaction).toHaveBeenCalledTimes(1);
+    // Alice's deployment was not sent again.
+    expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
+    expect(mockBroadcast).toHaveBeenCalledTimes(2);
+  });
 
-    test('the same account on another chain sends its own transaction, not the held one', async () => {
-      const running = start();
-      const { key, held } = await heldDeployment(running);
-      const tx = call(1);
-      const reply = await running.dappSend(
-        {},
-        tx,
-        0,
-        { intentKey: key, origin: SITE },
-        authorize(running, 0, tx)
-      );
+  test('the same account on another chain sends its own transaction, not the held one', async () => {
+    const running = start();
+    const { key, held } = await heldDeployment(running);
+    const tx = call(1);
+    const reply = await running.walletSend({}, tx, { intentKey: key }, authorize(running, 0, tx));
 
-      expect(reply).toMatchObject({ success: true, chainId: 1, from: ALICE.address });
-      expect(reply.intentId).not.toBe(held.intentId);
-      expect(broadcasts().at(-1).chainId).toBe(1n);
-      expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
+    expect(reply).toMatchObject({ success: true, chainId: 1, from: ALICE.address });
+    expect(reply.intentId).not.toBe(held.intentId);
+    expect(broadcasts().at(-1).chainId).toBe(1n);
+    expect(running.store.get(held.intentId).handoffs).toHaveLength(1);
+  });
+
+  test("a request can't reserve another workflow's key", async () => {
+    const running = start();
+    const future = '0x' + '7b'.repeat(20);
+    const futureKey = `safe-deploy:100:${future}`;
+    const tx = call(100);
+    for (const name of ['intentKey', 'intent_key', 'key', 'KEY']) {
+      const reply = await running.walletSend({}, tx, { [name]: futureKey }, authorize(running, 1, tx));
+      expect(reply.success).toBe(true);
+      expect(running.store.get(reply.intentId).context.key).toBeNull();
+    }
+    expect(running.store.byKey(futureKey)).toBeNull();
+
+    // The real deployment under that key later creates its own intent.
+    const before = mockBroadcast.mock.calls.length;
+    const { tx: deployed } = await running.safe.deploySafe({
+      owners: [ALICE.address],
+      threshold: 1,
+      saltNonce: '1',
+      chainId: 100,
+      executorIndex: 0,
+      deployment: { safeAddress: future, to: '0x' + '4e'.repeat(20), data: '0x1688f0b9' },
     });
-
-    test("a request can't reserve another workflow's key", async () => {
-      const running = start();
-      const future = '0x' + '7b'.repeat(20);
-      const futureKey = `safe-deploy:100:${future}`;
-      const tx = call(100);
-      for (const name of ['intentKey', 'intent_key', 'key', 'KEY']) {
-        const reply = await running.dappSend(
-          {},
-          tx,
-          1,
-          { [name]: futureKey, origin: SITE },
-          authorize(running, 1, tx)
-        );
-        expect(reply.success).toBe(true);
-        expect(running.store.get(reply.intentId).context.key).toBeNull();
-      }
-      expect(running.store.byKey(futureKey)).toBeNull();
-
-      // The real deployment under that key later creates its own intent.
-      const before = mockBroadcast.mock.calls.length;
-      const { tx: deployed } = await running.safe.deploySafe({
-        owners: [ALICE.address],
-        threshold: 1,
-        saltNonce: '1',
-        chainId: 100,
-        executorIndex: 0,
-        deployment: { safeAddress: future, to: '0x' + '4e'.repeat(20), data: '0x1688f0b9' },
-      });
-      expect(deployed).toMatchObject({ outcome: 'sent', from: ALICE.address });
-      expect(deployed.resent).toBeUndefined();
-      expect(broadcasts()[before].from).toBe(ALICE.address);
-    });
-  }
-);
+    expect(deployed).toMatchObject({ outcome: 'sent', from: ALICE.address });
+    expect(deployed.resent).toBeUndefined();
+    expect(broadcasts()[before].from).toBe(ALICE.address);
+  });
+});
 
 // freedom-core design 0011, PRQ-5b (Codex round 2 on #1191): a site's Safe
 // execution that was committed under the site and not sent, and that the
@@ -551,13 +505,11 @@ describe('held payments over IPC (4b)', () => {
     mockBroadcast.mockImplementationOnce(async () => {
       throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
     });
-    const tx = call(100);
-    const failed = await running.dappSend(
-      {},
-      tx,
-      1,
-      { origin: SITE },
-      authorize(running, 1, tx)
+    // A page's send, as main makes it once it has authorized it.
+    const { sendDappPayment } = require('../page/page-sends');
+    const failed = await sendDappPayment({ walletIndex: 1, tx: call(100), site: SITE }).then(
+      (sent) => ({ success: true, ...sent }),
+      (err) => ({ success: false, error: err.message, ...require('./intent-ipc').intentFailure(err) })
     );
     expect(failed).toMatchObject({
       success: false,

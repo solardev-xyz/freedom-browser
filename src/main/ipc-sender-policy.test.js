@@ -82,7 +82,7 @@ describe('isSenderAllowed', () => {
   test('a web page can never reach chrome-only channels', () => {
     for (const channel of [
       'wallet:send-transaction',
-      'wallet:sign-message',
+      'wallet:confirm-signing',
       'identity:export-mnemonic',
       'quick-unlock:unlock',
       'dapp:grant-permission',
@@ -144,6 +144,19 @@ describe('isSenderAllowed', () => {
     }
     // page:event goes the other way (WebFrameMain.send): nothing takes it in main.
     expect(isSenderAllowed('page:event', web())).toBe(false);
+  });
+
+  // freedom-core design 0011, PRQ-9: the chrome reaches every channel but
+  // these three. A compromised chrome can't hello, reserve or request as any
+  // page, whatever frame of its window it sends from.
+  test('the chrome is refused on page:hello, page:reserve and page:request', () => {
+    for (const channel of ['page:hello', 'page:reserve', 'page:request']) {
+      expect(isSenderAllowed(channel, chrome())).toBe(false);
+      expect(isSenderAllowed(channel, chrome({ subFrame: true }))).toBe(false);
+      expect(isSenderAllowed(channel, chrome({ noFrame: true }))).toBe(false);
+      // Any other channel still takes the chrome, page:decide included.
+      expect(isSenderAllowed('page:decide', chrome())).toBe(true);
+    }
   });
 
   // freedom-core design 0011, "The approvals document" (APS-1): the
@@ -499,6 +512,66 @@ describe('webview tiers mirror webview-preload.js', () => {
     expect(fn).toBeGreaterThan(0);
     expect(call).toBeGreaterThan(fn);
     expect(source.indexOf("sendSync('internal:get-theme')", call + 1)).toBe(-1);
+  });
+});
+
+// freedom-core design 0011, PRQ-9: a page's provider requests have one way
+// in, page:request to main. No provider channel is left between a tab, the
+// chrome and main: no sendToHost bridge or listener in the tab's preload,
+// none in the chrome's preload, no constant, no handler and no webview tier.
+describe('no provider channel is left', () => {
+  const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const PROVIDER_CHANNEL = /^(?:dapp|swarm|radicle):provider/;
+  const PROVIDER_LITERAL = /'(?:dapp|swarm|radicle):provider[^']*'/;
+
+  test('the tab\'s preload sends no provider request to the chrome and hears none back', () => {
+    const preload = read('main/webview-preload.js');
+    expect(preload).not.toMatch(PROVIDER_LITERAL);
+    // What the preload still sends its embedder is the chrome's own UI.
+    const toHost = [...preload.matchAll(/ipcRenderer\.sendToHost\(\s*'([^']+)'/g)].map((m) => m[1]);
+    expect(toHost.length).toBeGreaterThan(0);
+    for (const channel of toHost) expect(channel).not.toMatch(/^(?:dapp|swarm|radicle|ethereum|page):/);
+    // Every listener for a provider's answers and events is main's page:event.
+    const heard = [...preload.matchAll(/ipcRenderer\.on\(\s*'([^']+)'/g)].map((m) => m[1]);
+    for (const channel of heard) expect(channel).not.toMatch(PROVIDER_CHANNEL);
+    expect(heard).toContain('page:event');
+  });
+
+  test('the chrome\'s preload exposes no provider route', () => {
+    const preload = read('main/preload.js');
+    expect(preload).not.toMatch(PROVIDER_LITERAL);
+    expect(preload).not.toMatch(/\b(?:swarmProvider|radicleProvider|dappProvider)\b/);
+  });
+
+  test('main has no provider channel: no constant, no webview tier, no handler', () => {
+    const IPC = require('../shared/ipc-channels');
+    for (const channel of Object.values(IPC)) {
+      expect({ channel, provider: PROVIDER_CHANNEL.test(String(channel)) }).toEqual({ channel, provider: false });
+    }
+    for (const channel of WEBVIEW_CHANNEL_TIERS.keys()) expect(channel).not.toMatch(PROVIDER_CHANNEL);
+    // No main-process source registers or sends one (comments may name the
+    // channels that are gone).
+    const mainDir = __dirname;
+    const sources = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) sources.push(full);
+      }
+    };
+    walk(mainDir);
+    expect(sources.length).toBeGreaterThan(50);
+    const offenders = [];
+    for (const file of sources) {
+      const code = fs
+        .readFileSync(file, 'utf8')
+        .split('\n')
+        .filter((line) => !/^\s*(?:\/\/|\*|\/\*)/.test(line))
+        .join('\n');
+      if (PROVIDER_LITERAL.test(code)) offenders.push(path.relative(mainDir, file));
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

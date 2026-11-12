@@ -994,10 +994,6 @@ function registerFeedStoreIpc() {
     return hasIdentityMode(origin);
   });
 
-  ipcMain.handle(IPC.SWARM_HAS_FEED_GRANT, (_event, origin) => {
-    return hasFeedGrant(origin);
-  });
-
   ipcMain.handle(IPC.SWARM_GET_IDENTITY_MODE, (_event, origin) => {
     const entry = getOriginEntry(origin);
     return entry?.identityMode || null;
@@ -1005,10 +1001,6 @@ function registerFeedStoreIpc() {
 
   ipcMain.handle(IPC.SWARM_GET_ORIGIN_IDENTITIES, async (_event, origin) => {
     return getOriginIdentityStateWithOwners(origin);
-  });
-
-  ipcMain.handle(IPC.SWARM_PREVIEW_APP_SCOPED_IDENTITY, async (_event, origin, options = {}) => {
-    return previewAppScopedIdentity(origin, options);
   });
 
   // Everything arriving over IPC is a user action by definition: `source` is

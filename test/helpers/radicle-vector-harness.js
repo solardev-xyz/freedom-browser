@@ -878,6 +878,8 @@ function loadBridge(world, constants) {
     './radicle-manager': {
       getCurrentStatus: () => ({ status: 'running' }),
       isDisabledForProfile: () => false,
+      // The vectors are the add-on's, which never refuses with needs_vault.
+      radicleWriteRefusal: () => null,
       STATUS: { RUNNING: 'running' },
     },
     './radicle-embedded': embedded,

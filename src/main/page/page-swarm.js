@@ -227,8 +227,8 @@ const NO_ADDRESS = Object.freeze({
   message: 'This page has no address to connect from yet',
   data: Object.freeze({ reason: 'no_address' }),
 });
-// The chrome's answers, as its swarm-provider.js and swarm-connect.js gave
-// them.
+// The answers the chrome's swarm-provider.js and swarm-connect.js gave until
+// main took their requests, kept for pages.
 const NOT_CONNECTED = Object.freeze({ code: 4100, message: 'Origin not authorized. Call swarm_requestAccess first.' });
 const CONNECT_REJECTED = Object.freeze({ code: 4001, message: 'User rejected Swarm access' });
 const PUBLISH_REJECTED = Object.freeze({ code: 4001, message: 'User rejected publish' });

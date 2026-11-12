@@ -19,11 +19,9 @@ const path = require('path');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
-const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 const PERMISSIONS_FILE = 'dapp-permissions.json';
 const GRANT_REFUSED = 'A dApp connection is granted only from its own prompt';
-const CHAIN_REFUSED = 'A dApp connection’s chain is set only by the page’s own request';
 const SIGNING_RULE_REFUSED = 'Signing auto-approve is turned on only from a signing prompt';
 const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
@@ -469,16 +467,6 @@ function registerDappPermissionsIpc() {
     return getAllPermissions();
   });
 
-  // The timestamp only (freedom-core design 0011, PRQ-4). A grant's chain
-  // is written by main itself, from a page's wallet_switchEthereumChain or
-  // its connect (page/page-ethereum.js); the chrome named the site here, so
-  // a chain it supplies is refused. The signing paths still on the chrome
-  // (until PRQ-5) only mark a site used.
-  ipcMain.handle(IPC.DAPP_UPDATE_LAST_USED, (_event, origin, chainId) => {
-    if (chainId !== undefined) throw new Error(CHAIN_REFUSED);
-    return updateLastUsed(origin);
-  });
-
   ipcMain.handle(IPC.DAPP_GET_SIGNING_AUTO_APPROVE, (_event, origin) => {
     return getSigningAutoApprove(origin);
   });
@@ -491,16 +479,6 @@ function registerDappPermissionsIpc() {
   ipcMain.handle(IPC.DAPP_SET_SIGNING_AUTO_APPROVE, (_event, origin, enabled) => {
     if (enabled !== false) throw new Error(SIGNING_RULE_REFUSED);
     return setSigningAutoApprove(origin, false);
-  });
-
-  // The renderer's question before a dApp transaction: auto-approve it, or
-  // show the prompt. A covering rule is paused while one of the site's
-  // payments is in Payments waiting (D12, auto-approve-pause.js).
-  // `value` is the transaction's: a rule covers no more than the send it
-  // was recorded from.
-  ipcMain.handle(IPC.DAPP_IS_TX_AUTO_APPROVED, async (_event, origin, to, selector, chainId, value) => {
-    if (!isTransactionAutoApproved(origin, to, selector, chainId, value)) return false;
-    return !(await transactionAutoApprovePaused(origin));
   });
 
   // No IPC adds a transaction auto-approve rule: main records one itself,

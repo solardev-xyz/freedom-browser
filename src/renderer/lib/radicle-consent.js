@@ -12,15 +12,12 @@
  * identity-wallet feature: it opens the panel via sidebar.openForConsent()
  * (which honors the Radicle flag) and never touches vault or wallet state.
  *
- * Main's own prompts for a page's request (freedom-core design 0011, "The
- * prompt protocol"; PRQ-8a: `radicle.connect`; PRQ-8b: `radicle.node`;
- * PRQ-8c: `radicle.sign`) show in the same screen,
- * from what main sends: its site and its view. The screen answers them by
- * handle (`page:decide`) once its input protection has passed, writes no
- * grant, and takes itself down when main hides or closes the prompt. From
- * PRQ-8c every window.radicle prompt is main's: the promise-based flow
- * below receives nothing, and stays until PRQ-9 removes the chrome's old
- * request code.
+ * Every prompt it shows is main's, for a page's request (freedom-core
+ * design 0011, "The prompt protocol": `radicle.connect`, `radicle.node` and
+ * `radicle.sign`), from what main sends: its site and its view. The screen
+ * answers it by handle (`page:decide`) once its input protection has passed,
+ * writes no grant, and takes itself down when main hides or closes the
+ * prompt.
  */
 
 import { registerScreenHider, hideAllSubscreens, walletState } from './wallet/wallet-state.js';
@@ -46,13 +43,7 @@ let approveBtn;
 let rejectBtn;
 let backBtn;
 
-// { resolve, reject, sidebarWasOpen, owner } while a prompt is showing.
-// `owner` is an opaque token (the requesting webview) identifying which
-// document the prompt belongs to, so it can be dismissed when that
-// document navigates away or its tab closes.
-let pending = null;
-
-// Main's prompt on screen: { handle, sidebarWasOpen, armed, deciding }.
+// Main's prompt on screen: { handle, sidebarWasOpen, armed, deciding, offersAlways }.
 let pagePending = null;
 // True while this screen shows main's prompt: its own hideAllSubscreens()
 // is the transition, not a dismissal.
@@ -78,13 +69,12 @@ export function initRadicleConsent() {
     return;
   }
 
-  approveBtn?.addEventListener('click', () => (pagePending ? decidePage(true) : finish(true)));
-  rejectBtn?.addEventListener('click', () => (pagePending ? decidePage(false) : finish(false)));
-  backBtn?.addEventListener('click', () => (pagePending ? decidePage(false) : finish(false)));
+  approveBtn?.addEventListener('click', () => decidePage(true));
+  rejectBtn?.addEventListener('click', () => decidePage(false));
+  backBtn?.addEventListener('click', () => decidePage(false));
   // Closing the panel (X button, toggle, Cmd+Shift+W) rejects the request.
   document.addEventListener('sidebar-closed', () => {
     if (pagePending) decidePage(false, { keepSidebar: true, armedOrNot: true });
-    else if (pending) finish(false, { keepSidebar: true });
   });
 
   registerScreenHider(() => {
@@ -108,23 +98,6 @@ export function initRadicleConsent() {
   }
 
   console.log('[RadicleConsent] Initialized');
-}
-
-function finish(approved, { keepSidebar = false } = {}) {
-  if (!pending) return;
-  const { resolve, reject, sidebarWasOpen, offersAlways } = pending;
-  pending = null;
-  const alwaysAllow = offersAlways ? alwaysInput?.checked === true : undefined;
-  alwaysRow?.classList.add('hidden');
-
-  screen.classList.add('hidden');
-  walletState.identityView?.classList.remove('hidden');
-  // If the panel was opened just for this prompt, close it again rather
-  // than leaving the wallet view behind (which may not even be enabled).
-  if (!keepSidebar && !sidebarWasOpen) closeSidebar();
-
-  if (approved) resolve(offersAlways ? { alwaysAllow } : undefined);
-  else reject({ code: 4001, message: 'User rejected the request' });
 }
 
 function render({ title, origin, wants, allows, warning, approveLabel }) {
@@ -174,19 +147,11 @@ function clearPagePending() {
   setButtonsDisabled([approveBtn, rejectBtn], false);
 }
 
-/**
- * Show main's prompt `{ handle, kind, site, view }`. While a prompt of the
- * chrome's own path holds the screen, main's waits: it is reported
- * displaced, and shows once the sidebar is free again.
- */
+/** Show main's prompt `{ handle, kind, site, view }`. */
 function showPagePrompt(prompt) {
   if (!screen || pagePending?.handle === prompt?.handle) return;
   const copy = PAGE_COPY[prompt?.kind]?.(prompt.view || {});
   if (!copy) return;
-  if (pending) {
-    pagePromptDisplaced(prompt.handle);
-    return;
-  }
   const sidebarWasOpen = pagePending ? pagePending.sidebarWasOpen : isSidebarVisible();
   clearPagePending();
   render({ ...copy, origin: prompt.site?.label || prompt.site?.key || 'Unknown' });
@@ -247,61 +212,14 @@ async function decidePage(approve, { keepSidebar = false, armedOrNot = false } =
   clearPagePending();
   alwaysRow?.classList.add('hidden');
   takeDownPage();
+  // If the panel was opened just for this prompt, close it again rather
+  // than leaving the wallet view behind (which may not even be enabled).
   if (!keepSidebar && !sidebarWasOpen) closeSidebar();
   try {
     await window.pagePrompts?.decide?.(handle, approve, choices);
   } catch (err) {
     console.error('[RadicleConsent] The decision did not reach main:', err);
   }
-}
-
-/**
- * Show a consent prompt. Resolves on approve, rejects {code:4001} on
- * cancel/back/panel-close. Only one prompt can be active; a second request
- * while one is showing is rejected immediately (prevents prompt-queue
- * confusion from spammy pages).
- *
- * With `always: { label, checked }` the prompt also shows that checkbox,
- * and resolves to `{ alwaysAllow }`, its state when approved.
- */
-function prompt({ title, origin, wants, allows, warning, approveLabel, owner, always = null }) {
-  return new Promise((resolve, reject) => {
-    if (!screen) {
-      reject({ code: -32603, message: 'Consent UI unavailable' });
-      return;
-    }
-    if (pending) {
-      reject({ code: 4001, message: 'Another consent prompt is already open' });
-      return;
-    }
-
-    render({ title, origin, wants, allows, warning, approveLabel });
-    const offersAlways = Boolean(always && alwaysRow && alwaysInput);
-    if (offersAlways) {
-      if (alwaysLabel) alwaysLabel.textContent = always.label;
-      alwaysInput.checked = always.checked === true;
-      alwaysRow.classList.remove('hidden');
-    } else {
-      alwaysRow?.classList.add('hidden');
-    }
-
-    pending = { resolve, reject, sidebarWasOpen: isSidebarVisible(), owner, offersAlways };
-
-    hideAllSubscreens();
-    walletState.identityView?.classList.add('hidden');
-    screen.classList.remove('hidden');
-    openSidebarForConsent();
-  });
-}
-
-/**
- * Dismiss (reject) the pending prompt if it belongs to `owner` — called by
- * the provider when the requesting document navigates away or its webview
- * is destroyed, so a moot prompt can't be approved on behalf of a document
- * that no longer exists. A no-op when the pending prompt has another owner.
- */
-export function dismissRadicleConsent(owner) {
-  if (pending && pending.owner === owner) finish(false);
 }
 
 const CONNECT_COPY = Object.freeze({
@@ -315,10 +233,6 @@ const CONNECT_COPY = Object.freeze({
     'This site cannot write anything as you without a separate approval for your Radicle identity.',
   approveLabel: 'Connect',
 });
-
-export function showRadicleConnect(permissionKey, owner) {
-  return prompt({ owner, origin: permissionKey, ...CONNECT_COPY });
-}
 
 function seedCopy(rid) {
   return {
@@ -347,14 +261,6 @@ function unseedCopy(rid) {
   };
 }
 
-export function showRadicleSeedApproval(permissionKey, rid, owner) {
-  return prompt({ owner, origin: permissionKey, ...seedCopy(rid) });
-}
-
-export function showRadicleUnseedApproval(permissionKey, rid, owner) {
-  return prompt({ owner, origin: permissionKey, ...unseedCopy(rid) });
-}
-
 const SIGNING_COPY = Object.freeze({
   title: 'Act as your Radicle identity?',
   wants: 'wants to author content as your Radicle identity',
@@ -367,10 +273,6 @@ const SIGNING_COPY = Object.freeze({
   approveLabel: 'Allow',
 });
 
-export function showRadicleSigningApproval(permissionKey, owner) {
-  return prompt({ owner, origin: permissionKey, ...SIGNING_COPY });
-}
-
 const SIGNED_WRITE_METHODS = new Set([
   'radicle_createIssue',
   'radicle_commentIssue',
@@ -378,7 +280,8 @@ const SIGNED_WRITE_METHODS = new Set([
   'radicle_commentPatch',
 ]);
 
-// What one signed write does, in the prompt's own words. Every parameter
+// What one signed write does, in the prompt's own words: the user sees and
+// approves the exact content before it is signed (R-6). Every parameter
 // main signs with is shown — a parameter the prompt leaves out (a patch
 // revision, a reply target, labels) is one the page could steer unseen.
 // Page-supplied text only ever lands in textContent.
@@ -431,37 +334,16 @@ function describeSignedWrite(method, params = {}) {
         approveLabel: 'Post comment',
       };
     }
-    default: {
-      // A signed write this prompt has no wording for still shows every
-      // parameter rather than borrowing another method's summary.
-      let detail;
-      try {
-        detail = JSON.stringify(params);
-      } catch {
-        detail = '(unreadable parameters)';
-      }
-      return {
-        title: 'Sign this as you?',
-        wants: `asks to sign ${shown(method)} in ${rid}`,
-        allows: [`Parameters: ${detail}`],
-        approveLabel: 'Sign',
-      };
-    }
   }
 }
 
 const SIGNED_WRITE_WARNING =
   'This is signed with your Radicle identity and published to the Radicle network. It is public and permanent: it cannot be edited away or unpublished.';
 
-/**
- * Per-write prompt: the user sees and approves the exact content before it
- * is signed (R-6). Outside Agent custody it also offers the site's "always
- * allow writes" rule, checked when the rule is already on (the prompt then
- * shows because main's rate limit stopped an automatic write), and resolves
- * to `{ alwaysAllow }`.
- */
 // A write prompt's warning, and its "always allow writes" choice, which a
-// tab Freedom Agent holds is never offered.
+// tab Freedom Agent holds is never offered. The choice is checked when the
+// rule is already on: the prompt then shows because main's rate limit
+// stopped an automatic write.
 function signedWriteNotice({ agentHeld, alwaysAllow }) {
   return {
     warning: agentHeld ? `Freedom Agent is using this tab. ${SIGNED_WRITE_WARNING}` : SIGNED_WRITE_WARNING,
@@ -472,19 +354,4 @@ function signedWriteNotice({ agentHeld, alwaysAllow }) {
           checked: alwaysAllow,
         },
   };
-}
-
-export function showRadicleSignedWriteApproval(
-  permissionKey,
-  method,
-  params,
-  owner,
-  { agentHeld = false, alwaysAllow = false } = {}
-) {
-  return prompt({
-    owner,
-    origin: permissionKey,
-    ...describeSignedWrite(method, params),
-    ...signedWriteNotice({ agentHeld, alwaysAllow }),
-  });
 }

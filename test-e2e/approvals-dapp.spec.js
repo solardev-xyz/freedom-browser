@@ -58,7 +58,6 @@ const space = (win) => win.locator('[data-test="approvals-space"]');
 async function routeTestPrompts(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag, view: shown } = context.params || {};
       const decision = await context.prompt({ kind: 'test.prompt', view: shown });
@@ -364,7 +363,6 @@ test('a view replaced under the same handle while the panel reads its parts is n
     const send = doc.send.bind(doc);
     const state = { replaced: false, held: 0 };
     globalThis.__APS4_REPLACED__ = state;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag } = context.params || {};
       approvals.trace.push = function replaceOnFirstPart(entry, ...rest) {
@@ -536,7 +534,6 @@ const HOSTILE_PROMPTS = [
 async function routeKindPrompts(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { kind, view: shown } = context.params || {};
       const decision = await context.prompt({ kind, view: shown });
