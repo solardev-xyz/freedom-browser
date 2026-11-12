@@ -364,6 +364,56 @@ describe('vaultBackend', () => {
     await expect(write()).rejects.toMatchObject({ code: 'core_unavailable' });
   });
 
+  test("the Radicle node key, sealed to the service's recipient: only enc and the ciphertext come back", async () => {
+    const recipient = Buffer.alloc(32, 7).toString('base64');
+    const sealed = {
+      enc: Buffer.alloc(32, 1).toString('base64'),
+      ciphertext: Buffer.alloc(48, 2).toString('base64'),
+    };
+    const core = new FakeCore((method, params) => {
+      if (method !== 'nodes.seal_radicle_key') return {};
+      if (params.recipient !== recipient) throw coreError('invalid_argument', 'Invalid recipient');
+      return { ...sealed, extra: 'ignored' };
+    });
+    const { vaultBackend } = load(core);
+    await expect(vaultBackend.sealRadicleKey(recipient)).resolves.toEqual(sealed);
+    expect(core.calls.at(-1)).toMatchObject({
+      method: 'nodes.seal_radicle_key',
+      params: { recipient },
+      context: { caller: 'shell' },
+    });
+  });
+
+  test.each([
+    ['no_vault', 'No vault exists'],
+    ['vault_locked', 'Vault is locked'],
+  ])("the seal's %s keeps its code: the node decides what it means", async (code, message) => {
+    const core = new FakeCore(() => {
+      throw coreError(code, message);
+    });
+    const { vaultBackend } = load(core);
+    await expect(vaultBackend.sealRadicleKey('x')).rejects.toMatchObject({ code, message });
+  });
+
+  test("onVaultEvent: the core's vault events, until unsubscribed", async () => {
+    const core = new FakeCore(() => ({}));
+    const { vaultBackend } = load(core);
+    const seen = [];
+    const unsubscribe = vaultBackend.onVaultEvent((name, data) => seen.push([name, data]));
+    core.emit('event', 'vault.unlocked', { epoch: 3 });
+    core.emit('event', 'naming.changed', {});
+    core.emit('event', 'vault.locked', { reason: 'auto', epoch: 3 });
+    unsubscribe();
+    core.emit('event', 'vault.unlocked', { epoch: 4 });
+    expect(seen).toEqual([
+      ['vault.unlocked', { epoch: 3 }],
+      ['vault.locked', { reason: 'auto', epoch: 3 }],
+    ]);
+    expect(core.listenerCount('event')).toBe(0);
+    // No core: nothing to subscribe to.
+    expect(typeof load(null).vaultBackend.onVaultEvent(() => {})).toBe('function');
+  });
+
   test('radicle DID from raw public key bytes', async () => {
     const core = new FakeCore((method, params) => ({ did: `did:key:${params.public_key}` }));
     const { vaultBackend } = load(core);
@@ -421,6 +471,7 @@ describe('vaultBackend', () => {
     await vaultBackend.exportPrivateKey('password2', 0);
     await vaultBackend.addresses({ accounts: [0] });
     await vaultBackend.radicleDid(Uint8Array.from([1]));
+    await vaultBackend.sealRadicleKey(Buffer.alloc(32, 9).toString('base64'));
     await vaultBackend.sign.transaction(key, {});
     await vaultBackend.sign.message(key, Uint8Array.from([1]));
     await vaultBackend.sign.typedData(key, {});

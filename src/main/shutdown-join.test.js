@@ -52,4 +52,10 @@ describe('wind-down stop-leg join', () => {
       expect(join).toContain(leg);
     }
   });
+
+  // freedom-core design 0008: Radicle's leg is bounded at 10 s (plus the
+  // kill's reap) under freedom-radicled, as Tor's is (radicle-manager.js).
+  test("Radicle's leg is the bounded quit stop", () => {
+    expect(windDownJoin()).toContain("['Radicle', stopRadicleAtQuit]");
+  });
 });
