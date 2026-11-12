@@ -468,6 +468,14 @@ describe('preload', () => {
       [exposures.radicle, 'getStatus', [], IPC.RADICLE_GET_STATUS, []],
       [exposures.radicle, 'checkBinary', [], IPC.RADICLE_CHECK_BINARY, []],
       [exposures.radicle, 'getConnections', [], IPC.RADICLE_GET_CONNECTIONS, []],
+      [exposures.radicle, 'getRepair', [], IPC.RADICLE_GET_REPAIR, []],
+      [
+        exposures.radicle,
+        'removeQuarantined',
+        ['rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', '0123456789abcdef0123456789abcdef'],
+        IPC.RADICLE_REMOVE_QUARANTINED,
+        ['rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', '0123456789abcdef0123456789abcdef'],
+      ],
       [exposures.tor, 'start', [], IPC.TOR_START, []],
       [exposures.tor, 'stop', [], IPC.TOR_STOP, []],
       [exposures.tor, 'getStatus', [], IPC.TOR_GET_STATUS, []],
@@ -924,6 +932,24 @@ describe('preload', () => {
       cleanup();
       expect(ipcRenderer.removeListener).toHaveBeenCalledWith(updateChannel, handler);
     }
+  });
+
+  test("Radicle's repair state: subscribed, fetched at once, and cleaned up (plan B13)", async () => {
+    const repair = { repairing: true, count: 0, entries: [] };
+    const { exposures, ipcRenderer } = loadPreloadModule({
+      invokeResponses: { [IPC.RADICLE_GET_REPAIR]: repair },
+    });
+    const callback = jest.fn();
+    const cleanup = exposures.radicle.onRepairUpdate(callback);
+    const handler = ipcRenderer.listeners.get(IPC.RADICLE_REPAIR_UPDATE)[0];
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_GET_REPAIR);
+    await flushMicrotasks();
+    expect(callback).toHaveBeenCalledWith(repair);
+    const pushed = { repairing: false, count: 1, entries: [{ rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }] };
+    ipcRenderer.emit(IPC.RADICLE_REPAIR_UPDATE, pushed);
+    expect(callback).toHaveBeenLastCalledWith(pushed);
+    cleanup();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(IPC.RADICLE_REPAIR_UPDATE, handler);
   });
 
   test('does not expose default gateway URLs when overrides are absent', () => {

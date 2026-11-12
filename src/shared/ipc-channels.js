@@ -48,6 +48,11 @@ module.exports = {
   RADICLE_SYNC_REPO: 'radicle:syncRepo',
   RADICLE_GET_SEED_STATUS: 'radicle:getSeedStatus',
   RADICLE_SEED_STATUS_UPDATE: 'radicle:seedStatusUpdate',
+  // Radicle's repair under the service (freedom-core design 0008, "The
+  // escape"): "still repairing", and the quarantined repositories' Remove.
+  RADICLE_GET_REPAIR: 'radicle:getRepair',
+  RADICLE_REPAIR_UPDATE: 'radicle:repairUpdate',
+  RADICLE_REMOVE_QUARANTINED: 'radicle:removeQuarantined',
 
   // Tor (Arti) node management — routes .onion traffic via a local SOCKS proxy
   TOR_START: 'tor:start',
