@@ -284,6 +284,37 @@ describe('payments waiting: Send again', () => {
     expect(markup(elements)).toContain('Sent, waiting for confirmation');
   });
 
+  test('with the approvals panel on, a stale confirmation is asked again only when the payment was replaced (APS-4)', async () => {
+    const payment = held();
+    const { mod, elements } = await load([payment]);
+    window.pagePrompts = { approvalsDocument: true };
+    await mod.openHeldPayments();
+    const stale = (intent) => ({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: 'Signing was not confirmed',
+      intentId: payment.intentId,
+      intent,
+    });
+    const resendHashes = () =>
+      window.wallet.confirmSigning.mock.calls.filter(([kind]) => kind === 'intent-resend').map(([, , binding]) => binding.hash);
+    // Lapsed with nothing changed: no second prompt the user didn't cause.
+    window.wallet.intentResend.mockResolvedValueOnce(stale({ ...payment }));
+    await mod.handleAction('resend', payment);
+    expect(resendHashes()).toEqual([payment.hash]);
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(1);
+    expect(markup(elements)).toContain('Signing was not confirmed');
+    // Replaced meanwhile: asked again once, for main's latest transaction
+    // (whose prompt says why).
+    const replaced = { ...payment, hash: `0x${'cd'.repeat(32)}` };
+    window.wallet.intentResend
+      .mockResolvedValueOnce(stale(replaced))
+      .mockResolvedValueOnce(stale({ ...replaced, hash: `0x${'ef'.repeat(32)}` }));
+    await mod.handleAction('resend', payment);
+    expect(resendHashes()).toEqual([payment.hash, payment.hash, replaced.hash]);
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(3);
+  });
+
   test('a confirmation main refuses to mint sends nothing', async () => {
     const payment = held();
     const { mod, elements } = await load([payment]);

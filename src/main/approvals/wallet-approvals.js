@@ -18,6 +18,13 @@
  *
  * The chrome's screens still lead up to it (the send form, the held
  * payments, the Safe board's execution); the decision is the document's.
+ *
+ * A held payment's resend whose approval went stale because the payment was
+ * replaced meanwhile (its latest transaction, which the token binds, is
+ * another) is asked again by the chrome once (`intent-resend.js`). Main
+ * then says why (APS-4): the prompt names the transaction approved before
+ * (`replaced`), so the user sees the payment changed, with a higher fee,
+ * rather than a second prompt they didn't cause.
  */
 
 const PROMPT_KINDS = Object.freeze({
@@ -46,6 +53,12 @@ const INDEX_BOUND = new Set(['wallet-send', 'safe-send', 'executor-send']);
 // ERC-20's transfer(address,uint256): the recipient and the amount, read
 // from the data main binds, so the panel says what a token send does.
 const TRANSFER = /^0xa9059cbb0{24}([0-9a-fA-F]{40})([0-9a-fA-F]{64})$/;
+
+// How long main remembers a resend's approval, to say why it is asked again:
+// the life of the token it minted (signing-confirmation.js), within which a
+// stale one is refused and asked again at once.
+const RESEND_MEMORY_MS = 2 * 60 * 1000;
+const RESEND_MEMORY_MAX = 32;
 
 const isQuantity = (value) => typeof value === 'string' && /^(?:0|[1-9][0-9]*)$/.test(value);
 
@@ -101,6 +114,7 @@ function transferOf(tx) {
  * @param {(chainId: number) => string|null} deps.nativeSymbol
  * @param {(tx: object) => Promise<object>} deps.checkFees
  * @param {(tx: object, options: object) => Promise<object>} deps.checkAtApproval
+ * @param {() => number} [deps.now]
  */
 function createWalletApprovals({
   walletPrompt,
@@ -110,7 +124,32 @@ function createWalletApprovals({
   nativeSymbol = () => null,
   checkFees,
   checkAtApproval,
+  now = () => Date.now(),
 }) {
+  // A held payment's last approved resend, by intent id: the hash it bound.
+  const resends = new Map();
+
+  /**
+   * The transaction a resend of this payment was approved for moments ago,
+   * when that was another than the one now asked about: the payment was
+   * replaced since. Read once.
+   */
+  function replacedSince(payload) {
+    const id = typeof payload?.intentId === 'string' ? payload.intentId : null;
+    const last = id === null ? null : resends.get(id);
+    if (!last) return null;
+    resends.delete(id);
+    if (now() - last.at > RESEND_MEMORY_MS) return null;
+    return typeof payload.hash === 'string' && last.hash.toLowerCase() !== payload.hash.toLowerCase() ? last.hash : null;
+  }
+
+  function rememberResend(payload) {
+    if (typeof payload?.intentId !== 'string' || typeof payload.hash !== 'string') return;
+    resends.delete(payload.intentId);
+    resends.set(payload.intentId, { hash: payload.hash, at: now() });
+    while (resends.size > RESEND_MEMORY_MAX) resends.delete(resends.keys().next().value);
+  }
+
   // The account as main's wallet list has it. By index (the account a
   // token signs with): null unless the list is read and has it. By address
   // (an intent's sender): the address alone, `unknown`, when it isn't.
@@ -161,7 +200,7 @@ function createWalletApprovals({
    * Main's view of the request, for its kind's template in the document.
    * Null for an index-bound kind whose account main can't show.
    */
-  async function viewOf(kind, index, payload, { verdict, askAgain }) {
+  async function viewOf(kind, index, payload, { verdict, askAgain, replaced = null }) {
     const feeCheck = verdict ? { ...verdict } : null;
     let account = null;
     if (INDEX_BOUND.has(kind)) {
@@ -191,6 +230,7 @@ function createWalletApprovals({
           chain: chainOf(payload.chainId),
           nonce: payload.nonce,
           hash: payload.hash,
+          replaced,
         };
       case 'intent-replace': {
         const tx = txOf(payload);
@@ -269,8 +309,9 @@ function createWalletApprovals({
     if (!Number.isInteger(windowId)) return NO_WINDOW;
     let verdict = feeChecked ? await verdictFor(payload) : null;
     let askAgain = false;
+    const replaced = kind === 'intent-resend' ? replacedSince(payload) : null;
     for (;;) {
-      const view = await viewOf(kind, index, payload, { verdict, askAgain });
+      const view = await viewOf(kind, index, payload, { verdict, askAgain, replaced });
       if (!view) return NO_ACCOUNT;
       let release;
       const released = new Promise((resolve) => {
@@ -295,7 +336,9 @@ function createWalletApprovals({
             continue;
           }
         }
-        return { ...(await onApproved()), approved: true };
+        const minted = await onApproved();
+        if (kind === 'intent-resend') rememberResend(payload);
+        return { ...minted, approved: true };
       } finally {
         release();
       }

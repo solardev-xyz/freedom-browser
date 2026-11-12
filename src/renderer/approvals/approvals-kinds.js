@@ -891,11 +891,20 @@
   });
 
   const HASH_TEXT = text(66, { pattern: HASH });
+  // `replaced`, main's own: the transaction a resend of this payment was
+  // approved for moments ago, before the payment was replaced (APS-4).
   const walletIntentResend = Object.freeze({
-    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, nonce: NONCE, hash: HASH_TEXT }),
+    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, nonce: NONCE, hash: HASH_TEXT, replaced: nullable(HASH_TEXT) }),
     heading: () => 'Send again',
     approve: () => 'Send again',
     render(view, ui, body) {
+      if (view.replaced) {
+        body.append(
+          ui.warning(
+            'This payment was replaced with a higher fee after you approved sending it again, so that approval no longer applies. Approve again to send its latest transaction, below.'
+          )
+        );
+      }
       body.append(
         ui.note('The same signed payment, sent to the network again'),
         ui.own('From', walletAccountText(view.account)),
@@ -903,6 +912,7 @@
         ui.own('Nonce', String(view.nonce)),
         ui.own('Transaction', view.hash)
       );
+      if (view.replaced) body.append(ui.own('Approved before', view.replaced));
       return { choices: noChoices };
     },
   });

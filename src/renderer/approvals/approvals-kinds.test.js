@@ -527,7 +527,7 @@ describe('the wallet\'s own kinds', () => {
   const WALLET = {
     'wallet.send': { account: ACCOUNT, chain: GNOSIS, tx: { to: TO, value: '0', data: hostileData }, transfer: null, fee: FEE, feeCheck: VERDICT, feeAskAgain: false },
     'wallet.safe_send': { account: { index: 1000, name: 'Team Safe', address: SAFE, type: 'safe' }, chain: GNOSIS, tx: { to: TO, value: '5', data: '0x' }, transfer: null },
-    'wallet.intent_resend': { account: ACCOUNT, chain: GNOSIS, nonce: 7, hash: HASH },
+    'wallet.intent_resend': { account: ACCOUNT, chain: GNOSIS, nonce: 7, hash: HASH, replaced: null },
     'wallet.intent_replace': { account: { ...ACCOUNT, type: 'ledger' }, chain: GNOSIS, nonce: 7, tx: { to: TO, value: '0', data: '0x' }, transfer: null, fee: { gasLimit: '21000', gasPrice: '3' }, feeCheck: null, feeAskAgain: false },
     'wallet.intent_close': { account: { index: null, name: '', address: TO, type: 'unknown' }, chain: GNOSIS, nonce: 7, hashes: [HASH, HASH] },
     'wallet.executor_send': { account: ACCOUNT, chain: GNOSIS, tx: { to: SAFE, value: '0', data: '0x6a761202' }, fee: { gasLimit: '90000', gasPrice: '2000000000' }, feeCheck: VERDICT, feeAskAgain: true },
@@ -561,6 +561,20 @@ describe('the wallet\'s own kinds', () => {
     expect(render('wallet.intent_replace', WALLET['wallet.intent_replace']).body.textContent).toContain('You confirm this on your Ledger');
   });
 
+  // APS-4: a resend asked again because the payment was replaced says so.
+  test('a resend asked again after a replacement says why, and names the transaction approved before', () => {
+    const plain = render('wallet.intent_resend', WALLET['wallet.intent_resend']);
+    expect(plain.body.textContent).not.toContain('replaced');
+    const before = `0x${'cd'.repeat(32)}`;
+    const view = { ...WALLET['wallet.intent_resend'], replaced: before };
+    expect(checkMessage(message('wallet.intent_resend', view)).valid).toBe(true);
+    const again = render('wallet.intent_resend', view);
+    expect(again.body.textContent).toContain('This payment was replaced with a higher fee after you approved sending it again');
+    expect(again.body.textContent).toContain(before);
+    expect(again.body.textContent).toContain(HASH);
+    expect(again.approve).toBe('Send again');
+  });
+
   // Codex, #1210: the wallet's own decision is answered once its token is
   // minted, and the device step comes after, on the chrome's screen.
   test('an approval waits on a device for a page\'s prompt only, never for the wallet\'s own', () => {
@@ -583,6 +597,8 @@ describe('the wallet\'s own kinds', () => {
     for (const [kind, view] of [
       ['wallet.send', { ...WALLET['wallet.send'], memo: 'x' }],
       ['wallet.intent_resend', { ...WALLET['wallet.intent_resend'], hash: '0x12' }],
+      ['wallet.intent_resend', { ...WALLET['wallet.intent_resend'], replaced: '<b>replaced</b>' }],
+      ['wallet.intent_resend', { account: ACCOUNT, chain: GNOSIS, nonce: 7, hash: HASH }],
       ['wallet.intent_close', { ...WALLET['wallet.intent_close'], hashes: Array.from({ length: 65 }, () => HASH) }],
       ['wallet.safe_send', { ...WALLET['wallet.safe_send'], account: { ...ACCOUNT, type: 'Safe <b>' } }],
     ]) {

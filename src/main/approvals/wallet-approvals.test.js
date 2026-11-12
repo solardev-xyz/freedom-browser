@@ -29,7 +29,7 @@ const PAYLOADS = {
   'executor-send': [0, { chainId: 100, to: SAFE, value: '0', data: '0x6a761202', gasLimit: '90000', gasPrice: '2000000000' }],
 };
 
-function setup({ verdict = BELOW, atPress = [], wallets = async () => WALLETS } = {}) {
+function setup({ verdict = BELOW, atPress = [], wallets = async () => WALLETS, now = () => 0 } = {}) {
   const prompts = [];
   const decisions = [];
   const answers = [...atPress];
@@ -48,6 +48,7 @@ function setup({ verdict = BELOW, atPress = [], wallets = async () => WALLETS } 
     nativeSymbol: (chainId) => (chainId === 100 ? 'xDAI' : null),
     checkFees: jest.fn(async () => verdict),
     checkAtApproval,
+    now: () => now(),
   });
   return { approvals, prompts, decisions, checkAtApproval };
 }
@@ -244,5 +245,42 @@ describe('a step main runs in a window: a Safe board\'s executor fee (APS-3b)', 
     await env.approvals.confirm({ windowId: 4, sender: chrome, kind: 'executor-send', index, payload, feeChecked: true });
     expect(env.prompts.map((prompt) => prompt.windowId)).toEqual([4]);
     expect((await env.approvals.confirm({ kind: 'executor-send', index, payload, feeChecked: true })).code).toBe('NO_WINDOW');
+  });
+});
+
+// APS-4: a held payment's resend asked again by the chrome, because the
+// payment was replaced after the first approval, says so in the panel.
+describe('a resend asked again after a replacement', () => {
+  const RESEND = PAYLOADS['intent-resend'][1];
+  const REPLACED = { ...RESEND, hash: `0x${'cd'.repeat(32)}` };
+  const ask = (env, payload) =>
+    env.approvals.confirm({ sender: chrome, kind: 'intent-resend', index: null, payload, feeChecked: false }, () => ({ token: 't' }));
+
+  test('names the transaction approved before; a first ask, and the same transaction again, name none', async () => {
+    const env = setup();
+    await ask(env, RESEND);
+    expect(env.prompts[0].view.replaced).toBeNull();
+    await ask(env, REPLACED);
+    expect(env.prompts[1].view.replaced).toBe(HASH);
+    expect(kinds.checkMessage(message('wallet.intent_resend', env.prompts[1].view)).valid).toBe(true);
+    // Read once: the next ask of the same transaction is a plain one.
+    await ask(env, REPLACED);
+    expect(env.prompts[2].view.replaced).toBeNull();
+  });
+
+  test('not after a rejection, not for another payment, and not once the approval\'s token has lapsed', async () => {
+    let clock = 0;
+    const env = setup({ now: () => clock });
+    env.decisions.push({ approve: false });
+    await ask(env, RESEND);
+    await ask(env, REPLACED);
+    expect(env.prompts[1].view.replaced).toBeNull();
+    await ask(env, RESEND);
+    await ask(env, { ...REPLACED, intentId: 'intent-456' });
+    expect(env.prompts[3].view.replaced).toBeNull();
+    await ask(env, RESEND);
+    clock += 2 * 60 * 1000 + 1;
+    await ask(env, REPLACED);
+    expect(env.prompts[5].view.replaced).toBeNull();
   });
 });
