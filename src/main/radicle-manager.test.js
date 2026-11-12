@@ -1386,6 +1386,32 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     expect(broadcastStatuses(ctx)).not.toContain('error');
   });
 
+  test('a start while the node restarts, or waits for the unlock, makes no second node', async () => {
+    const ctx = load();
+    const started = ctx.mod.startRadicle();
+    await flush();
+    const node = ctx.node();
+    node.resolveStart(true);
+    await started;
+    node.options.onChange('restarting', node);
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'starting', error: null });
+    expect(ctx.radicledNode.nodes).toHaveLength(1);
+    await ctx.mod.stopRadicle();
+  });
+
+  test("a home that can't be prepared: the error state, and no node", async () => {
+    const ctx = load({
+      prepare: async () => {
+        throw new Error('The Radicle data is in use by another process. Close it and try again.');
+      },
+    });
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({
+      status: 'error',
+      error: 'The Radicle data is in use by another process. Close it and try again.',
+    });
+    expect(ctx.radicledNode.nodes).toHaveLength(0);
+  });
+
   test("the node's own changes: restarting, running again, waiting for the unlock, and giving up", async () => {
     const ctx = load();
     const started = ctx.mod.startRadicle();

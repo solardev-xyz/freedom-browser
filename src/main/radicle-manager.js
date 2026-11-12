@@ -377,7 +377,9 @@ async function startAddonInternal({ signal = null } = {}) {
  * over at once (stopRadicle), so a stop never waits for an unlock.
  */
 async function startServiceInternal() {
-  if (currentState === STATUS.RUNNING) return getCurrentStatus();
+  // One node at a time: one that is starting, waiting for the unlock or
+  // restarting is this start already.
+  if (currentState === STATUS.RUNNING || serviceNode) return getCurrentStatus();
   if (isDisabledForProfile()) {
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Node disabled for this profile');
@@ -398,12 +400,21 @@ async function startServiceInternal() {
   }
 
   updateState(STATUS.STARTING);
-  // A node that failed may still be ending, its process holding the home:
-  // the new one, which spawns a fresh process (the Retry after "still
-  // repairing" among them), starts after it.
-  await lastServiceNode?.stop();
-  lastServiceNode = null;
-  const radHome = await prepareRadicleDataDir();
+  let radHome;
+  try {
+    // A node that failed may still be ending, its process holding the
+    // home: the new one, which spawns a fresh process (the Retry after
+    // "still repairing" among them), starts after it.
+    await lastServiceNode?.stop();
+    lastServiceNode = null;
+    // A legacy home's carry-over, if one is due, runs under the gate of its
+    // own (profile-paths.js) and is done by now.
+    radHome = await prepareRadicleDataDir();
+  } catch (err) {
+    clearService('radicle');
+    updateState(STATUS.ERROR, err.message);
+    return getCurrentStatus();
+  }
   // Again at the boundary: an identity write may have begun meanwhile.
   const blockedNow = nodeBlockReason('radicle');
   if (blockedNow) {
