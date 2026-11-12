@@ -289,6 +289,16 @@ function createEthereumDispatchers(deps = {}) {
             attested: { key: requester.key, transportKey: requester.transportKey },
             beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
             effectAllowed: () => open() && context.holdsKey(),
+            // What the agent's own write did, told inside its guarded run
+            // (PRQ-6): a grant it created gets main's new-grant events,
+            // queued at that write. One it updated is told by the grant
+            // store (`page-events.js`), and one it left as it was by no one.
+            grantWritten: (effect) => {
+              if (effect?.grant !== 'created' || typeof effect.account !== 'string' || !effect.account) return;
+              const chainId =
+                Number.isSafeInteger(effect.chainId) && effect.chainId > 0 ? effect.chainId : chainIdOf(requester);
+              announceNewGrant(context, effect.account, chainId);
+            },
           }
         );
       } catch {
@@ -328,17 +338,23 @@ function createEthereumDispatchers(deps = {}) {
     return { accounts: offered, defaultIndex, chain: { id: chainId, name } };
   }
 
-  // The grant's events (today's, from the chrome's connect): the account to
-  // every live document of the key, `connect` to the one that asked. In the
-  // key's order with its other grant events (PRQ-6, `page-events.js`), so a
-  // revocation made after this connect is heard after it, even while a
-  // name's resolution holds this one.
-  function announceConnection(context, account, chainId) {
+  // A new grant's events (today's, from the chrome's connect): the account
+  // to every live document of the key, `connect` to the one that asked.
+  // Called at the write itself, in the same run, by main's connect or by
+  // the agent's (`grantWritten`), and queued there in the key's order with
+  // its other grant events (PRQ-6, `page-events.js`): a revocation made
+  // after the write is heard after them, even while a name's resolution
+  // holds them. They go out once main has answered the request, as the
+  // chrome sent them after its answer.
+  function announceNewGrant(context, account, chainId) {
     const { requester } = context;
-    const others = context
-      .liveDocuments()
-      .filter((doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation));
-    return context.inGrantOrder(requester.key, async () => {
+    context.inGrantOrder(requester.key, async () => {
+      await context.whenAnswered();
+      const others = context
+        .liveDocuments()
+        .filter(
+          (doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation)
+        );
       await context.sendEvent(requester, 'accountsChanged', [account]);
       await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
       for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
@@ -353,22 +369,9 @@ function createEthereumDispatchers(deps = {}) {
     // the write itself.
     const keyless = { keyless: { error: { ...NO_ADDRESS } } };
     if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
-    const unconnected = !getPermission(requester.key);
     const agent = await agentAnswer(context, keyless);
     // A name that moved meanwhile answers as a keyless document's would.
-    if (agent) {
-      if (!context.holdsKey()) return { error: { ...NO_ADDRESS } };
-      // The agent's approval wrote the site's first grant: its events, as
-      // main's own connect sends them (PRQ-6). An existing grant's account
-      // change is told by the grant store (`page-events.js`).
-      const granted = unconnected && Array.isArray(agent.result) ? getPermission(requester.key) : null;
-      const account = agent.result?.[0];
-      if (granted && typeof account === 'string') {
-        const chainId = Number.isSafeInteger(granted.chainId) && granted.chainId > 0 ? granted.chainId : chainIdOf(requester);
-        context.afterAnswer(() => announceConnection(context, account, chainId));
-      }
-      return agent;
-    }
+    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
     if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
     const permission = getPermission(requester.key);
     if (permission) {
@@ -406,7 +409,7 @@ function createEthereumDispatchers(deps = {}) {
     } catch {
       return { error: { ...GRANT_FAILED } };
     }
-    context.afterAnswer(() => announceConnection(context, chosen.address, chainId));
+    announceNewGrant(context, chosen.address, chainId);
     return { result: [chosen.address] };
   }
 

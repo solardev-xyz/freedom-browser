@@ -3038,6 +3038,7 @@ describe('FreedomAgentService', () => {
       attested: { key: 'https://app.example', transportKey: 'https://app.example' },
       beforeEffect: jest.fn(async () => true),
       effectAllowed: jest.fn(() => true),
+      grantWritten: jest.fn(),
     };
     const response = service.handleWalletRequest(
       'tab_assigned',
@@ -3051,6 +3052,7 @@ describe('FreedomAgentService', () => {
       attested: pageRequest.attested,
       beforeEffect: pageRequest.beforeEffect,
       effectAllowed: pageRequest.effectAllowed,
+      grantWritten: pageRequest.grantWritten,
     });
     // Main answers the request (its deadline): the approval is withdrawn.
     answered.abort();

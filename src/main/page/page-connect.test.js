@@ -383,6 +383,7 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
         attested: { key: KEY_A, transportKey: KEY_A },
         beforeEffect: expect.any(Function),
         effectAllowed: expect.any(Function),
+        grantWritten: expect.any(Function),
       }
     );
     expect(env.prompts()).toEqual([]);
@@ -436,6 +437,7 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
             attested: options.attested,
             beforeEffect: options.beforeEffect,
             effectAllowed: options.effectAllowed,
+            grantWritten: options.grantWritten,
           },
           request
         );
@@ -476,6 +478,73 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       expect(other.guest.events).toEqual([['accountsChanged', [SECOND]]]);
       expect(inWindow2.guest.events).toEqual([['accountsChanged', [SECOND]]]);
       expect(elsewhere.guest.events).toEqual([]);
+    });
+
+    // #1192 round 2: what the agent's write did is decided in its guarded
+    // run and told there, not inferred from the store before its wait.
+    test('a grant revoked while the agent\'s approval waits: the approval creates it again, announced once, after the revocation\'s event', async () => {
+      const env = setup();
+      env.state.permissions.set(KEY_A, { origin: KEY_A, walletIndex: 0, chainId: 100 });
+      const approvals = withAgent(env);
+      const events = createPageEvents({
+        requests: () => env.requests,
+        getDerivedWallets: async () => env.state.wallets,
+        normalizeKey: normalizeOrigin,
+      });
+      const other = env.tab(`${KEY_A}/other`, { front: false });
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      // The user disconnects the site while the agent's approval is open.
+      env.state.permissions.delete(KEY_A);
+      await events.grantChanged({ key: KEY_A, walletIndex: null });
+      approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+      expect(await answer).toEqual({ result: [SECOND] });
+      await flush();
+      expect(env.state.grants).toEqual([{ key: KEY_A, walletIndex: 1, chainId: 100 }]);
+      expect(page.guest.events).toEqual([
+        ['accountsChanged', []],
+        ['accountsChanged', [SECOND]],
+        ['connect', { chainId: '0x64' }],
+      ]);
+      expect(other.guest.events).toEqual([
+        ['accountsChanged', []],
+        ['accountsChanged', [SECOND]],
+      ]);
+    });
+
+    test('a site connected through main\'s prompt while the agent\'s approval waits: the approval creates nothing, so nothing is announced twice', async () => {
+      const env = setup();
+      const approvals = withAgent(env);
+      const agentRoute = env.state.agent;
+      const page = env.tab();
+      // Another page of the key, in window 2, which the agent doesn't hold.
+      const other = env.tab(`${KEY_A}/other`, { window: 2 });
+      env.state.agent = (guestId, request, options) =>
+        guestId === page.guest.id ? agentRoute(guestId, request, options) : { handled: false };
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      expect(approvals).toHaveLength(1);
+      // The other page connects through main's prompt meanwhile.
+      const otherAnswer = other.ask('eth_requestAccounts');
+      await flush();
+      const [prompt] = env.prompts(2);
+      await env.decide(prompt.handle, true, { walletIndex: 0 }, 2);
+      expect(await otherAnswer).toEqual({ result: [ACCOUNT] });
+      await flush();
+      // Then the agent's approval picks the same account: the grant is left
+      // as it is.
+      approvals[0].resolve({ status: 'approved', walletIndex: 0 });
+      expect(await answer).toEqual({ result: [ACCOUNT] });
+      await flush();
+      expect(env.state.grants).toEqual([{ key: KEY_A, walletIndex: 0, chainId: 100 }]);
+      expect(other.guest.events).toEqual([
+        ['accountsChanged', [ACCOUNT]],
+        ['connect', { chainId: '0x64' }],
+      ]);
+      // The agent's page heard main's connect once, and no "first" connect
+      // of its own.
+      expect(page.guest.events).toEqual([['accountsChanged', [ACCOUNT]]]);
     });
 
     test('a connected site\'s agent approval writes no new grant, so sends no new-grant events (an account change is the grant store\'s to tell)', async () => {

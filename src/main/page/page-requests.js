@@ -327,6 +327,10 @@ function createPageRequests({
       keyless: undefined,
       // What runs once the answer has reached the document (`afterAnswer`).
       after: null,
+      // Resolves once the record is answered, whether or not the document
+      // is still there (`whenAnswered`).
+      answeredGate: null,
+      openAnsweredGate: null,
       // Aborted when the record is answered, for a wallet operation it runs
       // (`walletOperation`).
       aborter: null,
@@ -392,6 +396,7 @@ function createPageRequests({
       value = { ...record.keyless };
     }
     record.resolve(current ? value : GONE);
+    record.openAnsweredGate?.();
     trace({ kind: current ? 'answered' : 'gone', id: record.id, value: current ? value : undefined });
     const after = record.after;
     record.after = null;
@@ -510,12 +515,25 @@ function createPageRequests({
       afterAnswer: (fn) => {
         if (typeof fn === 'function' && !record.answered) record.after = fn;
       },
+      // Resolves once main has answered the record, the document there or
+      // gone: for events queued at an effect, sent after the answer.
+      whenAnswered: () => whenAnswered(record),
       liveDocuments: () => documents.liveDocuments(),
       sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
       inGrantOrder: (key, job) => inGrantOrder(key, job),
       inChainOrder: (windowId, job) => inChainOrder(windowId, job),
       copied: (label) => copied(record, label),
     });
+  }
+
+  function whenAnswered(record) {
+    if (record.answered) return Promise.resolve();
+    if (!record.answeredGate) {
+      record.answeredGate = new Promise((resolve) => {
+        record.openAnsweredGate = resolve;
+      });
+    }
+    return record.answeredGate;
   }
 
   // Events in order (design 0011, "Events"; PRQ-6): one change's sends run

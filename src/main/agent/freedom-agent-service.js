@@ -1703,8 +1703,9 @@ class FreedomAgentService {
    * from main for a request it attested (freedom-core design 0011, PRQ-4):
    * `attested` (the key the request acts under, and the page's transport
    * key), `signal` (aborted when main answers the request: its approval is
-   * withdrawn), and `beforeEffect`/`effectAllowed`, which the effect waits
-   * on.
+   * withdrawn), `beforeEffect`/`effectAllowed`, which the effect waits on,
+   * and `grantWritten`, which the controller tells what a connect's grant
+   * write did, in the write's own run (PRQ-6).
    */
   async handleWalletRequest(tabId, payload, pageRequest = null) {
     const run = this.activeRun;
@@ -3238,6 +3239,7 @@ class FreedomAgentService {
           attested: pageRequest.attested,
           beforeEffect: pageRequest.beforeEffect,
           effectAllowed: pageRequest.effectAllowed,
+          grantWritten: pageRequest.grantWritten,
         }),
       },
       payload
