@@ -26,21 +26,31 @@
  *   approvals:moved      main -> document  the panel moved or was resized
  *   approvals:theme      main -> document  { theme }: Settings > Appearance
  *   approvals:ready      document -> main  its listeners are set: send what shows
- *   approvals:shown      document -> main  { handle }: the prompt is on screen
- *                                          and the document's input delay started
+ *   approvals:shown      document -> main  { handle, revision }: the prompt is on
+ *                                          screen and the document's input delay
+ *                                          started
  *   approvals:decide     document -> main  { handle, approve, choices }
  *                                          -> { ok } | { ok: false, reason }
- *   approvals:view-part  document -> main  { handle, index }
+ *   approvals:view-part  document -> main  { handle, revision, index }
  *                                          -> { ok, part } | { ok: false, reason }
  *
  * A view over 256 KiB (very large transaction data, typed data or a
  * message; APS-4) doesn't go in one message: `page:prompt` then carries
- * `view: null` and `parts: { count, length }`, and the document asks for
- * each part of the view's JSON in turn, for the prompt main shows it at
- * that moment, each part within 256 KiB. It joins them, checks the whole
- * against its kind's schema as it checks any view, within 4 MiB, and only
- * then shows the prompt and reports it shown. So every value is still
- * shown in full, in its scrolling box, and nothing is decided on a part.
+ * `view: null` and `parts: { count, length, revision }`, and the document
+ * asks for each part of the view's JSON in turn, each part within 256 KiB.
+ * It joins them, checks the whole against its kind's schema as it checks
+ * any view, within 4 MiB, and only then shows the prompt and reports it
+ * shown. So every value is still shown in full, in its scrolling box, and
+ * nothing is decided on a part.
+ *
+ * Each `page:prompt` main sends is a revision of its own: a prompt's view
+ * can change under the same handle (`page-prompts.js update()`), and a
+ * document still reading the parts of the view it was sent before must not
+ * join them with the new one's. So a part is given only for the handle and
+ * the revision main shows at that moment (`stale` for an earlier revision:
+ * the newer prompt is already on its way to the document, which reads that
+ * one afresh), and a report of a view in parts counts only for its
+ * revision.
  * A view over 4 MiB, more than any page request's view (a request is at
  * most 1 MiB, and the core's typed-data view one reply), is not
  * forwarded: the document shows its fixed error, and the prompt can only
@@ -241,10 +251,11 @@ function viewParts(json) {
 
 /**
  * How main forwards a prompt: the message (its own fields, and the view
- * within 256 KiB, or `view: null` and `parts: { count, length }` for a view
- * within 4 MiB), the view as main shows it, and the view's JSON in parts.
+ * within 256 KiB, or `view: null` and `parts: { count, length, revision }`
+ * for a view within 4 MiB), the view as main shows it, and the view's JSON
+ * in parts. `revision` is the delivery's own (`send`).
  */
-function promptDelivery(payload) {
+function promptDelivery(payload, revision = 1) {
   const message = {
     handle: payload?.handle,
     guest: payload?.guest,
@@ -265,7 +276,7 @@ function promptDelivery(payload) {
     const parts = viewParts(json);
     const view = message.view;
     message.view = null;
-    message.parts = { count: parts.length, length: json.length };
+    message.parts = { count: parts.length, length: json.length, revision };
     return { message, view, parts };
   }
   // Over 4 MiB, or not serializable: the document gets no view, shows its
@@ -275,8 +286,8 @@ function promptDelivery(payload) {
 }
 
 /** What main forwards of a prompt in its message (`promptDelivery`). */
-function outgoingPrompt(payload) {
-  return promptDelivery(payload).message;
+function outgoingPrompt(payload, revision) {
+  return promptDelivery(payload, revision).message;
 }
 
 /**
@@ -368,6 +379,8 @@ function createApprovalsDocuments({
 } = {}) {
   const byWindow = new Map(); // window id -> record
   const byContents = new Map(); // the view's webContents id -> record
+  // Every `page:prompt` sent is a revision of its own (APS-4).
+  let lastRevision = 0;
   const preparedSessions = new WeakSet();
 
   const trace = (entry) => {
@@ -527,9 +540,10 @@ function createApprovalsDocuments({
       visible: false,
       shown: null,
       // The shown prompt's view as main holds it, and its JSON in parts when
-      // it is over one message (APS-4).
+      // it is over one message, for the revision sent last (APS-4).
       shownView: null,
       parts: null,
+      revision: 0,
       report: null,
       // `{ handle, device }` while an approval for a device's account signs.
       waiting: null,
@@ -588,14 +602,16 @@ function createApprovalsDocuments({
     if (!record) return;
     const handle = payload?.handle;
     if (channel === CHANNELS.PROMPT) {
-      const { message, view, parts } = promptDelivery(payload);
+      lastRevision += 1;
+      const { message, view, parts } = promptDelivery(payload, lastRevision);
       record.shown = message;
       record.shownView = view;
       record.parts = parts;
+      record.revision = lastRevision;
       record.report = null;
       record.waiting = null;
       show(record);
-      trace({ kind: 'prompt', window: windowId, handle });
+      trace({ kind: 'prompt', window: windowId, handle, revision: lastRevision, parts: parts ? parts.length : 0 });
       deliver(record, CHANNELS.PROMPT, message);
     } else if (channel === CHANNELS.HIDDEN) {
       if (record.shown?.handle !== handle) return;
@@ -667,17 +683,23 @@ function createApprovalsDocuments({
     return { ok: true };
   }
 
-  /** `approvals:shown { handle }`: the prompt main shows is on screen. */
+  /**
+   * `approvals:shown { handle, revision }`: the prompt main shows is on
+   * screen. A view in parts is reported for its revision: a report for an
+   * earlier one counts for nothing (APS-4).
+   */
   function shown(event, payload) {
     const { record, reason } = senderOf(event);
     if (!record) return refused(CHANNELS.SHOWN, reason);
     const handle = isPlainObject(payload) ? payload.handle : undefined;
-    if (typeof handle !== 'string' || record.shown?.handle !== handle) {
-      trace({ kind: 'shown-ignored', window: record.windowId });
+    const revision = isPlainObject(payload) ? payload.revision : undefined;
+    const expected = record.parts ? record.revision : undefined;
+    if (typeof handle !== 'string' || record.shown?.handle !== handle || revision !== expected) {
+      trace({ kind: 'shown-ignored', window: record.windowId, handle, revision });
       return { ok: false, reason: 'not-shown' };
     }
     record.report = { handle, at: now() };
-    trace({ kind: 'shown', window: record.windowId, handle, at: record.report.at });
+    trace({ kind: 'shown', window: record.windowId, handle, revision: record.revision, at: record.report.at });
     return { ok: true };
   }
 
@@ -724,20 +746,32 @@ function createApprovalsDocuments({
   }
 
   /**
-   * `approvals:view-part { handle, index }` from a window's own document:
-   * one part of the view of the prompt main shows it at this moment, when
-   * that view came in parts (APS-4).
+   * `approvals:view-part { handle, revision, index }` from a window's own
+   * document: one part of the view of the prompt main shows it at this
+   * moment, when that view came in parts, for that very revision (APS-4).
    */
   function viewPart(event, payload) {
     const { record, reason } = senderOf(event);
     if (!record) return refused(CHANNELS.VIEW_PART, reason);
-    if (!isPlainObject(payload) || typeof payload.handle !== 'string' || !Number.isInteger(payload.index)) {
+    if (
+      !isPlainObject(payload) ||
+      typeof payload.handle !== 'string' ||
+      !Number.isInteger(payload.revision) ||
+      !Number.isInteger(payload.index)
+    ) {
       return { ok: false, reason: 'invalid' };
     }
-    if (record.shown?.handle !== payload.handle || !record.parts) return { ok: false, reason: 'not-shown' };
-    const part = record.parts[payload.index];
+    const { handle, revision, index } = payload;
+    if (record.shown?.handle !== handle || !record.parts) return { ok: false, reason: 'not-shown' };
+    // The view changed under the same handle since the document was sent
+    // this revision: nothing of the new one goes to a read of the old.
+    if (revision !== record.revision) {
+      trace({ kind: 'view-part-stale', window: record.windowId, handle, revision, index });
+      return { ok: false, reason: 'stale' };
+    }
+    const part = record.parts[index];
     if (typeof part !== 'string') return { ok: false, reason: 'invalid' };
-    trace({ kind: 'view-part', window: record.windowId, handle: payload.handle, index: payload.index });
+    trace({ kind: 'view-part', window: record.windowId, handle, revision, index });
     return { ok: true, part };
   }
 
@@ -799,6 +833,7 @@ function createApprovalsDocuments({
         top: record.top,
         shown: record.shown ? record.shown.handle : null,
         parts: record.parts ? record.parts.length : 0,
+        revision: record.revision,
         reported: record.report ? record.report.handle : null,
         waiting: record.waiting ? record.waiting.device : null,
       };

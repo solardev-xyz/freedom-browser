@@ -60,7 +60,8 @@
   let armTimer = null;
   let armFrame = null;
   // Each prompt message's turn: a view's parts still arriving for an older
-  // message are dropped (APS-4).
+  // message are dropped (APS-4). Main checks the same with the revision a
+  // view in parts names: it gives a part only for the revision it shows.
   let turn = 0;
 
   function setButtons() {
@@ -76,19 +77,22 @@
     armTimer = null;
   }
 
-  // Restart the delay once the prompt is on screen, and tell main.
+  // Restart the delay once the prompt is on screen, and tell main. A view
+  // still loading its parts is not on screen: nothing arms, and nothing is
+  // reported, until it renders in full (APS-4).
   function rearm() {
     gate.disarm();
     stopArming();
-    if (!current) return;
+    if (!current || current.loading) return;
     el.panel.classList.add('arming');
-    const handle = current.handle;
+    const { handle, revision } = current;
     armFrame = root.requestAnimationFrame(() => {
       armFrame = root.requestAnimationFrame(() => {
         armFrame = null;
         if (current?.handle !== handle) return;
         gate.arm();
-        bridge.shown(handle);
+        // A view in parts is reported for its revision (APS-4).
+        bridge.shown(handle, revision);
         armTimer = root.setTimeout(() => {
           armTimer = null;
           el.panel.classList.remove('arming');
@@ -151,12 +155,16 @@
   /**
    * A prompt whose view comes in parts (APS-4): the panel shows it is
    * loading, with nothing to approve and the input gate closed, while the
-   * page asks main for each part in turn. The joined view is checked whole
-   * and then shown as any prompt is; a part refused, a length that doesn't
-   * match, or a view off its schema shows the fixed error.
+   * page asks main for each part of that revision in turn. The joined view
+   * is checked whole and then shown as any prompt is; a part refused, a
+   * length that doesn't match, or a view off its schema shows the fixed
+   * error. A revision main has replaced since (`stale`) is dropped, not
+   * joined and not shown: the panel stays loading, with nothing to approve,
+   * and reads the newer prompt main has already sent it.
    */
   async function load(message, prompt) {
     const mine = turn;
+    const { revision } = prompt.parts;
     stopWaiting();
     stopArming();
     gate.disarm();
@@ -178,11 +186,12 @@
     for (let index = 0; index < prompt.parts.count && length <= prompt.parts.length; index += 1) {
       let answer;
       try {
-        answer = await bridge.viewPart(prompt.handle, index);
+        answer = await bridge.viewPart(prompt.handle, revision, index);
       } catch {
         answer = null;
       }
       if (mine !== turn || current?.handle !== prompt.handle) return;
+      if (answer?.ok !== true && answer?.reason === 'stale') return;
       if (answer?.ok !== true || typeof answer.part !== 'string' || answer.part.length === 0) break;
       parts.push(answer.part);
       length += answer.part.length;
@@ -191,7 +200,10 @@
       parts.length === prompt.parts.count && length === prompt.parts.length
         ? kinds.checkJoined(message, parts.join(''))
         : null;
-    render(whole?.valid ? whole : { handle: prompt.handle, kind: null, site: null, view: null, valid: false });
+    render({
+      ...(whole?.valid ? whole : { handle: prompt.handle, kind: null, site: null, view: null, valid: false }),
+      revision,
+    });
   }
 
   function clear(handle) {
