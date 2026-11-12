@@ -702,6 +702,9 @@ function createSwarmDispatchers(deps = {}) {
         effect: (run) => guardEffect(context, nameCheck, ruled ? 'publish' : null, run),
         afterEffect: (write) => afterEffect(context, write),
         copied: (label) => context.copied(label),
+        // Aborted once main answers the request (its deadline, its document
+        // gone): the upload stops, and its charge and turn go.
+        signal: context.signal,
       },
     });
     routeSetupFailure(context, out);

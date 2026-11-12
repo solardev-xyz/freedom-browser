@@ -129,6 +129,14 @@ async function publishData(data, options = {}) {
   return normalizeUploadResult(result, batchId, sizeEstimate);
 }
 
+// A page upload's batch lookup stops with it, and gives up on a node that
+// doesn't answer: bee-js passes its request options' signal to fetch.
+const BATCH_LOOKUP_MS = 30_000;
+const batchRequest = (signal) => {
+  const timeout = AbortSignal.timeout(BATCH_LOOKUP_MS);
+  return { requestOptions: { signal: signal ? AbortSignal.any([signal, timeout]) : timeout } };
+};
+
 /**
  * A page's raw data (window.swarm's publishData, a string or a Buffer), as
  * publishData uploads it, but sent by page-upload.js, which makes no copy of
@@ -138,13 +146,15 @@ async function publishData(data, options = {}) {
  * the caller's last check before anything reaches the node (a page's name,
  * custody, its rule). It resolves what `send` resolves, or null to send
  * nothing, and then this resolves null. `onSend` is told just before the
- * body goes to the node.
+ * body goes to the node. `signal`, the page request's, stops the batch
+ * lookup and the upload (page-upload.js), which also gives up on a node
+ * that stalls.
  */
 async function publishPageData(data, options = {}) {
   const apiUrl = getAntApiUrl();
   if (!apiUrl) throw new Error('Swarm node is not ready');
   const sizeEstimate = Buffer.byteLength(data);
-  const batchId = await selectBestBatch(sizeEstimate, { requireCapacity: true });
+  const batchId = await selectBestBatch(sizeEstimate, { requireCapacity: true, ...batchRequest(options.signal) });
 
   if (!batchId) {
     throw noUsableBatchError();
@@ -155,6 +165,7 @@ async function publishPageData(data, options = {}) {
     return pageUpload.uploadData(apiUrl, batchId, data, {
       name: options.name,
       contentType: options.contentType,
+      signal: options.signal,
     });
   };
   const result = options.guard ? await options.guard(send) : await send();
@@ -270,7 +281,7 @@ async function publishCollection(files, options = {}) {
  * page-upload.js instead, in views of the page's bytes: bee-js' tar writer
  * copied each file twice more, and fetch its stream's chunks, past the
  * upload's charge (freedom-core design 0011, "The size and the charge";
- * PRQ-7c). `guard` and `onSend` are as for publishPageData.
+ * PRQ-7c). `guard`, `onSend` and `signal` are as for publishPageData.
  *
  * The batch is chosen here, so that having none reads as noUsableBatchError,
  * as for the other page uploads.
@@ -280,13 +291,13 @@ async function publishCollection(files, options = {}) {
  * Files with non-standard names should use appropriate extensions.
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
- * @param {{ indexDocument?: string, guard?: Function, onSend?: () => void }} options
+ * @param {{ indexDocument?: string, guard?: Function, onSend?: () => void, signal?: AbortSignal }} options
  */
 async function publishFilesFromContent(files, options = {}) {
   const apiUrl = getAntApiUrl();
   if (!apiUrl) throw new Error('Swarm node is not ready');
   const totalSize = files.reduce((total, file) => total + file.bytes.byteLength, 0);
-  const batchId = await selectBestBatch(totalSize, { requireCapacity: true });
+  const batchId = await selectBestBatch(totalSize, { requireCapacity: true, ...batchRequest(options.signal) });
   if (!batchId) {
     throw noUsableBatchError();
   }
@@ -296,7 +307,7 @@ async function publishFilesFromContent(files, options = {}) {
     (files.some((item) => item.path === 'index.html') ? 'index.html' : undefined);
   const send = () => {
     options.onSend?.();
-    return pageUpload.uploadCollection(apiUrl, batchId, files, { indexDocument });
+    return pageUpload.uploadCollection(apiUrl, batchId, files, { indexDocument, signal: options.signal });
   };
   const result = options.guard ? await options.guard(send) : await send();
   if (!result) return null;

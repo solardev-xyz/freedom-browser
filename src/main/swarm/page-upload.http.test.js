@@ -34,16 +34,37 @@ const { publishPageData, publishFilesFromContent } = require('./publish-service'
 const { isBatchNotYetKnownError } = require('./ant-storage-api');
 
 const BATCH = 'ef'.repeat(32);
+
+async function waitFor(condition, ms = 5000) {
+  const until = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > until) throw new Error('timed out waiting');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 const REFERENCE = 'cd'.repeat(32);
 
 describe('page uploads to the node (0011 PRQ-7c)', () => {
   let server;
   const uploads = [];
+  // The uploads a stalling node took.
+  const started = [];
+  const stalled = [];
+  // Every client request the upload made (from the write spy).
+  const clientRequests = new Set();
   // What the next upload is answered: status, headers and body.
   let answer = null;
 
   beforeAll(async () => {
     server = http.createServer((request, response) => {
+      if (answer?.stall === 'reading') {
+        // Takes the connection and never reads the body. A paused socket
+        // doesn't see the client go, so the test ends it.
+        request.pause();
+        started.push(request.url);
+        stalled.push(request);
+        return;
+      }
       if (answer?.early) {
         response.writeHead(answer.status, { 'content-type': 'application/json' });
         response.end(answer.body);
@@ -53,6 +74,13 @@ describe('page uploads to the node (0011 PRQ-7c)', () => {
       request.on('data', (chunk) => chunks.push(chunk));
       request.on('end', () => {
         uploads.push({ method: request.method, url: request.url, headers: request.headers, body: Buffer.concat(chunks) });
+        // Reads it all, then never answers, or answers in part.
+        if (answer?.stall === 'answering') return;
+        if (answer?.stall === 'answer-body') {
+          response.writeHead(201, { 'content-type': 'application/json' });
+          response.write('{"refer');
+          return;
+        }
         const out = answer || { status: 201, headers: { 'swarm-tag': '42' }, body: JSON.stringify({ reference: REFERENCE }) };
         response.writeHead(out.status, { 'content-type': 'application/json', ...(out.headers || {}) });
         response.end(out.body);
@@ -62,22 +90,31 @@ describe('page uploads to the node (0011 PRQ-7c)', () => {
     mockAntUrl = `http://127.0.0.1:${server.address().port}`;
   });
 
-  afterAll(() => new Promise((resolve) => server.close(resolve)));
+  afterAll(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
 
   let writes;
   beforeEach(() => {
     uploads.length = 0;
+    started.length = 0;
+    clientRequests.clear();
     answer = null;
     mockSelectBestBatch.mockReset().mockResolvedValue(BATCH);
     writes = [];
     const write = http.ClientRequest.prototype.write;
     jest.spyOn(http.ClientRequest.prototype, 'write').mockImplementation(function spy(chunk, ...rest) {
       writes.push(chunk);
+      clientRequests.add(this);
       return write.call(this, chunk, ...rest);
     });
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.restoreAllMocks();
+    for (const request of stalled.splice(0)) request.socket?.destroy();
+  });
 
   test('one file: POST /bzz with its name, content type and batch, pinned, not deferred; the body in views of the caller\'s bytes', async () => {
     const bytes = Buffer.alloc(3 * SLICE_BYTES + 5, 7);
@@ -164,6 +201,78 @@ describe('page uploads to the node (0011 PRQ-7c)', () => {
     await expect(uploadData(mockAntUrl, BATCH, Buffer.alloc(8 * SLICE_BYTES))).rejects.toMatchObject({ status: 413 });
   });
 
+  // Codex round 1 on #1199: an upload ends, with its socket let go, however
+  // the node behaves, and stops on the caller's signal.
+  test('a node that stops taking the body is given up on after the stall bound, and the connection goes', async () => {
+    answer = { stall: 'reading' };
+    const err = await uploadData(mockAntUrl, BATCH, Buffer.alloc(32 * 1024 * 1024), { timeouts: { stallMs: 300 } }).catch((e) => e);
+    expect(err).toMatchObject({ code: 'ETIMEDOUT', message: 'The node stopped taking the upload' });
+    expect(started).toEqual(['/bzz?name=data']);
+    // The client let its socket go.
+    expect(clientRequests.size).toBe(1);
+    expect([...clientRequests][0].destroyed).toBe(true);
+  });
+
+  test('a node that takes the body and never answers, or answers in part, is given up on after the answer bound', async () => {
+    for (const stall of ['answering', 'answer-body']) {
+      answer = { stall };
+      clientRequests.clear();
+      const err = await uploadCollection(mockAntUrl, BATCH, [{ path: 'a', bytes: Buffer.from('x') }], { timeouts: { answerMs: 300 } }).catch((e) => e);
+      expect({ stall, err: { code: err.code, message: err.message } }).toEqual({
+        stall,
+        err: { code: 'ETIMEDOUT', message: 'The node did not answer the upload in time' },
+      });
+      expect([...clientRequests].map((r) => r.destroyed)).toEqual([true]);
+    }
+  });
+
+  test('the caller\'s signal stops an upload while its body goes, and one aborted already sends nothing', async () => {
+    answer = { stall: 'reading' };
+    const controller = new AbortController();
+    const pending = uploadData(mockAntUrl, BATCH, Buffer.alloc(32 * 1024 * 1024), { signal: controller.signal }).catch((e) => e);
+    await waitFor(() => started.length === 1);
+    controller.abort();
+    expect(await pending).toMatchObject({ name: 'AbortError', message: 'The upload was cancelled' });
+    expect([...clientRequests][0].destroyed).toBe(true);
+
+    started.length = 0;
+    answer = null;
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(uploadData(mockAntUrl, BATCH, Buffer.from('x'), { signal: aborted.signal })).rejects.toMatchObject({ name: 'AbortError' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(uploads).toEqual([]);
+    expect(started).toEqual([]);
+  });
+
+  test('a redirect isn\'t followed: the upload goes to the node in the registry and nowhere else', async () => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      answer = { status, headers: { location: `${mockAntUrl}/elsewhere` }, body: '' };
+      const err = await uploadData(mockAntUrl, BATCH, Buffer.from('x')).catch((e) => e);
+      expect({ status, err: { status: err.status, message: err.message } }).toEqual({
+        status,
+        err: { status, message: expect.stringContaining('follows no redirect') },
+      });
+    }
+    // Each upload went once, to /bzz, and nothing to the Location.
+    expect(uploads.map((u) => u.url)).toEqual(Array(5).fill('/bzz?name=data'));
+  });
+
+  test('an error body is read as bee-js read it: JSON in its own form, else the text; bounded', async () => {
+    answer = { status: 400, body: '{\n  "code": 400,\n  "message": "invalid content type"\n}' };
+    expect(await uploadData(mockAntUrl, BATCH, Buffer.from('x')).catch((e) => e.message)).toBe(
+      'Bad Request: {"code":400,"message":"invalid content type"}'
+    );
+    answer = { status: 500, body: 'node is busy' };
+    expect(await uploadData(mockAntUrl, BATCH, Buffer.from('x')).catch((e) => e.message)).toBe('Internal Server Error: node is busy');
+    answer = { status: 502, body: '' };
+    expect(await uploadData(mockAntUrl, BATCH, Buffer.from('x')).catch((e) => e.message)).toBe('Bad Gateway');
+    // Past 64 KiB the body is cut, and read as text.
+    answer = { status: 500, body: JSON.stringify({ message: 'x'.repeat(100 * 1024) }) };
+    const long = await uploadData(mockAntUrl, BATCH, Buffer.from('x')).catch((e) => e.message);
+    expect(long.length).toBe('Internal Server Error: '.length + 64 * 1024);
+  });
+
   test('publish-service: the batch first, then the write under the caller\'s guard, which may send nothing', async () => {
     const order = [];
     const out = await publishPageData('hello', {
@@ -176,7 +285,7 @@ describe('page uploads to the node (0011 PRQ-7c)', () => {
       onSend: () => order.push('send'),
     });
     expect(out).toMatchObject({ reference: REFERENCE, bzzUrl: `bzz://${REFERENCE}`, tagUid: 42, batchIdUsed: BATCH, bytesSize: 5 });
-    expect(mockSelectBestBatch).toHaveBeenCalledWith(5, { requireCapacity: true });
+    expect(mockSelectBestBatch).toHaveBeenCalledWith(5, { requireCapacity: true, requestOptions: { signal: expect.any(AbortSignal) } });
     expect(order).toEqual(['guard', 'send']);
     expect(await publishPageData('hello', { guard: async () => null })).toBeNull();
     expect(await publishFilesFromContent([{ path: 'a', bytes: Buffer.from('x') }], { guard: async () => null })).toBeNull();

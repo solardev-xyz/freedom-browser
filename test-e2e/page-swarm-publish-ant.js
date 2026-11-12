@@ -6,12 +6,14 @@
 // takes uploads on `POST /bzz`: it reads each body to its end, keeping only
 // its length and first bytes, and answers `{ reference }` with a tag, or
 // holds the answer while `hold` is on, until the parent says `release`.
+// While `stall` is on it takes an upload's connection and never reads it.
 // The parent hears each upload as it starts and as it ends.
 
 const http = require('http');
 const crypto = require('crypto');
 
 let hold = false;
+let stall = false;
 const held = [];
 let nextTag = 40;
 
@@ -48,6 +50,10 @@ const server = http.createServer((req, res) => {
     const id = crypto.randomBytes(4).toString('hex');
     const upload = { id, query: url.search, headers: req.headers, length: 0, head: '' };
     process.send?.({ kind: 'upload-started', id });
+    if (stall) {
+      req.pause();
+      return undefined;
+    }
     req.on('data', (chunk) => {
       if (upload.head.length < 64) upload.head += chunk.subarray(0, 64 - upload.head.length).toString('latin1');
       upload.length += chunk.length;
@@ -66,11 +72,15 @@ const server = http.createServer((req, res) => {
 
 process.on('message', (message) => {
   if (message?.kind === 'hold') hold = message.on === true;
+  if (message?.kind === 'stall') stall = message.on === true;
   if (message?.kind === 'release') {
     const count = Number.isInteger(message.count) ? message.count : held.length;
     for (const answer of held.splice(0, count)) answer();
   }
-  if (message?.kind === 'stop') server.close(() => process.exit(0));
+  if (message?.kind === 'stop') {
+    server.closeAllConnections();
+    server.close(() => process.exit(0));
+  }
 });
 
 server.listen(0, '127.0.0.1', () => process.send?.({ kind: 'listening', port: server.address().port }));

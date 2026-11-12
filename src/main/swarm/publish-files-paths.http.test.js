@@ -149,7 +149,7 @@ describe('publishFilesFromContent', () => {
     await expectPagePaths(require('./publish-service'));
     // The batch is chosen for the files' total size, as before.
     const total = FILES.reduce((sum, file) => sum + file.bytes.length, 0);
-    expect(mockSelectBestBatch).toHaveBeenCalledWith(total, { requireCapacity: true });
+    expect(mockSelectBestBatch).toHaveBeenCalledWith(total, expect.objectContaining({ requireCapacity: true }));
   });
 
   test('without an indexDocument, a top-level index.html is the index document', async () => {

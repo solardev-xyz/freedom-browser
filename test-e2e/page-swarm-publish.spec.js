@@ -495,3 +495,30 @@ test('a DNS name over IPNS publishes under the name\'s rule; once the name moves
   expect((await trace(electronApp)).filter((e) => e.kind === 'prompt-message' && e.channel === 'page:prompt')).toEqual([]);
   expect(await oldPath(win)).toEqual([]);
 });
+
+test('a page that navigates away while its large upload stalls on the node: main stops the upload, and its charge and turn go (0011 PRQ-7c)', async ({
+  electronApp,
+  window: win,
+  harness,
+}) => {
+  test.setTimeout(120_000);
+  await harness.setContentFixture(`${DAPP}/`, page('dapp'));
+  await startFakeAnt(electronApp);
+  await connectInMain(electronApp, DAPP, { publishRule: true });
+  await antSend(electronApp, { kind: 'stall', on: true });
+  await openIn(win, `${DAPP}/`);
+  const stats = () => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.stats());
+
+  const size = pageRequestMaxBytes('swarm', 'swarm_publishFiles');
+  await startBuilt(win, DAPP, 'stalled', 'swarm_publishFiles', 'u8', 50 * MiB, noteFor('swarm_publishFiles', 'u8', size, 50 * MiB));
+  // The node takes the connection and reads nothing: the upload holds its
+  // charge and a turn.
+  await expect.poll(async () => (await antState(electronApp)).started, { timeout: 30_000 }).toBe(1);
+  expect(await stats()).toMatchObject({ turns: 1, records: 1 });
+
+  // The page navigates: main answers its request (gone), aborts the upload,
+  // and lets its charge and turn go.
+  await inTab(win, DAPP, 'location.reload(); 0');
+  await expect.poll(stats, { timeout: 15_000 }).toMatchObject({ turns: 0, records: 0, browser: { requests: 0, bytes: 0 } });
+  expect((await antState(electronApp)).received).toEqual([]);
+});

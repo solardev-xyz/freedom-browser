@@ -499,8 +499,9 @@ function permissionFreeReadMeter(origin) {
  *   and runs `run` in the same run as those checks, resolving `{ value }`,
  *   or `{ refused }` with nothing done. For an upload (PRQ-7c),
  *   `afterEffect(write)` runs what the upload leaves held under the key (its
- *   tag's owner) only while the name still answers, and `copied(label)`
- *   hears each copy main makes of the request's bytes.
+ *   tag's owner) only while the name still answers, `copied(label)` hears
+ *   each copy main makes of the request's bytes, and `signal`, aborted when
+ *   main answers the request or its document goes, stops the upload.
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -755,6 +756,7 @@ async function handlePublishData(params, origin, meta) {
       // The body as it goes to the node: a string's UTF-8, or the bytes.
       onSend: () => reportCopy(meta, 'upload'),
       guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      signal: meta?.page?.signal,
     });
     if (refused) {
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
@@ -949,6 +951,7 @@ async function handlePublishFiles(params, origin, meta) {
       indexDocument,
       onSend: () => reportCopy(meta, 'upload'),
       guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      signal: meta?.page?.signal,
     });
     if (refused) {
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });

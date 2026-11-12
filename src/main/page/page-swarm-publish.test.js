@@ -27,6 +27,7 @@ jest.mock('electron-log', () => ({ info: jest.fn(), warn: jest.fn(), error: jest
 // The node: what was uploaded, and the waits a test may hold.
 const mockNode = {
   uploads: [],
+  signals: [],
   statusReads: [],
   readiness: null,
   batch: null,
@@ -36,13 +37,26 @@ const mockNode = {
 };
 // As publish-service and chunk-service: their own wait (the batch), then
 // the write under the caller's guard, which resolves null to send nothing.
+// As page-upload.js: the caller's signal stops an upload in flight.
+function mockAborted(signal) {
+  return new Promise((_resolve, reject) => {
+    const stop = () => {
+      const err = new Error('The upload was cancelled');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    if (signal?.aborted) stop();
+    else signal?.addEventListener('abort', stop, { once: true });
+  });
+}
 async function mockUpload(kind, body, options = {}) {
+  mockNode.signals.push(options.signal);
   if (mockNode.batch) await mockNode.batch;
   if (mockNode.fail) throw mockNode.fail;
   const send = async () => {
     options.onSend?.();
     mockNode.uploads.push({ kind, body });
-    if (mockNode.upload) await mockNode.upload;
+    if (mockNode.upload) await Promise.race([mockNode.upload, mockAborted(options.signal)]);
     return { reference: 'ab'.repeat(32), tagUid: kind === 'files' ? 7 : null };
   };
   const sent = options.guard ? await options.guard(send) : await send();
@@ -327,6 +341,7 @@ beforeEach(() => {
   fs.rmSync(path.join(mockUserData, 'swarm-permissions.json'), { force: true });
   clearTagOwnership();
   mockNode.uploads = [];
+  mockNode.signals = [];
   mockNode.statusReads = [];
   mockNode.readiness = null;
   mockNode.batch = null;
@@ -741,6 +756,43 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
     gate.release();
     expect(await served).toEqual(UPLOADS[0][2]);
     expect(typeof (await waiting[0]).ticket).toBe('string');
+  });
+
+  // Codex round 1 on #1199: an upload stops with its request, so its charge
+  // and its turn go.
+  test('a navigation, or main\'s deadline, during an upload stops it: its charge and turn go, and the next waiting upload gets the turn', async () => {
+    const env = setup();
+    connect(KEY_A, { publishRule: true });
+    const pages = [env.tab(`${KEY_A}/1`), env.tab(`${KEY_A}/2`, { front: false }), env.tab(`${KEY_A}/3`, { front: false })];
+    const gate = held();
+    mockNode.upload = gate.promise;
+    const bytes = 2 * MiB;
+    const tickets = await Promise.all(pages.slice(0, 2).map((page) => page.reserve('swarm_publishData', bytes)));
+    const third = pages[2].reserve('swarm_publishData', bytes);
+    const running = pages.slice(0, 2).map((page, i) => page.ask('swarm_publishData', paramsOfSize(page, 'swarm_publishData', bytes), tickets[i].ticket));
+    await flush();
+    expect(mockNode.uploads).toHaveLength(2);
+    expect(env.requests.stats()).toMatchObject({ turns: 2, waiting: 1, records: 2 });
+    // Every upload has the request's signal.
+    expect(mockNode.signals.every((signal) => signal instanceof AbortSignal && !signal.aborted)).toBe(true);
+
+    // The first page navigates while its upload is stalled on the node.
+    pages[0].guest.commit(`${KEY_A}/1?next`);
+    expect(await running[0]).toEqual({ gone: true });
+    await flush();
+    expect(mockNode.signals[0].aborted).toBe(true);
+    // Released: the record, its charge and its turn, which the third gets.
+    expect(typeof (await third).ticket).toBe('string');
+    expect(env.requests.stats()).toMatchObject({ turns: 2, waiting: 0, records: 1 });
+
+    // Main's deadline for the second, a rule-answered upload no prompt
+    // stopped, while it stalls.
+    env.fire(300_000);
+    expect(await running[1]).toEqual({ error: { code: -32603, message: 'Request timed out' } });
+    await flush();
+    expect(mockNode.signals[1].aborted).toBe(true);
+    expect(env.requests.stats()).toMatchObject({ turns: 1, records: 0 });
+    gate.release();
   });
 
   test.each(['swarm_publishData', 'swarm_publishFiles'])('PRQ-2\'s ticket tests for %s: spent once, bound to its document, method and bytes, released when its document goes or after 30 s unused', async (method) => {

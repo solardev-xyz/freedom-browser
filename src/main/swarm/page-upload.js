@@ -24,8 +24,10 @@
  * pinned, as one file (`?name=`, not deferred) or as a collection (a ustar
  * archive, `swarm-collection`, deferred), answering `{ reference }` and the
  * tag in `swarm-tag`. A failed response throws as bee-js did,
- * `<status text>: <body>`, with `status`, so the provider's error mapping
- * (`nodeWriteError`) reads it the same way.
+ * `<status text>: <body>` with the body's JSON in its own form, and
+ * `status`, so the provider's error mapping (`nodeWriteError`) reads it the
+ * same way. Unlike bee-js, an upload follows no redirect, has bounds on how
+ * long a node may take, and stops on the caller's signal (see post).
  */
 
 const http = require('http');
@@ -38,6 +40,9 @@ const SLICE_BYTES = 64 * 1024;
 const SLICE_CHARS = 16 * 1024;
 // The most of a response body read: the node answers a small JSON object.
 const MAX_RESPONSE_BYTES = 64 * 1024;
+// How long a node may take (see post): no byte of the body moving, and the
+// answer once the body has gone.
+const TIMEOUTS = Object.freeze({ stallMs: 60_000, answerMs: 300_000 });
 // A ustar header's name field: a page's path must fit it (LIMITS.maxPathBytes
 // keeps every path within 100 UTF-8 bytes).
 const TAR_NAME_BYTES = 100;
@@ -118,27 +123,87 @@ function* tarPieces(files) {
 }
 
 /**
- * POST `pieces` (Buffers, `length` bytes in all) to the node's `path`, each
- * written once the socket has taken the last. Resolves the parsed JSON
- * answer and the response's headers.
+ * The error text of a failed answer, as bee-js formatted it: the body parsed
+ * as JSON when it is JSON, and given back in JSON's own form, or the text as
+ * it came. Bounded: past MAX_RESPONSE_BYTES the body is cut, and read as text.
  */
-function post(apiUrl, path, { query = {}, headers = {}, length, pieces }) {
+function errorText(raw) {
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
+  } catch {
+    return raw;
+  }
+}
+
+/** The upload stopped for the caller (its request answered, its page gone). */
+function abortError() {
+  const err = new Error('The upload was cancelled');
+  err.name = 'AbortError';
+  err.code = 'ABORT_ERR';
+  return err;
+}
+
+function timeoutError(message) {
+  const err = new Error(message);
+  err.code = 'ETIMEDOUT';
+  return err;
+}
+
+/**
+ * POST `pieces()` (Buffers, `length` bytes in all) to the node's `path`,
+ * each written once the socket has taken the last. Resolves the parsed JSON
+ * answer and the response's headers.
+ *
+ * It ends, with everything let go, however the node behaves:
+ *   - `signal`, the caller's, aborts it: the request and the response are
+ *     destroyed (a page request's signal aborts when main answers it or its
+ *     document goes);
+ *   - a node that stops taking the body, with no byte moving for
+ *     `stallMs`, is given up on;
+ *   - a node that hasn't answered in full `answerMs` after the body went is
+ *     given up on. bee-js set no bound, and the page's own timer, 300 s for
+ *     an upload, gave up on it there; a node uploading without deferral
+ *     answers only once its chunks are pushed, so this is the same 300 s.
+ *
+ * A redirect isn't followed (an explicit choice): the upload goes to the
+ * node in the service registry and nowhere else, so a 3xx answer fails it.
+ * bee-js's fetch followed a 307 or 308 for a Buffer body (`publishData`),
+ * could follow none for a stream (`publishFiles`), and turned a 301-303 into
+ * a GET that uploaded nothing.
+ */
+function post(apiUrl, path, { query = {}, headers = {}, length, pieces, signal = null, timeouts = {} }) {
+  const stallMs = timeouts.stallMs ?? TIMEOUTS.stallMs;
+  const answerMs = timeouts.answerMs ?? TIMEOUTS.answerMs;
   const url = new URL(path, apiUrl.endsWith('/') ? apiUrl : `${apiUrl}/`);
   for (const [name, value] of Object.entries(query)) {
     if (value !== undefined && value !== null) url.searchParams.set(name, String(value));
   }
   const client = url.protocol === 'https:' ? https : http;
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
     let settled = false;
     let request = null;
+    let answerTimer = null;
+    const onAbort = () => fail(abortError());
+    const finish = () => {
+      settled = true;
+      clearTimeout(answerTimer);
+      signal?.removeEventListener?.('abort', onAbort);
+    };
     const fail = (err) => {
       if (settled) return;
-      settled = true;
-      // An answer before the whole body went (the node refused it early):
-      // nothing more is sent.
-      if (request && !request.writableFinished) request.destroy();
+      finish();
+      // Whatever is still open goes: an answer before the whole body went
+      // (the node refused it early), a stall, the caller's abort.
+      request?.destroy();
       reject(err);
     };
+    signal?.addEventListener?.('abort', onAbort, { once: true });
     request = client.request(
       url,
       {
@@ -149,16 +214,23 @@ function post(apiUrl, path, { query = {}, headers = {}, length, pieces }) {
         const chunks = [];
         let received = 0;
         response.on('data', (chunk) => {
+          if (received < MAX_RESPONSE_BYTES) chunks.push(chunk.subarray(0, MAX_RESPONSE_BYTES - received));
           received += chunk.length;
-          if (received <= MAX_RESPONSE_BYTES) chunks.push(chunk);
         });
         response.on('error', fail);
+        response.on('close', () => {
+          if (!response.complete) fail(new Error('The node closed its answer to the upload'));
+        });
         response.on('end', () => {
           if (settled) return;
           const text = Buffer.concat(chunks).toString('utf8');
           const status = response.statusCode || 0;
+          if (status >= 300 && status < 400) {
+            fail(responseError(status, response.statusMessage || '', 'Freedom uploads only to the node itself, and follows no redirect'));
+            return;
+          }
           if (status < 200 || status >= 300) {
-            fail(responseError(status, response.statusMessage || '', text));
+            fail(responseError(status, response.statusMessage || '', errorText(text)));
             return;
           }
           let body;
@@ -168,14 +240,23 @@ function post(apiUrl, path, { query = {}, headers = {}, length, pieces }) {
             fail(new Error('The node answered the upload with no reference'));
             return;
           }
-          settled = true;
+          finish();
           resolve({ body, headers: response.headers });
         });
       }
     );
     request.on('error', fail);
+    // While the body goes: no byte moving for stallMs is a stall.
+    request.setTimeout(stallMs, () => fail(timeoutError('The node stopped taking the upload')));
+    request.on('finish', () => {
+      // The body has gone: the node now has answerMs to answer in full.
+      request.setTimeout(0);
+      if (settled) return;
+      answerTimer = setTimeout(() => fail(timeoutError('The node did not answer the upload in time')), answerMs);
+      answerTimer.unref?.();
+    });
     (async () => {
-      for (const piece of pieces) {
+      for (const piece of pieces()) {
         if (settled || request.destroyed) return;
         if (!request.write(piece)) {
           await new Promise((drained) => {
@@ -190,10 +271,7 @@ function post(apiUrl, path, { query = {}, headers = {}, length, pieces }) {
         }
       }
       if (!settled && !request.destroyed) request.end();
-    })().catch((err) => {
-      request.destroy(err);
-      fail(err);
-    });
+    })().catch((err) => fail(err));
   });
 }
 
@@ -209,9 +287,10 @@ function uploadResult({ body, headers }) {
 
 /**
  * One file (`publishData`): a Buffer, or a string sent as its UTF-8.
+ * `signal` and `timeouts` as for post.
  * @returns {Promise<{ reference: string, tagUid: number|null }>}
  */
-async function uploadData(apiUrl, batchId, data, { name, contentType } = {}) {
+async function uploadData(apiUrl, batchId, data, { name, contentType, signal, timeouts } = {}) {
   const isString = typeof data === 'string';
   const answer = await post(apiUrl, 'bzz', {
     query: { name: name || 'data' },
@@ -222,17 +301,20 @@ async function uploadData(apiUrl, batchId, data, { name, contentType } = {}) {
       'swarm-deferred-upload': 'false',
     },
     length: isString ? Buffer.byteLength(data, 'utf8') : data.byteLength,
-    pieces: isString ? utf8Slices(data) : slices(data),
+    pieces: () => (isString ? utf8Slices(data) : slices(data)),
+    signal,
+    timeouts,
   });
   return uploadResult(answer);
 }
 
 /**
  * A collection (`publishFiles`): `files` as `{ path, bytes }`, each under
- * the page's own path, with an index document if given.
+ * the page's own path, with an index document if given. `signal` and
+ * `timeouts` as for post.
  * @returns {Promise<{ reference: string, tagUid: number|null }>}
  */
-async function uploadCollection(apiUrl, batchId, files, { indexDocument } = {}) {
+async function uploadCollection(apiUrl, batchId, files, { indexDocument, signal, timeouts } = {}) {
   const headers = {
     'content-type': 'application/x-tar',
     'swarm-collection': 'true',
@@ -241,8 +323,14 @@ async function uploadCollection(apiUrl, batchId, files, { indexDocument } = {}) 
     'swarm-deferred-upload': 'true',
   };
   if (indexDocument) headers['swarm-index-document'] = indexDocument;
-  const answer = await post(apiUrl, 'bzz', { headers, length: tarLength(files), pieces: tarPieces(files) });
+  const answer = await post(apiUrl, 'bzz', {
+    headers,
+    length: tarLength(files),
+    pieces: () => tarPieces(files),
+    signal,
+    timeouts,
+  });
   return uploadResult(answer);
 }
 
-module.exports = { uploadData, uploadCollection, SLICE_BYTES, SLICE_CHARS };
+module.exports = { uploadData, uploadCollection, SLICE_BYTES, SLICE_CHARS, TIMEOUTS };
