@@ -1871,6 +1871,7 @@ const SWARM_INJECT_SOURCE = `
       readFeedEntry(params) { return this.request({ method: 'swarm_readFeedEntry', params: params }); },
       listFeeds() { return this.request({ method: 'swarm_listFeeds' }); },
       publishChunk(params) { return this.request({ method: 'swarm_publishChunk', params: params }); },
+      publishSingleOwnerChunk(params) { return this.request({ method: 'swarm_publishSingleOwnerChunk', params: params }); },
       readChunk(params) { return this.request({ method: 'swarm_readChunk', params: params }); },
       readData(params) { return this.request({ method: 'swarm_readData', params: params }); },
       writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },

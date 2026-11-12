@@ -132,6 +132,7 @@ validation and node failures, `data`:
 | `messaging_not_granted`  | A messaging method without the messaging grant                                               |
 | `tag_ownership_mismatch` | `swarm_getUploadStatus` for a tag this origin did not create, or one already reported `done` |
 | `shared_identity`        | `swarm_writeSingleOwnerChunk` while the origin's active identity is shared with other sites  |
+| `freedom_identity`       | `swarm_publishSingleOwnerChunk` with an `owner` that is the Ant wallet or a wallet account   |
 
 A `4100` raised by the chrome before the request reaches the main process
 carries the message `Origin not authorized. Call swarm_requestAccess first.`
@@ -166,6 +167,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
 | `invalid_reference`, `invalid_span`, `invalid_identifier`, `invalid_owner`                                      | Chunk methods, `swarm_readData`, `swarm_updateFeed`, feed reads                                                          |
+| `invalid_signature`                                                                                             | `swarm_publishSingleOwnerChunk`: malformed, or does not recover to `owner` for this identifier and chunk                 |
 | `chunk_not_found`, `chunk_type_mismatch`                                                                        | Chunk reads, `swarm_readData`                                                                                            |
 | `invalid_feed_name`, `invalid_topic`, `feed_not_found`, `feed_empty`, `entry_not_found`, `index_already_exists` | Feed methods                                                                                                             |
 | `invalid_topic`, `invalid_recipient`, `invalid_target`, `invalid_payload`, `invalid_address`, `invalid_kind`    | Messaging methods                                                                                                        |
@@ -174,7 +176,10 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | `rate_limited`                                                                                                  | Permission-free reads (+ `windowMs`, `maxRequests`, `maxBytes`), new GSOC topics (+ `limit`, `windowMs`, `retryAfterMs`) |
 
 **`-32603`** carries a `data.reason` only for `gsoc_mining_timeout` and
-`gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s).
+`gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s),
+and for `vault_locked` from `swarm_publishSingleOwnerChunk` (a wallet
+account's address is not known until the vault is unlocked, so the owner
+cannot be checked against it).
 Bee 5xx responses and network errors are `-32603`, with two exceptions where
 the node reports a missing entry as a 500: feed reads (and the next-index
 lookup behind feed writes without an `index`) treat any Bee 500 like a 404, so a node-internal
@@ -206,7 +211,7 @@ an ENS name.
 | **Public**     | `swarm_getCapabilities`, `swarm_readChunk`, `swarm_readData`, `swarm_readSingleOwnerChunk`, `swarm_readFeedEntry`, `swarm_listFeeds` | none                         | never                                                                                                                              |
 | **Connection** | `swarm_requestAccess`                                                                                                                | —                            | once per origin                                                                                                                    |
 |                | `swarm_getUploadStatus`                                                                                                              | connection                   | never                                                                                                                              |
-| **Publish**    | `swarm_publishData`, `swarm_publishFiles`, `swarm_publishChunk`                                                                      | connection                   | every call, unless "always allow" (`autoApprove.publish`)                                                                          |
+| **Publish**    | `swarm_publishData`, `swarm_publishFiles`, `swarm_publishChunk`, `swarm_publishSingleOwnerChunk`                                     | connection                   | every call, unless "always allow" (`autoApprove.publish`)                                                                          |
 | **Feeds**      | `swarm_createFeed`, `swarm_updateFeed`, `swarm_writeFeedEntry`                                                                       | connection + feed grant      | the first call grants the tier and picks the identity; later calls prompt unless `autoApprove.feeds`                               |
 | **Signing**    | `swarm_getSigningIdentity`, `swarm_writeSingleOwnerChunk`                                                                            | connection + feed grant      | as Feeds, with `autoApprove.signing`                                                                                               |
 | **Messaging**  | `swarm_getMessagingIdentity`, `swarm_subscribe`, `swarm_sendPss`, `swarm_sendGsoc`                                                   | connection + messaging grant | the first call grants the tier; sends prompt every time unless `autoApprove.messaging`; identity and subscribe do not prompt again |
@@ -325,6 +330,15 @@ change in Settings. Three kinds exist (`identityMode`):
   page could write another site's feed entries (`keccak256(topic || index)`).
   Feeds and `swarm_getSigningIdentity` work under every identity, since feed
   topics are namespaced by origin.
+- `swarm_publishSingleOwnerChunk` uses no identity: the page signs the chunk
+  with a key it holds, and Freedom only checks the signature and stamps it.
+  For the same reason as above it refuses an `owner` that is the Ant wallet
+  or any wallet account (device accounts included) with `4100`
+  `freedom_identity`: a wallet's `personal_sign` of 32 bytes is exactly a SOC
+  signature, so a page that got one could otherwise write raw SOCs as that
+  shared owner. An `app-scoped` key signs nothing but Freedom's own writes,
+  so under one a page can only publish a chunk already signed for the
+  network.
 
 Messaging is different: PSS decrypts with the **node's** key, so
 `swarm_getMessagingIdentity` always reports `identityMode: 'bee-wallet'`, and
@@ -361,16 +375,16 @@ tag_ownership_mismatch`, so a page cannot watch another site's uploads. The
 
 Reported by `swarm_getCapabilities` under `limits`:
 
-| Limit                  | Value           | Applies to                                          |
-| ---------------------- | --------------- | --------------------------------------------------- |
-| `maxDataBytes`         | 10 MiB          | `swarm_publishData`                                 |
-| `maxFilesBytes`        | 50 MiB (total)  | `swarm_publishFiles`                                |
-| `maxFileCount`         | 100             | `swarm_publishFiles`                                |
-| `maxPathBytes`         | 100 UTF-8 bytes | each `swarm_publishFiles` path                      |
-| `maxChunkPayloadBytes` | 4096            | `swarm_publishChunk`, `swarm_writeSingleOwnerChunk` |
-| `maxMessageBytes`      | 4000            | `swarm_sendPss`, `swarm_sendGsoc`                   |
-| `maxTargetDepth`       | 3 bytes         | `swarm_sendPss` `targets`                           |
-| `maxSubscriptions`     | 32 per origin   | `swarm_subscribe`                                   |
+| Limit                  | Value           | Applies to                                                                           |
+| ---------------------- | --------------- | ------------------------------------------------------------------------------------ |
+| `maxDataBytes`         | 10 MiB          | `swarm_publishData`                                                                  |
+| `maxFilesBytes`        | 50 MiB (total)  | `swarm_publishFiles`                                                                 |
+| `maxFileCount`         | 100             | `swarm_publishFiles`                                                                 |
+| `maxPathBytes`         | 100 UTF-8 bytes | each `swarm_publishFiles` path                                                       |
+| `maxChunkPayloadBytes` | 4096            | `swarm_publishChunk`, `swarm_writeSingleOwnerChunk`, `swarm_publishSingleOwnerChunk` |
+| `maxMessageBytes`      | 4000            | `swarm_sendPss`, `swarm_sendGsoc`                                                    |
+| `maxTargetDepth`       | 3 bytes         | `swarm_sendPss` `targets`                                                            |
+| `maxSubscriptions`     | 32 per origin   | `swarm_subscribe`                                                                    |
 
 Not reported there:
 
@@ -446,7 +460,8 @@ it serves a [permission manifest](#permission-manifests):
              | 'ultra-light-mode' | 'no-usable-stamps',
   publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
   features: ['messaging'],
-  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true },
+  extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true,
+                pageSignedSingleOwnerChunks: true },
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
             maxChunkPayloadBytes, maxMessageBytes, maxTargetDepth,
             maxSubscriptions }
@@ -536,6 +551,36 @@ uploads it. `identifier` is 32 bytes of hex. `data` is 1–4096 bytes. `owner`
 is the checksummed `0x` signer address; `reference` is the SOC address. The
 active identity must be one no other origin uses (an `app-scoped` identity
 of its own); otherwise `4100` with `data.reason: 'shared_identity'`.
+
+#### `swarm_publishSingleOwnerChunk { owner, identifier, signature, data, span?, options? }` → `{ reference, owner, identifier }` (publish tier)
+
+Publishes a single-owner chunk the page signed itself, stamped with the
+node's batch. Freedom signs nothing, so no feed/signing grant is needed: the
+call takes the connection grant and the publish prompt (or the site's "always
+allow" publish rule), like `swarm_publishChunk`. This is how an app that keeps
+its own key (one it also uses in other browsers and clients) continues a feed
+it owns from a Freedom page.
+
+- `owner`: 40 hex, optional `0x`. `identifier`: 32 bytes of hex, no `0x`.
+  `signature`: 65 bytes of hex, optional `0x`, `r ‖ s ‖ v` with `v` 27 or 28.
+  `data`: 1–4096 bytes. `span` as for `swarm_publishChunk`.
+- The signature must recover to `owner` over the SOC digest: an EIP-191
+  (`personal_sign`) signature of the 32 bytes keccak256(`identifier` ‖ the
+  address of the content-addressed chunk built from `span` and `data`). That
+  is what bee-js's `makeSingleOwnerChunk` and Bee's `POST /soc` use. If it
+  does not, the call fails with `invalid_signature` before a batch is chosen
+  or anything is uploaded.
+- `reference` is the SOC address, keccak256(`identifier` ‖ `owner`); `owner`
+  comes back checksummed with `0x`.
+- `owner` must not be one of Freedom's own signing addresses (the Ant wallet,
+  any wallet account): `4100` `freedom_identity`. See
+  [Identity model](#identity-model).
+- Errors: `invalid_owner`, `invalid_identifier`, `invalid_signature`,
+  `invalid_span`, `payload_too_large`, `unsupported_option`, the publish
+  setup `4900` reasons, and `-32603` `vault_locked`.
+
+Feature-detect it with `extensions.pageSignedSingleOwnerChunks` from
+`swarm_getCapabilities`.
 
 #### `swarm_readSingleOwnerChunk { address } | { owner, identifier }, options?` → SOC (public)
 
