@@ -1,0 +1,4 @@
+- Sites can publish a single-owner chunk they signed with their own key, stamped by your Swarm node, through `window.swarm.publishSingleOwnerChunk` ([#647](https://github.com/solardev-xyz/freedom-browser/issues/647))
+  - An app that keeps one Swarm identity across browsers and clients can now continue its own feeds from a Freedom page
+  - Freedom checks the signature before stamping, signs nothing itself, and refuses chunks owned by your Ant wallet or wallet accounts
+  - It asks like any other publish, and the site's "always allow" publish rule covers it

@@ -41,6 +41,8 @@ let swarmPublishType;
 let swarmPublishSize;
 let swarmPublishNameRow;
 let swarmPublishName;
+let swarmPublishOwnerRow;
+let swarmPublishOwner;
 let swarmPublishPathsRow;
 let swarmPublishPaths;
 let swarmPublishRejectBtn;
@@ -172,6 +174,8 @@ export function initSwarmConnect() {
   swarmPublishNameRow = document.getElementById('swarm-publish-name-row');
   swarmPublishName = document.getElementById('swarm-publish-name');
   swarmPublishPathsRow = document.getElementById('swarm-publish-paths-row');
+  swarmPublishOwnerRow = document.getElementById('swarm-publish-owner-row');
+  swarmPublishOwner = document.getElementById('swarm-publish-owner');
   swarmPublishPaths = document.getElementById('swarm-publish-paths');
   swarmPublishRejectBtn = document.getElementById('swarm-publish-reject');
   swarmPublishConfirmBtn = document.getElementById('swarm-publish-confirm');
@@ -520,6 +524,7 @@ function presentSwarmPublishApproval({ permissionKey, params, method }) {
 
   const isFileMode = Array.isArray(params?.files);
   const isChunkMode = method === 'swarm_publishChunk';
+  const isSignedSocMode = method === 'swarm_publishSingleOwnerChunk';
 
   if (isFileMode) {
     // File mode: show file count, total size, path preview
@@ -546,7 +551,11 @@ function presentSwarmPublishApproval({ permissionKey, params, method }) {
   } else {
     // Data mode: show content type, size, optional name
     if (swarmPublishType) {
-      swarmPublishType.textContent = isChunkMode ? 'Swarm chunk' : (params?.contentType || 'unknown');
+      swarmPublishType.textContent = isSignedSocMode
+        ? 'Single Owner Chunk'
+        : isChunkMode
+          ? 'Swarm chunk'
+          : (params?.contentType || 'unknown');
     }
     if (swarmPublishSize) {
       swarmPublishSize.textContent = formatBytes(payloadByteSize(params?.data));
@@ -560,6 +569,13 @@ function presentSwarmPublishApproval({ permissionKey, params, method }) {
       }
     }
     swarmPublishPathsRow?.classList.add('hidden');
+  }
+
+  // A page-signed SOC names the key it was signed with; Freedom signs nothing.
+  if (swarmPublishOwnerRow && swarmPublishOwner) {
+    const owner = isSignedSocMode && typeof params?.owner === 'string' ? params.owner : '';
+    swarmPublishOwner.textContent = owner && !owner.startsWith('0x') ? `0x${owner}` : owner;
+    swarmPublishOwnerRow.classList.toggle('hidden', !owner);
   }
 
   hideAllSubscreens();

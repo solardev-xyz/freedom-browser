@@ -6,9 +6,9 @@
 /**
  * `swarm_sendPss` (#1062), through the result the page gets: the real
  * provider, messaging service and bee-js against a fake Ant over loopback
- * HTTP. The fake answers `POST /pss/send` the way Ant v0.5.77 does, and is
+ * HTTP. The fake answers `POST /pss/send` the way Ant v0.5.78 does, and is
  * held to answers recorded from that release
- * (test/fixtures/ant-pss-send/v0.5.77.json). Ant reads the recipient as a
+ * (test/fixtures/ant-pss-send/v0.5.78.json). Ant reads the recipient as a
  * SEC1 key, 33 or 65 bytes; bee-js 13.2.0's own `pssSend` sends something
  * else, which Ant refuses, so main builds the request itself.
  */
@@ -50,7 +50,7 @@ const { Bee, PrivateKey, Topic } = require('@ethersphere/bee-js');
 const { executeSwarmMethod } = require('./swarm-provider-ipc');
 const { BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { closedLoopbackPort, startFakeHttpNode } = require('../../../test/helpers/fake-http-node');
-const RECORDED = require('../../../test/fixtures/ant-pss-send/v0.5.77.json');
+const RECORDED = require('../../../test/fixtures/ant-pss-send/v0.5.78.json');
 
 const ORIGIN = 'https://chat.example';
 const TOPIC = 'chat';
@@ -59,7 +59,7 @@ const KEY = new PrivateKey('11'.repeat(32)).publicKey();
 const RECIPIENT = KEY.toCompressedHex(); // 66 hex, lower case
 const MESSAGE = Buffer.from('hello, bob');
 
-// ── A fake Ant: `upload_pss` at v0.5.77 (ant-gateway/src/retrieval.rs) ──
+// ── A fake Ant: `upload_pss` at v0.5.78 (ant-gateway/src/retrieval.rs) ──
 
 const P = 2n ** 256n - 2n ** 32n - 977n; // secp256k1's field prime
 
@@ -174,11 +174,11 @@ async function beeJsPssSendError() {
 // ── The fake against the recording ──
 
 describe('the fake Ant', () => {
-  test('answers every recorded request as Ant v0.5.77 did', async () => {
+  test('answers every recorded request as Ant v0.5.78 did', async () => {
     // The recording's node held no batch: every request it could parse ended
     // at the batch check.
     ant.handle(fakeAntPss({ usableBatches: [] }));
-    expect(RECORDED.ant).toBe('antd/0.5.77');
+    expect(RECORDED.ant).toBe('antd/0.5.78');
     for (const exchange of RECORDED.exchanges) {
       const res = await fetch(`${ant.origin}${exchange.path}`, {
         method: RECORDED.request.method,

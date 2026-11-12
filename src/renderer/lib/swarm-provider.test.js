@@ -401,6 +401,35 @@ describe('Agent custody and site auto-approve', () => {
       'swarm_publishData', { data: 'hi' }, 'app.eth', { webContentsId: 41, approval: 'auto' }
     );
   });
+
+  test('a page-signed SOC takes the publish prompt and rule, not the feed grant (#647)', async () => {
+    const params = { owner: 'ab'.repeat(20), identifier: 'cd'.repeat(32), signature: 'ef'.repeat(65), data: 'hi' };
+    window.swarmFeedStore = { hasFeedGrant: jest.fn().mockResolvedValue(false) };
+    const send = async (agentOwned) => {
+      mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+      const webview = setUp(setupSwarmProvider);
+      webview.dataset = { tabId: '3' };
+      sendRequest(webview, { id: 1, method: 'swarm_publishSingleOwnerChunk', params });
+      await flush();
+      await flush();
+    };
+
+    await send(false);
+    expect(showSwarmPublishApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenLastCalledWith(
+      'swarm_publishSingleOwnerChunk', params, 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+
+    await send(true);
+    expect(showSwarmPublishApproval).toHaveBeenCalledWith(
+      'app.eth', params, expect.any(Function), expect.any(Function), 'swarm_publishSingleOwnerChunk'
+    );
+    expect(window.swarmProvider.execute).toHaveBeenLastCalledWith(
+      'swarm_publishSingleOwnerChunk', params, 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+    expect(window.swarmFeedStore.hasFeedGrant).not.toHaveBeenCalled();
+    delete window.swarmFeedStore;
+  });
 });
 
 describe('feed writes with a locked vault', () => {
