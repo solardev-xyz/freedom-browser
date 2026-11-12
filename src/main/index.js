@@ -456,6 +456,7 @@ const {
   registerPermissionsIpc,
   clearPrivateDecisions: clearPrivatePermissionDecisions,
 } = require('./permissions/permissions-manager');
+const { registerScreenShareIpc } = require('./permissions/screen-share');
 const { registerExternalProtocolIpc } = require('./external-protocol');
 const { registerPopupBlockerIpc } = require('./popup-blocker');
 const { registerSwarmIpc } = require('./swarm/stamp-service');
@@ -662,6 +663,7 @@ async function bootstrap() {
   registerNetworkConfigIpc();
   registerDappPermissionsIpc();
   registerPermissionsIpc();
+  registerScreenShareIpc();
   registerExternalProtocolIpc();
   registerPopupBlockerIpc({
     // A dweb-link popup from a page in Agent custody stays in Agent custody.

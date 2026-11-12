@@ -409,6 +409,21 @@ module.exports = {
   // Main→renderer broadcast after any decision is recorded or revoked, so
   // the address-bar indicator and the settings page can re-query.
   PERMISSIONS_CHANGED: 'permissions:changed',
+  // Screen sharing (#951), src/main/permissions/screen-share.js. Main opens
+  // the picker in the requesting tab's window (main→renderer) and closes it
+  // when the request ends without a pick; the chrome lists one pane's
+  // sources and answers with the pick or null (renderer→main). BLOCKED tells
+  // the window a page that asked through getUserMedia's chromeMediaSource was
+  // stopped; TAB_SHARED and TAB_UNSHARED tell a shared tab's window when its
+  // share starts and ends (main→renderer).
+  SCREEN_SHARE_PICKER_OPEN: 'screen-share:picker-open',
+  SCREEN_SHARE_PICKER_CLOSE: 'screen-share:picker-close',
+  SCREEN_SHARE_LIST_SOURCES: 'screen-share:list-sources',
+  SCREEN_SHARE_RESPOND: 'screen-share:respond',
+  SCREEN_SHARE_OPEN_SYSTEM_SETTINGS: 'screen-share:open-system-settings',
+  SCREEN_SHARE_BLOCKED: 'screen-share:blocked',
+  SCREEN_SHARE_TAB_SHARED: 'screen-share:tab-shared',
+  SCREEN_SHARE_TAB_UNSHARED: 'screen-share:tab-unshared',
   // Popup blocker for tab webviews (#442), src/main/popup-blocker.js.
   // Webview preload → main: may this guest open a new tab for the dweb link
   // it intercepted (gesture consumed if so)? Answers a boolean.

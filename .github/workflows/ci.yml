@@ -1145,8 +1145,11 @@ jobs:
       # rest of the transfer (`downloads`, #309), the application menu's
       # History menu, which reads private-window state (`history-menu`, #584),
       # and the Swarm ACT prompt a page's `window.swarm.openAct` raises
-      # (`swarm-open-act`, #648).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
+      # (`swarm-open-act`, #648). `screen-share.spec.js` (#951) drives the
+      # screen-share picker from a real click on a guest, shares a real tab and
+      # checks a page that skips the picker is stopped: the gesture gate, the
+      # display-media handover and tab capture only exist in a running app.
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + screen-share E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1160,7 +1163,8 @@ jobs:
             test-e2e/sidebar-subscreen-headers.spec.js \
             test-e2e/downloads.spec.js \
             test-e2e/agent-review-layout.spec.js \
-            test-e2e/history-menu.spec.js
+            test-e2e/history-menu.spec.js \
+            test-e2e/screen-share.spec.js
 
       - name: Upload software rendering profile
         if: always()

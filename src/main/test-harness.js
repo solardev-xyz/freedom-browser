@@ -472,6 +472,49 @@ function installExternalProtocolRecorder() {
   };
 }
 
+// Screen sharing (#951): the picker's windows and screens, and macOS's Screen
+// Recording state, answered from here, so a test run never lists or records a
+// real desktop. A thumbnail is a data URL, as the picker receives it.
+const screenShareThumbnail = (label, fill) =>
+  'data:image/svg+xml,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">` +
+      `<rect width="320" height="180" fill="${fill}"/>` +
+      `<text x="160" y="96" font-family="sans-serif" font-size="20" fill="#fff" ` +
+      `text-anchor="middle">${label}</text></svg>`
+  );
+const DEFAULT_SCREEN_SHARE_SOURCES = {
+  window: [
+    { id: 'window:101:0', name: 'Notes', thumbnail: screenShareThumbnail('Notes', '#3b6ea5') },
+    {
+      id: 'window:102:0',
+      name: 'Terminal',
+      thumbnail: screenShareThumbnail('Terminal', '#2f4f4f'),
+    },
+  ],
+  screen: [
+    { id: 'screen:1:0', name: 'Screen 1', thumbnail: screenShareThumbnail('Screen 1', '#5b4a8b') },
+  ],
+};
+const screenShareSources = new Map();
+let screenShareAccess = 'granted';
+
+function resetScreenShareStub() {
+  screenShareSources.clear();
+  for (const [kind, sources] of Object.entries(DEFAULT_SCREEN_SHARE_SOURCES)) {
+    screenShareSources.set(kind, sources);
+  }
+  screenShareAccess = 'granted';
+}
+
+function installScreenShareStub() {
+  resetScreenShareStub();
+  globalThis.__FREEDOM_TEST_SCREEN_SHARE__ = {
+    sources: (kind) => (screenShareSources.get(kind) || []).map((source) => ({ ...source })),
+    screenRecordingAccess: () => screenShareAccess,
+  };
+}
+
 // The first ad-block engine's landing gate (#538), armed only for a launch
 // with FREEDOM_TEST_ADBLOCK_ENGINE_GATE=1 (adblock-first-engine.spec.js). The
 // engine is installed before the harness, so index.js asks for the gate here
@@ -1205,6 +1248,16 @@ function exposeGlobalShim(agentRuntime) {
       if (appName) externalHandlers.set(scheme, appName);
       else externalHandlers.delete(scheme);
     },
+    // Screen sharing (#951, see installScreenShareStub): the windows or
+    // screens the picker lists, and macOS's Screen Recording state
+    // ('granted', 'denied', …), which every platform then reports.
+    setScreenShareSources: (kind, sources) => {
+      screenShareSources.set(kind, Array.isArray(sources) ? sources : []);
+    },
+    setScreenRecordingAccess: (access) => {
+      screenShareAccess = access || 'granted';
+    },
+    resetScreenShare: resetScreenShareStub,
     // Update state (#87). `dispatchUpdate` drives the real state machine in
     // updater.js through the same entry point electron-updater's events use
     // (e.g. { type: 'supported' }, { type: 'progress', percent: 42 }), so the
@@ -1257,6 +1310,7 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   installProfileFocusSimulator();
   installProfileDeleteSimulator();
   installExternalProtocolRecorder();
+  installScreenShareStub();
   installUpdaterRecorder();
   exposeGlobalShim(agentRuntime);
   return true;

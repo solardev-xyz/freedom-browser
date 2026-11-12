@@ -107,7 +107,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(31);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(32);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -132,6 +132,7 @@ describe('preload', () => {
       'tokens',
       'rpcManager',
       'sitePermissions',
+      'screenShare',
       'externalProtocol',
       'dappPermissions',
       'swarmPermissions',
@@ -500,6 +501,9 @@ describe('preload', () => {
       // marker here and resolves the window itself from the IPC sender.
       [exposures.sitePermissions, 'revoke', ['https://example.com', 'camera'], IPC.PERMISSIONS_REVOKE, ['https://example.com', 'camera', { scope: 'window' }]],
       [exposures.sitePermissions, 'revokeOrigin', ['https://example.com'], IPC.PERMISSIONS_REVOKE_ORIGIN, ['https://example.com', { scope: 'window' }]],
+      [exposures.screenShare, 'listSources', [5, 'window'], IPC.SCREEN_SHARE_LIST_SOURCES, [{ id: 5, kind: 'window' }]],
+      [exposures.screenShare, 'respond', [5, 'screen:1:0', true], IPC.SCREEN_SHARE_RESPOND, [{ id: 5, sourceId: 'screen:1:0', audio: true }]],
+      [exposures.screenShare, 'openSystemSettings', [5], IPC.SCREEN_SHARE_OPEN_SYSTEM_SETTINGS, [{ id: 5 }]],
       [exposures.externalProtocol, 'openFromAddressBar', ['magnet:?xt=a'], IPC.EXTERNAL_PROTOCOL_OPEN_FROM_ADDRESS_BAR, ['magnet:?xt=a']],
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
@@ -695,6 +699,11 @@ describe('preload', () => {
       ],
       [exposures.electronAPI, 'onUpdateState', 'update:state', [{ status: 'downloading', percent: 42 }], [{ status: 'downloading', percent: 42 }]],
       [exposures.sitePermissions, 'onChanged', IPC.PERMISSIONS_CHANGED, [{}], [{}]],
+      [exposures.screenShare, 'onPickerOpen', IPC.SCREEN_SHARE_PICKER_OPEN, [{ id: 5, guestId: 7, origin: 'https://meet.example.com' }], [{ id: 5, guestId: 7, origin: 'https://meet.example.com' }]],
+      [exposures.screenShare, 'onPickerClose', IPC.SCREEN_SHARE_PICKER_CLOSE, [{ id: 5 }], [{ id: 5 }]],
+      [exposures.screenShare, 'onTabShared', IPC.SCREEN_SHARE_TAB_SHARED, [{ guestId: 7 }], [{ guestId: 7 }]],
+      [exposures.screenShare, 'onTabUnshared', IPC.SCREEN_SHARE_TAB_UNSHARED, [{ guestId: 7 }], [{ guestId: 7 }]],
+      [exposures.screenShare, 'onBlocked', IPC.SCREEN_SHARE_BLOCKED, [{ origin: 'https://meet.example.com', guestId: 7 }], [{ origin: 'https://meet.example.com', guestId: 7 }]],
       [exposures.githubBridge, 'onProgress', IPC.GITHUB_BRIDGE_PROGRESS, [{ step: 'cloning' }], [{ step: 'cloning' }]],
       [exposures.serviceRegistry, 'onUpdate', IPC.SERVICE_REGISTRY_UPDATE, [{ ant: { mode: 'bundled' } }], [{ ant: { mode: 'bundled' } }]],
       [exposures.publishSetup, 'onState', IPC.SWARM_SETUP_STATE, [{ readiness: { ok: true } }], [{ readiness: { ok: true } }]],
