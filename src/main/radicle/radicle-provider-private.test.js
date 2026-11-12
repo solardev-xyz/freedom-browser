@@ -83,8 +83,12 @@ const IPC = require('../../shared/ipc-channels');
 const manager = require('../radicle-manager');
 const cob = require('./cob-service');
 const privateWindows = require('../private/private-windows');
-const { registerRadicleProviderIpc } = require('./radicle-provider-ipc');
-const { registerRadiclePermissionsIpc } = require('./radicle-permissions');
+const { registerRadicleProviderIpc, executeRadicleForPage } = require('./radicle-provider-ipc');
+const {
+  registerRadiclePermissionsIpc,
+  grantPermission,
+  GRANT_REFUSED,
+} = require('./radicle-permissions');
 
 registerRadicleProviderIpc();
 registerRadiclePermissionsIpc();
@@ -99,11 +103,20 @@ const REFUSED = {
     data: { reason: 'private_window' },
   },
 };
+// A method main's page dispatcher serves (freedom-core design 0011, PRQ-8)
+// never comes from a private window: main's attestation refuses one, and
+// the chrome's route refuses the method for every sender, first.
+const PAGE_REQUEST_ONLY = {
+  error: {
+    code: 4100,
+    message: 'The origin is not authorized for this operation',
+    data: { reason: 'page_request_only' },
+  },
+};
 const MUTATORS = {
   radicle_seed: { rid: RID },
   radicle_unseed: { rid: RID },
   radicle_sync: { rid: RID },
-  radicle_disconnect: {},
   radicle_createIssue: { rid: RID, title: 'Bug', description: 'Steps' },
   radicle_commentIssue: { rid: RID, issueId: 'a'.repeat(40), body: 'Same here' },
   radicle_editIssueState: { rid: RID, issueId: 'a'.repeat(40), state: 'closed' },
@@ -140,6 +153,10 @@ test('every lasting change from a private window is refused before the backend',
       REFUSED
     );
   }
+  // Disconnecting is main's (PRQ-8a): the chrome's route refuses it.
+  await expect(
+    execute(privateChrome, { method: 'radicle_disconnect', params: {}, origin: ORIGIN })
+  ).resolves.toEqual(PAGE_REQUEST_ONLY);
   expect(backendCalls()).toBe(0);
   expect(manager.unsubscribeSeedStatus).not.toHaveBeenCalled();
   // The grant is still there (disconnect was refused) and the store is
@@ -186,13 +203,15 @@ test('reads a private window may make answer without recording their use', async
     origin: ORIGIN,
   });
   expect(status).toEqual({ result: mockStatus });
+  // The node's status and the seeded repositories are main's (PRQ-8a): the
+  // chrome's route refuses them.
   const node = await execute(privateChrome, { method: 'radicle_getNodeStatus', origin: ORIGIN });
-  expect(node.result).toMatchObject({ running: true });
+  expect(node).toEqual(PAGE_REQUEST_ONLY);
   const seeded = await execute(privateChrome, {
     method: 'radicle_listSeededRepos',
     origin: ORIGIN,
   });
-  expect(seeded).toEqual({ result: [] });
+  expect(seeded).toEqual(PAGE_REQUEST_ONLY);
 
   // The grant's lastUsed is still an hour old: nothing was written.
   expect(storeBytes()).toBe(before);
@@ -203,12 +222,13 @@ test('grants and use records from a private window are refused', async () => {
   const event = { sender: mockFixture.privateSender(privateWindows) };
   const other = 'https://other.example';
 
-  expect(mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)(event, other)).toBeNull();
+  // The chrome's connection grant is refused for every sender (PRQ-8a).
+  expect(() => mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)(event, other)).toThrow(GRANT_REFUSED);
   expect(mockHandlers.get(IPC.RADICLE_GRANT_SIGNING)(event, ORIGIN)).toBe(false);
   expect(mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)(event, ORIGIN, 'node', true)).toBe(false);
   expect(mockHandlers.get(IPC.RADICLE_UPDATE_LAST_USED)(event, ORIGIN)).toBe(false);
   // Unclassifiable senders too.
-  expect(mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)({}, other)).toBeNull();
+  expect(() => mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)({}, other)).toThrow(GRANT_REFUSED);
   expect(storeBytes()).toBe(before);
 });
 
@@ -238,22 +258,16 @@ test('a private seed-status read subscribes nothing and leaves no broadcaster', 
   expect(manager.getSeedFetchStatus.mock.calls[0]).toEqual([RID]);
   expect(listeners.size).toBe(0);
 
-  // Once the private window is gone, nothing of it is left: a public
-  // window's disconnect of the origin finds no broadcaster to unsubscribe.
-  await execute(mockFixture.publicSender(), {
-    method: 'radicle_disconnect',
-    params: {},
-    origin: WATCHED,
-  });
+  // Once the private window is gone, nothing of it is left: the origin's
+  // disconnect (a page's, through main, PRQ-8a) finds no broadcaster to
+  // unsubscribe.
+  await executeRadicleForPage('radicle_disconnect', {}, WATCHED);
   expect(manager.unsubscribeSeedStatus).not.toHaveBeenCalled();
 
   // The same read from a public window subscribes, as before.
   manager.getSeedFetchStatus.mockClear();
-  const granted = mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)(
-    { sender: mockFixture.publicSender() },
-    WATCHED
-  );
-  expect(granted).toMatchObject({ origin: WATCHED });
+  // Connected again, as main writes a connection.
+  expect(grantPermission(WATCHED)).toMatchObject({ origin: WATCHED });
   await execute(mockFixture.publicSender(), {
     method: 'radicle_getSeedStatus',
     params: { rid: RID },
@@ -286,9 +300,10 @@ test('the same calls from a known public window still run and record their use',
   expect(seeded.result).toMatchObject({ rid: RID, seeded: true });
   expect(manager.seedRepository).toHaveBeenCalledTimes(1);
 
-  const granted = await mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)(
-    { sender: publicChrome },
-    'https://other.example'
-  );
-  expect(granted).toMatchObject({ origin: 'https://other.example' });
+  // The chrome's connection grant is refused from a public window too
+  // (PRQ-8a): main writes a connection, from its own prompt.
+  expect(() =>
+    mockHandlers.get(IPC.RADICLE_GRANT_PERMISSION)({ sender: publicChrome }, 'https://other.example')
+  ).toThrow(GRANT_REFUSED);
+  expect(JSON.parse(storeBytes())['https://other.example']).toBeUndefined();
 });

@@ -1623,8 +1623,10 @@ jobs:
       # turns on their tickets within their measured charges
       # (`page-swarm-publish`, PRQ-7c), and its feeds and signing, whose
       # vault unlock, prompt, identity, grant and rule are main's, with no
-      # Swarm route left in the chrome (`page-swarm-feeds`, PRQ-7d).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds E2E
+      # Swarm route left in the chrome (`page-swarm-feeds`, PRQ-7d), and
+      # window.radicle's reads, connecting and disconnecting, whose prompt,
+      # grant and events are main's (`page-radicle`, PRQ-8a).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1649,7 +1651,8 @@ jobs:
             test-e2e/page-swarm.spec.js \
             test-e2e/page-swarm-connect.spec.js \
             test-e2e/page-swarm-publish.spec.js \
-            test-e2e/page-swarm-feeds.spec.js
+            test-e2e/page-swarm-feeds.spec.js \
+            test-e2e/page-radicle.spec.js
 
       - name: Upload software rendering profile
         if: always()

@@ -2,11 +2,16 @@
  * Radicle Provider — main-process authority.
  *
  * Handles `radicle_*` RPC methods for the page-facing window.radicle
- * provider. Mirrors the Swarm provider's trust model
- * (swarm-provider-ipc.js): the renderer is first-party code that derives
- * the origin from the per-webview display URL and runs the consent UX;
- * this module re-validates EVERYTHING — params, permissions, tier grants —
- * regardless of what the renderer did.
+ * provider. This module re-validates EVERYTHING — params, permissions, tier
+ * grants — regardless of what the caller did.
+ *
+ * Two callers (freedom-core design 0011, PRQ-8): main's page dispatcher
+ * (src/main/page/page-radicle.js), which runs a page's request under the
+ * key main attested from the sending frame and shows its prompts itself
+ * (`executeRadicleForPage`); and, for the methods not moved yet, the
+ * chrome's `radicle:provider-execute`, which names the origin it derived
+ * from the tab's display URL after running its own consent UX. The chrome's
+ * route refuses every method main's dispatcher serves.
  *
  * Scope: actions only. Reads of public repo data are permission-free
  * `rad:` URL fetches handled by rad-protocol.js, not provider methods.
@@ -245,8 +250,9 @@ function unavailableReason(origin) {
 }
 
 // ---------------------------------------------------------------------------
-// Method handlers. Origin is the renderer-derived display origin; permission
-// checks against it have already been re-done in executeRadicleMethod.
+// Method handlers. Origin is the page's key (main's attested one, or the
+// chrome's for the methods still on its route); permission checks against
+// it have already been re-done in executeRadicleMethod.
 
 async function handleGetCapabilities(origin) {
   const reason = unavailableReason(origin);
@@ -414,7 +420,8 @@ async function handleCobWrite(method, fn, params) {
  * already run consent UX; this is the authority layer.
  * @param {string} method
  * @param {object} params
- * @param {string} origin - display-URL-derived origin from the renderer
+ * @param {string} origin - the page's key: main's attested one for a page's
+ *   request, or the one the chrome derived from the display URL
  * @param {{onSeedStatus?: Function, privateSender?: boolean}} [options]
  *   privateSender: the request came from a private (or unclassifiable)
  *   window. Lasting changes are refused, and use is not recorded (R-9).
@@ -580,6 +587,46 @@ function privateWindowRefusal(privateSender, method) {
   });
 }
 
+// A method main's page dispatcher serves (src/main/page/page-radicle.js,
+// freedom-core design 0011 PRQ-8): the chrome's route names a site only a
+// page may speak for, and is refused before anything runs, for any site.
+function chromeRouteRefusal(method) {
+  const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
+  if (!RADICLE_PAGE_METHODS.includes(method)) return null;
+  return providerError(ERRORS.UNAUTHORIZED, 'The origin is not authorized for this operation', {
+    reason: 'page_request_only',
+  });
+}
+
+/**
+ * A failure as a page gets it: a provider error as it is, and anything else
+ * (an add-on, io or other failure) as its category's fixed text, never its
+ * own (#1073), which goes to the log only.
+ */
+function answerError(method, err) {
+  if (err && typeof err.code === 'number') return err;
+  const message = typeof err?.message === 'string' ? err.message : String(err);
+  log.error(`[radicle-provider] ${method} failed:`, redactForLog(message));
+  return {
+    ...ERRORS.INTERNAL,
+    message: publicAddonText(message, ERRORS.INTERNAL.message),
+  };
+}
+
+/**
+ * Run a method for main's page dispatcher (src/main/page/page-radicle.js),
+ * under the requester's attested key: `{ result }`, or `{ error }` as a page
+ * gets it. A page's request never comes from a private window (main's
+ * attestation refuses one), so its use is recorded.
+ */
+async function executeRadicleForPage(method, params, key, options = {}) {
+  try {
+    return { result: await executeRadicleMethod(method, params, key, options) };
+  } catch (err) {
+    return { error: answerError(method, err) };
+  }
+}
+
 function registerRadicleProviderIpc() {
   // Chrome-facing alias management (sidebar Nodes tab). Registered here —
   // not in radicle-manager — because the alias write must also invalidate
@@ -601,6 +648,8 @@ function registerRadicleProviderIpc() {
     // window's request runs in one, on the same fail-closed reading of its
     // sender as R-9's refusals (private-sender.js).
     return runWithPrivateLogContext(privateSender, async () => {
+      const chromeRefusal = chromeRouteRefusal(method);
+      if (chromeRefusal) return { error: chromeRefusal };
       const privateRefusal = privateWindowRefusal(privateSender, method);
       if (privateRefusal) return { error: privateRefusal };
       const refusal = agentCustodyRefusal(event?.sender, method, meta);
@@ -621,19 +670,7 @@ function registerRadicleProviderIpc() {
         return { result };
       } catch (err) {
         if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
-        if (err && typeof err.code === 'number') {
-          return { error: err };
-        }
-        // Not a provider error: an add-on, io or other failure, whose text
-        // the page doesn't get (#1073).
-        const message = typeof err?.message === 'string' ? err.message : String(err);
-        log.error(`[radicle-provider] ${method} failed:`, redactForLog(message));
-        return {
-          error: {
-            ...ERRORS.INTERNAL,
-            message: publicAddonText(message, ERRORS.INTERNAL.message),
-          },
-        };
+        return { error: answerError(method, err) };
       }
     });
   });
@@ -642,6 +679,7 @@ function registerRadicleProviderIpc() {
 
 module.exports = {
   executeRadicleMethod,
+  executeRadicleForPage,
   registerRadicleProviderIpc,
   _resetAutoWriteLimiter: () => autoWriteLimiter.reset(),
 };

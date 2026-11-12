@@ -228,6 +228,9 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
       /(?:announce\(context, |sendEvent\((?:requester|doc), (?:'swarm', )?)'([A-Za-z]+)'/g
     );
     add('radicle', read('renderer/lib/radicle-provider.js'), /sendRadicleEvent\(webview, '([A-Za-z]+)'/g);
+    // Main's own Radicle events, for a page's requests through main
+    // (PRQ-8a): a connect's new grant, and any revocation.
+    add('radicle', read('main/page/page-radicle.js'), /sendEvent\((?:requester|doc), (?:'radicle', )?'([A-Za-z]+)'/g);
     // Main's seed-status broadcaster, which the chrome relays to the key's
     // webviews.
     add('radicle', read('main/radicle/radicle-provider-ipc.js'), /event: '([A-Za-z]+)'/g);

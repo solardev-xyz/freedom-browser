@@ -135,7 +135,8 @@ test.describe('provider frame attribution (O-6)', () => {
         reason: 'e2e',
       });
       // All of window.swarm is main's (PRQ-7d): the chrome has no Swarm route
-      // to record. Radicle's is still the chrome's.
+      // to record. Radicle's seeding and signing are still the chrome's; its
+      // connecting is main's (PRQ-8a).
       for (const channel of ['radicle:provider-execute']) {
         ipcMain.removeHandler(channel);
         ipcMain.handle(channel, (_event, args) => {
@@ -266,9 +267,13 @@ test.describe('provider frame attribution (O-6)', () => {
     const calls = await executeCalls(electronApp);
     expect(calls.map((c) => c.method)).not.toContain('swarm_requestAccess');
     expect(calls.map((c) => c.method)).not.toContain('swarm_publishData');
-    expect(calls.map((c) => `${c.channel} ${c.method}`)).toEqual(
-      expect.arrayContaining(['radicle:provider-execute radicle_requestAccess'])
+    // window.radicle's connecting goes to main too (PRQ-8a), which shows
+    // its prompt and writes its grant: the chrome's route sees none of it.
+    expect(calls.map((c) => c.method)).not.toContain('radicle_requestAccess');
+    const radicleMain = await electronApp.evaluate(() =>
+      globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.filter((e) => e.kind === 'recorded' && e.provider === 'radicle').map((e) => e.method)
     );
+    expect(radicleMain).toContain('radicle_requestAccess');
     // Every forwarded call ran under the top page's origin.
     expect(calls.every((c) => c.origin?.includes(DAPP_HASH))).toBe(true);
 

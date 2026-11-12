@@ -312,3 +312,113 @@ const nodeInfoCases = readsVectors?.cases.filter((c) => c.op === 'node_info') ??
     );
   }
 );
+
+/**
+ * The radapi handlers' answers on main's service path (the radicled plan's
+ * B8): each radicle-reads.json case's endpoint (the same serveRepoApi path,
+ * listing or node endpoint the add-on replay asks), and each
+ * radicle-blob.json file's and error's `/blob/`, over a fake service node
+ * that answers the case's op as the service would (`serviceAnswer`; for
+ * node_info, `status` as the add-on's text and `node_info` as `expect`).
+ *
+ * Main must send one `rad.read` with the case's op and args (node_info's
+ * `/` the collected `status`, and `/api/v1/stats` the composed
+ * `node_info`), answer as it did over the add-on, status and body byte for
+ * byte, and log its own `[radapi]` lines as it did. What the add-on's
+ * composition logged (`[RadicleEmbedded] seeders() failed`) is the
+ * service's now. The one difference by design: a read past a byte bound is
+ * 413 on the service (deviation `size-caps`), where the add-on's was a 500.
+ */
+const blobVectors = vectors['radicle-blob.json'];
+(readsVectors ? describe : describe.skip)(
+  "radicle-reads.json's and radicle-blob.json's HTTP answers through main's service path",
+  () => {
+    let previousBackend;
+    let main;
+    beforeAll(() => {
+      previousBackend = process.env.FREEDOM_RADICLE_BACKEND;
+      process.env.FREEDOM_RADICLE_BACKEND = 'service';
+      main = harness.loadServiceReadsMain();
+    });
+    afterAll(() => {
+      if (previousBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+      else process.env.FREEDOM_RADICLE_BACKEND = previousBackend;
+    });
+
+    /** The reference's answer, as the service path gives it: 413 for a
+     * byte bound (size-caps), else the same. */
+    const onService = (recorded) => {
+      if (recorded.status === 200) return recorded;
+      const { error } = JSON.parse(recorded.body);
+      return harness.TOO_LARGE_TEXT.test(error) ? { ...recorded, status: 413 } : recorded;
+    };
+    const ownLines = (warnings) => warnings.filter((line) => line.startsWith('[radapi] '));
+
+    test('some failures are byte bounds, each a 413 on the service', () => {
+      const bounded = readsVectors.cases.filter(
+        (c) => c.op !== 'node_info' && onService(c.main).status === 413
+      );
+      expect(bounded.map((c) => c.id).length).toBeGreaterThan(0);
+    });
+
+    // describe.skip still runs this callback, so the table can't read a
+    // missing radicle-reads.json.
+    test.each(readsVectors ? readsVectors.cases.map((c) => [c.id, c]) : [['(no radicle-reads.json)', null]])(
+      '%s: the radapi answer, from one rad.read',
+      async (_id, c) => {
+        const replay = await harness.runServiceRead(main, c);
+        expect(replay.unscripted).toEqual([]);
+        if (c.op === 'node_info') {
+          expect(replay.calls).toEqual([
+            { op: 'status', args: {} },
+            { op: 'node_info', args: c.args },
+          ]);
+          expect(replay.main).toStrictEqual({ root: c.main.root, stats: c.main.stats });
+        } else {
+          expect(replay.calls).toEqual([{ op: c.op, args: c.args }]);
+          const expected = onService({ status: c.main.status, body: c.main.body });
+          expect(replay.main).toStrictEqual(expected);
+          expect(JSON.stringify(replay.main)).toBe(JSON.stringify(expected));
+        }
+        expect(replay.warnings).toEqual(ownLines(c.main.warnings));
+      }
+    );
+
+    // Each file's blob_at text, and each error's code and message as the
+    // service answers it (rad.blob's `expect`: the same libradicle error).
+    const blobCases = blobVectors
+      ? [
+          ...blobVectors.files
+            .filter((file) => file.main)
+            .map((file) => [
+              `files/${file.path}`,
+              file.path,
+              { body: harness.blobText(file) },
+              file.main,
+            ]),
+          ...blobVectors.errors.map((error) => [
+            `errors/${error.id}`,
+            error.path,
+            { error: error.expect.error },
+            error.main,
+          ]),
+        ]
+      : [['(no radicle-blob.json)', null, null, null]];
+    (blobVectors ? test.each : test.skip.each)(blobCases)(
+      '%s: /blob/ from one blob_at',
+      async (_id, filePath, answer, recorded) => {
+        const replay = await harness.runServiceBlob(main, answer, filePath);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.calls).toEqual([
+          { op: 'blob_at', args: { rid: harness.RID, revision: harness.REV, path: filePath } },
+        ]);
+        expect(replay.main).toStrictEqual(recorded);
+        expect(replay.warnings).toEqual(
+          recorded.status === 500
+            ? [`[radapi] ${harness.RID} /blob/${harness.REV}/${filePath} → ${answer.error.message}`]
+            : []
+        );
+      }
+    );
+  }
+);

@@ -12,6 +12,13 @@
  * Only plans bound for a node take a slot; a redirect or an error plan is
  * answered without one.
  *
+ * The `rad:` and `radapi:` handlers take it too, on the freedom-radicled
+ * service (freedom-core design 0008, "Reads take admission and cancel";
+ * deviation `rad-admission`; radicle-api-protocol.js's `serveAdmitted`):
+ * one slot per request, fenced the same way, held until its body is over.
+ * The service's read pool queues 320 requests: these 256, and 64 for main's
+ * other Radicle callers.
+ *
  * A request's session is fenced from its handler's entry, before anything is
  * planned (`fence`): a closing session aborts every fence it holds, so a
  * request still planning, waiting or streaming stops, and a closed session
