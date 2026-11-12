@@ -471,16 +471,17 @@ class AgentWalletController {
       // A request main attested writes only while main still holds it: not
       // answered (its deadline, its page gone), the name checked again, and
       // the page still under its key in the same run as the write.
-      await this.#mainAllows(context);
-      const current = context.attested ? this.getPermission(permissionKey) : permission;
-      if (current) {
-        if (current.walletIndex !== selected.index) {
-          this.updateWalletIndex(permissionKey, selected.index);
+      await this.#underMain(context, () => {
+        const current = context.attested ? this.getPermission(permissionKey) : permission;
+        if (current) {
+          if (current.walletIndex !== selected.index) {
+            this.updateWalletIndex(permissionKey, selected.index);
+          }
+          this.updateLastUsed(permissionKey, chainId);
+        } else {
+          this.grantPermission(permissionKey, selected.index, chainId);
         }
-        this.updateLastUsed(permissionKey, chainId);
-      } else {
-        this.grantPermission(permissionKey, selected.index, chainId);
-      }
+      });
       return {
         providerResult: [selected.address],
         receipt: {
@@ -657,15 +658,15 @@ class AgentWalletController {
     // A request main attested signs only while main still holds it: not
     // answered (its deadline, its page gone), the name checked again, and
     // the page still under its key in the same run as the signature.
-    await this.#mainAllows(context);
-    const signer = this.getSigner(wallet.index);
-    const signature = personal
-      ? await signer.signMessage(payload.params?.[0])
-      : await signer.signTypedData(typedData);
+    const signature = await this.#underMain(context, () => {
+      const signer = this.getSigner(wallet.index);
+      return personal ? signer.signMessage(payload.params?.[0]) : signer.signTypedData(typedData);
+    });
     // A grant held under the attested key is touched only while main still
-    // holds the request after the signature's wait: the name checked again,
-    // and the page under its key in the same run as the write.
-    if (!context.attested || (await this.#mainStillAllows(context))) this.updateLastUsed(permissionKey, chain.chainId);
+    // holds the request after the signature's wait, checked the same way.
+    // The signature itself reaches the page only while its name holds, which
+    // main checks when it answers.
+    await this.#underMain(context, () => this.updateLastUsed(permissionKey, chain.chainId), { required: false });
     return {
       providerResult: signature,
       receipt: {
@@ -679,17 +680,19 @@ class AgentWalletController {
     };
   }
 
-  // For a request main attested: main's gates, just before the effect.
-  async #mainAllows(context) {
-    if (!context.attested) return;
-    if (!(await this.#mainStillAllows(context))) {
-      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
-    }
-  }
-
-  async #mainStillAllows(context) {
+  /**
+   * Run `effect` (a grant write, a signature) for a request: at once for one
+   * of the agent's own, and for one main attested only once main's gates
+   * pass, in the same run as the last of them (`effectAllowed`), never across
+   * an await, so no other check can end the page's key between them. When
+   * they don't pass, nothing runs, and `required` throws.
+   */
+  async #underMain(context, effect, { required = true } = {}) {
+    if (!context.attested) return effect();
     const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
-    return ready && typeof context.effectAllowed === 'function' && context.effectAllowed() === true;
+    if (ready && typeof context.effectAllowed === 'function' && context.effectAllowed() === true) return effect();
+    if (required) throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
+    return undefined;
   }
 
   async #approve(context, request) {

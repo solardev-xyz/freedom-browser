@@ -16,7 +16,11 @@
  *   `no_identity`) ends the process with exit 0, and the client doesn't
  *   restart it;
  * - **the start steps before the node:** `rad.identity { ephemeral }` and
- *   `rad.reconcile` on a fresh home, then `rad.shutdown` and exit 0.
+ *   `rad.reconcile` on a fresh home, then `rad.shutdown` and exit 0;
+ * - **main's grant check** (design 0010, step 7), real, before each spawn,
+ *   on a named catalog profile laid out as a packaged build lays it out:
+ *   the home and the service's `HOME` as the service leaves them pass, so
+ *   its next start spawns; a hard link out of the home spawns nothing.
  *
  * Nothing here touches the network: `rad.start`, which runs the node, is
  * never sent.
@@ -27,9 +31,16 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-jest.mock('electron', () => ({ app: { isPackaged: false } }), { virtual: true });
+// Main's paths, which the grant check reads: the app's, and the profile in
+// use, a named catalog profile with slot 1 (set in beforeEach).
+const mockApp = { isPackaged: false, paths: {}, getPath: (name) => mockApp.paths[name] };
+let mockProfile = null;
+jest.mock('electron', () => ({ app: mockApp }), { virtual: true });
+jest.mock('../profile-resolver', () => ({ getActiveProfile: () => mockProfile }));
 
 const { RadicledClient, validRecipient } = require('./radicled-client');
+const { getLockDir } = require('../service-locks');
+const { radicleGrantRefusal } = require('../service-grant');
 const { PINNED_RADICLED_VERSION } = require('./radicled-pin');
 const { validConfinement } = require('../ipfs/ipfsd-client');
 
@@ -64,8 +75,24 @@ describeIfBinary('the freedom-radicled client with the real binary', () => {
   ];
   const savedEnv = Object.fromEntries(SET.map((name) => [name, process.env[name]]));
 
+  let appRoot;
+  let userData;
+
   beforeEach(() => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicled-client-'));
+    root = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicled-client-'))
+    );
+    appRoot = path.join(root, 'Freedom');
+    userData = path.join(appRoot, 'Profiles', 'work');
+    fs.mkdirSync(userData, { recursive: true });
+    mockApp.paths = { appData: root, userData };
+    mockProfile = {
+      source: 'catalog',
+      appRoot,
+      userDataDir: userData,
+      isDev: false,
+      metadata: { slot: 1 },
+    };
   });
 
   afterEach(async () => {
@@ -81,13 +108,18 @@ describeIfBinary('the freedom-radicled client with the real binary', () => {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   });
 
+  // The profile's short Radicle home and the service's HOME, as
+  // profile-paths lays them out.
+  const home = () => path.join(appRoot, 'R', '1');
+  const ownHome = () => path.join(userData, 'radicled-home');
+
   function newClient() {
     client = new RadicledClient({
       spawn,
       command: binary,
-      home: path.join(root, 'R', '1'),
-      lockDir: path.join(root, 'locks'),
-      ownHome: path.join(root, 'radicled-home'),
+      home: home(),
+      lockDir: getLockDir(),
+      ownHome: ownHome(),
       log: quietLog,
       shellVersion: '0.0.0-test',
     });
@@ -128,7 +160,7 @@ describeIfBinary('the freedom-radicled client with the real binary', () => {
       if (pinned) expect(hello.service_version).toBe(PINNED_RADICLED_VERSION);
       // Its own HOME, empty, and nothing made where main's points.
       expect(fs.existsSync(nowhere)).toBe(false);
-      expect(fs.statSync(path.join(root, 'radicled-home')).isDirectory()).toBe(true);
+      expect(fs.statSync(ownHome()).isDirectory()).toBe(true);
 
       const exited = nextExit();
       await client.stop();
@@ -175,6 +207,43 @@ describeIfBinary('the freedom-radicled client with the real binary', () => {
       const exited = nextExit();
       await client.stop();
       await expect(exited).resolves.toMatchObject({ code: 0, cause: 'shutdown' });
+    },
+    TEST_MS
+  );
+
+  test(
+    "the grants as the service leaves them pass main's check, so its next start spawns",
+    async () => {
+      await newClient().start();
+      const gen = client.current;
+      await client.identity(gen, { ephemeral: true });
+      await client.reconcile(gen);
+      await client.stop();
+      // What the service wrote, walked: no special file, no hard link out.
+      expect(fs.readdirSync(home()).length).toBeGreaterThan(0);
+      expect(radicleGrantRefusal(home(), ownHome())).toBeNull();
+      await expect(client.start()).resolves.toMatchObject({ protocol: 1 });
+      expect(client.generations).toBe(2);
+      expect(client.grantRefusal).toBeNull();
+    },
+    TEST_MS
+  );
+
+  test(
+    'a hard link out of the home spawns nothing',
+    async () => {
+      const outside = path.join(userData, 'identity', 'vault.json');
+      fs.mkdirSync(path.dirname(outside), { recursive: true });
+      fs.writeFileSync(outside, '{}');
+      fs.mkdirSync(home(), { recursive: true });
+      fs.linkSync(outside, path.join(home(), 'vault.json'));
+      const failed = new Promise((resolve) => newClient().once('failed', resolve));
+      await expect(client.start()).rejects.toMatchObject({ code: 'radicle_unavailable' });
+      await expect(failed).resolves.toBe('spawn refused');
+      expect(client.generations).toBe(0);
+      expect(client.grantRefusal).toBe(
+        'the grant holds a hard link to a file with a name outside it'
+      );
     },
     TEST_MS
   );
