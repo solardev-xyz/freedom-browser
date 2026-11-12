@@ -141,12 +141,10 @@ const seedStates = (win, url) =>
 
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 
-/** Count every Radicle request a page sends the chrome on the old path, and every event main relays to the chrome. */
+/** Count every Radicle request a page sends the chrome on the old path. The chrome has no relay for main's events (PRQ-8c). */
 const watchOldPath = (win) =>
   win.evaluate(() => {
     window.__oldPath = window.__oldPath || [];
-    window.__chromeEvents = window.__chromeEvents || [];
-    window.radicleProvider.onEvent((message) => window.__chromeEvents.push(message?.event));
     for (const wv of document.querySelectorAll('webview')) {
       if (wv.__watched) continue;
       wv.__watched = true;
@@ -155,7 +153,7 @@ const watchOldPath = (win) =>
       });
     }
   });
-const oldPath = (win) => win.evaluate(() => ({ requests: window.__oldPath.slice(), events: window.__chromeEvents.slice() }));
+const oldPath = (win) => win.evaluate(() => ({ requests: window.__oldPath.slice(), relay: typeof window.radicleProvider }));
 
 async function openIn(win, url, ready = url) {
   const address = win.locator('[data-test="address-input"]');
@@ -240,21 +238,17 @@ test('seeding through main: main\'s node prompt in the sidebar, each node action
   const sent = (await trace(electronApp)).filter((e) => e.kind === 'event-sent' && e.provider === 'radicle');
   expect(new Set(sent.map((e) => e.event))).toEqual(new Set(['seedStatus']));
 
-  // The chrome can't turn the node rule on, and its route refuses seeding.
+  // The chrome can't turn the node rule on, and has no route for seeding.
   const forged = await win.evaluate(async (key) => {
     const tryIt = (fn) => fn().then((value) => ({ value }), (err) => String(err?.message || err));
     return {
       rule: await tryIt(() => window.radiclePermissions.setAutoApprove(key, 'node', true)),
       off: await tryIt(() => window.radiclePermissions.setAutoApprove(key, 'node', false)),
-      seed: await window.radicleProvider.execute('radicle_seed', { rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }, key, {
-        approval: 'auto',
-      }),
     };
   }, DAPP);
   expect(forged.rule).toContain('Radicle node auto-approve can only be turned off here');
   expect(forged.off).toEqual({ value: true });
-  expect(forged.seed.error).toMatchObject({ code: 4100, data: { reason: 'page_request_only' } });
   expect((await radicleState(electronApp)).clones).toEqual([RID, RID]);
-  // Nothing went through the chrome: no request, and no event relayed.
-  expect(await oldPath(win)).toEqual({ requests: [], events: [] });
+  // Nothing went through the chrome: no request, and no relay left.
+  expect(await oldPath(win)).toEqual({ requests: [], relay: 'undefined' });
 });
