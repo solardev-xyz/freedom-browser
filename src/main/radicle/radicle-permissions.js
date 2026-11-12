@@ -213,11 +213,10 @@ const SIGNING_GRANT_REFUSED = 'The Radicle signing grant is given only from its 
 const SIGNING_RULE_REFUSED = 'Radicle signing auto-approve is turned on only from a write prompt';
 
 function registerRadiclePermissionsIpc() {
-  // PRIVATE MODE GUARD (R-9): the provider's consent flow grants from the
-  // chrome renderer, which in a private window would record the private
-  // session's sites on disk. Grants and use records from a private (or
-  // unclassifiable) sender are refused: false for the rest. Revoking stays
-  // open, since it removes a record.
+  // PRIVATE MODE GUARD (R-9): a private window's sites are never recorded on
+  // disk. A rule turned off from a private (or unclassifiable) sender
+  // answers false and writes nothing. Revoking stays open, since it removes
+  // a record.
   ipcMain.handle(IPC.RADICLE_GET_PERMISSION, (_event, origin) => getPermission(origin));
   // Refused for every site and every sender (design 0011, "Grants";
   // PRQ-8a): the chrome named the site here, so a compromised chrome could
@@ -227,18 +226,11 @@ function registerRadiclePermissionsIpc() {
   });
   ipcMain.handle(IPC.RADICLE_REVOKE_PERMISSION, (_event, origin) => revokePermission(origin));
   ipcMain.handle(IPC.RADICLE_GET_ALL_PERMISSIONS, () => getAllPermissions());
-  ipcMain.handle(IPC.RADICLE_UPDATE_LAST_USED, (event, origin) =>
-    isPrivateSender(event) ? false : updateLastUsed(origin)
-  );
-  ipcMain.handle(IPC.RADICLE_HAS_SIGNING_GRANT, (_event, origin) => hasSigningGrant(origin));
   // Refused for every site and every sender (PRQ-8c): main grants signing
   // for the key it attested, from the user's decision on its prompt.
   ipcMain.handle(IPC.RADICLE_GRANT_SIGNING, () => {
     throw new Error(SIGNING_GRANT_REFUSED);
   });
-  ipcMain.handle(IPC.RADICLE_GET_AUTO_APPROVE, (_event, origin, type) =>
-    getAutoApprove(origin, type)
-  );
   // Every rule only off, for every sender (design 0011, "Grants"; PRQ-8b
   // for the node rule, PRQ-8c for the signing rule): any value but `false`
   // is refused, so a truthy non-boolean can't turn one on.

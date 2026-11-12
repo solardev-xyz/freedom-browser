@@ -58,7 +58,6 @@ const space = (win) => win.locator('[data-test="approvals-space"]');
 async function routeTestPrompts(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag, view: shown } = context.params || {};
       const decision = await context.prompt({ kind: 'test.prompt', view: shown });
@@ -354,7 +353,6 @@ const HOSTILE_PROMPTS = [
 async function routeKindPrompts(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { kind, view: shown } = context.params || {};
       const decision = await context.prompt({ kind, view: shown });

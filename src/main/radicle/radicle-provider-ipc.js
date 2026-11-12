@@ -61,6 +61,7 @@ const {
   getNodeAlias,
   setNodeAlias,
   isDisabledForProfile,
+  radicleWriteRefusal,
   STATUS,
 } = require('../radicle-manager');
 const cob = require('./cob-service');
@@ -354,6 +355,8 @@ async function handleUnseed(origin, params, effect) {
   const rid = requireRidParam(params);
   const result = await guarded(effect, () => unseedRepository(rid));
   if (!result.success) {
+    // On the service, an unseed the process took and didn't confirm.
+    if (result.error?.code === 'OUTCOME_UNKNOWN') throw outcomeUnknown('radicle_unseed');
     throw managerFailure(
       'radicle_unseed',
       result.error,
@@ -421,6 +424,21 @@ async function handleGetSeedStatus(origin, params, onSeedStatus) {
 }
 
 /**
+ * A write the Radicle service took and ended without proving (freedom-core
+ * design 0008, Writes, deviation `outcome-unknown`): -32603 with the design's
+ * text, whatever the write. Main never sends it again; the page checks
+ * before writing again. Logged with its code, never with its content.
+ */
+function outcomeUnknown(method) {
+  log.warn(`[radicle-provider] ${method}: the write's outcome is unknown`, {
+    code: 'outcome_unknown',
+  });
+  return providerError(ERRORS.INTERNAL, cob.OUTCOME_UNKNOWN_MESSAGE, {
+    reason: 'outcome_unknown',
+  });
+}
+
+/**
  * Translate cob-service errors into provider errors. A validation error's
  * text is cob-service's own; any other is the add-on's, so the page gets
  * its category's text, and the reason cob-service decided on its text.
@@ -429,6 +447,10 @@ function wrapCobError(method, err) {
   if (err instanceof cob.CobValidationError) {
     return providerError(ERRORS.INVALID_PARAMS, err.message, { reason: err.reason });
   }
+  if (err instanceof cob.CobAdmissionError) {
+    return providerError(ERRORS.UNAVAILABLE, err.message, { reason: err.reason });
+  }
+  if (err instanceof cob.CobOutcomeUnknownError) return outcomeUnknown(method);
   logAddonError(method, err.message);
   const failed = SIGNED_WRITE_METHODS.has(method)
     ? ADDON_ERROR_TEXTS.writeFailed
@@ -522,6 +544,16 @@ async function executeRadicleMethod(
     if (!nodeRunning() && !WORKS_WHILE_STOPPED.has(method)) {
       throw providerError(ERRORS.UNAVAILABLE, 'Radicle node is not running', {
         reason: 'node-stopped',
+      });
+    }
+    // Under the service, a node running with a throwaway key can't publish
+    // (freedom-core design 0008, `needs_vault`): refused before the rule's
+    // rate limit counts it, and before anything is sent. cob-service checks
+    // again just before the write.
+    const writeRefusal = SIGNED_WRITE_METHODS.has(method) ? radicleWriteRefusal() : null;
+    if (writeRefusal) {
+      throw providerError(ERRORS.UNAVAILABLE, writeRefusal.message, {
+        reason: writeRefusal.reason,
       });
     }
     if (SIGNED_WRITE_METHODS.has(method) && approval !== 'user') {

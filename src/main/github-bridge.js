@@ -9,6 +9,7 @@ const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const {
   getCurrentStatus,
   isDisabledForProfile,
+  radicleWriteRefusal,
   STATUS,
 } = require('./radicle-manager');
 const embedded = require('./radicle-embedded');
@@ -234,7 +235,19 @@ function checkRadicleBridgeAvailable() {
       error: 'Radicle node is not running',
     };
   }
+  const refusal = needsVaultFailure();
+  if (refusal) return { available: false, code: refusal.code, error: refusal.message };
   return { available: true };
+}
+
+/**
+ * Under the Radicle service, the import while the running node's key is a
+ * throwaway one (freedom-core design 0008, `needs_vault`): refused in main
+ * before anything is sent. `{ code, message }`, or null.
+ */
+function needsVaultFailure() {
+  const refusal = radicleWriteRefusal();
+  return refusal ? { code: 'RADICLE_NEEDS_VAULT', message: refusal.message } : null;
 }
 
 /**
@@ -461,8 +474,15 @@ async function importGitHubRepo(url, sender) {
     // Step 6: Fetch description from GitHub API (best-effort)
     const description = await fetchGitHubDescription(validation.owner, validation.repo);
 
-    // Step 7: import directly into the in-process Radicle storage.
+    // Step 7: import directly into the in-process Radicle storage. The node
+    // may have restarted during the clone: its admission is checked again,
+    // with nothing awaited before the import's call.
     sendProgress({ step: 'initializing', message: 'Initializing Radicle project...' });
+    const refusal = needsVaultFailure();
+    if (refusal) {
+      sendProgress({ step: 'error', message: refusal.message });
+      return failure(refusal.code, refusal.message, undefined, { step: 'initializing' });
+    }
     const { rid } = await embedded.importRepo(
       repoDir,
       validation.repo,

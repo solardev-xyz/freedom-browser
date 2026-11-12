@@ -57,8 +57,7 @@
  * "This page has no address to connect from yet".
  *
  * Every method answers `4900` while the Identity & Wallet switch is off,
- * as the chrome did. The chrome's own path for these methods stays until
- * PRQ-9 removes it, but the preload no longer sends pages' requests there.
+ * as the chrome did. The chrome has no path of its own for them (PRQ-9).
  */
 
 const { ETHEREUM_RPC_READS } = require('./page-methods');

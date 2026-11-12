@@ -320,14 +320,6 @@ function registerSwarmPermissionsIpc() {
     return getAllPermissions();
   });
 
-  ipcMain.handle(IPC.SWARM_UPDATE_LAST_USED, (_event, origin) => {
-    return updateLastUsed(origin);
-  });
-
-  ipcMain.handle(IPC.SWARM_GET_AUTO_APPROVE, (_event, origin, type) => {
-    return getAutoApprove(origin, type);
-  });
-
   // Every rule only from main (PRQ-7b to 7d): main sets each, for the
   // requester's key, from the user's "always allow" on the prompt it showed.
   // The chrome named the site here, so turning any rule on is refused;

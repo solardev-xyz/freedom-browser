@@ -1561,6 +1561,29 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
     fs.writeFileSync(path.join(dataDirs.radicle, 'keys', 'radicle'), 'key');
   }
 
+  // Plan B10: the freedom-radicled service's status reads no keys/
+  // (radicle-generation-identity.test.js); the add-on keeps today's.
+  test("on the add-on, a locked vault's status still reads the key file's DID, and carries no service identity", async () => {
+    seedRadicleInjected();
+    const u32 = (n) => {
+      const b = Buffer.alloc(4);
+      b.writeUInt32BE(n);
+      return b;
+    };
+    const blob = Buffer.concat([u32(11), Buffer.from('ssh-ed25519'), u32(32), Buffer.alloc(32, 9)]);
+    fs.writeFileSync(path.join(dataDirs.radicle, 'keys', 'radicle.pub'), `ssh-ed25519 ${blob.toString('base64')} me`);
+    const backend = makeVaultBackendMock();
+    const mgr = loadIdentityManager(dataDirs, null, backend);
+    await mgr.createNewVault('password-123');
+    backend.state.unlocked = false;
+
+    const status = await mgr.getIdentityStatus();
+
+    expect(status).toMatchObject({ radicleInjected: true, addresses: { radicleDid: 'did:key:zTest' } });
+    expect(status).not.toHaveProperty('radicle');
+    expect(backend.radicleDid).toHaveBeenCalledWith(Buffer.alloc(32, 9));
+  });
+
   test('force reinjection reports no node for restart: both restart themselves (R-8)', async () => {
     // Bee/Radicle are injected. A stale IPFS identity metadata file from older
     // builds must be ignored because native freedom-ipfs now reports ephemeral

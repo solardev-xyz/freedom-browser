@@ -210,12 +210,15 @@ describe('swarm-permissions', () => {
       registerSwarmPermissionsIpc();
     });
 
-    test('registers all 5 channels', () => {
+    test('registers the grant channels', () => {
       expect(ipcHandlers['swarm:get-permission']).toBeDefined();
       expect(ipcHandlers['swarm:grant-permission']).toBeDefined();
       expect(ipcHandlers['swarm:revoke-permission']).toBeDefined();
       expect(ipcHandlers['swarm:get-all-permissions']).toBeDefined();
-      expect(ipcHandlers['swarm:update-last-used']).toBeDefined();
+      // Main marks a site used and reads its rules itself, for a page's
+      // request it serves (freedom-core design 0011, PRQ-9).
+      expect(ipcHandlers['swarm:update-last-used']).toBeUndefined();
+      expect(ipcHandlers['swarm:get-auto-approve']).toBeUndefined();
     });
 
     test('get-permission handler works', () => {

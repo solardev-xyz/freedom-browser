@@ -2,8 +2,8 @@
  * Subscription Registry
  *
  * Lifecycle state for window.swarm messaging subscriptions. Maps
- * subscription ids to their origin, target webContents, and the shared
- * node socket that feeds them. Deliberately Electron-free: the socket
+ * subscription ids to their origin, the document they are bound to, and
+ * the shared node socket that feeds them. Deliberately Electron-free: the socket
  * opener and the message deliverer are injected by provider-ipc, so the
  * registry is pure bookkeeping and fully unit-testable.
  *
@@ -26,12 +26,12 @@ const crypto = require('crypto');
 // is still connecting, the page may already be gone).
 const DEFAULT_ESTABLISH_TIMEOUT_MS = 30_000;
 
-// id → { id, origin, webContentsId, document, deliverTo, kind, key, socketKey, pending }
+// id → { id, origin, document, deliverTo, kind, key, socketKey, pending }
 //
 // A page's subscription through main (freedom-core design 0011, PRQ-7b) is
-// bound to its document instead of a webContents: `document` names it
-// (`${guest}:${navigation}`), `deliverTo(data)` sends it a message, and it
-// ends with the document (`cancelByDocument`).
+// bound to its document: `document` names it (`${guest}:${navigation}`),
+// `deliverTo(data)` sends it a message, and it ends with the document
+// (`cancelByDocument`).
 const subscriptions = new Map();
 // socketKey (`${kind}:${key}`) → { handle, established, subIds: Set }
 const sockets = new Map();
@@ -120,16 +120,14 @@ function withEstablishTimeout(established) {
 
 /**
  * Open (or join) a subscription.
- * @param {{ origin: string, webContentsId: number, kind: 'gsoc'|'pss', key: string }} params
- *   `origin` is the normalized permission key of the subscribing document;
- *   the deliverer re-checks it against the webContents' live URL so
- *   messages can never land in a page from another origin that navigated
- *   in after the subscription was opened.
+ * @param {{ origin: string, document: string, deliverTo: Function, kind: 'gsoc'|'pss', key: string }} params
+ *   `origin` is the normalized permission key of the subscribing document,
+ *   which `document` names and `deliverTo` sends the messages to.
  * @returns {Promise<{ subscriptionId: string }>}
  * @throws {Error} reason 'too_many_subscriptions' | 'node_subscription_limit'
  *   | 'establish_timeout' | 'subscription_cancelled' | socket errors
  */
-async function subscribe({ origin, webContentsId, document, deliverTo, kind, key }) {
+async function subscribe({ origin, document, deliverTo, kind, key }) {
   if (countByOrigin(origin) >= maxSubscriptionsPerOrigin) {
     throw semanticError(
       'too_many_subscriptions',
@@ -149,7 +147,6 @@ async function subscribe({ origin, webContentsId, document, deliverTo, kind, key
   const subscription = {
     id: subscriptionId,
     origin,
-    webContentsId,
     document: typeof document === 'string' ? document : undefined,
     deliverTo: typeof deliverTo === 'function' ? deliverTo : undefined,
     kind,
@@ -235,21 +232,6 @@ function cancelWhere(predicate) {
   }
 }
 
-function cancelByWebContents(webContentsId) {
-  cancelWhere((sub) => sub.webContentsId === webContentsId);
-}
-
-/**
- * Cancel the subscriptions on `webContentsId` that do NOT belong to
- * `currentOrigin`. Used when the deliverer notices the webview is hosting a
- * different origin than the one that subscribed: those documents are gone,
- * but a subscription the *current* document already opened is still live
- * and must survive.
- */
-function cancelStaleByWebContents(webContentsId, currentOrigin) {
-  cancelWhere((sub) => sub.webContentsId === webContentsId && sub.origin !== currentOrigin);
-}
-
 function cancelByOrigin(origin) {
   cancelWhere((sub) => sub.origin === origin);
 }
@@ -276,8 +258,6 @@ module.exports = {
   configure,
   subscribe,
   unsubscribe,
-  cancelByWebContents,
-  cancelStaleByWebContents,
   cancelByOrigin,
   cancelByDocument,
   cancelById,

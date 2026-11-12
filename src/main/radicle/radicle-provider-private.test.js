@@ -39,6 +39,9 @@ jest.mock('../radicle-embedded', () => ({ listSeededRepos: jest.fn(async () => [
 
 const mockStatus = { rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', state: 'fetched' };
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => false),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   getConnections: jest.fn(async () => ({ success: true, count: 3 })),
@@ -60,6 +63,10 @@ jest.mock('./cob-service', () => ({
   getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   clearIdentityCache: jest.fn(),
   CobValidationError: class CobValidationError extends Error {},
+  CobAdmissionError: class CobAdmissionError extends Error {},
+  CobOutcomeUnknownError: class CobOutcomeUnknownError extends Error {},
+  OUTCOME_UNKNOWN_MESSAGE:
+    'The Radicle node stopped before confirming this write; it may have been recorded.',
 }));
 
 const ORIGIN = 'https://forge.example';
@@ -129,20 +136,17 @@ test('the provider registers no route a private window, or any chrome, could for
   expect([...mockHandlers.keys()].filter((channel) => channel.startsWith('radicle:')).sort()).toEqual([
     IPC.RADICLE_GET_ALIAS,
     IPC.RADICLE_GET_ALL_PERMISSIONS,
-    IPC.RADICLE_GET_AUTO_APPROVE,
     IPC.RADICLE_GET_PERMISSION,
     IPC.RADICLE_GRANT_PERMISSION,
     IPC.RADICLE_GRANT_SIGNING,
-    IPC.RADICLE_HAS_SIGNING_GRANT,
     IPC.RADICLE_REVOKE_PERMISSION,
     IPC.RADICLE_SET_ALIAS,
     IPC.RADICLE_SET_AUTO_APPROVE,
-    IPC.RADICLE_UPDATE_LAST_USED,
   ].sort());
   expect(backendCalls()).toBe(0);
 });
 
-test('grants, rules and use records from a private window are refused; from any sender, a grant or a rule turned on is', async () => {
+test('grants and rules from a private window are refused; from any sender, a grant or a rule turned on is', async () => {
   const before = storeBytes();
   const privateEvent = { sender: mockFixture.privateSender(privateWindows) };
   const publicEvent = { sender: mockFixture.publicSender() };
@@ -156,10 +160,9 @@ test('grants, rules and use records from a private window are refused; from any 
     );
   }
   // A private (or unclassifiable) sender records nothing, not even a rule
-  // turned off or a use.
+  // turned off.
   for (const event of [privateEvent, {}]) {
     expect(mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)(event, ORIGIN, 'signing', false)).toBe(false);
-    expect(mockHandlers.get(IPC.RADICLE_UPDATE_LAST_USED)(event, ORIGIN)).toBe(false);
   }
   expect(storeBytes()).toBe(before);
 });

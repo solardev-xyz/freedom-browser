@@ -287,7 +287,9 @@ test('feeds and signing through main: the vault unlocked on main\'s prompt, the 
       check: typeof window.swarmManifest?.check,
       decide: typeof window.swarmManifest?.decide,
       feedsRule: await tryIt(() => window.swarmPermissions.setAutoApprove(key, 'feeds', true)),
-      feedGrant: await tryIt(() => window.swarmFeedStore.setFeedIdentity('other.eth', 'app-scoped')),
+      // PRQ-9: no feed grant in the chrome's preload; main refuses the
+      // channel too (feed-store.test.js).
+      feedGrant: typeof window.swarmFeedStore.setFeedIdentity,
       off: await tryIt(() => window.swarmPermissions.setAutoApprove(key, 'signing', false)),
     };
   }, DAPP);
@@ -296,7 +298,7 @@ test('feeds and signing through main: the vault unlocked on main\'s prompt, the 
     check: 'undefined',
     decide: 'undefined',
     feedsRule: { refused: expect.stringContaining('Feed auto-approve is turned on only from a feed prompt') },
-    feedGrant: { refused: expect.stringContaining('Swarm feed access is granted only from its own prompt') },
+    feedGrant: 'undefined',
     off: { value: true },
   });
   expect(await siteState(electronApp, DAPP)).toMatchObject({ autoApprove: { signing: false, feeds: false } });

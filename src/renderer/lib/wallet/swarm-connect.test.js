@@ -101,11 +101,6 @@ const elementIds = [
   'swarm-feed-auto-approve-label',
   'swarm-feed-warning',
   'swarm-feed-unlock',
-  'swarm-feed-touchid-btn',
-  'swarm-feed-password-link',
-  'swarm-feed-password-section',
-  'swarm-feed-password-input',
-  'swarm-feed-password-submit',
   'address-input',
 ];
 
@@ -139,10 +134,6 @@ async function loadSwarmConnect() {
     swarmPermissions: {
       getPermission: jest.fn().mockResolvedValue(null),
       setAutoApprove: jest.fn().mockResolvedValue({ success: true }),
-      grantPermission: jest.fn().mockResolvedValue({ success: true }),
-    },
-    swarmProvider: {
-      execute: jest.fn().mockResolvedValue({ result: {} }),
     },
     pagePrompts: {
       decide: jest.fn().mockResolvedValue({ ok: true }),
@@ -155,13 +146,7 @@ async function loadSwarmConnect() {
         activeIdentityId: 'ident-1',
         identities: [{ id: 'ident-1', mode: 'app-scoped', stored: true }],
       }),
-      previewAppScopedIdentity: jest.fn().mockResolvedValue({
-        id: 'ident-1',
-        mode: 'app-scoped',
-        stored: true,
-      }),
       activateFeedIdentity: jest.fn().mockResolvedValue({ success: true }),
-      setFeedIdentity: jest.fn().mockResolvedValue({ identityMode: 'app-scoped' }),
     },
   };
 
@@ -174,8 +159,11 @@ async function loadSwarmConnect() {
     open: openSidebarPanel,
     isVisible: jest.fn(() => false),
   }));
-  jest.doMock('../dapp-provider.js', () => ({
+  jest.doMock('../origin-utils.js', () => ({
+    ...jest.requireActual('../origin-utils.js'),
     getPermissionKey: jest.fn((url) => url),
+  }));
+  jest.doMock('../dapp-provider.js', () => ({
     getActiveWebview: jest.fn(() => null),
     getActivePageUrl: jest.fn(() => ''),
   }));
@@ -192,13 +180,11 @@ async function loadSwarmConnect() {
   }));
 
   const mod = await import('./swarm-connect.js');
-  const signatureFlight = await import('./signature-flight.js');
   const pagePromptRenderers = await import('../page-prompt-renderers.js');
   mod.initSwarmConnect();
 
   return {
     mod,
-    signatureFlight,
     pagePromptRenderers,
     elements: document.elements,
     hideAllSubscreens,
@@ -207,24 +193,11 @@ async function loadSwarmConnect() {
   };
 }
 
-// Track settlement without leaving unhandled rejections around.
-function trackedPrompt(show) {
-  const state = { resolved: false, rejected: null };
-  const promise = new Promise((resolve, reject) => {
-    show(
-      (value) => {
-        state.resolved = true;
-        resolve(value);
-      },
-      (err) => {
-        state.rejected = err;
-        reject(err);
-      }
-    );
-  });
-  promise.catch(() => {});
-  state.promise = promise;
-  return state;
+const SITE = { key: 'bzz://aaaa', label: 'bzz://aaaa' };
+
+// Main's prompt of `kind`, as `page:prompt` brings it to the screen.
+function showPrompt(ctx, kind, handle, view = {}, site = SITE) {
+  ctx.pagePromptRenderers.pagePromptRenderer(kind).show({ handle, guest: 7, kind, site, view });
 }
 
 // A freshly presented prompt ignores clicks for its input-protection window
@@ -235,7 +208,7 @@ async function armPrompt() {
   await Promise.resolve();
 }
 
-describe('swarm approval prompts queue concurrent requests', () => {
+describe('swarm screens queue main\'s prompts', () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -247,357 +220,199 @@ describe('swarm approval prompts queue concurrent requests', () => {
     jest.restoreAllMocks();
   });
 
-  // Sibling parity with showSwarmConnect / showSwarmPublishApproval /
-  // showSwarmFeedApproval (and the manifest sheet): none of these may repaint
-  // over a sidebar a live device confirmation owns.
-  test('every swarm prompt refuses to open while a signature is in flight', async () => {
-    const ctx = await loadSwarmConnect();
-    const signer = {};
-    ctx.signatureFlight.beginSignatureFlight(signer);
-
-    try {
-      const prompts = [
-        trackedPrompt((resolve, reject) =>
-          ctx.mod.showSwarmConnect('https://a.example', 'https://a.example', resolve, reject, null)),
-        trackedPrompt((resolve, reject) =>
-          ctx.mod.showSwarmPublishApproval('https://a.example', {}, resolve, reject, 'swarm_uploadFile')),
-        trackedPrompt((resolve, reject) =>
-          ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'alpha' }, resolve, reject, {
-            method: 'swarm_subscribe',
-            grantMode: true,
-          })),
-        trackedPrompt((resolve, reject) =>
-          ctx.mod.showSwarmFeedApproval('https://a.example', {}, resolve, reject, { method: 'swarm_setFeed' })),
-      ];
-
-      for (const prompt of prompts) {
-        await expect(prompt.promise).rejects.toMatchObject({ code: -32002 });
-      }
-      expect(ctx.hideAllSubscreens).not.toHaveBeenCalled();
-      for (const id of [
-        'sidebar-swarm-connect',
-        'sidebar-swarm-publish-approve',
-        'sidebar-swarm-messaging-approve',
-        'sidebar-swarm-feed-approve',
-      ]) {
-        expect(ctx.elements[id].classList.contains('hidden')).toBe(true);
-      }
-    } finally {
-      ctx.signatureFlight.endSignatureFlight(signer);
-    }
-  });
-
-  test('a second messaging request waits its turn instead of clobbering the first', async () => {
+  test('a second messaging prompt waits its turn instead of clobbering the first', async () => {
     const ctx = await loadSwarmConnect();
     const screen = ctx.elements['sidebar-swarm-messaging-approve'];
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'alpha' }, resolve, reject, {
-        method: 'swarm_subscribe',
-        grantMode: true,
-      })
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'beta' }, resolve, reject, {
-        method: 'swarm_subscribe',
-        grantMode: false,
-      })
-    );
+    showPrompt(ctx, 'swarm.messaging', 'm1', { method: 'swarm_subscribe', grantMode: true, topic: 'alpha' });
+    showPrompt(ctx, 'swarm.messaging', 'm2', { method: 'swarm_subscribe', grantMode: false, topic: 'beta' });
 
-    // Only the first request is on screen; the second is queued, not rejected.
+    // Only the first prompt is on screen; the second is queued, not answered.
     expect(screen.classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-messaging-topic'].textContent).toBe('alpha');
     expect(ctx.elements['swarm-messaging-title'].textContent).toBe('Messaging Access');
-    expect(first.rejected).toBe(null);
-    expect(second.rejected).toBe(null);
-    expect(second.resolved).toBe(false);
+    expect(decide).not.toHaveBeenCalled();
 
-    // Allow settles the first request only, then shows the queued one.
+    // Allow answers the first prompt only, then shows the queued one.
     await armPrompt();
     await ctx.elements['swarm-messaging-confirm'].fire('click');
-    await first.promise;
-    expect(first.resolved).toBe(true);
-    expect(second.resolved).toBe(false);
-    expect(second.rejected).toBe(null);
+    expect(decide.mock.calls).toEqual([['m1', true, {}]]);
     expect(screen.classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-messaging-topic'].textContent).toBe('beta');
     expect(ctx.elements['swarm-messaging-title'].textContent).toBe('Confirm Message');
 
-    // Allow settles the second request and leaves the screen closed.
+    // Allow answers the second prompt and leaves the screen closed.
     await armPrompt();
     await ctx.elements['swarm-messaging-confirm'].fire('click');
-    await second.promise;
-    expect(second.resolved).toBe(true);
+    expect(decide).toHaveBeenLastCalledWith('m2', true, {});
     expect(screen.classList.contains('hidden')).toBe(true);
   });
 
-  test('cancelling a messaging prompt rejects only that request and shows the next', async () => {
+  test('rejecting a messaging prompt answers only that one and shows the next', async () => {
     const ctx = await loadSwarmConnect();
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'alpha' }, resolve, reject, {
-        method: 'swarm_sendPss',
-      })
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'beta' }, resolve, reject, {
-        method: 'swarm_sendPss',
-      })
-    );
+    showPrompt(ctx, 'swarm.messaging', 'm1', { method: 'swarm_sendPss', topic: 'alpha', size: 3 });
+    showPrompt(ctx, 'swarm.messaging', 'm2', { method: 'swarm_sendPss', topic: 'beta', size: 3 });
 
     await armPrompt();
     await ctx.elements['swarm-messaging-reject'].fire('click');
 
-    expect(first.rejected).toEqual({ code: 4001, message: 'User rejected the request' });
-    expect(second.rejected).toBe(null);
+    expect(decide.mock.calls).toEqual([['m1', false, {}]]);
     expect(ctx.elements['sidebar-swarm-messaging-approve'].classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-messaging-topic'].textContent).toBe('beta');
 
     await armPrompt();
     await ctx.elements['swarm-messaging-confirm'].fire('click');
-    await second.promise;
-    expect(second.resolved).toBe(true);
+    expect(decide).toHaveBeenLastCalledWith('m2', true, { alwaysAllow: false });
   });
 
-  test('dismissing the messaging screen rejects the queued requests too', async () => {
+  test('dismissing the messaging screen reports every queued prompt displaced', async () => {
     const ctx = await loadSwarmConnect();
+    const displaced = jest.fn();
+    ctx.pagePromptRenderers.onPagePromptDisplaced(displaced);
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', {}, resolve, reject, {
-        method: 'swarm_sendPss',
-      })
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', {}, resolve, reject, {
-        method: 'swarm_sendPss',
-      })
-    );
+    showPrompt(ctx, 'swarm.messaging', 'm1', { method: 'swarm_sendPss' });
+    showPrompt(ctx, 'swarm.messaging', 'm2', { method: 'swarm_sendPss' });
 
     // Another screen taking over the sidebar fires every screen hider.
     ctx.hideAllSubscreens();
 
-    expect(first.rejected).toEqual({ code: 4001, message: 'User dismissed prompt' });
-    expect(second.rejected).toEqual({ code: 4001, message: 'User dismissed prompt' });
+    expect(displaced.mock.calls).toEqual([['m1'], ['m2']]);
+    expect(global.window.pagePrompts.decide).not.toHaveBeenCalled();
     expect(ctx.elements['sidebar-swarm-messaging-approve'].classList.contains('hidden')).toBe(true);
   });
 
-  test('concurrent publish requests queue as well', async () => {
+  test('concurrent publish prompts queue as well', async () => {
     const ctx = await loadSwarmConnect();
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmPublishApproval(
-        'https://a.example',
-        { contentType: 'text/plain', data: 'one', name: 'first.txt' },
-        resolve,
-        reject,
-        'swarm_publishData'
-      )
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmPublishApproval(
-        'https://a.example',
-        { contentType: 'text/plain', data: 'two', name: 'second.txt' },
-        resolve,
-        reject,
-        'swarm_publishData'
-      )
-    );
+    showPrompt(ctx, 'swarm.publish', 'p1', { method: 'swarm_publishData', kind: 'data', size: 3, contentType: 'text/plain', name: 'first.txt' });
+    showPrompt(ctx, 'swarm.publish', 'p2', { method: 'swarm_publishData', kind: 'data', size: 3, contentType: 'text/plain', name: 'second.txt' });
 
     expect(ctx.elements['swarm-publish-name'].textContent).toBe('first.txt');
-    expect(second.rejected).toBe(null);
 
     await armPrompt();
     await ctx.elements['swarm-publish-confirm'].fire('click');
-    await first.promise;
-    expect(first.resolved).toBe(true);
+    expect(decide.mock.calls).toEqual([['p1', true, { alwaysAllow: false }]]);
     expect(ctx.elements['sidebar-swarm-publish-approve'].classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-publish-name'].textContent).toBe('second.txt');
 
     await armPrompt();
     await ctx.elements['swarm-publish-confirm'].fire('click');
-    await second.promise;
-    expect(second.resolved).toBe(true);
+    expect(decide).toHaveBeenLastCalledWith('p2', true, { alwaysAllow: false });
   });
 
-  test('concurrent connect requests queue as well', async () => {
+  test('concurrent connect prompts queue as well', async () => {
     const ctx = await loadSwarmConnect();
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmConnect('https://a.example', 'https://a.example', resolve, reject, null)
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmConnect('https://b.example', 'https://b.example', resolve, reject, null)
-    );
+    showPrompt(ctx, 'swarm.connect', 'c1', {}, { key: 'a.eth', label: 'a.eth' });
+    showPrompt(ctx, 'swarm.connect', 'c2', {}, { key: 'b.eth', label: 'b.eth' });
 
-    expect(ctx.elements['swarm-connect-site'].textContent).toBe('https://a.example');
-    expect(second.rejected).toBe(null);
+    expect(ctx.elements['swarm-connect-site'].textContent).toBe('a.eth');
 
     await armPrompt();
     await ctx.elements['swarm-connect-approve'].fire('click');
-    await first.promise;
-    expect(first.resolved).toBe(true);
+    expect(decide.mock.calls).toEqual([['c1', true, {}]]);
     expect(ctx.elements['sidebar-swarm-connect'].classList.contains('hidden')).toBe(false);
-    expect(ctx.elements['swarm-connect-site'].textContent).toBe('https://b.example');
+    expect(ctx.elements['swarm-connect-site'].textContent).toBe('b.eth');
 
     await armPrompt();
     await ctx.elements['swarm-connect-reject'].fire('click');
-    expect(second.rejected).toEqual({ code: 4001, message: 'User rejected Swarm access' });
+    expect(decide).toHaveBeenLastCalledWith('c2', false, {});
   });
 
-  test('double-clicking Approve settles one request and leaves the queued one on screen', async () => {
+  test('double-clicking Approve answers one prompt and leaves the queued one on screen', async () => {
     const ctx = await loadSwarmConnect();
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmConnect('https://a.example', 'https://a.example', resolve, reject, null)
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmConnect('https://b.example', 'https://b.example', resolve, reject, null)
-    );
+    showPrompt(ctx, 'swarm.connect', 'c1', {}, { key: 'a.eth', label: 'a.eth' });
+    showPrompt(ctx, 'swarm.connect', 'c2', {}, { key: 'b.eth', label: 'b.eth' });
 
     await armPrompt();
     // Two clicks landing before the first approval finishes: the second must
-    // not settle the request again (which used to null the queue entry for
-    // https://b.example without ever resolving or showing it).
-    const doubleClick = Promise.all([
+    // not answer the prompt again, nor the one queued behind it.
+    await Promise.all([
       ctx.elements['swarm-connect-approve'].fire('click'),
       ctx.elements['swarm-connect-approve'].fire('click'),
     ]);
-    await doubleClick;
-    await first.promise;
 
-    expect(first.resolved).toBe(true);
-    expect(second.resolved).toBe(false);
-    expect(second.rejected).toBe(null);
-    // The queued request is on screen, not silently dropped.
+    expect(decide.mock.calls).toEqual([['c1', true, {}]]);
+    // The queued prompt is on screen, not silently dropped.
     expect(ctx.elements['sidebar-swarm-connect'].classList.contains('hidden')).toBe(false);
-    expect(ctx.elements['swarm-connect-site'].textContent).toBe('https://b.example');
+    expect(ctx.elements['swarm-connect-site'].textContent).toBe('b.eth');
 
     await armPrompt();
     await ctx.elements['swarm-connect-approve'].fire('click');
-    await second.promise;
-    expect(second.resolved).toBe(true);
+    expect(decide).toHaveBeenLastCalledWith('c2', true, {});
   });
 
   test('a click landing on a just-presented prompt is ignored until the user can read it', async () => {
     const ctx = await loadSwarmConnect();
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'grant' }, resolve, reject, {
-        method: 'swarm_subscribe',
-        grantMode: true,
-      })
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmMessagingApproval('https://a.example', { topic: 'send' }, resolve, reject, {
-        method: 'swarm_sendGsoc',
-      })
-    );
+    showPrompt(ctx, 'swarm.messaging', 'm1', { method: 'swarm_subscribe', grantMode: true, topic: 'grant' });
+    showPrompt(ctx, 'swarm.messaging', 'm2', { method: 'swarm_sendGsoc', topic: 'send', size: 3 });
 
     await armPrompt();
     // The click that approves the grant prompt also presents the send prompt.
     await ctx.elements['swarm-messaging-confirm'].fire('click');
-    await first.promise;
     expect(ctx.elements['swarm-messaging-topic'].textContent).toBe('send');
 
     // The second half of a double-click lands on the send prompt's buttons.
     expect(ctx.elements['swarm-messaging-confirm'].disabled).toBe(true);
     expect(ctx.elements['swarm-messaging-reject'].disabled).toBe(true);
     await ctx.elements['swarm-messaging-confirm'].fire('click');
-    expect(second.resolved).toBe(false);
-    expect(second.rejected).toBe(null);
+    expect(decide).toHaveBeenCalledTimes(1);
     expect(ctx.elements['sidebar-swarm-messaging-approve'].classList.contains('hidden')).toBe(false);
 
-    // Once the window has elapsed the same click settles it normally.
+    // Once the window has elapsed the same click answers it normally.
     await armPrompt();
     expect(ctx.elements['swarm-messaging-confirm'].disabled).toBe(false);
     await ctx.elements['swarm-messaging-confirm'].fire('click');
-    await second.promise;
-    expect(second.resolved).toBe(true);
+    expect(decide).toHaveBeenLastCalledWith('m2', true, { alwaysAllow: false });
   });
 
   test('the feed Always-allow choice survives a queued prompt resetting the checkbox', async () => {
     const ctx = await loadSwarmConnect();
+    const { decide } = global.window.pagePrompts;
+    const identities = [{ id: 'ident-1', mode: 'app-scoped', shared: false, stored: true }];
 
-    const first = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmFeedApproval('https://a.example', { name: 'first-feed' }, resolve, reject, {
-        method: 'swarm_createFeed',
-        autoApproveType: 'feeds',
-      })
-    );
-    const second = trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmFeedApproval('https://a.example', { name: 'second-feed' }, resolve, reject, {
-        method: 'swarm_updateFeed',
-        autoApproveType: 'feeds',
-      })
-    );
+    showPrompt(ctx, 'swarm.feed', 'f1', { method: 'swarm_createFeed', mode: 'feeds', name: 'first-feed', identities, activeIdentityId: 'ident-1' });
+    showPrompt(ctx, 'swarm.feed', 'f2', { method: 'swarm_updateFeed', mode: 'feeds', name: 'second-feed', identities, activeIdentityId: 'ident-1' });
 
     await armPrompt();
-    await Promise.resolve();
     ctx.elements['swarm-feed-auto-approve'].checked = true;
-
     await ctx.elements['swarm-feed-approve'].fire('click');
-    await first.promise;
 
     // Presenting the queued prompt reset the shared checkbox — the choice the
-    // user actually made must still have been persisted.
+    // user actually made must still be the answer.
     expect(ctx.elements['swarm-feed-auto-approve'].checked).toBe(false);
-    expect(global.window.swarmPermissions.setAutoApprove).toHaveBeenCalledWith(
-      'https://a.example',
-      'feeds',
-      true
-    );
-    expect(second.resolved).toBe(false);
-    expect(second.rejected).toBe(null);
+    expect(decide.mock.calls).toEqual([['f1', true, { identity: 'ident-1', alwaysAllow: true }]]);
     expect(ctx.elements['swarm-feed-name'].textContent).toBe('second-feed');
-  });
-
-  test('the feed Allow button stays disabled while the vault is locked', async () => {
-    const ctx = await loadSwarmConnect();
-    global.window.identity.getStatus.mockResolvedValue({ isUnlocked: false });
-    global.window.quickUnlock = {
-      canUseTouchId: jest.fn().mockResolvedValue(false),
-      isEnabled: jest.fn().mockResolvedValue(false),
-    };
-    global.window.identity.getVaultMeta = jest.fn().mockResolvedValue({ userKnowsPassword: true });
-
-    trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmFeedApproval('https://a.example', { name: 'locked-feed' }, resolve, reject, {
-        method: 'swarm_createFeed',
-        autoApproveType: 'feeds',
-      })
-    );
-
-    await armPrompt();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // The arm window elapsing must not hand out Allow on a locked vault.
-    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
   });
 });
 
 describe('Single Owner Chunk prompt under a shared identity (SW-1)', () => {
   beforeEach(() => jest.useFakeTimers());
-  afterEach(() => jest.useRealTimers());
-
-  const settle = async () => {
-    for (let i = 0; i < 10; i += 1) await Promise.resolve();
-  };
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+  });
 
   async function showSigning(method, identities) {
     const ctx = await loadSwarmConnect();
-    global.window.swarmFeedStore.getOriginIdentities.mockResolvedValue({
-      activeIdentityId: identities[0].id,
+    showPrompt(ctx, 'swarm.feed', 's1', {
+      method,
+      mode: 'signing',
+      identifier: 'ab'.repeat(32),
       identities,
+      activeIdentityId: identities[0].id,
     });
-    trackedPrompt((resolve, reject) =>
-      ctx.mod.showSwarmFeedApproval('https://a.example', { identifier: 'ab'.repeat(32) }, resolve, reject, {
-        method,
-        autoApproveType: 'signing',
-      })
-    );
     await armPrompt();
-    await settle();
     return ctx;
   }
 
@@ -606,10 +421,6 @@ describe('Single Owner Chunk prompt under a shared identity (SW-1)', () => {
       { id: 'bee-wallet', mode: 'bee-wallet', label: 'Ant wallet identity', shared: true },
       { id: 'app-scoped:3', mode: 'app-scoped', label: 'App-scoped identity 4', shared: false },
     ]);
-
-    const warning = ctx.elements['swarm-feed-warning'].textContent;
-    expect(warning).toContain('Ant wallet identity is also used by other sites');
-    expect(warning).toContain('cannot write Single Owner Chunks');
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
 
     // The user picks the identity only this site uses.
@@ -619,13 +430,23 @@ describe('Single Owner Chunk prompt under a shared identity (SW-1)', () => {
       'Publisher signing can create Single Owner Chunks and reveal the active publisher owner for this site.'
     );
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
+
+    // And back to the shared one: the notice says why Allow is off.
+    await onSelect({ id: 'bee-wallet', mode: 'bee-wallet', label: 'Ant wallet identity', shared: true });
+    const warning = ctx.elements['swarm-feed-warning'].textContent;
+    expect(warning).toContain('Ant wallet identity is also used by other sites');
+    expect(warning).toContain('cannot write Single Owner Chunks');
+    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
   });
 
   test('disclosing a shared signing identity is allowed, with the notice', async () => {
     const ctx = await showSigning('swarm_getSigningIdentity', [
+      { id: 'app-scoped:1', mode: 'app-scoped', label: 'App-scoped identity 2', shared: false },
       { id: 'ethereum-wallet:0', mode: 'ethereum-wallet', label: 'Main Wallet', shared: true },
     ]);
 
+    const { onSelect } = ctx.renderPublisherIdentitySelector.mock.calls.at(-1)[2];
+    await onSelect({ id: 'ethereum-wallet:0', mode: 'ethereum-wallet', label: 'Main Wallet', shared: true });
     expect(ctx.elements['swarm-feed-warning'].textContent).toBe(
       'Main Wallet is also used by other sites: they sign as the same owner address.'
     );
@@ -684,8 +505,6 @@ describe('main\'s Swarm prompts in the chrome', () => {
     jest.restoreAllMocks();
   });
 
-  const SITE = { key: 'bzz://aaaa', label: 'bzz://aaaa' };
-
   test('swarm.connect: main\'s site shows, and Connect answers the handle once armed, writing nothing itself', async () => {
     const ctx = await loadSwarmConnect();
     const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.connect');
@@ -700,8 +519,6 @@ describe('main\'s Swarm prompts in the chrome', () => {
     await armPrompt();
     await ctx.elements['swarm-connect-approve'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('h1', true, {});
-    expect(global.window.swarmPermissions.grantPermission).not.toHaveBeenCalled();
-    expect(global.window.swarmProvider.execute).not.toHaveBeenCalled();
     expect(screen.classList.contains('hidden')).toBe(true);
     expect(renderer.isShowing()).toBe(null);
   });
@@ -730,7 +547,7 @@ describe('main\'s Swarm prompts in the chrome', () => {
     ctx.pagePromptRenderers.onPagePromptDisplaced(displaced);
     const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.connect');
     renderer.show({ handle: 'h4', guest: 7, kind: 'swarm.connect', site: SITE, view: {} });
-    ctx.mod.showSwarmPublishApproval('https://b.example', { data: 'x' }, () => {}, () => {}, 'swarm_publishData');
+    showPrompt(ctx, 'swarm.publish', 'p9', { method: 'swarm_publishData', kind: 'data', size: 1 });
     expect(displaced).toHaveBeenCalledWith('h4');
     expect(renderer.isShowing()).toBe(null);
     expect(global.window.pagePrompts.decide).not.toHaveBeenCalled();
@@ -794,7 +611,6 @@ describe('main\'s Swarm prompts in the chrome', () => {
     await ctx.elements['swarm-publish-confirm'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('p1', true, { alwaysAllow: true });
     expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
-    expect(global.window.swarmProvider.execute).not.toHaveBeenCalled();
     expect(renderer.isShowing()).toBe(null);
 
     renderer.show({
@@ -851,14 +667,11 @@ describe('main\'s Swarm prompts in the chrome', () => {
     // "Create new app-scoped identity" offers main's new one, with no request.
     await handlers.onCreateAppScoped();
     expect(ctx.renderPublisherIdentitySelector.mock.calls.at(-1)[1].activeIdentityId).toBe('app-scoped:4');
-    expect(global.window.swarmFeedStore.previewAppScopedIdentity).not.toHaveBeenCalled();
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
     ctx.elements['swarm-feed-auto-approve'].checked = true;
     await ctx.elements['swarm-feed-approve'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('f1', true, { identity: 'app-scoped:4', alwaysAllow: true });
-    for (const write of ['activateFeedIdentity', 'setFeedIdentity']) {
-      expect(global.window.swarmFeedStore[write]).not.toHaveBeenCalled();
-    }
+    expect(global.window.swarmFeedStore.activateFeedIdentity).not.toHaveBeenCalled();
     expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
     expect(renderer.isShowing()).toBe(null);
 
