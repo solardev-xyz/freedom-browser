@@ -19,7 +19,7 @@ import { truncateAddress } from './wallet-utils.js';
 export const RADICLE_THROWAWAY_LABEL = 'throwaway key';
 export const RADICLE_THROWAWAY_TITLE =
   "This Radicle node runs with a throwaway key until it restarts with your identity, so it can't publish.";
-export const RADICLE_NOT_RUNNING_TITLE = 'No Radicle node is running.';
+export const RADICLE_NOT_RUNNING_TITLE = 'No Radicle node is running';
 export const RADICLE_NEXT_TITLE = 'The identity Radicle will use from its next start.';
 
 const shortDid = (did) => truncateAddress(did.replace('did:key:', ''), 8, 6);
