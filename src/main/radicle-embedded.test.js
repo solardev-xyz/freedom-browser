@@ -522,3 +522,168 @@ describe('shutdown proof (R-8)', () => {
     }
   });
 });
+
+// Under FREEDOM_RADICLE_BACKEND=service (freedom-core design 0008, "Main's
+// side"; plan B7): the exports keep their shapes; identity and status are
+// collected and kept under 4 KiB, callScoped and callStream are the service
+// node's reads (radicle/radicle-service-backend.js), the rest say they
+// aren't on the service yet, and the add-on is never loaded.
+describe('on the freedom-radicled service', () => {
+  let embedded;
+  let reads;
+  let generation;
+
+  /** A service node whose `rad.read` answers `answer(op, args)`'s JSON. */
+  const node = {
+    get generation() {
+      return generation;
+    },
+    read: jest.fn(async (op, args) => {
+      reads.push({ op, args });
+      const bytes = Buffer.from(JSON.stringify({ op, args }));
+      return {
+        result: { content_type: 'application/json', bytes: bytes.length },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+      };
+    }),
+    streamStats: () => ({ outstanding: 0, ringBytes: 0, bodies: 0, outbox: 0 }),
+  };
+
+  beforeEach(() => {
+    process.env.FREEDOM_RADICLE_BACKEND = 'service';
+    // An add-on that must never load.
+    process.env.FREEDOM_RADICLE_ADDON = path.join(os.tmpdir(), 'no-such', 'libradicle.node');
+    reads = [];
+    generation = 1;
+    jest.isolateModules(() => {
+      embedded = require('./radicle-embedded');
+    });
+    embedded.setServiceNodeSource(() => node);
+  });
+
+  afterEach(() => {
+    delete process.env.FREEDOM_RADICLE_BACKEND;
+    delete process.env.FREEDOM_RADICLE_ADDON;
+    jest.resetModules();
+  });
+
+  test.each([
+    ['identity', 'identity'],
+    ['status', 'status'],
+  ])('%s is a collected read of %s, kept under 4 KiB', async (name, op) => {
+    await expect(embedded[name]()).resolves.toEqual({ op, args: {} });
+    expect(reads).toEqual([{ op, args: {} }]);
+    expect(embedded.collectionBudget()).toEqual({ held: 0, limit: 16 * 1024 * 1024 });
+  });
+
+  test('identity and status of 4 KiB or more are too_large to keep', async () => {
+    const big = { op: 'identity', alias: 'x'.repeat(4096) };
+    node.read.mockImplementationOnce(async () => {
+      const bytes = Buffer.from(JSON.stringify(big));
+      return {
+        result: { content_type: 'application/json', bytes: bytes.length },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+      };
+    });
+    await expect(embedded.identity()).rejects.toMatchObject({ code: 'too_large' });
+    expect(embedded.collectionBudget().held).toBe(0);
+  });
+
+  test("callScoped and callStream are the service backend's", async () => {
+    await expect(embedded.callScoped('node_info', {}, async (value) => value.op)).resolves.toBe(
+      'node_info'
+    );
+    // The value is used in its scope, not handed out of it.
+    await expect(
+      embedded.callScoped('list_repos', {}, async (value) => value)
+    ).rejects.toMatchObject({ code: 'invalid_argument' });
+    const { head, body } = await embedded.callStream('commit', { rid: 'rad:z1', revision: 'a' });
+    expect(head).toEqual({ content_type: 'application/json', bytes: expect.any(Number) });
+    expect(JSON.parse(await new Response(body).text())).toEqual({
+      op: 'commit',
+      args: { rid: 'rad:z1', revision: 'a' },
+    });
+    expect(embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
+  });
+
+  test.each([
+    // Collected, but used only inside a scope: their callers move into one.
+    'repoInfo',
+    'seeders',
+    'listSeededRepos',
+    'listRepos',
+    'start',
+    'shutdown',
+    'connectSeeds',
+    'cloneRepo',
+    'cloneRepoWithProgress',
+    'cancelClone',
+    'unseedRepo',
+    'createIssue',
+    'commentIssue',
+    'editIssueState',
+    'commentPatch',
+    'importRepo',
+    'issues',
+    'issue',
+    'patches',
+    'patch',
+    'commits',
+    'commit',
+    'tree',
+    'treeAt',
+    'blob',
+    'blobAt',
+    'commitsRaw',
+    'commitRaw',
+    'treeAtRaw',
+    'blobRaw',
+    'blobAtRaw',
+    'remotes',
+    'repoStats',
+    'buildRepoMeta',
+    'readme',
+    'readmeAt',
+    'readmeAtRaw',
+  ])('%s is not on the service yet: it says so, and reads nothing', async (name) => {
+    await expect(embedded[name]('rad:z1', 'a'.repeat(40), 'README.md')).rejects.toMatchObject({
+      name: 'RadicleServiceUnsupported',
+      code: 'RADICLE_SERVICE_UNSUPPORTED',
+      message: embedded.NOT_ON_SERVICE,
+      export: name,
+    });
+    expect(reads).toEqual([]);
+  });
+
+  test("isStarted is the service node's: a generation that serves", () => {
+    expect(embedded.isStarted()).toBe(true);
+    generation = null;
+    expect(embedded.isStarted()).toBe(false);
+    embedded.setServiceNodeSource(() => null);
+    expect(embedded.isStarted()).toBe(false);
+  });
+
+  test('with no node, a read is stopped', async () => {
+    embedded.setServiceNodeSource(() => null);
+    await expect(embedded.status()).rejects.toMatchObject({ code: 'stopped' });
+  });
+
+  test('the add-on has no streams: callStream and callScoped refuse there', async () => {
+    delete process.env.FREEDOM_RADICLE_BACKEND;
+    await expect(embedded.callStream('status', {})).rejects.toThrow(/the add-on has no streams/);
+    await expect(embedded.callScoped('status', {}, async () => {})).rejects.toThrow(
+      /the add-on has no streams/
+    );
+    expect(() => embedded.collectionBudget()).toThrow(/the add-on has no streams/);
+  });
+});
