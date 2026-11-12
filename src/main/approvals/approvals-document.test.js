@@ -29,6 +29,10 @@ const {
   MAX_VIEW_BYTES,
   DEFAULT_TOP,
   MAX_TOP,
+  MIN_PANEL_WIDTH,
+  MIN_PANEL_HEIGHT,
+  MIN_WINDOW_SIZE,
+  panelFits,
 } = approvals;
 
 const RENDERER = path.resolve(__dirname, '..', '..', 'renderer');
@@ -119,10 +123,19 @@ class FakeWindow extends EventEmitter {
     this.children = [];
     this.contentView = { addChildView: (view) => this.children.push(view) };
     this.webContents = { id: 500 + id, focused: false, focus() { this.focused = true; } };
+    this.minimum = [0, 0];
   }
 
   getContentSize() {
     return this.size;
+  }
+
+  getMinimumSize() {
+    return this.minimum;
+  }
+
+  setMinimumSize(width, height) {
+    this.minimum = [width, height];
   }
 }
 
@@ -150,7 +163,9 @@ function setup({ theme = 'system' } = {}) {
     decisions.push([windowId, payload]);
     return { ok: true };
   });
+  const deferred = [];
   const docs = createApprovalsDocuments({
+    defer: (fn) => deferred.push(fn),
     WebContentsView: () =>
       class extends FakeView {
         constructor(options) {
@@ -176,7 +191,11 @@ function setup({ theme = 'system' } = {}) {
   const advance = (ms) => {
     clock += ms;
   };
-  return { docs, ses, partitions, views, decide, decisions, trace, advance, themeListeners, ipc };
+  const runDeferred = async () => {
+    while (deferred.length) deferred.shift()();
+    for (let i = 0; i < 3; i += 1) await Promise.resolve();
+  };
+  return { docs, ses, partitions, views, decide, decisions, trace, advance, themeListeners, ipc, runDeferred };
 }
 
 /** An IPC event from `contents`' main frame, or the frame given. */
@@ -280,10 +299,71 @@ describe('one document per chrome window', () => {
     expect(view.bounds).toHaveLength(moves);
   });
 
-  test('panelBounds: never wider than the window, never below it', () => {
-    expect(panelBounds({ width: 200, height: 100 }, 85)).toEqual({ x: 0, y: 85, width: 200, height: 15 });
-    expect(panelBounds({ width: 200, height: 50 }, 85)).toEqual({ x: 0, y: 50, width: 200, height: 0 });
+  test('panelBounds: never wider than the window, never shorter than its minimum while the window has room', () => {
     expect(panelBounds({ width: 1200, height: 800 }, Number.NaN)).toEqual({ x: 880, y: DEFAULT_TOP, width: 320, height: 715 });
+    // A short window: the panel rises over the toolbar rather than lose
+    // its buttons, however low the chrome says the content starts.
+    expect(panelBounds({ width: 1200, height: 400 }, MAX_TOP)).toEqual({ x: 880, y: 400 - MIN_PANEL_HEIGHT, width: 320, height: MIN_PANEL_HEIGHT });
+    expect(panelBounds({ width: 1200, height: MIN_PANEL_HEIGHT }, MAX_TOP)).toEqual({ x: 880, y: 0, width: 320, height: MIN_PANEL_HEIGHT });
+    // No room at all (a window below its minimum size): it fills what there is.
+    expect(panelBounds({ width: 200, height: 100 }, 85)).toEqual({ x: 0, y: 0, width: 200, height: 100 });
+    expect(panelFits(panelBounds({ width: 1200, height: 400 }, MAX_TOP))).toBe(true);
+    expect(panelFits(panelBounds({ width: 300, height: 200 }, MAX_TOP))).toBe(false);
+    expect(panelFits(panelBounds({ width: MIN_PANEL_WIDTH - 1, height: 800 }, 0))).toBe(false);
+    expect(panelFits(null)).toBe(false);
+  });
+
+  test('the window keeps a minimum size while the flag is on, never lowering one it has', () => {
+    const env = setup();
+    const window = new FakeWindow(1);
+    env.docs.attach(window);
+    expect(window.minimum).toEqual([...MIN_WINDOW_SIZE]);
+    // The panel fits beside some content at that size, frame and title bar
+    // taken off.
+    expect(MIN_WINDOW_SIZE[0] - 40).toBeGreaterThanOrEqual(MIN_PANEL_WIDTH);
+    expect(MIN_WINDOW_SIZE[1] - 80).toBeGreaterThanOrEqual(MIN_PANEL_HEIGHT);
+    const bigger = new FakeWindow(2);
+    bigger.minimum = [900, 700];
+    env.docs.attach(bigger);
+    expect(bigger.minimum).toEqual([900, 700]);
+  });
+
+  test('the chrome\'s anchor never leaves the panel without its buttons (the 300x200 window)', async () => {
+    const env = setup();
+    const { window, view, contents } = attached(env);
+    const chrome = { id: 501 };
+    env.docs.anchor({ sender: chrome }, { top: MAX_TOP });
+    window.size = [1200, 400];
+    window.emit('resize');
+    expect(view.bounds.at(-1)).toEqual({ x: 880, y: 160, width: 320, height: MIN_PANEL_HEIGHT });
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    await env.runDeferred();
+    expect(env.decide).not.toHaveBeenCalled();
+    expect(env.docs.state()[1].shown).toBe(HANDLE);
+    // Smaller than the window's minimum size can make it: no room for the
+    // panel, and the chrome's decision is refused, so main rejects.
+    window.size = [300, 200];
+    window.emit('resize');
+    expect(view.bounds.at(-1)).toEqual({ x: 0, y: 0, width: 300, height: 200 });
+    await env.runDeferred();
+    expect(env.decisions).toEqual([[1, { handle: HANDLE, approve: false }]]);
+    expect(env.trace.map((e) => e.kind)).toContain('no-room');
+    expect(contents.sent.map(([channel]) => channel)).toContain(CHANNELS.PROMPT);
+  });
+
+  test('a prompt that arrives with no room for the panel is closed as rejected', async () => {
+    const env = setup();
+    const window = new FakeWindow(1, [300, 200]);
+    const { contents } = env.docs.attach(window);
+    env.docs.ready(eventFrom(contents));
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    await env.runDeferred();
+    expect(env.decisions).toEqual([[1, { handle: HANDLE, approve: false }]]);
+    // Once it is gone, nothing more.
+    env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
+    window.emit('resize');
+    await env.runDeferred();
+    expect(env.decisions).toHaveLength(1);
   });
 });
 
@@ -794,5 +874,20 @@ describe('the flag on, with main\'s page prompts (page-requests.js)', () => {
     const answer = await env.tab().ask(VIEW);
     expect(answer.error).toBeDefined();
     expect(env.chromeChannels()).toEqual([]);
+  });
+});
+
+describe('no room for the panel, with page-requests', () => {
+  test('the page hears its request rejected, nothing approved, and the panel goes', async () => {
+    const env = withPageRequests();
+    const window = new FakeWindow(1, [300, 200]);
+    const { contents, view } = env.docs.attach(window);
+    env.docs.ready(eventFrom(contents));
+    const answer = env.tab().ask(VIEW);
+    await flush();
+    await env.runDeferred();
+    expect(await answer).toEqual({ error: { code: 4001, message: 'User rejected the request' } });
+    expect(view.visible).toBe(false);
+    expect(env.docs.state()[1].shown).toBeNull();
   });
 });

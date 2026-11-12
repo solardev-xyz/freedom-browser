@@ -42,6 +42,12 @@
  * document last reported the prompt shown, or after main last showed or
  * moved the panel.
  *
+ * The panel stays whole and actionable: the chrome's anchor never pushes
+ * it below its minimum height, the window keeps a minimum size, and a
+ * prompt that still has no room for the panel (a screen smaller than that
+ * minimum) is closed as rejected rather than left pending, since the
+ * chrome's decision is refused.
+ *
  * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
  * narrows what the chrome can do, so packaged builds honour it too. The
  * flag goes on by default with APS-2.
@@ -126,6 +132,14 @@ const PANEL_WIDTH = 320;
 const DEFAULT_TOP = 85;
 // However the chrome reports it, the panel starts no lower than this.
 const MAX_TOP = 240;
+// The least room the panel needs to show a prompt's heading, site and both
+// buttons, with some of its body; however the chrome reports its anchor,
+// the panel keeps this height.
+const MIN_PANEL_WIDTH = 240;
+const MIN_PANEL_HEIGHT = 240;
+// The window's minimum size while the flag is on, so the panel always
+// fits beside some content (outer size: room for a frame and title bar).
+const MIN_WINDOW_SIZE = Object.freeze([480, 360]);
 
 // The most of a view main forwards (design 0011, "What a prompt shows").
 const MAX_VIEW_BYTES = 256 * 1024;
@@ -203,14 +217,22 @@ function outgoingPrompt(payload) {
   };
 }
 
-/** The panel's bounds in a window of `width` x `height`, below `top`. */
+/**
+ * The panel's bounds in a window of `width` x `height`, below `top`, but
+ * never so low that it is shorter than its minimum: in a short window it
+ * rises over the toolbar rather than lose its buttons.
+ */
 function panelBounds({ width, height }, top) {
   const w = Math.max(0, Math.floor(width) || 0);
   const h = Math.max(0, Math.floor(height) || 0);
   const panelWidth = Math.min(PANEL_WIDTH, w);
-  const y = Math.min(clampTop(top), h);
+  const y = Math.max(0, Math.min(clampTop(top), h - MIN_PANEL_HEIGHT));
   return { x: w - panelWidth, y, width: panelWidth, height: h - y };
 }
+
+/** Whether bounds leave the panel room for a whole, actionable prompt. */
+const panelFits = (bounds) =>
+  Boolean(bounds) && bounds.width >= MIN_PANEL_WIDTH && bounds.height >= MIN_PANEL_HEIGHT;
 
 function clampTop(top) {
   if (typeof top !== 'number' || !Number.isFinite(top)) return DEFAULT_TOP;
@@ -237,6 +259,8 @@ function defaultChromeWindowOf(contents) {
  * @param {(contents: object) => number|null} [options.chromeWindowOf]
  * @param {(file: string) => Promise<Buffer>} [options.readFile]
  * @param {() => number} [options.now] a monotonic clock, in ms.
+ * @param {(fn: Function) => void} [options.defer] runs `fn` once the
+ *   current call is over.
  * @param {() => string} [options.themeSetting] Settings > Appearance:
  *   'light', 'dark' or 'system'. The setting doesn't reach
  *   `prefers-color-scheme` on every platform, so the document is told.
@@ -250,6 +274,7 @@ function createApprovalsDocuments({
   chromeWindowOf = defaultChromeWindowOf,
   readFile = (file) => fs.promises.readFile(file),
   now = () => performance.now(),
+  defer = (fn) => queueMicrotask(fn),
   themeSetting = () => 'system',
   onThemeChange = () => {},
   onTrace = () => {},
@@ -347,8 +372,27 @@ function createApprovalsDocuments({
       arm(record);
       trace({ kind: 'moved', window: record.windowId, bounds });
       deliver(record, CHANNELS.MOVED, null);
+      rejectIfNoRoom(record);
     }
     return true;
+  }
+
+  /**
+   * The prompt shown in a panel with no room for it (a window smaller than
+   * its minimum size, on a screen smaller than that) can't be answered, and
+   * the chrome's decision is refused: main closes it as rejected rather
+   * than leave the page waiting.
+   */
+  function rejectIfNoRoom(record) {
+    if (!record.shown || panelFits(record.bounds)) return;
+    const handle = record.shown.handle;
+    defer(() => {
+      if (record.shown?.handle !== handle || panelFits(record.bounds)) return;
+      trace({ kind: 'no-room', window: record.windowId, handle, bounds: { ...record.bounds } });
+      Promise.resolve()
+        .then(() => decide(record.windowId, { handle, approve: false }))
+        .catch(() => {});
+    });
   }
 
   function show(record) {
@@ -360,6 +404,7 @@ function createApprovalsDocuments({
     arm(record);
     // The panel takes focus when it shows.
     safely(() => record.contents.focus());
+    rejectIfNoRoom(record);
   }
 
   function hide(record) {
@@ -402,6 +447,11 @@ function createApprovalsDocuments({
     byContents.set(record.contentsId, record);
     lock(contents);
     safely(() => view.setVisible(false));
+    // Room for the panel beside some content, whatever the chrome asks for.
+    safely(() => {
+      const [minWidth, minHeight] = window.getMinimumSize?.() || [0, 0];
+      window.setMinimumSize(Math.max(minWidth, MIN_WINDOW_SIZE[0]), Math.max(minHeight, MIN_WINDOW_SIZE[1]));
+    });
     window.contentView.addChildView(view);
     layout(record);
     const relayout = () => layout(record);
@@ -679,12 +729,16 @@ module.exports = {
   PANEL_WIDTH,
   DEFAULT_TOP,
   MAX_TOP,
+  MIN_PANEL_WIDTH,
+  MIN_PANEL_HEIGHT,
+  MIN_WINDOW_SIZE,
   MAX_VIEW_BYTES,
   WEB_PREFERENCES,
   isApprovalsDocumentEnabled,
   ownFile,
   outgoingPrompt,
   panelBounds,
+  panelFits,
   createApprovalsDocuments,
   getApprovalsDocuments,
   attachApprovalsDocument,
