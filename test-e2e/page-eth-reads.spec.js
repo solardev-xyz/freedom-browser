@@ -160,6 +160,13 @@ const chromeRead = (win, chainId, method, params, origin) =>
 
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 
+// A connection, written in main as main writes one: the chrome's own grant
+// write is refused from PRQ-4.
+const grant = (electronApp, key) =>
+  electronApp.evaluate((_electron, args) => {
+    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, 0, 100);
+  }, { root: repoRoot, key });
+
 /** Count every request a page sends the chrome on the old path, in every tab. */
 const watchOldPath = (win) =>
   win.evaluate(() => {
@@ -244,7 +251,7 @@ test('the Ethereum reads go to main, with the chrome\'s answers: the selected ch
 
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
-  await win.evaluate((key) => window.dappPermissions.grantPermission(key, 0, 100), DAPP);
+  await grant(electronApp, DAPP);
 
   // A connected dApp: Gnosis, the switcher's default, and its account.
   await openIn(win, `${DAPP}/`);
@@ -266,8 +273,8 @@ test('the Ethereum reads go to main, with the chrome\'s answers: the selected ch
   expect(await ask(win, DAPP, 'eth_chainId')).toEqual({ ok: '0x1' });
   expect(await ask(win, DAPP, 'net_version')).toEqual({ ok: '1' });
 
-  // A chain switch the chrome makes for a page (wallet_switchEthereumChain,
-  // still the chrome's until PRQ-4) reaches main the same way.
+  // A chain the chrome's switcher sets (as the old path's
+  // wallet_switchEthereumChain did) reaches main the same way.
   await win.evaluate(async (id) => {
     const switcher = await import('./lib/wallet/chain-switcher.js');
     switcher.setSelectedChainId(id);
@@ -350,7 +357,7 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
   // Connected under its name, as the chrome keys it.
-  await win.evaluate((key) => window.dappPermissions.grantPermission(key, 0, 100), NAME);
+  await grant(electronApp, NAME);
 
   await openIn(win, `ens://${NAME}`, `ipns://${IPNS_KEY}`);
   await watchOldPath(win);

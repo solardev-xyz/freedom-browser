@@ -119,6 +119,13 @@ function request(win, url, id, method, params = []) {
 
 const outcome = (win, url, id) => inTab(win, url, `window.__r && window.__r[${JSON.stringify(id)}]`);
 
+// A connection, written in main as main writes one (freedom-core design
+// 0011, PRQ-4): the chrome's own grant write is refused.
+const grant = (electronApp, key) =>
+  electronApp.evaluate((_electron, args) => {
+    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, 0, 100);
+  }, { root: repoRoot, key });
+
 async function openIn(win, url) {
   const address = win.locator('[data-test="address-input"]');
   await address.click();
@@ -147,10 +154,8 @@ test('a background tab is attributed to its own site, never the visible one', as
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
 
   // The trusted dApp: connected, signatures auto-approved.
-  await win.evaluate(async (key) => {
-    await window.dappPermissions.grantPermission(key, 0, 100);
-    await window.dappPermissions.setSigningAutoApprove(key, true);
-  }, TRUSTED_KEY);
+  await grant(electronApp, TRUSTED_KEY);
+  await win.evaluate((key) => window.dappPermissions.setSigningAutoApprove(key, true), TRUSTED_KEY);
 
   // Tab 1: the trusted dApp. Tab 2: the other site. Back to tab 1, so the
   // other site sits in a background tab while the address bar shows the
@@ -208,7 +213,7 @@ test('a background tab is attributed to its own site, never the visible one', as
 
   // Once the other site is connected (no auto-approve), its signature needs
   // a prompt — and the prompt names the other site, not the visible one.
-  await win.evaluate((key) => window.dappPermissions.grantPermission(key, 0, 100), OTHER_KEY);
+  await grant(electronApp, OTHER_KEY);
   await request(win, OTHER_URL, 'sig2', 'personal_sign', [MESSAGE, account]);
   await expect(win.locator('#sidebar-dapp-sign')).toBeVisible({ timeout: 15_000 });
   await expect(win.locator('#dapp-sign-site')).toHaveText(OTHER_KEY);
@@ -221,5 +226,4 @@ test('a background tab is attributed to its own site, never the visible one', as
 
   // The connection banner keeps describing the visible tab.
   await expect(win.locator('#dapp-connection-site')).toHaveText(TRUSTED_KEY);
-  void electronApp;
 });

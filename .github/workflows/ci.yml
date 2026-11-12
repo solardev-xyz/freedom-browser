@@ -1525,9 +1525,11 @@ jobs:
       # the page request channels, which answer only the document that asked
       # and refuse sub-frames and private windows (`page-requests`, PRQ-2),
       # and their sizes, tickets and measured charges (`page-budgets`, PRQ-2),
-      # and window.ethereum's reads, which main now answers as the chrome did
-      # (`page-eth-reads`, PRQ-3).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads E2E
+      # window.ethereum's reads, which main now answers as the chrome did
+      # (`page-eth-reads`, PRQ-3), and connecting, whose prompts main holds
+      # for a background tab and shows only for the tab in front
+      # (`page-connect`, PRQ-4).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1544,7 +1546,8 @@ jobs:
             test-e2e/page-documents.spec.js \
             test-e2e/page-requests.spec.js \
             test-e2e/page-budgets.spec.js \
-            test-e2e/page-eth-reads.spec.js
+            test-e2e/page-eth-reads.spec.js \
+            test-e2e/page-connect.spec.js
 
       - name: Upload software rendering profile
         if: always()
