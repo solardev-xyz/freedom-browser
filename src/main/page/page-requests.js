@@ -923,6 +923,24 @@ function createPageRequests({
    * @returns {Promise<{ok: true} | {ok: false, reason: string}>}
    */
   async function sendEvent(target, provider, event, data) {
+    const outcome = await deliverEvent(target, provider, event, data);
+    if (!outcome.ok) {
+      trace({
+        kind: 'event-refused',
+        provider,
+        event,
+        guest: target?.guest ?? null,
+        navigation: target?.navigation ?? null,
+        reason: outcome.reason,
+      });
+    }
+    return outcome;
+  }
+
+  // The checks and the send. Up to its first wait it runs in the caller's
+  // turn: an event that resolves no name is sent before `sendEvent` returns
+  // its promise, so events sent one after another arrive in that order.
+  async function deliverEvent(target, provider, event, data) {
     const row = eventRow(provider, event);
     if (!row) return { ok: false, reason: 'unlisted' };
     if (!target || !documents.isCurrent(target)) return { ok: false, reason: 'navigated' };
@@ -987,6 +1005,7 @@ function createPageRequests({
 
   return {
     track: (contents) => documents.track(contents),
+    liveDocuments: () => documents.liveDocuments(),
     bindName,
     hello,
     reserve,

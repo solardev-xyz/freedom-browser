@@ -1,6 +1,7 @@
 // The chain switcher tells main every selection (freedom-core design 0011,
 // PRQ-3): main answers pages' Ethereum reads with the window's selected
-// chain, so it hears of each change before any page does.
+// chain, and (PRQ-6) tells the window's pages of the change itself. The
+// chrome sends no page an event.
 
 function element() {
   const classes = new Set();
@@ -41,15 +42,15 @@ describe('chain switcher: the selection reaches main', () => {
     jest.resetModules();
     log = [];
     elements = new Map();
-    const webview = { id: 'active' };
     jest.doMock('./balance-display.js', () => ({
       renderAssetList: jest.fn(),
       loadChainRegistry: jest.fn(async () => {}),
     }));
-    jest.doMock('../dapp-provider.js', () => ({
-      getActiveWebview: () => webview,
-      emitChainChanged: jest.fn((_webview, chainId) => log.push(['chainChanged', chainId])),
-    }));
+    // Anything the switcher sent a page would go through the chrome's
+    // provider module, which it no longer imports.
+    jest.doMock('../dapp-provider.js', () => {
+      throw new Error('the chain switcher imports no provider module');
+    });
     global.document = {
       getElementById: (id) => {
         if (!elements.has(id)) elements.set(id, element());
@@ -93,15 +94,12 @@ describe('chain switcher: the selection reaches main', () => {
     expect(log).toEqual([['main', 100]]);
   });
 
-  test('a chain the user picks reaches main before the page hears chainChanged', async () => {
+  test('a chain the user picks reaches main, which tells the pages', async () => {
     log.length = 0;
     // Items: "All Chains", then the registered chains in order.
     await pick(1);
     expect(walletState.selectedChainId).toBe(1);
-    expect(log).toEqual([
-      ['main', 1],
-      ['chainChanged', '0x1'],
-    ]);
+    expect(log).toEqual([['main', 1]]);
     log.length = 0;
     await pick(0);
     expect(walletState.selectedChainId).toBeNull();
@@ -126,17 +124,21 @@ describe('chain switcher: the selection reaches main', () => {
 
   // freedom-core design 0011, PRQ-4: main runs a page's switch, selects the
   // chain for the window and tells the page itself.
-  test('a chain main selected for a page\'s switch shows in the switcher, with no chainChanged from the chrome', () => {
+  test('a chain main selected for a page\'s switch shows in the switcher, and nothing goes back to main', () => {
     log.length = 0;
     expect(typeof pageSelected).toBe('function');
     pageSelected(1);
     expect(walletState.selectedChainId).toBe(1);
     expect(elements.get('chain-switcher-name').textContent).toBe('Ethereum');
-    // The report back to main is the same chain; no page hears it from here.
-    expect(log).toEqual([['main', 1]]);
+    // Main selected it already: a report back would reach main after any
+    // later change and select this chain again (PRQ-6).
+    expect(log).toEqual([]);
     pageSelected('0x64');
     pageSelected(0);
     expect(walletState.selectedChainId).toBe(1);
+    // The user's next pick reaches main as ever.
+    switcher.setSelectedChainId(100);
+    expect(log).toEqual([['main', 100]]);
   });
 
   test('a chrome without the API still switches', () => {

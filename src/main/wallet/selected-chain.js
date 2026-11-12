@@ -14,7 +14,13 @@
  * A page's `wallet_switchEthereumChain` is main's from PRQ-4
  * (`page/page-ethereum.js`): main selects the chain for the page's window
  * itself (`selectChainForPage`) and tells that window's chrome
- * (`wallet:page-selected-chain`), whose switcher then shows it.
+ * (`wallet:page-selected-chain`), whose switcher then shows it, and reports
+ * nothing back.
+ *
+ * The user's own selection is told to the window's pages by main from PRQ-6
+ * (`page/page-events.js`, which listens with `onChromeSelection`): main
+ * sends `chainChanged` to every live document of the window whose chain
+ * follows the selection. The chrome sends no page an event.
  *
  * A window that has reported nothing has the switcher's default, Gnosis
  * (100). `null` is the switcher's "All Chains", which reads as Gnosis too.
@@ -32,6 +38,9 @@ const DEFAULT_SELECTED_CHAIN_ID = 100;
 // window id -> chain id, or null for "All Chains"
 const selected = new Map();
 const watched = new Set();
+// Called with { window, previous, next } when a window's chrome changes its
+// selection (`wallet:select-chain`).
+const chromeListeners = new Set();
 
 const isChainId = (value) => Number.isSafeInteger(value) && value > 0;
 
@@ -89,10 +98,22 @@ function selectChainForPage(
 }
 
 /**
+ * Hear of every change a window's chrome makes to its selection, the
+ * user's pick in its switcher (`{ window, previous, next }`), but not of a
+ * page's switch, which tells its own pages. Returns a function that stops
+ * it.
+ */
+function onChromeSelection(listener) {
+  if (typeof listener !== 'function') return () => {};
+  chromeListeners.add(listener);
+  return () => chromeListeners.delete(listener);
+}
+
+/**
  * `wallet:select-chain`, a `send` from the chrome (the sender policy lets
- * only the chrome call a channel no webview tier lists). Sent before the
- * chrome tells a page of the change, on the same pipe, so a page that asks
- * on its `chainChanged` reads the new chain.
+ * only the chrome call a channel no webview tier lists). Main records the
+ * selection before it tells any page (`onChromeSelection`), so a page that
+ * asks on its `chainChanged` reads the new chain.
  */
 function registerSelectedChainIpc(
   ipcMain = require('electron').ipcMain,
@@ -106,8 +127,18 @@ function registerSelectedChainIpc(
       return;
     }
     if (!win || win.isDestroyed?.() || !Number.isInteger(win.id)) return;
+    const previous = selectedChainOf(win.id);
     if (!selectChain(win.id, chainId)) return;
     watch(win);
+    if (previous === chainId) return;
+    const change = Object.freeze({ window: win.id, previous, next: chainId });
+    for (const listener of chromeListeners) {
+      try {
+        listener(change);
+      } catch {
+        // One listener's failure must not keep the others from hearing it.
+      }
+    }
   });
 }
 
@@ -124,6 +155,7 @@ module.exports = {
   selectedChainOf,
   selectChain,
   selectChainForPage,
+  onChromeSelection,
   registerSelectedChainIpc,
   resetSelectedChains,
 };

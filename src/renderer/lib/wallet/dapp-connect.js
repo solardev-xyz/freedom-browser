@@ -17,9 +17,7 @@ import { isSignatureInFlight, signatureInFlightError } from './signature-flight.
 import { escapeHtml, isSafeAccount, isSafeDeployed } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
 import {
-  getActiveWebview,
   getActiveDisplayUrl,
-  emitAccountsChanged,
   getPermissionKey,
   getNavigationGeneration,
 } from '../dapp-provider.js';
@@ -564,13 +562,9 @@ export async function disconnectDapp(permissionKey = null) {
       currentBannerPermissionKey = null;
     }
 
-    // Only the visible page can be told — and only when it is the site
-    // that was disconnected (a key from the permissions list can name a
-    // site in another tab).
-    const webview = getActiveWebview();
-    if (webview && getPermissionKey(getActiveDisplayUrl()) === key) {
-      emitAccountsChanged(webview, []);
-    }
+    // Main tells every open page of the site, in every window
+    // (`accountsChanged`, freedom-core design 0011, PRQ-6): the chrome
+    // sends no page an event.
   } catch (err) {
     console.error('[WalletUI] Failed to disconnect:', err);
   }

@@ -77,10 +77,11 @@ async function loadDappConnect({ activeDisplayUrl = '', activeWebview = null } =
   const provider = {
     getActiveWebview: jest.fn(() => activeWebview),
     getActiveDisplayUrl: jest.fn(() => activeDisplayUrl),
-    emitAccountsChanged: jest.fn(),
     getPermissionKey: jest.fn((url) => url || null),
     getNavigationGeneration: jest.fn(() => 0),
   };
+  const sent = [];
+  if (activeWebview) activeWebview.send = jest.fn((...args) => sent.push(args));
   jest.doMock('./wallet-state.js', () => ({
     walletState: {},
     registerScreenHider: jest.fn(),
@@ -92,7 +93,7 @@ async function loadDappConnect({ activeDisplayUrl = '', activeWebview = null } =
 
   const mod = await import('./dapp-connect.js');
   mod.initDappConnect();
-  return { mod, elements, provider };
+  return { mod, elements, provider, sent };
 }
 
 describe('dApp connection banner', () => {
@@ -104,9 +105,10 @@ describe('dApp connection banner', () => {
 
   // A key from the permissions list (permission-manage.js) can name a site in
   // another tab: revoking it must leave the visible, still-connected site's
-  // banner and page alone. Revoking the visible site hides the banner and
-  // tells its page.
-  test('disconnecting another site leaves the visible site\'s banner and page alone', async () => {
+  // banner alone. Revoking the visible site hides the banner. Main tells
+  // the site's pages (freedom-core design 0011, PRQ-6): the chrome sends
+  // none an event.
+  test('disconnecting another site leaves the visible site\'s banner alone, and the chrome tells no page', async () => {
     const visible = {};
     const ctx = await loadDappConnect({ activeDisplayUrl: 'visible.eth', activeWebview: visible });
     const banner = ctx.elements['dapp-connection-banner'];
@@ -118,11 +120,11 @@ describe('dApp connection banner', () => {
     await ctx.mod.disconnectDapp('background.eth');
     expect(global.window.dappPermissions.revokePermission).toHaveBeenCalledWith('background.eth');
     expect(banner.classList.contains('hidden')).toBe(false);
-    expect(ctx.provider.emitAccountsChanged).not.toHaveBeenCalled();
 
     await ctx.mod.disconnectDapp('visible.eth');
+    expect(global.window.dappPermissions.revokePermission).toHaveBeenCalledWith('visible.eth');
     expect(banner.classList.contains('hidden')).toBe(true);
-    expect(ctx.provider.emitAccountsChanged).toHaveBeenCalledWith(visible, []);
+    expect(ctx.sent).toEqual([]);
   });
 
   test('the banner\'s own Disconnect (no key) revokes the site it shows', async () => {
@@ -208,12 +210,10 @@ async function loadDappConnectPrompt() {
   jest.doMock('../sidebar.js', () => ({ open: jest.fn(), isVisible: jest.fn(() => true) }));
   // Webviews by committed site; the active one is `provider.active`.
   const provider = { active: null, keys: new Map(), generations: new Map() };
-  const emitAccountsChanged = jest.fn();
   jest.doMock('../dapp-provider.js', () => ({
     getActiveWebview: jest.fn(() => provider.active),
     getActiveDisplayUrl: jest.fn(() => provider.keys.get(provider.active) ?? ''),
     getPermissionKey: jest.fn((url) => url || null),
-    emitAccountsChanged,
     getNavigationGeneration: jest.fn((wv) => provider.generations.get(wv) ?? 0),
   }));
   jest.doMock('./permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
@@ -244,7 +244,7 @@ async function loadDappConnectPrompt() {
 
   const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
 
-  return { mod, elements: elementsById, grantPermission, openConnect, hideForOtherScreen, guard, provider, tab, emitAccountsChanged };
+  return { mod, elements: elementsById, grantPermission, openConnect, hideForOtherScreen, guard, provider, tab };
 }
 
 describe('dapp-connect prompt', () => {

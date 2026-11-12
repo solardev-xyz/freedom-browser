@@ -6,6 +6,12 @@
  * - Which wallet index is exposed to the dApp
  * - Which chain was last used
  * - Connection timestamps
+ *
+ * A grant revoked, or its account changed, is told to whoever listens
+ * (`onGrantChanged`): main sends `accountsChanged` to every live document
+ * of the key (freedom-core design 0011, "Events"; PRQ-6,
+ * `page/page-events.js`). A grant main writes from a connect is told by its
+ * own dispatcher (`page/page-ethereum.js`).
  */
 
 const { app, ipcMain } = require('electron');
@@ -23,6 +29,32 @@ const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
 // In-memory cache of permissions
 let permissionsCache = null;
+
+// Called with { key, walletIndex } when a grant is revoked (walletIndex
+// null) or its account changes.
+const grantListeners = new Set();
+
+/**
+ * Hear of every grant revoked or whose account changes: `{ key,
+ * walletIndex }`, with the normalized key, and null for a revocation.
+ * Returns a function that stops it.
+ */
+function onGrantChanged(listener) {
+  if (typeof listener !== 'function') return () => {};
+  grantListeners.add(listener);
+  return () => grantListeners.delete(listener);
+}
+
+function grantChanged(key, walletIndex) {
+  const change = Object.freeze({ key, walletIndex });
+  for (const listener of grantListeners) {
+    try {
+      listener(change);
+    } catch {
+      // One listener's failure must not keep the others from hearing it.
+    }
+  }
+}
 
 /**
  * Get the path to the permissions file
@@ -122,6 +154,7 @@ function revokePermission(origin) {
     permissionsCache = permissions;
     savePermissions();
     console.log('[DAppPermissions] Revoked permission for:', normalizedOrigin);
+    grantChanged(normalizedOrigin, null);
     return true;
   }
 
@@ -163,6 +196,7 @@ function revokePermissionsForWalletIndex(walletIndex) {
     `[DAppPermissions] Revoked ${revoked.length} permission(s) for deleted wallet ${walletIndex}:`,
     revoked.join(', ')
   );
+  for (const origin of revoked) grantChanged(origin, null);
   return revoked;
 }
 
@@ -209,10 +243,12 @@ function updateWalletIndex(origin, walletIndex) {
   const normalizedOrigin = normalizeOrigin(origin);
 
   if (permissions[normalizedOrigin]) {
+    const changed = permissions[normalizedOrigin].walletIndex !== walletIndex;
     permissions[normalizedOrigin].walletIndex = walletIndex;
     permissions[normalizedOrigin].lastUsed = Date.now();
     permissionsCache = permissions;
     savePermissions();
+    if (changed) grantChanged(normalizedOrigin, walletIndex);
     return true;
   }
 
@@ -423,6 +459,8 @@ function registerDappPermissionsIpc() {
     throw new Error(GRANT_REFUSED);
   });
 
+  // Main tells every live document of the key (`accountsChanged`, from
+  // `onGrantChanged`; PRQ-6): the chrome no longer tells a page.
   ipcMain.handle(IPC.DAPP_REVOKE_PERMISSION, (_event, origin) => {
     return revokePermission(origin);
   });
@@ -495,6 +533,7 @@ module.exports = {
   isTransactionAutoApproved,
   addTransactionAutoApprove,
   removeTransactionAutoApprove,
+  onGrantChanged,
   registerDappPermissionsIpc,
   _resetCache,
 };
