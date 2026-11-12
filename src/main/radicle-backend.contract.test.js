@@ -141,7 +141,7 @@ describeRecord('Radicle backend contract: recording the fixture (addon)', () => 
       const another = await e.createIssue(rid, 'Another open issue', 'For the pages.', [
         'contract',
       ]);
-      await seeding.stop();
+      await seeding.close();
       writeSnapshot(seedingHome);
 
       // The vectors come from the snapshot, as every later run reads it.
@@ -164,7 +164,7 @@ describeRecord('Radicle backend contract: recording the fixture (addon)', () => 
           handlers[name] = record;
         }
       }
-      await backend.stop();
+      await backend.close();
       fs.writeFileSync(
         VECTORS_PATH,
         `${JSON.stringify(
