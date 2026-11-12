@@ -959,7 +959,10 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
         const closed = await e.editIssueState(fx.rid, created.id, 'closed');
         expect(closed).toEqual({ id: created.id, state: 'closed' });
 
-        const issue = await e.issue(fx.rid, created.id);
+        // Read back as every backend serves it: the `issue` and `issues`
+        // reads' text (on the service, `rad.read`; the parsed exports aren't
+        // its).
+        const issue = JSON.parse(await backend.readText('issue', { rid: fx.rid, id: created.id }));
         expect(issue).toMatchObject({
           id: created.id,
           title: 'Written by the suite',
@@ -968,15 +971,58 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           author: { id: fx.did },
         });
         expect(issue.discussion.map((entry) => entry.body)).toEqual(['Body text.', 'A comment.']);
-        expect((await e.issues(fx.rid)).map((entry) => entry.id)).toContain(created.id);
+        const issues = JSON.parse(await backend.readText('issues', { rid: fx.rid }));
+        expect(issues.map((entry) => entry.id)).toContain(created.id);
       }
     );
 
-    partTest('writes', 'a comment on an unknown patch revision is refused', async () => {
-      await expect(
-        backend.embedded.commentPatch(fx.rid, '0'.repeat(40), 'A comment.')
-      ).rejects.toThrow();
-    });
+    partTest(
+      'writes',
+      'a comment on an unknown patch revision is refused',
+      async () => {
+        const refused = await backend.embedded
+          .commentPatch(fx.rid, '0'.repeat(40), 'A comment.')
+          .then(
+            () => null,
+            (err) => err
+          );
+        expect(refused).toBeInstanceOf(Error);
+        if (backend.name !== 'radicled') return;
+        // On the service (0008, Writes; deviation `outcome-unknown`): libradicle
+        // refuses it past the mutation start, so its outcome is unknown, and
+        // the repository is repaired online. Its COB reads answer `stopped`
+        // until that repair is over, then read as before.
+        expect(refused).toMatchObject({
+          code: 'outcome_unknown',
+          message:
+            'The Radicle node stopped before confirming this write; it may have been recorded.',
+        });
+        let issues = null;
+        for (let i = 0; i < 200 && issues === null; i += 1) {
+          issues = await backend.readText('issues', { rid: fx.rid }).catch((err) => {
+            expect(err.code).toBe('stopped');
+            return null;
+          });
+          if (issues === null) await sleep(50);
+        }
+        expect(JSON.parse(issues).map((entry) => entry.id)).toEqual(
+          expect.arrayContaining(Object.values(fx.issues))
+        );
+      },
+      30_000
+    );
+
+    partTest(
+      'writes',
+      'the fixture repository unseeded is no longer listed as seeded',
+      async () => {
+        const listed = async () =>
+          JSON.parse(await backend.readText('list_seeded_repos')).map((repo) => repo.rid);
+        expect(await listed()).toContain(fx.rid);
+        await expect(backend.embedded.unseedRepo(fx.rid)).resolves.toEqual({ unseeded: true });
+        expect(await listed()).not.toContain(fx.rid);
+      }
+    );
 
     partTest(
       'import',

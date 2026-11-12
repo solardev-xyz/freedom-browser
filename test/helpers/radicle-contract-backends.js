@@ -18,7 +18,8 @@
  *   radicled:download`, or `FREEDOM_RADICLED_PATH`), driven through the
  *   production `radicle-manager.js` and `radicle-embedded.js` under
  *   `FREEDOM_RADICLE_BACKEND=service`: the real node on the real binary,
- *   its reads through `callStream` and `callScoped`. Its key is the
+ *   its reads through `callStream` and `callScoped`, its writes `rad.write`
+ *   and `rad.unseed`. Its key is the
  *   fixture's, sealed to the process as the core's `nodes.seal_radicle_key`
  *   would seal it (`radicle-seal.js`), so the home holds no key file (the
  *   service refuses one: 0008, "The switch"). It runs under a SOCKS policy
@@ -655,7 +656,7 @@ const BACKENDS = {
       // Its test needs the scriptedClone hook (plan C4), which no release has.
       'progress-summary',
     ],
-    lacks: ['parsed-reads', 'writes', 'import'],
+    lacks: ['parsed-reads', 'import'],
     hooks: [],
     deviations: RADICLED_DEVIATIONS,
     handlerDeviations: radicledHandlerDeviations,
