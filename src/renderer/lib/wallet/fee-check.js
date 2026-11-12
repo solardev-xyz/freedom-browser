@@ -205,6 +205,21 @@ export class FeeConfirmation {
     return this.verdict;
   }
 
+  /**
+   * Shows the verdict main gave with its prompt (freedom-core design 0011,
+   * PRQ-5b: a page's send), with nothing asked of main. `askAgain` when main
+   * asked again at the press: the fee is newly above the threshold, and the
+   * next press confirms it.
+   */
+  show(verdict, symbol = 'ETH', { askAgain = false } = {}) {
+    this.reset(symbol);
+    if (!verdict) return;
+    this.verdict = verdict;
+    this.state = 'shown';
+    this.asking = askAgain === true && Boolean(verdict.above);
+    this.render();
+  }
+
   /** Whether main's verdict is still pending: Confirm waits for it. */
   pending() {
     return this.state === 'loading';

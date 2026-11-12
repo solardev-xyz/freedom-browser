@@ -88,18 +88,21 @@ function failure(err, fallback = 'Signing failed') {
   return { error: { code: INTERNAL_ERROR_CODE, message } };
 }
 
+/** Whether the agent holds the tab `guestId` now (`agent-tab-custody.js`). */
+function guestInCustody(guestId) {
+  const { webContents } = require('electron');
+  let contents;
+  try {
+    contents = webContents.fromId(guestId);
+  } catch {
+    contents = null;
+  }
+  return require('../wallet/agent-tab-custody').isAgentPage(contents);
+}
+
 function defaultSigningDependencies() {
   return {
-    inCustody: (guestId) => {
-      const { webContents } = require('electron');
-      let contents;
-      try {
-        contents = webContents.fromId(guestId);
-      } catch {
-        contents = null;
-      }
-      return require('../wallet/agent-tab-custody').isAgentPage(contents);
-    },
+    inCustody: guestInCustody,
     isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),
     messageView: (message) => require('../wallet/wallet-ipc').messageViewFor(message),
     typedDataView: (typedData, chainId) => require('../wallet/wallet-ipc').typedDataViewFor(typedData, chainId),
@@ -447,4 +450,5 @@ function createSigningDispatchers(shared, deps = {}) {
 module.exports = {
   SIGNING_METHODS,
   createSigningDispatchers,
+  guestInCustody,
 };

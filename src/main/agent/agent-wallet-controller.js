@@ -31,9 +31,14 @@ const PRIVILEGED_METHODS = new Set([
 ]);
 
 // The methods main serves for a page and hands to the agent attested
-// (freedom-core design 0011): connecting (PRQ-4), and messages and typed
-// data (PRQ-5a). A send still comes through the chrome until its step.
-const ATTESTED_METHODS = new Set(['eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4']);
+// (freedom-core design 0011): connecting (PRQ-4), messages and typed data
+// (PRQ-5a), and sends (PRQ-5b).
+const ATTESTED_METHODS = new Set([
+  'eth_requestAccounts',
+  'personal_sign',
+  'eth_signTypedData_v4',
+  'eth_sendTransaction',
+]);
 
 function providerError(code, message) {
   return { code, message };
@@ -579,11 +584,18 @@ class AgentWalletController {
         requiresUnlock: wallet.type === 'mnemonic',
       },
     });
+    // A request main attested sends only while main still holds it: not
+    // answered (its deadline, its page gone), the name checked again, and
+    // the page still under its key in the same run as the send.
+    await this.#mainAllows(context);
     const result = await this.signAndRecord(tx, this.getSigner(wallet.index), {
       kind: KINDS.DAPP_SEND,
       origin: permissionKey,
     });
-    this.updateLastUsed(permissionKey, chainId);
+    // A grant held under the attested key is touched only while main still
+    // holds the request after the send's wait: the name checked again, and
+    // the page under its key in the same run as the write.
+    if (!context.attested || (await this.#mainStillAllows(context))) this.updateLastUsed(permissionKey, chainId);
     return {
       providerResult: result.hash,
       receipt: {

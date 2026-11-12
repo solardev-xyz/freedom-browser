@@ -531,7 +531,7 @@ function notSent(err, intentId) {
  * commit (a rejection on the device, a locked vault, a refused commit)
  * leaves nothing recorded.
  */
-async function commitNewIntent(params, signer, { context = {}, key = null } = {}) {
+async function commitNewIntent(params, signer, { context = {}, key = null, guardCommit = null } = {}) {
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } =
     params;
   if (!gasLimit) throw new Error('Missing gas limit: refusing to sign a transaction without one');
@@ -578,15 +578,19 @@ async function commitNewIntent(params, signer, { context = {}, key = null } = {}
       const raw = await signer.signTransaction(tx);
       // The store names the intent: its id comes back with the commit,
       // before anything is handed off.
-      return store.commit({
-        chainId,
-        sender: from,
-        nonce,
-        hash: keccak256(raw),
-        raw,
-        via: 'original',
-        context: intentContext(context, key),
-      });
+      const commit = () =>
+        store.commit({
+          chainId,
+          sender: from,
+          nonce,
+          hash: keccak256(raw),
+          raw,
+          via: 'original',
+          context: intentContext(context, key),
+        });
+      // The caller's guard, after the signature's wait: it commits in the
+      // same run as its last checks, or withdraws the send.
+      return guardCommit ? guardCommit(commit) : commit();
     });
   } catch (err) {
     // Before the commit: nothing was signed into the records or sent.
@@ -945,6 +949,14 @@ async function sendUnderKey(params, signer, intentKey, context, onCommitted = nu
  *   the broadcast; at once for a phone, which keeps no record; before a
  *   resend, which commits nothing new. Not called when the send fails
  *   first. ("Always allow"'s per-site turn, auto-approve-pause.js.)
+ * @param {(commit: () => Promise<Object>) => Promise<Object>} [options.guardCommit]
+ *   A new intent's guard, run once its transaction is signed (after the
+ *   signer's wait: a Ledger, the core) and before the signed bytes enter the
+ *   intent records: it calls `commit()` itself, in the same run as its last
+ *   checks, or throws to withdraw the send, with nothing recorded or sent
+ *   (freedom-core design 0011, PRQ-5b: a page's send checks its name and
+ *   its document again here). A phone signs and broadcasts in one step, so
+ *   its send has no such point.
  * @returns {Promise<Object>} Transaction result: `hash` (main's keccak of
  *   the bytes), `nonce`, `from`, `to`, `value`, `chainId`, `explorerUrl`,
  *   `broadcastSource`, `intentId` and `outcome` (`sent` or `uncertain`)
@@ -952,14 +964,14 @@ async function sendUnderKey(params, signer, intentKey, context, onCommitted = nu
 async function signAndSendTransaction(
   params,
   signer,
-  { intentKey = null, context = {}, onCommitted = null } = {}
+  { intentKey = null, context = {}, onCommitted = null, guardCommit = null } = {}
 ) {
   if (typeof signer.sendTransaction === 'function') {
     onCommitted?.();
     return sendThroughDevice(params, signer);
   }
   if (intentKey) return sendUnderKey(params, signer, intentKey, context, onCommitted);
-  const committed = await commitNewIntent(params, signer, { context });
+  const committed = await commitNewIntent(params, signer, { context, guardCommit });
   onCommitted?.();
   return handOff(committed, { redact: Boolean(params.redactErrors) });
 }

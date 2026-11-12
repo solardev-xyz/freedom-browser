@@ -63,10 +63,12 @@
  * user decides, the dispatcher acts on its own record.
  *
  * A record prompts one prompt at a time, and may prompt again once its
- * prompt is decided (PRQ-5: a vault unlock and then the signature, or a Safe
- * message's approval and then its signing board). An approved wallet prompt
- * keeps the document's one wallet slot for its record until main answers
- * it, so the record's next prompt, or its effect, isn't raced by another.
+ * prompt is decided (PRQ-5: a vault unlock and then the signature, a Safe's
+ * approval and then its signing board, or a send's fee asked again at the
+ * press). An approved wallet prompt keeps the document's one wallet slot for
+ * its record until main answers it, so the record's next prompt, or its
+ * effect, isn't raced by another, unless the record gives it up while it
+ * waits with nothing to show (`leaveWalletSlot`).
  *
  * Main's own issuer (PRQ-5, design 0011 "Approval tokens"): a page kind's
  * approval token is minted only for a live record whose prompt the user has
@@ -498,6 +500,12 @@ function createPageRequests({
       confirm: (kind, accountIndex, payload, bound) => confirm(record, kind, accountIndex, payload, bound),
       spend: (token, kind, accountIndex, payload) => spend(record, token, kind, accountIndex, payload),
       walletOperation: (run) => walletOperation(record, run),
+      leaveWalletSlot: () => leaveWalletSlot(record),
+      // Aborted when main answers the record: for a dispatcher that waits on
+      // something outside main's prompts.
+      get signal() {
+        return abortSignalOf(record);
+      },
       afterAnswer: (fn) => {
         if (typeof fn === 'function' && !record.answered) record.after = fn;
       },
@@ -657,13 +665,31 @@ function createPageRequests({
       return { error: { ...PROMPT_PENDING } };
     }
     walletOperations.set(record.key, record);
-    if (!record.aborter) record.aborter = new AbortController();
     try {
-      const value = await run({ signal: record.aborter.signal, open: () => !record.answered });
+      const value = await run({ signal: abortSignalOf(record), open: () => !record.answered });
       return { done: value };
     } finally {
       if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
     }
+  }
+
+  // The record's signal, aborted once main answers it.
+  function abortSignalOf(record) {
+    if (!record.aborter) {
+      record.aborter = new AbortController();
+      if (record.answered) record.aborter.abort();
+    }
+    return record.aborter.signal;
+  }
+
+  /**
+   * A record that goes on waiting with no prompt open and nothing of its
+   * own to show (PRQ-5b: a Safe send whose board the user left, waiting for
+   * the SafeTx's outcome) gives up its document's wallet slot, which its
+   * approved prompt kept: the document's next wallet request may prompt.
+   */
+  function leaveWalletSlot(record) {
+    if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
   }
 
   /**

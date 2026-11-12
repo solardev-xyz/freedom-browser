@@ -45,6 +45,35 @@ const {
 // entries; the SafeTx hash is the entry's identity.
 const store = { get: getPending, set: setPending, idOf: (entry) => entry.safeTxHash };
 
+// Who hears a pending SafeTx's outcome (onSafeSendSettled).
+const settledListeners = new Set();
+
+/**
+ * Hear each pending SafeTx's outcome as main records it: `{ safeIndex,
+ * safeTxHash, outcome: 'executed', hash }` once its execution lands, or
+ * `{ safeIndex, safeTxHash, outcome: 'discarded' }` once it is discarded.
+ * A page's Safe send waits on this for its answer (page/page-sends.js),
+ * whichever screen executed or discarded it. Returns the way to stop.
+ *
+ * @param {(event: object) => void} listener
+ * @returns {() => void}
+ */
+function onSafeSendSettled(listener) {
+  if (typeof listener !== 'function') return () => {};
+  settledListeners.add(listener);
+  return () => settledListeners.delete(listener);
+}
+
+function settled(event) {
+  for (const listener of [...settledListeners]) {
+    try {
+      listener(Object.freeze({ ...event }));
+    } catch {
+      // One listener's failure never changes the outcome, or what the others hear.
+    }
+  }
+}
+
 /** Safe.nonce() — raw uncached read. */
 async function chainSafeNonce(safeAddress) {
   return BigInt(
@@ -269,6 +298,7 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
 
     const state = getSafeSendState(safeIndex);
     clearPending(safeIndex);
+    settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'executed', hash: result.hash });
     return { ...state, status: 'executed', executed: { hash: result.hash, explorerUrl: result.explorerUrl } };
   } finally {
     release(safeIndex);
@@ -295,7 +325,9 @@ function cancelSafeSend(safeIndex) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
+  const pending = getPending(safeIndex);
   clearPending(safeIndex);
+  if (pending) settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'discarded' });
 }
 
 module.exports = {
@@ -305,4 +337,5 @@ module.exports = {
   getSafeSendState,
   getAllSafeSendStates,
   cancelSafeSend,
+  onSafeSendSettled,
 };

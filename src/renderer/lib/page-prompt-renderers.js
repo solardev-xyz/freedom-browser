@@ -7,7 +7,10 @@
  *   - `show(prompt)`: render `{ handle, guest, kind, site, view }` and take
  *     the sidebar; the screen answers the handle itself (`page:decide`);
  *   - `close(handle)`: take it down (main hid or closed it);
- *   - `isShowing()`: the handle the screen shows now, or null.
+ *   - `isShowing()`: the handle the screen shows now, or null;
+ *   - `takesOver(prompt)` (optional): true when the screen holds a decided
+ *     prompt of the same request that main still works on, and shows this
+ *     one in its place (a send's fee asked again at the press).
  *
  * A screen another one hides before its prompt is decided reports it
  * (`pagePromptDisplaced`), and the prompt shows again once the sidebar is
