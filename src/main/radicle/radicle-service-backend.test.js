@@ -4,8 +4,8 @@
  * step-5 plan's B7), main's side of 0008 §Tests first, "JSON results":
  * a real RadicledNode on an in-process fake service (fake-radicled.js),
  * whose `rad.read` replies are freedom-radicled's (a head of `{
- * content_type, bytes }` that opens its stream without saying `body: true`,
- * then the JSON under 0007's credit), and a manual clock for main's waits.
+ * content_type, bytes, body: true }`, then the JSON under 0007's credit),
+ * and a manual clock for main's waits.
  *
  * - four maximum-size bodies with slow consumers: main holds one ring per
  *   stream, and nothing of them is collected;
