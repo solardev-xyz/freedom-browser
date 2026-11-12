@@ -72,7 +72,7 @@ window.swarm.removeAllListeners(event?)
 
 ### Timeouts
 
-The shim rejects a request that has had no answer with
+A request that has had no answer is rejected with
 `{ code: -32603, message: 'Request timed out' }` after:
 
 - **300 s** for `swarm_publish*`, `swarm_send*`, `swarm_createFeed`,
@@ -80,22 +80,23 @@ The shim rejects a request that has had no answer with
   `swarm_getSigningIdentity`, `swarm_getMessagingIdentity` and
   `swarm_subscribe` (these may wait on a consent prompt or a node write),
   and `swarm_readData` (a blob of several MiB fetched from the network);
-- **60 s** for everything else, including `swarm_requestAccess` and any
-  other call that has to wait on a consent prompt: the connect prompt, or
-  the [permission manifest](#permission-manifests) sheet, which any
-  non-public method can open.
+- **60 s** for everything else, including `swarm_requestAccess`.
 
-The budget covers the whole request, prompt included, and is set by the
-method called, not by which prompt it ends up waiting on. A user who takes
-longer than 60 s on a prompt opened by a 60 s method (the connect prompt
-from `swarm_requestAccess`, or the manifest sheet opened by
-`swarm_requestAccess`, `swarm_getUploadStatus` or another 60 s method) gets a
-`-32603 Request timed out` on the page even though the decision, once made,
-still takes effect (the grant lands); call `swarm_requestAccess` again, or
-retry the call, to pick it up. A 300 s method that opens the manifest sheet
-(a `swarm_publishData`, say) keeps waiting for up to 300 s. The node-side bounds named elsewhere (15 s to
-mine a GSOC topic, 30 s for a subscription to establish) cover only that
-stage, not the request end to end.
+For every method but the feed and signing ones, Freedom itself keeps the
+time, from when the request reaches it, until the request's prompt shows:
+a prompt on screen waits for the user, with no limit, and the page waits
+for the answer. A request whose prompt never showed within its time (a
+background tab's, say) is closed and rejected as above, and nothing happens
+for it. A large upload's wait for its turn ([Limits](#limits)) comes before
+the request reaches Freedom, so it doesn't count.
+
+The feed and signing methods are still timed by the page shim: the budget
+covers the whole request, prompt included, and a user who takes longer than
+that on a prompt gets a `-32603 Request timed out` on the page even though
+the decision, once made, still takes effect; retry the call to pick it up.
+The node-side bounds named elsewhere (15 s to mine a GSOC topic, 30 s for a
+subscription to establish) cover only that stage, not the request end to
+end.
 
 A timed-out request may still complete on the node. A response that settles
 after the page navigated away is never delivered to the new document.
@@ -414,6 +415,14 @@ Not reported there:
   a character outside the Basic Multilingual Plane, such as most emoji,
   counts as 2), no `/`, no characters below U+0020.
 - **Messaging topics**: 1–256 UTF-8 bytes, no control characters.
+- **Large uploads**: a `swarm_publishData` or `swarm_publishFiles` request
+  over 1 MiB waits for its turn before it is sent. Freedom runs two such
+  uploads at a time across all pages, a page's own one at a time, in the
+  order they asked; at most 16 wait, and one more is refused with `-32005`
+  (`Limit exceeded`). Every request, however large, also counts against what
+  Freedom holds in flight for the page, its window and the browser; a request
+  past those is refused with `-32005` too, and can be retried once others
+  have finished.
 
 ## Methods
 
