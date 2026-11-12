@@ -1,0 +1,182 @@
+/* Design tokens (#1198): the one palette and the scales the chrome and every
+ * internal page paint from. docs/design-system.md says how to use them, and
+ * ui.css (beside this file) builds the shared blocks from them.
+ *
+ * Themes. Dark is the default. `data-theme='light'` on <html> switches the
+ * document: the chrome sets it from Settings > Appearance, and the tab
+ * preload stamps it on internal pages (#233). Any element may carry
+ * `data-theme` as well, and its subtree then paints in that theme; the
+ * catalog page (ui-catalog.html) shows both side by side that way. So a
+ * token that depends on another is declared in every theme block below,
+ * never only on :root: `--a: var(--b)` resolves where it is declared, and a
+ * nested theme would otherwise inherit the root's answer.
+ *
+ * Colours are the chrome's palette, the one #1198 chose. The older names in
+ * styles/variables.css and pages/styles/theme.css stay valid while screens
+ * migrate; a migrated screen paints from these names only. This file, those
+ * two and the brand colours marked `theme-literal` are the only places a
+ * colour literal may appear (renderer-styles.test.js).
+ *
+ * Not every value is final: #971 gives dark `--text-muted` its own value in
+ * the first migration, where the screenshots show the change. Until then it
+ * matches `--text`, as the chrome's `--muted` does, so this file changes
+ * nothing on screen by itself. */
+
+:root {
+  /* Spacing: multiples of 4. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Corner radius. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+
+  /* Type. `--text-*` names are colours; sizes are `--font-size-*`. */
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 14px;
+  --font-size-xl: 16px;
+  --font-size-title: 20px;
+  --font-size-display: 28px;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  /* Control heights: icon buttons inside a row, compact controls, the
+     default, and the buttons of an approval sheet. */
+  --control-xs: 24px;
+  --control-sm: 28px;
+  --control-md: 36px;
+  --control-lg: 44px;
+}
+
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --surface-canvas: #1f2020;
+  --surface: #3c3c3c;
+  --surface-raised: #1a1a1a;
+  --surface-inset: rgba(255, 255, 255, 0.05);
+  --surface-hover: rgba(255, 255, 255, 0.08);
+
+  --text: #c7c7c7;
+  --text-strong: #f5f5f5;
+  --text-muted: #c7c7c7;
+  --text-faint: #9aa0a6;
+  --text-on-accent: #202124;
+
+  --border: #4a4a4a;
+  --border-strong: #5f6368;
+
+  --accent: #8ab4f8;
+  --accent-hover: #aecbfa;
+  --accent-soft: rgba(138, 180, 248, 0.16);
+  --danger: #f28b82;
+  --danger-soft: rgba(242, 139, 130, 0.16);
+  --warning: #d29922;
+  --warning-soft: rgba(210, 153, 34, 0.16);
+  --success: #6b9e7a;
+  --success-soft: rgba(107, 158, 122, 0.18);
+  --info-soft: rgba(138, 180, 248, 0.16);
+
+  --focus-ring: #8ab4f8;
+  --shadow-raised: 0 2px 10px rgba(0, 0, 0, 0.4);
+  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  --surface-canvas: #dfe1e5;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-inset: rgba(0, 0, 0, 0.03);
+  --surface-hover: rgba(0, 0, 0, 0.06);
+
+  --text: #202124;
+  --text-strong: #202124;
+  --text-muted: #5f6368;
+  --text-faint: #80868b;
+  --text-on-accent: #ffffff;
+
+  --border: #dfe1e5;
+  --border-strong: #9aa0a6;
+
+  --accent: #1a73e8;
+  --accent-hover: #1967d2;
+  --accent-soft: rgba(26, 115, 232, 0.1);
+  --danger: #d93025;
+  --danger-soft: rgba(217, 48, 37, 0.08);
+  --warning: #b06000;
+  --warning-soft: rgba(176, 96, 0, 0.1);
+  --success: #188038;
+  --success-soft: rgba(24, 128, 56, 0.1);
+  --info-soft: rgba(26, 115, 232, 0.1);
+
+  --focus-ring: #1a73e8;
+  --shadow-raised: 0 2px 10px rgba(0, 0, 0, 0.15);
+  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+
+/* A private window keeps its dark plum chrome in both profile themes
+   (styles/private.css sets the older names on this same selector, and says
+   why). It redefines every colour token, so nothing of the light theme leaks
+   into it when the profile is light. */
+body.private-window {
+  color-scheme: dark;
+
+  --surface-canvas: #221b2e;
+  --surface: #352b47;
+  --surface-raised: #241d31;
+  --surface-inset: rgba(255, 255, 255, 0.05);
+  --surface-hover: rgba(255, 255, 255, 0.08);
+
+  --text: #d5cfe3;
+  --text-strong: #f5f5f5;
+  --text-muted: #a89fc0;
+  --text-faint: #968cae;
+  --text-on-accent: #221b2e;
+
+  --border: #4c3f66;
+  --border-strong: #6a5a8e;
+
+  --accent: #b39ddb;
+  --accent-hover: #c5b3e6;
+  --accent-soft: rgba(179, 157, 219, 0.16);
+  --danger: #f28b82;
+  --danger-soft: rgba(242, 139, 130, 0.16);
+  --warning: #d29922;
+  --warning-soft: rgba(210, 153, 34, 0.16);
+  --success: #6b9e7a;
+  --success-soft: rgba(107, 158, 122, 0.18);
+  --info-soft: rgba(179, 157, 219, 0.16);
+
+  --focus-ring: #b39ddb;
+  --shadow-raised: 0 2px 10px rgba(0, 0, 0, 0.4);
+  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* Names `styles/sidebar.css` paints from but nothing ever defined (#1198), so
+   every declaration using them did nothing: no hover on the approval sheets'
+   Reject and Touch ID buttons, inherited instead of muted labels. Until the
+   sidebar migrates they stand for the token each one meant. Declared on every
+   theme scope so they resolve to that scope's colours. */
+:root,
+[data-theme='dark'],
+[data-theme='light'],
+body.private-window {
+  --foreground: var(--text);
+  --foreground-muted: var(--text-muted);
+  --background: var(--surface);
+  --hover: var(--surface-hover);
+  --toolbar-hover: var(--surface-hover);
+  --border-hover: var(--border-strong);
+  --text-inverse: var(--text-on-accent);
+}

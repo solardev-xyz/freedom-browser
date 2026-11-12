@@ -25,7 +25,9 @@ const SKIP_DIRS = new Set(['vendor', 'assets', 'images', 'scripts']);
 /**
  * The token files: the one place a colour literal is the *point*. The chrome
  * window paints from the first three; #261 item 2 (#287) moved every internal
- * page's palette into `pages/styles/theme.css`, so that is the fourth. Every
+ * page's palette into `pages/styles/theme.css`, so that is the fourth; the
+ * design system's `pages/styles/tokens.css` (#1198), which both read, is the
+ * fifth, and the one the others shrink into as screens migrate. Every
  * entry has to name a file that exists — `renderer-styles.test.js` asserts the
  * set against the tree, so a speculative name cannot sit here as a free pass
  * waiting for someone to create the file.
@@ -35,6 +37,7 @@ const TOKEN_FILES = new Set([
   'styles/light-theme.css',
   'styles/private.css',
   'pages/styles/theme.css',
+  'pages/styles/tokens.css',
 ]);
 
 function sources(dir = RENDERER, out = []) {

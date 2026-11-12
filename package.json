@@ -64,6 +64,8 @@
     "lint": "eslint .",
     "changelog:assemble": "node scripts/assemble-changelog.js",
     "styles:inventory": "node scripts/update-renderer-color-literals.js",
+    "ui:catalog": "electron scripts/ui-catalog.js",
+    "ui:inventory": "node scripts/update-design-system-inventory.js",
     "test:e2e:theme-parity": "playwright test --project=harness test-e2e/theme-parity.spec.js",
     "test:e2e:theme-parity:update": "THEME_CONTRAST_UPDATE=1 playwright test --project=harness test-e2e/theme-parity.spec.js",
     "test:e2e:screenshots": "FREEDOM_E2E_STABLE_TEXT=1 playwright test --project=harness test-e2e/renderer-screenshots.spec.js",
@@ -167,6 +169,8 @@
       "notarize": false,
       "files": [
         "src/**/*",
+        "!src/renderer/pages/ui-catalog.html",
+        "!src/renderer/pages/scripts/ui-catalog.js",
         "package.json",
         "!**/*.test.js",
         "!**/coverage/**",
@@ -226,6 +230,8 @@
       ],
       "files": [
         "src/**/*",
+        "!src/renderer/pages/ui-catalog.html",
+        "!src/renderer/pages/scripts/ui-catalog.js",
         "package.json",
         "!**/*.test.js",
         "!**/coverage/**",
@@ -301,6 +307,8 @@
       "icon": "assets/icon.png",
       "files": [
         "src/**/*",
+        "!src/renderer/pages/ui-catalog.html",
+        "!src/renderer/pages/scripts/ui-catalog.js",
         "package.json",
         "!**/*.test.js",
         "!**/coverage/**",
@@ -336,6 +344,8 @@
     },
     "files": [
       "src/**/*",
+      "!src/renderer/pages/ui-catalog.html",
+      "!src/renderer/pages/scripts/ui-catalog.js",
       "package.json",
       "!**/*.test.js",
       "!**/coverage/**",
