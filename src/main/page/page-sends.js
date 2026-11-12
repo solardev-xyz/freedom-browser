@@ -70,6 +70,11 @@
  * of the SafeTx's outcome (`onSafeSendSettled`): the execution's hash, or a
  * rejection when it is discarded. Leaving the board parks the SafeTx, and
  * the page waits for its outcome without holding the document's wallet slot.
+ * Each execution of it, at once or after it was parked, runs only past the
+ * request's guard (`guardSiteSafeSend`): the name, the key and the
+ * requesting document checked again. A SafeTx whose site no longer holds is
+ * not executed for the site: it stays the wallet's, with no site, and the
+ * page gets the keyless answer.
  */
 
 const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED } = require('../wallet/signing-confirmation');
@@ -325,6 +330,12 @@ function defaultSendDependencies() {
     checkAtApproval: (tx, options) => require('../wallet/fee-check').checkAtApproval(tx, options),
     startSafeSend: (options) => require('../wallet/safe/safe-transactions').startSafeSend(options),
     onSafeSendSettled: (listener) => require('../wallet/safe/safe-transactions').onSafeSendSettled(listener),
+    guardSiteSafeSend: (safeTxHash, guard) =>
+      require('../wallet/safe/safe-transactions').guardSiteSafeSend(safeTxHash, guard),
+    siteWithdrawn: () => {
+      const { codedError, SAFE_SITE_WITHDRAWN } = require('../wallet/safe/errors');
+      return codedError('The site no longer holds this transaction', SAFE_SITE_WITHDRAWN);
+    },
   };
 }
 
@@ -669,7 +680,27 @@ function createSendDispatchers(shared, deps = {}) {
     } catch (err) {
       return failure(err);
     }
-    const settled = settledOutcome(context, ctx.walletIndex, started?.safeTxHash);
+    const safeTxHash = started?.safeTxHash;
+    const settled = settledOutcome(context, ctx.walletIndex, safeTxHash);
+    // Before each step that can execute the SafeTx, now or after it was
+    // parked: the name, the key and the requesting document, checked again
+    // in the same run as the execution, which the guard runs itself. A
+    // SafeTx whose site no longer holds isn't executed for the site: it stays
+    // the wallet's, with no site (`safe-transactions.js`), and the page gets
+    // the keyless answer. Once the request has ended, there is no guard, and
+    // the SafeTx is never executed for the site.
+    let withdraw;
+    const withdrawn = new Promise((resolve) => {
+      withdraw = () => resolve({ outcome: 'withdrawn' });
+    });
+    const stopGuard = d.guardSiteSafeSend(safeTxHash, async (execute) => {
+      const live = () => !context.signal.aborted;
+      if (!live() || !(await context.nameHolds()) || !live() || !context.holdsKey()) {
+        withdraw();
+        throw d.siteWithdrawn();
+      }
+      return execute();
+    });
     // The board: it signs and executes as today. Leaving it parks the
     // SafeTx, and the page waits for its outcome, without the document's
     // wallet slot.
@@ -683,8 +714,14 @@ function createSendDispatchers(shared, deps = {}) {
         context.leaveWalletSlot();
         return { board: decision };
       });
-    const first = await Promise.race([settled, board]);
-    const outcome = first.board ? await settled : first;
+    let outcome;
+    try {
+      const first = await Promise.race([settled, withdrawn, board]);
+      outcome = first.board ? await Promise.race([settled, withdrawn]) : first;
+    } finally {
+      stopGuard();
+    }
+    if (outcome.outcome === 'withdrawn') return error(NO_ADDRESS);
     if (outcome.outcome !== 'executed' || typeof outcome.hash !== 'string') return error(USER_REJECTED);
     // The SafeTx the user approved for this request has executed: its hash
     // is the page's while the document is live, whatever the name does.

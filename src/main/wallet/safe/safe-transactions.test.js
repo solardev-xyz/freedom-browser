@@ -108,6 +108,7 @@ const {
   getAllSafeSendStates,
   cancelSafeSend,
   onSafeSendSettled,
+  guardSiteSafeSend,
 } = require('./safe-transactions');
 const { getPending, setPending, clearPending } = require('./pending-store');
 
@@ -427,6 +428,71 @@ describe('onSafeSendSettled', () => {
     await start();
     cancelSafeSend(5);
     expect(heard).toHaveLength(2);
+  });
+});
+
+// freedom-core design 0011, PRQ-5b, "After a waiting signature or send": a
+// site's SafeTx is checked again before each step that can execute it, a
+// parked one included. Whenever its site no longer holds it, it isn't
+// executed for the site, and stays pending as the wallet's own.
+describe("a site's SafeTx at its execution", () => {
+  const SITE = 'https://app.example';
+  const startForSite = () =>
+    startSafeSend({ safeIndex: 5, tx: TX, display: { ...DISPLAY, site: SITE }, chainId: 100 });
+
+  test("past its request's guard it executes for the site, the guard running the execution itself", async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    const guard = jest.fn(async (execute) => execute());
+    const stop = guardSiteSafeSend(SAFE_TX_HASH, guard);
+    try {
+      const state = await executeSafePending(5);
+      expect(state.status).toBe('executed');
+      expect(guard).toHaveBeenCalledTimes(1);
+      expect(mockExecTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ record: expect.objectContaining({ origin: SITE }) })
+      );
+    } finally {
+      stop();
+    }
+  });
+
+  test.each([
+    ['its request refuses it (its name moved, or its page is gone)', true],
+    ['its request has ended, or main restarted: no guard', false],
+  ])("when %s: not executed, and kept as the wallet's own, with no site", async (_name, guarded) => {
+    await startForSite();
+    await signSafePending(5, 2);
+    const refusing = jest.fn(async () => {
+      throw Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' });
+    });
+    const stop = guarded ? guardSiteSafeSend(SAFE_TX_HASH, refusing) : () => {};
+    const heard = [];
+    const stopHearing = onSafeSendSettled((event) => heard.push(event));
+    try {
+      await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+      expect(mockExecTransaction).not.toHaveBeenCalled();
+      expect(heard).toEqual([]);
+      // Still pending, its signatures kept, its site gone.
+      const pending = getPending(5);
+      expect(pending.signatures).toHaveLength(2);
+      expect(pending.display).toEqual(DISPLAY);
+      expect(getSafeSendState(5).display.site).toBeUndefined();
+      // The user executes it as the wallet's: no guard, no site recorded.
+      const state = await executeSafePending(5);
+      expect(state.status).toBe('executed');
+      expect(refusing).toHaveBeenCalledTimes(guarded ? 1 : 0);
+      expect(mockExecTransaction.mock.calls[0][0].record.origin).toBeUndefined();
+    } finally {
+      stop();
+      stopHearing();
+    }
+  });
+
+  test("the wallet's own SafeTx needs no guard", async () => {
+    await start();
+    await signSafePending(5, 2);
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
   });
 });
 

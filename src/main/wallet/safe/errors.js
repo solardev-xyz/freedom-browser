@@ -24,6 +24,9 @@ const CODES = {
   SAFE_UNVERIFIED: 'SAFE_UNVERIFIED',
   /** The deployment would create another address than the record's. */
   SAFE_ADDRESS_MISMATCH: 'SAFE_ADDRESS_MISMATCH',
+  /** A site's SafeTx whose site no longer holds it (its name moved, or its
+   * page has gone) is not executed for the site: it stays, as the wallet's. */
+  SAFE_SITE_WITHDRAWN: 'SAFE_SITE_WITHDRAWN',
 };
 
 function codedError(message, code) {
