@@ -1299,9 +1299,10 @@ jobs:
       # Wallet approval surfaces, driven through the real sidebar renderer with the
       # main-process IPC replaced per app instance. A hardware-account signature
       # can't be recalled once the device prompt is up, so these pin that nothing
-      # else can hide or cancel it: a dApp transaction (`dapp-tx-ledger-confirm`),
-      # a send (`send-ledger-confirm`), an x402 payment (`x402-payment-in-flight`)
-      # and the sidebar chrome above them (`sidebar-in-flight-chrome`).
+      # else can hide or cancel it: a send (`send-ledger-confirm`), an x402
+      # payment (`x402-payment-in-flight`) and the sidebar chrome above them
+      # (`sidebar-in-flight-chrome`). A page's dApp transaction on a Ledger is
+      # `page-sends.spec.js`'s, through main's prompt (freedom-core 0011).
       # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
       # is deployed on, and `publisher-identity-selector.spec.js` renders
       # unusable publisher identities as inert. `browsing-credit.spec.js` (#488)
@@ -1324,7 +1325,6 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-wallet \
-            test-e2e/dapp-tx-ledger-confirm.spec.js \
             test-e2e/dapp-background-tab.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \

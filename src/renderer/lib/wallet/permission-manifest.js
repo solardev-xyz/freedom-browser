@@ -1,7 +1,6 @@
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { open as openSidebarPanel } from '../sidebar.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
-import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 
 let screen;
@@ -44,14 +43,10 @@ export function initPermissionManifest() {
     if (manifestQueue.presenting) return;
     const wasVisible = screen && !screen.classList.contains('hidden');
     screen?.classList.add('hidden');
-    // Dismissing the sheet drops queued requests too — the user never sees
-    // them, so leaving them pending would hang the page.
+    // Dismissing the sheet drops queued prompts too — the user never sees
+    // them here, so main shows them again once the sidebar is free.
     if (wasVisible) {
-      for (const pending of manifestQueue.drain()) {
-        // Main's prompt shows again once the sidebar is free.
-        if (pending.handle) pagePromptDisplaced(pending.handle);
-        else pending.resolve('deny');
-      }
+      for (const pending of manifestQueue.drain()) pagePromptDisplaced(pending.handle);
     }
   });
 
@@ -91,37 +86,6 @@ async function decidePagePrompt(handle, approve, choices = {}) {
     console.error('[PermissionManifest] The decision did not reach main:', err);
     return null;
   }
-}
-
-// Concurrent tabs of the same app share one consent token (main hands the
-// outstanding one back), and one token means one sheet: a second request for a
-// token already queued, on screen, or just answered rides on that single
-// answer instead of asking the user the same question twice. Bounded like the
-// main process's completed-token replay — tokens live five minutes.
-const MAX_TRACKED_OUTCOMES = 100;
-const outcomesByToken = new Map();
-
-export function showPermissionManifest(model, token) {
-  // A live device confirmation owns the sidebar (see signature-flight.js).
-  // Pre-checked like every sibling prompt rather than left to present()'s
-  // hideAllSubscreens() throwing: the page gets the standard in-flight
-  // rejection, and a queue entry can never be shifted into a present() that
-  // throws and drops it with its promise unsettled.
-  if (isSignatureInFlight()) return Promise.reject(signatureInFlightError());
-
-  if (!token) return new Promise((resolve) => manifestQueue.show({ model, resolve }));
-
-  const tracked = outcomesByToken.get(token);
-  if (tracked) return tracked;
-
-  const outcome = new Promise((resolve) => {
-    manifestQueue.show({ model, token, resolve });
-  });
-  outcomesByToken.set(token, outcome);
-  if (outcomesByToken.size > MAX_TRACKED_OUTCOMES) {
-    outcomesByToken.delete(outcomesByToken.keys().next().value);
-  }
-  return outcome;
 }
 
 function presentPermissionManifest({ model }) {

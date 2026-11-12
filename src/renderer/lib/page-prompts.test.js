@@ -61,7 +61,6 @@ async function load({ appBody = null } = {}) {
   const listeners = {};
   const decisions = [];
   let answerDecision = () => ({ ok: true });
-  const grantPermission = jest.fn();
   const getCachedFavicon = jest.fn(async () => 'data:image/png;base64,AAAA');
   global.window = {
     pagePrompts: {
@@ -76,7 +75,7 @@ async function load({ appBody = null } = {}) {
       anchor: jest.fn(),
     },
     addEventListener: (type, fn) => (windowListeners[type] = fn),
-    dappPermissions: { grantPermission, getPermission: jest.fn(async () => null) },
+    dappPermissions: { getPermission: jest.fn(async () => null) },
     electronAPI: { getCachedFavicon },
   };
 
@@ -100,10 +99,7 @@ async function load({ appBody = null } = {}) {
   const sidebar = { open: jest.fn(), isVisible: jest.fn(() => true) };
   jest.doMock('./sidebar.js', () => sidebar);
   jest.doMock('./dapp-provider.js', () => ({
-    getActiveWebview: () => null,
     getActiveDisplayUrl: () => '',
-    getPermissionKey: (url) => url || null,
-    getNavigationGeneration: () => 0,
   }));
   jest.doMock('./wallet/permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
   jest.doMock('./url-utils.js', () => ({ parseOnchainAppUrl: () => null }));
@@ -138,7 +134,6 @@ async function load({ appBody = null } = {}) {
     listeners,
     decisions,
     setAnswer: (fn) => (answerDecision = fn),
-    grantPermission,
     getCachedFavicon,
     sidebar,
     tabs,
@@ -209,7 +204,6 @@ describe('page prompts in the chrome (0011 PRQ-4)', () => {
     env.elements['dapp-connect-approve'].dispatch('click');
     await flush();
     expect(env.decisions).toEqual([{ handle: 'h1', approve: true, choices: { walletIndex: 1000 } }]);
-    expect(env.grantPermission).not.toHaveBeenCalled();
     expect(env.showing()).toBe(false);
   });
 

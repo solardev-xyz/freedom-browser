@@ -271,7 +271,7 @@ afterAll(() => {
 });
 
 describe('the methods main serves (0011 PRQ-8a)', () => {
-  test('the dispatcher serves every window.radicle method, each with its row, and the preload routes exactly these', () => {
+  test('the dispatcher serves every window.radicle method, each with its row, and the preload sends them all to main', () => {
     expect(RADICLE_READ_METHODS).toEqual(['radicle_getCapabilities', 'radicle_getNodeStatus', 'radicle_listSeededRepos']);
     expect(RADICLE_CONNECT_METHODS).toEqual(['radicle_requestAccess', 'radicle_disconnect']);
     expect(RADICLE_SEED_METHODS).toEqual(['radicle_seed', 'radicle_unseed', 'radicle_sync', 'radicle_getSeedStatus']);
@@ -288,13 +288,10 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
     expect(Object.keys(createRadicleDispatchers({ execute: jest.fn() })).sort()).toEqual(
       RADICLE_PAGE_METHODS.map((m) => `radicle:${m}`).sort()
     );
+    // The preload sends every window.radicle method to main (PRQ-8c), and
+    // keeps no list of routed methods (PRQ-9).
     const preload = fs.readFileSync(path.join(__dirname, '../webview-preload.js'), 'utf-8');
-    const routes = /const PAGE_ROUTES = new Set\(\[([\s\S]*?)\]\);/
-      .exec(preload)[1]
-      .match(/'[^']+'/g)
-      .map((r) => r.slice(1, -1))
-      .filter((r) => r.startsWith('radicle:'));
-    expect(routes.sort()).toEqual(RADICLE_PAGE_METHODS.map((m) => `radicle:${m}`).sort());
+    expect(preload).not.toMatch(/PAGE_ROUTES|routedToMain|sendToHost\('radicle:/);
     // Each has the design's class.
     for (const method of RADICLE_PAGE_METHODS) {
       expect({ method, class: methodRow('radicle', method).class }).toEqual({

@@ -138,6 +138,23 @@ async function enterViaToolbarButton(window) {
   await window.locator('#fullscreen-btn').click();
 }
 
+// Shows the chrome's consent screen as main shows it, for a page's
+// window.radicle connect (`page:prompt`, kind `radicle.connect`). Main has
+// no such handle, so the user's answer reaches main and is refused there,
+// after the screen is down.
+async function showConsentPrompt(window) {
+  await window.evaluate(async () => {
+    const { pagePromptRenderer } = await import('./lib/page-prompt-renderers.js');
+    pagePromptRenderer('radicle.connect').show({
+      handle: 'f'.repeat(64),
+      guest: 0,
+      kind: 'radicle.connect',
+      site: { key: 'myapp.eth', label: 'myapp.eth' },
+      view: {},
+    });
+  });
+}
+
 test.describe('with the bookmarks bar on and the sidebar open', () => {
   test.use({ seedSettings: { showBookmarkBar: true, enableIdentityWallet: true } });
 
@@ -198,10 +215,7 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
     await clickMenuItem(electronApp, 'fullscreen');
     await expectChromeHidden(window, electronApp);
 
-    await window.evaluate(async () => {
-      const consent = await import('./lib/radicle-consent.js');
-      consent.showRadicleConnect('bzz://myapp.eth', 'fullscreen-test').catch(() => {});
-    });
+    await showConsentPrompt(window);
     await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
     await expect(window.locator('#sidebar')).toBeVisible();
     await window.screenshot({ path: test.info().outputPath('fullscreen-consent-shown.png') });
@@ -233,10 +247,7 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
     await window.keyboard.press('ControlOrMeta+Shift+W');
     await expect(window.locator('#sidebar')).toBeVisible();
 
-    await window.evaluate(async () => {
-      const consent = await import('./lib/radicle-consent.js');
-      consent.showRadicleConnect('bzz://myapp.eth', 'fullscreen-test').catch(() => {});
-    });
+    await showConsentPrompt(window);
     await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
     await window.locator('#radicle-consent-reject').click();
     await expect(window.locator('#sidebar-radicle-consent')).toBeHidden();
@@ -256,10 +267,7 @@ test.describe('with the bookmarks bar on and the sidebar open', () => {
   }) => {
     await window.locator('#wallet-toggle-btn').click();
     await expect(window.locator('#sidebar')).not.toHaveClass(/collapsed/);
-    await window.evaluate(async () => {
-      const consent = await import('./lib/radicle-consent.js');
-      consent.showRadicleConnect('bzz://myapp.eth', 'fullscreen-test').catch(() => {});
-    });
+    await showConsentPrompt(window);
     await expect(window.locator('#sidebar-radicle-consent')).toBeVisible();
 
     await clickMenuItem(electronApp, 'fullscreen');

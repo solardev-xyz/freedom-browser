@@ -159,16 +159,14 @@ test('reads, connecting and disconnecting through main: main\'s prompt in the si
     'radicle_getCapabilities',
   ]);
 
-  // The chrome's connection grant is refused, for any site, and it has no
-  // route for a Radicle method (PRQ-8c).
-  const forged = await win.evaluate(async () => {
-    const tryIt = (fn) => fn().then(() => 'accepted', (err) => String(err?.message || err));
-    return {
-      grant: await tryIt(() => window.radiclePermissions.grantPermission('other.eth')),
-      route: typeof window.radicleProvider,
-    };
-  });
-  expect(forged.grant).toContain('A Radicle connection is granted only from its own prompt');
+  // The chrome has no connection grant of its own (PRQ-9: its preload
+  // exposes none, and main refuses the channel, radicle-provider-ipc tests)
+  // and no route for a Radicle method (PRQ-8c).
+  const forged = await win.evaluate(async () => ({
+    grant: typeof window.radiclePermissions.grantPermission,
+    route: typeof window.radicleProvider,
+  }));
+  expect(forged.grant).toBe('undefined');
   expect(forged.route).toBe('undefined');
   expect(await radicleGrant(electronApp, 'other.eth')).toBeNull();
   expect(await radicleGrant(electronApp, DAPP)).toEqual({ origin: DAPP, signing: false });

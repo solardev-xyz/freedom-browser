@@ -353,19 +353,13 @@ async function signSafeMessage(safeIndex, ownerIndex, token) {
  *
  * @param {number} safeIndex
  * @param {string} token - The session token from startSafeMessage
- * @param {{chrome?: boolean}} [options] - `chrome`: the chrome asks
- *   (`wallet:safe-message-complete`), which may not complete a session
- *   main opened for a page's request
  * @returns {{signature: string}}
  */
-function completeSafeMessage(safeIndex, token, { chrome = false } = {}) {
+function completeSafeMessage(safeIndex, token) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
   const entry = requireSession(safeIndex, token);
-  if (chrome && entry.mainOwned) {
-    throw new Error('This signature request is answered by the browser itself');
-  }
   if (entry.signatures.length < entry.threshold) {
     throw new Error(
       `Not enough signatures yet (${entry.signatures.length} of ${entry.threshold})`

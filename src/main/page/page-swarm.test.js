@@ -175,35 +175,8 @@ function setup() {
 }
 
 describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
-  test('the dispatcher serves the chrome\'s public methods but unsubscribe, and the preload routes exactly these', () => {
-    // The chrome's own list, read from the code that served it: the methods
-    // it ran with no prompt and no manifest check.
-    const source = fs.readFileSync(path.join(__dirname, '../../renderer/lib/swarm-provider.js'), 'utf-8');
-    const publicMethods = /const PUBLIC_METHODS = new Set\(\[([\s\S]*?)\]\);/
-      .exec(source)[1]
-      .match(/'[^']+'/g)
-      .map((m) => m.slice(1, -1));
-    expect([...SWARM_READ_METHODS].sort()).toEqual(publicMethods.filter((m) => m !== 'swarm_unsubscribe').sort());
-    // And PRQ-7b's: connecting, and the methods its messaging handler ran.
+  test('the dispatcher serves every window.swarm method, and the preload sends them all to main', () => {
     expect(SWARM_CONNECT_METHODS).toEqual(['swarm_requestAccess']);
-    const messagingMethods = /method === 'swarm_getMessagingIdentity' \|\|[\s\S]*?\) \{\s*result = await handleMessagingRequest/
-      .exec(source)[0]
-      .match(/'swarm_[A-Za-z]+'/g)
-      .map((m) => m.slice(1, -1));
-    expect([...SWARM_MESSAGING_METHODS].sort()).toEqual(messagingMethods.sort());
-    // And PRQ-7c's: the methods the chrome ran with its publish prompt, and
-    // swarm_getUploadStatus, the one its catch-all branch ran.
-    const publishMethods = /method === 'swarm_publishData' \|\| method === 'swarm_publishFiles' \|\| method === 'swarm_publishChunk'/
-      .exec(source)[0]
-      .match(/'swarm_[A-Za-z]+'/g)
-      .map((m) => m.slice(1, -1));
-    expect([...SWARM_PUBLISH_METHODS].sort()).toEqual([...publishMethods, 'swarm_getUploadStatus'].sort());
-    // And PRQ-7d's: the methods its feed and signing handler ran.
-    const feedMethods = /method === 'swarm_createFeed' \|\|[\s\S]*?'swarm_getSigningIdentity'\s*\) \{/
-      .exec(source)[0]
-      .match(/'swarm_[A-Za-z]+'/g)
-      .map((m) => m.slice(1, -1));
-    expect([...SWARM_FEED_METHODS].sort()).toEqual(feedMethods.sort());
     expect(SWARM_PAGE_METHODS).toEqual([
       ...SWARM_READ_METHODS,
       ...SWARM_CONNECT_METHODS,
@@ -221,13 +194,10 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     expect(Object.keys(createSwarmDispatchers({ identityWalletEnabled: () => true, execute: jest.fn() })).sort()).toEqual(
       SWARM_PAGE_METHODS.map((m) => `swarm:${m}`).sort()
     );
+    // The preload sends every window.swarm method to main (PRQ-7d), and
+    // keeps no list of routed methods (PRQ-9).
     const preload = fs.readFileSync(path.join(__dirname, '../webview-preload.js'), 'utf-8');
-    const routes = /const PAGE_ROUTES = new Set\(\[([\s\S]*?)\]\);/
-      .exec(preload)[1]
-      .match(/'[^']+'/g)
-      .map((r) => r.slice(1, -1))
-      .filter((r) => r.startsWith('swarm:'));
-    expect(routes.sort()).toEqual(SWARM_PAGE_METHODS.map((m) => `swarm:${m}`).sort());
+    expect(preload).not.toMatch(/PAGE_ROUTES|routedToMain|sendToHost\('swarm:/);
     // Each has its row, of the class the design gives it.
     for (const method of PERMISSION_FREE) expect(methodRow('swarm', method).class).toBe(CLASS.PERMISSION_FREE);
     for (const method of UNDER_KEY) expect(methodRow('swarm', method).class).toBe(CLASS.NAME_REVALIDATED);

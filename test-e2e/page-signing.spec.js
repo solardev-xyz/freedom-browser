@@ -184,26 +184,25 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
 
   // The chrome mints no page token, and claims no site's rule.
   const forged = await win.evaluate(
-    async ({ guest: id, key, message, typed }) => {
+    async ({ message, typed }) => {
       const reason = (result) => (result?.success ? 'granted' : result?.code || result?.error);
       return {
         message: reason(await window.wallet.confirmSigning('sign-message', 0, message)),
         typed: reason(await window.wallet.confirmSigning('sign-typed-data', 0, typed)),
         safe: reason(await window.wallet.confirmSigning('safe-message', 1000, { method: 'personal_sign', params: [message] })),
-        ruleMessage: reason(await window.wallet.signMessage(message, 0, { autoApprove: key, webContentsId: id })),
-        ruleTyped: reason(
-          await window.wallet.signTypedData(typed, 0, { autoApprove: key, webContentsId: id }, { chainId: 100 })
-        ),
+        // PRQ-9: the chrome has no signing call of its own to claim a rule on.
+        ruleMessage: typeof window.wallet.signMessage,
+        ruleTyped: typeof window.wallet.signTypedData,
       };
     },
-    { guest, key: KEY_A, message: MESSAGE, typed: TYPED }
+    { message: MESSAGE, typed: TYPED }
   );
   expect(forged).toEqual({
     message: 'SIGNING_NOT_CONFIRMED',
     typed: 'SIGNING_NOT_CONFIRMED',
     safe: 'SIGNING_NOT_CONFIRMED',
-    ruleMessage: 'SIGNING_NOT_CONFIRMED',
-    ruleTyped: 'SIGNING_NOT_CONFIRMED',
+    ruleMessage: 'undefined',
+    ruleTyped: 'undefined',
   });
   // Nor does it set the site's rule; it may still clear one.
   const ruleWrites = await win.evaluate(async (key) => {

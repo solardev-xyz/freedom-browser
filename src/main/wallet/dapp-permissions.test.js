@@ -14,13 +14,7 @@ jest.mock('electron', () => ({
   },
 }));
 
-// D12's pause reads the wallet's payment records; here it is the switch.
-jest.mock('./auto-approve-pause', () => ({
-  transactionAutoApprovePaused: jest.fn(async () => false),
-}));
-
 const { app } = require('electron');
-const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 let tmpDir;
 
@@ -216,44 +210,6 @@ describe('dapp-permissions — revoke by wallet index', () => {
   });
 });
 
-// The renderer's question before a dApp transaction: true sends it silently,
-// false shows the approval prompt.
-describe('dapp-permissions — the auto-approve question, paused while a payment waits (D12)', () => {
-  const SITE = 'https://swap.example';
-  const TO = '0x' + '66'.repeat(20);
-  const SELECTOR = '0xabcdef12';
-  let ask;
-
-  beforeEach(() => {
-    jest.spyOn(console, 'log').mockImplementation(() => {});
-    registerDappPermissionsIpc();
-    ask = (site, selector = SELECTOR) =>
-      ipcHandlers['dapp:is-tx-auto-approved']({}, site, TO, selector, 1);
-    transactionAutoApprovePaused.mockReset().mockResolvedValue(false);
-    grantPermission(SITE, 0, 1);
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1);
-  });
-
-  afterEach(() => jest.restoreAllMocks());
-
-  test('a covering rule answers yes while nothing of the site waits', async () => {
-    await expect(ask(SITE)).resolves.toBe(true);
-    expect(transactionAutoApprovePaused).toHaveBeenCalledWith(SITE);
-  });
-
-  test("a covering rule answers no while one of the site's payments waits", async () => {
-    transactionAutoApprovePaused.mockResolvedValue(true);
-    await expect(ask(SITE)).resolves.toBe(false);
-  });
-
-  test('no covering rule answers no, as before, without reading the records', async () => {
-    transactionAutoApprovePaused.mockResolvedValue(true);
-    await expect(ask(SITE, '0x12345678')).resolves.toBe(false);
-    await expect(ask('https://other.example')).resolves.toBe(false);
-    expect(transactionAutoApprovePaused).not.toHaveBeenCalled();
-  });
-});
-
 // A transaction rule covers its call with no more value than the confirmed
 // send it was recorded from. Before, a rule recorded from a send of 0.01 ETH
 // covered the same call with any value.
@@ -268,7 +224,6 @@ describe('dapp-permissions — a transaction rule covers no more value than its 
 
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
-    transactionAutoApprovePaused.mockReset().mockResolvedValue(false);
     grantPermission(SITE, 0, 1);
   });
 
@@ -343,14 +298,6 @@ describe('dapp-permissions — a transaction rule covers no more value than its 
     expect(covers(CENT)).toBe(true);
   });
 
-  test("the renderer's question carries the value", async () => {
-    registerDappPermissionsIpc();
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
-    const ask = (value) => ipcHandlers['dapp:is-tx-auto-approved']({}, SITE, TO, SELECTOR, 1, value);
-    await expect(ask(CENT_HEX)).resolves.toBe(true);
-    await expect(ask(TWO_CENTS_HEX)).resolves.toBe(false);
-  });
-
   test('removing a rule still works on its call alone', () => {
     addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
     expect(removeTransactionAutoApprove(SITE, TO, SELECTOR, 1)).toBe(true);
@@ -394,21 +341,12 @@ describe('dapp-permissions — the chrome writes no grant (0011 PRQ-4)', () => {
     expect(getPermission('https://swap.example')).toBeNull();
   });
 
-  test('dapp:update-last-used marks a site used, and refuses a chain the chrome supplies', () => {
-    grantPermission('https://swap.example', 0, 100);
-    const before = getPermission('https://swap.example').lastUsed;
-    jest.spyOn(Date, 'now').mockReturnValue(before + 5000);
-    expect(ipcHandlers['dapp:update-last-used']({}, 'https://swap.example')).toBe(true);
-    expect(getPermission('https://swap.example')).toMatchObject({ chainId: 100, lastUsed: before + 5000 });
-    for (const chainId of [1, null, '0x1', 0]) {
-      expect(() => ipcHandlers['dapp:update-last-used']({}, 'https://swap.example', chainId)).toThrow(
-        'A dApp connection’s chain is set only by the page’s own request'
-      );
-    }
-    expect(getPermission('https://swap.example')).toMatchObject({ chainId: 100, lastUsed: before + 5000 });
-    // A site with no grant gets none.
-    expect(ipcHandlers['dapp:update-last-used']({}, 'https://other.example')).toBe(false);
-    expect(getPermission('https://other.example')).toBeNull();
+  // Main marks a site used and reads its rules itself, for a page's request
+  // it serves (page/page-ethereum.js, page/page-sends.js): the chrome's old
+  // route to either is gone (PRQ-9).
+  test('the chrome neither marks a site used nor asks for its rules', () => {
+    expect(Object.keys(ipcHandlers)).not.toContain('dapp:update-last-used');
+    expect(Object.keys(ipcHandlers)).not.toContain('dapp:is-tx-auto-approved');
   });
 });
 

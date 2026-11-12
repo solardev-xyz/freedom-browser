@@ -1421,22 +1421,11 @@ function trackPageGuest(contents) {
 }
 
 /**
- * Test only: the methods the harness routes through `page:request`, for the
- * preload's boot switch. Empty unless the harness enabled the hooks and set
- * some.
- */
-function testPageRoutes() {
-  if (sharedHooks.enabled !== true || !Array.isArray(sharedHooks.routes)) return [];
-  return sharedHooks.routes.filter((route) => typeof route === 'string');
-}
-
-/**
  * Test only: turn on the hooks that run the new path (the E2E harness,
  * under FREEDOM_TEST_MODE). Returns what the harness exposes to specs.
  */
 function enablePageRequestTestHooks() {
   sharedHooks.enabled = true;
-  sharedHooks.routes = [];
   // The harness's own prompt kind (`test.prompt`), for the approvals
   // document's tests (APS-1).
   sharedHooks.testPrompts = true;
@@ -1447,9 +1436,6 @@ function enablePageRequestTestHooks() {
   };
   return {
     trace,
-    setRoutes: (routes) => {
-      sharedHooks.routes = Array.isArray(routes) ? routes.slice() : [];
-    },
     setDispatch: (dispatch) => {
       sharedHooks.dispatch = typeof dispatch === 'function' ? dispatch : undefined;
     },
@@ -1480,6 +1466,5 @@ module.exports = {
   getPageRequests,
   registerPageRequestsIpc,
   trackPageGuest,
-  testPageRoutes,
   enablePageRequestTestHooks,
 };
