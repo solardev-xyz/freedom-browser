@@ -63,6 +63,11 @@ const KINDS = Object.freeze([
 ]);
 const KIND_SET = new Set(KINDS);
 
+// The E2E harness's own prompt, to exercise the approvals document's
+// rendering and input rules (APS-1). Main issues it only while the
+// harness's test hooks are on (`page-requests.js`); it is no wallet kind.
+const TEST_KIND = 'test.prompt';
+
 // The kinds that count against a document's one pending wallet prompt.
 // Swarm and Radicle keep their own limits on their prompts.
 const WALLET_KINDS = new Set([
@@ -193,6 +198,27 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     return entry;
   }
 
+  /**
+   * The prompt's content changed (a dispatcher has more to show): it shows
+   * again with the new view if it is the one shown, and the renderer
+   * restarts its input delay. Returns whether the handle was open.
+   */
+  function update(handle, view) {
+    const entry = open.get(handle);
+    if (!entry) return false;
+    entry.view = view;
+    if (windowState(entry.window).shown !== entry) return true;
+    trace({ kind: 'prompt-updated', handle });
+    tell(entry.window, CHANNELS.PROMPT, {
+      handle: entry.handle,
+      guest: entry.guest,
+      kind: entry.kind,
+      site: { ...entry.site },
+      view: entry.view,
+    });
+    return true;
+  }
+
   /** A handle closed, for any reason: its prompt goes, and the next shows. */
   function closed(handle, reason) {
     const entry = open.get(handle);
@@ -269,13 +295,14 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     return out;
   }
 
-  return { add, closed, foreground, decide, walletPromptOpen, forgetWindow, state };
+  return { add, update, closed, foreground, decide, walletPromptOpen, forgetWindow, state };
 }
 
 module.exports = {
   CHANNELS,
   KINDS,
   KIND_SET,
+  TEST_KIND,
   WALLET_KINDS,
   createPagePrompts,
 };

@@ -580,6 +580,18 @@ jobs:
           FREEDOM_RADICLE_CONTRACT_BACKEND: radicled
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
 
+      # The network operations on the same binary (design 0008, Methods
+      # rad.connect_seeds and rad.clone, Progress): the background seeds and
+      # clone, a seed's failure and its sync, a cancel's timing, and twenty
+      # failed candidates, through main's manager, radicle-embedded.js and
+      # seed-status.js, on the contract fixture's home, under a SOCKS policy
+      # at a closed loopback port: nothing leaves the runner.
+      - name: freedom-radicled network operations (real binary)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/radicle/radicled-network.integration.test.js
+        env:
+          FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
+
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
       - name: Verify the win-arm64 release asset
@@ -1629,8 +1641,11 @@ jobs:
       # seeding, whose prompt, guard and seed statuses are main's
       # (`page-radicle-seed`, PRQ-8b), and its signing, whose grant, prompts,
       # rule and guard are main's, with no Radicle route left in the chrome
-      # (`page-radicle-sign`, PRQ-8c).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle + page-radicle-seed + page-radicle-sign E2E
+      # (`page-radicle-sign`, PRQ-8c), and the approvals document behind its
+      # flag, which only the window's own view can drive, under its CSP and
+      # Trusted Types, with its input held for 500 ms and Enter never
+      # approving (`approvals-document`, APS-1).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle + page-radicle-seed + page-radicle-sign + approvals-document E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1658,7 +1673,8 @@ jobs:
             test-e2e/page-swarm-feeds.spec.js \
             test-e2e/page-radicle.spec.js \
             test-e2e/page-radicle-seed.spec.js \
-            test-e2e/page-radicle-sign.spec.js
+            test-e2e/page-radicle-sign.spec.js \
+            test-e2e/approvals-document.spec.js
 
       - name: Upload software rendering profile
         if: always()

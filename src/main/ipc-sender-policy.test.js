@@ -10,8 +10,10 @@ const {
   TIER,
   WEBVIEW_CHANNEL_TIERS,
   PAGE_CHANNELS,
+  APPROVALS_CHANNELS,
   CHROME_INDEX,
   PAGES_DIR,
+  APPROVALS_HTML,
 } = policy;
 
 function makeEvent({ type = 'webview', url, subFrame = false, noFrame = false } = {}) {
@@ -155,6 +157,43 @@ describe('isSenderAllowed', () => {
       // Any other channel still takes the chrome, page:decide included.
       expect(isSenderAllowed('page:decide', chrome())).toBe(true);
     }
+  });
+
+  // freedom-core design 0011, "The approvals document" (APS-1): the
+  // document's own top frame only, and, like the page channels, never the
+  // chrome, which must not be able to decide. Main then checks the exact
+  // view (approvals-document.js).
+  test('the approvals channels take the approvals document\'s top frame and refuse the chrome', () => {
+    expect(APPROVALS_CHANNELS).toEqual(['approvals:ready', 'approvals:shown', 'approvals:decide']);
+    expect(APPROVALS_HTML).toBe(path.join(path.dirname(CHROME_INDEX), 'approvals', 'approvals.html'));
+    const approvalsDoc = (extra = {}) => makeEvent({ type: 'window', url: fileUrl(APPROVALS_HTML), ...extra });
+    for (const channel of APPROVALS_CHANNELS) {
+      expect(WEBVIEW_CHANNEL_TIERS.has(channel)).toBe(false);
+      expect(isSenderAllowed(channel, approvalsDoc())).toBe(true);
+      // The chrome, a page, an internal page, and the document's file in a tab.
+      expect(isSenderAllowed(channel, chrome())).toBe(false);
+      expect(isSenderAllowed(channel, web())).toBe(false);
+      expect(isSenderAllowed(channel, page('settings.html'))).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'webview', url: fileUrl(APPROVALS_HTML) }))).toBe(false);
+      // A sub-frame, a frame gone or detached, and a copy elsewhere on disk.
+      expect(isSenderAllowed(channel, approvalsDoc({ subFrame: true }))).toBe(false);
+      expect(isSenderAllowed(channel, approvalsDoc({ noFrame: true }))).toBe(false);
+      const detached = approvalsDoc();
+      detached.senderFrame.detached = true;
+      expect(isSenderAllowed(channel, detached)).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'window', url: fileUrl('/tmp/renderer/approvals/approvals.html') }))).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'window', url: 'https://evil.example/approvals/approvals.html' }))).toBe(false);
+      const throwing = approvalsDoc();
+      Object.defineProperty(throwing, 'senderFrame', { get() { throw new Error('disposed'); } });
+      expect(isSenderAllowed(channel, throwing)).toBe(false);
+    }
+    // The document reaches nothing else, the chrome's channels included.
+    for (const channel of ['page:decide', 'page:foreground', 'page:approvals-anchor', 'wallet:confirm-signing', 'settings:get']) {
+      expect(isSenderAllowed(channel, approvalsDoc())).toBe(false);
+    }
+    // Where the content area starts: the chrome's to say.
+    expect(isSenderAllowed('page:approvals-anchor', chrome())).toBe(true);
+    expect(isSenderAllowed('page:approvals-anchor', web())).toBe(false);
   });
 
   test('public bootstrap channels answer any sender and frame', () => {

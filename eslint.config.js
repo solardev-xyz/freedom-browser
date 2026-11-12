@@ -63,6 +63,17 @@ module.exports = [
     },
   },
   {
+    // The approvals document's script (freedom-core design 0011, APS-1): a
+    // classic <script src> under its own CSP (`script-src 'self'`, Trusted
+    // Types), reaching main only through the `approvals` global its preload
+    // exposes.
+    files: ['src/renderer/approvals/**/*.js'],
+    ignores: ['**/*.test.js'],
+    languageOptions: {
+      sourceType: 'script',
+    },
+  },
+  {
     files: ['**/*.test.js'],
     languageOptions: {
       globals: {

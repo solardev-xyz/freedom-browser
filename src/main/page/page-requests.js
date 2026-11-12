@@ -64,6 +64,13 @@
  * prompt carries main's `site`, the request's attested key, and whatever the
  * user decides, the dispatcher acts on its own record.
  *
+ * With the approvals document's flag on (APS-1, `FREEDOM_APPROVALS_DOCUMENT`,
+ * `approvals/approvals-document.js`), `page:prompt`, `page:prompt-hidden`
+ * and `page:prompt-closed` go to the window's approvals document instead,
+ * the chrome keeps `page:prompt-pending` and `page:prompt-closed` for its
+ * badges and count, and the chrome's `page:decide` is refused: a decision
+ * counts only from the window's own approvals document (`decideInWindow`).
+ *
  * A record prompts one prompt at a time, and may prompt again once its
  * prompt is decided (PRQ-5: a vault unlock and then the signature, a Safe's
  * approval and then its signing board, or a send's fee asked again at the
@@ -100,7 +107,13 @@ const {
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const signingConfirmation = require('../wallet/signing-confirmation');
-const { CHANNELS: PROMPT_CHANNELS, KIND_SET, WALLET_KINDS, createPagePrompts } = require('./page-prompts');
+const {
+  CHANNELS: PROMPT_CHANNELS,
+  KIND_SET,
+  TEST_KIND,
+  WALLET_KINDS,
+  createPagePrompts,
+} = require('./page-prompts');
 
 const CHANNELS = Object.freeze({
   HELLO: 'page:hello',
@@ -240,6 +253,10 @@ function defaultWatchWindow(windowId, onClosed) {
  *   chrome window a sender is the chrome of.
  * @param {(windowId: number, channel: string, payload: object) => void} [options.sendToWindow]
  *   to a window's chrome.
+ * @param {{send: (windowId: number, channel: string, payload: object) => void}|null} [options.approvals]
+ *   the approvals documents (APS-1), when their flag is on: they get the
+ *   prompts the chrome otherwise renders, and the chrome's decisions are
+ *   refused.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -254,6 +271,7 @@ function createPageRequests({
   chromeWindowOf = defaultChromeWindowOf,
   sendToWindow = defaultSendToWindow,
   watchWindow = defaultWatchWindow,
+  approvals = null,
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -269,8 +287,32 @@ function createPageRequests({
     }
   };
 
+  // Where a prompt message goes: the chrome, or with the approvals
+  // document's flag on, the window's approvals document for what it shows,
+  // and the chrome for its badges and count.
+  const toChrome = (windowId, channel, payload) => {
+    try {
+      sendToWindow(windowId, channel, payload);
+    } catch {
+      // A window mid-teardown: its handles close with its guests.
+    }
+  };
+  const toApprovals = (windowId, channel, payload) => {
+    try {
+      approvals.send(windowId, channel, payload);
+    } catch {
+      // The same.
+    }
+  };
+  function sendPromptMessage(windowId, channel, payload) {
+    if (!approvals) return toChrome(windowId, channel, payload);
+    if (channel === PROMPT_CHANNELS.PENDING) return toChrome(windowId, channel, payload);
+    if (channel === PROMPT_CHANNELS.CLOSED) toChrome(windowId, channel, payload);
+    toApprovals(windowId, channel, payload);
+  }
+
   const prompts = createPagePrompts({
-    send: (windowId, channel, payload) => sendToWindow(windowId, channel, payload),
+    send: sendPromptMessage,
     markShown: (entry) => markShown(entry.record),
     decided: (entry) => decidedEntry(entry),
     trace,
@@ -543,6 +585,9 @@ function createPageRequests({
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       prompt: (spec) => prompt(record, spec),
+      // The open prompt's content changed: it shows again with this view.
+      updatePrompt: (view) =>
+        Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
       confirm: (kind, accountIndex, payload, bound) => confirm(record, kind, accountIndex, payload, bound),
       spend: (token, kind, accountIndex, payload) => spend(record, token, kind, accountIndex, payload),
       walletOperation: (run) => walletOperation(record, run),
@@ -617,7 +662,8 @@ function createPageRequests({
    * open.
    */
   async function prompt(record, { kind, view = {}, choices } = {}) {
-    if (!KIND_SET.has(kind)) throw new Error(`page-requests: no prompt of kind ${kind}`);
+    const testKind = kind === TEST_KIND && hooks.testPrompts === true;
+    if (!KIND_SET.has(kind) && !testKind) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
     if (record.handle && handles.get(record.handle) === record) {
       throw new Error('page-requests: a record prompts one prompt at a time');
@@ -798,11 +844,31 @@ function createPageRequests({
       windowId = null;
     }
     if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
+    // With the approvals document's flag on, only it decides (APS-1).
+    if (approvals) {
+      trace({ kind: 'decide', window: windowId, ok: false, reason: 'approvals-document' });
+      return { ok: false, reason: 'approvals-document' };
+    }
+    return decideIn(windowId, payload, 'chrome');
+  }
+
+  async function decideIn(windowId, payload, from) {
     const outcome = prompts.decide(windowId, payload);
-    trace({ kind: 'decide', window: windowId, ok: outcome.ok, reason: outcome.reason });
+    trace({ kind: 'decide', window: windowId, from, ok: outcome.ok, reason: outcome.reason });
     if (!outcome.ok) return outcome;
     await outcome.entry.record.reply;
     return { ok: true };
+  }
+
+  /**
+   * A decision from window `windowId`'s approvals document, which has
+   * checked its sender and main's input delay
+   * (`approvals/approvals-document.js`). It counts only for the handle that
+   * window shows at this moment, as the chrome's did.
+   */
+  function decideInWindow(windowId, payload) {
+    if (!approvals || !Number.isInteger(windowId)) return Promise.resolve({ ok: false, reason: 'not-a-window' });
+    return decideIn(windowId, payload, 'approvals');
   }
 
   /**
@@ -1108,6 +1174,7 @@ function createPageRequests({
     findHandle,
     onHandleClosed,
     decide,
+    decideInWindow,
     foreground,
     promptState: () => prompts.state(),
     stats,
@@ -1134,10 +1201,12 @@ function getPageRequests() {
     const { createEthereumDispatchers } = require('./page-ethereum');
     const { createSwarmDispatchers, registerSwarmPageEvents } = require('./page-swarm');
     const { createRadicleDispatchers, registerRadiclePageEvents } = require('./page-radicle');
+    const { isApprovalsDocumentEnabled, getApprovalsDocuments } = require('../approvals/approvals-document');
     shared = createPageRequests({
       documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
       dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers(), ...createRadicleDispatchers() },
       hooks: sharedHooks,
+      approvals: isApprovalsDocumentEnabled() ? getApprovalsDocuments() : null,
     });
     registerSwarmPageEvents(shared);
     registerRadiclePageEvents(shared);
@@ -1160,6 +1229,9 @@ function trackPageGuest(contents) {
  */
 function enablePageRequestTestHooks() {
   sharedHooks.enabled = true;
+  // The harness's own prompt kind (`test.prompt`), for the approvals
+  // document's tests (APS-1).
+  sharedHooks.testPrompts = true;
   const trace = [];
   sharedHooks.onTrace = (entry) => {
     trace.push(entry);
