@@ -133,7 +133,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(29);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -163,7 +163,6 @@ describe('preload', () => {
       'swarmPermissions',
       'swarmManifest',
       'radiclePermissions',
-      'radicleProvider',
       'swarmFeedStore',
     ]);
     expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.GET_INTERNAL_PAGES);
@@ -721,7 +720,6 @@ describe('preload', () => {
         [{ origin: 'app.eth', reason: 'no-usable-stamps' }],
         [{ origin: 'app.eth', reason: 'no-usable-stamps' }],
       ],
-      [exposures.radicleProvider, 'onEvent', IPC.RADICLE_PROVIDER_EVENT, [{ event: 'seedStatus', origin: 'rad://repo', data: { state: 'fetching' } }], [{ event: 'seedStatus', origin: 'rad://repo', data: { state: 'fetching' } }]],
     ];
 
     for (const [target, method, channel, emittedArgs, expectedArgs] of listenerCases) {

@@ -13,13 +13,14 @@
  * (which honors the Radicle flag) and never touches vault or wallet state.
  *
  * Main's own prompts for a page's request (freedom-core design 0011, "The
- * prompt protocol"; PRQ-8a: `radicle.connect`; PRQ-8b: `radicle.node`)
- * show in the same screen,
+ * prompt protocol"; PRQ-8a: `radicle.connect`; PRQ-8b: `radicle.node`;
+ * PRQ-8c: `radicle.sign`) show in the same screen,
  * from what main sends: its site and its view. The screen answers them by
  * handle (`page:decide`) once its input protection has passed, writes no
- * grant, and takes itself down when main hides or closes the prompt. The
- * prompts that still take the chrome's own path (signing) keep
- * the promise-based flow below until their parts move them.
+ * grant, and takes itself down when main hides or closes the prompt. From
+ * PRQ-8c every window.radicle prompt is main's: the promise-based flow
+ * below receives nothing, and stays until PRQ-9 removes the chrome's old
+ * request code.
  */
 
 import { registerScreenHider, hideAllSubscreens, walletState } from './wallet/wallet-state.js';
@@ -147,6 +148,17 @@ function render({ title, origin, wants, allows, warning, approveLabel }) {
 // nothing.
 const PAGE_COPY = Object.freeze({
   'radicle.connect': () => CONNECT_COPY,
+  // The signing grant, or one signed write with exactly what main will sign
+  // and, outside Agent custody, its "always allow writes" choice.
+  'radicle.sign': (view) => {
+    if (view.mode === 'grant') return SIGNING_COPY;
+    if (view.mode !== 'write' || !SIGNED_WRITE_METHODS.has(view.method)) return null;
+    const agentHeld = view.agentHeld === true;
+    return {
+      ...describeSignedWrite(view.method, view),
+      ...signedWriteNotice({ agentHeld, alwaysAllow: view.alwaysAllow === true }),
+    };
+  },
   'radicle.node': (view) => {
     if (typeof view.rid !== 'string' || !view.rid) return null;
     if (view.method === 'radicle_seed') return seedCopy(view.rid);
@@ -178,8 +190,15 @@ function showPagePrompt(prompt) {
   const sidebarWasOpen = pagePending ? pagePending.sidebarWasOpen : isSidebarVisible();
   clearPagePending();
   render({ ...copy, origin: prompt.site?.label || prompt.site?.key || 'Unknown' });
-  alwaysRow?.classList.add('hidden');
-  pagePending = { handle: prompt.handle, sidebarWasOpen, armed: false, deciding: false };
+  const offersAlways = Boolean(copy.always && alwaysRow && alwaysInput);
+  if (offersAlways) {
+    if (alwaysLabel) alwaysLabel.textContent = copy.always.label;
+    alwaysInput.checked = copy.always.checked === true;
+    alwaysRow.classList.remove('hidden');
+  } else {
+    alwaysRow?.classList.add('hidden');
+  }
+  pagePending = { handle: prompt.handle, sidebarWasOpen, armed: false, deciding: false, offersAlways };
   presentingPagePrompt = true;
   try {
     hideAllSubscreens();
@@ -222,12 +241,15 @@ async function decidePage(approve, { keepSidebar = false, armedOrNot = false } =
   const current = pagePending;
   if (!current || current.deciding || (!current.armed && !armedOrNot)) return;
   current.deciding = true;
-  const { handle, sidebarWasOpen } = current;
+  const { handle, sidebarWasOpen, offersAlways } = current;
+  // The one choice a prompt may offer: "always allow writes", on approval.
+  const choices = approve && offersAlways ? { alwaysAllow: alwaysInput?.checked === true } : {};
   clearPagePending();
+  alwaysRow?.classList.add('hidden');
   takeDownPage();
   if (!keepSidebar && !sidebarWasOpen) closeSidebar();
   try {
-    await window.pagePrompts?.decide?.(handle, approve, {});
+    await window.pagePrompts?.decide?.(handle, approve, choices);
   } catch (err) {
     console.error('[RadicleConsent] The decision did not reach main:', err);
   }
@@ -333,21 +355,28 @@ export function showRadicleUnseedApproval(permissionKey, rid, owner) {
   return prompt({ owner, origin: permissionKey, ...unseedCopy(rid) });
 }
 
+const SIGNING_COPY = Object.freeze({
+  title: 'Act as your Radicle identity?',
+  wants: 'wants to author content as your Radicle identity',
+  allows: Object.freeze([
+    'Know your Radicle DID and alias',
+    'Ask to open issues, comment, and change issue states as you. You approve each one.',
+  ]),
+  warning:
+    'Everything it writes is signed with your Radicle identity, published to the Radicle network, and cannot be unpublished.',
+  approveLabel: 'Allow',
+});
+
 export function showRadicleSigningApproval(permissionKey, owner) {
-  return prompt({
-    owner,
-    title: 'Act as your Radicle identity?',
-    origin: permissionKey,
-    wants: 'wants to author content as your Radicle identity',
-    allows: [
-      'Know your Radicle DID and alias',
-      'Ask to open issues, comment, and change issue states as you. You approve each one.',
-    ],
-    warning:
-      'Everything it writes is signed with your Radicle identity, published to the Radicle network, and cannot be unpublished.',
-    approveLabel: 'Allow',
-  });
+  return prompt({ owner, origin: permissionKey, ...SIGNING_COPY });
 }
+
+const SIGNED_WRITE_METHODS = new Set([
+  'radicle_createIssue',
+  'radicle_commentIssue',
+  'radicle_editIssueState',
+  'radicle_commentPatch',
+]);
 
 // What one signed write does, in the prompt's own words. Every parameter
 // main signs with is shown — a parameter the prompt leaves out (a patch
@@ -431,6 +460,20 @@ const SIGNED_WRITE_WARNING =
  * shows because main's rate limit stopped an automatic write), and resolves
  * to `{ alwaysAllow }`.
  */
+// A write prompt's warning, and its "always allow writes" choice, which a
+// tab Freedom Agent holds is never offered.
+function signedWriteNotice({ agentHeld, alwaysAllow }) {
+  return {
+    warning: agentHeld ? `Freedom Agent is using this tab. ${SIGNED_WRITE_WARNING}` : SIGNED_WRITE_WARNING,
+    always: agentHeld
+      ? null
+      : {
+          label: 'Always allow this site to write as you without asking (at most 50 writes a day)',
+          checked: alwaysAllow,
+        },
+  };
+}
+
 export function showRadicleSignedWriteApproval(
   permissionKey,
   method,
@@ -442,14 +485,6 @@ export function showRadicleSignedWriteApproval(
     owner,
     origin: permissionKey,
     ...describeSignedWrite(method, params),
-    warning: agentHeld
-      ? `Freedom Agent is using this tab. ${SIGNED_WRITE_WARNING}`
-      : SIGNED_WRITE_WARNING,
-    always: agentHeld
-      ? null
-      : {
-          label: 'Always allow this site to write as you without asking (at most 50 writes a day)',
-          checked: alwaysAllow,
-        },
+    ...signedWriteNotice({ agentHeld, alwaysAllow }),
   });
 }

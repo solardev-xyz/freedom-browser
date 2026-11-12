@@ -16,8 +16,8 @@
  *
  * The tab in front is reported to main by tabs.js (`page:foreground`).
  *
- * The sidebar is shared with the prompts that still take the chrome's own
- * path until their step moves them (Radicle's signing). A prompt main
+ * The sidebar is shared with the chrome's own screens (the wallet's
+ * management, its own sends). A prompt main
  * shows waits while one of those holds the sidebar or a device signature is
  * in flight, and shows once the sidebar is back on the wallet's own view.
  *
@@ -29,7 +29,8 @@
  * permission-manifest screens (`swarm.connect`, `swarm.messaging`,
  * `swarm.manifest`), from PRQ-7c its publish screen (`swarm.publish`), from
  * PRQ-7d its feed screen (`swarm.feed`), and from PRQ-8a Radicle's consent
- * screen (`radicle.connect`, and from PRQ-8b `radicle.node`), which register themselves
+ * screen (`radicle.connect`, from PRQ-8b `radicle.node` and from PRQ-8c
+ * `radicle.sign`), which register themselves
  * (`page-prompt-renderers.js`).
  */
 

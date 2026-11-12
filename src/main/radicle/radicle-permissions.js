@@ -207,6 +207,10 @@ const GRANT_REFUSED = 'A Radicle connection is granted only from its own prompt'
 // PRQ-8b: the node rule is read by main, which never turns it on: no prompt
 // offers it, as none did before. The chrome may only turn it off.
 const NODE_RULE_REFUSED = 'Radicle node auto-approve can only be turned off here';
+// PRQ-8c: the signing grant and the signing rule are written by main, from
+// its own prompts. The chrome may only turn the rule off, and revoke.
+const SIGNING_GRANT_REFUSED = 'The Radicle signing grant is given only from its own prompt';
+const SIGNING_RULE_REFUSED = 'Radicle signing auto-approve is turned on only from a write prompt';
 
 function registerRadiclePermissionsIpc() {
   // PRIVATE MODE GUARD (R-9): the provider's consent flow grants from the
@@ -227,17 +231,19 @@ function registerRadiclePermissionsIpc() {
     isPrivateSender(event) ? false : updateLastUsed(origin)
   );
   ipcMain.handle(IPC.RADICLE_HAS_SIGNING_GRANT, (_event, origin) => hasSigningGrant(origin));
-  ipcMain.handle(IPC.RADICLE_GRANT_SIGNING, (event, origin) =>
-    isPrivateSender(event) ? false : grantSigning(origin)
-  );
+  // Refused for every site and every sender (PRQ-8c): main grants signing
+  // for the key it attested, from the user's decision on its prompt.
+  ipcMain.handle(IPC.RADICLE_GRANT_SIGNING, () => {
+    throw new Error(SIGNING_GRANT_REFUSED);
+  });
   ipcMain.handle(IPC.RADICLE_GET_AUTO_APPROVE, (_event, origin, type) =>
     getAutoApprove(origin, type)
   );
-  // The node rule only off, for every sender (design 0011, "Grants";
-  // PRQ-8b): any value but `false` is refused, so a truthy non-boolean
-  // can't turn it on.
+  // Every rule only off, for every sender (design 0011, "Grants"; PRQ-8b
+  // for the node rule, PRQ-8c for the signing rule): any value but `false`
+  // is refused, so a truthy non-boolean can't turn one on.
   ipcMain.handle(IPC.RADICLE_SET_AUTO_APPROVE, (event, origin, type, enabled) => {
-    if (type === 'node' && enabled !== false) throw new Error(NODE_RULE_REFUSED);
+    if (enabled !== false) throw new Error(type === 'node' ? NODE_RULE_REFUSED : SIGNING_RULE_REFUSED);
     return isPrivateSender(event) ? false : setAutoApprove(origin, type, enabled);
   });
 
@@ -263,5 +269,7 @@ module.exports = {
   registerRadiclePermissionsIpc,
   GRANT_REFUSED,
   NODE_RULE_REFUSED,
+  SIGNING_GRANT_REFUSED,
+  SIGNING_RULE_REFUSED,
   _resetCache,
 };

@@ -1948,22 +1948,9 @@ test('Pi cannot sign a Radicle write on the site grant without the user', async 
   await window.locator('#radicle-consent-reject').click();
   await expect(consent).toBeHidden();
   await expect.poll(pageStatus).toBe('error 4001');
-  // Main reads custody itself: a write the chrome reports as answered by the
-  // grant is refused for this guest before anything is signed.
-  const grantAnswered = await window.evaluate(
-    ({ origin }) =>
-      window.radicleProvider.execute(
-        'radicle_createIssue',
-        { rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', title: 'Agent-filed bug', description: 'x' },
-        origin,
-        {
-          webContentsId: document.querySelector('webview:not(.hidden)').getWebContentsId(),
-          approval: 'auto',
-        }
-      ),
-    { origin: RADICLE_WRITE_ORIGIN }
-  );
-  expect(grantAnswered.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+  // Main reads custody itself, and the chrome has no route to report a
+  // write as answered by the grant (freedom-core design 0011, PRQ-8c).
+  expect(await window.evaluate(() => typeof window.radicleProvider)).toBe('undefined');
   expect(operations).toEqual(['browser_snapshot', 'browser_click']);
 });
 

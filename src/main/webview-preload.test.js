@@ -1818,14 +1818,16 @@ describe('webview-preload private windows', () => {
     });
 
     const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
-    for (const channel of providerChannels.filter((name) => !name.startsWith('swarm:'))) {
+    for (const channel of providerChannels.filter((name) => !name.startsWith('swarm:') && !name.startsWith('radicle:'))) {
       expect(onChannels).toContain(channel);
     }
-    // window.swarm's answers and events come from main (page:event), never
-    // from the chrome (freedom-core design 0011, PRQ-7d).
+    // window.swarm's and window.radicle's answers and events come from main
+    // (page:event), never from the chrome (freedom-core design 0011, PRQ-7d
+    // and PRQ-8c).
     expect(onChannels).toContain('page:event');
-    expect(onChannels).not.toContain('swarm:provider-response');
-    expect(onChannels).not.toContain('swarm:provider-event');
+    for (const channel of ['swarm:provider-response', 'swarm:provider-event', 'radicle:provider-response', 'radicle:provider-event']) {
+      expect(onChannels).not.toContain(channel);
+    }
 
     const messageListeners = global.window.addEventListener.mock.calls.filter(
       ([event]) => event === 'message'
@@ -3015,11 +3017,8 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    // Radicle's signing still takes the chrome's path; its reads, connecting
-    // and disconnecting (0011 PRQ-8a) and seeding (PRQ-8b) go to main.
-    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_createIssue', params: { rid: 'rad:z1' } });
-    expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
-    expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
+    // All of window.radicle goes to main (0011 PRQ-8a to 8c), and never to
+    // the chrome: an unknown method too, which main refuses.
     for (const [id, method] of [
       [11, 'radicle_getCapabilities'],
       [12, 'radicle_getNodeStatus'],
@@ -3030,6 +3029,12 @@ describe('page requests', () => {
       [17, 'radicle_unseed'],
       [18, 'radicle_sync'],
       [19, 'radicle_getSeedStatus'],
+      [20, 'radicle_getIdentity'],
+      [21, 'radicle_createIssue'],
+      [22, 'radicle_commentIssue'],
+      [23, 'radicle_editIssueState'],
+      [24, 'radicle_commentPatch'],
+      [25, 'radicle_noSuchMethod'],
     ]) {
       fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: {} });
     }
@@ -3045,8 +3050,14 @@ describe('page requests', () => {
       ['radicle', 'radicle_unseed'],
       ['radicle', 'radicle_sync'],
       ['radicle', 'radicle_getSeedStatus'],
+      ['radicle', 'radicle_getIdentity'],
+      ['radicle', 'radicle_createIssue'],
+      ['radicle', 'radicle_commentIssue'],
+      ['radicle', 'radicle_editIssueState'],
+      ['radicle', 'radicle_commentPatch'],
+      ['radicle', 'radicle_noSuchMethod'],
     ]);
-    expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
+    expect(ipcRenderer.sendToHost).not.toHaveBeenCalled();
     ipcRenderer.invoke.mockClear();
     // Swarm's reads (0011 PRQ-7a) go to main, and never to the chrome.
     for (const [id, method] of [
@@ -3121,7 +3132,9 @@ describe('page requests', () => {
       'eth_requestAccounts',
       'wallet_switchEthereumChain',
     ]);
-    expect(ipcRenderer.sendToHost).toHaveBeenCalledTimes(1);
+    // Nothing of window.ethereum's moved methods, window.swarm or
+    // window.radicle went to the chrome.
+    expect(ipcRenderer.sendToHost).not.toHaveBeenCalled();
   });
 
   // The page-world source the preload ran for window.ethereum, and the
@@ -3195,12 +3208,18 @@ describe('page requests', () => {
       'radicle_unseed',
       'radicle_sync',
       'radicle_getSeedStatus',
+      // Signing (PRQ-8c).
+      'radicle_getIdentity',
+      'radicle_createIssue',
+      'radicle_commentIssue',
+      'radicle_editIssueState',
+      'radicle_commentPatch',
     ]);
     const routed = radicleMainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['radicle:radicle_createIssue', 'swarm:swarm_noSuchMethod'] }))] })
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['radicle:radicle_noSuchMethod', 'swarm:swarm_noSuchMethod'] }))] })
         .contextBridge
     );
-    expect(routed).toEqual([...moved, 'radicle_createIssue']);
+    expect(routed).toEqual([...moved, 'radicle_noSuchMethod']);
   });
 
   test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
@@ -3247,7 +3266,7 @@ describe('page requests', () => {
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 12, method: 'swarm_readChunk', params: { reference: 'ab' } });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 13, method: 'radicle_getCapabilities', params: {} });
     // An unrouted method keeps today's path.
-    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 14, method: 'radicle_createIssue', params: {} });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 14, method: 'wallet_watchAsset', params: [] });
     await flushMicrotasks();
 
     expect(ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request')).toEqual([
@@ -3255,8 +3274,8 @@ describe('page requests', () => {
       ['page:request', { nonce, provider: 'swarm', method: 'swarm_readChunk', params: { reference: 'ab' } }],
       ['page:request', { nonce, provider: 'radicle', method: 'radicle_getCapabilities', params: {} }],
     ]);
-    expect(ipcRenderer.sendToHost.mock.calls).toEqual([
-      ['radicle:provider-request', { id: 14, method: 'radicle_createIssue', params: {} }],
+    expect(ipcRenderer.sendToHost.mock.calls.map(([channel, request]) => [channel, request.id, request.method])).toEqual([
+      ['dapp:provider-request', 14, 'wallet_watchAsset'],
     ]);
     expect(posted()).toEqual([
       { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 11, result: '0x10', error: undefined },

@@ -55,19 +55,20 @@ function nativeError(err) {
   return err;
 }
 
-/**
- * Open an issue. @returns {Promise<{id: string}>}
- */
-async function createIssue({ rid, title, description, labels } = {}) {
-  const fullRid = requireRid(rid);
-  requireText(title, { field: 'title', reason: 'invalid_title', maxBytes: LIMITS.maxTitleBytes });
-  requireText(description, {
+// What each signed write signs, from the page's params as the write accepts
+// them: the repository id normalized, each id in its form and each text
+// within its bound. Throws a CobValidationError for params it refuses. Main's
+// per-write prompt shows exactly these fields (freedom-core design 0011,
+// "What a prompt shows"), and the write signs them.
+
+function issueFields({ rid, title, description, labels } = {}) {
+  const fields = { rid: requireRid(rid) };
+  fields.title = requireText(title, { field: 'title', reason: 'invalid_title', maxBytes: LIMITS.maxTitleBytes });
+  fields.description = requireText(description, {
     field: 'description',
     reason: 'invalid_body',
     maxBytes: LIMITS.maxBodyBytes,
   });
-
-  let normalizedLabels = [];
   if (labels !== undefined) {
     if (!Array.isArray(labels) || labels.length > LIMITS.maxLabels) {
       throw new CobValidationError('invalid_labels', 'labels must be an array (max 10)');
@@ -79,70 +80,102 @@ async function createIssue({ rid, title, description, labels } = {}) {
         maxBytes: LIMITS.maxLabelBytes,
       });
     }
-    normalizedLabels = labels;
+    fields.labels = labels.slice();
   }
+  return fields;
+}
 
+function issueCommentFields({ rid, issueId, body, replyTo } = {}) {
+  const fields = { rid: requireRid(rid), issueId: requireCobId(issueId, 'invalid_id') };
+  fields.body = requireText(body, { field: 'body', reason: 'invalid_body', maxBytes: LIMITS.maxBodyBytes });
+  if (replyTo !== undefined) fields.replyTo = requireCobId(replyTo, 'invalid_id');
+  return fields;
+}
+
+const ISSUE_STATES = new Set(['open', 'closed', 'solved']);
+
+function issueStateFields({ rid, issueId, state } = {}) {
+  const fields = { rid: requireRid(rid), issueId: requireCobId(issueId, 'invalid_id') };
+  if (!ISSUE_STATES.has(state)) {
+    throw new CobValidationError('invalid_state', "state must be 'open', 'closed' or 'solved'");
+  }
+  fields.state = state;
+  return fields;
+}
+
+// The patch id doubles as the first revision's id, so callers without a
+// specific revision can pass the patch id.
+function patchCommentFields({ rid, patchId, body, revisionId } = {}) {
+  const fields = { rid: requireRid(rid), patchId: requireCobId(patchId, 'invalid_id') };
+  if (revisionId !== undefined) fields.revisionId = requireCobId(revisionId, 'invalid_id');
+  fields.body = requireText(body, { field: 'body', reason: 'invalid_body', maxBytes: LIMITS.maxBodyBytes });
+  return fields;
+}
+
+const WRITE_FIELDS = Object.freeze({
+  radicle_createIssue: issueFields,
+  radicle_commentIssue: issueCommentFields,
+  radicle_editIssueState: issueStateFields,
+  radicle_commentPatch: patchCommentFields,
+});
+
+/**
+ * The fields a signed write of `method` signs, from the page's `params`.
+ * Throws a CobValidationError for params the write refuses.
+ */
+function validateWrite(method, params) {
+  const fields = Object.prototype.hasOwnProperty.call(WRITE_FIELDS, method) ? WRITE_FIELDS[method] : null;
+  if (!fields) throw new CobValidationError('invalid_method', 'Not a signed write');
+  return fields(params && typeof params === 'object' ? params : {});
+}
+
+/**
+ * The add-on's signed write, under a page's guard (freedom-core design 0011,
+ * PRQ-8c): the add-on signs and publishes in one call, so `guard(write)`
+ * checks the page again and makes the call in the same run, or resolves
+ * null to write nothing. With no guard, it writes.
+ */
+async function signedWrite(guard, write) {
   try {
-    return await embedded.createIssue(fullRid, title, description, normalizedLabels);
+    return typeof guard === 'function' ? await guard(write) : await write();
   } catch (err) {
     throw nativeError(err);
   }
+}
+
+/**
+ * Open an issue. @returns {Promise<{id: string}>}
+ */
+async function createIssue(params = {}, { guard } = {}) {
+  const fields = issueFields(params);
+  return signedWrite(guard, () =>
+    embedded.createIssue(fields.rid, fields.title, fields.description, fields.labels || [])
+  );
 }
 
 /**
  * Comment on an issue. @returns {Promise<{id: string}>}
  */
-async function commentIssue({ rid, issueId, body, replyTo } = {}) {
-  const fullRid = requireRid(rid);
-  requireCobId(issueId, 'invalid_id');
-  requireText(body, { field: 'body', reason: 'invalid_body', maxBytes: LIMITS.maxBodyBytes });
-
-  if (replyTo !== undefined) {
-    requireCobId(replyTo, 'invalid_id');
-  }
-
-  try {
-    return await embedded.commentIssue(fullRid, issueId, body, replyTo);
-  } catch (err) {
-    throw nativeError(err);
-  }
+async function commentIssue(params = {}, { guard } = {}) {
+  const fields = issueCommentFields(params);
+  return signedWrite(guard, () => embedded.commentIssue(fields.rid, fields.issueId, fields.body, fields.replyTo));
 }
-
-const ISSUE_STATES = new Set(['open', 'closed', 'solved']);
 
 /**
  * Transition issue state. @returns {Promise<{id: string, state: string}>}
  */
-async function editIssueState({ rid, issueId, state } = {}) {
-  const fullRid = requireRid(rid);
-  requireCobId(issueId, 'invalid_id');
-  if (!ISSUE_STATES.has(state)) {
-    throw new CobValidationError('invalid_state', "state must be 'open', 'closed' or 'solved'");
-  }
-
-  try {
-    return await embedded.editIssueState(fullRid, issueId, state);
-  } catch (err) {
-    throw nativeError(err);
-  }
+async function editIssueState(params = {}, { guard } = {}) {
+  const fields = issueStateFields(params);
+  return signedWrite(guard, () => embedded.editIssueState(fields.rid, fields.issueId, fields.state));
 }
 
 /**
- * Comment on a patch revision. The patch id doubles as the first revision's
- * id, so callers without a specific revision can pass the patch id.
- * @returns {Promise<{id: string}>}
+ * Comment on a patch revision, the patch's first one unless `revisionId`
+ * names another. @returns {Promise<{id: string}>}
  */
-async function commentPatch({ rid, patchId, body, revisionId } = {}) {
-  const fullRid = requireRid(rid);
-  requireCobId(patchId, 'invalid_id');
-  const target = revisionId !== undefined ? requireCobId(revisionId, 'invalid_id') : patchId;
-  requireText(body, { field: 'body', reason: 'invalid_body', maxBytes: LIMITS.maxBodyBytes });
-
-  try {
-    return await embedded.commentPatch(fullRid, target, body);
-  } catch (err) {
-    throw nativeError(err);
-  }
+async function commentPatch(params = {}, { guard } = {}) {
+  const fields = patchCommentFields(params);
+  return signedWrite(guard, () => embedded.commentPatch(fields.rid, fields.revisionId ?? fields.patchId, fields.body));
 }
 
 /**
@@ -171,6 +204,7 @@ module.exports = {
   commentPatch,
   getIdentity,
   clearIdentityCache,
+  validateWrite,
   CobValidationError,
   LIMITS,
 };

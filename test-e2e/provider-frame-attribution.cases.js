@@ -105,7 +105,7 @@ test.describe('provider frame attribution (O-6)', () => {
   // per-capability prompts). A publish goes to main (PRQ-7c), which uploads
   // it to a fake Ant here, answering every upload with one reference.
   async function recordProviderExecutes(electronApp) {
-    await electronApp.evaluate(async ({ ipcMain }, root) => {
+    await electronApp.evaluate(async (_electron, root) => {
       const load = process.mainModule.require;
       const http = load('http');
       const ant = http.createServer((req, res) => {
@@ -134,16 +134,8 @@ test.describe('provider frame attribution (O-6)', () => {
         kind: 'legacy',
         reason: 'e2e',
       });
-      // All of window.swarm is main's (PRQ-7d): the chrome has no Swarm route
-      // to record. Radicle's seeding and signing are still the chrome's; its
-      // connecting is main's (PRQ-8a).
-      for (const channel of ['radicle:provider-execute']) {
-        ipcMain.removeHandler(channel);
-        ipcMain.handle(channel, (_event, args) => {
-          calls.push({ channel, method: args?.method, origin: args?.origin });
-          return { result: { connected: true, origin: args?.origin } };
-        });
-      }
+      // All of window.swarm (PRQ-7d) and window.radicle (PRQ-8c) is main's:
+      // the chrome has no route left to record.
     }, path.resolve(__dirname, '..'));
   }
 
