@@ -127,6 +127,9 @@ const CHANNELS = Object.freeze({
 const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
 const FOREGROUND_KEYS = new Set(['guest']);
+const PASSWORD_KEYS = new Set(['password']);
+// The longest vault password a decision may carry.
+const MAX_PASSWORD_LENGTH = 1024;
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
@@ -257,6 +260,9 @@ function defaultWatchWindow(windowId, onClosed) {
  *   the approvals documents (APS-1), when their flag is on: they get the
  *   prompts the chrome otherwise renders, and the chrome's decisions are
  *   refused.
+ * @param {(password: string) => Promise<void>} [options.unlockVault] main's
+ *   own unlock, for a `vault.unlock` decided in the approvals document
+ *   (APS-2), which carries the password; throws when it is wrong.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -272,6 +278,9 @@ function createPageRequests({
   sendToWindow = defaultSendToWindow,
   watchWindow = defaultWatchWindow,
   approvals = null,
+  unlockVault = async () => {
+    throw new Error('no vault');
+  },
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -665,7 +674,47 @@ function createPageRequests({
    * `{ error }`, `-32002`, while the document has another wallet prompt
    * open.
    */
-  async function prompt(record, { kind, view = {}, choices } = {}) {
+  async function prompt(record, spec = {}) {
+    if (spec?.kind === 'vault.unlock' && approvals) return unlockPrompt(record, spec);
+    return promptOnce(record, spec);
+  }
+
+  // A decision's password for the vault, or null.
+  const passwordChoices = (raw) =>
+    isPlainObject(raw) &&
+    hasOnlyKeys(raw, PASSWORD_KEYS) &&
+    typeof raw.password === 'string' &&
+    raw.password.length > 0 &&
+    raw.password.length <= MAX_PASSWORD_LENGTH
+      ? { password: raw.password }
+      : null;
+
+  /**
+   * With the approvals document on (APS-2), a vault unlock takes the
+   * password in the document, and main unlocks with it: the dispatcher
+   * hears an approval only once the vault is open, with no choices, as the
+   * chrome's unlock gave it. A wrong password shows the prompt again,
+   * saying so (`failed`). The password goes nowhere else.
+   */
+  async function unlockPrompt(record, { view = {} } = {}) {
+    let shown = view;
+    for (;;) {
+      const decision = await promptOnce(record, { kind: 'vault.unlock', view: shown, choices: passwordChoices });
+      if (decision.error || decision.closed || decision.approve !== true) return decision;
+      try {
+        await unlockVault(decision.choices.password);
+      } catch {
+        trace({ kind: 'unlock-failed', id: record.id });
+        if (record.answered) return { closed: CLOSED.CANCELLED };
+        shown = { ...view, failed: true };
+        continue;
+      }
+      trace({ kind: 'unlocked', id: record.id });
+      return Object.freeze({ approve: true, choices: Object.freeze({}), from: decision.from });
+    }
+  }
+
+  async function promptOnce(record, { kind, view = {}, choices } = {}) {
     const testKind = kind === TEST_KIND && hooks.testPrompts === true;
     if (!KIND_SET.has(kind) && !testKind) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
@@ -1216,6 +1265,7 @@ function getPageRequests() {
       dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers(), ...createRadicleDispatchers() },
       hooks: sharedHooks,
       approvals: isApprovalsDocumentEnabled() ? getApprovalsDocuments() : null,
+      unlockVault: (password) => require('../identity-manager').unlockVault(password),
     });
     registerSwarmPageEvents(shared);
     registerRadiclePageEvents(shared);
