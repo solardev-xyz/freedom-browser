@@ -968,3 +968,90 @@ describe('attestNow and onEnded (PRQ-2)', () => {
     expect(documents.onEnded('not a function')()).toBe(undefined);
   });
 });
+
+describe('recheckName: the name checked again at every use (PRQ-3)', () => {
+  function named(decoded = IPNS_B58) {
+    const answer = { decoded };
+    const resolveEnsContent = jest.fn(async () => ({ type: 'ok', protocol: 'ipns', decoded: answer.decoded }));
+    const ctx = setup({ resolveEnsContent });
+    const guest = new Guest();
+    ctx.documents.track(guest);
+    ctx.documents.bindName({ guest: guest.id, name: 'example.com', key: IPNS_KEY });
+    guest.commit(`ipns://${IPNS_KEY}/`);
+    const n = nonce();
+    ctx.documents.hello(eventFrom(guest), { nonce: n });
+    return { ...ctx, guest, nonce: n, answer };
+  }
+
+  test('a document with no name binding resolves nothing', async () => {
+    const { documents, resolveEnsContent } = setup();
+    const { guest, nonce: n } = open(documents);
+    const { requester } = await documents.attest(eventFrom(guest), n);
+    expect(await documents.recheckName(requester)).toEqual({ ok: true, resolved: false });
+    const plain = open(documents, `ipns://${IPNS_KEY}/`);
+    const unbound = (await documents.attest(eventFrom(plain.guest), plain.nonce)).requester;
+    expect(await documents.recheckName(unbound)).toEqual({ ok: true, resolved: false });
+    expect(resolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('a name that still answers its key holds, after a fresh resolution', async () => {
+    const { documents, guest, nonce: n, resolveEnsContent } = named();
+    const { requester } = await documents.attest(eventFrom(guest), n);
+    resolveEnsContent.mockClear();
+    expect(await documents.recheckName(requester)).toEqual({ ok: true, resolved: true });
+    expect(resolveEnsContent).toHaveBeenCalledWith('example.com');
+  });
+
+  test('a name that moved off its key ends the binding: the document is keyless, and a reload is not bound', async () => {
+    const { documents, guest, nonce: n, answer, resolveEnsContent } = named();
+    const { requester } = await documents.attest(eventFrom(guest), n);
+    answer.decoded = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+    expect(await documents.recheckName(requester)).toEqual({ ok: false, resolved: true });
+    // Later requests act as a keyless document's, and resolve nothing.
+    const after = (await documents.attest(eventFrom(guest), n)).requester;
+    expect(after).toMatchObject({ key: null, topKey: null, transportKey: `ipns://${IPNS_KEY}` });
+    resolveEnsContent.mockClear();
+    expect(await documents.recheckName(after)).toEqual({ ok: false, resolved: false });
+    expect(await documents.recheckName(requester)).toEqual({ ok: false, resolved: false });
+    expect(resolveEnsContent).not.toHaveBeenCalled();
+    // Even with the name back on the key, a reload is bound only afresh.
+    answer.decoded = IPNS_B58;
+    guest.commit(`ipns://${IPNS_KEY}/`);
+    const m = nonce();
+    documents.hello(eventFrom(guest), { nonce: m });
+    expect((await documents.attest(eventFrom(guest), m)).requester.key).toBe(`ipns://${IPNS_KEY}`);
+    expect(resolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('an answer for a document that has gone, or whose binding another check ended, holds nothing', async () => {
+    const { documents, guest, nonce: n, answer, resolveEnsContent } = named();
+    const { requester } = await documents.attest(eventFrom(guest), n);
+    // Two checks in flight: the first finds the name moved, so the second's
+    // answer, whatever it is, holds nothing.
+    let release;
+    resolveEnsContent.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        release = () => resolve({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+      })
+    );
+    const slow = documents.recheckName(requester);
+    answer.decoded = OTHER_IPNS_KEY;
+    expect(await documents.recheckName(requester)).toEqual({ ok: false, resolved: true });
+    release();
+    expect(await slow).toEqual({ ok: false, resolved: true });
+
+    const again = named();
+    const live = (await again.documents.attest(eventFrom(again.guest), again.nonce)).requester;
+    let late;
+    again.resolveEnsContent.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        late = () => resolve({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+      })
+    );
+    const pending = again.documents.recheckName(live);
+    again.guest.commit(DAPP);
+    late();
+    expect(await pending).toEqual({ ok: false, resolved: true });
+    expect(await again.documents.recheckName(live)).toEqual({ ok: false, resolved: false });
+  });
+});

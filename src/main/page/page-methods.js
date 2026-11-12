@@ -50,7 +50,7 @@ const TIMEOUT_ERRORS = Object.freeze({
 // The Ethereum read-only methods but the two that answer the chain
 // (`READ_ONLY_METHODS`, dapp-provider.js): the core's router gets the key as
 // a routing hint.
-const ETHEREUM_RPC_READS = [
+const ETHEREUM_RPC_READS = Object.freeze([
   'eth_blockNumber',
   'eth_getBalance',
   'eth_getCode',
@@ -74,7 +74,7 @@ const ETHEREUM_RPC_READS = [
   'eth_uninstallFilter',
   'web3_clientVersion',
   'web3_sha3',
-];
+]);
 
 // [provider, class, methods, today's time limit for them]
 const GROUPS = [
@@ -217,6 +217,7 @@ function timeoutError(provider) {
 module.exports = {
   CLASS,
   PROVIDERS,
+  ETHEREUM_RPC_READS,
   METHODS,
   EVENTS,
   methodRow,

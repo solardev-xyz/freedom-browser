@@ -42,11 +42,17 @@
  * `WebFrameMain.send` targets a frame, and the frame can commit a new
  * document between the check and the delivery.
  *
- * No provider method is served here yet: `dispatchers` is empty in the app,
- * so every method still takes today's path through the chrome, and the
- * preload sends none on `page:request`. The path runs through a test hook
- * only (`enablePageRequestTestHooks`), which the E2E harness turns on. Later
- * steps (PRQ-3 to PRQ-8) move each provider's methods.
+ * The app serves the Ethereum reads here (PRQ-3, `page-ethereum.js`):
+ * the preload sends those on `page:request`, and every other method still
+ * takes today's path through the chrome. The E2E harness can route and
+ * serve any method through a test hook (`enablePageRequestTestHooks`).
+ * Later steps (PRQ-4 to PRQ-8) move the rest.
+ *
+ * `page:bind-name { guest, name, key }` (the design's "Names over IPNS")
+ * comes from the chrome, before it loads `ipns://<key>` for a DNS name: it
+ * holds the name for the guest's next main-frame commit, which main checks
+ * against its own resolution (`page-documents.js`). The chrome may name only
+ * a guest it hosts.
  */
 
 const crypto = require('crypto');
@@ -72,6 +78,7 @@ const CHANNELS = Object.freeze({
   RESERVE: 'page:reserve',
   REQUEST: 'page:request',
   EVENT: 'page:event',
+  BIND_NAME: 'page:bind-name',
 });
 
 const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
@@ -348,10 +355,24 @@ function createPageRequests({
       class: record.row.class,
       params,
       isCurrent: () => documents.isCurrent(record.requester),
+      nameHolds: () => nameHolds(record),
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       copied: (label) => copied(record, label),
     });
+  }
+
+  // Whether a name-revalidated method may use its document's key now
+  // (design 0011, "Which methods check the name"): the document current,
+  // with a key, and for a DNS name over IPNS the name resolved again to the
+  // document's IPNS key, after which, since the resolution was awaited, the
+  // document is checked again and its frame must still be on its transport
+  // key. A document with no name binding resolves nothing.
+  async function nameHolds(record) {
+    const checked = await documents.recheckName(record.requester);
+    const holds = checked.ok && (!checked.resolved || documentHolds(record.requester));
+    if (checked.resolved) trace({ kind: 'name-checked', id: record.id, holds });
+    return holds;
   }
 
   // A dispatcher made or caused a copy of the request's bytes (design 0011,
@@ -389,6 +410,29 @@ function createPageRequests({
     } finally {
       settle(record);
     }
+  }
+
+  /**
+   * `page:bind-name` from the chrome: hold `name` for the next main-frame
+   * commit of `guest`, a tab of the sending chrome window, on `ipns://<key>`.
+   * Main checks the name itself at that commit; this decides nothing.
+   */
+  function bindName(event, payload) {
+    if (!isPlainObject(payload)) return false;
+    const { guest, name, key } = payload;
+    if (!Number.isInteger(guest)) return false;
+    let contents;
+    try {
+      contents = webContentsFromId(guest);
+      if (!isLive(contents) || contents.getType() !== 'webview') return false;
+      const hostId = contents.hostWebContents?.id;
+      if (!Number.isInteger(hostId) || hostId !== event?.sender?.id) return false;
+    } catch {
+      return false;
+    }
+    const bound = documents.bindName({ guest, name, key });
+    trace({ kind: 'bind-name', guest, ok: bound });
+    return bound;
   }
 
   /** `page:hello`: bind the nonce to the sender's current document. */
@@ -502,8 +546,8 @@ function createPageRequests({
    * Send `event` to the target document (an attested requester), with its
    * nonce: only an event with a row, only while the document is current,
    * and only to its guest's main frame. Until main resolves a name again
-   * before an event (from PRQ-3), a name-revalidated event never goes to a
-   * name-keyed document.
+   * before an event (`documents.recheckName`, from PRQ-6), a
+   * name-revalidated event never goes to a name-keyed document.
    *
    * @returns {Promise<{ok: true} | {ok: false, reason: string}>}
    */
@@ -550,12 +594,16 @@ function createPageRequests({
     ipcMain.on(CHANNELS.HELLO, (event, payload) => {
       hello(event, payload);
     });
+    ipcMain.on(CHANNELS.BIND_NAME, (event, payload) => {
+      bindName(event, payload);
+    });
     ipcMain.handle(CHANNELS.RESERVE, (event, payload) => reserve(event, payload));
     ipcMain.handle(CHANNELS.REQUEST, (event, payload) => request(event, payload));
   }
 
   return {
     track: (contents) => documents.track(contents),
+    bindName,
     hello,
     reserve,
     request,
@@ -572,8 +620,24 @@ function createPageRequests({
 const sharedHooks = {};
 let shared = null;
 
+// Main's own resolution of a bound name, or the harness's stand-in for it
+// (real ENS needs the network).
+function resolveBoundName(name) {
+  if (sharedHooks.enabled === true && typeof sharedHooks.resolveName === 'function') {
+    return sharedHooks.resolveName(name);
+  }
+  return require('../ens-resolver').resolveEnsContent(name);
+}
+
 function getPageRequests() {
-  if (!shared) shared = createPageRequests({ hooks: sharedHooks });
+  if (!shared) {
+    const { createEthereumDispatchers } = require('./page-ethereum');
+    shared = createPageRequests({
+      documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
+      dispatchers: createEthereumDispatchers(),
+      hooks: sharedHooks,
+    });
+  }
   return shared;
 }
 
@@ -621,6 +685,9 @@ function enablePageRequestTestHooks() {
     },
     setOnCopy: (hear) => {
       sharedHooks.onCopy = typeof hear === 'function' ? hear : undefined;
+    },
+    setResolveName: (resolve) => {
+      sharedHooks.resolveName = typeof resolve === 'function' ? resolve : undefined;
     },
     sendEvent: (target, provider, event, data) => getPageRequests().sendEvent(target, provider, event, data),
     stats: () => getPageRequests().stats(),

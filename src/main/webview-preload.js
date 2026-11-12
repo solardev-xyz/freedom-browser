@@ -1726,8 +1726,10 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // the page sees anything: main sends to a frame, and the frame can commit a
 // new document between main's check and the delivery.
 //
-// No method takes the new path yet (PAGE_ROUTES is empty): each later step
-// of the design moves its own. For a test, the E2E harness can route some
+// The Ethereum reads take the new path (PRQ-3, PAGE_ROUTES), and main
+// answers them: their page-world provider arms no timer of its own, and
+// main's deadline answers one that runs too long. Each later step of the
+// design moves its own methods. For a test, the E2E harness can route more
 // through main (`testPageRoutes`, which main puts on the boot switch only in
 // test mode).
 const PAGE_REQUESTS_ENABLED = PROVIDERS_ENABLED && !isInternalPage();
@@ -1740,7 +1742,37 @@ if (PAGE_REQUESTS_ENABLED) {
   ipcRenderer.send('page:hello', { nonce: PAGE_NONCE });
 }
 
-const PAGE_ROUTES = new Set([]);
+// window.ethereum's read methods: `READ_ONLY_METHODS` in the chrome's
+// dapp-provider.js, and `eth_accounts`. page-ethereum.test.js keeps this the
+// list main's Ethereum dispatcher serves (src/main/page/page-ethereum.js).
+const PAGE_ROUTES = new Set([
+  'ethereum:eth_chainId',
+  'ethereum:net_version',
+  'ethereum:eth_accounts',
+  'ethereum:eth_blockNumber',
+  'ethereum:eth_getBalance',
+  'ethereum:eth_getCode',
+  'ethereum:eth_getStorageAt',
+  'ethereum:eth_getTransactionCount',
+  'ethereum:eth_getBlockByNumber',
+  'ethereum:eth_getBlockByHash',
+  'ethereum:eth_getTransactionByHash',
+  'ethereum:eth_getTransactionReceipt',
+  'ethereum:eth_call',
+  'ethereum:eth_estimateGas',
+  'ethereum:eth_gasPrice',
+  'ethereum:eth_feeHistory',
+  'ethereum:eth_maxPriorityFeePerGas',
+  'ethereum:eth_getLogs',
+  'ethereum:eth_getFilterChanges',
+  'ethereum:eth_getFilterLogs',
+  'ethereum:eth_newFilter',
+  'ethereum:eth_newBlockFilter',
+  'ethereum:eth_newPendingTransactionFilter',
+  'ethereum:eth_uninstallFilter',
+  'ethereum:web3_clientVersion',
+  'ethereum:web3_sha3',
+]);
 const TEST_PAGE_ROUTES = new Set(
   Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
     ? WEBVIEW_BOOT.testPageRoutes.filter((route) => typeof route === 'string')
@@ -1759,7 +1791,27 @@ function routedToMain(provider, method) {
   return PAGE_ROUTES.has(route) || TEST_PAGE_ROUTES.has(route);
 }
 
-const postToPage = (fields) => window.postMessage(fields, window.location.origin);
+// To this window's own document. An opaque origin (a `data:` page, a blank
+// one) serializes as "null", which postMessage refuses as a target, so the
+// page never heard an answer: such a document gets its reads now (design
+// 0011, Keys: "A document without a key gets the read methods"), and the
+// target for it is the window itself. A message posted to a window reaches
+// no other document: a navigation replaces the window, and its preload.
+const pageTargetOrigin = () => (window.location.origin === 'null' ? '*' : window.location.origin);
+const postToPage = (fields) => window.postMessage(fields, pageTargetOrigin());
+
+// The Ethereum methods main answers, for the page-world provider, which
+// arms its own timer only for the others (design 0011, "One deadline,
+// main's"). It reads and deletes the global before any page script runs.
+function withMainAnsweredMethods(source) {
+  const prefix = 'ethereum:';
+  const methods = [...PAGE_ROUTES, ...TEST_PAGE_ROUTES]
+    .filter((route) => route.startsWith(prefix))
+    .map((route) => route.slice(prefix.length))
+    .filter((method) => routedToMain('ethereum', method));
+  const list = JSON.stringify([...new Set(methods)]).replace(/</g, '\\u003c');
+  return `window.__FREEDOM_MAIN_ANSWERED__ = ${list};\n${source}`;
+}
 
 // The size walk main runs on every request as it arrives (design 0011,
 // "Bounds"). A sandboxed preload can't require it, so this is a copy of
@@ -2031,7 +2083,7 @@ function injectPageProvider(name, source) {
 // PRIVATE MODE GUARD (providers): skipped entirely in private windows —
 // no injection, no bridges. Nothing announces via EIP-6963.
 if (PROVIDERS_ENABLED) {
-  injectPageProvider('ethereum', ETHEREUM_INJECT_SOURCE);
+  injectPageProvider('ethereum', withMainAnsweredMethods(ETHEREUM_INJECT_SOURCE));
 
   // Bridge postMessage from page to IPC
   window.addEventListener('message', (event) => {
