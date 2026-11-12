@@ -175,13 +175,60 @@ describe('permissions-manager', () => {
     );
   });
 
-  test('non-promptable permissions (hid, display-capture, unknown) are denied without a prompt', () => {
+  test('non-promptable permissions (hid, serial, unknown) are denied without a prompt', () => {
     load();
     const host = makeHost();
-    for (const permission of ['hid', 'display-capture', 'unknown']) {
+    for (const permission of ['hid', 'serial', 'unknown']) {
       expect(request(permission, { host })).toHaveBeenCalledWith(false);
     }
     expect(host.send).not.toHaveBeenCalled();
+  });
+
+  describe('screen sharing (#951)', () => {
+    test('display-capture opens the screen-share picker, never the permission prompt', () => {
+      load();
+      const host = makeHost();
+      const guest = makeGuest('https://meet.example.com/room', host);
+      const external = require('../external-protocol');
+      external.trackUserGestures(guest);
+      guest.emit('input-event', {}, { type: 'mouseDown' });
+      const callback = jest.fn();
+      session.requestHandler(guest, 'display-capture', callback, {
+        mediaTypes: ['video'],
+        requestingUrl: 'https://meet.example.com/room',
+        isMainFrame: true,
+      });
+      expect(callback).not.toHaveBeenCalled();
+      expect(host.send).toHaveBeenCalledWith(
+        IPC.SCREEN_SHARE_PICKER_OPEN,
+        expect.objectContaining({ origin: 'https://meet.example.com', guestId: guest.id })
+      );
+      expect(host.send).not.toHaveBeenCalledWith(IPC.PERMISSIONS_PROMPT_REQUEST, expect.anything());
+    });
+
+    test('display-capture checks report allowed for a site, and nothing is stored', () => {
+      load();
+      expect(
+        session.checkHandler(null, 'display-capture', 'https://meet.example.com', {
+          requestingUrl: 'https://meet.example.com/room',
+        })
+      ).toBe(true);
+      expect(
+        session.checkHandler(null, 'display-capture', 'file:///pages/settings.html', {
+          requestingUrl: 'file:///pages/settings.html',
+        })
+      ).toBe(false);
+      expect(ctx.mod.getAllSitePermissions()).toEqual({});
+    });
+
+    test('the display-media handler is installed with the permission handlers', () => {
+      load();
+      const withDisplayMedia = { ...makeFakeSession(), setDisplayMediaRequestHandler: jest.fn() };
+      ctx.mod.installPermissionHandlers(withDisplayMedia);
+      expect(withDisplayMedia.setDisplayMediaRequestHandler).toHaveBeenCalledWith(
+        expect.any(Function)
+      );
+    });
   });
 
   test('requests without a usable site origin are denied', () => {
@@ -787,7 +834,7 @@ describe('permissions-manager', () => {
     expect(session.checkHandler(null, 'pointerLock', 'https://example.com', {})).toBe(true);
     // Non-promptable permissions stay denied regardless.
     expect(session.checkHandler(null, 'hid', 'https://example.com', {})).toBe(false);
-    expect(session.checkHandler(null, 'display-capture', 'https://example.com', {})).toBe(false);
+    expect(session.checkHandler(null, 'serial', 'https://example.com', {})).toBe(false);
     // …as do origins that can never be prompted for.
     expect(
       session.checkHandler(null, 'notifications', 'file:///pages/settings.html', {

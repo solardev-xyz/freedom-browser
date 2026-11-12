@@ -1,0 +1,149 @@
+/* Screen sharing picker (#951): "Choose what to share with <site>", opened by
+   a site's getDisplayMedia(). Its controls are the shared blocks (ui-tabs,
+   ui-list-row, ui-card, ui-callout, ui-empty-state, ui-button); this sheet
+   only lays them out. The dialog itself is the chrome's `.modal` overlay. */
+
+.screen-share-picker__window {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  box-sizing: border-box;
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-overlay);
+  color: var(--text);
+}
+
+.screen-share-picker__title {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.screen-share-picker__lede {
+  margin: calc(-1 * var(--space-2)) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+/* One height for every pane, so switching panes does not move the buttons. */
+.screen-share-picker__pane {
+  flex: none;
+  height: min(340px, calc(100vh - 260px));
+  min-height: 160px;
+  overflow: auto;
+}
+
+.screen-share-picker__tab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.screen-share-picker__favicon {
+  object-fit: contain;
+}
+
+.screen-share-picker__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  align-content: start;
+  gap: var(--space-3);
+}
+
+/* A tile: the shared interactive card, laid out as thumbnail over name. */
+.screen-share-picker__source {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.screen-share-picker__thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--surface-inset);
+}
+
+.screen-share-picker__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.screen-share-picker__source-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--font-size-sm);
+}
+
+.screen-share-picker__source-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-share-picker__source-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.screen-share-picker__loading {
+  margin: 0;
+  padding-top: var(--space-6);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.screen-share-picker__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-4);
+}
+
+.screen-share-picker__audio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: auto;
+  color: var(--text);
+  font-size: var(--font-size-md);
+  cursor: pointer;
+}
+
+.screen-share-picker__audio[hidden] {
+  display: none;
+}
+
+.screen-share-picker__audio input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* A shared tab that is not the active one stays laid out, transparent, under
+   the active tab: a tab with no size paints nothing, and its share would stop
+   sending frames. Chrome keeps painting a shared background tab the same way. */
+.webview-container webview.hidden.is-screen-shared {
+  display: flex !important;
+  z-index: -1;
+  visibility: visible;
+  opacity: 0;
+  pointer-events: none;
+}

@@ -186,19 +186,27 @@ const showNextPrompt = () => {
   if (!next) return;
   activePrompt = next;
 
-  const isNotice = activePrompt.type === 'os-denied';
+  const isNotice = activePrompt.type === 'os-denied' || activePrompt.type === 'notice';
   const keys = activePrompt.keys || activePrompt.permissions || [];
 
   if (isNotice) {
     const devices = keys.map((k) => permissionLabel(k).toLowerCase()).join(' and ');
-    if (promptOriginEl) promptOriginEl.textContent = '';
+    const notice =
+      activePrompt.type === 'notice'
+        ? activePrompt
+        : {
+            origin: '',
+            text: `macOS is blocking Freedom's access to your ${devices || 'camera'}.`,
+            note: 'Allow Freedom under System Settings → Privacy & Security, then try again.',
+          };
+    if (promptOriginEl) promptOriginEl.textContent = notice.origin || '';
     if (promptActionEl) {
-      promptActionEl.textContent = `macOS is blocking Freedom's access to your ${devices || 'camera'}.`;
+      // The origin is its own bold span, as in a request's "<origin> wants to …".
+      promptActionEl.textContent = notice.origin ? ` ${notice.text || ''}` : notice.text || '';
     }
     if (promptNoteEl) {
-      promptNoteEl.textContent =
-        'Allow Freedom under System Settings → Privacy & Security, then try again.';
-      promptNoteEl.classList.remove('hidden');
+      promptNoteEl.textContent = notice.note || '';
+      promptNoteEl.classList.toggle('hidden', !notice.note);
     }
     promptRememberLabel?.classList.add('hidden');
     promptBlockBtn?.classList.add('hidden');
@@ -227,7 +235,7 @@ const showNextPrompt = () => {
   boundPopoverToViewport(promptEl);
   pushDebug(
     isNotice
-      ? `[permissions] showing macOS-denied notice (${keys.join('+')})`
+      ? `[permissions] showing ${activePrompt.type} notice (${keys.join('+')})`
       : `[permissions] prompt for ${activePrompt.origin}: ${keys.join('+')}`
   );
 };
@@ -235,7 +243,7 @@ const showNextPrompt = () => {
 const respondToActivePrompt = (decision) => {
   if (!activePrompt) return;
 
-  if (activePrompt.type === 'os-denied') {
+  if (activePrompt.type === 'os-denied' || activePrompt.type === 'notice') {
     hidePromptElement();
     showNextPrompt();
     return;
@@ -269,6 +277,16 @@ const setPopoverOpen = (open) => {
     popoverEl.scrollTop = 0;
     boundPopoverToViewport(popoverEl);
   }
+};
+
+/**
+ * Show a window-scoped notice in the prompt's place, with an OK button:
+ * `origin` in bold, then `text`, and `note` below. Used by the screen-share
+ * picker when it stops a page (#951).
+ */
+export const showPermissionNotice = ({ origin = '', text = '', note = '' } = {}) => {
+  noticeQueue.push({ type: 'notice', origin, text, note });
+  showNextPrompt();
 };
 
 // Public hook so the chrome's shared dismissal paths (index.js's

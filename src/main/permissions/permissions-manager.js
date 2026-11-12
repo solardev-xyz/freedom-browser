@@ -32,6 +32,11 @@
  * the user chose in the native file/folder picker is tracked in
  * src/main/permissions/file-system-access.js and answered from there.
  *
+ * `display-capture` (screen sharing, #951) is not a per-origin decision
+ * either: every share opens Freedom's picker, the pick is the consent and
+ * nothing is remembered. src/main/permissions/screen-share.js owns it,
+ * including the session's display-media handler.
+ *
  * `pointerLock` and `fullscreen` stay auto-allowed (status quo). `hid`
  * is deliberately NOT promptable: Ledger hardware-wallet support drives
  * HID through its own connect flow, so web-page HID requests keep the
@@ -76,6 +81,7 @@ const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPartitionForWebContents } = require('../private/private-windows');
 const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webcontents');
 const fileSystemAccess = require('./file-system-access');
+const { requestScreenShare, installScreenShareHandler } = require('./screen-share');
 const {
   permissionKeyForExternalUrl,
   externalUrlForLog,
@@ -1114,6 +1120,18 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
       return;
     }
 
+    if (permission === 'display-capture') {
+      requestScreenShare({
+        guest: webContents,
+        host: hostForWebContents(webContents),
+        origin: originForRequest(webContents, details),
+        details,
+        callback,
+        privatePartition,
+      });
+      return;
+    }
+
     if (permission === 'fileSystem') {
       const origin = originForRequest(webContents, details);
       const granted = fileSystemAccess.requestFileSystemAccess({
@@ -1198,6 +1216,15 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
       return fileSystemAccess.checkFileSystemAccess({ origin, details, privatePartition });
     }
 
+    // `display-capture` reports allowed: no capture consults this handler
+    // (checked in the running app on 2026-11-12, Electron 45.2.1 — both
+    // getDisplayMedia() and getUserMedia's chromeMediaSource are decided by
+    // the request path, which always opens the picker), and nothing is ever
+    // recorded for it, so there is no deny to report either.
+    if (permission === 'display-capture') {
+      return Boolean(originForRequest(webContents, details, requestingOrigin));
+    }
+
     let keys;
     if (permission === 'media') {
       const key = MEDIA_TYPE_KEYS[details?.mediaType];
@@ -1207,7 +1234,7 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
     } else {
       keys = permissionKeysForRequest(permission, details);
     }
-    // Non-promptable permissions (hid, display-capture, …) stay denied.
+    // Non-promptable permissions (hid, serial, …) stay denied.
     if (!keys) return false;
 
     const origin = originForRequest(webContents, details, requestingOrigin);
@@ -1215,6 +1242,9 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
 
     return keys.every((key) => getEffectiveDecision(origin, key, privatePartition) !== 'deny');
   });
+
+  // Screen sharing hands over the picked source here (#951).
+  installScreenShareHandler(targetSession);
 
   // A picked path Electron treats as sensitive (system folders, the home
   // folder itself, the profile). Without a listener Electron never answers
