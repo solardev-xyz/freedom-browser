@@ -899,3 +899,72 @@ describe('the record\'s agent flag', () => {
     expect(await outcomes(true)).toEqual(outside);
   });
 });
+
+// PRQ-2: page-requests.js charges a request to its document before it waits
+// for anything, and lets a document's requests go when it ends.
+describe('attestNow and onEnded (PRQ-2)', () => {
+  test('attestNow runs the same steps with no wait, and says when the name check is pending', async () => {
+    const { documents } = setup();
+    const { guest, nonce: n } = open(documents);
+    const now = documents.attestNow(eventFrom(guest), n);
+    expect(now).toEqual({ ok: true, requester: (await documents.attest(eventFrom(guest), n)).requester, naming: false });
+    expect(documents.attestNow(eventFrom(guest), nonce())).toEqual({ ok: false, reason: 'wrong-nonce' });
+    expect(documents.attestNow(eventFrom(guest, null), n)).toEqual({ ok: false, reason: 'detached' });
+
+    let answer;
+    const named = setup({
+      resolveEnsContent: () => new Promise((resolve) => {
+        answer = resolve;
+      }),
+    });
+    const other = new Guest();
+    named.documents.track(other);
+    named.documents.bindName({ guest: other.id, name: 'example.com', key: IPNS_KEY });
+    other.commit(`ipns://${IPNS_KEY}/`);
+    const m = nonce();
+    named.documents.hello(eventFrom(other), { nonce: m });
+    const pending = named.documents.attestNow(eventFrom(other), m);
+    expect(pending.ok).toBe(true);
+    expect(pending.naming).toBe(true);
+    // The key isn't settled yet: nothing may act under it.
+    expect(pending.requester.key).toBeNull();
+    answer({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 });
+    await flush();
+    expect(named.documents.attestNow(eventFrom(other), m)).toEqual({
+      ok: true,
+      requester: expect.objectContaining({ key: 'example.com', navigation: pending.requester.navigation }),
+      naming: false,
+    });
+  });
+
+  test('onEnded hears each document that ends, and why', () => {
+    const { documents } = setup();
+    const ended = [];
+    const stop = documents.onEnded((entry) => ended.push(entry));
+    // A listener that throws doesn't keep the others from hearing it.
+    documents.onEnded(() => {
+      throw new Error('listener failed');
+    });
+    const { guest, nonce: n } = open(documents);
+    const first = documents.attestNow(eventFrom(guest), n).requester.navigation;
+
+    guest.commit(`${DAPP}two`, { newFrame: false });
+    const second = ended.length;
+    expect(ended).toEqual([{ guest: guest.id, navigation: first, nonce: n, reason: 'navigated' }]);
+    expect(second).toBe(1);
+
+    // An error page ends the document too; the next commit starts one.
+    guest.commitErrorPage(`${DAPP}gone`);
+    expect(ended[1]).toEqual({ guest: guest.id, navigation: first + 1, nonce: null, reason: 'navigated' });
+    guest.commit(DAPP);
+    guest.destroy();
+    expect(ended[2]).toEqual({ guest: guest.id, navigation: first + 2, nonce: null, reason: 'closed' });
+    expect(Object.isFrozen(ended[2])).toBe(true);
+
+    stop();
+    const later = open(documents);
+    later.guest.destroy();
+    expect(ended).toHaveLength(3);
+    expect(documents.onEnded('not a function')()).toBe(undefined);
+  });
+});

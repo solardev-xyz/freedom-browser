@@ -15,6 +15,7 @@ const { requestOpenExternal } = require('./permissions/permissions-manager');
 const { claimPopup, reportBlockedPopup } = require('./popup-blocker');
 const { attachTabSwitchKeys } = require('./tab-switch-keys');
 const { isAgentPage } = require('./wallet/agent-tab-custody');
+const { trackPageGuest, testPageRoutes } = require('./page/page-requests');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -177,7 +178,7 @@ function attachWebviewBoot(embedder, webPreferences, params) {
     : [];
   webPreferences.additionalArguments = [
     ...existing.filter((arg) => !String(arg).startsWith(WEBVIEW_BOOT_SWITCH)),
-    buildWebviewBootSwitch({ isPrivate }),
+    buildWebviewBootSwitch({ isPrivate, testPageRoutes: testPageRoutes() }),
   ];
 }
 
@@ -276,6 +277,12 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
 
     // For webview contents, fix dark defaults and intercept navigation
     if (type === 'webview') {
+      // Main numbers each committed document of a tab guest, and binds the
+      // nonce its preload sends with `page:hello` (freedom-core design 0011,
+      // src/main/page/). A webview that isn't a chrome window's tab is
+      // tracked too, and refused when it asks.
+      trackPageGuest(contents);
+
       // An external-protocol launch (magnet:, mailto:, …) must follow real
       // user input on the page; Electron does not report Chromium's gesture
       // bit, so the guest's input stream stands in for it (#406).
