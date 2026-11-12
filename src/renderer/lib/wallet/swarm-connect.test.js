@@ -821,4 +821,59 @@ describe('main\'s Swarm prompts in the chrome', () => {
     expect(ctx.elements['sidebar-swarm-publish-approve'].classList.contains('hidden')).toBe(true);
     expect(global.window.pagePrompts.decide).toHaveBeenCalledTimes(2);
   });
+
+  test('swarm.feed: main\'s identities and owners show, with no unlock asked; Allow answers the handle with the pick and "always allow", writing nothing itself', async () => {
+    const ctx = await loadSwarmConnect();
+    global.window.identity.getStatus.mockClear();
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.feed');
+    const view = {
+      method: 'swarm_writeSingleOwnerChunk',
+      mode: 'signing',
+      identifier: 'cc'.repeat(32),
+      identities: [{ id: 'bee-wallet', mode: 'bee-wallet', label: 'Ant wallet identity', owner: '0xBee', shared: true, stored: true }],
+      newIdentity: { id: 'app-scoped:4', mode: 'app-scoped', label: 'App-scoped identity 5', owner: '0xPub4', shared: false, stored: false },
+      activeIdentityId: 'bee-wallet',
+    };
+    renderer.show({ handle: 'f1', guest: 7, kind: 'swarm.feed', site: SITE, view });
+    expect(ctx.elements['sidebar-swarm-feed-approve'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-feed-site'].textContent).toBe('bzz://aaaa');
+    expect(ctx.elements['swarm-feed-title'].textContent).toBe('Publisher Signing');
+    expect(ctx.elements['swarm-feed-name'].textContent).toBe(`Single Owner Chunk ${'cc'.repeat(32)}`);
+    expect(ctx.elements['swarm-feed-unlock'].classList.contains('hidden')).toBe(true);
+    // Main's identities, not the chrome's own reads.
+    const [, state, handlers] = ctx.renderPublisherIdentitySelector.mock.calls.at(-1);
+    expect(state).toEqual({ activeIdentityId: 'bee-wallet', identities: view.identities });
+    expect(global.window.swarmFeedStore.getOriginIdentities).not.toHaveBeenCalled();
+    expect(global.window.identity.getStatus).not.toHaveBeenCalled();
+    await armPrompt();
+    // A raw chunk under the shared Ant wallet: Allow stays off.
+    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(true);
+    // "Create new app-scoped identity" offers main's new one, with no request.
+    await handlers.onCreateAppScoped();
+    expect(ctx.renderPublisherIdentitySelector.mock.calls.at(-1)[1].activeIdentityId).toBe('app-scoped:4');
+    expect(global.window.swarmFeedStore.previewAppScopedIdentity).not.toHaveBeenCalled();
+    expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
+    ctx.elements['swarm-feed-auto-approve'].checked = true;
+    await ctx.elements['swarm-feed-approve'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('f1', true, { identity: 'app-scoped:4', alwaysAllow: true });
+    for (const write of ['activateFeedIdentity', 'setFeedIdentity']) {
+      expect(global.window.swarmFeedStore[write]).not.toHaveBeenCalled();
+    }
+    expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
+    expect(renderer.isShowing()).toBe(null);
+
+    // A feed write with the site's own identity active; Reject answers.
+    renderer.show({
+      handle: 'f2',
+      guest: 7,
+      kind: 'swarm.feed',
+      site: SITE,
+      view: { ...view, method: 'swarm_createFeed', mode: 'feeds', identifier: undefined, name: 'blog', activeIdentityId: 'app-scoped:4', identities: [view.newIdentity] },
+    });
+    expect(ctx.elements['swarm-feed-title'].textContent).toBe('Feed Access');
+    expect(ctx.elements['swarm-feed-name'].textContent).toBe('blog');
+    await armPrompt();
+    await ctx.elements['swarm-feed-reject'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenLastCalledWith('f2', false, {});
+  });
 });

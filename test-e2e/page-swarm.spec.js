@@ -4,8 +4,9 @@
 // `swarm_listFeeds` go from the app's preload to main on `page:request`, and
 // main serves them with `executeSwarmMethod` under the requester's attested
 // key: the answers main gives for that key, read off a node (a fake Ant here,
-// the harness runs none). The chrome's old path sees none of them, and its
-// own route (`swarm:provider-execute`) refuses them, whatever site it names.
+// the harness runs none). The chrome's old path sees none of them, and the
+// chrome has no route of its own to name a site on (`swarm:provider-execute`
+// went with PRQ-7d).
 // A DNS name over IPNS keeps its feed records through main's name binding
 // until the name moves off its IPNS key; the permission-free reads answer on
 // with no resolution.
@@ -245,23 +246,19 @@ test('Swarm\'s reads go to main, under the page\'s attested key, and the chrome\
   expect(byGuest(keylessId)).toEqual(['swarm_getCapabilities', 'swarm_listFeeds', 'swarm_readChunk', 'swarm_readFeedEntry']);
   expect(await oldPath(win)).toEqual([]);
 
-  // A forged chrome origin: the chrome's own route refuses each of them, for
-  // the page's key and for any other, and runs nothing.
-  const forged = await win.evaluate(async (key) => {
-    const out = [];
-    for (const method of ['swarm_listFeeds', 'swarm_readFeedEntry', 'swarm_getCapabilities', 'swarm_readChunk']) {
-      for (const origin of [key, 'other.eth']) {
-        out.push(await window.swarmProvider.execute(method, { name: 'chat', reference: 'f'.repeat(64) }, origin));
-      }
+  // A forged chrome origin: the chrome has no route to name a site on
+  // (swarm:provider-execute is gone, PRQ-7d), so it can't ask for these as
+  // the page or any other site.
+  expect(await win.evaluate(() => typeof window.swarmProvider)).toBe('undefined');
+  expect(await electronApp.evaluate(({ ipcMain }) => {
+    try {
+      ipcMain.handle('swarm:provider-execute', () => null);
+      ipcMain.removeHandler('swarm:provider-execute');
+      return 'free';
+    } catch {
+      return 'taken';
     }
-    return out;
-  }, DAPP);
-  expect(forged).toHaveLength(8);
-  for (const answer of forged) {
-    expect(answer).toEqual({
-      error: { code: 4100, message: 'The origin is not authorized for this operation', data: { reason: 'page_request_only' } },
-    });
-  }
+  })).toBe('free');
   await win.screenshot({ path: test.info().outputPath('page-swarm-reads.png') });
 });
 

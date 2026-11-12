@@ -136,6 +136,7 @@ const permissionElementIds = [
   'swarm-perms-site',
   'swarm-perms-publish-toggle',
   'swarm-perms-feeds-toggle',
+  'swarm-perms-signing-toggle',
   'swarm-perms-messaging-toggle',
   'swarm-perms-disconnect',
   'sidebar-x402-permissions',
@@ -445,16 +446,16 @@ describe('permission-manage: Swarm messaging can only be revoked here (0011 PRQ-
 // Publishing's rule is turned on only by "Always allow" on main's publish
 // prompt (freedom-core design 0011, PRQ-7c): the site's screen only turns
 // it off.
-describe('the Swarm publish auto-approve toggle', () => {
+describe('the Swarm auto-approve toggles: publish (PRQ-7c), feeds and signing (PRQ-7d)', () => {
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;
     jest.restoreAllMocks();
   });
 
-  async function showSwarm(ctx, publish) {
+  async function showSwarm(ctx, publish, type = 'publish') {
     Object.assign(global.window.swarmPermissions, {
-      getPermission: jest.fn().mockResolvedValue({ origin: 'bzz://aaaa', autoApprove: { publish } }),
+      getPermission: jest.fn().mockResolvedValue({ origin: 'bzz://aaaa', autoApprove: { [type]: publish } }),
       hasMessagingGrant: jest.fn().mockResolvedValue(false),
       setAutoApprove: jest.fn().mockResolvedValue(true),
     });
@@ -464,12 +465,12 @@ describe('the Swarm publish auto-approve toggle', () => {
       previewAppScopedIdentity: jest.fn(),
     };
     await ctx.mod.showSwarmPermissions('bzz://aaaa');
-    return ctx.elements['swarm-perms-publish-toggle'];
+    return ctx.elements[`swarm-perms-${type}-toggle`];
   }
 
-  test('off shows disabled, and turning it on asks main for nothing', async () => {
+  test.each(['publish', 'feeds', 'signing'])('%s: off shows disabled, and turning it on asks main for nothing', async (type) => {
     const ctx = await loadPermissionManage();
-    const toggle = await showSwarm(ctx, false);
+    const toggle = await showSwarm(ctx, false, type);
     expect(toggle.checked).toBe(false);
     expect(toggle.disabled).toBe(true);
     toggle.checked = true;
@@ -478,14 +479,14 @@ describe('the Swarm publish auto-approve toggle', () => {
     expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
   });
 
-  test('on can be turned off, and then shows disabled', async () => {
+  test.each(['publish', 'feeds', 'signing'])('%s: on can be turned off, and then shows disabled', async (type) => {
     const ctx = await loadPermissionManage();
-    const toggle = await showSwarm(ctx, true);
+    const toggle = await showSwarm(ctx, true, type);
     expect(toggle.checked).toBe(true);
     expect(toggle.disabled).toBe(false);
     toggle.checked = false;
     await toggle.fire('change');
-    expect(global.window.swarmPermissions.setAutoApprove).toHaveBeenCalledWith('bzz://aaaa', 'publish', false);
+    expect(global.window.swarmPermissions.setAutoApprove).toHaveBeenCalledWith('bzz://aaaa', type, false);
     expect(toggle.disabled).toBe(true);
   });
 });

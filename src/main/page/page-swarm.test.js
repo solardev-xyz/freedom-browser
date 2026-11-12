@@ -9,6 +9,7 @@ const {
   SWARM_CONNECT_METHODS,
   SWARM_MESSAGING_METHODS,
   SWARM_PUBLISH_METHODS,
+  SWARM_FEED_METHODS,
   SWARM_PAGE_METHODS,
   createSwarmDispatchers,
 } = require('./page-swarm');
@@ -197,12 +198,26 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
       .match(/'swarm_[A-Za-z]+'/g)
       .map((m) => m.slice(1, -1));
     expect([...SWARM_PUBLISH_METHODS].sort()).toEqual([...publishMethods, 'swarm_getUploadStatus'].sort());
+    // And PRQ-7d's: the methods its feed and signing handler ran.
+    const feedMethods = /method === 'swarm_createFeed' \|\|[\s\S]*?'swarm_getSigningIdentity'\s*\) \{/
+      .exec(source)[0]
+      .match(/'swarm_[A-Za-z]+'/g)
+      .map((m) => m.slice(1, -1));
+    expect([...SWARM_FEED_METHODS].sort()).toEqual(feedMethods.sort());
     expect(SWARM_PAGE_METHODS).toEqual([
       ...SWARM_READ_METHODS,
       ...SWARM_CONNECT_METHODS,
       ...SWARM_MESSAGING_METHODS,
       ...SWARM_PUBLISH_METHODS,
+      ...SWARM_FEED_METHODS,
     ]);
+    // Every method main's provider knows: all of window.swarm is main's.
+    const provider = fs.readFileSync(path.join(__dirname, '../swarm/swarm-provider-ipc.js'), 'utf-8');
+    const known = /const KNOWN_METHODS = \[([\s\S]*?)\];/
+      .exec(provider)[1]
+      .match(/'[^']+'/g)
+      .map((m) => m.slice(1, -1));
+    expect([...SWARM_PAGE_METHODS].sort()).toEqual(known.sort());
     expect(Object.keys(createSwarmDispatchers({ identityWalletEnabled: () => true, execute: jest.fn() })).sort()).toEqual(
       SWARM_PAGE_METHODS.map((m) => `swarm:${m}`).sort()
     );
@@ -216,7 +231,7 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     // Each has its row, of the class the design gives it.
     for (const method of PERMISSION_FREE) expect(methodRow('swarm', method).class).toBe(CLASS.PERMISSION_FREE);
     for (const method of UNDER_KEY) expect(methodRow('swarm', method).class).toBe(CLASS.NAME_REVALIDATED);
-    for (const method of [...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS, ...SWARM_PUBLISH_METHODS]) {
+    for (const method of [...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS, ...SWARM_PUBLISH_METHODS, ...SWARM_FEED_METHODS]) {
       expect({ method, class: methodRow('swarm', method).class }).toEqual({
         method,
         class: method === 'swarm_unsubscribe' ? CLASS.EXEMPT : CLASS.NAME_REVALIDATED,

@@ -60,8 +60,8 @@ function normalizeReference(reference) {
   return String(reference || '').replace(/^0x/, '').toLowerCase();
 }
 
-async function selectChunkBatch() {
-  const batchId = await selectBestBatch(4096);
+async function selectChunkBatch(signal) {
+  const batchId = await selectBestBatch(4096, signal ? { requestOptions: { signal } } : {});
   if (!batchId) {
     throw noUsableBatchError();
   }
@@ -107,6 +107,8 @@ async function uploadSingleOwnerChunk(bee, batchId, chunk, options = {}) {
     method: 'POST',
     headers,
     body: makeSocUploadBody(chunk),
+    // A client bound to a page request's signal (getBee({ signal })).
+    ...(bee.requestOptions?.signal ? { signal: bee.requestOptions.signal } : {}),
   });
 
   if (!response.ok) {
@@ -126,9 +128,10 @@ async function uploadSingleOwnerChunk(bee, batchId, chunk, options = {}) {
 }
 
 async function publishChunk(data, options = {}) {
-  const bee = getBee();
+  // `signal`, a page request's, stops the batch lookup and the upload.
+  const bee = getBee({ signal: options.signal });
   const chunk = bee.makeContentAddressedChunk(data, options.span);
-  const batchId = await selectChunkBatch();
+  const batchId = await selectChunkBatch(options.signal);
 
   // `guard(send)`, if given, runs the upload once the batch is chosen: the
   // caller's last check before the node (a page's name, custody, its rule,
@@ -288,18 +291,25 @@ async function readData(reference, root) {
  * @param {import('./swarm-signer').SwarmSigner} signer
  */
 async function writeSingleOwnerChunk(signer, identifier, data, options = {}) {
-  const bee = getBee();
+  // `signal`, a page request's, stops the batch lookup and the upload.
+  const bee = getBee({ signal: options.signal });
   bee.makeContentAddressedChunk(data, options.span);
   const id = new Identifier(identifier);
   const signed = await signer.signSoc({ identifier: id.toUint8Array(), payload: data, span: options.span });
-  const batchId = await selectChunkBatch();
+  const batchId = await selectChunkBatch(options.signal);
 
-  const reference = await uploadSingleOwnerChunk(
+  // `guard(send)`, if given, runs the upload after the identity core's
+  // signature and the batch: the caller's last check before the node (a
+  // page's name, custody, its rule, its grants, PRQ-7d). It resolves null to
+  // send nothing, and then so does this.
+  const send = () => uploadSingleOwnerChunk(
     bee,
     batchId,
     { ...signed, identifier: id.toUint8Array(), payload: data },
     { pin: true, deferred: false }
   );
+  const reference = options.guard ? await options.guard(send) : await send();
+  if (reference === null) return null;
 
   return {
     reference,

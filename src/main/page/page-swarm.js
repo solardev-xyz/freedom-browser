@@ -65,9 +65,7 @@
  * wait (`meta.page.effect` in `swarm-provider-ipc.js`).
  *
  * Every method answers `4900` while the Identity & Wallet switch is off, as
- * the chrome did. The chrome's own path (`swarm:provider-execute`) refuses
- * the moved methods: the preload no longer sends them there, and a chrome
- * that names a site for them asks for something only a page may.
+ * the chrome did.
  *
  * PRQ-7c: publishing, with its prompt (`swarm.publish`):
  *
@@ -93,7 +91,33 @@
  *     with a setup reason) takes the user to the setup screen, as the
  *     chrome did: main tells the requesting window's chrome.
  *
- * PRQ-7d moves feeds and signing, with their prompts.
+ * PRQ-7d: feeds and signing, with their prompts (`vault.unlock`,
+ * `swarm.feed`), and the last of window.swarm:
+ *
+ *   - `swarm_createFeed`, `swarm_updateFeed`, `swarm_writeFeedEntry` (the
+ *     site's feeds rule) and `swarm_writeSingleOwnerChunk`,
+ *     `swarm_getSigningIdentity` (its signing rule): the manifest checked
+ *     first; a site that isn't connected is refused. The identity core
+ *     signs with the vault's keys and the prompt shows their owners, so a
+ *     locked vault is unlocked first, on main's own prompt (`vault.unlock`).
+ *     Then main prompts (`swarm.feed`), unless the site has feed access and
+ *     its rule answers, which it never does for a tab in Agent custody, read
+ *     live. The prompt's view carries the site's publisher identities and
+ *     their owners, and a new app-scoped one; the user's pick comes back in
+ *     its choices, and on approval main creates or activates that identity
+ *     and grants feed access itself, with "always allow" the rule, under
+ *     the key's lock once the name answers again.
+ *   - Each write is its effect, guarded after the method's last wait (the
+ *     identity core's signature among them) and run in the same run as its
+ *     checks, by the services themselves (`guard(send)`): the guard owns the
+ *     write. What a write leaves under the key (a feed's record, its last
+ *     reference) is recorded only while the name answers. The signing
+ *     identity, which discloses the site's owner, answers keyless once the
+ *     name has moved.
+ *
+ * With PRQ-7d every window.swarm method is main's: the chrome's route
+ * (`swarm:provider-execute`) and its manifest check and decide are gone,
+ * and none of its channels writes a Swarm grant.
  */
 
 /** PRQ-7a: the methods that need no prompt and no manifest check. */
@@ -126,12 +150,29 @@ const SWARM_PUBLISH_METHODS = Object.freeze([
   'swarm_getUploadStatus',
 ]);
 
-/** Every method main's Swarm dispatcher serves, and so the preload routes to main. */
+/** PRQ-7d: feeds and signing, by the rule each one's prompt offers. */
+const SWARM_FEED_METHODS = Object.freeze([
+  'swarm_createFeed',
+  'swarm_updateFeed',
+  'swarm_writeFeedEntry',
+  'swarm_writeSingleOwnerChunk',
+  'swarm_getSigningIdentity',
+]);
+const FEED_RULES = Object.freeze({
+  swarm_createFeed: 'feeds',
+  swarm_updateFeed: 'feeds',
+  swarm_writeFeedEntry: 'feeds',
+  swarm_writeSingleOwnerChunk: 'signing',
+  swarm_getSigningIdentity: 'signing',
+});
+
+/** Every method main's Swarm dispatcher serves: all of window.swarm's. */
 const SWARM_PAGE_METHODS = Object.freeze([
   ...SWARM_READ_METHODS,
   ...SWARM_CONNECT_METHODS,
   ...SWARM_MESSAGING_METHODS,
   ...SWARM_PUBLISH_METHODS,
+  ...SWARM_FEED_METHODS,
 ]);
 
 // The permission-free ones: the key is a rate, never authority.
@@ -151,7 +192,14 @@ const UPLOAD_METHODS = new Set(['swarm_publishData', 'swarm_publishFiles', 'swar
 // The writes that need publishing set up, and the node's reasons that say
 // it isn't (`checkSwarmPreFlight`): a failure for one of them takes the
 // user to the setup screen, as the chrome's swarm-provider.js did.
-const SETUP_ROUTED = new Set([...UPLOAD_METHODS, ...SEND_METHODS]);
+const SETUP_ROUTED = new Set([
+  ...UPLOAD_METHODS,
+  ...SEND_METHODS,
+  'swarm_createFeed',
+  'swarm_updateFeed',
+  'swarm_writeFeedEntry',
+  'swarm_writeSingleOwnerChunk',
+]);
 const SETUP_REASONS = new Set(['node-stopped', 'node-not-ready', 'ultra-light-mode', 'no-usable-stamps']);
 
 // What a messaging prompt may show of a topic: what the method accepts.
@@ -162,6 +210,13 @@ const MAX_TOPIC_BYTES = 256;
 const MAX_VIEW_TEXT_BYTES = 256;
 const MAX_VIEW_PATH_BYTES = 100;
 const VIEW_PATHS = 3;
+// What a feed prompt may show of the page's own text: a feed name as the
+// methods accept one, and a chunk identifier as 64 hex characters.
+const MAX_FEED_NAME = 64;
+// How often a feed prompt is shown again because the new identity it showed
+// was taken meanwhile, before the request fails.
+const MAX_FEED_PROMPTS = 3;
+const IDENTIFIER = /^[0-9a-fA-F]{64}$/;
 
 // The chrome's answer while the Identity & Wallet switch is off.
 const DISCONNECTED = Object.freeze({ code: 4900, message: 'Swarm provider is not available' });
@@ -177,6 +232,8 @@ const NO_ADDRESS = Object.freeze({
 const NOT_CONNECTED = Object.freeze({ code: 4100, message: 'Origin not authorized. Call swarm_requestAccess first.' });
 const CONNECT_REJECTED = Object.freeze({ code: 4001, message: 'User rejected Swarm access' });
 const PUBLISH_REJECTED = Object.freeze({ code: 4001, message: 'User rejected publish' });
+const FEED_REJECTED = Object.freeze({ code: 4001, message: 'User rejected feed access' });
+const UNLOCK_CANCELLED = Object.freeze({ code: 4001, message: 'User cancelled unlock' });
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
 const MANIFEST_UNRESOLVED = Object.freeze({ code: 4900, message: 'Could not refresh this app’s permission manifest' });
 // As main answers a request Agent custody refuses.
@@ -270,10 +327,70 @@ function messagingView(method, params, grantMode) {
   return view;
 }
 
+// A feed name as the methods accept one (`validateFeedName`), or undefined.
+function feedName(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_FEED_NAME || value.includes('/')) return undefined;
+  for (let i = 0; i < value.length; i += 1) if (value.charCodeAt(i) < 32) return undefined;
+  return value;
+}
+
+// A publisher identity as a feed prompt shows it: main's own fields.
+function identityView(identity) {
+  return {
+    id: String(identity.id),
+    mode: String(identity.mode),
+    label: typeof identity.label === 'string' ? identity.label : '',
+    owner: typeof identity.owner === 'string' ? identity.owner : null,
+    shared: identity.shared === true,
+    stored: identity.stored !== false,
+    unavailable: identity.unavailable === true,
+  };
+}
+
+/**
+ * The feed prompt's view (design 0011, "What a prompt shows"): the method
+ * and the rule it offers, main's own; the site's publisher identities and
+ * their owners, the active one, and a new app-scoped one the user may pick
+ * instead, main's own too; and of the page's, the feed's name or the
+ * chunk's identifier, only as the method accepts them.
+ */
+function feedView(method, params, state, preview) {
+  const view = { method, mode: FEED_RULES[method] };
+  if (view.mode === 'feeds') {
+    const name = feedName(method === 'swarm_updateFeed' ? params?.feedId : params?.name);
+    if (name !== undefined) view.name = name;
+  } else if (method === 'swarm_writeSingleOwnerChunk' && typeof params?.identifier === 'string' && IDENTIFIER.test(params.identifier)) {
+    view.identifier = params.identifier;
+  }
+  view.identities = (Array.isArray(state?.identities) ? state.identities : []).map(identityView);
+  view.newIdentity = identityView({ ...preview, stored: false });
+  const active = view.identities.find((identity) => identity.id === state?.activeIdentityId && !identity.unavailable);
+  view.activeIdentityId = active ? active.id : view.newIdentity.id;
+  return view;
+}
+
+/**
+ * What the user may pick on a feed prompt: one of the view's usable
+ * identities, or its new one; and "always allow". A raw single-owner chunk
+ * needs an identity only this site uses (SW-1), so a shared one isn't a
+ * choice for it, as the chrome's prompt kept its Allow off.
+ */
+function feedChoices(view) {
+  return (raw) => {
+    if (!Object.keys(raw).every((name) => name === 'identity' || name === 'alwaysAllow')) return null;
+    if (raw.alwaysAllow !== undefined && typeof raw.alwaysAllow !== 'boolean') return null;
+    const picked = [...view.identities, view.newIdentity].find((identity) => identity.id === raw.identity);
+    if (!picked || picked.unavailable) return null;
+    if (view.method === 'swarm_writeSingleOwnerChunk' && picked.shared) return null;
+    return { identity: picked.id, alwaysAllow: raw.alwaysAllow === true };
+  };
+}
+
 function defaultDependencies() {
   const permissions = () => require('../swarm/swarm-permissions');
   const provider = () => require('../swarm/swarm-provider-ipc');
   const manifests = () => require('../swarm/permission-manifests');
+  const feeds = () => require('../swarm/feed-store');
   return {
     identityWalletEnabled: () => require('../settings-store').loadSettings()?.enableIdentityWallet === true,
     execute: (method, params, key, meta) => provider().executeSwarmMethod(method, params, key, meta),
@@ -292,6 +409,16 @@ function defaultDependencies() {
     inCustody: (guest) => require('./page-signing').guestInCustody(guest),
     endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
     endDocumentSubscription: (document, id) => provider().endDocumentSubscription(document, id),
+    isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),
+    hasFeedGrant: (key) => feeds().hasFeedGrant(key),
+    identityState: (key) => feeds().getOriginIdentityStateWithOwners(key),
+    previewIdentity: (key) => feeds().previewAppScopedIdentity(key),
+    createIdentityAt: (key, publisherKeyIndex) =>
+      feeds().createAppScopedIdentityAt(key, publisherKeyIndex, { activate: true, source: 'user' }),
+    ensureAntWalletIdentity: (key) => feeds().ensureAntWalletIdentity(key, { activate: true, source: 'user' }),
+    activateIdentity: (key, id) => feeds().activateIdentity(key, id, { source: 'user' }),
+    assertFeedGrantable: (key) => feeds().assertFeedGrantable(key),
+    grantFeedAccess: (key) => feeds().grantFeedAccess(key, { source: 'user' }),
     routeToSetup: (requester, reason) => {
       const { BrowserWindow } = require('electron');
       const win = BrowserWindow.fromId(requester.window);
@@ -328,6 +455,15 @@ function createSwarmDispatchers(deps = {}) {
     inCustody,
     endDocumentSubscriptions,
     endDocumentSubscription,
+    isVaultUnlocked,
+    hasFeedGrant,
+    identityState,
+    previewIdentity,
+    createIdentityAt,
+    ensureAntWalletIdentity,
+    activateIdentity,
+    assertFeedGrantable,
+    grantFeedAccess,
     routeToSetup,
   } = { ...defaultDependencies(), ...deps };
 
@@ -738,6 +874,120 @@ function createSwarmDispatchers(deps = {}) {
     return out;
   }
 
+  async function vaultUnlocked() {
+    try {
+      return (await isVaultUnlocked()) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The identity the user picked on a feed prompt, made the site's active
+   * one, and feed access granted, as the chrome's prompt did through
+   * `swarm:set-feed-identity`: the Ant wallet's, the new app-scoped one on
+   * exactly the key the prompt showed (it throws `identity_taken`, with
+   * nothing written, if another identity took that key meanwhile), or one
+   * the site already has. A stored identity of the removed mode is never
+   * granted (#89). Synchronous: it runs in the run of the checks before it.
+   */
+  function grantFeedIdentity(key, picked, view, preview) {
+    if (picked === 'bee-wallet') ensureAntWalletIdentity(key);
+    else if (picked === view.newIdentity.id) createIdentityAt(key, preview.publisherKeyIndex);
+    else activateIdentity(key, picked);
+    assertFeedGrantable(key);
+    if (hasFeedGrant(key) !== true) grantFeedAccess(key);
+  }
+
+  /**
+   * Feeds and signing (PRQ-7d): the manifest, the connection, the vault,
+   * then the site's rule or main's feed prompt, and the write under the
+   * effect's guard, in the services.
+   */
+  async function feed(context) {
+    const { requester, method, params } = context;
+    const key = requester.key;
+    if (!key) return error(NO_ADDRESS);
+    const rule = FEED_RULES[method];
+    // A write that went out after a passing check answers as written, even
+    // if the name moves afterwards, as an upload does. The signing identity
+    // discloses the site's owner, so it answers keyless then.
+    const discloses = method === 'swarm_getSigningIdentity';
+    const keyless = { keyless: error(NO_ADDRESS) };
+    const nameCheck = discloses ? keyless : {};
+    if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    const manifest = await manifestFresh(context, nameCheck, false);
+    if (manifest.error) return { error: manifest.error };
+    if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    if (!getPermission(key)) return error(NOT_CONNECTED);
+    // A standing rule is chosen only for a site with feed access and outside
+    // Agent custody, read live now. A request that goes to its prompt keeps
+    // it, whatever custody does next; one the rule answers reads custody
+    // again just before its write.
+    const ruled = hasFeedGrant(key) === true && getAutoApprove(key, rule) === true && !custody(requester.guest);
+    // The identity core signs with the vault's keys, and the prompt shows
+    // their owners: a locked vault is unlocked first, on main's own prompt.
+    if (!(await vaultUnlocked())) {
+      const unlock = await context.prompt({
+        kind: 'vault.unlock',
+        view: { reason: rule },
+        choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+      });
+      if (unlock.error) return { error: unlock.error };
+      if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
+      if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    }
+    if (!ruled) {
+      // The user approves exactly what the prompt shows. A new identity's key
+      // taken meanwhile by another identity is no approval of the next one:
+      // the prompt is shown again, with the key that is now next.
+      for (let shown = 1; ; shown += 1) {
+        let view;
+        let preview;
+        try {
+          preview = await previewIdentity(key);
+          view = feedView(method, params, await identityState(key), preview);
+        } catch (err) {
+          return { error: failure(err, 'Failed to load publisher identities') };
+        }
+        if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+        const decision = await context.prompt({ kind: 'swarm.feed', view, choices: feedChoices(view) });
+        if (decision.error) return { error: decision.error };
+        if (decision.closed || decision.approve !== true) return error(FEED_REJECTED);
+        let written;
+        try {
+          written = await writeUnderKey(context, nameCheck, () => {
+            grantFeedIdentity(key, decision.choices.identity, view, preview);
+            if (decision.choices.alwaysAllow) setAutoApprove(key, rule, true);
+          });
+        } catch (err) {
+          if (err?.code === 'identity_taken' && shown < MAX_FEED_PROMPTS) continue;
+          return { error: failure(err, 'Failed to set feed identity') };
+        }
+        if (!written) return error(NO_ADDRESS);
+        break;
+      }
+    }
+    // The site's last use, as the chrome marked it before each call.
+    try {
+      if (!(await writeUnderKey(context, nameCheck, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+    } catch {
+      // The request stands; the timestamp didn't change.
+    }
+    const out = await execute(method, params, key, {
+      page: {
+        document: documentKeyOf(requester),
+        effect: (run) => guardEffect(context, nameCheck, ruled ? rule : null, run),
+        afterEffect: (write) => afterEffect(context, write),
+        copied: (label) => context.copied(label),
+        // Aborted once main answers the request: the write's node calls stop.
+        signal: context.signal,
+      },
+    });
+    routeSetupFailure(context, out);
+    return out;
+  }
+
   // Exempt, revocation only: one of the document's own subscriptions ends,
   // with no resolution, keyless or not.
   async function unsubscribe(context) {
@@ -763,6 +1013,7 @@ function createSwarmDispatchers(deps = {}) {
   for (const method of SWARM_PUBLISH_METHODS) {
     dispatchers[`swarm:${method}`] = serve(UPLOAD_METHODS.has(method) ? publish : uploadStatus);
   }
+  for (const method of SWARM_FEED_METHODS) dispatchers[`swarm:${method}`] = serve(feed);
   return dispatchers;
 }
 
@@ -800,6 +1051,7 @@ module.exports = {
   SWARM_CONNECT_METHODS,
   SWARM_MESSAGING_METHODS,
   SWARM_PUBLISH_METHODS,
+  SWARM_FEED_METHODS,
   SWARM_PAGE_METHODS,
   createSwarmDispatchers,
   registerSwarmPageEvents,

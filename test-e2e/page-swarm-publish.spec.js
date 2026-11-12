@@ -5,7 +5,7 @@
 // Main shows the publish prompt (`swarm.publish`), which the chrome renders
 // in its sidebar and answers by handle; main sets the publish rule on
 // "always allow", reads it itself, and uploads for the page's attested key.
-// The chrome's own route and its rule write are refused.
+// The chrome's rule write is refused, and it has no route.
 //
 // The uploads' charges are measured on the real path: main's heap and
 // external memory at each copy main reports (`context.copied`) and while the
@@ -296,15 +296,13 @@ test('publishing through main: main\'s prompt in the sidebar, the upload for the
     const tryIt = (fn) => fn().then((v) => v, (err) => String(err?.message || err));
     return {
       rule: await tryIt(() => window.swarmPermissions.setAutoApprove('other.eth', 'publish', true)),
-      execute: await tryIt(() => window.swarmProvider.execute('swarm_publishData', { data: 'x', contentType: 'text/plain' }, key, { approval: 'user' })),
-      status: await tryIt(() => window.swarmProvider.execute('swarm_getUploadStatus', { tagUid: 1 }, 'other.eth')),
+      // No route to name a site on (PRQ-7d).
+      route: typeof window.swarmProvider,
       off: await tryIt(() => window.swarmPermissions.setAutoApprove(key, 'publish', false)),
     };
   }, DAPP);
   expect(forged.rule).toContain('Publish auto-approve is turned on only from a publish prompt');
-  for (const refused of [forged.execute, forged.status]) {
-    expect(refused).toEqual({ error: { code: 4100, message: 'The origin is not authorized for this operation', data: { reason: 'page_request_only' } } });
-  }
+  expect(forged.route).toBe('undefined');
   expect(forged.off).toBe(true);
   expect(await swarmGrant(electronApp, DAPP)).toMatchObject({ autoApprove: { publish: false } });
   expect((await antState(electronApp)).received).toHaveLength(2);

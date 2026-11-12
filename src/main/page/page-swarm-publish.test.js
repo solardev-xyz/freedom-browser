@@ -846,7 +846,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
 describe('the chrome\'s grant writes (0011 PRQ-7c, "Grants")', () => {
   const invoke = (channel, ...args) => mockIpcHandlers[channel]({}, ...args);
 
-  test('swarm:set-auto-approve refused for turning publishing\'s rule on, accepted for turning it off; the feed rules, still on the chrome, stay open', async () => {
+  test('swarm:set-auto-approve refused for turning publishing\'s rule on, accepted for turning it off', async () => {
     connect(KEY_A);
     for (const enabled of [true, 1, 'yes', null]) {
       expect(() => invoke('swarm:set-auto-approve', KEY_A, 'publish', enabled)).toThrow(
@@ -857,21 +857,11 @@ describe('the chrome\'s grant writes (0011 PRQ-7c, "Grants")', () => {
     permissions.setAutoApprove(KEY_A, 'publish', true);
     expect(await invoke('swarm:set-auto-approve', KEY_A, 'publish', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'publish')).toBe(false);
-    expect(await invoke('swarm:set-auto-approve', KEY_A, 'feeds', true)).toBe(true);
-    expect(await invoke('swarm:set-auto-approve', KEY_A, 'signing', true)).toBe(true);
   });
 
-  test('swarm:provider-execute refuses every publishing method for any site, with nothing uploaded or read', async () => {
-    connect(KEY_A, { publishRule: true });
-    for (const [method, params] of [...UPLOADS, ['swarm_getUploadStatus', { tagUid: 7 }]]) {
-      for (const origin of [KEY_A, 'name.eth']) {
-        expect(await invoke('swarm:provider-execute', { method, params, origin, meta: { webContentsId: 9, approval: 'user' } })).toEqual({
-          error: { code: 4100, message: 'The origin is not authorized for this operation', data: { reason: 'page_request_only' } },
-        });
-      }
-    }
+  test('the chrome has no route to publish for any site: swarm:provider-execute is gone (PRQ-7d)', async () => {
+    expect(mockIpcHandlers['swarm:provider-execute']).toBeUndefined();
     expect(mockNode.uploads).toEqual([]);
-    expect(mockNode.statusReads).toEqual([]);
     expect(mockHistory).toEqual([]);
   });
 });
