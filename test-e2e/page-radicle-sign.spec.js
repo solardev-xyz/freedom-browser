@@ -249,13 +249,15 @@ test('signing through main: main\'s grant and per-write prompts in the sidebar, 
     const tryIt = (fn) => fn().then((value) => ({ value }), (err) => String(err?.message || err));
     return {
       route: typeof window.radicleProvider,
-      grant: await tryIt(() => window.radiclePermissions.grantSigning('other.eth')),
+      grant: typeof window.radiclePermissions.grantSigning,
       rule: await tryIt(() => window.radiclePermissions.setAutoApprove('other.eth', 'signing', true)),
       off: await tryIt(() => window.radiclePermissions.setAutoApprove(key, 'signing', false)),
     };
   }, DAPP);
   expect(forged.route).toBe('undefined');
-  expect(forged.grant).toContain('The Radicle signing grant is given only from its own prompt');
+  // PRQ-9: no signing grant in the chrome's preload; main refuses the
+  // channel too (radicle-provider-ipc tests).
+  expect(forged.grant).toBe('undefined');
   expect(forged.rule).toContain('Radicle signing auto-approve is turned on only from a write prompt');
   expect(forged.off).toEqual({ value: true });
   expect(await radicleGrant(electronApp, DAPP)).toEqual({ signing: true, rule: false });

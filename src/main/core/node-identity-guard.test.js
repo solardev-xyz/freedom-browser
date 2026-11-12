@@ -55,6 +55,26 @@ describe('node identity guard', () => {
     expect(guard.nodeBlockReason('bee')).toBeNull();
   });
 
+  test("a refused write puts back main's own record only, and leaves the core's report", () => {
+    guard.setStartupRecovery({ status: 'pending_recovery', node: 'radicle' });
+    expect(guard.nodeWriteStatus('radicle')).toBeNull();
+    guard.blockNode('radicle', 'writing');
+    expect(guard.nodeWriteStatus('radicle')).toBe('writing');
+    // The core answered lock_held: nothing written, and its report stands.
+    guard.restoreNodeWrite('radicle', null);
+    expect(guard.nodeWriteStatus('radicle')).toBeNull();
+    expect(guard.nodeBlockReason('radicle')).toMatch(/did not finish/);
+    // An earlier write's block comes back as it was.
+    guard.setStartupRecovery(null);
+    guard.blockNode('radicle', 'corrupt');
+    const before = guard.nodeWriteStatus('radicle');
+    guard.blockNode('radicle', 'writing');
+    guard.restoreNodeWrite('radicle', before);
+    expect(guard.nodeBlockReason('radicle')).toMatch(/set up node identities again/);
+    guard.restoreNodeWrite('radicle', null);
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
+  });
+
   test('before any report, nodes wait unless there is nothing to protect', () => {
     // A profile that never set up an identity: nothing to protect.
     expect(guard.nodeBlockReason('bee')).toBeNull();

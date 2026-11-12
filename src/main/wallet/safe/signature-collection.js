@@ -59,15 +59,16 @@ function ownersView(ownerIndexes, signatures) {
  * unlocked — zero ceremony, so no user action is required. The single
  * home of the "which signatures are free" policy; runs at creation and
  * again when the board (re)opens (covers a vault that was locked the
- * first time).
+ * first time). With `expectedId`, only that entry is signed.
  */
-async function collectFreeSignatures(store, safeIndex, ownerIndexes) {
+async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId = null) {
   if (!(await isVaultUnlocked())) {
     return;
   }
   for (const ownerIndex of ownerIndexes) {
     const entry = store.get(safeIndex);
     if (!entry || entry.superseded || entry.signatures.length >= entry.threshold) break;
+    if (expectedId != null && store.idOf(entry) !== expectedId) break;
     const owner = getWalletRecord(ownerIndex);
     if (owner?.type !== WALLET_TYPES.MNEMONIC || hasSigned(entry.signatures, owner.address)) {
       continue;
@@ -93,13 +94,15 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes) {
  *
  * Callers own the existence/terminal-state checks on the entry; this
  * owns membership, idempotency, mutual exclusion, and the
- * identity re-check after a ceremony that may have taken minutes.
+ * identity re-check after a ceremony that may have taken minutes. With
+ * `expectedId`, the caller's entry is the one signed: another one is
+ * refused (SAFE_DISCARDED) before any ceremony starts.
  */
-async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes }) {
+async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expectedId = null }) {
   if (ownerIndex == null) {
     acquire(safeIndex);
     try {
-      await collectFreeSignatures(store, safeIndex, ownerIndexes);
+      await collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId);
     } finally {
       release(safeIndex);
     }
@@ -110,19 +113,22 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes }) {
     throw new Error('That account is not an owner of this Safe');
   }
   const entry = store.get(safeIndex);
+  if (!entry || (expectedId != null && store.idOf(entry) !== expectedId)) {
+    throw codedError('The request was discarded or replaced', SAFE_DISCARDED);
+  }
   if (hasSigned(entry.signatures, getWalletRecord(ownerIndex)?.address)) {
     return; // already signed — idempotent
   }
 
   acquire(safeIndex);
   try {
-    const expectedId = store.idOf(entry);
+    const signedId = store.idOf(entry);
     const signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex });
 
     // The ceremony can take minutes: re-validate that THIS payload is
     // still the pending one before persisting into it.
     const current = store.get(safeIndex);
-    if (!current || store.idOf(current) !== expectedId) {
+    if (!current || store.idOf(current) !== signedId) {
       throw codedError(
         'The request was discarded while the signature was being made',
         SAFE_DISCARDED

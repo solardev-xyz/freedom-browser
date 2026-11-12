@@ -5,6 +5,8 @@
 // Mirrors the mechanisms used by test-e2e/*.spec.js so the recipes stay in
 // step with what the harness supports.
 
+const { randomBytes } = require('crypto');
+
 const {
   launch,
   go,
@@ -221,11 +223,11 @@ async function stubWalletIpc({ app }) {
       walletIndex: 1000000,
       chainId: 8453,
     }));
-    replace('dapp:add-transaction-auto-approve', () => ({ success: true }));
     globalThis.__resolveLedgerSend = null;
-    const pending = () => new Promise((r) => (globalThis.__resolveLedgerSend = r));
-    replace('wallet:send-transaction', pending);
-    replace('wallet:dapp-send-transaction', pending);
+    replace(
+      'wallet:send-transaction',
+      () => new Promise((r) => (globalThis.__resolveLedgerSend = r))
+    );
   });
   return (result) => app.evaluate((_e, r) => globalThis.__resolveLedgerSend(r), result);
 }
@@ -269,20 +271,51 @@ async function sendForm({ app, win }) {
   void app;
 }
 
-// dApp screens rendered directly from the renderer modules.
+// dApp screens: main's prompts for a page's requests (freedom-core design
+// 0011). Main sends a prompt to the chrome (`page:prompt`) and
+// page-prompts.js hands it to the screen for its kind: the screens that
+// register themselves (page-prompt-renderers.js), and dapp-connect.js's
+// showPageConnect for connecting. A recipe hands the screen a prompt the way
+// main would send it, with a handle main never issued. The screen is what is
+// being tested here, not main's queue. Main refuses a decision for that
+// handle (`page:decide` answers `closed`), and the screen comes down as it
+// would after any refusal.
 //
-// The Send, Sign and Connect prompts share the sidebar, and one showing an
-// undecided request refuses a newcomer with -32002 (dapp-prompt-guard.js). So
-// each recipe first answers whichever prompt is up the way a user would — its
-// own Reject button — and only then asks for its own. The click goes through
-// the DOM rather than the mouse so the pointer (and any :hover it draws) stays
-// where the caller left it. Every promise a recipe starts is settled quietly:
-// rejecting it here is the point, not an error.
+// The Send, Sign and Connect screens share the sidebar, and page-prompts.js
+// shows no newcomer while one of them shows an undecided request
+// (dapp-prompt-guard.js). So each recipe first answers whichever prompt is up
+// the way a user would, with its own Reject button, and only then shows its
+// own. The click goes through the DOM rather than the mouse so the pointer
+// (and any :hover it draws) stays where the caller left it.
 const DAPP_PROMPTS = [
   ['#sidebar-dapp-tx', '#dapp-tx-reject'],
   ['#sidebar-dapp-sign', '#dapp-sign-reject'],
   ['#sidebar-dapp-connect', '#dapp-connect-reject'],
 ];
+
+const DAPP_SITE = { key: 'https://swap.example', label: 'https://swap.example' };
+const SWARM_SITE = { key: 'bzz://myapp.eth', label: 'bzz://myapp.eth' };
+// The account as main's views carry it.
+const LEDGER_ACCOUNT = {
+  index: LEDGER.index,
+  name: LEDGER.name,
+  address: LEDGER.address,
+  type: LEDGER.type,
+};
+
+// A prompt as main sends it (`page:prompt`), with a fresh handle.
+function pagePrompt(kind, site, view) {
+  return { handle: randomBytes(32).toString('hex'), guest: 1, kind, site, view };
+}
+
+// Show `prompt` on the screen registered for its kind, as page-prompts.js
+// does once the sidebar is free.
+function showPagePrompt(win, prompt) {
+  return win.evaluate(async (p) => {
+    const { pagePromptRenderer } = await import('./lib/page-prompt-renderers.js');
+    pagePromptRenderer(p.kind).show(p);
+  }, prompt);
+}
 
 async function dismissDappPrompts(win) {
   await win.evaluate((prompts) => {
@@ -296,63 +329,78 @@ async function dismissDappPrompts(win) {
   }
 }
 
+// The screens look the Ledger up among the wallet's accounts: a device
+// account skips the vault's unlock gate.
+async function knowLedger(win) {
+  await win.evaluate(async (ledger) => {
+    const { walletState } = await import('./lib/wallet/wallet-state.js');
+    walletState.derivedWallets = [ledger];
+  }, LEDGER);
+}
+
+// A page's ERC-20 approve call: main's send prompt (`eth.send`) with the fee
+// main quoted and the fee check's verdict.
 async function dappTxApproval({ win }) {
   await dismissDappPrompts(win);
-  await win.evaluate(
-    async ({ ledger, to }) => {
-      const dappTx = await import('./lib/wallet/dapp-tx.js');
-      const { walletState } = await import('./lib/wallet/wallet-state.js');
-      walletState.derivedWallets = [ledger];
-      dappTx
-        .showDappTxApproval({}, 'https://swap.example', {
-          to,
-          value: '0',
-          data: `0x095ea7b3${'0'.repeat(56)}deadbeef${'f'.repeat(64)}`,
-        })
-        .then(
-          () => {},
-          () => {}
-        );
-    },
-    { ledger: LEDGER, to: RECIPIENT }
+  await knowLedger(win);
+  await showPagePrompt(
+    win,
+    pagePrompt('eth.send', DAPP_SITE, {
+      account: LEDGER_ACCOUNT,
+      chain: { id: 8453, name: 'Base', symbol: 'ETH' },
+      tx: {
+        to: RECIPIENT,
+        value: '0',
+        data: `0x095ea7b3${'0'.repeat(56)}deadbeef${'f'.repeat(64)}`,
+      },
+      fee: { gasLimit: '21000', gasPrice: '1000000000', estimate: '21000000000000' },
+      feeCheck: {
+        maxCost: '21000000000000',
+        comparable: true,
+        ratio: '1',
+        above: false,
+        autoApprove: true,
+      },
+      feeAskAgain: false,
+      alwaysAllow: true,
+    })
   );
   await win.waitForSelector('#sidebar-dapp-tx', { state: 'visible' });
   await win.waitForTimeout(500);
 }
 
+// A page's personal_sign: main's signing prompt (`eth.sign`) with the message
+// as main decoded it.
 async function dappSign({ win }) {
   await dismissDappPrompts(win);
-  await win.evaluate(async () => {
-    const dappSign = await import('./lib/wallet/dapp-sign.js');
-    // What main hands the screen for this message (wallet:message-view).
-    dappSign
-      .showDappSignApproval(
-        {},
-        'https://swap.example',
-        'personal_sign',
-        ['0x48656c6c6f2046726565646f6d', '0x209693Bc6afc0C5328bA36FaF03C514EF312287C'],
-        { message: { hex: '0x48656c6c6f2046726565646f6d', rawHash: false } }
-      )
-      .then(
-        () => {},
-        () => {}
-      );
-  });
+  await knowLedger(win);
+  await showPagePrompt(
+    win,
+    pagePrompt('eth.sign', DAPP_SITE, {
+      account: LEDGER_ACCOUNT,
+      chain: { id: 8453, name: 'Base' },
+      method: 'personal_sign',
+      message: { hex: '0x48656c6c6f2046726565646f6d', rawHash: false },
+    })
+  );
   await win.waitForSelector('#sidebar-dapp-sign', { state: 'visible' });
   await win.waitForTimeout(500);
 }
 
+// A page's eth_requestAccounts: main's connect prompt (`eth.connect`) with the
+// accounts main offers.
 async function dappConnect({ win }) {
   await dismissDappPrompts(win);
-  await win.evaluate(async () => {
-    const dappConnect = await import('./lib/wallet/dapp-connect.js');
-    new Promise((res, rej) =>
-      dappConnect.showDappConnect('https://swap.example', 'https://swap.example', res, rej, {})
-    ).then(
-      () => {},
-      () => {}
-    );
-  });
+  await win.evaluate(
+    async (prompt) => {
+      const { showPageConnect } = await import('./lib/wallet/dapp-connect.js');
+      showPageConnect(prompt);
+    },
+    pagePrompt('eth.connect', DAPP_SITE, {
+      accounts: [LEDGER_ACCOUNT],
+      defaultIndex: LEDGER.index,
+    })
+  );
   await win.waitForSelector('#sidebar-dapp-connect', { state: 'visible' });
   await win.waitForTimeout(500);
 }
@@ -497,47 +545,77 @@ async function safeActivateFee({ app, win }) {
   await win.waitForTimeout(400);
 }
 
-// Swarm approval screens: 'connect' | 'publish' | 'messaging' | 'feed'
-async function swarmApproval({ win }, kind = 'connect') {
-  await win.evaluate(async (k) => {
-    const sc = await import('./lib/wallet/swarm-connect.js');
-    const origin = 'bzz://myapp.eth';
-    const show = {
-      connect: (res, rej) => sc.showSwarmConnect('myapp.eth', origin, res, rej, null),
-      // Data mode reads params.contentType / params.data / params.name
-      // (see presentSwarmPublishApproval); anything else renders as
-      // "Type: unknown" with no name row.
-      publish: (res, rej) =>
-        sc.showSwarmPublishApproval(
-          origin,
+// Swarm approval screens: 'connect' | 'publish' | 'messaging' | 'feed'.
+// Main's Swarm prompts (`swarm.*`, see the dApp screens above), each with the
+// view main builds for the page's request.
+const SWARM_PUBLISH_HTML = `<!doctype html><title>My app</title>${'<p>Hello Swarm.</p>'.repeat(64)}`;
+const SWARM_MESSAGE = 'Hello from myapp.eth';
+const SWARM_PROMPTS = {
+  connect: ['#sidebar-swarm-connect', () => pagePrompt('swarm.connect', SWARM_SITE, {})],
+  // swarm_publishData: what main measured, and the page's name and content
+  // type as far as main bounds them.
+  publish: [
+    '#sidebar-swarm-publish-approve',
+    () =>
+      pagePrompt('swarm.publish', SWARM_SITE, {
+        method: 'swarm_publishData',
+        kind: 'data',
+        size: Buffer.byteLength(SWARM_PUBLISH_HTML),
+        contentType: 'text/html',
+        name: 'index.html',
+      }),
+  ],
+  // A PSS send on a site that already has messaging access: the per-send
+  // prompt, with the "always allow" it offers.
+  messaging: [
+    '#sidebar-swarm-messaging-approve',
+    () =>
+      pagePrompt('swarm.messaging', SWARM_SITE, {
+        method: 'swarm_sendPss',
+        grantMode: false,
+        topic: 'chat',
+        size: Buffer.byteLength(SWARM_MESSAGE),
+      }),
+  ],
+  // swarm_createFeed: main unlocks the vault first, so its view carries the
+  // site's publisher identities and their owners, and the new app-scoped
+  // identity it picks for a site with none.
+  feed: [
+    '#sidebar-swarm-feed-approve',
+    () =>
+      pagePrompt('swarm.feed', SWARM_SITE, {
+        method: 'swarm_createFeed',
+        mode: 'feeds',
+        name: 'blog-updates',
+        identities: [
           {
-            data: `<!doctype html><title>My app</title>${'<p>Hello Swarm.</p>'.repeat(64)}`,
-            contentType: 'text/html',
-            name: 'index.html',
+            id: 'bee-wallet',
+            mode: 'bee-wallet',
+            label: '',
+            owner: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+            shared: true,
+            stored: true,
+            unavailable: false,
           },
-          res,
-          rej,
-          'swarm_publishData'
-        ),
-      // Siblings of the publish prompt: both read `options.method` (and
-      // grantMode/autoApproveType) for their copy, so an empty options object
-      // renders the wrong title/label pair the product never shows.
-      messaging: (res, rej) =>
-        sc.showSwarmMessagingApproval(
-          origin,
-          { topic: 'chat', data: 'Hello from myapp.eth' },
-          res,
-          rej,
-          { method: 'swarm_sendPss', grantMode: false }
-        ),
-      feed: (res, rej) =>
-        sc.showSwarmFeedApproval(origin, { name: 'blog-updates' }, res, rej, {
-          method: 'swarm_createFeed',
-          autoApproveType: 'feeds',
-        }),
-    }[k];
-    new Promise(show);
-  }, kind);
+        ],
+        newIdentity: {
+          id: 'app-scoped:0',
+          mode: 'app-scoped',
+          label: '',
+          owner: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
+          shared: false,
+          stored: false,
+          unavailable: false,
+        },
+        activeIdentityId: 'app-scoped:0',
+      }),
+  ],
+};
+
+async function swarmApproval({ win }, kind = 'connect') {
+  const [screen, prompt] = SWARM_PROMPTS[kind];
+  await showPagePrompt(win, prompt());
+  await win.waitForSelector(screen, { state: 'visible' });
   await win.waitForTimeout(600);
 }
 

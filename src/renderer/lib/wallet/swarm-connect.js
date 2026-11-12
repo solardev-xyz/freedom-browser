@@ -1,20 +1,20 @@
 /**
  * Swarm Connect Module
  *
- * Connection approval UI for Swarm publishing access, plus
+ * The screens of main's Swarm prompts for a page's requests (connect,
+ * publish, messaging, feeds and signing; freedom-core design 0011), plus
  * the Swarm connection banner in the sidebar.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
-import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { formatBytes } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getPermissionKey, getActivePageUrl } from '../dapp-provider.js';
+import { getPermissionKey } from '../origin-utils.js';
+import { getActivePageUrl } from '../dapp-provider.js';
 import { showSwarmPermissions } from './permission-manage.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
 import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 import {
-  BEE_WALLET_IDENTITY_ID,
   getActivePublisherIdentity,
   identityLabel,
   renderPublisherIdentitySelector,
@@ -80,15 +80,9 @@ let swarmFeedApproveBtn;
 let swarmFeedAutoApproveCheckbox;
 let swarmFeedAutoApproveLabel;
 let swarmFeedWarning;
-
-// DOM references — feed unlock section
+// Main unlocks the vault before it shows a feed prompt: the screen's own
+// unlock section stays hidden.
 let swarmFeedUnlock;
-let swarmFeedTouchIdBtn;
-let swarmFeedPasswordLink;
-let swarmFeedPasswordSection;
-let swarmFeedPasswordInput;
-let swarmFeedPasswordSubmit;
-let swarmFeedUnlockError;
 
 // Local state
 const swarmConnectQueue = createPromptQueue(presentSwarmConnect, (armed) => {
@@ -102,19 +96,15 @@ const swarmMessagingQueue = createPromptQueue(presentSwarmMessagingApproval, (ar
 });
 const swarmFeedQueue = createPromptQueue(presentSwarmFeedApproval, (armed) => {
   setButtonsDisabled([swarmFeedRejectBtn], !armed);
-  // Approve is additionally gated on the vault being unlocked.
+  // Approve is additionally gated on the identity (SW-1).
   syncFeedApproveButton();
 });
 let swarmFeedIdentityState = null;
-// Feed approval needs vault access; the button is enabled only once the
-// vault is confirmed unlocked *and* the prompt is past its arm window.
-let swarmFeedVaultUnlocked = false;
 let currentBannerPermissionKey = null;
 
 function syncFeedApproveButton() {
   if (swarmFeedApproveBtn) {
-    swarmFeedApproveBtn.disabled =
-      !(swarmFeedVaultUnlocked && swarmFeedQueue.armed) || sharedIdentityBlocksFeedRequest();
+    swarmFeedApproveBtn.disabled = !swarmFeedQueue.armed || sharedIdentityBlocksFeedRequest();
   }
 }
 
@@ -146,14 +136,11 @@ function syncFeedSharedIdentityNotice() {
   syncFeedApproveButton();
 }
 
-// A screen another one hid: its old-path requests are rejected, and main's
-// prompt (a page request through main, freedom-core design 0011) is told
-// it was displaced, so it shows again once the sidebar is free.
-function rejectDismissed(queue) {
-  for (const pending of queue.drain()) {
-    if (pending.handle) pagePromptDisplaced(pending.handle);
-    else pending.reject({ code: 4001, message: 'User dismissed prompt' });
-  }
+// A screen another one hid: main's prompts on it (page requests through
+// main, freedom-core design 0011) are told they were displaced, so they show
+// again once the sidebar is free.
+function reportDismissed(queue) {
+  for (const pending of queue.drain()) pagePromptDisplaced(pending.handle);
 }
 
 async function decidePagePrompt(handle, approve, choices = {}) {
@@ -214,24 +201,24 @@ export function initSwarmConnect() {
   swarmPublishAutoApproveCheckbox = document.getElementById('swarm-publish-auto-approve');
 
   registerScreenHider(() => {
-    // Only reject if the screen was actually visible (not already hidden).
-    // hideAllSubscreens() fires all hiders — including this one — when
-    // showing a new screen, so we must not reject during that transition.
+    // Only report a dismissal if the screen was actually visible (not
+    // already hidden). hideAllSubscreens() fires all hiders — including this
+    // one — when showing a new screen.
     // `presenting` means this queue is showing its own next request — the
     // hideAllSubscreens() inside present() is our transition, not a dismissal
     // (queued requests behind it must survive it).
     if (swarmConnectQueue.presenting) return;
     const wasVisible = swarmConnectScreen && !swarmConnectScreen.classList.contains('hidden');
     swarmConnectScreen?.classList.add('hidden');
-    // Dismissing the screen drops queued requests too — the user never sees
-    // them, so leaving them pending would hang the page.
-    if (wasVisible) rejectDismissed(swarmConnectQueue);
+    // Dismissing the screen drops queued prompts too — the user never sees
+    // them here, so main shows them again.
+    if (wasVisible) reportDismissed(swarmConnectQueue);
   });
   registerScreenHider(() => {
     if (swarmPublishQueue.presenting) return;
     const wasVisible = swarmPublishScreen && !swarmPublishScreen.classList.contains('hidden');
     swarmPublishScreen?.classList.add('hidden');
-    if (wasVisible) rejectDismissed(swarmPublishQueue);
+    if (wasVisible) reportDismissed(swarmPublishQueue);
   });
 
   swarmMessagingScreen = document.getElementById('sidebar-swarm-messaging-approve');
@@ -253,7 +240,7 @@ export function initSwarmConnect() {
     if (swarmMessagingQueue.presenting) return;
     const wasVisible = swarmMessagingScreen && !swarmMessagingScreen.classList.contains('hidden');
     swarmMessagingScreen?.classList.add('hidden');
-    if (wasVisible) rejectDismissed(swarmMessagingQueue);
+    if (wasVisible) reportDismissed(swarmMessagingQueue);
   });
 
   swarmFeedScreen = document.getElementById('sidebar-swarm-feed-approve');
@@ -272,18 +259,12 @@ export function initSwarmConnect() {
   swarmFeedAutoApproveLabel = document.getElementById('swarm-feed-auto-approve-label');
   swarmFeedWarning = document.getElementById('swarm-feed-warning');
   swarmFeedUnlock = document.getElementById('swarm-feed-unlock');
-  swarmFeedTouchIdBtn = document.getElementById('swarm-feed-touchid-btn');
-  swarmFeedPasswordLink = document.getElementById('swarm-feed-password-link');
-  swarmFeedPasswordSection = document.getElementById('swarm-feed-password-section');
-  swarmFeedPasswordInput = document.getElementById('swarm-feed-password-input');
-  swarmFeedPasswordSubmit = document.getElementById('swarm-feed-password-submit');
-  swarmFeedUnlockError = document.getElementById('swarm-feed-unlock-error');
 
   registerScreenHider(() => {
     if (swarmFeedQueue.presenting) return;
     const wasVisible = swarmFeedScreen && !swarmFeedScreen.classList.contains('hidden');
     swarmFeedScreen?.classList.add('hidden');
-    if (wasVisible) rejectDismissed(swarmFeedQueue);
+    if (wasVisible) reportDismissed(swarmFeedQueue);
   });
 
   setupSwarmConnectScreen();
@@ -329,7 +310,6 @@ export function initSwarmConnect() {
         handle: prompt.handle,
         permissionKey: siteOf(prompt),
         view: prompt.view || {},
-        method: prompt.view?.method,
       }),
       closeSwarmPublishApproval
     )
@@ -368,7 +348,7 @@ function setupSwarmConnectScreen() {
     swarmConnectBackBtn.addEventListener('click', () => {
       const pending = swarmConnectQueue.claim();
       if (!pending) return;
-      rejectSwarmConnect(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmConnect();
     });
   }
@@ -377,7 +357,7 @@ function setupSwarmConnectScreen() {
     swarmConnectRejectBtn.addEventListener('click', () => {
       const pending = swarmConnectQueue.claim();
       if (!pending) return;
-      rejectSwarmConnect(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmConnect();
     });
   }
@@ -413,23 +393,9 @@ function setupSwarmConnectScreen() {
   });
 }
 
-/**
- * Show the Swarm connect approval screen (queued behind any prompt already
- * on screen).
- */
-export function showSwarmConnect(displayUrl, permissionKey, resolve, reject, webview) {
-  // A live device confirmation owns the sidebar (see signature-flight.js).
-  if (isSignatureInFlight()) {
-    reject(signatureInFlightError());
-    return;
-  }
-
-  swarmConnectQueue.show({ displayUrl, permissionKey, resolve, reject, webview });
-}
-
-function presentSwarmConnect({ displayUrl, permissionKey }) {
+function presentSwarmConnect({ permissionKey }) {
   if (swarmConnectSite) {
-    swarmConnectSite.textContent = permissionKey || displayUrl || 'Unknown';
+    swarmConnectSite.textContent = permissionKey || 'Unknown';
   }
 
   hideAllSubscreens();
@@ -446,51 +412,11 @@ function closeSwarmConnect() {
 }
 
 async function approveSwarmConnect(pending) {
-  if (pending.handle) {
-    // Main writes the grant, for the site it attested, and answers the
-    // page; the banner reads the grant once it has.
-    closeSwarmConnect();
-    await decidePagePrompt(pending.handle, true);
-    updateSwarmConnectionBanner();
-    return;
-  }
-  const { permissionKey, resolve, webview } = pending;
-
-  try {
-    await window.swarmPermissions.grantPermission(permissionKey);
-
-    // Round-trip through main process (the authority) to confirm
-    const response = await window.swarmProvider.execute('swarm_requestAccess', {}, permissionKey);
-    if (response.error) {
-      throw response.error;
-    }
-
-    resolve(response.result);
-
-    if (webview && webview.send) {
-      webview.send('swarm:provider-event', {
-        event: 'connect',
-        data: { origin: permissionKey },
-      });
-    }
-
-    console.log('[SwarmConnect] Approved:', permissionKey);
-    updateSwarmConnectionBanner(permissionKey);
-  } catch (err) {
-    console.error('[SwarmConnect] Failed to grant permission:', err);
-  }
-
+  // Main writes the grant, for the site it attested, and answers the
+  // page; the banner reads the grant once it has.
   closeSwarmConnect();
-}
-
-function rejectSwarmConnect(pending) {
-  if (pending.handle) {
-    decidePagePrompt(pending.handle, false);
-    return;
-  }
-  const { reject } = pending;
-  reject({ code: 4001, message: 'User rejected Swarm access' });
-  console.log('[SwarmConnect] Rejected');
+  await decidePagePrompt(pending.handle, true);
+  updateSwarmConnectionBanner();
 }
 
 /**
@@ -562,16 +488,6 @@ export async function disconnectSwarmApp(permissionKey = null) {
   }
 }
 
-// Byte size of a prompt payload — Blob handles strings (UTF-8),
-// ArrayBuffers, and TypedArrays alike.
-function payloadByteSize(data) {
-  try {
-    return new Blob([data]).size;
-  } catch {
-    return data?.length || 0;
-  }
-}
-
 // ============================================
 // Per-publish approval prompt
 // ============================================
@@ -581,7 +497,7 @@ function setupSwarmPublishScreen() {
     swarmPublishBackBtn.addEventListener('click', () => {
       const pending = swarmPublishQueue.claim();
       if (!pending) return;
-      rejectSwarmPublish(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmPublishApproval();
     });
   }
@@ -590,7 +506,7 @@ function setupSwarmPublishScreen() {
     swarmPublishRejectBtn.addEventListener('click', () => {
       const pending = swarmPublishQueue.claim();
       if (!pending) return;
-      rejectSwarmPublish(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmPublishApproval();
     });
   }
@@ -603,20 +519,6 @@ function setupSwarmPublishScreen() {
       closeSwarmPublishApproval();
     });
   }
-}
-
-/**
- * Show the per-publish approval prompt (queued behind any prompt already on
- * screen). Resolves on "Publish", rejects (code 4001) on "Reject".
- */
-export function showSwarmPublishApproval(permissionKey, params, resolve, reject, method) {
-  // A live device confirmation owns the sidebar (see signature-flight.js).
-  if (isSignatureInFlight()) {
-    reject(signatureInFlightError());
-    return;
-  }
-
-  swarmPublishQueue.show({ permissionKey, params, resolve, reject, method });
 }
 
 // Main's view of a page's upload (PRQ-7c): what it measured, and the
@@ -652,70 +554,17 @@ function presentPageUploadView(view) {
   swarmPublishPathsRow?.classList.add('hidden');
 }
 
-function presentSwarmPublishApproval({ permissionKey, params, method, handle, view }) {
+function presentSwarmPublishApproval({ permissionKey, view }) {
   if (swarmPublishAutoApproveCheckbox) swarmPublishAutoApproveCheckbox.checked = false;
 
   if (swarmPublishSite) {
     swarmPublishSite.textContent = permissionKey || 'Unknown';
   }
 
-  if (handle) {
-    presentPageUploadView(view || {});
-    hideAllSubscreens();
-    walletState.identityView?.classList.add('hidden');
-    swarmPublishScreen?.classList.remove('hidden');
-    openSidebarPanel();
-    return;
-  }
-
-  const isFileMode = Array.isArray(params?.files);
-  const isChunkMode = method === 'swarm_publishChunk';
-
-  if (isFileMode) {
-    // File mode: show file count, total size, path preview
-    const fileCount = params.files.length;
-    if (swarmPublishType) {
-      swarmPublishType.textContent = `${fileCount} file${fileCount !== 1 ? 's' : ''}`;
-    }
-    if (swarmPublishSize) {
-      const totalSize = params.files.reduce((sum, f) => {
-        const b = f.bytes;
-        return sum + (b?.length || b?.byteLength || b?.data?.length || 0);
-      }, 0);
-      swarmPublishSize.textContent = formatBytes(totalSize);
-    }
-    // Path preview: first 3 paths + "...and N more"
-    if (swarmPublishPathsRow && swarmPublishPaths) {
-      const paths = params.files.map((f) => f.path);
-      const preview = paths.slice(0, 3).join(', ');
-      const more = paths.length > 3 ? ` \u2026and ${paths.length - 3} more` : '';
-      swarmPublishPaths.textContent = preview + more;
-      swarmPublishPathsRow.classList.remove('hidden');
-    }
-    swarmPublishNameRow?.classList.add('hidden');
-  } else {
-    // Data mode: show content type, size, optional name
-    if (swarmPublishType) {
-      swarmPublishType.textContent = isChunkMode ? 'Swarm chunk' : (params?.contentType || 'unknown');
-    }
-    if (swarmPublishSize) {
-      swarmPublishSize.textContent = formatBytes(payloadByteSize(params?.data));
-    }
-    if (swarmPublishNameRow && swarmPublishName) {
-      if (params?.name) {
-        swarmPublishName.textContent = params.name;
-        swarmPublishNameRow.classList.remove('hidden');
-      } else {
-        swarmPublishNameRow.classList.add('hidden');
-      }
-    }
-    swarmPublishPathsRow?.classList.add('hidden');
-  }
-
+  presentPageUploadView(view || {});
   hideAllSubscreens();
   walletState.identityView?.classList.add('hidden');
   swarmPublishScreen?.classList.remove('hidden');
-
   openSidebarPanel();
 }
 
@@ -726,34 +575,11 @@ function closeSwarmPublishApproval() {
 }
 
 async function approveSwarmPublish(pending) {
-  const { permissionKey, resolve } = pending;
   // Read the shared checkbox before the first await: closing this prompt
   // presents any queued one, which resets it.
   const alwaysAllow = !!swarmPublishAutoApproveCheckbox?.checked;
-
-  if (pending.handle) {
-    // Main sets the rule, for the site it attested, and publishes.
-    await decidePagePrompt(pending.handle, true, { alwaysAllow });
-    return;
-  }
-
-  if (alwaysAllow && permissionKey) {
-    await window.swarmPermissions.setAutoApprove(permissionKey, 'publish', true);
-    console.log('[SwarmConnect] Auto-approve publish enabled for:', permissionKey);
-  }
-
-  resolve();
-  console.log('[SwarmConnect] Publish approved');
-}
-
-function rejectSwarmPublish(pending) {
-  if (pending.handle) {
-    decidePagePrompt(pending.handle, false);
-    return;
-  }
-  const { reject } = pending;
-  reject({ code: 4001, message: 'User rejected publish' });
-  console.log('[SwarmConnect] Publish rejected');
+  // Main sets the rule, for the site it attested, and publishes.
+  await decidePagePrompt(pending.handle, true, { alwaysAllow });
 }
 
 // ============================================
@@ -765,7 +591,7 @@ function setupSwarmMessagingScreen() {
     swarmMessagingBackBtn.addEventListener('click', () => {
       const pending = swarmMessagingQueue.claim();
       if (!pending) return;
-      rejectSwarmMessaging(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmMessagingApproval();
     });
   }
@@ -774,7 +600,7 @@ function setupSwarmMessagingScreen() {
     swarmMessagingRejectBtn.addEventListener('click', () => {
       const pending = swarmMessagingQueue.claim();
       if (!pending) return;
-      rejectSwarmMessaging(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmMessagingApproval();
     });
   }
@@ -803,23 +629,10 @@ function messagingRequestLabel(method) {
 }
 
 /**
- * Show the messaging approval prompt (queued behind any prompt already on
- * screen — a page can fire several messaging calls at once).
- *
  * Grant mode (first messaging call for the origin) asks for the
  * messaging tier as a whole; send mode asks per message and offers the
- * messaging auto-approve. Resolves on approve, rejects (4001) on cancel.
+ * messaging auto-approve.
  */
-export function showSwarmMessagingApproval(permissionKey, params, resolve, reject, options = {}) {
-  // A live device confirmation owns the sidebar (see signature-flight.js).
-  if (isSignatureInFlight()) {
-    reject(signatureInFlightError());
-    return;
-  }
-
-  swarmMessagingQueue.show({ permissionKey, params, resolve, reject, options });
-}
-
 function presentSwarmMessagingApproval({ permissionKey, params, options, size }) {
   const { method, grantMode } = options || {};
 
@@ -844,13 +657,9 @@ function presentSwarmMessagingApproval({ permissionKey, params, options, size })
   }
 
   if (swarmMessagingSizeRow && swarmMessagingSize) {
-    // Main's prompt carries the size it measured; the old path measures the
-    // page's data here.
-    const bytes = size !== undefined
-      ? size
-      : (params?.data !== undefined && params?.data !== null ? payloadByteSize(params.data) : null);
-    if (isSend && bytes !== null) {
-      swarmMessagingSize.textContent = formatBytes(bytes);
+    // Main's prompt carries the size it measured, or null.
+    if (isSend && size !== null) {
+      swarmMessagingSize.textContent = formatBytes(size);
       swarmMessagingSizeRow.classList.remove('hidden');
     } else {
       swarmMessagingSizeRow.classList.add('hidden');
@@ -883,35 +692,12 @@ function closeSwarmMessagingApproval() {
 }
 
 async function approveSwarmMessaging(pending) {
-  const { permissionKey, resolve } = pending;
   // Read the shared checkbox before the first await (see approveSwarmPublish).
   const alwaysAllow = !!swarmMessagingAutoApproveCheckbox?.checked;
-
-  if (pending.handle) {
-    // Main writes the grant or the rule, for the site it attested; "always
-    // allow" only where the prompt offered it (a send).
-    const offered = !pending.options?.grantMode && ['swarm_sendPss', 'swarm_sendGsoc'].includes(pending.options?.method);
-    await decidePagePrompt(pending.handle, true, offered ? { alwaysAllow } : {});
-    return;
-  }
-
-  if (alwaysAllow && permissionKey) {
-    await window.swarmPermissions.setAutoApprove(permissionKey, 'messaging', true);
-    console.log('[SwarmConnect] Auto-approve messaging enabled for:', permissionKey);
-  }
-
-  resolve();
-  console.log('[SwarmConnect] Messaging approved');
-}
-
-function rejectSwarmMessaging(pending) {
-  if (pending.handle) {
-    decidePagePrompt(pending.handle, false);
-    return;
-  }
-  const { reject } = pending;
-  reject({ code: 4001, message: 'User rejected the request' });
-  console.log('[SwarmConnect] Messaging rejected');
+  // Main writes the grant or the rule, for the site it attested; "always
+  // allow" only where the prompt offered it (a send).
+  const offered = !pending.options?.grantMode && ['swarm_sendPss', 'swarm_sendGsoc'].includes(pending.options?.method);
+  await decidePagePrompt(pending.handle, true, offered ? { alwaysAllow } : {});
 }
 
 // ============================================
@@ -923,7 +709,7 @@ function setupSwarmFeedScreen() {
     swarmFeedBackBtn.addEventListener('click', () => {
       const pending = swarmFeedQueue.claim();
       if (!pending) return;
-      rejectSwarmFeed(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmFeedApproval();
     });
   }
@@ -932,7 +718,7 @@ function setupSwarmFeedScreen() {
     swarmFeedRejectBtn.addEventListener('click', () => {
       const pending = swarmFeedQueue.claim();
       if (!pending) return;
-      rejectSwarmFeed(pending);
+      decidePagePrompt(pending.handle, false);
       closeSwarmFeedApproval();
     });
   }
@@ -945,50 +731,13 @@ function setupSwarmFeedScreen() {
       closeSwarmFeedApproval();
     });
   }
-
-  if (swarmFeedTouchIdBtn) {
-    swarmFeedTouchIdBtn.addEventListener('click', handleFeedTouchIdUnlock);
-  }
-
-  if (swarmFeedPasswordSubmit) {
-    swarmFeedPasswordSubmit.addEventListener('click', handleFeedPasswordUnlock);
-  }
-
-  if (swarmFeedPasswordInput) {
-    swarmFeedPasswordInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') handleFeedPasswordUnlock();
-    });
-  }
-
-  if (swarmFeedPasswordLink) {
-    swarmFeedPasswordLink.addEventListener('click', () => {
-      swarmFeedPasswordSection?.classList.remove('hidden');
-      swarmFeedPasswordLink?.classList.add('hidden');
-      swarmFeedPasswordInput?.focus();
-    });
-  }
-}
-
-/**
- * Show the feed access approval prompt (queued behind any prompt already on
- * screen). On approval, establishes or re-grants feed access for the origin.
- */
-export function showSwarmFeedApproval(permissionKey, params, resolve, reject, options = {}) {
-  // A live device confirmation owns the sidebar (see signature-flight.js).
-  if (isSignatureInFlight()) {
-    reject(signatureInFlightError());
-    return;
-  }
-
-  const autoApproveType = options.autoApproveType === 'signing' ? 'signing' : 'feeds';
-  swarmFeedQueue.show({ permissionKey, params, resolve, reject, autoApproveType, method: options.method });
 }
 
 // The identities main's view offers (PRQ-7d): the site's, and the new
 // app-scoped one, which joins the list when the user asks for it.
 const viewIdentities = (view) => (Array.isArray(view?.identities) ? view.identities.filter((i) => i && typeof i.id === 'string') : []);
 
-function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, method, handle, view }) {
+function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, method, view }) {
   swarmFeedIdentityState = null;
   if (swarmFeedAutoApproveCheckbox) swarmFeedAutoApproveCheckbox.checked = false;
 
@@ -998,39 +747,19 @@ function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, meth
     swarmFeedSite.textContent = permissionKey || 'Unknown';
   }
 
-  if (handle) {
-    // Main's prompt: the vault is unlocked already, and the identities and
-    // their owners are main's.
-    const identities = viewIdentities(view);
-    const fresh = view?.newIdentity && typeof view.newIdentity.id === 'string' ? view.newIdentity : null;
-    if (fresh && view.activeIdentityId === fresh.id) identities.push(fresh);
-    swarmFeedIdentityState = { activeIdentityId: view?.activeIdentityId ?? null, identities };
-    renderFeedIdentitySelector();
-    swarmFeedUnlock?.classList.add('hidden');
-    swarmFeedVaultUnlocked = true;
-    syncFeedApproveButton();
-    hideAllSubscreens();
-    walletState.identityView?.classList.add('hidden');
-    swarmFeedScreen?.classList.remove('hidden');
-    openSidebarPanel();
-    return;
-  }
-
+  // The vault is unlocked already, and the identities and their owners are
+  // main's.
+  const identities = viewIdentities(view);
+  const fresh = view?.newIdentity && typeof view.newIdentity.id === 'string' ? view.newIdentity : null;
+  if (fresh && view.activeIdentityId === fresh.id) identities.push(fresh);
+  swarmFeedIdentityState = { activeIdentityId: view?.activeIdentityId ?? null, identities };
   renderFeedIdentitySelector();
-
-  // Disable Allow until vault status is confirmed (and until the prompt's
-  // input-protection window has elapsed — see syncFeedApproveButton).
-  swarmFeedVaultUnlocked = false;
+  swarmFeedUnlock?.classList.add('hidden');
   syncFeedApproveButton();
-
   hideAllSubscreens();
   walletState.identityView?.classList.add('hidden');
   swarmFeedScreen?.classList.remove('hidden');
-
   openSidebarPanel();
-
-  // Check vault unlock status (feed signing requires vault access)
-  checkFeedUnlockStatus();
 }
 
 function applyFeedPromptCopy(method, params, autoApproveType) {
@@ -1050,7 +779,7 @@ function applyFeedPromptCopy(method, params, autoApproveType) {
   if (swarmFeedName) {
     swarmFeedName.textContent = signing
       ? signingRequestLabel(method, params)
-      : (params?.name || params?.feedId || params?.identifier || 'Feed operation');
+      : (params?.name || params?.identifier || 'Feed operation');
   }
   if (swarmFeedWarning) {
     swarmFeedWarning.textContent = signing
@@ -1083,27 +812,6 @@ function renderFeedIdentitySelector() {
   syncFeedSharedIdentityNotice();
 }
 
-async function refreshFeedIdentitySelector() {
-  if (!swarmFeedQueue.current?.permissionKey || swarmFeedQueue.current.handle) return;
-  try {
-    swarmFeedIdentityState = await loadFeedIdentityState(swarmFeedQueue.current.permissionKey);
-    renderFeedIdentitySelector();
-  } catch (err) {
-    console.error('[SwarmConnect] Failed to load publisher identities:', err);
-    showFeedUnlockError(err.message || 'Failed to load publisher identities');
-  }
-}
-
-async function loadFeedIdentityState(permissionKey) {
-  let state = await window.swarmFeedStore.getOriginIdentities(permissionKey);
-  if (!state?.activeIdentityId) {
-    const preview = await window.swarmFeedStore.previewAppScopedIdentity(permissionKey);
-    state = addOrReplaceIdentity(state, preview);
-    state.activeIdentityId = preview.id;
-  }
-  return state;
-}
-
 async function activateFeedPromptIdentity(identity) {
   if (!swarmFeedQueue.current?.permissionKey || !identity) return;
   if (identity.id === swarmFeedIdentityState?.activeIdentityId) return;
@@ -1116,27 +824,13 @@ async function activateFeedPromptIdentity(identity) {
   renderFeedIdentitySelector();
 }
 
-async function createFeedPromptIdentity() {
-  if (!swarmFeedQueue.current?.permissionKey) return;
-  if (swarmFeedQueue.current.handle) {
-    // Main's prompt offers one new identity, made only if the user approves.
-    const fresh = swarmFeedQueue.current.view?.newIdentity;
-    if (!fresh || typeof fresh.id !== 'string') return;
-    swarmFeedIdentityState = addOrReplaceIdentity(swarmFeedIdentityState, fresh);
-    swarmFeedIdentityState.activeIdentityId = fresh.id;
-    renderFeedIdentitySelector();
-    return;
-  }
-  const { permissionKey } = swarmFeedQueue.current;
-  try {
-    const preview = await window.swarmFeedStore.previewAppScopedIdentity(permissionKey);
-    swarmFeedIdentityState = addOrReplaceIdentity(swarmFeedIdentityState, preview);
-    swarmFeedIdentityState.activeIdentityId = preview.id;
-    renderFeedIdentitySelector();
-  } catch (err) {
-    console.error('[SwarmConnect] Failed to preview publisher identity:', err);
-    showFeedUnlockError(err.message || 'Failed to preview publisher identity');
-  }
+function createFeedPromptIdentity() {
+  // Main's prompt offers one new identity, made only if the user approves.
+  const fresh = swarmFeedQueue.current?.view?.newIdentity;
+  if (!fresh || typeof fresh.id !== 'string') return;
+  swarmFeedIdentityState = addOrReplaceIdentity(swarmFeedIdentityState, fresh);
+  swarmFeedIdentityState.activeIdentityId = fresh.id;
+  renderFeedIdentitySelector();
 }
 
 function addOrReplaceIdentity(state, identity) {
@@ -1148,184 +842,21 @@ function addOrReplaceIdentity(state, identity) {
   };
 }
 
-async function checkFeedUnlockStatus() {
-  try {
-    const status = await window.identity.getStatus();
-
-    if (status.isUnlocked) {
-      swarmFeedUnlock?.classList.add('hidden');
-      swarmFeedVaultUnlocked = true;
-      syncFeedApproveButton();
-      await refreshFeedIdentitySelector();
-      return;
-    }
-
-    swarmFeedUnlock?.classList.remove('hidden');
-    swarmFeedVaultUnlocked = false;
-    syncFeedApproveButton();
-
-    const canUseTouchId = await window.quickUnlock.canUseTouchId();
-    const touchIdEnabled = await window.quickUnlock.isEnabled();
-    const hasTouchId = canUseTouchId && touchIdEnabled;
-
-    const vaultMeta = await window.identity.getVaultMeta();
-    const userKnowsPassword = vaultMeta?.userKnowsPassword ?? true;
-
-    if (swarmFeedTouchIdBtn) {
-      swarmFeedTouchIdBtn.classList.toggle('hidden', !hasTouchId);
-    }
-
-    if (hasTouchId && userKnowsPassword) {
-      swarmFeedPasswordLink?.classList.remove('hidden');
-      swarmFeedPasswordSection?.classList.add('hidden');
-    } else if (userKnowsPassword) {
-      swarmFeedPasswordLink?.classList.add('hidden');
-      swarmFeedPasswordSection?.classList.remove('hidden');
-    } else {
-      swarmFeedPasswordLink?.classList.add('hidden');
-      swarmFeedPasswordSection?.classList.add('hidden');
-    }
-  } catch (err) {
-    console.error('[SwarmConnect] Failed to check vault status:', err);
-    swarmFeedUnlock?.classList.remove('hidden');
-    swarmFeedTouchIdBtn?.classList.add('hidden');
-    swarmFeedPasswordLink?.classList.add('hidden');
-    swarmFeedPasswordSection?.classList.remove('hidden');
-  }
-}
-
-async function handleFeedTouchIdUnlock() {
-  try {
-    const result = await window.quickUnlock.unlock();
-    if (!result.success) {
-      throw new Error(result.error || 'Touch ID failed');
-    }
-
-    swarmFeedUnlock?.classList.add('hidden');
-    swarmFeedVaultUnlocked = true;
-    syncFeedApproveButton();
-    hideFeedUnlockError();
-    await refreshFeedIdentitySelector();
-  } catch (err) {
-    console.error('[SwarmConnect] Feed Touch ID unlock failed:', err);
-    if (err.message !== 'Touch ID cancelled') {
-      showFeedUnlockError(err.message || 'Touch ID failed');
-    }
-  }
-}
-
-async function handleFeedPasswordUnlock() {
-  const password = swarmFeedPasswordInput?.value;
-  if (!password) return;
-
-  try {
-    const result = await window.identity.unlock(password);
-    if (!result.success) {
-      throw new Error(result.error || 'Incorrect password');
-    }
-
-    swarmFeedUnlock?.classList.add('hidden');
-    swarmFeedVaultUnlocked = true;
-    syncFeedApproveButton();
-    if (swarmFeedPasswordInput) swarmFeedPasswordInput.value = '';
-    hideFeedUnlockError();
-    await refreshFeedIdentitySelector();
-  } catch (err) {
-    console.error('[SwarmConnect] Feed password unlock failed:', err);
-    showFeedUnlockError(err.message || 'Failed to unlock');
-  }
-}
-
-function showFeedUnlockError(msg) {
-  if (swarmFeedUnlockError) {
-    swarmFeedUnlockError.textContent = msg;
-    swarmFeedUnlockError.classList.remove('hidden');
-  }
-}
-
-function hideFeedUnlockError() {
-  if (swarmFeedUnlockError) {
-    swarmFeedUnlockError.textContent = '';
-    swarmFeedUnlockError.classList.add('hidden');
-  }
-}
-
 function closeSwarmFeedApproval() {
   swarmFeedScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
   swarmFeedIdentityState = null;
-  swarmFeedVaultUnlocked = false;
   if (swarmFeedIdentitySelector) swarmFeedIdentitySelector.innerHTML = '';
-  // Reset unlock state
-  if (swarmFeedPasswordInput) swarmFeedPasswordInput.value = '';
-  hideFeedUnlockError();
   swarmFeedQueue.settle();
 }
 
 async function approveSwarmFeed(pending) {
-  const { permissionKey, resolve, reject, autoApproveType } = pending;
   // Snapshot the shared prompt state before the first await: closing this
   // prompt (and showing any queued one) resets both the identity state and
   // the Always-allow checkbox while this approval is still in flight.
-  let identityState = swarmFeedIdentityState;
+  const identity = swarmFeedIdentityState?.activeIdentityId;
   const alwaysAllow = !!swarmFeedAutoApproveCheckbox?.checked;
-
-  if (pending.handle) {
-    // Main makes the identity the site's, grants feed access and sets the
-    // rule, for the site it attested.
-    const identity = identityState?.activeIdentityId;
-    await decidePagePrompt(pending.handle, true, { identity, alwaysAllow });
-    return;
-  }
-
-  try {
-    if (!identityState?.activeIdentityId) {
-      identityState = await loadFeedIdentityState(permissionKey);
-    }
-    const activeIdentity = getActivePublisherIdentity(identityState);
-    const entry = await persistFeedPromptIdentity(permissionKey, activeIdentity);
-    const effectiveMode = entry?.identityMode || activeIdentity?.mode || 'app-scoped';
-
-    if (alwaysAllow && permissionKey) {
-      await window.swarmPermissions.setAutoApprove(permissionKey, autoApproveType, true);
-      console.log(`[SwarmConnect] Auto-approve ${autoApproveType} enabled for:`, permissionKey);
-    }
-
-    resolve();
-    console.log('[SwarmConnect] Feed access approved:', permissionKey, 'mode:', effectiveMode);
-  } catch (err) {
-    console.error('[SwarmConnect] Failed to set feed identity:', err);
-    reject({ code: -32603, message: err.message || 'Failed to set feed identity' });
-  }
-}
-
-async function persistFeedPromptIdentity(permissionKey, identity) {
-  if (!identity) {
-    throw new Error('No publisher identity selected');
-  }
-
-  // A stored ethereum-wallet identity (a removed mode, #89) is activated
-  // like any stored one, and main refuses it with its own error.
-  if (identity.id === BEE_WALLET_IDENTITY_ID) {
-    await window.swarmFeedStore.ensureAntWalletIdentity(permissionKey, { activate: true });
-  } else if (identity.mode === 'app-scoped' && identity.stored === false) {
-    await window.swarmFeedStore.createAppScopedIdentity(permissionKey, {
-      activate: true,
-      label: identity.label,
-    });
-  } else {
-    await window.swarmFeedStore.activateFeedIdentity(permissionKey, identity.id);
-  }
-
-  return window.swarmFeedStore.setFeedIdentity(permissionKey, identity.mode);
-}
-
-function rejectSwarmFeed(pending) {
-  if (pending.handle) {
-    decidePagePrompt(pending.handle, false);
-    return;
-  }
-  const { reject } = pending;
-  reject({ code: 4001, message: 'User rejected feed access' });
-  console.log('[SwarmConnect] Feed access rejected');
+  // Main makes the identity the site's, grants feed access and sets the
+  // rule, for the site it attested.
+  await decidePagePrompt(pending.handle, true, { identity, alwaysAllow });
 }

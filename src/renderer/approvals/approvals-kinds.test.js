@@ -156,6 +156,34 @@ const VIEWS = {
     alwaysAllow: false,
   },
 };
+
+// The Safe signing boards (APS-3b), as `main/approvals/safe-boards.js` builds them.
+const BOARD = {
+  safe: { index: 1000, name: 'Team Safe', address: SAFE },
+  threshold: 2,
+  collected: 1,
+  owners: [
+    { index: 0, name: 'Main Wallet', address: ADDRESS, type: 'mnemonic', signed: true },
+    { index: 5, name: 'Ledger 1', address: OTHER, type: 'ledger', signed: false },
+    { index: 6, name: '', address: null, type: 'remote', signed: false },
+  ],
+  notes: [{ owner: 5, note: 'declined', message: null }],
+  step: 'collect',
+  error: null,
+};
+const SEND_BOARD = {
+  ...BOARD,
+  chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
+  tx: { to: OTHER, value: '400000000000000000', data: '0x' },
+  transfer: null,
+  executor: { index: 0, name: 'Main Wallet', address: ADDRESS },
+};
+Object.assign(VIEWS, {
+  'eth.safe_message': { ...BOARD, method: 'personal_sign' },
+  'eth.safe_send': SEND_BOARD,
+  'wallet.safe_board': SEND_BOARD,
+  'wallet.vault_unlock': { reason: 'send' },
+});
 const kindOf = (name) => name.split(':')[0];
 
 // --- Hostile data: what a page may put in every field it chooses -----------------
@@ -215,6 +243,23 @@ const hostileViews = {
     labels: [HOSTILE.slice(0, 100)],
   },
 };
+// A board: the page's transaction data, and every text field a name or a
+// message can fill.
+const hostileBoard = (view) => ({
+  ...view,
+  safe: { ...view.safe, name: HOSTILE.slice(0, 256) },
+  owners: view.owners.map((owner) => ({ ...owner, name: HOSTILE.slice(0, 256) })),
+  notes: [{ owner: 5, note: 'failed', message: HOSTILE.slice(0, 300) }],
+});
+Object.assign(hostileViews, {
+  'eth.safe_message': hostileBoard(VIEWS['eth.safe_message']),
+  'eth.safe_send': {
+    ...hostileBoard(SEND_BOARD),
+    tx: { ...SEND_BOARD.tx, data: `0x${Buffer.from(HOSTILE, 'utf8').toString('hex')}` },
+    step: 'retry',
+    error: { code: 'failed', message: HOSTILE.slice(0, 300) },
+  },
+});
 // `undefined` marks a field the hostile view leaves out.
 for (const view of Object.values(hostileViews)) {
   for (const key of Object.keys(view)) if (view[key] === undefined) delete view[key];
@@ -243,10 +288,12 @@ describe('every view main builds fits its kind\'s schema', () => {
     expect(checkMessage(message(kindOf(name), hostileViews[name])).valid).toBe(true);
   });
 
-  test('the dApp kinds and the wallet\'s own, and no Safe board (the chrome keeps those for now)', () => {
+  test('the dApp kinds, the wallet\'s own, and the Safe boards (APS-3b)', () => {
     expect(Object.keys(KINDS).sort()).toEqual(
       [
         'eth.connect',
+        'eth.safe_message',
+        'eth.safe_send',
         'eth.send',
         'eth.sign',
         'radicle.connect',
@@ -263,8 +310,10 @@ describe('every view main builds fits its kind\'s schema', () => {
         'wallet.intent_close',
         'wallet.intent_replace',
         'wallet.intent_resend',
+        'wallet.safe_board',
         'wallet.safe_send',
         'wallet.send',
+        'wallet.vault_unlock',
       ].sort()
     );
   });
@@ -552,5 +601,102 @@ describe('vault.unlock with Touch ID', () => {
     inputs(offered.body, 'password')[0].value = 'pw';
     expect(offered.form.choices()).toEqual({ password: 'pw' });
     expect(render('vault.unlock', { reason: 'send' }).form.choices()).toBeNull();
+  });
+});
+
+describe('the Safe signing boards (APS-3b)', () => {
+  const { boardChoices } = require('../../main/approvals/safe-boards');
+  const radiosOf = (body) => inputs(body, 'radio');
+  const pick = (body, index) => {
+    radiosOf(body).forEach((radio, i) => {
+      radio.checked = i === index;
+    });
+    for (const fn of radiosOf(body)[index].listeners.change || []) fn();
+  };
+
+  test('a message\'s board: the owners still to sign as choices, main\'s checker takes each; Reject cancels', () => {
+    const view = VIEWS['eth.safe_message'];
+    const { body, form, heading, approve } = render('eth.safe_message', view);
+    expect([heading, approve, KINDS['eth.safe_message'].reject(view)]).toEqual(['Collect signatures', 'Sign', 'Cancel request']);
+    const text = body.textContent;
+    expect(text).toContain('1 of 2');
+    expect(text).toContain('Any 2 of the 3 owners can sign.');
+    expect(text).toContain('Declined on the device');
+    expect(text).toContain('Team Safe');
+    expect(text).not.toContain('session');
+    expect(radiosOf(body)).toHaveLength(2);
+    expect(form.choices()).toEqual({ action: 'sign', owner: 5 });
+    expect(boardChoices('message', view)(form.choices())).toEqual({ action: 'sign', owner: 5 });
+    pick(body, 1);
+    expect(form.choices()).toEqual({ action: 'sign', owner: 6 });
+    expect(boardChoices('message', view)(form.choices())).toEqual({ action: 'sign', owner: 6 });
+    // No discard for a message; no owner who has signed.
+    expect(boardChoices('message', view)({ action: 'discard' })).toBeNull();
+    expect(boardChoices('message', view)({ action: 'sign', owner: 0 })).toBeNull();
+    expect(boardChoices('message', view)({ action: 'sign', owner: 5, extra: 1 })).toBeNull();
+  });
+
+  test('a send\'s board: the SafeTx main holds, its executor, discard as its own choice; the Approve label follows the choice', () => {
+    const view = VIEWS['eth.safe_send'];
+    const { body, form } = render('eth.safe_send', view);
+    expect(KINDS['eth.safe_send'].reject(view)).toBe('Leave');
+    const text = body.textContent;
+    expect(text).toContain(OTHER);
+    expect(text).toContain('0.4 xDAI');
+    expect(text).toContain('Paid by Main Wallet');
+    const labels = [];
+    form.watch((label) => labels.push(label));
+    expect(radiosOf(body)).toHaveLength(3);
+    pick(body, 2);
+    expect(form.choices()).toEqual({ action: 'discard' });
+    expect(boardChoices('send', view)(form.choices())).toEqual({ action: 'discard' });
+    pick(body, 0);
+    expect(labels).toEqual(['Discard', 'Sign']);
+    // The wallet's own board is the same board, with no site.
+    expect(render('wallet.safe_board', view).body.textContent).toContain("Your multi-owner account's transaction");
+  });
+
+  test('a discard asked again, a superseded SafeTx, and an execution to try again', () => {
+    const discard = { ...SEND_BOARD, step: 'discard' };
+    const asked = render('eth.safe_send', discard);
+    expect([asked.heading, asked.approve, KINDS['eth.safe_send'].reject(discard)]).toEqual(['Discard transaction?', 'Discard', 'Keep']);
+    expect(asked.form.choices()).toEqual({ action: 'discard' });
+    expect(radiosOf(asked.body)).toHaveLength(0);
+    const outdated = render('wallet.safe_board', { ...SEND_BOARD, step: 'superseded' });
+    expect([outdated.heading, outdated.approve]).toEqual(['Transaction outdated', 'Discard transaction']);
+    expect(outdated.form.choices()).toEqual({ action: 'discard' });
+    const funds = { ...SEND_BOARD, collected: 2, step: 'retry', error: { code: 'needs-funds', message: 'insufficient funds' } };
+    const retry = render('eth.safe_send', funds);
+    expect(retry.approve).toBe("I've added funds: try again");
+    expect(retry.body.textContent).toContain('insufficient funds');
+    expect(retry.form.choices()).toEqual({ action: 'retry' });
+    expect(boardChoices('send', funds)(retry.form.choices())).toEqual({ action: 'retry' });
+    // Signing isn't a choice on this step.
+    expect(boardChoices('send', funds)({ action: 'sign', owner: 5 })).toBeNull();
+  });
+
+  test('an approval waits on the device of the owner chosen to sign', () => {
+    for (const kind of ['eth.safe_message', 'eth.safe_send', 'wallet.safe_board']) {
+      const prompt = checkMessage(message(kind, VIEWS[kind]));
+      expect(prompt.valid).toBe(true);
+      expect(kinds.deviceOf(prompt, { action: 'sign', owner: 5 })).toBe('ledger');
+      expect(kinds.deviceOf(prompt, { action: 'sign', owner: 6 })).toBe('remote');
+      expect(kinds.deviceOf(prompt, { action: 'sign', owner: 0 })).toBeNull();
+      expect(kinds.deviceOf(prompt, { action: 'discard' })).toBeNull();
+      expect(kinds.deviceOf(prompt)).toBeNull();
+    }
+  });
+
+  test('off its schema: a token, a display, an unknown step, a guest named for the wallet\'s board', () => {
+    const off = [
+      ['eth.safe_message', { ...VIEWS['eth.safe_message'], token: 'session-1' }],
+      ['eth.safe_send', { ...SEND_BOARD, display: { label: 'x' } }],
+      ['eth.safe_send', { ...SEND_BOARD, step: 'execute' }],
+      ['eth.safe_send', { ...SEND_BOARD, owners: [{ ...SEND_BOARD.owners[0], type: 'Ledger <b>' }] }],
+      ['eth.safe_send', { ...SEND_BOARD, tx: { ...SEND_BOARD.tx, to: 'javascript:alert(1)' } }],
+    ];
+    for (const [kind, view] of off) expect(checkMessage(message(kind, view)).valid).toBe(false);
+    expect(checkMessage({ ...message('wallet.safe_board', SEND_BOARD), guest: 4 }).valid).toBe(false);
+    expect(checkMessage({ ...message('eth.safe_send', SEND_BOARD), guest: null }).valid).toBe(false);
   });
 });

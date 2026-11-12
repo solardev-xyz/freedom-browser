@@ -249,18 +249,22 @@ function createWalletApprovals({
    * the token, on the chrome's screen (design 0011: "Device steps keep
    * today's paths after the decision").
    *
-   * @param {object} request `{ sender, kind, index, payload, feeChecked }`
+   * @param {object} request `{ sender, kind, index, payload, feeChecked }`,
+   *   or `windowId` in place of `sender` for a step main itself runs in a
+   *   window (a Safe board's executor fee, `safe-boards.js`)
    * @param {() => object} [onApproved] run on the approval, before it is
    *   released; what it returns joins the answer.
    */
-  async function confirm({ sender, kind, index, payload, feeChecked }, onApproved = () => ({})) {
+  async function confirm({ sender, windowId: inWindow, kind, index, payload, feeChecked }, onApproved = () => ({})) {
     const promptKind = PROMPT_KINDS[kind];
     if (!promptKind) throw new Error(`wallet-approvals: not a wallet kind: ${kind}`);
-    let windowId;
-    try {
-      windowId = chromeWindowOf(sender);
-    } catch {
-      windowId = null;
+    let windowId = Number.isInteger(inWindow) ? inWindow : null;
+    if (windowId === null) {
+      try {
+        windowId = chromeWindowOf(sender);
+      } catch {
+        windowId = null;
+      }
     }
     if (!Number.isInteger(windowId)) return NO_WINDOW;
     let verdict = feeChecked ? await verdictFor(payload) : null;

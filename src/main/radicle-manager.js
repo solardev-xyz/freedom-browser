@@ -1097,17 +1097,23 @@ const PRIVATE_SEED_FAILURE = () =>
 
 /**
  * Run `work` with the node stopped (R-8): the wipe and key write of an
- * identity re-injection, which must never run under a live node.
+ * identity re-injection, which must never run under a live node. Under the
+ * service, the identity change: the core's write, which takes the home's
+ * gate the stopped process let go (freedom-core design 0008, "Identity
+ * changes"; identity-manager.js changeRadicleIdentityOnService).
  *
  * One lifecycle-queue operation, so every start, stop, alias change and
  * other re-key queues behind it. Inside it, once the earlier operations
  * have run:
  *  - it notes whether the node is running,
- *  - stops it and requires the add-on's proof that it stopped (a stop
- *    without that proof throws, and `work` never runs),
+ *  - stops it and requires proof that it stopped: the add-on's (a stop
+ *    without that proof throws, and `work` never runs), or under the
+ *    service the process's exit,
  *  - awaits `work`,
  *  - and in `finally` starts the node again if it was running: as the new
  *    identity, or as the old one when `work` failed before its key write.
+ *    A start the identity write left blocked (node-identity-guard.js) is
+ *    refused with its reason: the node stays stopped.
  * @template T
  * @param {() => Promise<T>} work
  * @returns {Promise<T>} work's result

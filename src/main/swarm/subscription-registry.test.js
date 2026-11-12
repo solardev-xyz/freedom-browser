@@ -43,7 +43,7 @@ describe('subscription-registry', () => {
   }
 
   test('subscribe opens a socket and resolves once established', async () => {
-    const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+    const promise = registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
     expect(openSocket).toHaveBeenCalledWith({ kind: 'gsoc', key: GSOC_KEY }, expect.any(Object));
 
     opened[0].resolveEstablished();
@@ -53,19 +53,19 @@ describe('subscription-registry', () => {
   });
 
   test('multiplexes: same (kind, key) shares one socket, distinct keys open their own', async () => {
-    const first = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+    const first = registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
     opened[0].resolveEstablished();
     await first;
-    await registry.subscribe({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: GSOC_KEY });
+    await registry.subscribe({ origin: 'b.eth', document: '2:1', kind: 'gsoc', key: GSOC_KEY });
     expect(openSocket).toHaveBeenCalledTimes(1);
 
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'pss', key: GSOC_KEY });
+    await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'pss', key: GSOC_KEY });
     expect(openSocket).toHaveBeenCalledTimes(2);
   });
 
   test('fans a payload out to every subscription on the socket', async () => {
-    const { subscriptionId: subA } = await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
-    const { subscriptionId: subB } = await registry.subscribe({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: GSOC_KEY });
+    const { subscriptionId: subA } = await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
+    const { subscriptionId: subB } = await registry.subscribe({ origin: 'b.eth', document: '2:1', kind: 'gsoc', key: GSOC_KEY });
 
     const payload = Buffer.from('hello');
     opened[0].handlers.onMessage(payload);
@@ -78,7 +78,7 @@ describe('subscription-registry', () => {
   });
 
   test('does not fan out to a subscription that has not established yet', async () => {
-    const pending = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+    const pending = registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
 
     // A message arriving before establishment has no id the page could
     // correlate it with, and the page may already be gone.
@@ -98,7 +98,7 @@ describe('subscription-registry', () => {
     try {
       registry.configure({ openSocket, deliver, maxSubscriptionsPerOrigin: 3, establishTimeoutMs: 100 });
       // The socket layer reconnects forever, so `established` never settles.
-      const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+      const promise = registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
       const assertion = expect(promise).rejects.toMatchObject({ reason: 'establish_timeout' });
 
       jest.advanceTimersByTime(100);
@@ -113,57 +113,46 @@ describe('subscription-registry', () => {
   });
 
   test('a subscription cancelled while establishing never reaches the page', async () => {
-    const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+    const promise = registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
 
-    // The page navigated away (or the tab closed) mid-establishment.
-    registry.cancelByWebContents(1);
+    // The origin's messaging grant was revoked mid-establishment.
+    registry.cancelByOrigin('a.eth');
     opened[0].resolveEstablished();
 
     await expect(promise).rejects.toMatchObject({ reason: 'subscription_cancelled' });
     expect(registry.countByOrigin('a.eth')).toBe(0);
   });
 
-  test('carries the subscribing origin through to the deliverer', async () => {
+  test('carries the subscribing origin and document through to the deliverer', async () => {
+    const deliverTo = jest.fn();
     await subscribeEstablished({
       origin: 'a.eth',
-      webContentsId: 1,
+      document: '1:1',
+      deliverTo,
       kind: 'gsoc',
       key: GSOC_KEY,
     });
 
     opened[0].handlers.onMessage(Buffer.from('hi'));
-    // The deliverer re-checks this against the webContents' live URL, so
-    // it must reach it — messages can never land in another origin's page.
-    expect(deliver.mock.calls[0][0]).toMatchObject({ origin: 'a.eth', webContentsId: 1 });
-  });
-
-  test('cancelStaleByWebContents keeps the subscriptions of the origin now loaded', async () => {
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
-    await subscribeEstablished({ origin: 'b.eth', webContentsId: 1, kind: 'gsoc', key: 'bb'.repeat(32) });
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 2, kind: 'gsoc', key: 'cc'.repeat(32) });
-
-    // The webview turned out to be hosting b.eth: a.eth's subscription on
-    // that webview is stale, b.eth's is live, and other tabs are untouched.
-    registry.cancelStaleByWebContents(1, 'b.eth');
-
-    expect(registry.countByOrigin('b.eth')).toBe(1);
-    expect(registry.countByOrigin('a.eth')).toBe(1);
+    // The deliverer sends to the subscribing document alone, so it must
+    // reach it.
+    expect(deliver.mock.calls[0][0]).toMatchObject({ origin: 'a.eth', document: '1:1', deliverTo });
   });
 
   test('enforces the per-origin cap', async () => {
     for (let i = 0; i < 3; i++) {
-      await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: `${i}${i}`.repeat(32) });
+      await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: `${i}${i}`.repeat(32) });
     }
     await expect(
-      registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: 'ff'.repeat(32) })
+      registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: 'ff'.repeat(32) })
     ).rejects.toMatchObject({ reason: 'too_many_subscriptions' });
 
     // Other origins are unaffected
-    await subscribeEstablished({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: 'ff'.repeat(32) });
+    await subscribeEstablished({ origin: 'b.eth', document: '2:1', kind: 'gsoc', key: 'ff'.repeat(32) });
   });
 
   test('a failed establish releases the slot and removes the socket', async () => {
-    const promise = registry.subscribe({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+    const promise = registry.subscribe({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
     const err = new Error('no lurker slot available');
     err.reason = 'node_subscription_limit';
     opened[0].rejectEstablished(err);
@@ -172,13 +161,13 @@ describe('subscription-registry', () => {
     expect(registry.countByOrigin('a.eth')).toBe(0);
 
     // A retry opens a fresh socket rather than joining the dead one
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
+    await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
     expect(openSocket).toHaveBeenCalledTimes(2);
   });
 
   test('unsubscribe is origin-scoped and closes the socket with its last subscription', async () => {
-    const { subscriptionId } = await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
-    const { subscriptionId: other } = await registry.subscribe({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: GSOC_KEY });
+    const { subscriptionId } = await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
+    const { subscriptionId: other } = await registry.subscribe({ origin: 'b.eth', document: '2:1', kind: 'gsoc', key: GSOC_KEY });
 
     expect(() => registry.unsubscribe('b.eth', subscriptionId)).toThrow(
       expect.objectContaining({ reason: 'subscription_not_found' })
@@ -196,8 +185,8 @@ describe('subscription-registry', () => {
   });
 
   test('no delivery after unsubscribe', async () => {
-    const { subscriptionId } = await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
-    await registry.subscribe({ origin: 'b.eth', webContentsId: 2, kind: 'gsoc', key: GSOC_KEY });
+    const { subscriptionId } = await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
+    await registry.subscribe({ origin: 'b.eth', document: '2:1', kind: 'gsoc', key: GSOC_KEY });
 
     registry.unsubscribe('a.eth', subscriptionId);
     opened[0].handlers.onMessage(Buffer.from('after'));
@@ -206,21 +195,10 @@ describe('subscription-registry', () => {
     expect(deliver.mock.calls[0][0].origin).toBe('b.eth');
   });
 
-  test('cancelByWebContents tears down that page only', async () => {
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 7, kind: 'gsoc', key: 'cd'.repeat(32) });
-
-    registry.cancelByWebContents(1);
-
-    expect(registry.countByOrigin('a.eth')).toBe(1);
-    expect(opened[0].cancel).toHaveBeenCalledTimes(1);
-    expect(opened[1].cancel).not.toHaveBeenCalled();
-  });
-
   test('cancelByOrigin tears down every subscription of the origin', async () => {
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 1, kind: 'gsoc', key: GSOC_KEY });
-    await subscribeEstablished({ origin: 'a.eth', webContentsId: 2, kind: 'pss', key: 'cd'.repeat(32) });
-    await subscribeEstablished({ origin: 'b.eth', webContentsId: 3, kind: 'gsoc', key: 'ef'.repeat(32) });
+    await subscribeEstablished({ origin: 'a.eth', document: '1:1', kind: 'gsoc', key: GSOC_KEY });
+    await subscribeEstablished({ origin: 'a.eth', document: '2:1', kind: 'pss', key: 'cd'.repeat(32) });
+    await subscribeEstablished({ origin: 'b.eth', document: '3:1', kind: 'gsoc', key: 'ef'.repeat(32) });
 
     registry.cancelByOrigin('a.eth');
 
@@ -233,7 +211,7 @@ describe('subscription-registry', () => {
 });
 
 // A page's subscription through main (freedom-core design 0011, PRQ-7b):
-// bound to its document, not to a webContents.
+// bound to its document.
 describe('subscription-registry: subscriptions bound to a document', () => {
   let opened;
 
@@ -261,17 +239,17 @@ describe('subscription-registry: subscriptions bound to a document', () => {
     expect(opened[0].cancel).toHaveBeenCalled();
   });
 
-  test('unsubscribeDocument closes only the document\'s own; a webContents\' subscription is none of a document\'s', async () => {
+  test('unsubscribeDocument closes only the document\'s own; one bound to no document is none of a document\'s', async () => {
     const own = await open('7:1');
     const theirs = await open('8:1');
-    const legacy = registry.subscribe({ origin: 'a.eth', webContentsId: 9, kind: 'pss', key: 'cd'.repeat(32) });
-    const { subscriptionId: chrome } = await legacy;
-    for (const id of [theirs, chrome, 'nope']) {
+    const unbound = registry.subscribe({ origin: 'a.eth', kind: 'pss', key: 'cd'.repeat(32) });
+    const { subscriptionId: none } = await unbound;
+    for (const id of [theirs, none, 'nope']) {
       expect(() => registry.unsubscribeDocument('7:1', id)).toThrow(expect.objectContaining({ reason: 'subscription_not_found' }));
     }
     registry.unsubscribeDocument('7:1', own);
     expect(registry.countByOrigin('a.eth')).toBe(2);
-    // A document's end never closes a webContents' subscription.
+    // A document's end never closes one bound to no document.
     registry.cancelByDocument(undefined);
     expect(registry.countByOrigin('a.eth')).toBe(2);
   });

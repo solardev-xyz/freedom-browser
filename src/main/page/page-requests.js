@@ -69,8 +69,9 @@
  * and `page:prompt-closed` go to the window's approvals document instead,
  * the chrome keeps `page:prompt-pending` and `page:prompt-closed` for its
  * badges and count, and the chrome's `page:decide` is refused: a decision
- * counts only from the window's own approvals document (`decideInWindow`).
- * The Safe signing boards stay in the chrome (`CHROME_KINDS`).
+ * counts only from the window's own approvals document (`decideInWindow`),
+ * the Safe signing boards' too, which main runs there (APS-3b,
+ * `approvals/safe-boards.js`).
  *
  * A record prompts one prompt at a time, and may prompt again once its
  * prompt is decided (PRQ-5: a vault unlock and then the signature, a Safe's
@@ -129,16 +130,14 @@ const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
 const FOREGROUND_KEYS = new Set(['guest']);
 const PASSWORD_KEYS = new Set(['password']);
-// The Safe signing boards stay in the chrome with the approvals document on
-// (APS-2). They collect the owners' signatures through device steps only
-// the chrome runs (a Ledger, a phone's QR, the board's execution), after
-// the user approved the Safe's request in the document (`eth.sign`,
-// `eth.send`), whose approval minted its one token. A board's decision
-// mints nothing: a message's completes only once its owners have signed,
-// and a send's only says the board was left. The wallet's own Safe flow
-// moves in APS-3.
-const CHROME_KINDS = new Set(['eth.safe_message', 'eth.safe_send']);
-// The wallet's own prompts (APS-3): the window's, not a page's.
+// The Safe signing boards (PRQ-5a/5b; in the approvals document from
+// APS-3b, `approvals/safe-boards.js`). They open after the user approved
+// the Safe's request (`eth.sign`, `eth.send`), whose approval minted its one
+// token: a board's decision mints nothing. Each says which owner signs, or
+// that the board was left, and main acts on it.
+const BOARD_KINDS = new Set(['eth.safe_message', 'eth.safe_send']);
+// The wallet's own prompts (APS-3): the window's, not a page's. From
+// APS-3b, its Safe board and the vault unlock a board's step needs.
 const WALLET_PROMPT_KINDS = new Set([
   'wallet.send',
   'wallet.safe_send',
@@ -146,6 +145,8 @@ const WALLET_PROMPT_KINDS = new Set([
   'wallet.intent_replace',
   'wallet.intent_close',
   'wallet.executor_send',
+  'wallet.safe_board',
+  'wallet.vault_unlock',
 ]);
 // What a wallet prompt shows where a page's shows its site.
 const WALLET_SITE = Object.freeze({ key: 'freedom:wallet', label: 'Your wallet' });
@@ -351,9 +352,6 @@ function createPageRequests({
       toChrome(windowId, channel, payload);
       return toApprovals(windowId, channel, payload);
     }
-    // A Safe board: the chrome renders it (`CHROME_KINDS`).
-    const kind = channel === PROMPT_CHANNELS.PROMPT ? payload?.kind : prompts.kindOf(payload?.handle);
-    if (CHROME_KINDS.has(kind)) return toChrome(windowId, channel, payload);
     toApprovals(windowId, channel, payload);
   }
 
@@ -545,11 +543,16 @@ function createPageRequests({
   // approval is what main's issuer may mint the record's token on, and an
   // approved wallet prompt keeps the document's wallet slot for its record
   // until main answers it.
+  //
+  // A Safe board's approval is no approval to mint on: it chose an owner to
+  // sign with, or a step of its own, after the Safe's request was approved.
   function decidedEntry(entry) {
     const { record } = entry;
     if (entry.decided?.approve === true && !record.answered) {
-      record.approved = entry.handle;
-      record.approvedFrom = entry.decided.from;
+      if (!BOARD_KINDS.has(entry.kind)) {
+        record.approved = entry.handle;
+        record.approvedFrom = entry.decided.from;
+      }
       if (WALLET_KINDS.has(entry.kind) && !walletOperations.has(record.key)) walletOperations.set(record.key, record);
     }
     closeHandle(record, CLOSED.DECIDED);
@@ -741,7 +744,37 @@ function createPageRequests({
    * chrome's unlock gave it. A wrong password shows the prompt again,
    * saying so (`failed`). The password goes nowhere else.
    */
-  async function unlockPrompt(record, { view = {} } = {}) {
+  function unlockPrompt(record, spec) {
+    return unlockLoop(
+      {
+        id: record.id,
+        ask: (shown) => promptOnce(record, { ...shown, kind: 'vault.unlock' }),
+        over: () => record.answered,
+      },
+      spec
+    );
+  }
+
+  /**
+   * A window's own vault unlock (APS-3b): a step of the wallet's own Safe
+   * board (`approvals/safe-boards.js`), which no page asked for. As a page's
+   * unlock: the password in the document, main unlocking with it, and an
+   * approval only once the vault is open. Only with the approvals document on.
+   */
+  function walletUnlock(windowId, view = {}) {
+    if (!approvals) return Promise.resolve({ closed: CLOSED.CANCELLED });
+    return unlockLoop(
+      {
+        id: null,
+        ask: (shown) => walletPrompt(windowId, { ...shown, kind: 'wallet.vault_unlock' }),
+        over: () => false,
+      },
+      { view }
+    );
+  }
+
+  // The unlock's prompts, for a record or a window: `ask` shows one.
+  async function unlockLoop({ id, ask, over }, { view = {} } = {}) {
     let touchId = false;
     try {
       touchId = (await touchIdAvailable()) === true;
@@ -773,7 +806,7 @@ function createPageRequests({
       };
       let decision;
       try {
-        decision = await promptOnce(record, { kind: 'vault.unlock', view: shown, choices, released });
+        decision = await ask({ view: shown, choices, released });
         if (decision.error || decision.closed || decision.approve !== true) return decision;
         const attempt = password;
         password = null;
@@ -785,15 +818,15 @@ function createPageRequests({
             await unlockVault(attempt);
           }
         } catch {
-          trace({ kind: 'unlock-failed', id: record.id });
-          if (record.answered) return { closed: CLOSED.CANCELLED };
+          trace({ kind: 'unlock-failed', id });
+          if (over()) return { closed: CLOSED.CANCELLED };
           shown = { ...offered, failed: true };
           continue;
         }
       } finally {
         attemptDone();
       }
-      trace({ kind: 'unlocked', id: record.id });
+      trace({ kind: 'unlocked', id });
       return Object.freeze({ approve: true, choices: Object.freeze({}), from: decision.from });
     }
   }
@@ -1021,9 +1054,9 @@ function createPageRequests({
       windowId = null;
     }
     if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
-    // With the approvals document's flag on, only it decides (APS-1), but
-    // for the Safe boards the chrome still renders (`CHROME_KINDS`).
-    if (approvals && !CHROME_KINDS.has(prompts.kindOf(isPlainObject(payload) ? payload.handle : undefined))) {
+    // With the approvals document's flag on, only it decides (APS-1), the
+    // Safe boards included (APS-3b).
+    if (approvals) {
       trace({ kind: 'decide', window: windowId, ok: false, reason: 'approvals-document' });
       return { ok: false, reason: 'approvals-document' };
     }
@@ -1366,6 +1399,7 @@ function createPageRequests({
     decide,
     decideInWindow,
     walletPrompt,
+    walletUnlock,
     foreground,
     promptState: () => prompts.state(),
     stats,
@@ -1421,22 +1455,11 @@ function trackPageGuest(contents) {
 }
 
 /**
- * Test only: the methods the harness routes through `page:request`, for the
- * preload's boot switch. Empty unless the harness enabled the hooks and set
- * some.
- */
-function testPageRoutes() {
-  if (sharedHooks.enabled !== true || !Array.isArray(sharedHooks.routes)) return [];
-  return sharedHooks.routes.filter((route) => typeof route === 'string');
-}
-
-/**
  * Test only: turn on the hooks that run the new path (the E2E harness,
  * under FREEDOM_TEST_MODE). Returns what the harness exposes to specs.
  */
 function enablePageRequestTestHooks() {
   sharedHooks.enabled = true;
-  sharedHooks.routes = [];
   // The harness's own prompt kind (`test.prompt`), for the approvals
   // document's tests (APS-1).
   sharedHooks.testPrompts = true;
@@ -1447,9 +1470,6 @@ function enablePageRequestTestHooks() {
   };
   return {
     trace,
-    setRoutes: (routes) => {
-      sharedHooks.routes = Array.isArray(routes) ? routes.slice() : [];
-    },
     setDispatch: (dispatch) => {
       sharedHooks.dispatch = typeof dispatch === 'function' ? dispatch : undefined;
     },
@@ -1480,6 +1500,5 @@ module.exports = {
   getPageRequests,
   registerPageRequestsIpc,
   trackPageGuest,
-  testPageRoutes,
   enablePageRequestTestHooks,
 };

@@ -8,10 +8,10 @@
 // appears, changes, is shown again or moves, with main refusing an approval
 // sooner than that, and Enter never approving.
 //
-// The prompt is the harness's own kind (`test.prompt`): the test hooks
-// route `swarm_readChunk` through main for tabs opened after `setRoutes`,
-// and serve it with a dispatcher that opens a prompt with the view the page
-// sent, so every field it shows is the page's choice.
+// The prompt is the harness's own kind (`test.prompt`): every page request
+// goes to main, and the test hooks serve `swarm_readChunk` with a dispatcher
+// that opens a prompt with the view the page sent, so every field it shows
+// is the page's choice.
 
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -71,7 +71,6 @@ async function routeTestPrompts(electronApp) {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
     const aps = { contexts: {}, decisions: [] };
     globalThis.__aps = aps;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag, view: shown } = context.params || {};
       aps.contexts[tag] = context;

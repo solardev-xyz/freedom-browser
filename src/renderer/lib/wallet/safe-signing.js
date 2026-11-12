@@ -17,10 +17,10 @@
  * The board serves two kinds of pending item behind one UX:
  *  - 'send'    — a SafeTx (persisted main-side, finalized by on-chain
  *                execution, leaveable/resumable);
- *  - 'message' — a dApp EIP-1271 signing session (in-memory, finalized
- *                by returning the combined signature to the waiting
- *                dApp; closing the board cancels the request, because a
- *                dApp promise can't be parked).
+ *  - 'message' — a page's EIP-1271 signing session (in-memory, finalized
+ *                when the threshold is met and main returns the combined
+ *                signature to the page; closing the board cancels the
+ *                request, because a page's request can't be parked).
  *
  * From freedom-core design 0011 PRQ-5a a page's Safe message is main's: main
  * opens the session on the user's approval or the site's rule and, when a
@@ -37,6 +37,13 @@
  * itself and answers the page with the execution's hash, or a rejection
  * when it is discarded. Leaving the board parks the SafeTx, as before: it
  * answers the handle, and main keeps the page waiting for the outcome.
+ *
+ * With the approvals document on (freedom-core design 0011, APS-3b), main
+ * runs every board in the window's approvals panel instead: a page's two,
+ * which no longer reach the chrome, and the wallet's own, which
+ * openSafeSigningBoard asks main for (`wallet.safeBoard`). The chrome keeps
+ * what decides nothing: the summary with the explorer link once a send has
+ * executed, the balances, and the DOM events below.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -62,9 +69,8 @@ let content;
 // Board state
 let boardSafeIndex = null;
 let boardKind = 'send'; // 'send' | 'message'
-let messageResolver = null; // {resolve, reject} of the waiting dApp request
+let messageResolver = null; // {resolve, reject}: the answer to main's prompt
 let messageToken = null; // the session's capability token (from start's state)
-let messageOwner = null; // opaque token for the requesting document (its webview)
 let state = null; // SafeSendState / SafeMessageState from main
 let phase = 'board'; // 'board' | 'executing' | 'success' | 'superseded'
 let executed = null; // {hash, explorerUrl} (send mode)
@@ -182,7 +188,7 @@ export function showPageSafeBoard(prompt) {
     decidePageBoard(handle, false);
     return;
   }
-  // A message board on the chrome's own path gives way, as before.
+  // A message board already open gives way.
   abandonMessageSession();
   boardKind = 'message';
   pageBoard = { handle, kind: 'message' };
@@ -191,7 +197,6 @@ export function showPageSafeBoard(prompt) {
     reject: () => decidePageBoard(handle, false),
   };
   messageToken = token;
-  messageOwner = handle;
   presentingPagePrompt = true;
   try {
     // From main's state, fresh: the board may have been shown before.
@@ -232,7 +237,6 @@ function leavePageBoard() {
   pageBoard = null;
   messageResolver = null;
   messageToken = null;
-  messageOwner = null;
   signingIndex = null;
 }
 
@@ -252,7 +256,7 @@ export function isSafeSigningBoardOpen() {
 
 /**
  * The board is a single slot: opening it over a live message session
- * would silently drop the waiting dApp promise — settle it first.
+ * would leave main's prompt unanswered — settle it first.
  */
 function abandonMessageSession() {
   if (boardKind !== 'message' || !messageResolver) return;
@@ -266,52 +270,58 @@ function abandonMessageSession() {
  * pending item (its start call already swept the free signatures).
  */
 export async function openSafeSigningBoard(safeIndex, initialState = null) {
+  if (window.pagePrompts?.approvalsDocument === true) {
+    // Main's board, in the panel; the caller goes on at once.
+    openPanelBoard(safeIndex);
+    return;
+  }
   abandonMessageSession();
   boardKind = 'send';
   await openBoard(safeIndex, initialState);
 }
 
 /**
- * Open the board for a dApp SafeMessage session (already started
- * main-side; pass its state as `initialState`). Resolves with the
- * combined EIP-1271 signature when the threshold is met, rejects with
- * an EIP-1193 user-rejection when the user closes or cancels the
- * board — a waiting dApp can't be parked. `owner` identifies the
- * requesting document (its webview), so the board can be withdrawn when
- * that document goes away (see abandonSafeMessageBoard).
+ * The wallet's own board in the approvals panel (APS-3b): main runs it, and
+ * answers once it ends. An executed send shows its summary here, with the
+ * explorer link; every end tells the listeners, as the chrome's board did.
  */
-export function openSafeMessageBoard(safeIndex, initialState = null, owner = null) {
-  return new Promise((resolve, reject) => {
+async function openPanelBoard(safeIndex) {
+  let result;
+  try {
+    result = await window.wallet.safeBoard(safeIndex);
+  } catch (err) {
+    result = { success: false, error: err?.message };
+  }
+  const outcome = result?.success ? result.outcome : null;
+  if (!result?.success) console.error('[SafeSigning] The board did not open:', result?.error);
+  if (outcome?.outcome === 'executed' && typeof outcome.executed?.hash === 'string') {
     abandonMessageSession();
-    boardKind = 'message';
-    messageResolver = { resolve, reject };
-    messageToken = initialState?.token ?? null;
-    messageOwner = owner;
-    openBoard(safeIndex, initialState);
-  });
-}
-
-/**
- * Withdraw the message board when the document that requested the
- * signature navigates away or its webview dies — called by the dApp
- * provider from the same invalidation seam that suppresses the in-flight
- * response (mirrors radicle-consent's owner-scoped dismissal). Main has
- * already discarded the session and the provider drops the rejection, so
- * this is chrome cleanup: settle the promise, stop the Ledger probing,
- * take the screen down. The busy guard in closeSafeSigning doesn't apply
- * — nothing on the board can succeed once its session is gone. Owner-
- * scoped: a board opened by a successor document (or another tab) is
- * left alone.
- */
-export function abandonSafeMessageBoard(owner) {
-  if (boardKind !== 'message' || !messageResolver || !owner || messageOwner !== owner) return;
-  boardEpoch += 1; // fence the session's in-flight continuations
-  api().cancel(boardSafeIndex); // best effort — main usually dropped it already
-  settleMessage('reject', { code: 4001, message: 'User rejected the request' });
-  if (!screen || screen.classList.contains('hidden')) return;
-  signingIndex = null;
-  hideScreen();
-  walletState.identityView?.classList.remove('hidden');
+    boardEpoch += 1;
+    boardKind = 'send';
+    boardSafeIndex = safeIndex;
+    pageBoard = null;
+    signingIndex = null;
+    executeError = null;
+    feeAsk = null;
+    state = { display: outcome.display || {}, safeTxHash: outcome.safeTxHash };
+    executed = { hash: outcome.executed.hash, explorerUrl: outcome.executed.explorerUrl || null };
+    phase = 'success';
+    hideAllSubscreens();
+    walletState.identityView?.classList.add('hidden');
+    screen?.classList.remove('hidden');
+    render();
+    window.dispatchEvent(
+      new CustomEvent('wallet:safe-executed', {
+        detail: { safeIndex, safeTxHash: outcome.safeTxHash, hash: executed.hash },
+      })
+    );
+    return;
+  }
+  if (outcome?.outcome === 'discarded') {
+    window.dispatchEvent(
+      new CustomEvent('wallet:safe-discarded', { detail: { safeIndex, safeTxHash: outcome.safeTxHash } })
+    );
+  }
   window.dispatchEvent(new CustomEvent('wallet:safe-signing-closed'));
 }
 
@@ -374,13 +384,12 @@ export function closeSafeSigning() {
   }
 }
 
-/** Answer the waiting dApp exactly once. */
+/** Answer main's prompt exactly once. */
 function settleMessage(outcome, value) {
   if (!messageResolver) return;
   const { resolve, reject } = messageResolver;
   messageResolver = null;
   messageToken = null;
-  messageOwner = null;
   (outcome === 'resolve' ? resolve : reject)(value);
 }
 
@@ -518,33 +527,14 @@ function describeRowFailure(result) {
 // --- finalizing ------------------------------------------------------------
 
 /**
- * Message finalization: hand the combined signature to the waiting dApp
- * and close the board — the dApp reacting IS the success feedback.
- * Purely local (no broadcast), so failures are rare — but they get the
- * same banner-with-retry treatment as execution failures.
+ * Message finalization: the threshold is met, so the board answers main's
+ * prompt and closes — main completes the session and hands the combined
+ * signature to the page, and the page reacting IS the success feedback.
  */
-async function completeNow() {
-  const epoch = boardEpoch;
-  // A session main opened for a page: main completes it and answers the
-  // page, on the board's approval.
-  if (pageBoard) {
-    phase = 'success'; // past the busy guard in closeSafeSigning
-    settleMessage('resolve', null);
-    closeSafeSigning();
-    return;
-  }
-  const result = await window.wallet.safeMessageComplete(boardSafeIndex, messageToken);
-  if (isStale(epoch)) return;
-  if (result.success) {
-    phase = 'success'; // past the busy guard in closeSafeSigning
-    settleMessage('resolve', result.signature);
-    closeSafeSigning();
-    return;
-  }
-  executeError = { message: result.error || 'Signing failed', needsFunds: false };
-  await refreshState();
-  if (isStale(epoch)) return;
-  render();
+function completeNow() {
+  phase = 'success'; // past the busy guard in closeSafeSigning
+  settleMessage('resolve', null);
+  closeSafeSigning();
 }
 
 /**

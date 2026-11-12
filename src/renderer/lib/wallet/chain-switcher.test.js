@@ -106,13 +106,6 @@ describe('chain switcher: the selection reaches main', () => {
     expect(log).toEqual([['main', null]]);
   });
 
-  test('a page\'s chain switch through the chrome reaches main too', () => {
-    log.length = 0;
-    switcher.setSelectedChainId(1);
-    switcher.setSelectedChainId(1);
-    expect(log).toEqual([['main', 1]]);
-  });
-
   test('a selected chain that was removed falls back to "All Chains", in main too', async () => {
     walletState.selectedChainId = 10;
     log.length = 0;
@@ -124,7 +117,7 @@ describe('chain switcher: the selection reaches main', () => {
 
   // freedom-core design 0011, PRQ-4: main runs a page's switch, selects the
   // chain for the window and tells the page itself.
-  test('a chain main selected for a page\'s switch shows in the switcher, and nothing goes back to main', () => {
+  test('a chain main selected for a page\'s switch shows in the switcher, and nothing goes back to main', async () => {
     log.length = 0;
     expect(typeof pageSelected).toBe('function');
     pageSelected({ chainId: 1, sequence: 1 });
@@ -137,13 +130,13 @@ describe('chain switcher: the selection reaches main', () => {
     }
     expect(walletState.selectedChainId).toBe(1);
     // The user's next pick reaches main with the number it last showed.
-    switcher.setSelectedChainId(100);
+    await pick(2);
     expect(log).toEqual([['main', 100, 1]]);
   });
 
-  test('a selection of main\'s no newer than the last shown is ignored', () => {
+  test('a selection of main\'s no newer than the last shown is ignored', async () => {
     pageSelected({ chainId: 1, sequence: 2 });
-    switcher.setSelectedChainId(100);
+    await pick(2);
     // A copy of an earlier one, or an older one, arriving after the pick.
     pageSelected({ chainId: 1, sequence: 2 });
     pageSelected({ chainId: 1, sequence: 1 });
@@ -154,9 +147,9 @@ describe('chain switcher: the selection reaches main', () => {
     expect(elements.get('chain-switcher-name').textContent).toBe('All Chains');
   });
 
-  test('a chrome without the API still switches', () => {
+  test('a chrome without the API still switches', async () => {
     delete window.wallet;
-    switcher.setSelectedChainId(1);
+    await pick(1);
     expect(walletState.selectedChainId).toBe(1);
   });
 });

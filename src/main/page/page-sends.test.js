@@ -252,6 +252,8 @@ function backends() {
         };
       },
       siteWithdrawn: () => Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' }),
+      // The boards main runs in the approvals document (APS-3b), when a test sets them.
+      safeBoards: () => state.safeBoards || null,
     },
   };
   // An execution of the site's SafeTx, as safe-transactions.js and the
@@ -281,7 +283,7 @@ function backends() {
   return { state, deps, signer, phoneSigner, settle, executeSafe };
 }
 
-function setup() {
+function setup({ approvalsDocument = false } = {}) {
   const guests = new Map();
   const names = new Map();
   const nameHolds = new Map(); // name -> deferred: the next resolution waits for it
@@ -320,6 +322,8 @@ function setup() {
     chromeWindowOf: (contents) => (contents?.id >= 500 ? contents.id - 500 : null),
     sendToWindow: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
     watchWindow: () => {},
+    // With the approvals document on (APS-3b): its prompts land in `sent` too.
+    approvals: approvalsDocument ? { send: (windowId, channel, payload) => sent.push([windowId, channel, payload]) } : null,
   });
 
   function tab(url = DAPP, { window = 1, bind = null, front = true } = {}) {
@@ -346,7 +350,9 @@ function setup() {
   const lastPrompt = (windowId = 1) => prompts(windowId).at(-1);
   const closed = () => sent.filter(([, c]) => c === 'page:prompt-closed').map(([, , p]) => p);
   const decide = (handle, approve, choices, windowId = 1) =>
-    requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
+    approvalsDocument
+      ? requests.decideInWindow(windowId, { handle, approve, choices })
+      : requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
   const connect = (key = KEY_A, walletIndex = 0, extra = {}) =>
     state.permissions.set(key, { origin: key, walletIndex, chainId: 100, ...extra });
   const rule = (key = KEY_A, to = CONTRACT, value = '0') => state.txRules.push([key, to, SELECTOR, 100, value]);
@@ -1577,5 +1583,127 @@ describe('a tab the agent holds: its send inside the request', () => {
     approvals[0].resolve('approved');
     expect(await answer).toEqual(NO_ADDRESS);
     expect(agentSends).toEqual([]);
+  });
+});
+
+describe('APS-3b: with the approvals document on, main runs the Safe send\'s board in the panel', () => {
+  const { createSafeBoards } = require('../approvals/safe-boards');
+
+  // A 2-of-2 Safe: the vault owner signed as the SafeTx started; a Ledger
+  // owner still to sign. Its execution runs past the request's guard.
+  function withBoards(env) {
+    const board = { signed: new Set([0]), cancelled: 0, signs: [] };
+    env.state.safeBoards = createSafeBoards({
+      getDerivedWallets: async () => env.state.wallets,
+      sends: {
+        state: () => ({
+          safeIndex: SAFE_INDEX,
+          chainId: 100,
+          safeTxHash: SAFE_TX_HASH,
+          threshold: 2,
+          collected: board.signed.size,
+          owners: [
+            { index: 0, address: ACCOUNT, type: 'mnemonic', signed: board.signed.has(0) },
+            { index: 1, address: LEDGER, type: 'ledger', signed: board.signed.has(1) },
+          ],
+          executorIndex: 0,
+          display: { site: KEY_A },
+          status: 'awaiting',
+        }),
+        sign: async (safeIndex, owner) => {
+          board.signs.push(owner);
+          if (owner !== undefined) board.signed.add(owner);
+        },
+        execute: async () => {
+          const run = await env.executeSafe();
+          if (!run.executed) throw Object.assign(new Error('withdrawn'), { code: run.refused || 'SAFE_SITE_WITHDRAWN' });
+          return { status: 'executed', safeTxHash: SAFE_TX_HASH, executed: { hash: EXEC_HASH, explorerUrl: null } };
+        },
+        cancel: () => {
+          board.cancelled += 1;
+          env.settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+        },
+        tx: () => ({ to: CONTRACT, value: '0', data: DATA }),
+      },
+      messages: {},
+    });
+    return board;
+  }
+
+  test('the board shows in the document with main\'s view; the owner the user picks signs; executed, the page gets the hash', async () => {
+    const env = setup({ approvalsDocument: true });
+    const board = withBoards(env);
+    env.connect(KEY_A, SAFE_INDEX);
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    const shown = env.lastPrompt();
+    expect(shown.kind).toBe('eth.safe_send');
+    expect(shown.view).toMatchObject({
+      safe: { index: SAFE_INDEX },
+      threshold: 2,
+      collected: 1,
+      tx: { to: CONTRACT, value: '0', data: DATA },
+      executor: { index: 0, address: ACCOUNT },
+      step: 'collect',
+    });
+    expect(shown.view.state).toBeUndefined();
+    // The chrome decides none of it.
+    expect(await env.requests.decide({ sender: { id: 501 } }, { handle: shown.handle, approve: true, choices: { action: 'sign', owner: 1 } })).toEqual({
+      ok: false,
+      reason: 'approvals-document',
+    });
+    // An owner who signed is no choice: refused, and the board stays.
+    expect(await env.decide(shown.handle, true, { action: 'sign', owner: 0 })).toEqual({ ok: false, reason: 'invalid' });
+    const signed = env.decide(shown.handle, true, { action: 'sign', owner: 1 });
+    expect(await answer).toEqual({ result: EXEC_HASH });
+    expect(await signed).toEqual({ ok: true });
+    expect(board.signs).toEqual([undefined, 1]);
+    // One token, the Safe send's own: the board's approval minted none.
+    expect(env.minted()).toEqual([expect.objectContaining({ token: 'safe-send' })]);
+    expect(env.state.safe.guards.size).toBe(0);
+  });
+
+  test('left in the panel: the SafeTx waits, the page too, without its wallet slot; discarded later, 4001', async () => {
+    const env = setup({ approvalsDocument: true });
+    withBoards(env);
+    env.connect(KEY_A, SAFE_INDEX);
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    expect(await env.decide(env.lastPrompt().handle, false)).toEqual({ ok: true });
+    let settled = false;
+    answer.then(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
+    page.ask('personal_sign', ['0x68', SAFE]);
+    await flush();
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    env.settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+    expect(await answer).toEqual(REJECTED);
+  });
+
+  test('discarded in the panel, asked again first: the page hears 4001', async () => {
+    const env = setup({ approvalsDocument: true });
+    const board = withBoards(env);
+    env.connect(KEY_A, SAFE_INDEX);
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    env.decide(env.lastPrompt().handle, true, { action: 'discard' });
+    await flush();
+    expect(env.lastPrompt().view.step).toBe('discard');
+    expect(board.cancelled).toBe(0);
+    env.decide(env.lastPrompt().handle, true, { action: 'discard' });
+    expect(await answer).toEqual(REJECTED);
+    expect(board.cancelled).toBe(1);
   });
 });

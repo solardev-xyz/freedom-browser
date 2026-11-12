@@ -399,6 +399,45 @@ describe('executeSafePending', () => {
   });
 });
 
+// A board's step names the SafeTx it showed (approvals/safe-boards.js,
+// Codex round 1 on #1214): another one pending is refused, nothing done.
+describe('a step naming its SafeTx', () => {
+  const OTHER = '0x' + 'ee'.repeat(32);
+
+  test('the SafeTx named: signed, swept, executed, discarded as without a name', async () => {
+    await start();
+    mockCollectOwnerSignature.mockClear();
+    await expect(signSafePending(5, undefined, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ collected: 1 });
+    await expect(signSafePending(5, 2, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ collected: 2 });
+    await expect(executeSafePending(5, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ status: 'executed' });
+    await start();
+    cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH });
+    expect(getPending(5)).toBeNull();
+  });
+
+  test('another SafeTx pending: no ceremony, no sweep, no chain read, no execution, no discard', async () => {
+    await start();
+    await signSafePending(5, 2);
+    mockCollectOwnerSignature.mockClear();
+    mockRpcRequest.mockClear();
+    await expect(signSafePending(5, 4, { safeTxHash: OTHER })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    await expect(signSafePending(5, undefined, { safeTxHash: OTHER })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+    await expect(executeSafePending(5, { safeTxHash: OTHER })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    expect(mockRpcRequest).not.toHaveBeenCalled();
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    expect(() => cancelSafeSend(5, { safeTxHash: OTHER })).toThrow(expect.objectContaining({ code: 'SAFE_DISCARDED' }));
+    expect(getPending(5).signatures).toHaveLength(2);
+    // Not busy after a refusal: the SafeTx named executes.
+    await expect(executeSafePending(5, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ status: 'executed' });
+  });
+
+  test('none pending: a named discard is refused', () => {
+    expect(() => cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH })).toThrow(expect.objectContaining({ code: 'SAFE_DISCARDED' }));
+    expect(() => cancelSafeSend(5)).not.toThrow();
+  });
+});
+
 describe('getSafeSendState / cancelSafeSend', () => {
   test('null when nothing is pending; cancel clears', async () => {
     expect(getSafeSendState(5)).toBeNull();

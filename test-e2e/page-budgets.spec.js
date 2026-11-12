@@ -59,10 +59,9 @@ const PAGE = {
   </script><h1>budgets</h1>`,
 };
 
-/** Route every method through main, served by a dispatcher that makes each method's copies. */
+/** Serve every method with a dispatcher that makes each method's copies. */
 async function instrument(electronApp) {
-  await electronApp.evaluate((_electron, root) => {
-    const { METHODS } = process.mainModule.require(`${root}/src/main/page/page-methods`);
+  await electronApp.evaluate(() => {
     process.mainModule.require('v8').setFlagsFromString('--expose-gc');
     const gc = process.mainModule.require('vm').runInNewContext('gc');
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
@@ -79,7 +78,6 @@ async function instrument(electronApp) {
       state.baseline = used();
     };
     globalThis.__budgets = state;
-    hooks.setRoutes([...METHODS.keys()]);
     hooks.setOnCopy((entry) => {
       state.copies.push({ label: entry.label, inPlace: entry.inPlace, charge: entry.charge, used: used() - state.baseline });
     });
@@ -144,7 +142,7 @@ async function instrument(electronApp) {
       }
       return { result: live.length };
     });
-  }, ROOT);
+  });
 }
 
 const state = (electronApp) =>

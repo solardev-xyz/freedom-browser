@@ -46,7 +46,11 @@
  * `owner: 'main'`): the vault owners sign at once, and a Safe that needs a
  * device owner's signature shows its signing board as a second prompt
  * (`eth.safe_message`), whose approval main completes and answers. The
- * session is cancelled if the request ends any other way.
+ * session is cancelled if the request ends any other way. With the approvals
+ * document on (APS-3b), main runs that board in the panel itself
+ * (`approvals/safe-boards.js`): each owner the user picks signs in main,
+ * and main completes the session once the threshold is met. The session's
+ * token stays main's.
  */
 
 const { KINDS: CONFIRM_KINDS } = require('../wallet/signing-confirmation');
@@ -112,6 +116,8 @@ function defaultSigningDependencies() {
     startSafeMessage: (options) => require('../wallet/safe/safe-messages').startSafeMessage(options),
     completeSafeMessage: (safeIndex, token) => require('../wallet/safe/safe-messages').completeSafeMessage(safeIndex, token),
     cancelSafeMessage: (safeIndex, token) => require('../wallet/safe/safe-messages').cancelSafeMessage(safeIndex, token),
+    // The boards main runs in the approvals document (APS-3b).
+    safeBoards: () => require('../approvals/safe-boards').getSafeBoards(),
   };
 }
 
@@ -136,6 +142,7 @@ function createSigningDispatchers(shared, deps = {}) {
     startSafeMessage,
     completeSafeMessage,
     cancelSafeMessage,
+    safeBoards,
   } = { ...defaultSigningDependencies(), ...deps };
 
   const custody = (guest) => {
@@ -285,7 +292,14 @@ function createSigningDispatchers(shared, deps = {}) {
     const token = state?.token;
     let completed = false;
     try {
-      if (!state?.complete) {
+      if (!state?.complete && context.approvalsDocument) {
+        // In the panel (APS-3b): main's board, the token never shown.
+        const boards = safeBoards();
+        if (!boards) return error(USER_REJECTED);
+        const board = await boards.runMessageBoard(context, { safeIndex: ctx.walletIndex, token });
+        if (board.error) return { error: board.error };
+        if (board.outcome !== 'complete') return error(USER_REJECTED);
+      } else if (!state?.complete) {
         const board = await context.prompt({
           kind: 'eth.safe_message',
           view: { safeIndex: ctx.walletIndex, state },

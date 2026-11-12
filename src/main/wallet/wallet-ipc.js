@@ -23,7 +23,6 @@ const { intentFailure } = require('./intent-ipc');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
 const { redactedHandler } = require('./rpc-errors');
-const chainData = require('../networks/chain-data');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
 const {
@@ -44,7 +43,6 @@ const {
   issueConfirmation,
   consumeConfirmation,
 } = require('./signing-confirmation');
-const { takeSiteTurn } = require('./auto-approve-pause');
 const {
   FEE_CHECK_ASK_AGAIN,
   checkFees,
@@ -87,9 +85,8 @@ function isAllowedRpcUrl(rpcUrl) {
 // deployment), so any key-like field is dropped here.
 const RENDERER_KEY_FIELD = /^(intent_?key|key)$/i;
 
-// Shared body of the two send-transaction IPC handlers. They differ only
-// in which wallet index signs and which payment-history kind tags the
-// resulting row.
+// A send's payment-history context: the renderer's display data, tagged
+// with the kind main gives it.
 function buildTxRecordContext(kind, context = {}) {
   const display = Object.fromEntries(
     Object.entries(context ?? {}).filter(([name]) => !RENDERER_KEY_FIELD.test(name))
@@ -103,7 +100,7 @@ function feeAsk(err) {
   return err?.feeCheck && err?.offer ? { feeCheck: err.feeCheck, offer: err.offer } : {};
 }
 
-// The page kinds, whose methods main serves now (freedom-core design 0011,
+// The page kinds, whose methods main serves (freedom-core design 0011,
 // "Approval tokens"; PRQ-5): `personal_sign` and `eth_signTypedData_v4`
 // (PRQ-5a) and `eth_sendTransaction` (PRQ-5b), from a Safe account too. Main's
 // own issuer mints their tokens for a page's request (page/page-signing.js,
@@ -111,7 +108,7 @@ function feeAsk(err) {
 // and a Safe send that names a site with them (`isPageKind`). The signing
 // handlers refuse the chrome's `{ autoApprove, webContentsId }` claim
 // outright: main reads a site's rules itself, for the requester's attested
-// key, and no other kind has a rule. The wallet's own six kinds stay the
+// key, and no other kind has a rule. The wallet's own kinds stay the
 // chrome's to confirm until APS-3.
 const CHROME_REFUSED_KINDS = new Set([
   CONFIRM_KINDS.DAPP_SEND,
@@ -125,27 +122,6 @@ function notAuthorized(reason) {
   const err = new Error(`Signing was not confirmed: ${reason}`);
   err.code = NOT_CONFIRMED;
   return err;
-}
-
-/**
- * The site a dApp send is confirmed for and recorded under: the one its
- * confirmation binds (signing-confirmation.js), which the token's check holds
- * equal to the context's and which can't be empty. As a permission key
- * (normalizeOrigin), or null when there is none, which no confirmation then
- * accepts.
- */
-function dappSendSite(context) {
-  const shown = typeof context?.origin === 'string' ? normalizeOrigin(context.origin) : '';
-  return shown || null;
-}
-
-/**
- * Whether signing auto-approve may cover a dApp's message request: never a
- * personal_sign of exactly 32 bytes, whose signature can be a Swarm feed
- * update (#89), whatever the account. Its prompt always shows.
- */
-function isAutoApprovableMessage(method, message) {
-  return !(method === 'personal_sign' && signsRawHash(message));
 }
 
 /**
@@ -230,44 +206,31 @@ function phoneSigner(walletIndex) {
   }
 }
 
-async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
-  // A dApp send's turn among its site's sends (auto-approve-pause.js), left
-  // once its payment is committed, or here when it fails first.
-  let release = null;
+// The wallet's own send. A dApp's is main's, for a page's request it holds
+// (page/page-sends.js), confirmed by main's own issuer and recorded under
+// the requester's key.
+async function handleSendTransaction(walletIndex, params, context = {}, authorization = null) {
   try {
     const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params || {};
     if (!to || chainId === undefined || !gasLimit) {
       return { success: false, error: 'Missing required parameters: to, chainId, gasLimit' };
     }
     const tx = { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId };
-    const dapp = kind === PAYMENT_KINDS.DAPP_SEND;
-    const confirmKind = dapp ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
-    // A dApp send is confirmed for, and recorded under, its site. Main's
-    // issuer alone mints a dApp send's token, for a page's request it holds
-    // (page/page-sends.js, PRQ-5b), and never for this route: the chrome's
-    // old path stays until PRQ-9, but sends nothing a page asked for.
-    const site = dapp ? dappSendSite(context) : undefined;
-    await authorizeSigning(authorization, confirmKind, walletIndex, dapp ? { ...tx, origin: site } : tx);
+    await authorizeSigning(authorization, CONFIRM_KINDS.WALLET_SEND, walletIndex, tx);
     // Main never signs fees the user didn't see: a send that doesn't name
     // its own would be given today's after its confirmation
     // (resolveFeeParams). It goes back to its screen instead, with nothing
     // signed. A phone picks its own fees.
     if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShownError();
-    // D12: a confirmed dApp send waits for its site's turn
-    // (auto-approve-pause.js).
-    if (dapp) release = await takeSiteTurn(site, { wait: true });
     const result = await signAndRecord(
       tx,
       getSigner(walletIndex),
-      buildTxRecordContext(kind, dapp ? { ...context, origin: site } : context),
-      { walletIndex, onCommitted: release }
+      buildTxRecordContext(PAYMENT_KINDS.WALLET_SEND, context),
+      { walletIndex }
     );
-    // A contract rule ("Always allow") is recorded by main from a send the
-    // user confirmed on main's own prompt, for the requester's key
-    // (page/page-sends.js), never here.
     return { success: true, ...result };
   } catch (err) {
-    console.error(`[WalletIPC] ${kind} transaction failed:`, err);
+    console.error('[WalletIPC] wallet-send transaction failed:', err);
     // A send that got as far as an intent reports it (its id, outcome and a
     // summary), so the screen can offer to send those same bytes again. One
     // its fee check refused carries the verdict.
@@ -277,8 +240,6 @@ async function handleSendTransaction(walletIndex, params, kind, context = {}, au
       ...intentFailure(err),
       ...(err.feeCheck ? { feeCheck: err.feeCheck } : {}),
     };
-  } finally {
-    release?.();
   }
 }
 
@@ -534,33 +495,8 @@ function registerWalletIpc() {
     }
   });
 
-  // What a dApp's signing request signs, before its prompt (#88). Typed
-  // data: the core's view, for every signer kind; a request it refuses
-  // (malformed, or a view too large for one reply) fails here, unprompted.
-  handle('wallet:typed-data-view', async (_event, typedData, chainId) => {
-    try {
-      return { success: true, ...(await typedDataViewFor(typedData, chainId)) };
-    } catch (err) {
-      return { success: false, error: err.message, ...(err.code ? { code: err.code } : {}) };
-    }
-  });
-
-  handle('wallet:message-view', async (_event, message) => {
-    try {
-      return { success: true, ...messageViewFor(message) };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-  });
-
   handle('wallet:send-transaction', (_event, params, context, authorization) =>
-    handleSendTransaction(
-      getActiveWalletIndex(),
-      params,
-      PAYMENT_KINDS.WALLET_SEND,
-      context,
-      authorization
-    ));
+    handleSendTransaction(getActiveWalletIndex(), params, context, authorization));
 
   // Get transaction status
   handle('wallet:get-transaction-status', async (_event, txHash, chainId) => {
@@ -587,62 +523,6 @@ function registerWalletIpc() {
     } catch (err) {
       console.error('[WalletIPC] Wait for transaction failed:', err);
       return { success: false, error: err.message };
-    }
-  });
-
-  // ============================================
-  // dApp-specific handlers (use specific wallet index)
-  // ============================================
-
-  // Renderer threads the dapp's permissionKey through as context.origin
-  // so payment-history rows match the x402 permission store's keying.
-  handle('wallet:dapp-send-transaction', (_event, params, walletIndex, context, authorization) =>
-    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization));
-
-  // A dApp's personal_sign (EIP-191) and typed data (EIP-712): the chrome's
-  // old path, kept for rollback until PRQ-9. A page's request is served by
-  // main now (page/page-signing.js), whose own issuer mints its token on the
-  // user's decision, and the chrome gets none (`wallet:confirm-signing`) and
-  // can claim no site's rule (`authorizeSigning`). So these sign nothing a
-  // page asked for.
-  handle('wallet:sign-message', async (_event, message, walletIndex, authorization) => {
-    try {
-      if (!message) {
-        return { success: false, error: 'Message is required' };
-      }
-      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message);
-
-      const signature = await getSigner(walletIndex).signMessage(message);
-
-      return { success: true, signature };
-    } catch (err) {
-      console.error('[WalletIPC] Message signing failed:', err);
-      return { success: false, error: err.message, ...(err.code === NOT_CONFIRMED ? { code: err.code } : {}) };
-    }
-  });
-
-  handle('wallet:sign-typed-data', async (_event, typedData, walletIndex, authorization) => {
-    try {
-      if (!typedData) {
-        return { success: false, error: 'Typed data is required' };
-      }
-      if (!authorization?.confirmation) {
-        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData);
-      }
-      // The digest the user confirmed: the core signs nothing else.
-      const { hash: expectedHash } = consumeConfirmation(
-        authorization.confirmation,
-        CONFIRM_KINDS.SIGN_TYPED_DATA,
-        walletIndex,
-        typedData
-      );
-
-      const signature = await getSigner(walletIndex).signTypedData(typedData, { expectedHash });
-
-      return { success: true, signature };
-    } catch (err) {
-      console.error('[WalletIPC] Typed data signing failed:', err);
-      return { success: false, error: err.message, ...(err.code === NOT_CONFIRMED ? { code: err.code } : {}) };
     }
   });
 
@@ -752,6 +632,25 @@ function registerWalletIpc() {
     })
   );
 
+  // The wallet's own Safe board in the window's approvals document (design
+  // 0011, APS-3b): main runs it, for the Safe's pending SafeTx, and answers
+  // with how it ended (executed, parked, discarded…), for the chrome's
+  // summary. Only with the document on; the chrome's own board otherwise.
+  handle('wallet:safe-board', async (event, safeIndex) => {
+    try {
+      const boards = require('../approvals/safe-boards').getSafeBoards();
+      if (!boards) return { success: false, error: 'The approvals document is off' };
+      const { BrowserWindow } = require('electron');
+      const win = BrowserWindow.fromWebContents(event?.sender);
+      const windowId = win && !win.isDestroyed() && win.webContents === event?.sender ? win.id : null;
+      const outcome = await boards.openWalletBoard(windowId, safeIndex);
+      if (outcome?.error) return { success: false, error: outcome.error.message || 'The board could not open' };
+      return { success: true, outcome };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   handle('wallet:safe-pending-list', async () => {
     try {
       const { getAllSafeSendStates } = require('./safe/safe-transactions');
@@ -762,26 +661,12 @@ function registerWalletIpc() {
   });
 
   // SafeMessage sessions — dApp message signing via EIP-1271 (see
-  // safe/safe-messages.js). Same granular board API as sends; complete
-  // returns the concatenated owner signatures instead of a state. Each
-  // session is bound to its requesting page and guarded by a per-session
-  // token that every other call must present.
-  //
-  // A page's Safe message is served by main now (page/page-signing.js),
-  // which opens the session itself on the user's decision or the site's
-  // rule. This start is the chrome's old path, kept for rollback until
-  // PRQ-9: the chrome gets no token for it (`wallet:confirm-signing`) and
-  // can claim no site's rule (`authorizeSigning`), so it opens nothing a
-  // page asked for.
-  handle(
-    'wallet:safe-message-start',
-    safeStateHandler(async (safeIndex, request, display, requester, authorization) => {
-      const { startSafeMessage } = require('./safe/safe-messages');
-      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request);
-      return startSafeMessage({ safeIndex, request, display, requester });
-    })
-  );
-
+  // safe/safe-messages.js). Same granular board API as sends. A page's Safe
+  // message is main's (page/page-signing.js): main opens its session on the
+  // user's decision or the site's rule, and completes it once the board has
+  // collected its owners' signatures. Each session is bound to its
+  // requesting page and guarded by a per-session token that every call
+  // here must present.
   handle(
     'wallet:safe-message-sign',
     safeStateHandler((safeIndex, ownerIndex, token) => {
@@ -804,40 +689,6 @@ function registerWalletIpc() {
       const { cancelSafeMessage } = require('./safe/safe-messages');
       cancelSafeMessage(safeIndex, token);
     })
-  );
-
-  // A session main opened for a page's request is completed by main, which
-  // answers the page: the chrome's board only collects its signatures.
-  handle('wallet:safe-message-complete', async (_event, safeIndex, token) => {
-    try {
-      const { completeSafeMessage } = require('./safe/safe-messages');
-      const { signature } = completeSafeMessage(safeIndex, token, { chrome: true });
-      return { success: true, signature };
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-  });
-
-  // Capability-aware chain request. Myotis and Colibri are attempted before
-  // quorum/direct RPC according to the selected chain's access policy.
-  handle(
-    'wallet:chain-request',
-    async (_event, { chainId, method, params, routingContext }) => {
-      try {
-        if (!chainData.isReadMethod(method)) {
-          return { success: false, error: { code: 4200, message: 'Method not supported' } };
-        }
-        const response = await chainData.request(chainId, method, params || [], {
-          routingContext,
-        });
-        return { success: true, ...response };
-      } catch (err) {
-        return {
-          success: false,
-          error: { code: err.code || -32603, message: err.message, data: err.data },
-        };
-      }
-    }
   );
 
   // Legacy endpoint-specific proxy retained for existing internal callers.
@@ -881,7 +732,6 @@ module.exports = {
   CHROME_REFUSED_KINDS,
   authorizeSigning,
   buildTxRecordContext,
-  isAutoApprovableMessage,
   messageViewFor,
   registerWalletIpc,
   typedDataViewFor,
