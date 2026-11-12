@@ -6,6 +6,7 @@ const {
   selectChain,
   selectChainForPage,
   PAGE_SELECTED_CHANNEL,
+  onChromeSelection,
   registerSelectedChainIpc,
   resetSelectedChains,
 } = require('./selected-chain');
@@ -97,5 +98,70 @@ describe('the selected chain in main (freedom-core design 0011, PRQ-3)', () => {
     win.destroyed = true;
     expect(selectChainForPage(4, 10, { windowFromId })).toBe(false);
     expect(win.webContents.send).toHaveBeenCalledTimes(1);
+  });
+});
+
+// freedom-core design 0011, PRQ-6: main tells a window's pages of the user's
+// selection (page/page-events.js), so it hears each change the chrome makes,
+// with the selection before it, after recording it.
+describe('the chrome\'s selection is told to main\'s listeners (0011 PRQ-6)', () => {
+  beforeEach(() => resetSelectedChains());
+
+  function setupIpc() {
+    const ipc = fakeIpc();
+    const windows = new Map([['chrome-1', new FakeWindow(1)], ['chrome-2', new FakeWindow(2)]]);
+    registerSelectedChainIpc(ipc, { windowOf: (sender) => windows.get(sender) || null });
+    return { ipc, windows };
+  }
+
+  test('each change, with its window and the selection before it, recorded before it is told', () => {
+    const { ipc } = setupIpc();
+    const heard = [];
+    const stop = onChromeSelection((change) => heard.push({ ...change, recorded: selectedChainOf(change.window) }));
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, 1);
+    ipc.emit(CHANNEL, { sender: 'chrome-2' }, 10);
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, null);
+    expect(heard).toEqual([
+      { window: 1, previous: 100, next: 1, recorded: 1 },
+      { window: 2, previous: 100, next: 10, recorded: 10 },
+      { window: 1, previous: 1, next: null, recorded: null },
+    ]);
+    stop();
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, 5);
+    expect(heard).toHaveLength(3);
+  });
+
+  test('no change, a malformed one, an unknown sender and a page\'s switch are not told', () => {
+    const { ipc } = setupIpc();
+    const heard = [];
+    const stop = onChromeSelection((change) => heard.push(change));
+    // The starting report: the switcher's default, which main already has.
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, 100);
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, 'nonsense');
+    ipc.emit(CHANNEL, { sender: 'unknown' }, 5);
+    // A page's switch tells its own pages (page-ethereum.js).
+    const win = new FakeWindow(1);
+    win.webContents = { send: jest.fn(), isDestroyed: () => false };
+    expect(selectChainForPage(1, 10, { windowFromId: () => win })).toBe(true);
+    expect(heard).toEqual([]);
+    // The chrome's report of the same chain changes nothing either.
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, 10);
+    expect(heard).toEqual([]);
+    stop();
+  });
+
+  test('one listener\'s failure does not keep another from hearing', () => {
+    const { ipc } = setupIpc();
+    const heard = [];
+    const stops = [
+      onChromeSelection(() => {
+        throw new Error('boom');
+      }),
+      onChromeSelection((change) => heard.push(change.next)),
+    ];
+    ipc.emit(CHANNEL, { sender: 'chrome-1' }, 1);
+    expect(heard).toEqual([1]);
+    for (const stop of stops) stop();
+    expect(onChromeSelection(null)()).toBeUndefined();
   });
 });
