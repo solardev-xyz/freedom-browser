@@ -328,9 +328,10 @@ function createPageRequests({
       // What runs once the answer has reached the document (`afterAnswer`).
       after: null,
       // Resolves once the record is answered, whether or not the document
-      // is still there (`whenAnswered`).
+      // is still there, with how (`whenAnswered`).
       answeredGate: null,
       openAnsweredGate: null,
+      answerOutcome: null,
       // Aborted when the record is answered, for a wallet operation it runs
       // (`walletOperation`).
       aborter: null,
@@ -396,7 +397,10 @@ function createPageRequests({
       value = { ...record.keyless };
     }
     record.resolve(current ? value : GONE);
-    record.openAnsweredGate?.();
+    // `ok`: the document that asked got a result, not an error (its
+    // deadline, a name lost) and not nothing (it had gone).
+    record.answerOutcome = Object.freeze({ delivered: current, ok: Boolean(current && value && !value.error) });
+    record.openAnsweredGate?.(record.answerOutcome);
     trace({ kind: current ? 'answered' : 'gone', id: record.id, value: current ? value : undefined });
     const after = record.after;
     record.after = null;
@@ -516,7 +520,9 @@ function createPageRequests({
         if (typeof fn === 'function' && !record.answered) record.after = fn;
       },
       // Resolves once main has answered the record, the document there or
-      // gone: for events queued at an effect, sent after the answer.
+      // gone, with `{ delivered, ok }`: for events queued at an effect, sent
+      // after the answer, and to the document that asked only if it got a
+      // result.
       whenAnswered: () => whenAnswered(record),
       liveDocuments: () => documents.liveDocuments(),
       sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
@@ -527,7 +533,7 @@ function createPageRequests({
   }
 
   function whenAnswered(record) {
-    if (record.answered) return Promise.resolve();
+    if (record.answered) return Promise.resolve(record.answerOutcome);
     if (!record.answeredGate) {
       record.answeredGate = new Promise((resolve) => {
         record.openAnsweredGate = resolve;

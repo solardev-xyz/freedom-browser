@@ -345,18 +345,23 @@ function createEthereumDispatchers(deps = {}) {
   // its other grant events (PRQ-6, `page-events.js`): a revocation made
   // after the write is heard after them, even while a name's resolution
   // holds them. They go out once main has answered the request, as the
-  // chrome sent them after its answer.
+  // chrome sent them after its answer. The grant exists once written, so
+  // the key's other documents hear it however the request ended; the
+  // document that asked hears it only if its answer was the account, not
+  // "Request timed out" or nothing at all.
   function announceNewGrant(context, account, chainId) {
     const { requester } = context;
     context.inGrantOrder(requester.key, async () => {
-      await context.whenAnswered();
+      const answered = await context.whenAnswered();
       const others = context
         .liveDocuments()
         .filter(
           (doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation)
         );
-      await context.sendEvent(requester, 'accountsChanged', [account]);
-      await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
+      if (answered?.ok === true) {
+        await context.sendEvent(requester, 'accountsChanged', [account]);
+        await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
+      }
       for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
     });
   }
