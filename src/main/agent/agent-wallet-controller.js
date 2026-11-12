@@ -588,15 +588,17 @@ class AgentWalletController {
     // A request main attested sends only while main still holds it: not
     // answered (its deadline, its page gone), the name checked again, and
     // the page still under its key in the same run as the send.
-    await this.#mainAllows(context);
-    const result = await this.signAndRecord(tx, this.getSigner(wallet.index), {
-      kind: KINDS.DAPP_SEND,
-      origin: permissionKey,
-    });
+    const result = await this.#underMain(context, () =>
+      this.signAndRecord(tx, this.getSigner(wallet.index), {
+        kind: KINDS.DAPP_SEND,
+        origin: permissionKey,
+      })
+    );
     // A grant held under the attested key is touched only while main still
-    // holds the request after the send's wait: the name checked again, and
-    // the page under its key in the same run as the write.
-    if (!context.attested || (await this.#mainStillAllows(context))) this.updateLastUsed(permissionKey, chainId);
+    // holds the request after the send's wait, checked the same way. The
+    // hash itself reaches the page only while its name holds, which main
+    // checks when it answers.
+    await this.#underMain(context, () => this.updateLastUsed(permissionKey, chainId), { required: false });
     return {
       providerResult: result.hash,
       receipt: {

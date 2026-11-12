@@ -493,16 +493,49 @@ describe('AgentWalletController', () => {
       });
     });
 
-    test('only a connect and a signature come attested: a send is left to its own path', async () => {
-      const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-      const approval = jest.fn(async () => 'approved');
-      const provider = await harness.controller.handleRequest(attestedContext({}, approval), {
+    // PRQ-5b: a send comes attested too, and is sent only once main's
+    // checks pass, just before it.
+    describe('eth_sendTransaction main attested', () => {
+      const send = {
         method: 'eth_sendTransaction',
-        params: [{ to: '0x1111111111111111111111111111111111111111', value: '0x1' }],
+        params: [{ to: '0x3333333333333333333333333333333333333333', value: '0x1' }],
         chainId: 100,
+      };
+
+      test("sends under main's key once main's checks pass", async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true) };
+        const provider = await harness.controller.handleRequest(attestedContext(gate), send);
+        expect(provider).toMatchObject({ handled: true, result: expect.stringMatching(/^0x/) });
+        expect(provider.receipt.wallet.origin).toBe('example.com');
+        expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
+        expect(harness.dependencies.signAndRecord).toHaveBeenCalledTimes(1);
+        expect(harness.dependencies.signAndRecord.mock.calls[0][2]).toMatchObject({ origin: 'example.com' });
+        // Both before the send, and again before the grant's last use.
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
+        expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
+        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100);
       });
-      expect(provider).toEqual({ handled: false });
-      expect(approval).not.toHaveBeenCalled();
+
+      test("the name moving during the send: sent, but the grant's last use untouched", async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect }), send);
+        expect(provider).toMatchObject({ handled: true, result: expect.stringMatching(/^0x/) });
+        expect(harness.dependencies.signAndRecord).toHaveBeenCalledTimes(1);
+        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
+      });
+
+      test.each([
+        ['main has answered the request, or the name moved', { beforeEffect: jest.fn(async () => false) }],
+        ['the page left its key in the run of the send', { effectAllowed: jest.fn(() => false) }],
+      ])('sends nothing when %s', async (_name, gate) => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const provider = await harness.controller.handleRequest(attestedContext(gate), send);
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
+      });
     });
   });
 
