@@ -31,12 +31,12 @@ describe('the charge (freedom-core design 0011, "The size and the charge")', () 
     expect(VALUE_BYTES).toBe(128);
     // Main's own bookkeeping of every request (its record, context, promises
     // and IPC event), which the uploads' exact copies leave no room for.
-    expect(REQUEST_BYTES).toBe(32 * KiB);
+    expect(REQUEST_BYTES).toBe(64 * KiB);
   });
 
   test('size times copies, 128 bytes for each value and name, the stream buffers, and main\'s bookkeeping', () => {
     const measured = { size: 1000, values: 10, names: 4 };
-    const bookkeeping = 32 * KiB;
+    const bookkeeping = 64 * KiB;
     expect(chargeOf('swarm', 'swarm_publishFiles', measured)).toBe(2 * 1000 + 128 * 14 + MiB + bookkeeping);
     expect(chargeOf('swarm', 'swarm_publishData', measured)).toBe(3 * 1000 + 128 * 14 + bookkeeping);
     expect(chargeOf('ethereum', 'eth_call', measured)).toBe(24 * 1000 + 128 * 14 + bookkeeping);
@@ -52,14 +52,14 @@ describe('the charge (freedom-core design 0011, "The size and the charge")', () 
     const files = largestChargeOf('swarm', 'swarm_publishFiles', 50 * MiB + 64 * KiB);
     const data = largestChargeOf('swarm', 'swarm_publishData', 10 * MiB + 64 * KiB);
     const other = largestChargeOf('ethereum', 'eth_call', MiB);
-    expect(files / MiB).toBeCloseTo(103.6, 2);
-    expect(data / MiB).toBeCloseTo(32.66, 2);
-    expect(other / MiB).toBeCloseTo(26.47, 2);
+    expect(files / MiB).toBeCloseTo(103.63, 2);
+    expect(data / MiB).toBeCloseTo(32.69, 2);
+    expect(other / MiB).toBeCloseTo(26.5, 2);
     // A document holds one, with about 24 MiB to spare; a window the two the
     // browser runs at once; the browser those two and about 177 MiB more.
     expect((BUDGETS.document.bytes - files) / MiB).toBeCloseTo(24.4, 1);
-    expect((BUDGETS.window.bytes - 2 * files) / MiB).toBeCloseTo(48.8, 1);
-    expect((BUDGETS.browser.bytes - 2 * files) / MiB).toBeCloseTo(176.8, 1);
+    expect((BUDGETS.window.bytes - 2 * files) / MiB).toBeCloseTo(48.7, 1);
+    expect((BUDGETS.browser.bytes - 2 * files) / MiB).toBeCloseTo(176.7, 1);
   });
 });
 
