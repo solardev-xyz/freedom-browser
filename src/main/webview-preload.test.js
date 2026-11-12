@@ -1690,6 +1690,33 @@ describe('injected provider request timeouts', () => {
   test('swarm_readData gets the 300s budget: a multi-MiB join can outlast 60s', () => {
     expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readData')).toBe(300000);
   });
+
+  // Design 0011, "One deadline, main's" (PRQ-7a): the preload tells the
+  // page-world source which methods main answers, and it arms no timer for
+  // them; main's deadline answers one that runs too long.
+  test('window.swarm arms no timer for a method main answers, and reads and deletes its list first', () => {
+    const armed = [];
+    const posted = [];
+    const sandboxWindow = {
+      __FREEDOM_SWARM_MAIN_ANSWERED__: ['swarm_readChunk', 'swarm_listFeeds', 42],
+      postMessage: (message) => posted.push(message.method),
+      addEventListener: () => {},
+      location: { origin: 'https://dapp.example' },
+    };
+    new Function('window', 'setTimeout', 'Map', 'Set', extractScript('SWARM_INJECT_SOURCE'))(
+      sandboxWindow,
+      (_fn, ms) => armed.push(ms),
+      Map,
+      Set
+    );
+    expect('__FREEDOM_SWARM_MAIN_ANSWERED__' in sandboxWindow).toBe(false);
+    for (const method of ['swarm_readChunk', 'swarm_listFeeds', 'swarm_publishData', 'swarm_readData']) {
+      sandboxWindow.swarm.request({ method }).catch(() => {});
+    }
+    expect(posted).toEqual(['swarm_readChunk', 'swarm_listFeeds', 'swarm_publishData', 'swarm_readData']);
+    // Only the two main doesn't answer arm one.
+    expect(armed).toEqual([300000, 300000]);
+  });
 });
 
 // PRIVATE MODE GUARD coverage (providers): in private windows none of
@@ -2958,13 +2985,35 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_readChunk', params: {} });
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_publishData', params: {} });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
     expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual([
       'swarm:provider-request',
       'radicle:provider-request',
     ]);
+    // Swarm's reads (0011 PRQ-7a) go to main, and never to the chrome.
+    for (const [id, method] of [
+      [21, 'swarm_getCapabilities'],
+      [22, 'swarm_readChunk'],
+      [23, 'swarm_readData'],
+      [24, 'swarm_readSingleOwnerChunk'],
+      [25, 'swarm_readFeedEntry'],
+      [26, 'swarm_listFeeds'],
+    ]) {
+      fromPage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: {} });
+    }
+    expect(
+      ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request').map(([, r]) => [r.provider, r.method])
+    ).toEqual([
+      ['swarm', 'swarm_getCapabilities'],
+      ['swarm', 'swarm_readChunk'],
+      ['swarm', 'swarm_readData'],
+      ['swarm', 'swarm_readSingleOwnerChunk'],
+      ['swarm', 'swarm_readFeedEntry'],
+      ['swarm', 'swarm_listFeeds'],
+    ]);
+    ipcRenderer.invoke.mockClear();
     // The Ethereum reads (0011 PRQ-3), connecting (PRQ-4), signing messages
     // and typed data (PRQ-5a) and sends (PRQ-5b) go to main, and never to
     // the chrome.
@@ -3003,6 +3052,30 @@ describe('page requests', () => {
     expect(source).toContain('/* eth */');
     return JSON.parse(/window\.__FREEDOM_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
   };
+
+  // window.swarm's source, behind its own list (PRQ-7a).
+  const swarmMainAnswered = (contextBridge) => {
+    const source = contextBridge.executeInMainWorld.mock.calls[1][0].func.toString();
+    expect(source).toContain('FREEDOM_SWARM_REQUEST');
+    return JSON.parse(/window\.__FREEDOM_SWARM_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
+  };
+
+  test('window.swarm is told which of its methods main answers: the moved reads, and the harness\'s routes', () => {
+    const moved = swarmMainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);
+    expect(moved).toEqual([
+      'swarm_getCapabilities',
+      'swarm_readChunk',
+      'swarm_readData',
+      'swarm_readSingleOwnerChunk',
+      'swarm_readFeedEntry',
+      'swarm_listFeeds',
+    ]);
+    const routed = swarmMainAnswered(
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_publishData', 'ethereum:eth_sign'] }))] })
+        .contextBridge
+    );
+    expect(routed).toEqual([...moved, 'swarm_publishData']);
+  });
 
   test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
     const moved = mainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);

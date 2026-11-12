@@ -185,9 +185,13 @@ describe('Ethereum reads through main (freedom-core design 0011, PRQ-3)', () => 
     expect(Object.keys(createEthereumDispatchers(backends().deps)).sort()).toEqual(
       ETHEREUM_PAGE_METHODS.map((method) => `ethereum:${method}`).sort()
     );
-    // The preload routes exactly these to main.
+    // The preload routes exactly these of window.ethereum's to main.
     const preload = fs.readFileSync(path.join(__dirname, '../webview-preload.js'), 'utf-8');
-    const routes = /const PAGE_ROUTES = new Set\(\[([\s\S]*?)\]\);/.exec(preload)[1].match(/'[^']+'/g).map((r) => r.slice(1, -1));
+    const routes = /const PAGE_ROUTES = new Set\(\[([\s\S]*?)\]\);/
+      .exec(preload)[1]
+      .match(/'[^']+'/g)
+      .map((r) => r.slice(1, -1))
+      .filter((r) => r.startsWith('ethereum:'));
     expect(routes.sort()).toEqual(ETHEREUM_PAGE_METHODS.map((method) => `ethereum:${method}`).sort());
     // Each has its row, of the class the design gives it.
     for (const method of ETHEREUM_READ_METHODS) {

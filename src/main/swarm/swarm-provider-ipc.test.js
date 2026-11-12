@@ -186,6 +186,7 @@ global.fetch = jest.fn();
 
 const {
   registerSwarmProviderIpc,
+  executeSwarmMethod,
   checkSwarmPreFlight,
   checkBeeReachable,
   validateVirtualPath,
@@ -197,7 +198,14 @@ const {
 
 registerSwarmProviderIpc();
 
+const { SWARM_PAGE_METHODS } = require('../page/page-swarm');
+
+// The methods main serves to pages itself (freedom-core design 0011, PRQ-7)
+// run through executeSwarmMethod, which page/page-swarm.js calls with the
+// requester's attested key; the chrome's handler refuses them (below). Every
+// other method still comes through the handler.
 async function invokeProvider(method, params, origin, meta) {
+  if (SWARM_PAGE_METHODS.includes(method)) return executeSwarmMethod(method, params, origin, meta);
   const handler = ipcHandlers['swarm:provider-execute'];
   return handler({}, { method, params, origin, meta });
 }
@@ -257,6 +265,53 @@ describe('swarm-provider-ipc', () => {
 
   test('registers swarm:provider-execute handler', () => {
     expect(ipcHandlers['swarm:provider-execute']).toBeDefined();
+  });
+
+  // A forged chrome origin (design 0011, PRQ-7): the methods main serves to
+  // pages from the attested requester are refused on the chrome's route,
+  // whatever site it names, before anything is read.
+  test('swarm:provider-execute refuses every method main serves to pages, for any site, with nothing read', async () => {
+    mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: {} });
+    mockGetAllFeeds.mockReturnValue({ chat: { topic: 'a'.repeat(64), owner: 'b'.repeat(40), manifestReference: 'c'.repeat(64) } });
+    const handler = ipcHandlers['swarm:provider-execute'];
+    expect(SWARM_PAGE_METHODS).toEqual([
+      'swarm_getCapabilities',
+      'swarm_readChunk',
+      'swarm_readData',
+      'swarm_readSingleOwnerChunk',
+      'swarm_readFeedEntry',
+      'swarm_listFeeds',
+    ]);
+    for (const origin of ['myapp.eth', 'https://app.example', `bzz://${'a'.repeat(64)}`]) {
+      for (const method of SWARM_PAGE_METHODS) {
+        const answer = await handler({}, { method, params: { reference: 'a'.repeat(64), name: 'chat' }, origin });
+        expect({ origin, method, answer }).toEqual({
+          origin,
+          method,
+          answer: {
+            error: {
+              code: 4100,
+              message: 'The origin is not authorized for this operation',
+              data: { reason: 'page_request_only' },
+            },
+          },
+        });
+      }
+    }
+    expect(mockGetAllFeeds).not.toHaveBeenCalled();
+    expect(mockGetFeed).not.toHaveBeenCalled();
+    expect(mockGetPermission).not.toHaveBeenCalled();
+    expect(mockReadChunk).not.toHaveBeenCalled();
+    expect(mockReadSingleOwnerChunk).not.toHaveBeenCalled();
+    expect(mockReadDataRoot).not.toHaveBeenCalled();
+    expect(mockReadFeedPayload).not.toHaveBeenCalled();
+    expect(mockGetPublishReadiness).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    // A method still on the chrome's route keeps it.
+    expect((await handler({}, { method: 'swarm_requestAccess', params: {}, origin: 'myapp.eth' })).result).toMatchObject({
+      connected: true,
+      origin: 'myapp.eth',
+    });
   });
 
   describe('method dispatch', () => {
