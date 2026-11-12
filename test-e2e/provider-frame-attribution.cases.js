@@ -101,10 +101,9 @@ test.describe('provider frame attribution (O-6)', () => {
   // Replace main's provider execute handlers with recorders: the harness runs
   // no Ant node and no Radicle addon, and what matters here is whether the
   // chrome forwarded a request at all. The Swarm permission-manifest lookup
-  // also needs a node, so it reports "no manifest" (legacy per-capability
-  // prompts), on the chrome's path and on main's own (PRQ-7b). A publish
-  // goes to main (PRQ-7c), which uploads it to a fake Ant here, answering
-  // every upload with one reference.
+  // also needs a node, so main's own (PRQ-7b) reports "no manifest" (legacy
+  // per-capability prompts). A publish goes to main (PRQ-7c), which uploads
+  // it to a fake Ant here, answering every upload with one reference.
   async function recordProviderExecutes(electronApp) {
     await electronApp.evaluate(async ({ ipcMain }, root) => {
       const load = process.mainModule.require;
@@ -131,17 +130,16 @@ test.describe('provider frame attribution (O-6)', () => {
       load(`${root}/src/main/swarm/publish-setup-service`).getPublishSetupService().getPublishReadiness = async () => ({ ok: true });
       const calls = [];
       globalThis.__providerExecuteCalls = calls;
-      ipcMain.removeHandler('swarm:manifest-check');
-      ipcMain.handle('swarm:manifest-check', () => ({ kind: 'legacy', reason: 'e2e' }));
       process.mainModule.require(`${root}/src/main/swarm/permission-manifests`).checkPageManifest = async () => ({
         kind: 'legacy',
         reason: 'e2e',
       });
-      for (const channel of ['swarm:provider-execute', 'radicle:provider-execute']) {
+      // All of window.swarm is main's (PRQ-7d): the chrome has no Swarm route
+      // to record. Radicle's is still the chrome's.
+      for (const channel of ['radicle:provider-execute']) {
         ipcMain.removeHandler(channel);
         ipcMain.handle(channel, (_event, args) => {
           calls.push({ channel, method: args?.method, origin: args?.origin });
-          if (args?.method === 'swarm_publishData') return { result: { reference: 'ab'.repeat(32) } };
           return { result: { connected: true, origin: args?.origin } };
         });
       }
