@@ -27,10 +27,12 @@
  * display-media handler runs synchronously inside the permission callback
  * (checked against Electron 45.2.1), which hands it the pick through the
  * `grant` slot below. When the callback returns without that handler having
- * run, the page took the older route, and its renderer is ended before the
- * capture it was granted can reach it (checked the same way: the page never
- * received its stream). The user still saw the picker and chose to share
- * with that site, so this guard bounds what the site gets to what was picked.
+ * run while the asking document is still there, the page took the older
+ * route. The OS processes of its renderers, the asking iframe's included, are
+ * then killed before the capture it was granted can reach them (checked the
+ * same way: the page never received its stream). The user still saw the
+ * picker and chose to share with that site, so this guard bounds what the
+ * site gets to what was picked.
  *
  * Gates before the picker, each logged with the origin hidden for a private
  * window:
@@ -409,8 +411,8 @@ function requestingFrameGone(entry) {
 
 /**
  * The page asked through getUserMedia's chromeMediaSource, which captures
- * the source id it names and skips the pick. Its renderer is ended before the
- * capture reaches it, and the window says why.
+ * the source id it names and skips the pick. Its renderers are ended before
+ * the capture reaches them, and the window says why.
  */
 function stopOlderRouteCapture(entry) {
   const who = originForLog(entry.origin, entry.privatePartition);
@@ -422,12 +424,67 @@ function stopOlderRouteCapture(entry) {
     `[screen-share] ${who} asked through getUserMedia's chromeMediaSource, which skips the ` +
       'picker; its page was stopped'
   );
+  endRenderers(entry);
+  sendToHost(entry, IPC.SCREEN_SHARE_BLOCKED, { origin: entry.origin, guestId: entry.guestId });
+}
+
+/**
+ * The OS processes that may hold the asking document: those of the frames
+ * identified when it asked, or every frame of the tab when none was, plus the
+ * tab's main frame. A cross-origin iframe runs in a process of its own, which
+ * ending the tab's main renderer would leave running.
+ */
+function rendererPids(entry) {
+  const pids = new Set();
+  const add = (frame) => {
+    const pid = frame?.osProcessId;
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+  };
+  const asking = entry.requestingFrames
+    .map(({ processId, frameToken }) => {
+      try {
+        return webFrameMain.fromFrameToken(processId, frameToken);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  try {
+    for (const frame of asking.length ? asking : entry.guest.mainFrame.framesInSubtree) add(frame);
+    add(entry.guest.mainFrame);
+  } catch {
+    // The tab is going away
+  }
+  // Never this process or the window's own chrome.
+  pids.delete(process.pid);
+  try {
+    pids.delete(entry.host.getOSProcessId());
+  } catch {
+    // The window is closing
+  }
+  return pids;
+}
+
+/**
+ * End the asking page's renderers now. A kill signal ends a process before it
+ * handles another message, on every platform; forcefullyCrashRenderer() alone
+ * only asks a Linux renderer to crash itself, which leaves the capture a
+ * moment to arrive, and covers the main frame only. It still runs after the
+ * signal, as the fallback should a signal fail.
+ */
+function endRenderers(entry) {
+  for (const pid of rendererPids(entry)) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch (err) {
+      log.warn('[screen-share] could not end a renderer of the page:', err?.message || err);
+    }
+  }
   try {
     entry.guest.forcefullyCrashRenderer();
   } catch (err) {
     log.error('[screen-share] could not stop the page:', err?.message || err);
   }
-  sendToHost(entry, IPC.SCREEN_SHARE_BLOCKED, { origin: entry.origin, guestId: entry.guestId });
 }
 
 /**
