@@ -1593,6 +1593,34 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
       return { file: journal.size, owed: owed(), budget: budget(), limit: limits.journalBytes };
     },
 
+    /**
+     * Withdraw the site a held intent was recorded for (freedom-core design
+     * 0011, PRQ-5b: a site's Safe execution that its site no longer holds is
+     * the wallet's own). Its context keeps its kind, key and account, with no
+     * origin; its signed bytes, hashes and handoffs stay. The file is
+     * rewritten from the state, so the change outlives this run; if it can't
+     * be, memory is left as it was and the error thrown.
+     *
+     * @returns {Promise<boolean>} false for an intent not held, or with no site
+     */
+    async withdrawOrigin(intentId) {
+      assertLoaded();
+      return serialize(async () => {
+        const intent = intents.get(intentId);
+        if (!intent || intent.state !== 'held' || intent.context?.origin == null) return false;
+        const before = intent.context;
+        intent.context = { ...before, origin: null };
+        try {
+          await compactNow();
+        } catch (err) {
+          intent.context = before;
+          throw err;
+        }
+        notify(intentId);
+        return true;
+      });
+    },
+
     /** Rewrite the file from the state: tombstones and held snapshots. */
     compact() {
       assertLoaded();

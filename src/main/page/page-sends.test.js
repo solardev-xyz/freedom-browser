@@ -254,17 +254,24 @@ function backends() {
       siteWithdrawn: () => Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' }),
     },
   };
-  // An execution of the site's SafeTx, as safe-transactions.js runs one: past
-  // the request's guard, or not at all for the site when it has none.
-  const executeSafe = async (hash = EXEC_HASH) => {
+  // An execution of the site's SafeTx, as safe-transactions.js and the
+  // executor run one: past the request's guard, then the executor's waits
+  // (its quote, the site's turn, its signer: `duringWait` runs among them),
+  // and the same guard again at the commit after the signature. Not at all
+  // for the site when it has no guard.
+  const executeSafe = async ({ hash = EXEC_HASH, duringWait = null } = {}) => {
     const guard = state.safe.guards.get(SAFE_TX_HASH);
     if (!guard) return { executed: false, guarded: false };
     let executed = false;
     try {
       await guard(async () => {
-        executed = true;
-        settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash });
-        return { hash };
+        await new Promise((resolve) => setImmediate(resolve));
+        duringWait?.();
+        return guard(async () => {
+          executed = true;
+          settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash });
+          return { hash };
+        });
       });
     } catch (err) {
       return { executed, refused: err.code };
@@ -1306,6 +1313,21 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
     await flush();
     env.state.permissions.delete(KEY_A);
     expect(await env.executeSafe()).toEqual({ executed: false, refused: 'SAFE_SITE_WITHDRAWN' });
+    expect(await answer).toEqual(NO_ADDRESS);
+  });
+
+  test('its name moves during the execution\'s waits (the quote, the signer): refused at the commit, nothing sent for the site', async () => {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME, SAFE_INDEX);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const answer = page.send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    expect(
+      await env.executeSafe({ duringWait: () => env.names.set(NAME, OTHER_IPNS_KEY) })
+    ).toEqual({ executed: false, refused: 'SAFE_SITE_WITHDRAWN' });
     expect(await answer).toEqual(NO_ADDRESS);
   });
 

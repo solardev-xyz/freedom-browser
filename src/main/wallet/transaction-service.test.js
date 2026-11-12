@@ -130,6 +130,74 @@ describe('signAndSendTransaction (signer-based)', () => {
     console.error.mockRestore();
   });
 
+  // Codex round 2 on #1191: a keyed send (a Safe's execution) honours the
+  // guard too: at its first commit, after the signer's wait, and at a held
+  // intent's handoff, the last point before its bytes go out again.
+  it('a keyed send: the guard at its first commit after a held signature, and at a resend\'s handoff', async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    const params = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '0',
+      gasLimit: '21000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      chainId: 100,
+    };
+    const intentKey = `safe-exec:100:0x${'5e'.repeat(32)}`;
+    const context = { kind: 'safe-send', origin: 'https://app.example' };
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const heldSigner = {
+      getAddress: signer.getAddress,
+      signTransaction: async (tx) => {
+        await held;
+        return signer.signTransaction(tx);
+      },
+    };
+    let holds = true;
+    const refusal = Object.assign(new Error('the site no longer holds it'), { code: 'SAFE_SITE_WITHDRAWN' });
+    const guardCommit = jest.fn(async (effect) => {
+      if (!holds) throw refusal;
+      return effect();
+    });
+    // Its first commit: the guard runs after the signer's wait, and refuses.
+    const sending = signAndSendTransaction(params, heldSigner, { intentKey, context, guardCommit });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(guardCommit).not.toHaveBeenCalled();
+    holds = false;
+    release();
+    await expect(sending).rejects.toBe(refusal);
+    await mockIntentStore.ready;
+    expect(mockIntentStore.byKey(intentKey)).toBeNull();
+    expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+    // Committed, then not sent: the intent is held under its key.
+    holds = true;
+    mockBroadcastRawTransaction.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
+    });
+    await expect(signAndSendTransaction(params, signer, { intentKey, context, guardCommit })).rejects.toThrow();
+    const intent = mockIntentStore.byKey(intentKey);
+    expect(intent).toMatchObject({ context: { origin: 'https://app.example' } });
+    const handoffs = mockIntentStore.get(intent.intentId).handoffs.length;
+    // Sent again: the guard runs before the handoff, and refuses.
+    holds = false;
+    guardCommit.mockClear();
+    await expect(signAndSendTransaction(params, signer, { intentKey, context, guardCommit })).rejects.toBe(refusal);
+    expect(guardCommit).toHaveBeenCalledTimes(1);
+    expect(mockIntentStore.get(intent.intentId).handoffs).toHaveLength(handoffs);
+    expect(mockBroadcastRawTransaction).toHaveBeenCalledTimes(1);
+    // Let through: the guard takes the handoff, and the same bytes go out.
+    holds = true;
+    const resent = await signAndSendTransaction(params, signer, { intentKey, context, guardCommit });
+    expect(resent).toMatchObject({ resent: true, intentId: intent.intentId });
+    expect(mockBroadcastRawTransaction).toHaveBeenCalledTimes(2);
+    console.error.mockRestore();
+    console.log.mockRestore();
+  });
+
   it('a phone signs and broadcasts in one step: it has no guard point', async () => {
     const guardCommit = jest.fn();
     const phone = { sendTransaction: jest.fn(async () => ({ hash: '0xphone' })) };

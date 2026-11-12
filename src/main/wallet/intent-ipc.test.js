@@ -275,6 +275,47 @@ describe.each(['confirmed'])(
   }
 );
 
+// freedom-core design 0011, PRQ-5b (Codex round 2 on #1191): a site's Safe
+// execution that was committed under the site and not sent, and that the
+// site then stops holding, is the wallet's own in every record: the held
+// intent loses its site (signed bytes kept), so the held-payments list
+// doesn't name it, the site's rules aren't paused by it, and sending it
+// again records no site.
+test("a site's Safe execution not sent, then withdrawn: its held intent is the wallet's, its bytes kept", async () => {
+  const running = start();
+  const recorder = require('./tx-recorder');
+  const pause = require('./auto-approve-pause');
+  const safeTxHash = '0x' + '5c'.repeat(32);
+  const intentKey = `safe-exec:100:${safeTxHash}`;
+  const params = { ...call(100), data: '0x6a761202' };
+  mockBroadcast.mockImplementationOnce(async () => {
+    throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
+  });
+  await expect(
+    recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send', origin: SITE }, { intentKey })
+  ).rejects.toMatchObject({ outcome: 'not_sent' });
+  const held = running.store.byKey(intentKey);
+  expect(held.context.origin).toBe(SITE);
+  await expect(pause.sitePaymentWaiting(SITE)).resolves.toBe(true);
+
+  await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(true);
+  expect(running.store.byKey(intentKey)).toMatchObject({ intentId: held.intentId, context: { origin: null } });
+  expect(running.store.get(held.intentId).hashes).toEqual(held.hashes);
+  await expect(pause.sitePaymentWaiting(SITE)).resolves.toBe(false);
+  const waiting = await require('./intent-ipc').waitingIntents();
+  expect(waiting.filter((intent) => intent.intentId === held.intentId).map((intent) => intent.origin)).toEqual([null]);
+
+  // The user executes it as the wallet's: the same bytes again, no site.
+  const before = mockBroadcast.mock.calls.length;
+  const sent = await recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send' }, { intentKey });
+  expect(sent).toMatchObject({ intentId: held.intentId, resent: true });
+  expect(mockBroadcast).toHaveBeenCalledTimes(before + 1);
+  const row = require('../payment-history').getRecent({}).find((entry) => entry.txHash === sent.hash);
+  expect(row.origin).toBeNull();
+  // Nothing more to withdraw.
+  await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(false);
+});
+
 test('the wallet send handler drops a renderer key too', async () => {
   const running = start();
   const { key, held } = await heldDeployment(running);

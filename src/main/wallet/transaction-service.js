@@ -531,6 +531,34 @@ function notSent(err, intentId) {
  * commit (a rejection on the device, a locked vault, a refused commit)
  * leaves nothing recorded.
  */
+// The refusals a caller's guard threw to withdraw a send (guardCommit): they
+// reach the caller as they are, never wrapped as a send's failure.
+const guardRefusals = new WeakSet();
+
+/**
+ * Run `effect` (a commit, a handoff) through the caller's guard, which runs
+ * it itself in the same run as its last check, or throws to withdraw the
+ * send. An error of the effect's own stays an effect's; anything else the
+ * guard throws is its refusal.
+ */
+async function runGuarded(guard, effect) {
+  let effectError = null;
+  const run = async () => {
+    try {
+      return await effect();
+    } catch (err) {
+      effectError = err;
+      throw err;
+    }
+  };
+  try {
+    return await guard(run);
+  } catch (err) {
+    if (err !== effectError && err && typeof err === 'object') guardRefusals.add(err);
+    throw err;
+  }
+}
+
 async function commitNewIntent(params, signer, { context = {}, key = null, guardCommit = null } = {}) {
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } =
     params;
@@ -590,9 +618,12 @@ async function commitNewIntent(params, signer, { context = {}, key = null, guard
         });
       // The caller's guard, after the signature's wait: it commits in the
       // same run as its last checks, or withdraws the send.
-      return guardCommit ? guardCommit(commit) : commit();
+      return guardCommit ? runGuarded(guardCommit, commit) : commit();
     });
   } catch (err) {
+    // Withdrawn by the caller's guard: nothing recorded or sent, and the
+    // caller hears its own refusal.
+    if (guardRefusals.has(err)) throw err;
     // Before the commit: nothing was signed into the records or sent.
     logFailure('Transaction failed', err, params.redactErrors);
     if (params.redactErrors) throw redactedSendError(false);
@@ -641,7 +672,7 @@ function intentContext(context, key) {
  *   again (one whose bytes are still kept); the latest by default
  * @returns {Promise<Object>} as signAndSendTransaction, with `resent: true`
  */
-async function resendIntent(intentId, { hash } = {}) {
+async function resendIntent(intentId, { hash, guardHandoff = null } = {}) {
   const store = getIntentStore();
   await store.ready;
   const intent = store.get(intentId);
@@ -653,11 +684,14 @@ async function resendIntent(intentId, { hash } = {}) {
     throw error;
   }
   let handoff;
+  const takeHandoff = () =>
+    withAccountLock({ chainId: intent.chainId, sender: intent.sender }, () => store.handoff(intentId, hash));
   try {
-    handoff = await withAccountLock({ chainId: intent.chainId, sender: intent.sender }, () =>
-      store.handoff(intentId, hash)
-    );
+    // A keyed send's caller may guard its last point before the bytes go
+    // out again (sendUnderKey): the guard takes the handoff itself.
+    handoff = await (guardHandoff ? runGuarded(guardHandoff, takeHandoff) : takeHandoff());
   } catch (err) {
+    if (guardRefusals.has(err)) throw err;
     console.error('[TransactionService] Transaction not sent:', err);
     throw notSent(err, intentId);
   }
@@ -879,11 +913,11 @@ async function heldIntentFor(intentKey) {
  * sends the first's bytes again. A held intent of another chain, sender or
  * kind is refused, with nothing sent.
  */
-async function sendUnderKey(params, signer, intentKey, context, onCommitted = null) {
+async function sendUnderKey(params, signer, intentKey, context, onCommitted = null, guardCommit = null) {
   const next = await withIntentKeyLock({ intentKey }, async () => {
     const held = await heldIntentFor(intentKey);
     if (!held) {
-      return { committed: await commitNewIntent(params, signer, { context, key: intentKey }) };
+      return { committed: await commitNewIntent(params, signer, { context, key: intentKey, guardCommit }) };
     }
     const sender = String(await signer.getAddress()).toLowerCase();
     const { kind } = intentContext(context, intentKey);
@@ -902,7 +936,9 @@ async function sendUnderKey(params, signer, intentKey, context, onCommitted = nu
     return { held };
   });
   onCommitted?.();
-  return next.held ? resendIntent(next.held.intentId) : handOff(next.committed);
+  return next.held
+    ? resendIntent(next.held.intentId, { guardHandoff: guardCommit })
+    : handOff(next.committed);
 }
 
 /**
@@ -955,8 +991,10 @@ async function sendUnderKey(params, signer, intentKey, context, onCommitted = nu
  *   intent records: it calls `commit()` itself, in the same run as its last
  *   checks, or throws to withdraw the send, with nothing recorded or sent
  *   (freedom-core design 0011, PRQ-5b: a page's send checks its name and
- *   its document again here). A phone signs and broadcasts in one step, so
- *   its send has no such point.
+ *   its document again here). On a keyed send it guards the first commit,
+ *   and a resend's handoff, the last point before held bytes go out again.
+ *   A refusal reaches the caller as it was thrown. A phone signs and
+ *   broadcasts in one step, so its send has no such point.
  * @returns {Promise<Object>} Transaction result: `hash` (main's keccak of
  *   the bytes), `nonce`, `from`, `to`, `value`, `chainId`, `explorerUrl`,
  *   `broadcastSource`, `intentId` and `outcome` (`sent` or `uncertain`)
@@ -970,7 +1008,7 @@ async function signAndSendTransaction(
     onCommitted?.();
     return sendThroughDevice(params, signer);
   }
-  if (intentKey) return sendUnderKey(params, signer, intentKey, context, onCommitted);
+  if (intentKey) return sendUnderKey(params, signer, intentKey, context, onCommitted, guardCommit);
   const committed = await commitNewIntent(params, signer, { context, guardCommit });
   onCommitted?.();
   return handOff(committed, { redact: Boolean(params.redactErrors) });
