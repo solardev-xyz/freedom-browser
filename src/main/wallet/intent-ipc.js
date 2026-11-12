@@ -49,6 +49,7 @@ const { OBSERVED } = require('./intent-labels');
 const { withAccountLock } = require('./nonce-reservations');
 const { getTxExplorerUrl } = require('./chains');
 const { redactedHandler } = require('./rpc-errors');
+const { forSenderWindow } = require('../windows/request-window');
 
 const OUTCOME_ATTENTION = Object.freeze({
   rejected: 'refused',
@@ -368,7 +369,9 @@ async function closeHeldIntent(intentId, authorization) {
 // A failed send's text can quote an RPC error; it reaches the renderer
 // redacted, as every wallet handler's does (wallet-ipc.js, #1040).
 function handle(channel, listener) {
-  ipcMain.handle(channel, redactedHandler(listener));
+  // Run for the window of the chrome that called: a phone account's job
+  // shows its QR in that window's sidebar (APS-4, `request-window.js`).
+  ipcMain.handle(channel, redactedHandler(forSenderWindow(listener)));
 }
 
 /**

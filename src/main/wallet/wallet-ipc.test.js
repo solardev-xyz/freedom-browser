@@ -1,6 +1,7 @@
 jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn() },
   webContents: { fromId: jest.fn(() => null) },
+  BrowserWindow: { fromWebContents: jest.fn(() => null) },
 }));
 
 jest.mock('qrcode', () => ({}));
@@ -111,6 +112,23 @@ test('startup cached balance IPC never starts a fresh read', async () => {
   const handler = ipcMain.handle.mock.calls.find(([channel]) => channel === 'wallet:get-balances-cached')[1];
   await handler({}, '0xabc');
   expect(getBalancesWithCache).toHaveBeenCalledWith('0xabc', false);
+});
+
+test("a wallet handler runs for its chrome's window: a phone account's job shows there (APS-4)", async () => {
+  const { BrowserWindow } = require('electron');
+  const { requestWindowId } = require('../windows/request-window');
+  const chrome = { id: 41 };
+  BrowserWindow.fromWebContents.mockImplementation((contents) =>
+    contents === chrome ? { id: 6, webContents: chrome, isDestroyed: () => false } : null
+  );
+  registerWalletIpc();
+  const handler = ipcMain.handle.mock.calls.find(([channel]) => channel === 'wallet:get-balances-cached')[1];
+  getBalancesWithCache.mockImplementationOnce(async () => ({ balances: requestWindowId(), fromCache: true }));
+  expect(await handler({ sender: chrome }, '0xabc')).toEqual(expect.objectContaining({ balances: 6 }));
+  // Not a chrome window's own webContents: no window.
+  getBalancesWithCache.mockImplementationOnce(async () => ({ balances: requestWindowId(), fromCache: true }));
+  expect(await handler({ sender: { id: 42 } }, '0xabc')).toEqual(expect.objectContaining({ balances: null }));
+  BrowserWindow.fromWebContents.mockReset().mockReturnValue(null);
 });
 
 // Security audit O-7: every signing handler refuses unless it is handed a

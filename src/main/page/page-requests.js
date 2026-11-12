@@ -109,6 +109,7 @@ const {
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const signingConfirmation = require('../wallet/signing-confirmation');
+const { runInWindow } = require('../windows/request-window');
 const {
   CHANNELS: PROMPT_CHANNELS,
   KIND_SET,
@@ -1151,7 +1152,9 @@ function createPageRequests({
       if (record.answered) return;
       let out;
       try {
-        out = await dispatch(contextOf(record, params));
+        // For the window that hosts the tab: a phone account's job shows
+        // its QR in that window's sidebar (APS-4, `request-window.js`).
+        out = await runInWindow(record.window, () => dispatch(contextOf(record, params)));
       } catch (err) {
         out = { error: { code: err?.code, message: err?.message, data: err?.data } };
       }

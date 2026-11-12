@@ -35,6 +35,9 @@
  * code for a payment once its request went, so a payment has at most one
  * delivered attempt.
  *
+ * The job goes to the chrome of the window that asked, with the approvals
+ * document on (getTargetWindow); otherwise to the focused window.
+ *
  * Responses are only accepted from the webContents the job was sent to —
  * a dApp webview must not be able to answer (or cancel) signing jobs.
  */
@@ -44,6 +47,8 @@ const { randomUUID } = require('crypto');
 const { ipcMain, BrowserWindow } = require('electron');
 
 const { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError } = require('./errors');
+const { requestWindowId } = require('../../windows/request-window');
+const { isApprovalsDocumentEnabled } = require('../../approvals/approvals-document');
 
 // Scanning a QR and confirming on a phone is slow; the renderer session
 // enforces its own (shorter) protocol timeouts — this is the backstop.
@@ -90,7 +95,23 @@ function markDelivery(err, job) {
   return err;
 }
 
+/**
+ * The window whose chrome gets the job. With the approvals document on
+ * (freedom-core design 0011, APS-4), the window that asked
+ * (`windows/request-window.js`): its panel's device wait points to its own
+ * sidebar, so the QR must show there, not in whichever window has focus.
+ * A window that asked and has closed gets none, and the job fails with
+ * REMOTE_NO_UI. Without an asking window (the agent, an x402 payment), or
+ * with the document off, the focused window, as before.
+ */
 function getTargetWindow() {
+  if (isApprovalsDocumentEnabled()) {
+    const asked = requestWindowId();
+    if (asked !== null) {
+      const win = BrowserWindow.fromId(asked);
+      return win && !win.isDestroyed() ? win : null;
+    }
+  }
   return BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
 }
 
