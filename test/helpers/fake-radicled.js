@@ -19,9 +19,10 @@
  * A handler answers through the child, as fake-ipfsd.js's do: `result`,
  * `error`, `head` and `body`, `event`, `exit`, or nothing, to hang. A
  * `rad.read` is answered as the service answers one (`readReply`): its head,
- * `{ content_type: "application/json", bytes }`, which doesn't say `body:
- * true`, opening the stream all the same, then the JSON as the window
- * allows (`readHead` and `body` for the two apart).
+ * `{ content_type: "application/json", bytes, body: true }`, then the JSON
+ * as the window allows (`readHead` and `body` for the two apart). With
+ * `{ says: false }` the head leaves `body` out and opens the stream all the
+ * same, as freedom-radicled 0.1.0's did.
  *
  * As the real service does:
  * - **it checks its environment first** (0008, "Spawn and lock"): with any
@@ -169,19 +170,21 @@ class FakeRadicledChild extends FakeIpfsdChild {
     }
   }
 
-  /** `rad.read`'s head for a body of `bytes` bytes: the stream opens, though
-   * the head doesn't say so (as freedom-radicled's sender writes it). */
-  readHead(id, bytes) {
+  /** `rad.read`'s head for a body of `bytes` bytes, which opens the stream:
+   * `{ content_type, bytes, body: true }`, or with `says: false` the same
+   * without `body` (freedom-radicled 0.1.0's head). */
+  readHead(id, bytes, { says = true } = {}) {
     const result = { content_type: 'application/json', bytes };
+    if (says) result.body = true;
     this.sender.head(id, Buffer.from(JSON.stringify({ type: 'response', id, result })), true);
     this.pump();
   }
 
-  /** `rad.read`'s whole reply: the head, then `text` (a string or bytes) as
-   * the window allows, then its end. */
-  readReply(id, text) {
+  /** `rad.read`'s whole reply: the head (`readHead`'s, with `options`), then
+   * `text` (a string or bytes) as the window allows, then its end. */
+  readReply(id, text, options) {
     const bytes = Buffer.isBuffer(text) ? text : Buffer.from(text);
-    this.readHead(id, bytes.length);
+    this.readHead(id, bytes.length, options);
     this.body(id, bytes);
   }
 
