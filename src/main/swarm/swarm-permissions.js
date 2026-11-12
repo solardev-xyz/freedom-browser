@@ -24,6 +24,13 @@ const { withOriginLock } = require('./origin-mutation-lock');
 
 const PERMISSIONS_FILE = 'swarm-permissions.json';
 
+// The chrome's grant writes main refuses (freedom-core design 0011,
+// "Grants"; PRQ-7b): main writes them itself, for the key it attested, from
+// the user's decision on the prompt it issued (page/page-swarm.js).
+const GRANT_REFUSED = 'A Swarm connection is granted only from its own prompt';
+const MESSAGING_GRANT_REFUSED = 'Swarm messaging is granted only from its own prompt';
+const MESSAGING_RULE_REFUSED = 'Messaging auto-approve is turned on only from a messaging prompt';
+
 let permissionsCache = null;
 
 function getPermissionsPath() {
@@ -283,8 +290,13 @@ function registerSwarmPermissionsIpc() {
     return getPermission(origin);
   });
 
-  ipcMain.handle(IPC.SWARM_GRANT_PERMISSION, (_event, origin) => {
-    return withOriginLock(origin, () => grantPermission(origin));
+  // Refused for every site (freedom-core design 0011, "Grants"; PRQ-7b): a
+  // Swarm connection is written by main itself, for the key it attested,
+  // from the user's decision on the prompt it issued. The chrome named the
+  // site here, so a compromised chrome could connect any site. Revoking
+  // stays open: it only narrows.
+  ipcMain.handle(IPC.SWARM_GRANT_PERMISSION, () => {
+    throw new Error(GRANT_REFUSED);
   });
 
   ipcMain.handle(IPC.SWARM_REVOKE_PERMISSION, (_event, origin) => {
@@ -303,12 +315,22 @@ function registerSwarmPermissionsIpc() {
     return getAutoApprove(origin, type);
   });
 
+  // Messaging's rule only from main (PRQ-7b): main sets it, for the
+  // requester's key, from the user's "always allow" on a messaging prompt
+  // it showed. The chrome named the site here, so turning it on is refused;
+  // turning it off only narrows, and stays open. The publish, feed and
+  // signing rules are still set from the chrome's own prompts until their
+  // step (PRQ-7c).
   ipcMain.handle(IPC.SWARM_SET_AUTO_APPROVE, (_event, origin, type, enabled) => {
+    if (type === 'messaging' && enabled !== false) throw new Error(MESSAGING_RULE_REFUSED);
     return withOriginLock(origin, () => setAutoApprove(origin, type, enabled));
   });
 
-  ipcMain.handle(IPC.SWARM_GRANT_MESSAGING, (_event, origin) => {
-    return withOriginLock(origin, () => grantMessaging(origin));
+  // Refused for every site (PRQ-7b): the messaging grant is written by main
+  // from the user's decision on its own messaging prompt. Revoking it
+  // (swarm:revoke-messaging) stays open.
+  ipcMain.handle(IPC.SWARM_GRANT_MESSAGING, () => {
+    throw new Error(MESSAGING_GRANT_REFUSED);
   });
 
   ipcMain.handle(IPC.SWARM_HAS_MESSAGING_GRANT, (_event, origin) => {

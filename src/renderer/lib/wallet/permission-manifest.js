@@ -2,6 +2,7 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { open as openSidebarPanel } from '../sidebar.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 
 let screen;
 let site;
@@ -46,9 +47,50 @@ export function initPermissionManifest() {
     // Dismissing the sheet drops queued requests too — the user never sees
     // them, so leaving them pending would hang the page.
     if (wasVisible) {
-      for (const pending of manifestQueue.drain()) pending.resolve('deny');
+      for (const pending of manifestQueue.drain()) {
+        // Main's prompt shows again once the sidebar is free.
+        if (pending.handle) pagePromptDisplaced(pending.handle);
+        else pending.resolve('deny');
+      }
     }
   });
+
+  // Main's own consent prompt for a page's request (freedom-core design
+  // 0011, PRQ-7b): main checked the manifest for the site it attested, holds
+  // the consent's token, and decides it on this answer.
+  registerPagePromptRenderer('swarm.manifest', {
+    show: (prompt) => {
+      if (manifestQueue.current?.handle === prompt.handle) return;
+      const model = prompt.view?.model;
+      if (!model || typeof model !== 'object') {
+        decidePagePrompt(prompt.handle, false);
+        return;
+      }
+      manifestQueue.show({
+        handle: prompt.handle,
+        model: { ...model, origin: prompt.site?.label || prompt.site?.key || model.origin },
+        resolve: (outcome) =>
+          decidePagePrompt(prompt.handle, outcome !== 'deny', outcome !== 'deny' ? { outcome } : {}),
+      });
+    },
+    close: (handle) => {
+      if (!manifestQueue.withdraw((entry) => entry.handle === handle)) return;
+      screen?.classList.add('hidden');
+      walletState.identityView?.classList.remove('hidden');
+      manifestQueue.showNext();
+    },
+    isShowing: () =>
+      manifestQueue.current?.handle && screen && !screen.classList.contains('hidden') ? manifestQueue.current.handle : null,
+  });
+}
+
+async function decidePagePrompt(handle, approve, choices = {}) {
+  try {
+    return await window.pagePrompts?.decide?.(handle, approve, choices);
+  } catch (err) {
+    console.error('[PermissionManifest] The decision did not reach main:', err);
+    return null;
+  }
 }
 
 // Concurrent tabs of the same app share one consent token (main hands the

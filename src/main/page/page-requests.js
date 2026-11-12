@@ -42,11 +42,12 @@
  * `WebFrameMain.send` targets a frame, and the frame can commit a new
  * document between the check and the delivery.
  *
- * The app serves the Ethereum reads here (PRQ-3, `page-ethereum.js`):
- * the preload sends those on `page:request`, and every other method still
- * takes today's path through the chrome. The E2E harness can route and
- * serve any method through a test hook (`enablePageRequestTestHooks`).
- * Later steps (PRQ-4 to PRQ-8) move the rest.
+ * The app serves Ethereum's methods here (PRQ-3 to PRQ-5, `page-ethereum.js`)
+ * and Swarm's reads, connecting and messaging (PRQ-7a and 7b,
+ * `page-swarm.js`): the preload sends those on `page:request`, and every
+ * other method still takes today's path through the chrome. The E2E harness can route and serve any method through a
+ * test hook (`enablePageRequestTestHooks`). Later steps (the rest of PRQ-7,
+ * and PRQ-8) move the rest.
  *
  * `page:bind-name { guest, name, key }` (the design's "Names over IPNS")
  * comes from the chrome, before it loads `ipns://<key>` for a DNS name: it
@@ -480,9 +481,22 @@ function createPageRequests({
     return true;
   }
 
+  // document key -> what dispatchers asked to hear when it ends
+  // (`context.onDocumentEnded`): a subscription bound to the document.
+  const endListeners = new Map();
+
   // A document ended: its handles close, nothing is answered to it, and its
   // reservation, waiting or granted, is released.
   documents.onEnded(({ guest, navigation, reason }) => {
+    const ended = endListeners.get(`${guest}:${navigation}`);
+    endListeners.delete(`${guest}:${navigation}`);
+    for (const listener of ended || []) {
+      try {
+        listener();
+      } catch {
+        // One listener's failure must not keep the others from hearing it.
+      }
+    }
     budgets.documentEnded(`${guest}:${navigation}`, GONE);
     const inDocument = byDocument.get(`${guest}:${navigation}`);
     if (!inDocument) return;
@@ -492,6 +506,27 @@ function createPageRequests({
       answer(record, GONE);
     }
   });
+
+  /**
+   * Hear once when the record's document ends (a navigation, its guest
+   * destroyed, its window closed), for what outlives the request but not
+   * the document: a subscription bound to it. One that has already ended is
+   * told at once. Returns a function that stops it.
+   */
+  function onDocumentEnded(record, listener) {
+    if (typeof listener !== 'function') return () => {};
+    if (!documents.isCurrent(record.requester)) {
+      try {
+        listener();
+      } catch {
+        // Told; what it does is its own.
+      }
+      return () => {};
+    }
+    if (!endListeners.has(record.key)) endListeners.set(record.key, new Set());
+    endListeners.get(record.key).add(listener);
+    return () => endListeners.get(record.key)?.delete(listener);
+  }
 
   function contextOf(record, params) {
     return Object.freeze({
@@ -526,6 +561,7 @@ function createPageRequests({
       whenAnswered: () => whenAnswered(record),
       liveDocuments: () => documents.liveDocuments(),
       sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
+      onDocumentEnded: (listener) => onDocumentEnded(record, listener),
       inGrantOrder: (key, job) => inGrantOrder(key, job),
       inChainOrder: (windowId, job) => inChainOrder(windowId, job),
       copied: (label) => copied(record, label),
@@ -1095,11 +1131,13 @@ function resolveBoundName(name) {
 function getPageRequests() {
   if (!shared) {
     const { createEthereumDispatchers } = require('./page-ethereum');
+    const { createSwarmDispatchers, registerSwarmPageEvents } = require('./page-swarm');
     shared = createPageRequests({
       documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
-      dispatchers: createEthereumDispatchers(),
+      dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers() },
       hooks: sharedHooks,
     });
+    registerSwarmPageEvents(shared);
   }
   return shared;
 }

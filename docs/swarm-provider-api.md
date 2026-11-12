@@ -675,20 +675,23 @@ once the node accepts the subscription (bounded at 30 s). Errors:
 (`-32602`, 32 per origin); `establish_timeout`, `node_subscription_limit`,
 `subscription_cancelled` (`4900`, retryable). See
 [Origin isolation](#origin-isolation-guarantees) for when subscriptions end on
-their own.
+their own. Delivery is best effort: a subscription whose messages arrive faster
+than Freedom can hand them to the page (more than 64 messages, or 256 KiB,
+waiting) is closed, and the page stops getting its messages; subscribe again to
+resume.
 
-#### `swarm_unsubscribe { subscriptionId }` → `{ unsubscribed: true }` (connection tier, never prompts)
+#### `swarm_unsubscribe { subscriptionId }` → `{ unsubscribed: true }` (never prompts; needs no connection)
 
-Closes one of the caller's subscriptions. `subscription_not_found` if the id
+Closes one of the calling page's own subscriptions. `subscription_not_found` if the id
 is unknown or not the caller's.
 
 ## Events
 
-| Event        | Payload      | When                                                                 |
-| ------------ | ------------ | -------------------------------------------------------------------- |
-| `connect`    | `{ origin }` | The user approved the connect prompt (not the manifest sheet)        |
-| `disconnect` | `{ origin }` | The user disconnected the origin; sent to the page in the active tab |
-| `message`    | see below    | A subscribed message arrived                                         |
+| Event        | Payload      | When                                                                                          |
+| ------------ | ------------ | --------------------------------------------------------------------------------------------- |
+| `connect`    | `{ origin }` | A `requestAccess` connected the origin (its connect prompt or its manifest sheet); every open page of the origin |
+| `disconnect` | `{ origin }` | The origin's connection was revoked; every open page of the origin                            |
+| `message`    | see below    | A subscribed message arrived; only the page that subscribed                                    |
 
 ```javascript
 {
@@ -699,12 +702,13 @@ is unknown or not the caller's.
 }
 ```
 
-`connect` is not emitted when the origin was already connected, nor when the
-connection came from approving the [manifest sheet](#permission-manifests). `disconnect`
-goes to whatever page is in the active tab, so compare `data.origin` with your
-own; it is not emitted when only one tier is revoked (e.g. messaging in
-Settings) or when a manifest change withdraws a grant. Do not treat the events as the only source of truth: a call
-failing with `4100` means the grant is gone.
+Freedom sends each event only to the page it is for, never through the
+browser's own UI: a page that has navigated away hears nothing more, and its
+subscriptions end with it. `connect` is not emitted when the origin was already
+connected. `disconnect` is not emitted when only one tier is revoked (e.g.
+messaging in Settings). For a DNS name served over IPNS, no event is sent once
+the name no longer points at the page's content. Do not treat the events as
+the only source of truth: a call failing with `4100` means the grant is gone.
 
 ## Example
 

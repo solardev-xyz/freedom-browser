@@ -28,6 +28,12 @@
  *       fail *closed* for it (messaging blocked, not leaked) — update them here
  *       rather than assuming this comment still holds.
  *   The renderer is the only process that can map webview → tab → display URL.
+ *
+ * Page requests (freedom-core design 0011, PRQ-7): main's own dispatcher
+ * (`page/page-swarm.js`) serves the methods it has moved straight from the
+ * page's preload, and calls executeSwarmMethod with the requester's attested
+ * key in place of the chrome's origin. swarm:provider-execute refuses those
+ * methods; the trust model above holds only for the ones still on it.
  */
 
 const { ipcMain, webContents } = require('electron');
@@ -142,6 +148,27 @@ function nodeWriteError(err) {
   return { error: { ...ERRORS.INTERNAL_ERROR, message: err?.message } };
 }
 
+/**
+ * Run a write's effect: at once on the chrome's path, or under the page's
+ * guard (meta.page.effect), which checks again after the method's last wait
+ * and runs `run` in the same run as its checks. Resolves `{ value }`, or
+ * `{ refused }` with nothing done.
+ */
+async function guardedEffect(meta, run) {
+  if (typeof meta?.page?.effect !== 'function') return { value: await run() };
+  return meta.page.effect(run);
+}
+
+// What a page's messaging effect runs instead when the grant went during
+// the method's waits: nothing.
+const MESSAGING_GONE = Symbol('messaging-grant-gone');
+
+// A page's messaging effect, through main: the grant read again in the same
+// run as the effect, after every wait.
+function whileMessagingGranted(meta, origin, run) {
+  return () => (!meta?.page || hasMessagingGrant(origin) ? run() : MESSAGING_GONE);
+}
+
 const KNOWN_METHODS = [
   'swarm_requestAccess',
   'swarm_getCapabilities',
@@ -234,6 +261,16 @@ function agentCustodyRefusal(sender, method, meta) {
 
 function notConnected() {
   return notAuthorized('not_connected');
+}
+
+// The methods main serves to pages itself, from the attested requester
+// (freedom-core design 0011, PRQ-7; `page/page-swarm.js`). The preload no
+// longer sends them through the chrome, so a chrome that asks for one here
+// names a site only a page may speak for, and is refused before anything
+// runs.
+function chromeRouteRefusal(method) {
+  const { SWARM_PAGE_METHODS } = require('../page/page-swarm');
+  return SWARM_PAGE_METHODS.includes(method) ? notAuthorized('page_request_only') : null;
 }
 
 function feedNotGranted() {
@@ -394,11 +431,20 @@ function permissionFreeReadMeter(origin) {
  * @param {string} method
  * @param {*} params
  * @param {string} origin - Normalized origin from renderer
- * @param {{ webContentsId?: number, approval?: 'user'|'auto' }} [meta] -
+ * @param {{ webContentsId?: number, approval?: 'user'|'auto', page?: object }} [meta] -
  *   Renderer-supplied routing info (trusted like origin — the renderer is
  *   Freedom's own code). swarm_subscribe uses webContentsId to target
  *   message delivery at the webview; the IPC handler checks both fields
  *   against Agent custody first (agentCustodyRefusal).
+ *   `page` is main's own, for a page's request through main (freedom-core
+ *   design 0011, PRQ-7b; page/page-swarm.js), never the chrome's:
+ *   `document` names the requesting document, which a subscription is bound
+ *   to and an unsubscribe is scoped to; `deliverTo(data)` sends a
+ *   subscription's message to it and resolves `{ ok }`; and `effect(run)`
+ *   guards the effect (a send, a subscription opened): after the method's
+ *   last wait it checks the name, custody and the document again, and runs
+ *   `run` in the same run as those checks, resolving `{ value }`, or
+ *   `{ refused }` with nothing done.
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -452,6 +498,12 @@ async function executeSwarmMethod(method, params, origin, meta) {
     // here would just be friction without security benefit.
     if (method === 'swarm_listFeeds') {
       return handleListFeeds(normalizedOrigin);
+    }
+
+    // A page's own subscriptions, through main (PRQ-7b): ending one only
+    // gives up the document's own authority, so it needs no grant.
+    if (method === 'swarm_unsubscribe' && meta?.page) {
+      return handleUnsubscribe(params, normalizedOrigin, meta);
     }
 
     // All other methods require permission
@@ -519,11 +571,11 @@ async function executeSwarmMethod(method, params, origin, meta) {
     }
 
     if (method === 'swarm_sendPss') {
-      return handleSendPss(params, normalizedOrigin);
+      return handleSendPss(params, normalizedOrigin, meta);
     }
 
     if (method === 'swarm_sendGsoc') {
-      return handleSendGsoc(params, normalizedOrigin);
+      return handleSendGsoc(params, normalizedOrigin, meta);
     }
 
     if (method === 'swarm_subscribe') {
@@ -531,7 +583,7 @@ async function executeSwarmMethod(method, params, origin, meta) {
     }
 
     if (method === 'swarm_unsubscribe') {
-      return handleUnsubscribe(params, normalizedOrigin);
+      return handleUnsubscribe(params, normalizedOrigin, meta);
     }
 
     return { error: ERRORS.INTERNAL_ERROR };
@@ -1768,7 +1820,7 @@ async function handleGetMessagingIdentity(origin) {
 /**
  * Handle swarm_sendPss: encrypted point-to-point message.
  */
-async function handleSendPss(params, origin) {
+async function handleSendPss(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return invalidParams('params is required');
   }
@@ -1823,13 +1875,15 @@ async function handleSendPss(params, origin) {
   }
 
   try {
-    await messagingService.sendPss({
+    const sent = await guardedEffect(meta, whileMessagingGranted(meta, origin, () => messagingService.sendPss({
       topic: params.topic,
       targets: targets.toLowerCase(),
       // Sent to the node as is: the compressed SEC1 key, 66 hex (#1062).
       recipient: recipient.toLowerCase(),
       data: payload,
-    });
+    })));
+    if (sent.refused) return { error: sent.refused };
+    if (sent.value === MESSAGING_GONE) return messagingNotGranted();
     return { result: { sent: true } };
   } catch (err) {
     log.error(`[SwarmProvider] sendPss failed for ${origin}:`, err.message);
@@ -1865,7 +1919,7 @@ function gsocDerivationError(err) {
  * carries no key, so there is nothing to sign with. Cross-provider
  * senders must share the topic (or use the feed/SOC layer).
  */
-async function handleSendGsoc(params, origin) {
+async function handleSendGsoc(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return invalidParams('params is required');
   }
@@ -1900,8 +1954,13 @@ async function handleSendGsoc(params, origin) {
   }
 
   try {
-    const result = await messagingService.sendGsoc({ topic: params.topic, data: payload, origin });
-    return { result: { sent: true, address: result.address } };
+    const sent = await guardedEffect(
+      meta,
+      whileMessagingGranted(meta, origin, () => messagingService.sendGsoc({ topic: params.topic, data: payload, origin }))
+    );
+    if (sent.refused) return { error: sent.refused };
+    if (sent.value === MESSAGING_GONE) return messagingNotGranted();
+    return { result: { sent: true, address: sent.value.address } };
   } catch (err) {
     log.error(`[SwarmProvider] sendGsoc failed for ${origin}:`, err.message);
     return gsocDerivationError(err) || nodeWriteError(err);
@@ -1963,7 +2022,91 @@ function attachWebContentsTeardown(webContentsId) {
   });
 }
 
+// A message's data, as the page-world provider reads it.
+function subscriptionMessage(subscription, payload, receivedAt = Date.now()) {
+  return {
+    type: 'swarm_subscription',
+    subscription: subscription.id,
+    result: {
+      kind: subscription.kind,
+      key: subscription.key,
+      data: payload.toString('base64'),
+      encoding: 'base64',
+      receivedAt,
+    },
+  };
+}
+
+// What may wait to be delivered for one page subscription through main:
+// messages arrive as fast as the node sends them, while each delivery may
+// wait on a DNS name's resolution. Past either bound the subscription is
+// closed (delivery is best effort), and nothing more waits for it.
+const PAGE_DELIVERY_LIMITS = Object.freeze({
+  messages: 64,
+  bytes: 256 * 1024,
+});
+
+/**
+ * A page's subscription through main (PRQ-7b) goes to its own document, in
+ * the order its messages came, one at a time: main's `sendEvent` carries
+ * the document's nonce, sends only while the document is current, and for a
+ * name-keyed document resolves the name again first. Messages waiting
+ * meanwhile are held as their raw payloads, bounded (PAGE_DELIVERY_LIMITS);
+ * one past the bounds closes the subscription. One that can't be delivered
+ * (the document gone, the name moved off its IPNS key) ends the
+ * subscription, and a subscription that ends drops whatever still waits.
+ */
+function deliverToDocument(subscription, payload) {
+  if (subscription.closed) return;
+  let outbox = subscription.outbox;
+  if (!outbox) {
+    outbox = { items: [], bytes: 0, running: false };
+    subscription.outbox = outbox;
+    subscription.onClosed = () => {
+      outbox.items = [];
+      outbox.bytes = 0;
+    };
+  }
+  if (
+    outbox.items.length + 1 > PAGE_DELIVERY_LIMITS.messages ||
+    outbox.bytes + payload.length > PAGE_DELIVERY_LIMITS.bytes
+  ) {
+    log.warn(`[SwarmProvider] subscription ${subscription.kind}:${subscription.key} closed: its page can't keep up`);
+    subscriptionRegistry.cancelById(subscription.id);
+    return;
+  }
+  outbox.items.push({ payload, receivedAt: Date.now() });
+  outbox.bytes += payload.length;
+  if (!outbox.running) drainToDocument(subscription, outbox);
+}
+
+async function drainToDocument(subscription, outbox) {
+  outbox.running = true;
+  try {
+    while (!subscription.closed && outbox.items.length > 0) {
+      const { payload, receivedAt } = outbox.items.shift();
+      outbox.bytes -= payload.length;
+      let outcome;
+      try {
+        outcome = await subscription.deliverTo(subscriptionMessage(subscription, payload, receivedAt));
+      } catch {
+        outcome = null;
+      }
+      if (!outcome?.ok) {
+        subscriptionRegistry.cancelById(subscription.id);
+        break;
+      }
+    }
+  } finally {
+    outbox.running = false;
+  }
+}
+
 function deliverSubscriptionMessage(subscription, payload) {
+  if (subscription.deliverTo) {
+    deliverToDocument(subscription, payload);
+    return;
+  }
   const contents = webContents.fromId(subscription.webContentsId);
   if (!contents || contents.isDestroyed()) return;
   // A webview keeps its webContents across navigations, so the page on
@@ -1990,17 +2133,7 @@ function deliverSubscriptionMessage(subscription, payload) {
   // shared modules).
   contents.send(IPC.SWARM_PROVIDER_EVENT, {
     event: 'message',
-    data: {
-      type: 'swarm_subscription',
-      subscription: subscription.id,
-      result: {
-        kind: subscription.kind,
-        key: subscription.key,
-        data: payload.toString('base64'),
-        encoding: 'base64',
-        receivedAt: Date.now(),
-      },
-    },
+    data: subscriptionMessage(subscription, payload),
   });
 }
 
@@ -2045,6 +2178,10 @@ async function handleSubscribe(params, origin, meta) {
   if (hasTopic) {
     const topicError = validateMessagingTopic(params.topic);
     if (topicError) return topicError;
+  }
+
+  if (meta?.page) {
+    return subscribeForPage({ kind, key, topic: params.topic }, origin, meta);
   }
 
   const webContentsId = meta?.webContentsId;
@@ -2101,13 +2238,7 @@ async function handleSubscribe(params, origin, meta) {
   // gone; binding now would hand its slot to a page that never subscribed.
   if (normalizeOrigin(contents.getURL()) !== origin || navEpoch(webContentsId) !== entryNavEpoch) {
     log.warn(`[SwarmProvider] subscribe target navigated away from ${origin}: ${kind}:${key}`);
-    return {
-      error: {
-        ...ERRORS.NODE_UNAVAILABLE,
-        message: 'Page navigated away before the subscription was established',
-        data: { reason: 'subscription_cancelled' },
-      },
-    };
+    return subscriptionCancelled();
   }
 
   // Teardown must be armed *before* the registry can hold a slot on this
@@ -2127,46 +2258,120 @@ async function handleSubscribe(params, origin, meta) {
     log.info(`[SwarmProvider] subscribe succeeded for ${origin}: ${kind}:${key}`);
     return { result: { subscriptionId, kind, key } };
   } catch (err) {
-    if (err.reason === 'establish_timeout' || err.reason === 'subscription_cancelled' || err.reason === 'cancelled') {
-      // Never established within the window, or torn down while we waited
-      // (navigation, tab close, grant revoke). Retryable, like any other
-      // node-availability failure — the slot has already been released.
-      log.warn(`[SwarmProvider] subscribe did not establish for ${origin} (${err.reason}): ${kind}:${key}`);
-      return {
-        error: {
-          ...ERRORS.NODE_UNAVAILABLE,
-          message: err.message,
-          data: { reason: err.reason },
-        },
-      };
+    return subscribeError(err, origin, kind, key);
+  }
+}
+
+// A subscription that ended before it was established, or whose
+// requesting document went meanwhile: retryable, like any node failure.
+function subscriptionCancelled(message = 'Page navigated away before the subscription was established') {
+  return {
+    error: {
+      ...ERRORS.NODE_UNAVAILABLE,
+      message,
+      data: { reason: 'subscription_cancelled' },
+    },
+  };
+}
+
+// The errors a subscription that didn't open answers, both paths alike.
+function subscribeError(err, origin, kind, key) {
+  if (err.reason === 'establish_timeout' || err.reason === 'subscription_cancelled' || err.reason === 'cancelled') {
+    // Never established within the window, or torn down while we waited
+    // (navigation, tab close, grant revoke). Retryable, like any other
+    // node-availability failure — the slot has already been released.
+    log.warn(`[SwarmProvider] subscribe did not establish for ${origin} (${err.reason}): ${kind}:${key}`);
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: err.message,
+        data: { reason: err.reason },
+      },
+    };
+  }
+  if (err.reason === 'too_many_subscriptions') {
+    return invalidParams(err.message, 'too_many_subscriptions', {
+      limit: LIMITS.maxSubscriptions,
+    });
+  }
+  if (err.reason === 'node_subscription_limit') {
+    // Node-wide pipeline pool exhausted (possibly by other origins) —
+    // per spec this is a retryable 4900, NOT a parameter error: the
+    // calling dApp did nothing wrong and capacity frees as other
+    // subscriptions close.
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: `Node subscription capacity exhausted: ${err.message}`,
+        data: { reason: 'node_subscription_limit' },
+      },
+    };
+  }
+  log.error(`[SwarmProvider] subscribe failed for ${origin}:`, err.message);
+  return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+}
+
+/**
+ * swarm_subscribe for a page, through main (freedom-core design 0011,
+ * PRQ-7b): bound to the requesting document (`meta.page.document`), not to
+ * a webContents. Its messages go to that document alone, through main's
+ * `sendEvent` (`meta.page.deliverTo`), and it ends with the document, which
+ * main tells the registry (`cancelByDocument`): no navigation counter and
+ * no URL cross-check, since a document is never reused. After the waits
+ * (the reachability probe, a GSOC topic's mining) the page's guard checks
+ * the name and the document again before the registry holds a slot for it.
+ */
+async function subscribeForPage({ kind, key: givenKey, topic }, origin, meta) {
+  const { document, deliverTo } = meta.page;
+  if (typeof document !== 'string' || typeof deliverTo !== 'function') {
+    return invalidParams('subscribe requires a document target', 'invalid_params');
+  }
+
+  if (!hasMessagingGrant(origin)) {
+    return messagingNotGranted();
+  }
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  let key = givenKey;
+  if (!key) {
+    try {
+      key = kind === 'gsoc'
+        ? (await messagingService.deriveGsoc(topic, { origin })).address
+        : messagingService.resolvePssTopicHex(topic);
+    } catch (err) {
+      log.error(`[SwarmProvider] subscribe derivation failed for ${origin}:`, err.message);
+      return gsocDerivationError(err) || { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
     }
-    if (err.reason === 'too_many_subscriptions') {
-      return invalidParams(err.message, 'too_many_subscriptions', {
-        limit: LIMITS.maxSubscriptions,
-      });
-    }
-    if (err.reason === 'node_subscription_limit') {
-      // Node-wide pipeline pool exhausted (possibly by other origins) —
-      // per spec this is a retryable 4900, NOT a parameter error: the
-      // calling dApp did nothing wrong and capacity frees as other
-      // subscriptions close.
-      return {
-        error: {
-          ...ERRORS.NODE_UNAVAILABLE,
-          message: `Node subscription capacity exhausted: ${err.message}`,
-          data: { reason: 'node_subscription_limit' },
-        },
-      };
-    }
-    log.error(`[SwarmProvider] subscribe failed for ${origin}:`, err.message);
-    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+
+  try {
+    // The grant read again in the same run as the registry takes a slot:
+    // one revoked during the waits above opens nothing.
+    const opened = await guardedEffect(meta, whileMessagingGranted(meta, origin, () => subscriptionRegistry.subscribe({
+      origin,
+      document,
+      deliverTo,
+      kind,
+      key,
+    })));
+    if (opened.refused) return { error: opened.refused };
+    if (opened.value === MESSAGING_GONE) return messagingNotGranted();
+    log.info(`[SwarmProvider] subscribe succeeded for ${origin}: ${kind}:${key}`);
+    return { result: { subscriptionId: opened.value.subscriptionId, kind, key } };
+  } catch (err) {
+    return subscribeError(err, origin, kind, key);
   }
 }
 
 /**
- * Handle swarm_unsubscribe: close a subscription (origin-scoped).
+ * Handle swarm_unsubscribe: close a subscription (origin-scoped), or for a
+ * page through main one of its document's own (`meta.page.document`).
  */
-function handleUnsubscribe(params, origin) {
+function handleUnsubscribe(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return invalidParams('params is required');
   }
@@ -2177,7 +2382,8 @@ function handleUnsubscribe(params, origin) {
   }
 
   try {
-    subscriptionRegistry.unsubscribe(origin, subscriptionId);
+    if (meta?.page) subscriptionRegistry.unsubscribeDocument(meta.page.document, subscriptionId);
+    else subscriptionRegistry.unsubscribe(origin, subscriptionId);
     return { result: { unsubscribed: true } };
   } catch (err) {
     if (err.reason === 'subscription_not_found') {
@@ -2248,16 +2454,34 @@ function registerSwarmProviderIpc() {
 
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
-    return agentCustodyRefusal(event?.sender, method, meta) ||
+    return chromeRouteRefusal(method) ||
+      agentCustodyRefusal(event?.sender, method, meta) ||
       executeSwarmMethod(method, params, origin, meta);
   });
 
   log.info('[SwarmProvider] IPC handler registered');
 }
 
+/** A page's document ended (PRQ-7b): its subscriptions end with it. */
+function endDocumentSubscriptions(document) {
+  subscriptionRegistry.cancelByDocument(document);
+}
+
+/** Close one subscription of a page's document, if it is still open. */
+function endDocumentSubscription(document, subscriptionId) {
+  try {
+    subscriptionRegistry.unsubscribeDocument(document, subscriptionId);
+  } catch {
+    // Already gone.
+  }
+}
+
 module.exports = {
   registerSwarmProviderIpc,
   executeSwarmMethod,
+  PAGE_DELIVERY_LIMITS,
+  endDocumentSubscriptions,
+  endDocumentSubscription,
   checkSwarmPreFlight,
   checkBeeReachable,
   validateVirtualPath,
