@@ -204,7 +204,7 @@ function backends() {
   return { state, deps, signer };
 }
 
-function setup({ dispatchers: custom, approvalsDocument = false } = {}) {
+function setup({ dispatchers: custom, approvalsDocument = false, touchId = false } = {}) {
   const guests = new Map();
   const names = new Map();
   const nameHolds = new Map(); // name -> deferred: the next resolution waits for it
@@ -265,6 +265,13 @@ function setup({ dispatchers: custom, approvalsDocument = false } = {}) {
       unlockAttempts.push(password);
       if (password !== 'right password') throw new Error('Incorrect password');
       state.unlocked = true;
+    },
+    touchIdAvailable: async () => touchId,
+    unlockWithTouchId: async () => {
+      unlockAttempts.push('touch id');
+      if (state.touchIdFails) return { success: false, error: 'Touch ID failed' };
+      state.unlocked = true;
+      return { success: true };
     },
   });
   const unlockAttempts = [];
@@ -1588,6 +1595,37 @@ describe('with the approvals document on (0011 APS-2)', () => {
 
     await env.decide(env.lastPrompt().handle, true, {});
     expect(await answer).toEqual({ result: '0xmsgsig' });
+  });
+
+  // APS-3: Touch ID in the panel, run by main, where main offers it.
+  test('Touch ID: offered only where main can use it, run by main, a failure asked again', async () => {
+    const env = setup({ approvalsDocument: true, touchId: true });
+    env.connect();
+    env.state.unlocked = false;
+    env.state.touchIdFails = true;
+    const answer = env.tab().ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'vault.unlock', view: { reason: 'sign', touchId: true } });
+    env.decide(env.lastPrompt().handle, true, { touchId: true });
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'vault.unlock', view: { touchId: true, failed: true } });
+    env.state.touchIdFails = false;
+    env.decide(env.lastPrompt().handle, true, { touchId: true });
+    await flush();
+    expect(env.unlockAttempts).toEqual(['touch id', 'touch id']);
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    await env.decide(env.lastPrompt().handle, true, {});
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+
+    // Not offered: a Touch ID decision is no decision.
+    const plain = setup({ approvalsDocument: true });
+    plain.connect();
+    plain.state.unlocked = false;
+    plain.tab().ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(plain.lastPrompt().view.touchId).toBeUndefined();
+    expect(await plain.decide(plain.lastPrompt().handle, true, { touchId: true })).toEqual({ ok: false, reason: 'invalid' });
+    expect(plain.unlockAttempts).toEqual([]);
   });
 
   test('the document off: no unlock first, as the chrome\'s screen unlocks in place', async () => {

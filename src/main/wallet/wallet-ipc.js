@@ -40,6 +40,7 @@ const {
   KINDS: CONFIRM_KINDS,
   NOT_CONFIRMED,
   isPageKind,
+  bindingFor,
   issueConfirmation,
   consumeConfirmation,
 } = require('./signing-confirmation');
@@ -492,6 +493,26 @@ function registerWalletIpc() {
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
           ? getActiveWalletIndex()
           : accountIndex;
+      // With the approvals document on (design 0011, APS-3), the wallet's own
+      // kinds are minted only on the user's approval in the window's
+      // approvals document, which shows main's view of exactly the request
+      // the token binds, checked first, and asks again for a fee above the
+      // threshold itself: the chrome's acknowledgement counts for nothing.
+      const walletApprovals = require('../approvals/wallet-approvals');
+      const approvals = walletApprovals.PROMPT_KINDS[kind] ? walletApprovals.getWalletApprovals() : null;
+      if (approvals) {
+        bindingFor(kind, index, payload);
+        const outcome = await approvals.confirm({
+          sender: event?.sender,
+          kind,
+          index,
+          payload,
+          feeChecked: FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index),
+        });
+        if (!outcome.approved) return { success: false, error: outcome.error, code: outcome.code };
+        const { token, expiresAt } = issueConfirmation(kind, index, payload);
+        return { success: true, token, expiresAt };
+      }
       if (FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index)) {
         const verdict = await checkAtApproval(payload, {
           acknowledged: options?.feeAcknowledged === true,

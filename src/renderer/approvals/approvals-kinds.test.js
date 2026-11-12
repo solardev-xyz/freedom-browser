@@ -237,7 +237,7 @@ describe('every view main builds fits its kind\'s schema', () => {
     expect(checkMessage(message(kindOf(name), hostileViews[name])).valid).toBe(true);
   });
 
-  test('the dApp kinds, and no Safe board (the chrome keeps those until APS-3)', () => {
+  test('the dApp kinds and the wallet\'s own, and no Safe board (the chrome keeps those for now)', () => {
     expect(Object.keys(KINDS).sort()).toEqual(
       [
         'eth.connect',
@@ -253,6 +253,12 @@ describe('every view main builds fits its kind\'s schema', () => {
         'swarm.publish',
         'test.prompt',
         'vault.unlock',
+        'wallet.executor_send',
+        'wallet.intent_close',
+        'wallet.intent_replace',
+        'wallet.intent_resend',
+        'wallet.safe_send',
+        'wallet.send',
       ].sort()
     );
   });
@@ -452,5 +458,75 @@ describe('what each template shows and sends', () => {
   test('the connect prompts\' copy', () => {
     expect(render('swarm.connect', {}).body.textContent).toContain('Publish content through your Swarm node');
     expect(render('radicle.connect', {}).heading).toBe('Connect Radicle node?');
+  });
+});
+
+// The wallet's own prompts (APS-3): main's view of the request a token binds.
+describe('the wallet\'s own kinds', () => {
+  const TO = '0x2222222222222222222222222222222222222222';
+  const HASH = `0x${'ab'.repeat(32)}`;
+  const GNOSIS = { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' };
+  const FEE = { gasLimit: '21000', maxFeePerGas: '1000000000', maxPriorityFeePerGas: '1000000' };
+  const VERDICT = { maxCost: '21000000000000', comparable: true, ratio: '4.5', above: true, oneEndpoint: false, basis: 'header', autoApprove: false };
+  const hostileData = `0x${Buffer.from(HOSTILE, 'utf8').toString('hex')}`;
+  const WALLET = {
+    'wallet.send': { account: ACCOUNT, chain: GNOSIS, tx: { to: TO, value: '0', data: hostileData }, transfer: null, fee: FEE, feeCheck: VERDICT, feeAskAgain: false },
+    'wallet.safe_send': { account: { index: 1000, name: 'Team Safe', address: SAFE, type: 'safe' }, chain: GNOSIS, tx: { to: TO, value: '5', data: '0x' }, transfer: null },
+    'wallet.intent_resend': { account: ACCOUNT, chain: GNOSIS, nonce: 7, hash: HASH },
+    'wallet.intent_replace': { account: { ...ACCOUNT, type: 'ledger' }, chain: GNOSIS, nonce: 7, tx: { to: TO, value: '0', data: '0x' }, transfer: null, fee: { gasLimit: '21000', gasPrice: '3' }, feeCheck: null, feeAskAgain: false },
+    'wallet.intent_close': { account: { index: null, name: '', address: TO, type: 'unknown' }, chain: GNOSIS, nonce: 7, hashes: [HASH, HASH] },
+    'wallet.executor_send': { account: ACCOUNT, chain: GNOSIS, tx: { to: SAFE, value: '0', data: '0x6a761202' }, fee: { gasLimit: '90000', gasPrice: '2000000000' }, feeCheck: VERDICT, feeAskAgain: true },
+  };
+
+  test.each(Object.keys(WALLET))('%s fits its schema, and its page-free fields render as text', (kind) => {
+    expect(checkMessage(message(kind, WALLET[kind])).valid).toBe(true);
+    const { body, form } = render(kind, WALLET[kind]);
+    expect(form.choices()).toEqual({});
+    const tags = new Set(body.all().map((n) => n.tagName));
+    for (const tag of ['SCRIPT', 'IMG', 'SVG', 'STYLE', 'A', 'INPUT']) expect(tags.has(tag)).toBe(false);
+  });
+
+  test('a send shows its data as hex, cut; its fee above the threshold; the second press labelled', () => {
+    const first = render('wallet.send', WALLET['wallet.send']);
+    expect(first.approve).toBe('Send');
+    expect(first.body.textContent).toContain("This network fee is 4.5× today's network fee.");
+    expect(first.body.textContent).toContain('Up to 0.000021 xDAI');
+    expect(first.body.all().find((n) => n.className === 'field-full').textContent).toBe(hostileData);
+    expect(render('wallet.send', { ...WALLET['wallet.send'], feeAskAgain: true }).approve).toBe('Send anyway');
+    expect(render('wallet.executor_send', WALLET['wallet.executor_send']).approve).toBe('Send anyway');
+    expect(render('wallet.executor_send', { ...WALLET['wallet.executor_send'], feeAskAgain: false }).approve).toBe('Confirm fee and execute');
+  });
+
+  test('a token transfer is read from the data; an account not in the wallet says so; a device says where to confirm', () => {
+    const amount = (5n * 10n ** 18n).toString();
+    const transfer = render('wallet.send', { ...WALLET['wallet.send'], transfer: { token: TO, recipient: SAFE, amount } });
+    expect(transfer.body.textContent).toContain('An ERC-20 transfer, read from the data below');
+    expect(transfer.body.textContent).toContain(amount);
+    expect(render('wallet.intent_close', WALLET['wallet.intent_close']).body.textContent).toContain('An account not in this wallet');
+    expect(render('wallet.intent_replace', WALLET['wallet.intent_replace']).body.textContent).toContain('You confirm this on your Ledger');
+  });
+
+  test('off its schema: an unknown field, a bad hash, a page\'s choice in the account', () => {
+    for (const [kind, view] of [
+      ['wallet.send', { ...WALLET['wallet.send'], memo: 'x' }],
+      ['wallet.intent_resend', { ...WALLET['wallet.intent_resend'], hash: '0x12' }],
+      ['wallet.intent_close', { ...WALLET['wallet.intent_close'], hashes: Array.from({ length: 65 }, () => HASH) }],
+      ['wallet.safe_send', { ...WALLET['wallet.safe_send'], account: { ...ACCOUNT, type: 'Safe <b>' } }],
+    ]) {
+      expect(checkMessage(message(kind, view)).valid).toBe(false);
+    }
+  });
+});
+
+// Touch ID, where main offers it (APS-3): the panel asks main to use it.
+describe('vault.unlock with Touch ID', () => {
+  test('an empty password means Touch ID only where main offers it', () => {
+    const offered = render('vault.unlock', { reason: 'send', touchId: true });
+    expect(checkMessage(message('vault.unlock', { reason: 'send', touchId: true })).valid).toBe(true);
+    expect(offered.body.textContent).toContain('Leave the password empty to unlock with Touch ID.');
+    expect(offered.form.choices()).toEqual({ touchId: true });
+    inputs(offered.body, 'password')[0].value = 'pw';
+    expect(offered.form.choices()).toEqual({ password: 'pw' });
+    expect(render('vault.unlock', { reason: 'send' }).form.choices()).toBeNull();
   });
 });

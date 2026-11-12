@@ -284,6 +284,10 @@ function defaultWatchWindow(windowId, onClosed) {
  * @param {(password: string) => Promise<void>} [options.unlockVault] main's
  *   own unlock, for a `vault.unlock` decided in the approvals document
  *   (APS-2), which carries the password; throws when it is wrong.
+ * @param {() => Promise<boolean>} [options.touchIdAvailable] whether main
+ *   can unlock with Touch ID here (APS-3: macOS, quick unlock set up).
+ * @param {() => Promise<{success: boolean}>} [options.unlockWithTouchId]
+ *   main's own Touch ID unlock, whose password never leaves main.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -302,6 +306,8 @@ function createPageRequests({
   unlockVault = async () => {
     throw new Error('no vault');
   },
+  touchIdAvailable = async () => false,
+  unlockWithTouchId = async () => ({ success: false }),
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -720,6 +726,9 @@ function createPageRequests({
     raw.password.length <= MAX_PASSWORD_LENGTH
       ? { password: raw.password }
       : null;
+  // A decision for Touch ID instead (APS-3), where main offers it.
+  const touchIdChoice = (raw) =>
+    isPlainObject(raw) && Object.keys(raw).length === 1 && raw.touchId === true ? { touchId: true } : null;
 
   /**
    * With the approvals document on (APS-2), a vault unlock takes the
@@ -729,18 +738,30 @@ function createPageRequests({
    * saying so (`failed`). The password goes nowhere else.
    */
   async function unlockPrompt(record, { view = {} } = {}) {
-    let shown = view;
+    let touchId = false;
+    try {
+      touchId = (await touchIdAvailable()) === true;
+    } catch {
+      touchId = false;
+    }
+    const offered = touchId ? { ...view, touchId: true } : view;
+    let shown = offered;
     for (;;) {
       // The password goes from the decision's check straight to this
       // attempt: the decision main keeps carries no choices, and the
       // decision's invocation is answered once the attempt is done, so
       // nothing holds a password past its own attempt (Codex, #1208).
       let password = null;
+      let viaTouchId = false;
       let attemptDone;
       const released = new Promise((resolve) => {
         attemptDone = resolve;
       });
       const choices = (raw) => {
+        if (touchId && touchIdChoice(raw)) {
+          viaTouchId = true;
+          return {};
+        }
         const checked = passwordChoices(raw);
         if (!checked) return null;
         password = checked.password;
@@ -753,11 +774,16 @@ function createPageRequests({
         const attempt = password;
         password = null;
         try {
-          await unlockVault(attempt);
+          if (viaTouchId) {
+            const result = await unlockWithTouchId();
+            if (result?.success !== true) throw new Error(result?.error || 'Touch ID failed');
+          } else {
+            await unlockVault(attempt);
+          }
         } catch {
           trace({ kind: 'unlock-failed', id: record.id });
           if (record.answered) return { closed: CLOSED.CANCELLED };
-          shown = { ...view, failed: true };
+          shown = { ...offered, failed: true };
           continue;
         }
       } finally {
@@ -1358,6 +1384,11 @@ function getPageRequests() {
       hooks: sharedHooks,
       approvals: isApprovalsDocumentEnabled() ? getApprovalsDocuments() : null,
       unlockVault: (password) => require('../identity-manager').unlockVault(password),
+      touchIdAvailable: async () => {
+        const quickUnlock = require('../quick-unlock');
+        return (await quickUnlock.canUseTouchId()) === true && (await quickUnlock.isQuickUnlockEnabled()) === true;
+      },
+      unlockWithTouchId: () => require('../quick-unlock').unlockWithTouchId(),
     });
     registerSwarmPageEvents(shared);
     registerRadiclePageEvents(shared);
