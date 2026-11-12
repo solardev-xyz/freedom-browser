@@ -1,0 +1,4 @@
+- A site's Swarm feed or signing request now asks you to unlock your identity vault first, if it is locked, and then shows the feed screen with your publisher identities; a site in a background tab waits for you to switch to it ([#1201](https://github.com/solardev-xyz/freedom-browser/pull/1201))
+  - A request you haven't seen within five minutes is closed and the page is told it timed out; one you're looking at waits for your answer
+  - Feed and signing auto-approve can no longer be turned on from a site's permission screen, only turned off; choose "Always allow" on the site's next request instead
+  - A feed write the Swarm node stops answering is given up on after five minutes

@@ -1615,8 +1615,8 @@ jobs:
       # main reads and records (`page-sends`, PRQ-5b), the chain
       # switcher's and a revocation's Ethereum events, which main sends to
       # the right documents only (`page-events`, PRQ-6), window.swarm's
-      # reads, which main serves under the page's attested key and the
-      # chrome's route refuses (`page-swarm`, PRQ-7a), its connecting and
+      # reads, which main serves under the page's attested key with no
+      # route left in the chrome (`page-swarm`, PRQ-7a), its connecting and
       # messaging, whose prompts and grants are main's and whose
       # subscriptions end with their document (`page-swarm-connect`, PRQ-7b),
       # its publishing, whose prompt and rule are main's and whose uploads take
