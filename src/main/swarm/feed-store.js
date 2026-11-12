@@ -679,6 +679,23 @@ function createAppScopedIdentity(origin, options = {}) {
   return getOriginEntry(origin);
 }
 
+/**
+ * An app-scoped identity on exactly the publisher key `publisherKeyIndex`,
+ * which must still be the next one: the key a feed prompt previewed and the
+ * user approved (freedom-core design 0011, PRQ-7d). If another identity took
+ * that key meanwhile, nothing is written and this throws (`identity_taken`):
+ * the user never approved the next one. Synchronous, so nothing else can
+ * take the key between the check and the allocation.
+ */
+function createAppScopedIdentityAt(origin, publisherKeyIndex, options = {}) {
+  if (loadFeeds().nextPublisherKeyIndex !== publisherKeyIndex) {
+    const err = new Error('The publisher identity this prompt showed was taken by another one');
+    err.code = 'identity_taken';
+    throw err;
+  }
+  return createAppScopedIdentity(origin, options);
+}
+
 function ensureAntWalletIdentity(origin, options = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
@@ -1049,6 +1066,7 @@ module.exports = {
   getOriginIdentityStateWithOwners,
   previewAppScopedIdentity,
   createAppScopedIdentity,
+  createAppScopedIdentityAt,
   ensureAntWalletIdentity,
   activateIdentity,
   getFeed,

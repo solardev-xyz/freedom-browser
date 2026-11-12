@@ -410,6 +410,59 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
     expect(Object.keys(feeds.getOriginEntry(KEY_A).identities).sort()).toEqual(['app-scoped:0', 'bee-wallet']);
   });
 
+  // Codex round 1 on #1201: the user approves exactly the identity shown.
+  test('a new identity whose key another one takes while its prompt is open is never granted: the prompt shows again, with the key now next', async () => {
+    const env = setup();
+    permissions.grantPermission(KEY_A);
+    const page = env.tab();
+    const answer = page.ask('swarm_writeSingleOwnerChunk', { identifier: IDENTIFIER, data: 'x' });
+    const first = await env.shown('swarm.feed');
+    expect(first.view.newIdentity).toMatchObject({ id: 'app-scoped:0', owner: '0xPublisher0' });
+    // Another site takes that key, through the chrome's identity channel.
+    await mockIpcHandlers['swarm:create-app-scoped-identity']({}, KEY_B, { activate: true });
+    expect(feeds.getOriginEntry(KEY_B).activeIdentityId).toBe('app-scoped:0');
+    // The user approves the identity shown, with "always allow".
+    const decided = env.decide(first.handle, true, { identity: 'app-scoped:0', alwaysAllow: true });
+    const second = await env.shown('swarm.feed');
+    expect(second.handle).not.toBe(first.handle);
+    expect(second.view.newIdentity).toMatchObject({ id: 'app-scoped:1', owner: '0xPublisher1' });
+    // Nothing was granted, set or created for the identity that was taken.
+    expect(feeds.getOriginEntry(KEY_A)).toBeNull();
+    expect(permissions.getAutoApprove(KEY_A, 'signing')).toBe(false);
+    expect(mockNode.writes).toEqual([]);
+    // The stale choice is no choice on the new prompt.
+    expect(await env.decide(second.handle, true, { identity: 'app-scoped:0' })).toEqual({ ok: false, reason: 'invalid' });
+    await env.decide(second.handle, true, { identity: 'app-scoped:1', alwaysAllow: true });
+    expect((await answer).result).toMatchObject({ owner: '0xPublisher1', identifier: IDENTIFIER });
+    expect(await decided).toEqual({ ok: true });
+    expect(feeds.getOriginEntry(KEY_A)).toMatchObject({ activeIdentityId: 'app-scoped:1', feedGranted: true });
+    expect(permissions.getAutoApprove(KEY_A, 'signing')).toBe(true);
+  });
+
+  test('a feed that exists already is answered under the guard too: custody begun, or the rule turned off, during the vault\'s unlock answers nothing', async () => {
+    const env = setup();
+    grantFeeds(KEY_A, { feeds: true });
+    const page = env.tab();
+    for (const [label, change, refusal] of [
+      ['custody', () => env.state.custody.add(page.guest.id), AGENT_CUSTODY],
+      ['rule off', () => permissions.setAutoApprove(KEY_A, 'feeds', false), RULE_OFF],
+    ]) {
+      mockVault.unlocked = false;
+      const answer = page.ask('swarm_createFeed', { name: 'blog' });
+      const unlock = await env.shown('vault.unlock');
+      change();
+      mockVault.unlocked = true;
+      const decided = env.decide(unlock.handle, true);
+      expect({ label, answer: await answer }).toEqual({ label, answer: refusal });
+      expect(await decided).toEqual({ ok: true });
+      env.state.custody.delete(page.guest.id);
+      permissions.setAutoApprove(KEY_A, 'feeds', true);
+    }
+    // Without a wait, the rule still answers it.
+    expect((await page.ask('swarm_createFeed', { name: 'blog' })).result).toMatchObject({ feedId: 'blog' });
+    expect(mockNode.writes).toEqual([]);
+  });
+
   test('a locked vault is unlocked first, on main\'s own prompt, for the prompt and for the rule; cancelled, nothing is granted or written', async () => {
     const env = setup();
     permissions.grantPermission(KEY_A);

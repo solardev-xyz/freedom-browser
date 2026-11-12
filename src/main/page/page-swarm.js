@@ -213,6 +213,9 @@ const VIEW_PATHS = 3;
 // What a feed prompt may show of the page's own text: a feed name as the
 // methods accept one, and a chunk identifier as 64 hex characters.
 const MAX_FEED_NAME = 64;
+// How often a feed prompt is shown again because the new identity it showed
+// was taken meanwhile, before the request fails.
+const MAX_FEED_PROMPTS = 3;
 const IDENTIFIER = /^[0-9a-fA-F]{64}$/;
 
 // The chrome's answer while the Identity & Wallet switch is off.
@@ -410,7 +413,8 @@ function defaultDependencies() {
     hasFeedGrant: (key) => feeds().hasFeedGrant(key),
     identityState: (key) => feeds().getOriginIdentityStateWithOwners(key),
     previewIdentity: (key) => feeds().previewAppScopedIdentity(key),
-    createIdentity: (key) => feeds().createAppScopedIdentity(key, { activate: true, source: 'user' }),
+    createIdentityAt: (key, publisherKeyIndex) =>
+      feeds().createAppScopedIdentityAt(key, publisherKeyIndex, { activate: true, source: 'user' }),
     ensureAntWalletIdentity: (key) => feeds().ensureAntWalletIdentity(key, { activate: true, source: 'user' }),
     activateIdentity: (key, id) => feeds().activateIdentity(key, id, { source: 'user' }),
     assertFeedGrantable: (key) => feeds().assertFeedGrantable(key),
@@ -455,7 +459,7 @@ function createSwarmDispatchers(deps = {}) {
     hasFeedGrant,
     identityState,
     previewIdentity,
-    createIdentity,
+    createIdentityAt,
     ensureAntWalletIdentity,
     activateIdentity,
     assertFeedGrantable,
@@ -881,14 +885,15 @@ function createSwarmDispatchers(deps = {}) {
   /**
    * The identity the user picked on a feed prompt, made the site's active
    * one, and feed access granted, as the chrome's prompt did through
-   * `swarm:set-feed-identity`: the Ant wallet's, a new app-scoped one, or
-   * one the site already has. A stored identity of the removed mode is
-   * never granted (#89). Synchronous: it runs in the run of the checks
-   * before it.
+   * `swarm:set-feed-identity`: the Ant wallet's, the new app-scoped one on
+   * exactly the key the prompt showed (it throws `identity_taken`, with
+   * nothing written, if another identity took that key meanwhile), or one
+   * the site already has. A stored identity of the removed mode is never
+   * granted (#89). Synchronous: it runs in the run of the checks before it.
    */
-  function grantFeedIdentity(key, picked, view) {
+  function grantFeedIdentity(key, picked, view, preview) {
     if (picked === 'bee-wallet') ensureAntWalletIdentity(key);
-    else if (picked === view.newIdentity.id) createIdentity(key);
+    else if (picked === view.newIdentity.id) createIdentityAt(key, preview.publisherKeyIndex);
     else activateIdentity(key, picked);
     assertFeedGrantable(key);
     if (hasFeedGrant(key) !== true) grantFeedAccess(key);
@@ -933,26 +938,35 @@ function createSwarmDispatchers(deps = {}) {
       if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
     }
     if (!ruled) {
-      let view;
-      try {
-        view = feedView(method, params, await identityState(key), await previewIdentity(key));
-      } catch (err) {
-        return { error: failure(err, 'Failed to load publisher identities') };
+      // The user approves exactly what the prompt shows. A new identity's key
+      // taken meanwhile by another identity is no approval of the next one:
+      // the prompt is shown again, with the key that is now next.
+      for (let shown = 1; ; shown += 1) {
+        let view;
+        let preview;
+        try {
+          preview = await previewIdentity(key);
+          view = feedView(method, params, await identityState(key), preview);
+        } catch (err) {
+          return { error: failure(err, 'Failed to load publisher identities') };
+        }
+        if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+        const decision = await context.prompt({ kind: 'swarm.feed', view, choices: feedChoices(view) });
+        if (decision.error) return { error: decision.error };
+        if (decision.closed || decision.approve !== true) return error(FEED_REJECTED);
+        let written;
+        try {
+          written = await writeUnderKey(context, nameCheck, () => {
+            grantFeedIdentity(key, decision.choices.identity, view, preview);
+            if (decision.choices.alwaysAllow) setAutoApprove(key, rule, true);
+          });
+        } catch (err) {
+          if (err?.code === 'identity_taken' && shown < MAX_FEED_PROMPTS) continue;
+          return { error: failure(err, 'Failed to set feed identity') };
+        }
+        if (!written) return error(NO_ADDRESS);
+        break;
       }
-      if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
-      const decision = await context.prompt({ kind: 'swarm.feed', view, choices: feedChoices(view) });
-      if (decision.error) return { error: decision.error };
-      if (decision.closed || decision.approve !== true) return error(FEED_REJECTED);
-      let written;
-      try {
-        written = await writeUnderKey(context, nameCheck, () => {
-          grantFeedIdentity(key, decision.choices.identity, view);
-          if (decision.choices.alwaysAllow) setAutoApprove(key, rule, true);
-        });
-      } catch (err) {
-        return { error: failure(err, 'Failed to set feed identity') };
-      }
-      if (!written) return error(NO_ADDRESS);
     }
     // The site's last use, as the chrome marked it before each call.
     try {

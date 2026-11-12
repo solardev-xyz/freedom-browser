@@ -1439,20 +1439,31 @@ async function handleCreateFeed(params, origin, meta) {
 
   const originEntry = getOriginEntry(origin);
 
-  // Idempotent: if feed already exists, return existing metadata
+  // Idempotent: if feed already exists, return existing metadata. For a page
+  // through main (PRQ-7d) the answer goes out under its guard too: a rule
+  // that answered before a wait (the vault's unlock) is read again, with
+  // custody, the name and the grants, and nothing is answered if it no
+  // longer holds.
   const existingFeed = getFeed(origin, name);
   if (existingFeed) {
     const feedIdentity = getFeedIdentity(originEntry, existingFeed);
-    return {
-      result: {
+    let refused = null;
+    const existing = await guardWrite(
+      meta,
+      origin,
+      async () => ({
         feedId: name,
         owner: existingFeed.owner,
         topic: existingFeed.topic,
         manifestReference: existingFeed.manifestReference,
         bzzUrl: `bzz://${existingFeed.manifestReference}`,
         identityMode: getIdentityMode(feedIdentity),
-      },
-    };
+      }),
+      (answer) => { refused = answer; },
+      { feed: true }
+    );
+    if (refused) return refused;
+    return { result: existing };
   }
 
   const activeIdentity = getActiveOriginIdentity(originEntry);

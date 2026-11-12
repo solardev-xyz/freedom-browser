@@ -55,6 +55,7 @@ const {
   getOriginIdentityStateWithOwners,
   previewAppScopedIdentity,
   createAppScopedIdentity,
+  createAppScopedIdentityAt,
   ensureAntWalletIdentity,
   activateIdentity,
   getFeed,
@@ -902,6 +903,23 @@ describe('feed-store', () => {
         ['app-scoped:1', false],
         ['bee-wallet', false],
       ]);
+    });
+
+    // freedom-core design 0011, PRQ-7d (Codex round 1 on #1201): main
+    // creates the new identity a feed prompt showed on exactly its key.
+    test('createAppScopedIdentityAt takes exactly the key it names, or throws with nothing written', async () => {
+      _resetCache();
+      const preview = await previewAppScopedIdentity('at.eth');
+      expect(preview.publisherKeyIndex).toBe(0);
+      // Another site takes that key first.
+      createAppScopedIdentity('other.eth', { activate: true });
+      expect(() => createAppScopedIdentityAt('at.eth', preview.publisherKeyIndex, { activate: true })).toThrow(
+        expect.objectContaining({ code: 'identity_taken' })
+      );
+      expect(getOriginEntry('at.eth')).toBeNull();
+      // The key now next is taken as named.
+      const entry = createAppScopedIdentityAt('at.eth', 1, { activate: true });
+      expect(entry).toMatchObject({ activeIdentityId: 'app-scoped:1', publisherKeyIndex: 1 });
     });
 
     test('preview-app-scoped-identity does not allocate or persist until approval', async () => {
