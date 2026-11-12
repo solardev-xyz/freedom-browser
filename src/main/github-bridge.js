@@ -3,18 +3,23 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const https = require('https');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const {
+  checkBinary,
   getCurrentStatus,
   isDisabledForProfile,
+  radicleImportPending,
   radicleWriteRefusal,
   STATUS,
 } = require('./radicle-manager');
 const embedded = require('./radicle-embedded');
 const { createProfileTempDir, prepareRadicleDataDir } = require('./profile-paths');
 const fsOffload = require('./fs-offload');
+const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
+const { isPrivateSender } = require('./private/private-sender');
 
 const execFileAsync = promisify(execFile);
 
@@ -217,18 +222,32 @@ async function checkGitAvailable() {
   }
 }
 
+const onService = () => radicleBackendKind() === 'service';
+
 /**
- * Check if the native Radicle bridge is ready.
+ * Check if the native Radicle bridge is ready. Under the Radicle service
+ * (plan B14), the freedom-radicled binary rather than the add-on; and while
+ * an import runs the node is stopped for it, and started again after it, so
+ * the check doesn't require it running then.
  */
 function checkRadicleBridgeAvailable() {
-  if (!embedded.isAvailable()) {
+  if (onService()) {
+    if (!checkBinary()) {
+      return {
+        available: false,
+        code: 'RADICLE_BINARY_MISSING',
+        error: 'freedom-radicled binary not found',
+      };
+    }
+  } else if (!embedded.isAvailable()) {
     return {
       available: false,
       code: 'RADICLE_ADDON_MISSING',
       error: 'Native Radicle addon not found',
     };
   }
-  if (getCurrentStatus().status !== STATUS.RUNNING) {
+  const importing = onService() && radicleImportPending();
+  if (!importing && getCurrentStatus().status !== STATUS.RUNNING) {
     return {
       available: false,
       code: 'RADICLE_NOT_RUNNING',
@@ -409,10 +428,38 @@ function fetchGitHubDescription(owner, repo) {
 }
 
 /**
+ * The clone's directory. Under the Radicle service (plan B14; freedom-core
+ * design 0010, D5) it is in the OS's temporary directory, outside every
+ * protected root, named by its real path: the import process refuses a
+ * working copy inside the profile's userData directory, a protected root,
+ * as `unsupported_layout`. The add-on's import keeps the profile's.
+ */
+function createCloneDir() {
+  if (!onService()) return createProfileTempDir('github-bridge');
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-github-bridge-')));
+}
+
+// The service's answer for a repository already in storage (freedom-core
+// design 0008, Writes "Import"): `failed`, "<rid> already exists in storage".
+const ALREADY_IN_STORAGE = / already exists in storage$/;
+
+// Main's own refusals of an import on the service, before anything is
+// sent (radicle-manager.js's importRepoOnService): their codes stand.
+const MAIN_REFUSALS = new Set(['RADICLE_NOT_RUNNING', 'RADICLE_NEEDS_VAULT']);
+
+/**
  * Import a public GitHub repository into Radicle.
  *
  * Steps: validate → check git → clone → native Radicle import.
  * Progress events are sent to the caller via IPC.
+ *
+ * Under the Radicle service (plan B14) the import is freedom-radicled's
+ * one-shot import process (radicle-manager.js stops the node for it and
+ * starts it again), and its answer is read as the service gives it: only
+ * "already exists in storage" is an already-bridged repository, and
+ * anything else fails the import with the service's message, an import
+ * whose outcome is unknown among them. The git steps' errors are read as
+ * today.
  */
 async function importGitHubRepo(url, sender) {
   const sendProgress = (data) => {
@@ -423,6 +470,8 @@ async function importGitHubRepo(url, sender) {
 
   let clonePath = null;
   let prereqStep = 'checking-prereqs';
+  // The service's answer, or main's refusal, from here on (plan B14).
+  let importCalled = false;
 
   try {
     // Step 1: Validate URL
@@ -451,7 +500,7 @@ async function importGitHubRepo(url, sender) {
 
     // Step 4: Clone
     sendProgress({ step: 'cloning', message: `Cloning ${validation.owner}/${validation.repo}...` });
-    clonePath = createProfileTempDir('github-bridge');
+    clonePath = createCloneDir();
     activeTempDirs.add(clonePath);
 
     const repoDir = path.join(clonePath, validation.repo);
@@ -483,6 +532,7 @@ async function importGitHubRepo(url, sender) {
       sendProgress({ step: 'error', message: refusal.message });
       return failure(refusal.code, refusal.message, undefined, { step: 'initializing' });
     }
+    importCalled = onService();
     const { rid } = await embedded.importRepo(
       repoDir,
       validation.repo,
@@ -515,12 +565,18 @@ async function importGitHubRepo(url, sender) {
 
     const stderrStr = stripAnsi(err.stderr?.toString() || '');
     const fallbackMessage = stderrStr || stripAnsi(err.message);
+    if (importCalled && MAIN_REFUSALS.has(err?.code)) {
+      sendProgress({ step: 'error', message: fallbackMessage });
+      return failure(err.code, fallbackMessage, undefined, { step: 'initializing' });
+    }
     const ridMatch = fallbackMessage.match(/rad:z[a-zA-Z0-9]+/);
     const ridFromError = ridMatch ? ridMatch[0].slice(4) : null;
     const parsed = extractGitHubRepoFromUrl(url);
-    const alreadyBridged = /already (exists|initialized)|already a radicle project|project exists/i.test(
-      fallbackMessage
-    );
+    const alreadyBridged = importCalled
+      ? err?.code === 'failed' && ALREADY_IN_STORAGE.test(fallbackMessage)
+      : /already (exists|initialized)|already a radicle project|project exists/i.test(
+        fallbackMessage
+      );
 
     if (alreadyBridged) {
       if (parsed && ridFromError) {
@@ -537,7 +593,9 @@ async function importGitHubRepo(url, sender) {
       );
     }
 
-    const friendlyError = getFriendlyImportError(err, fallbackMessage);
+    const friendlyError = importCalled
+      ? { code: 'IMPORT_FAILED', message: fallbackMessage }
+      : getFriendlyImportError(err, fallbackMessage);
 
     sendProgress({ step: 'error', message: friendlyError.message });
 
@@ -572,11 +630,21 @@ function registerGithubBridgeIpc() {
   const radicleDisabledFailure = () =>
     failure('RADICLE_DISABLED', 'Radicle is disabled for this profile');
   const ensureRadicleEnabled = () => !isDisabledForProfile();
+  // PRIVATE MODE GUARD (R-9; freedom-core design 0008, Main's side): under
+  // the Radicle service, an import writes a lasting repository and its
+  // seeding policy into storage, which a private window must not leave
+  // behind. isPrivateSender fails closed.
+  const privateRefusal = (event) =>
+    onService() && isPrivateSender(event)
+      ? failure('RADICLE_PRIVATE_WINDOW', 'Importing is not available in private windows')
+      : null;
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_IMPORT, async (event, url) => {
     if (!ensureRadicleEnabled()) {
       return radicleDisabledFailure();
     }
+    const refused = privateRefusal(event);
+    if (refused) return refused;
     if (!validateNonEmptyString(url)) {
       return failure('INVALID_URL', 'Missing GitHub URL', { field: 'url' });
     }
@@ -587,10 +655,12 @@ function registerGithubBridgeIpc() {
     return await checkGitAvailable();
   });
 
-  ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, async () => {
+  ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, async (event) => {
     if (!ensureRadicleEnabled()) {
       return radicleDisabledFailure();
     }
+    const refused = privateRefusal(event);
+    if (refused) return refused;
     return await checkImportPrerequisites();
   });
 

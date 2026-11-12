@@ -423,6 +423,23 @@ const commentPatch = (rid, revisionId, body) =>
   call('commentPatch', rid, revisionId, body);
 const importRepo = (repoPath, name, description, defaultBranch) =>
   call('importRepo', repoPath, name, description, defaultBranch);
+
+// The import on the service (0010, D5; plan B14): radicle-manager.js's
+// (setServiceImport), which stops the node, runs the one-shot import
+// process on the working copy and starts the node again. Today's arguments
+// and result, `{ rid }`.
+let serviceImport = null;
+
+/** radicle-manager.js names its import on the service: `(repoPath, name,
+ * description, defaultBranch) => Promise<{ rid }>`. */
+function setServiceImport(run) {
+  serviceImport = typeof run === 'function' ? run : null;
+}
+
+const serviceImportRepo = (repoPath, name, description, defaultBranch) =>
+  serviceImport
+    ? serviceImport(repoPath, name, description, defaultBranch)
+    : Promise.reject(new RadicleServiceUnsupported('importRepo'));
 const repoInfo = (rid) => call('repoInfo', rid);
 const commits = (rid, parent, page = 0, perPage = 30) =>
   call('commits', rid, parent, page, perPage);
@@ -548,6 +565,7 @@ module.exports = {
   getVersion,
   // The service's routes, and the node they read from.
   setServiceNodeSource,
+  setServiceImport,
   callStream,
   callScoped,
   collectionBudget,
@@ -571,8 +589,8 @@ module.exports = {
   commentIssue: routed('commentIssue', commentIssue, serviceCommentIssue),
   editIssueState: routed('editIssueState', editIssueState, serviceEditIssueState),
   commentPatch: routed('commentPatch', commentPatch, serviceCommentPatch),
-  // The import: its own step.
-  importRepo: routed('importRepo', importRepo),
+  // The import: the one-shot import process on the service.
+  importRepo: routed('importRepo', importRepo, serviceImportRepo),
   // The collected results that may outlive their scope (0008, "JSON
   // results"); the others are read in callScoped, where their callers use
   // them.

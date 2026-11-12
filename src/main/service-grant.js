@@ -95,6 +95,12 @@
  *   data directory (`SERVICE_DIRS`): only freedom-radicled has another
  *   profile's protected before it exists, so freedom-ipfsd's roots are what
  *   they were.
+ * - **freedom-radicled's import** (design 0010, D5) reads a working copy,
+ *   read only, besides those grants: main checks the working copy against
+ *   the same roots and the two grants (`radicleSourceRefusal`), and hands
+ *   the process the roots, resolved (`radicleImportRoots`), for its own
+ *   check of every root the working copy has (its git, common and
+ *   alternate directories, which only the process finds).
  *
  * A refusal names the root's kind, never a path.
  */
@@ -717,6 +723,9 @@ function ipfsGrantRefusal(dataDir, options = {}) {
   return serviceGrantRefusal([dataDir], { ...options, own: ['ipfs'] });
 }
 
+// freedom-radicled's own components: its Radicle home and its `HOME`.
+const RADICLE_OWN = Object.freeze(['radicle', 'radicledHome']);
+
 /**
  * Why freedom-radicled may not be given `home`, the profile's Radicle home
  * (`getRadicleDataDir()`: `<appRoot>/R/<slot>`, `<userData>/radicle-data`
@@ -728,7 +737,42 @@ function ipfsGrantRefusal(dataDir, options = {}) {
  * `radicled-home` are its own.
  */
 function radicleGrantRefusal(home, ownHome, options = {}) {
-  return serviceGrantRefusal([home, ownHome], { ...options, own: ['radicle', 'radicledHome'] });
+  return serviceGrantRefusal([home, ownHome], { ...options, own: RADICLE_OWN });
+}
+
+/**
+ * The import process's `--protected` roots (design 0010, D5): freedom-
+ * radicled's protected roots (`protectedRoots`, its own two excluded; the
+ * process adds its home, its `HOME` and the lock directory itself), each
+ * resolved as this check resolves it (`realPath`: symlinks through the
+ * longest prefix that exists, the rest as named), once each. The process
+ * compares them resolved again, case folded on macOS and Windows.
+ */
+function radicleImportRoots({ foldCase = FOLD_CASE } = {}) {
+  const roots = protectedRoots({ own: RADICLE_OWN, foldCase });
+  return [...new Set(roots.filter((root) => root.dir).map((root) => realPath(root.dir)))];
+}
+
+/**
+ * Main's check of the working copy an import reads (design 0010, D5 and
+ * step 7), before the import process is spawned: why `source` may not be
+ * read, or null. It may not be, contain or lie inside a protected root,
+ * the Radicle home (`home`) or the service's `HOME` (`ownHome`); and it
+ * must be absolute, since the process is handed the very path compared.
+ * Its other roots are found and checked by the process, which refuses them
+ * as `unsupported_layout`. A refusal names the root's kind, never a path.
+ */
+function radicleSourceRefusal(source, { home, ownHome, foldCase = FOLD_CASE, win32 = WIN32 } = {}) {
+  if (typeof source !== 'string' || !path.isAbsolute(source)) {
+    return "the working copy isn't an absolute path, which the import may resolve from another directory";
+  }
+  const roots = [
+    ...protectedRoots({ own: RADICLE_OWN, foldCase }),
+    { name: "this profile's Radicle home", dir: home ?? null },
+    { name: 'the Radicle service home', dir: ownHome ?? null },
+  ];
+  const refused = grantRefusal([source], roots, { foldCase, win32 });
+  return refused ? refused.replace(/^the grant /, 'the working copy ') : null;
 }
 
 module.exports = {
@@ -741,6 +785,8 @@ module.exports = {
   grantContentRefusal,
   ipfsGrantRefusal,
   radicleGrantRefusal,
+  radicleImportRoots,
+  radicleSourceRefusal,
   win32DriveRelative,
   win32Uncomparable,
   win32MixedRoots,

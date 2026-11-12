@@ -84,6 +84,15 @@ function radicledNodeModule() {
   return require('./radicle/radicled-node');
 }
 
+function radicledImportModule() {
+  return require('./radicle/radicled-import');
+}
+
+// The imports asked for on the service and not yet over (plan B14): the
+// node is stopped for each, and the GitHub bridge's check doesn't require
+// it running meanwhile.
+let importsPending = 0;
+
 // Under the service, what the bound of the quit's Radicle leg adds to the
 // service's own: the kill 10 s after `rad.shutdown`, and up to 1 s for its
 // exit to be reaped.
@@ -1114,6 +1123,93 @@ function withServiceStopped(work) {
   return rekey;
 }
 
+// ---- the import, on the service (plan B14) ----
+
+// What the import answers when main refuses it before anything runs: the
+// GitHub bridge's codes.
+const importRefusal = (code, message) => Object.assign(new Error(message), { code });
+
+/**
+ * `importRepo` on the service (freedom-core design 0010, D5; design 0008,
+ * Writes "Import"): `{ rid }` for the working copy `source`, imported by
+ * freedom-radicled's one-shot import process (radicle/radicled-import.js).
+ *
+ * One lifecycle-queue operation, so starts, stops, re-keys and other
+ * imports queue around it. Inside it, once the earlier operations have run:
+ *  - the node must be running (`RADICLE_NOT_RUNNING` otherwise), and the
+ *    running generation's key not a throwaway one (`RADICLE_NEEDS_VAULT`,
+ *    0008's `needs_vault`: refused before anything is sent), nor its
+ *    identity in the middle of a write (node-identity-guard.js);
+ *  - it stops the node, and waits for its process's exit, so the home's
+ *    gate is free;
+ *  - it runs the import process, which waits for the vault's unlock if it
+ *    must, reconciles the home, and imports;
+ *  - and in `finally` starts the node again, whatever the import answered:
+ *    after an uncertain one, that start reconciles the home again.
+ *
+ * A stop asked for meanwhile (stopRadicle, or a re-key's) gives up the
+ * import before it is sent, with nothing imported, and gives up the start
+ * after it; once the import is sent, its answer is waited for.
+ */
+function importRepoOnService(source, name, description, defaultBranch) {
+  importsPending += 1;
+  // Registered now, with the request: a stop asked for at any point
+  // aborts it (stopRadicle, withServiceStopped).
+  const cancel = startCancel();
+  const imported = enqueueLifecycle(async () => {
+    if (cancel.signal.aborted) {
+      throw importRefusal('RADICLE_NOT_RUNNING', 'Radicle was stopped before the import started');
+    }
+    if (currentState !== STATUS.RUNNING || !serviceNode?.activeIdentity()) {
+      throw importRefusal('RADICLE_NOT_RUNNING', 'Radicle node is not running');
+    }
+    const refusal = radicleWriteRefusal();
+    if (refusal) throw importRefusal('RADICLE_NEEDS_VAULT', refusal.message);
+    const blocked = nodeBlockReason('radicle');
+    if (blocked) throw importRefusal('RADICLE_NOT_RUNNING', blocked);
+    await stopNode();
+    setStatusMessage('radicle', 'Importing a repository');
+    try {
+      const home = await prepareRadicleDataDir();
+      return await radicledImportModule().runRadicledImport({
+        home,
+        lockDir: getLockDir(),
+        ownHome: getRadicledHomeDir(),
+        source,
+        name,
+        description,
+        defaultBranch,
+        signal: cancel.signal,
+        onWaiting: () => setStatusMessage('radicle', 'Waiting for the vault to be unlocked'),
+        shellVersion: app?.getVersion?.(),
+        log,
+      });
+    } finally {
+      setStatusMessage('radicle', null);
+      if (!cancel.signal.aborted) {
+        const restarted = await startRadicleInternal({ signal: cancel.signal });
+        if (restarted.status !== STATUS.RUNNING && !cancel.signal.aborted) {
+          log.warn('[Radicle] Node did not start again after the import:', restarted.error);
+        }
+      }
+    }
+  });
+  const done = () => {
+    importsPending -= 1;
+    cancel.done();
+  };
+  imported.then(done, done);
+  return imported;
+}
+
+/** Whether an import on the service is asked for and not yet over: the
+ * node is stopped for it, and started again after it. */
+function radicleImportPending() {
+  return importsPending > 0;
+}
+
+embedded.setServiceImport?.(importRepoOnService);
+
 /** The hook identity-manager's setRadicleLifecycle takes (R-8). */
 function createRadicleLifecycle() {
   return { withStopped: withRadicleStopped };
@@ -1153,6 +1249,7 @@ module.exports = {
   stopRadicle,
   stopRadicleAtQuit,
   getRadicleDataPath,
+  checkBinary,
   setUseInjectedIdentity,
   hasInjectedIdentity,
   getCurrentStatus,
@@ -1179,4 +1276,6 @@ module.exports = {
   radicleWriteRefusal,
   NEEDS_VAULT,
   NEEDS_VAULT_MESSAGE,
+  // The import on the service (plan B14).
+  radicleImportPending,
 };
