@@ -115,6 +115,8 @@ const {
   KIND_SET,
   TEST_KIND,
   WALLET_KINDS,
+  PROMPT_BUDGETS,
+  LIMIT_EXCEEDED: PROMPT_LIMIT_EXCEEDED,
   createPagePrompts,
 } = require('./page-prompts');
 
@@ -301,6 +303,7 @@ function createPageRequests({
   dispatchers = {},
   hooks = {},
   budgets: budgetBounds = BUDGETS,
+  promptBudgets = PROMPT_BUDGETS,
   tickets: ticketBounds = TICKETS,
   randomHex = (bytes) => crypto.randomBytes(bytes).toString('hex'),
   setTimer = setTimeout,
@@ -361,7 +364,11 @@ function createPageRequests({
     // A window's own prompt (the wallet's, `walletPrompt`) has no record.
     markShown: (entry) => (entry.record ? markShown(entry.record) : true),
     decided: (entry) => (entry.record ? decidedEntry(entry) : prompts.closed(entry.handle, CLOSED.DECIDED)),
+    // A changed view past the prompt budget (`page-prompts.js` `update`).
+    cancel: (entry) =>
+      entry.record ? closeHandle(entry.record, CLOSED.CANCELLED) : prompts.closed(entry.handle, CLOSED.CANCELLED),
     trace,
+    budgets: promptBudgets,
   });
   const watchedWindows = new Set();
   // document key -> the record whose wallet operation outside main's
@@ -843,8 +850,19 @@ function createPageRequests({
       trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
       return { error: { ...PROMPT_PENDING } };
     }
+    // Room for its view in the prompt budget (0011, "Prompt views"), taken
+    // before the handle opens: past it, the page gets `-32005` and nothing
+    // opens. The request itself is charged already.
+    const charge = prompts.admit(record.window, { view });
+    if (!charge) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'budget' });
+      return { error: { ...PROMPT_LIMIT_EXCEEDED } };
+    }
     const handle = openHandle(record);
-    if (!handle) return { closed: CLOSED.CANCELLED };
+    if (!handle) {
+      prompts.release(charge);
+      return { closed: CLOSED.CANCELLED };
+    }
     const { requester } = record;
     const entry = prompts.add({
       handle,
@@ -857,6 +875,7 @@ function createPageRequests({
       view,
       choices,
       released,
+      charge,
     });
     return entry.decision;
   }
@@ -873,11 +892,22 @@ function createPageRequests({
    * the prompt shown again), and the decision's invocation is answered then.
    * A window closed meanwhile (during the caller's fee check, say) gets no
    * prompt: it closes at once.
+   *
+   * It has no request record either, so nothing else bounds it: its view,
+   * and `holds`, the request it answers (the chrome's, which its caller
+   * keeps while it waits), are charged to the prompt budget (0011, "Prompt
+   * views"). Past it, it settles at once with `{ error }`, `-32005`, and
+   * nothing opens.
    */
-  function walletPrompt(windowId, { kind, view = {}, choices, released } = {}) {
+  function walletPrompt(windowId, { kind, view = {}, choices, released, holds } = {}) {
     if (!approvals) return Promise.resolve({ closed: CLOSED.CANCELLED });
     if (!WALLET_PROMPT_KINDS.has(kind)) throw new Error(`page-requests: no wallet prompt of kind ${kind}`);
     if (!Number.isInteger(windowId) || !watch(windowId)) return Promise.resolve({ closed: CLOSED.CLOSED });
+    const charge = prompts.admit(windowId, { view, holds });
+    if (!charge) {
+      trace({ kind: 'wallet-prompt-refused', window: windowId, prompt: kind, reason: 'budget' });
+      return Promise.resolve({ error: { ...PROMPT_LIMIT_EXCEEDED } });
+    }
     const handle = randomHex(HANDLE_BYTES);
     trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
     const entry = prompts.add({
@@ -891,6 +921,7 @@ function createPageRequests({
       view,
       choices,
       released: released instanceof Promise ? released : Promise.resolve(),
+      charge,
     });
     return entry.decision;
   }
@@ -1405,6 +1436,7 @@ function createPageRequests({
     walletUnlock,
     foreground,
     promptState: () => prompts.state(),
+    promptUsage: () => prompts.usage(),
     stats,
     register,
   };

@@ -524,3 +524,165 @@ describe('update', () => {
     expect(WALLET_KINDS.has(TEST_KIND)).toBe(false);
   });
 });
+
+// Codex, freedom-core #335: every open prompt's view is charged to its
+// window and the browser, a page's prompt and the window's own alike (0011,
+// "Bounds": "Prompt views").
+describe('the prompt budget', () => {
+  const {
+    createPagePrompts,
+    PROMPT_BUDGETS,
+    MAX_SHOWN_VIEW_BYTES,
+    LIMIT_EXCEEDED,
+  } = require('./page-prompts');
+  const { MAX_PARTED_VIEW_BYTES } = require('../approvals/approvals-document');
+  const site = { key: DAPP_A, label: DAPP_A };
+  const MiB = 1024 * 1024;
+  const sizeOf = (view) => Buffer.byteLength(JSON.stringify(view), 'utf8');
+
+  function prompts(budgets) {
+    const sent = [];
+    const traced = [];
+    const api = createPagePrompts({
+      send: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
+      markShown: () => true,
+      decided: () => {},
+      trace: (entry) => traced.push(entry),
+      ...(budgets ? { budgets } : {}),
+    });
+    let n = 0;
+    const add = (window, view, extra = {}) =>
+      api.add({ handle: `h${(n += 1)}`, record: null, window, guest: null, document: null, kind: 'wallet.send', site, view, ...extra });
+    return { api, sent, traced, add };
+  }
+
+  test('the numbers: 64 prompts and 8 MiB a window, 256 and 16 MiB in the browser; a view over 4 MiB is not shown', () => {
+    expect(PROMPT_BUDGETS).toEqual({ window: { count: 64, bytes: 8 * MiB }, browser: { count: 256, bytes: 16 * MiB } });
+    expect(MAX_SHOWN_VIEW_BYTES).toBe(MAX_PARTED_VIEW_BYTES);
+    expect(LIMIT_EXCEEDED).toEqual({ code: -32005, message: 'Limit exceeded' });
+  });
+
+  test('past a window\'s count or bytes, or the browser\'s, nothing opens and nothing is told; a close lets its charge go', () => {
+    const { api, sent, traced, add } = prompts({ window: { count: 2, bytes: 1000 }, browser: { count: 3, bytes: 1500 } });
+    const small = { n: 1 };
+    expect(add(1, small)).not.toBeNull();
+    expect(add(1, small)).not.toBeNull();
+    // The window's count.
+    sent.length = 0;
+    expect(add(1, small)).toBeNull();
+    expect(sent).toEqual([]);
+    expect(traced.at(-1)).toMatchObject({ kind: 'prompt-over-budget', window: 1 });
+    // The browser's count, from another window.
+    expect(add(2, small)).not.toBeNull();
+    expect(add(3, small)).toBeNull();
+    expect(api.usage()).toEqual({ count: 3, bytes: 3 * sizeOf(small), windows: { 1: { count: 2, bytes: 14 }, 2: { count: 1, bytes: 7 } } });
+    // Closed: its charge goes, and the next fits.
+    api.closed('h1', 'decided');
+    expect(api.usage().count).toBe(2);
+    const big = { text: 'x'.repeat(900) };
+    expect(add(3, big)).not.toBeNull();
+    // The window's bytes, then the browser's.
+    expect(add(3, { text: 'x'.repeat(200) })).toBeNull();
+    api.closed('h2', 'decided');
+    expect(add(2, { text: 'x'.repeat(600) })).toBeNull();
+    expect(api.usage()).toEqual({
+      count: 2,
+      bytes: sizeOf(small) + sizeOf(big),
+      windows: { 2: { count: 1, bytes: sizeOf(small) }, 3: { count: 1, bytes: sizeOf(big) } },
+    });
+    // Every prompt closed: nothing is charged.
+    for (const handle of ['h4', 'h6']) api.closed(handle, 'decided');
+    expect(api.usage()).toEqual({ count: 0, bytes: 0, windows: {} });
+  });
+
+  test('admitted first, then opened with that charge; let go if it never opens', () => {
+    const { api } = prompts({ window: { count: 1, bytes: 1000 }, browser: { count: 4, bytes: 4000 } });
+    const charge = api.admit(1, { view: { n: 1 } });
+    expect(charge).not.toBeNull();
+    expect(api.admit(1, { view: { n: 2 } })).toBeNull();
+    api.release(charge);
+    api.release(charge);
+    expect(api.usage()).toEqual({ count: 0, bytes: 0, windows: {} });
+    const again = api.admit(1, { view: { n: 3 } });
+    const entry = api.add({ handle: 'h', record: null, window: 1, guest: null, document: null, kind: 'wallet.send', site, view: { n: 3 }, charge: again });
+    expect(entry.charge).toBe(again);
+    expect(api.usage().count).toBe(1);
+    api.closed('h', 'decided');
+    expect(api.usage().count).toBe(0);
+  });
+
+  test('a window\'s own prompt is charged the request it answers too; one the walk refuses never opens', () => {
+    const { api } = prompts({ window: { count: 8, bytes: 10_000 }, browser: { count: 8, bytes: 10_000 } });
+    const view = { n: 1 };
+    const charge = api.admit(1, { view, holds: { data: 'a'.repeat(5000) } });
+    expect(charge).toMatchObject({ viewBytes: sizeOf(view), heldBytes: 5004 });
+    expect(api.admit(1, { view, holds: { data: 'a'.repeat(5000) } })).toBeNull();
+    // Past the walk's values, a type it doesn't take, or a view that can't
+    // be serialized: refused.
+    expect(api.admit(1, { view, holds: Array.from({ length: 10_001 }, () => 0) })).toBeNull();
+    expect(api.admit(1, { view, holds: { when: new Date() } })).toBeNull();
+    expect(api.admit(1, { view: { n: 1n } })).toBeNull();
+    const cyclic = {};
+    cyclic.self = cyclic;
+    expect(api.admit(1, { view: cyclic })).toBeNull();
+    expect(api.usage()).toMatchObject({ count: 1, bytes: sizeOf(view) + 5004 });
+  });
+
+  test('a view over 4 MiB is charged in full and not kept: the prompt shows null, the fixed error', () => {
+    const { api, sent, add } = prompts();
+    api.foreground(1, null);
+    const huge = { text: 'x'.repeat(MAX_SHOWN_VIEW_BYTES) };
+    const entry = add(1, huge);
+    expect(entry.view).toBeNull();
+    expect(entry.charge.viewBytes).toBe(sizeOf(huge));
+    expect(api.usage().bytes).toBe(sizeOf(huge));
+    expect(sent.at(-1)).toEqual([1, 'page:prompt', expect.objectContaining({ handle: entry.handle, view: null })]);
+    // Within 4 MiB, kept as it is.
+    const fits = { text: 'x'.repeat(MAX_SHOWN_VIEW_BYTES - 20) };
+    expect(add(2, fits).view).toBe(fits);
+    // Past the window's 8 MiB, never opened.
+    expect(add(3, { text: 'x'.repeat(8 * MiB) })).toBeNull();
+  });
+
+  test('a changed view moves the charge; one that doesn\'t fit closes the prompt as cancelled', async () => {
+    const cancelled = [];
+    const sent = [];
+    const api = createPagePrompts({
+      send: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
+      markShown: () => true,
+      decided: () => {},
+      cancel: (entry) => {
+        cancelled.push(entry.handle);
+        api.closed(entry.handle, 'cancelled');
+      },
+      budgets: { window: { count: 4, bytes: 1000 }, browser: { count: 4, bytes: 1000 } },
+    });
+    api.foreground(1, 10);
+    const entry = api.add({ handle: 'h1', record: {}, window: 1, guest: 10, document: '10:1', kind: 'eth.sign', site, view: { n: 1 } });
+    expect(api.update('h1', { text: 'x'.repeat(500) })).toBe(true);
+    expect(api.usage().bytes).toBe(sizeOf({ text: 'x'.repeat(500) }));
+    expect(api.update('h1', { n: 2 })).toBe(true);
+    expect(api.usage().bytes).toBe(sizeOf({ n: 2 }));
+    sent.length = 0;
+    expect(api.update('h1', { text: 'x'.repeat(1000) })).toBe(false);
+    expect(cancelled).toEqual(['h1']);
+    expect(await entry.decision).toEqual({ closed: 'cancelled' });
+    expect(sent.map(([, channel]) => channel)).toEqual(['page:prompt-closed']);
+    expect(api.usage()).toEqual({ count: 0, bytes: 0, windows: {} });
+    // Over 4 MiB in an update: charged, not kept.
+    const roomy = createPagePrompts({ send: () => {}, markShown: () => true, decided: () => {} });
+    const kept = roomy.add({ handle: 'h2', record: null, window: 1, guest: null, document: null, kind: 'wallet.send', site, view: { n: 1 } });
+    expect(roomy.update('h2', { text: 'x'.repeat(MAX_SHOWN_VIEW_BYTES) })).toBe(true);
+    expect(kept.view).toBeNull();
+    expect(roomy.usage().bytes).toBe(sizeOf({ text: 'x'.repeat(MAX_SHOWN_VIEW_BYTES) }));
+  });
+
+  test('a closed window\'s own prompts close and let their charges go', () => {
+    const { api, add } = prompts();
+    add(1, { n: 1 });
+    add(1, { n: 2 });
+    add(2, { n: 3 });
+    api.forgetWindow(1);
+    expect(api.usage()).toEqual({ count: 1, bytes: sizeOf({ n: 3 }), windows: { 2: { count: 1, bytes: sizeOf({ n: 3 }) } } });
+  });
+});

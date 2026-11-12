@@ -10,7 +10,7 @@ const { pathToFileURL } = require('url');
 const approvals = require('./approvals-document');
 const { createPageDocuments } = require('../page/page-documents');
 const { createPageRequests } = require('../page/page-requests');
-const { createWalletApprovals, REJECTED } = require('./wallet-approvals');
+const { createWalletApprovals, REJECTED, LIMITED } = require('./wallet-approvals');
 
 const {
   createApprovalsDocuments,
@@ -1037,7 +1037,7 @@ class Guest extends EventEmitter {
   }
 }
 
-function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null } = {}) {
+function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null, promptBudgets = null } = {}) {
   const env = setup();
   const guests = new Map();
   const toChrome = [];
@@ -1075,6 +1075,7 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null, un
     },
     approvals: flag ? env.docs : null,
     ...(unlockVault ? { unlockVault } : {}),
+    ...(promptBudgets ? { promptBudgets } : {}),
   });
   env.decide.mockImplementation((windowId, payload) => requests.decideInWindow(windowId, payload));
 
@@ -1521,6 +1522,136 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
       expect(contents.sent).toEqual([]);
       expect(env.requests.promptState()[1]).toBeUndefined();
     }
+  });
+});
+
+// Codex, freedom-core #335: a window's own prompts have no request record,
+// so nothing bounded them; a compromised chrome could leave any number of
+// large views (and the requests behind them) waiting. Every open prompt's
+// view, and a window's own prompt's request, are charged to its window and
+// the browser (0011, "Prompt views").
+describe('the prompt budget, through wallet:confirm-signing and a page\'s prompts', () => {
+  const ACCOUNT = '0x1111111111111111111111111111111111111111';
+  const TO = '0x2222222222222222222222222222222222222222';
+  const WALLETS = [{ index: 0, name: 'Main Wallet', address: ACCOUNT, type: 'mnemonic' }];
+  const SEND = { chainId: 100, to: TO, value: '1', data: '0x', gasLimit: '21000', gasPrice: '1000000000' };
+  const MiB = 1024 * 1024;
+
+  const confirmations = (env) =>
+    createWalletApprovals({
+      walletPrompt: (windowId, spec) => env.requests.walletPrompt(windowId, spec),
+      chromeWindowOf: (contents) => (contents?.id >= 500 && contents.id < 600 ? contents.id - 500 : null),
+      getDerivedWallets: async () => WALLETS,
+    });
+
+  test('many concurrent confirmations from one window: past its 64 open prompts each is refused, nothing asked or minted', async () => {
+    const env = withPageRequests();
+    const { contents } = attached(env);
+    const approvals = confirmations(env);
+    const mint = jest.fn(() => ({ token: 'token' }));
+    const outcomes = new Array(80).fill(null);
+    for (let i = 0; i < outcomes.length; i += 1) {
+      approvals.confirm({ sender: { id: 501 }, kind: 'wallet-send', index: 0, payload: SEND }, mint).then((outcome) => {
+        outcomes[i] = outcome;
+      });
+    }
+    await flush();
+    // The first 64 wait in the window; the other 16 are answered at once.
+    expect(outcomes.filter((outcome) => outcome === null)).toHaveLength(64);
+    expect(outcomes.filter((outcome) => outcome === LIMITED)).toHaveLength(16);
+    expect(LIMITED).toMatchObject({ approved: false, code: 'LIMIT_EXCEEDED' });
+    expect(env.requests.promptState()[1].open).toHaveLength(64);
+    expect(env.requests.promptUsage()).toMatchObject({ count: 64, windows: { 1: { count: 64 } } });
+    expect(env.chromeChannels().filter((c) => c === 'page:prompt-pending')).toHaveLength(64);
+    expect(mint).not.toHaveBeenCalled();
+    // One rejected: its charge goes, and the next confirmation is asked.
+    const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false })).toEqual({ ok: true });
+    await flush();
+    expect(env.requests.promptUsage().count).toBe(63);
+    let next = null;
+    approvals.confirm({ sender: { id: 501 }, kind: 'wallet-send', index: 0, payload: SEND }, mint).then((outcome) => (next = outcome));
+    await flush();
+    expect(next).toBeNull();
+    expect(env.requests.promptUsage().count).toBe(64);
+    // The window closes: every one of its own prompts closes, and lets go.
+    env.closeWindow(1);
+    await flush();
+    expect(outcomes.filter((outcome) => outcome === null)).toHaveLength(0);
+    expect(next).toEqual(REJECTED);
+    expect(env.requests.promptUsage()).toEqual({ count: 0, bytes: 0, windows: {} });
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  test('large requests, from three windows: past a window\'s 8 MiB, or the browser\'s 16 MiB, refused; the request is charged with its view', async () => {
+    const env = withPageRequests();
+    for (const id of [1, 2, 3]) attached(env, id);
+    const approvals = confirmations(env);
+    // A send whose data is 1 MiB of hex: about 1 MiB in the view, and 1 MiB
+    // more in the request main keeps while the prompt waits.
+    const large = { ...SEND, data: `0x${'ab'.repeat(MiB / 2)}` };
+    const ask = (window) => {
+      const state = { outcome: null };
+      approvals.confirm({ sender: { id: 500 + window }, kind: 'wallet-send', index: 0, payload: large }, () => ({})).then((outcome) => {
+        state.outcome = outcome;
+      });
+      return state;
+    };
+    const one = ask(1);
+    await flush();
+    const each = env.requests.promptUsage().bytes;
+    expect(each).toBeGreaterThan(2 * MiB);
+    expect(each).toBeLessThan(2 * MiB + 4096);
+    const perWindow = Math.floor((8 * MiB) / each);
+    expect(perWindow).toBe(3);
+    const asked = [one];
+    for (let i = 1; i < perWindow + 2; i += 1) asked.push(ask(1));
+    await flush();
+    expect(asked.map((state) => state.outcome === LIMITED)).toEqual([false, false, false, true, true]);
+    expect(env.requests.promptUsage().windows[1]).toEqual({ count: 3, bytes: 3 * each });
+    // Window 2 has its own 8 MiB; the browser's 16 MiB then leaves window
+    // 3 room for one.
+    const two = [ask(2), ask(2), ask(2)];
+    const three = [ask(3), ask(3)];
+    await flush();
+    expect(two.map((state) => state.outcome)).toEqual([null, null, null]);
+    expect(three.map((state) => state.outcome === LIMITED)).toEqual([false, true]);
+    expect(env.requests.promptUsage()).toMatchObject({ count: 7, bytes: 7 * each });
+    expect(env.requests.promptUsage().bytes).toBeLessThanOrEqual(16 * MiB);
+  });
+
+  test('a page\'s prompt past the budget: the page gets -32005, and no handle opens', async () => {
+    // As every dispatcher does, a prompt's `{ error }` answers the page.
+    const dispatch = async (context) => {
+      const decision = await context.prompt({ kind: 'test.prompt', view: context.params.view });
+      if (decision.error) return { error: decision.error };
+      return decision.approve === true ? { result: 'approved' } : { error: { code: 4001, message: 'User rejected the request' } };
+    };
+    const env = withPageRequests({ dispatch, promptBudgets: { window: { count: 1, bytes: MiB }, browser: { count: 4, bytes: 4 * MiB } } });
+    const { contents } = attached(env);
+    const firstTab = env.tab();
+    const first = firstTab.ask(VIEW);
+    await flush();
+    expect(env.requests.promptState()[1].open).toHaveLength(1);
+    const second = await env.tab().ask(VIEW);
+    expect(second).toEqual({ error: { code: -32005, message: 'Limit exceeded' } });
+    expect(env.requests.promptState()[1].open).toHaveLength(1);
+    expect(env.requests.stats().handles).toBe(1);
+    expect(env.chromeChannels().filter((c) => c === 'page:prompt-pending')).toHaveLength(1);
+    // A window's own prompt is refused there too, with `-32005`.
+    expect(await env.requests.walletPrompt(1, { kind: 'wallet.send', view: VIEW })).toEqual({
+      error: { code: -32005, message: 'Limit exceeded' },
+    });
+    // The first rejected: its charge goes, and the next page's prompt opens.
+    env.requests.foreground({ sender: { id: 501 } }, { guest: firstTab.guest.id });
+    const handle = env.requests.promptState()[1].shown;
+    expect(handle).toEqual(expect.any(String));
+    expect(await env.docs.decide(eventFrom(contents), { handle, approve: false })).toEqual({ ok: true });
+    expect(await first).toEqual({ error: { code: 4001, message: 'User rejected the request' } });
+    expect(env.requests.promptUsage()).toEqual({ count: 0, bytes: 0, windows: {} });
+    env.tab().ask(VIEW);
+    await flush();
+    expect(env.requests.promptUsage().count).toBe(1);
   });
 });
 
