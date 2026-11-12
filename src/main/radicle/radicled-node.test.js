@@ -664,6 +664,7 @@ describe("readiness (0008, Main's side)", () => {
     child(0).exit(70);
     await settle();
     expect(node.isUp()).toBe(false);
+    expect(node.generation).toBeNull();
     expect(node.activeIdentity()).toBeNull();
     expect(node.connectedPeers()).toBeNull();
     await expect(node.connectSeeds(15000)).rejects.toThrow('The Radicle node is not running');
@@ -673,6 +674,9 @@ describe("readiness (0008, Main's side)", () => {
 describe('crashes and restarts', () => {
   test('restarts at 0.5 s and 2 s; the third crash within 60 s gives up', async () => {
     const node = await running();
+    // Each process is a generation of its own (the manager seeds each).
+    const first = node.generation;
+    expect(first).toEqual(expect.any(Number));
     child(0).exit(70);
     await settle();
     await clock.advance(499);
@@ -680,6 +684,7 @@ describe('crashes and restarts', () => {
     await clock.advance(1);
     expect(service.children).toHaveLength(2);
     expect(node.state).toBe('running');
+    expect(node.generation).toBeGreaterThan(first);
     child(1).exit(70);
     await settle();
     await clock.advance(2_000);
