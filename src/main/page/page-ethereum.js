@@ -289,6 +289,16 @@ function createEthereumDispatchers(deps = {}) {
             attested: { key: requester.key, transportKey: requester.transportKey },
             beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
             effectAllowed: () => open() && context.holdsKey(),
+            // What the agent's own write did, told inside its guarded run
+            // (PRQ-6): a grant it created gets main's new-grant events,
+            // queued at that write. One it updated is told by the grant
+            // store (`page-events.js`), and one it left as it was by no one.
+            grantWritten: (effect) => {
+              if (effect?.grant !== 'created' || typeof effect.account !== 'string' || !effect.account) return;
+              const chainId =
+                Number.isSafeInteger(effect.chainId) && effect.chainId > 0 ? effect.chainId : chainIdOf(requester);
+              announceNewGrant(context, effect.account, chainId);
+            },
           }
         );
       } catch {
@@ -328,16 +338,32 @@ function createEthereumDispatchers(deps = {}) {
     return { accounts: offered, defaultIndex, chain: { id: chainId, name } };
   }
 
-  // The grant's events (today's, from the chrome's connect): the account to
-  // every live document of the key, `connect` to the one that asked.
-  async function announceConnection(context, account, chainId) {
+  // A new grant's events (today's, from the chrome's connect): the account
+  // to every live document of the key, `connect` to the one that asked.
+  // Called at the write itself, in the same run, by main's connect or by
+  // the agent's (`grantWritten`), and queued there in the key's order with
+  // its other grant events (PRQ-6, `page-events.js`): a revocation made
+  // after the write is heard after them, even while a name's resolution
+  // holds them. They go out once main has answered the request, as the
+  // chrome sent them after its answer. The grant exists once written, so
+  // the key's other documents hear it however the request ended; the
+  // document that asked hears it only if its answer was the account, not
+  // "Request timed out" or nothing at all.
+  function announceNewGrant(context, account, chainId) {
     const { requester } = context;
-    const others = context
-      .liveDocuments()
-      .filter((doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation));
-    await context.sendEvent(requester, 'accountsChanged', [account]);
-    await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
-    for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
+    context.inGrantOrder(requester.key, async () => {
+      const answered = await context.whenAnswered();
+      const others = context
+        .liveDocuments()
+        .filter(
+          (doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation)
+        );
+      if (answered?.ok === true) {
+        await context.sendEvent(requester, 'accountsChanged', [account]);
+        await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
+      }
+      for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
+    });
   }
 
   async function requestAccounts(context) {
@@ -388,7 +414,7 @@ function createEthereumDispatchers(deps = {}) {
     } catch {
       return { error: { ...GRANT_FAILED } };
     }
-    context.afterAnswer(() => announceConnection(context, chosen.address, chainId));
+    announceNewGrant(context, chosen.address, chainId);
     return { result: [chosen.address] };
   }
 
@@ -432,22 +458,27 @@ function createEthereumDispatchers(deps = {}) {
     const previous = windowChainOf(requester.window);
     if (getPermission(requester.key)) updateLastUsed(requester.key, requested);
     selectChainForPage(requester.window, requested);
-    // The page that asked hears it first, as from the chrome, unless it is
-    // an onchain app, which keeps its own chain.
-    if (!pinned) await context.sendEvent(requester, 'chainChanged', hex(requested));
     // The chain changed for every other page of the window too, but the
     // onchain apps.
-    if (previous !== requested) {
-      const others = context
-        .liveDocuments()
-        .filter(
-          (doc) =>
-            doc.window === requester.window &&
-            !doc.chain &&
-            !(doc.guest === requester.guest && doc.navigation === requester.navigation)
-        );
+    const others =
+      previous === requested
+        ? []
+        : context
+          .liveDocuments()
+          .filter(
+            (doc) =>
+              doc.window === requester.window &&
+              !doc.chain &&
+              !(doc.guest === requester.guest && doc.navigation === requester.navigation)
+          );
+    // In the window's order with the chain switcher's events (PRQ-6,
+    // `page-events.js`), and before the answer, as from the chrome.
+    await context.inChainOrder(requester.window, async () => {
+      // The page that asked hears it first, unless it is an onchain app,
+      // which keeps its own chain.
+      if (!pinned) await context.sendEvent(requester, 'chainChanged', hex(requested));
       for (const doc of others) await context.sendEvent(doc, 'chainChanged', hex(requested));
-    }
+    });
     return { result: null };
   }
 

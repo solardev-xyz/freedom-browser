@@ -565,6 +565,21 @@ jobs:
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
           FREEDOM_CORED_PATH: ${{ github.workspace }}/freedom-cored-bin/${{ matrix.target }}/freedom-cored
 
+      # The same Radicle backend contract on the service (design 0008,
+      # "Tests first" and "JSON results"): the suite against the downloaded
+      # freedom-radicled, through main's manager and radicle-embedded.js
+      # under FREEDOM_RADICLE_BACKEND=service. The golden read vectors byte
+      # for byte, the design's deviations asserted as such; callStream and
+      # callScoped; node_info; the dirty marker; and the quarantine's calls.
+      # The fixture's key reaches the node sealed, as the core would seal it,
+      # under a SOCKS policy at a closed port: nothing leaves the machine.
+      - name: Radicle backend contract suite (freedom-radicled)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/radicle-backend.contract.test.js
+        env:
+          FREEDOM_RADICLE_CONTRACT_BACKEND: radicled
+          FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
+
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
       - name: Verify the win-arm64 release asset
@@ -1595,17 +1610,19 @@ jobs:
       # for a background tab and shows only for the tab in front
       # (`page-connect`, PRQ-4), signing messages and typed data, whose
       # tokens only main mints and whose site rules only main reads
-      # (`page-signing`, PRQ-5a), and sends, whose fee main quotes and
+      # (`page-signing`, PRQ-5a), sends, whose fee main quotes and
       # judges, whose tokens only main mints and whose contract rules only
-      # main reads and records (`page-sends`, PRQ-5b), window.swarm's
+      # main reads and records (`page-sends`, PRQ-5b), the chain
+      # switcher's and a revocation's Ethereum events, which main sends to
+      # the right documents only (`page-events`, PRQ-6), window.swarm's
       # reads, which main serves under the page's attested key and the
-      # chrome's route refuses (`page-swarm`, PRQ-7a), and its connecting
-      # and messaging, whose prompts and grants are main's and whose
+      # chrome's route refuses (`page-swarm`, PRQ-7a), its connecting and
+      # messaging, whose prompts and grants are main's and whose
       # subscriptions end with their document (`page-swarm-connect`, PRQ-7b),
       # and its publishing, whose prompt and rule are main's and whose
       # uploads take turns on their tickets within their measured charges
       # (`page-swarm-publish`, PRQ-7c).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-swarm + page-swarm-connect + page-swarm-publish E2E
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1626,6 +1643,7 @@ jobs:
             test-e2e/page-connect.spec.js \
             test-e2e/page-signing.spec.js \
             test-e2e/page-sends.spec.js \
+            test-e2e/page-events.spec.js \
             test-e2e/page-swarm.spec.js \
             test-e2e/page-swarm-connect.spec.js \
             test-e2e/page-swarm-publish.spec.js

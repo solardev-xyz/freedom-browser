@@ -36,9 +36,14 @@ const FIXTURE_ALIAS = 'FreedomContract';
 
 const BIG_FILE_BYTES = 70 * 1024 * 1024;
 
+/** The test identity's Ed25519 secret seed, 32 bytes. */
+function fixtureSeed() {
+  return crypto.createHash('sha256').update(FIXTURE_SEED).digest();
+}
+
 /** The test identity: its OpenSSH key files and its DID. */
 function fixtureIdentity() {
-  const seed = crypto.createHash('sha256').update(FIXTURE_SEED).digest();
+  const seed = fixtureSeed();
   const privateKey = crypto.createPrivateKey({
     // PKCS#8 for an Ed25519 seed: the fixed prefix, then the 32 bytes.
     key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]),
@@ -189,6 +194,7 @@ module.exports = {
   VECTORS_PATH,
   buildWorkingCopy,
   fixtureIdentity,
+  fixtureSeed,
   restoreSnapshot,
   writeIdentity,
   writeSnapshot,

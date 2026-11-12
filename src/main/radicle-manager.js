@@ -17,6 +17,8 @@ const { isPrivateSender } = require('./private/private-sender');
 // through redactForLog. The context alone redacts nothing.
 const { redactForLog } = require('./private/private-log-context');
 const seedStatus = require('./radicle/seed-status');
+// What runs the node (plan B6): the add-on, or the freedom-radicled service.
+const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
 const {
   takeRadicleGate,
   withRadicleGate,
@@ -72,27 +74,6 @@ const notOnService = () => failure('RADICLE_SERVICE_UNSUPPORTED', NOT_ON_SERVICE
 // new one starts only after it.
 let serviceNode = null;
 let lastServiceNode = null;
-let warnedBackend = null;
-
-/**
- * What runs the profile's Radicle node (freedom-core design 0008, step 6;
- * plan B6): `addon`, the libradicle add-on in main, or `service`, the
- * freedom-radicled service process. Packaged builds always run the add-on,
- * whatever FREEDOM_RADICLE_BACKEND says: the service is development only
- * until the default switches. Development builds run the add-on by default,
- * and the service with FREEDOM_RADICLE_BACKEND=service; any other value is
- * warned of, once, and runs the default.
- */
-function radicleBackendKind({ packaged = Boolean(app?.isPackaged), env = process.env } = {}) {
-  if (packaged) return 'addon';
-  const kind = env.FREEDOM_RADICLE_BACKEND || 'addon';
-  if (kind === 'addon' || kind === 'service') return kind;
-  if (warnedBackend !== kind) {
-    warnedBackend = kind;
-    log.warn(`[Radicle] Unknown FREEDOM_RADICLE_BACKEND=${kind}; using the add-on`);
-  }
-  return 'addon';
-}
 
 const onService = () => radicleBackendKind() === 'service';
 
@@ -485,6 +466,9 @@ async function startServiceInternal({ signal = null } = {}) {
     onChange: (state, changed) => handleServiceNodeChange(state, changed),
   });
   serviceNode = node;
+  // The service's reads (radicle-embedded.js; 0008, "JSON results") go to
+  // the running generation of the node this manager holds, if any.
+  embedded.setServiceNodeSource(() => serviceNode);
   // From here on the stop is the node's: stopRadicle stops it at once too.
   signal?.addEventListener('abort', () => void node.stop(), { once: true });
   const started = await node.start();
@@ -657,9 +641,12 @@ function requireRunning() {
     : failure('RADICLE_NOT_RUNNING', 'Radicle node is not running');
 }
 
+// The seed paths' reads. Under the service each is collected, its value
+// used inside its scope (0008, "JSON results"): none leaves it.
 async function repoExists(rid) {
   try {
-    await embedded.repoInfo(rid);
+    if (onService()) await embedded.callScoped('repo_info', { rid }, async () => {});
+    else await embedded.repoInfo(rid);
     return true;
   } catch {
     return false;
@@ -667,6 +654,9 @@ async function repoExists(rid) {
 }
 
 async function getSeederCount(rid) {
+  if (onService()) {
+    return embedded.callScoped('seeders', { rid }, async (info) => info?.seeding);
+  }
   return (await embedded.seeders(rid)).seeding;
 }
 
@@ -706,9 +696,12 @@ async function seedRepository(rid, onStatus) {
 }
 
 async function isSeeded(fullRid) {
+  const seeded = (repos) => Array.isArray(repos) && repos.some((repo) => repo?.rid === fullRid);
   try {
-    const repos = await embedded.listSeededRepos();
-    return Array.isArray(repos) && repos.some((repo) => repo?.rid === fullRid);
+    if (onService()) {
+      return await embedded.callScoped('list_seeded_repos', {}, async (repos) => seeded(repos));
+    }
+    return seeded(await embedded.listSeededRepos());
   } catch (err) {
     log.warn(
       `[Radicle] Could not read seeding policies for ${redactForLog(fullRid)}:`,
@@ -810,11 +803,13 @@ async function unseedRepository(rid) {
   }
 }
 
-// Under the service: the peer count from the node's last `rad.stats`
-// (0008: the count main shows), the libradicle build its process links,
-// and the confinement it got, for the nodes panel (design 0010, step 5).
-// The repository count comes with the service's reads.
-function getServiceConnections() {
+// Under the service (0008, "JSON results"): the counts from the composed
+// `node_info`, collected, beside the libradicle build the process links and
+// the confinement it got, for the nodes panel (design 0010, step 5). Its
+// `repos_total` is null when the service couldn't list the repositories,
+// as today's count is; a `node_info` that fails, `status` with it, is
+// GET_CONNECTIONS_FAILED.
+async function getServiceConnections() {
   const node = serviceNode;
   const diagnostics = {
     version: node?.version ?? null,
@@ -823,7 +818,27 @@ function getServiceConnections() {
   };
   const unavailable = requireRunning();
   if (unavailable) return { ...unavailable, count: 0, reposCount: null, ...diagnostics };
-  return success({ count: node?.connectedPeers() ?? 0, reposCount: null, ...diagnostics });
+  try {
+    const { count, reposCount } = await embedded.callScoped('node_info', {}, async (info) => {
+      if (typeof info?.repos_error === 'string') {
+        log.warn(
+          '[Radicle] Could not read seeded repository count:',
+          redactForLog(info.repos_error)
+        );
+      }
+      return {
+        count: Number.isSafeInteger(info?.connected_peers) ? info.connected_peers : 0,
+        reposCount: Number.isSafeInteger(info?.repos_total) ? info.repos_total : null,
+      };
+    });
+    return success({ count, reposCount, ...diagnostics });
+  } catch (err) {
+    return failure('GET_CONNECTIONS_FAILED', err.message, undefined, {
+      count: 0,
+      reposCount: null,
+      ...diagnostics,
+    });
+  }
 }
 
 async function getConnections() {
@@ -1064,6 +1079,10 @@ module.exports = {
   hasInjectedIdentity,
   getCurrentStatus,
   getConnections,
+  // The seed paths' reads, for their tests.
+  repoExists,
+  getSeederCount,
+  isSeeded,
   seedRepository,
   unseedRepository,
   getSeedFetchStatus,

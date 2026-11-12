@@ -37,6 +37,13 @@ function loadManager(options = {}) {
     listRepos: jest.fn(async () => [{ rid: 'rad:zRepoOne' }, { rid: 'rad:zRepoTwo' }]),
     listSeededRepos: jest.fn(async () => [{ rid: 'rad:zRepoOne' }, { rid: 'rad:zRepoTwo' }]),
     getVersion: jest.fn(() => '0.4.0'),
+    // The service's reads (radicle-embedded.js under the service): its node,
+    // and a collected result handed to its scope.
+    setServiceNodeSource: jest.fn(),
+    callScoped: jest.fn(async (op, _args, scope) => {
+      if (op !== 'node_info') throw new Error(`unexpected collected read ${op}`);
+      return scope({ connected_peers: 6, repos_total: 2, repos_error: null }, { signal: null });
+    }),
     ...options.embedded,
   };
   const registry = {
@@ -1719,7 +1726,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     await ctx.mod.stopRadicle();
   });
 
-  test("getConnections: the stats' peer count, the libradicle build and the sandbox", async () => {
+  test("getConnections: node_info's counts, collected, with the libradicle build and the sandbox", async () => {
     const ctx = load();
     await expect(ctx.mod.getConnections()).resolves.toMatchObject({
       success: false,
@@ -1728,27 +1735,134 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       version: null,
       confinement: null,
     });
+    expect(ctx.embedded.callScoped).not.toHaveBeenCalled();
     const started = ctx.mod.startRadicle();
     await flush();
     ctx.node().resolveStart(true);
     await started;
+    // The reads go to the node the manager holds.
+    const [source] = ctx.embedded.setServiceNodeSource.mock.calls.at(-1);
+    expect(source()).toBe(ctx.node());
     await expect(ctx.mod.getConnections()).resolves.toEqual({
       success: true,
-      count: 4,
-      reposCount: null,
+      count: 6,
+      reposCount: 2,
       version: '0.8.0',
       confinement: CONFINEMENT,
       service: '0.1.0',
     });
+    expect(ctx.embedded.callScoped).toHaveBeenCalledWith('node_info', {}, expect.any(Function));
     await flush();
     expect(ctx.statusSend).toHaveBeenCalledWith(
       'radicle:statusUpdate',
       expect.objectContaining({
         status: 'running',
-        info: expect.objectContaining({ confinement: CONFINEMENT }),
+        info: expect.objectContaining({ count: 6, reposCount: 2, confinement: CONFINEMENT }),
       })
     );
+    // Nothing of the add-on's.
     expect(ctx.embedded.status).not.toHaveBeenCalled();
+    expect(ctx.embedded.listRepos).not.toHaveBeenCalled();
+    await ctx.mod.stopRadicle();
+    expect(source()).toBeNull();
+  });
+
+  test("the seed paths' reads are collected, each value used in its scope: repoInfo, seeders, listSeededRepos", async () => {
+    const answers = {
+      repo_info: { rid: 'rad:zRepoOne', name: 'one' },
+      seeders: { seeding: 5 },
+      list_seeded_repos: [{ rid: 'rad:zRepoOne' }, { rid: 'rad:zRepoTwo' }],
+    };
+    const results = [];
+    const ctx = load({
+      embedded: {
+        callScoped: jest.fn(async (op, _args, scope) => {
+          if (!answers[op]) throw Object.assign(new Error('not found'), { code: 'not_found' });
+          const value = answers[op];
+          const result = await scope(value, { signal: null, bytes: 1 });
+          // What leaves the scope is the caller's own answer, not the value.
+          results.push(result);
+          expect(result).not.toBe(value);
+          return result;
+        }),
+      },
+    });
+    await expect(ctx.mod.repoExists('rad:zRepoOne')).resolves.toBe(true);
+    await expect(ctx.mod.getSeederCount('rad:zRepoOne')).resolves.toBe(5);
+    await expect(ctx.mod.isSeeded('rad:zRepoTwo')).resolves.toBe(true);
+    await expect(ctx.mod.isSeeded('rad:zRepoThree')).resolves.toBe(false);
+    expect(ctx.embedded.callScoped.mock.calls.map(([op, args]) => [op, args])).toEqual([
+      ['repo_info', { rid: 'rad:zRepoOne' }],
+      ['seeders', { rid: 'rad:zRepoOne' }],
+      ['list_seeded_repos', {}],
+      ['list_seeded_repos', {}],
+    ]);
+    expect(results).toEqual([undefined, 5, true, false]);
+    // A read that fails: no repository, and not seeded.
+    delete answers.repo_info;
+    delete answers.list_seeded_repos;
+    await expect(ctx.mod.repoExists('rad:zRepoOne')).resolves.toBe(false);
+    await expect(ctx.mod.isSeeded('rad:zRepoOne')).resolves.toBe(false);
+    // Nothing of the add-on's.
+    for (const name of ['repoInfo', 'seeders', 'listSeededRepos']) {
+      expect(ctx.embedded[name]).not.toHaveBeenCalled();
+    }
+  });
+
+  test("getConnections: node_info's three contracts (0008, Tests first)", async () => {
+    const answers = [];
+    const ctx = load({
+      embedded: {
+        callScoped: jest.fn(async (_op, _args, scope) => {
+          const next = answers.shift();
+          if (next instanceof Error) throw next;
+          return scope(next, { signal: null });
+        }),
+      },
+    });
+    const started = ctx.mod.startRadicle();
+    await flush();
+    ctx.node().resolveStart(true);
+    await started;
+    await flush();
+    const log = require('./logger');
+    log.warn.mockClear();
+    const diagnostics = { version: '0.8.0', confinement: CONFINEMENT, service: '0.1.0' };
+
+    // Both succeed.
+    answers.push({ connected_peers: 3, repos_total: 3, repos_error: null });
+    await expect(ctx.mod.getConnections()).resolves.toEqual({
+      success: true,
+      count: 3,
+      reposCount: 3,
+      ...diagnostics,
+    });
+    expect(log.warn).not.toHaveBeenCalled();
+
+    // status succeeds, enumeration fails: no count, and today's warning.
+    answers.push({ connected_peers: 2, repos_total: null, repos_error: 'listing failed' });
+    await expect(ctx.mod.getConnections()).resolves.toEqual({
+      success: true,
+      count: 2,
+      reposCount: null,
+      ...diagnostics,
+    });
+    expect(log.warn).toHaveBeenCalledWith(
+      '[Radicle] Could not read seeded repository count:',
+      'listing failed'
+    );
+
+    // status fails: the read fails, and so does the manager's answer.
+    answers.push(
+      Object.assign(new Error('node thread: the node is not running'), { code: 'failed' })
+    );
+    await expect(ctx.mod.getConnections()).resolves.toEqual({
+      success: false,
+      error: { code: 'GET_CONNECTIONS_FAILED', message: 'node thread: the node is not running' },
+      count: 0,
+      reposCount: null,
+      ...diagnostics,
+    });
     await ctx.mod.stopRadicle();
   });
 

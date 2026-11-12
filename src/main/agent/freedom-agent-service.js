@@ -1703,8 +1703,9 @@ class FreedomAgentService {
    * from main for a request it attested (freedom-core design 0011, PRQ-4):
    * `attested` (the key the request acts under, and the page's transport
    * key), `signal` (aborted when main answers the request: its approval is
-   * withdrawn), and `beforeEffect`/`effectAllowed`, which the effect waits
-   * on.
+   * withdrawn), `beforeEffect`/`effectAllowed`, which the effect waits on,
+   * and `grantWritten`, which the controller tells what a connect's grant
+   * write did, in the write's own run (PRQ-6).
    */
   async handleWalletRequest(tabId, payload, pageRequest = null) {
     const run = this.activeRun;
@@ -1729,13 +1730,16 @@ class FreedomAgentService {
       ? AbortSignal.any([delegationSignal || run.workspaceAbortController?.signal, pageRequest.signal].filter(Boolean))
       : delegationSignal;
     const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest);
-    run.pendingWalletRequests.add(handling);
-    run.scopedController?.setExternalApprovalBarrier?.(handling);
-    try {
-      return await handling;
-    } finally {
-      run.pendingWalletRequests.delete(handling);
-    }
+    // The run and its browser actions wait for the whole request, the
+    // Agent's steering after it included; the page's answer doesn't. From
+    // the controller's effect to main's answer nothing waits on anything
+    // but this chain, so main's deadline or the page's close can't land
+    // between an effect and its answer (freedom-core design 0011, PRQ-6).
+    const whole = handling.then(({ steering }) => steering, () => undefined);
+    run.pendingWalletRequests.add(whole);
+    run.scopedController?.setExternalApprovalBarrier?.(whole);
+    void whole.finally(() => run.pendingWalletRequests.delete(whole));
+    return (await handling).answer;
   }
 
   async start(options) {
@@ -3238,6 +3242,7 @@ class FreedomAgentService {
           attested: pageRequest.attested,
           beforeEffect: pageRequest.beforeEffect,
           effectAllowed: pageRequest.effectAllowed,
+          grantWritten: pageRequest.grantWritten,
         }),
       },
       payload
@@ -3265,11 +3270,14 @@ class FreedomAgentService {
             origin: getPermissionKey(pageState.url) || '',
           }
         : null;
+    // Started now, and not waited on before the page's answer
+    // (`handleWalletRequest`).
+    let steering = null;
     if (event && this.activeRun === run && !run.finished && !run.stopRequested && run.acceptingGuidance !== false && run.session.isStreaming !== false) {
       try {
-        await run.session.steer(
-          `Freedom wallet event (trusted browser result): ${JSON.stringify(event)}`
-        );
+        steering = Promise.resolve(
+          run.session.steer(`Freedom wallet event (trusted browser result): ${JSON.stringify(event)}`)
+        ).catch(() => undefined);
       } catch {
         // The page still receives the authoritative provider result. A later
         // snapshot remains available if Pi's current turn has already ended.
@@ -3277,9 +3285,12 @@ class FreedomAgentService {
     }
 
     return {
-      handled: outcome?.handled === true,
-      ...(outcome?.result !== undefined && { result: outcome.result }),
-      ...(outcome?.error && { error: outcome.error }),
+      answer: {
+        handled: outcome?.handled === true,
+        ...(outcome?.result !== undefined && { result: outcome.result }),
+        ...(outcome?.error && { error: outcome.error }),
+      },
+      steering,
     };
   }
 
