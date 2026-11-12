@@ -1621,9 +1621,13 @@ describe('webview-preload', () => {
 // The page-side provider scripts are injected as source strings, so they are
 // exercised here by extracting and evaluating them in a sandbox rather than
 // through loadWebviewPreloadModule().
-describe('injected provider request timeouts', () => {
+// Design 0011, "One deadline, main's": main answers every request, a method
+// it doesn't serve included, and its deadline answers one that runs too
+// long, so no page-world provider arms a timer of its own.
+describe('injected providers arm no timer', () => {
   const fs = require('fs');
   const preloadSource = fs.readFileSync(require.resolve('./webview-preload'), 'utf8');
+  const ethereumSource = fs.readFileSync(require.resolve('./webview-preload-ethereum-inject'), 'utf8');
 
   function extractScript(varName) {
     const start = preloadSource.indexOf(`const ${varName} = \``);
@@ -1635,112 +1639,44 @@ describe('injected provider request timeouts', () => {
     return preloadSource.slice(bodyStart, bodyEnd);
   }
 
-  /** Evaluate an injected provider and report the timeout it arms per method. */
-  function timeoutFor(varName, globalName, method) {
-    let armed = null;
+  /** Run a page-world source, send `methods`, and report what it posted and armed. */
+  function run(source, globalName, methods) {
+    const armed = [];
+    const posted = [];
     const sandboxWindow = {
-      postMessage: () => {},
+      postMessage: (message) => posted.push(message.method),
       addEventListener: () => {},
+      dispatchEvent: () => true,
       location: { origin: 'https://dapp.example' },
     };
-    new Function('window', 'setTimeout', 'Map', extractScript(varName))(
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    new Function('window', 'setTimeout', 'Map', 'Set', source)(
       sandboxWindow,
-      (_fn, ms) => {
-        armed = ms;
-      },
-      Map
+      (_fn, ms) => armed.push(ms),
+      Map,
+      Set
     );
-    sandboxWindow[globalName].request({ method }).catch(() => {});
-    return armed;
+    for (const method of methods) sandboxWindow[globalName].request({ method }).catch(() => {});
+    return { armed, posted };
   }
 
-  // A consent prompt blocks the response until the user decides. Timing that
-  // out page-side rejects the dApp's promise while main still records the
-  // grant and performs the write — the dApp retries and duplicates the COB.
-  test.each([
-    'radicle_requestAccess',
-    'radicle_seed',
-    'radicle_getIdentity',
-    'radicle_createIssue',
-    'radicle_commentIssue',
-    'radicle_editIssueState',
-    'radicle_commentPatch',
-  ])('radicle %s (can prompt) gets the 300s budget', (method) => {
-    expect(timeoutFor('RADICLE_INJECT_SOURCE', 'radicle', method)).toBe(300000);
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   test.each([
-    'radicle_getCapabilities',
-    'radicle_getNodeStatus',
-    'radicle_listSeededRepos',
-    'radicle_unseed',
-    'radicle_sync',
-    'radicle_getSeedStatus',
-    'radicle_disconnect',
-  ])('radicle %s (never prompts) keeps the 60s budget', (method) => {
-    expect(timeoutFor('RADICLE_INJECT_SOURCE', 'radicle', method)).toBe(60000);
+    ['window.swarm', () => extractScript('SWARM_INJECT_SOURCE'), 'swarm', ['swarm_readChunk', 'swarm_publishData', 'swarm_readData', 'swarm_noSuchMethod']],
+    ['window.radicle', () => extractScript('RADICLE_INJECT_SOURCE'), 'radicle', ['radicle_requestAccess', 'radicle_seed', 'radicle_sync', 'radicle_noSuchMethod']],
+    ['window.ethereum', () => ethereumSource, 'ethereum', ['eth_chainId', 'eth_sendTransaction', 'personal_sign', 'wallet_watchAsset']],
+  ])('%s posts every method and arms no timer', (_name, source, globalName, methods) => {
+    const { armed, posted } = run(source(), globalName, methods);
+    expect(posted).toEqual(methods);
+    expect(armed).toEqual([]);
   });
 
-  // Parity with the sibling provider the radicle one was modelled on.
-  test('swarm prompt/long-running methods use the same 300s budget', () => {
-    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_getSigningIdentity')).toBe(300000);
-    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readChunk')).toBe(60000);
-  });
-
-  test('swarm_readData gets the 300s budget: a multi-MiB join can outlast 60s', () => {
-    expect(timeoutFor('SWARM_INJECT_SOURCE', 'swarm', 'swarm_readData')).toBe(300000);
-  });
-
-  // Design 0011, "One deadline, main's" (PRQ-7a): the preload tells the
-  // page-world source which methods main answers, and it arms no timer for
-  // them; main's deadline answers one that runs too long.
-  test('window.swarm arms no timer for a method main answers, and reads and deletes its list first', () => {
-    const armed = [];
-    const posted = [];
-    const sandboxWindow = {
-      __FREEDOM_SWARM_MAIN_ANSWERED__: ['swarm_readChunk', 'swarm_listFeeds', 42],
-      postMessage: (message) => posted.push(message.method),
-      addEventListener: () => {},
-      location: { origin: 'https://dapp.example' },
-    };
-    new Function('window', 'setTimeout', 'Map', 'Set', extractScript('SWARM_INJECT_SOURCE'))(
-      sandboxWindow,
-      (_fn, ms) => armed.push(ms),
-      Map,
-      Set
-    );
-    expect('__FREEDOM_SWARM_MAIN_ANSWERED__' in sandboxWindow).toBe(false);
-    for (const method of ['swarm_readChunk', 'swarm_listFeeds', 'swarm_publishData', 'swarm_readData']) {
-      sandboxWindow.swarm.request({ method }).catch(() => {});
-    }
-    expect(posted).toEqual(['swarm_readChunk', 'swarm_listFeeds', 'swarm_publishData', 'swarm_readData']);
-    // Only the two main doesn't answer arm one.
-    expect(armed).toEqual([300000, 300000]);
-  });
-
-  // PRQ-8a: window.radicle, behind its own list.
-  test('window.radicle arms no timer for a method main answers, and reads and deletes its list first', () => {
-    const armed = [];
-    const posted = [];
-    const sandboxWindow = {
-      __FREEDOM_RADICLE_MAIN_ANSWERED__: ['radicle_requestAccess', 'radicle_getNodeStatus', 42],
-      postMessage: (message) => posted.push(message.method),
-      addEventListener: () => {},
-      location: { origin: 'https://dapp.example' },
-    };
-    new Function('window', 'setTimeout', 'Map', 'Set', extractScript('RADICLE_INJECT_SOURCE'))(
-      sandboxWindow,
-      (_fn, ms) => armed.push(ms),
-      Map,
-      Set
-    );
-    expect('__FREEDOM_RADICLE_MAIN_ANSWERED__' in sandboxWindow).toBe(false);
-    for (const method of ['radicle_requestAccess', 'radicle_getNodeStatus', 'radicle_seed', 'radicle_sync']) {
-      sandboxWindow.radicle.request({ method }).catch(() => {});
-    }
-    expect(posted).toEqual(['radicle_requestAccess', 'radicle_getNodeStatus', 'radicle_seed', 'radicle_sync']);
-    // Only the two main doesn't answer arm one.
-    expect(armed).toEqual([300000, 60000]);
+  test('no page-world source reads a list of the methods main answers', () => {
+    expect(preloadSource).not.toContain('MAIN_ANSWERED');
+    expect(ethereumSource).not.toContain('MAIN_ANSWERED');
   });
 });
 
@@ -1808,7 +1744,7 @@ describe('webview-preload private windows', () => {
     );
   });
 
-  test('normal window: provider bridges are installed as before', () => {
+  test('normal window: the providers\' bridges go to main, none to the chrome', () => {
     const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({
       location: {
         href: 'https://dapp.example/',
@@ -1817,22 +1753,17 @@ describe('webview-preload private windows', () => {
       },
     });
 
+    // Every provider's answers and events come from main (page:event),
+    // never from the chrome (freedom-core design 0011, PRQ-9).
     const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
-    for (const channel of providerChannels.filter((name) => !name.startsWith('swarm:') && !name.startsWith('radicle:'))) {
-      expect(onChannels).toContain(channel);
-    }
-    // window.swarm's and window.radicle's answers and events come from main
-    // (page:event), never from the chrome (freedom-core design 0011, PRQ-7d
-    // and PRQ-8c).
     expect(onChannels).toContain('page:event');
-    for (const channel of ['swarm:provider-response', 'swarm:provider-event', 'radicle:provider-response', 'radicle:provider-event']) {
-      expect(onChannels).not.toContain(channel);
-    }
+    for (const channel of providerChannels) expect(onChannels).not.toContain(channel);
+    expect(ipcRenderer.sendToHost).not.toHaveBeenCalled();
 
     const messageListeners = global.window.addEventListener.mock.calls.filter(
       ([event]) => event === 'message'
     );
-    // ethereum, swarm (to main) and radicle page bridges.
+    // ethereum, swarm and radicle page bridges, all to main.
     expect(messageListeners).toHaveLength(3);
 
     // #683: all three providers run in the main world at document start —
@@ -1900,10 +1831,8 @@ describe('webview-preload private windows', () => {
 
     expect(documentHandlers.DOMContentLoaded).toBeUndefined();
     expect(scripts).toHaveLength(3);
-    // The Ethereum source behind its list of the methods main answers.
-    expect(scripts[0].textContent).toMatch(
-      /^window\.__FREEDOM_MAIN_ANSWERED__ = \[[^\n]*"eth_chainId"[^\n]*\];\n\/\* ethereum inject source stub \*\/$/
-    );
+    // The Ethereum source as main handed it over, behind no list.
+    expect(scripts[0].textContent).toBe('/* ethereum inject source stub */');
     expect(scripts[1].textContent).toContain('FREEDOM_SWARM_REQUEST');
     expect(scripts[2].textContent).toContain('FREEDOM_RADICLE_REQUEST');
     scripts.forEach((script, i) => {
@@ -1915,7 +1844,9 @@ describe('webview-preload private windows', () => {
 
 // #432: internal pages reach main through freedomAPI and have no use for
 // window.swarm / window.radicle, so those two shims are skipped there — and
-// still installed into every web page. Since #683 they run in the main world
+// still installed into every web page. Since PRQ-9 of freedom-core design
+// 0011 they get no window.ethereum either (Keys: Freedom's own pages get no
+// key and no window.ethereum). Since #683 they run in the main world
 // through executeInMainWorld (like window.ethereum) rather than as an inline
 // <script>, so no shim is inserted into the DOM on either kind of page.
 describe('webview-preload page-world shims on internal pages', () => {
@@ -1951,25 +1882,30 @@ describe('webview-preload page-world shims on internal pages', () => {
     };
   };
 
-  test('a web page gets the window.swarm and window.radicle shims in the main world', () => {
+  test('a web page gets the window.ethereum, window.swarm and window.radicle shims in the main world', () => {
     const { mainWorld, scripts } = injected({
       href: 'https://dapp.example/',
       protocol: 'https:',
       pathname: '/',
     });
+    expect(mainWorld.some((source) => source.includes('ethereum inject source stub'))).toBe(true);
     expect(mainWorld.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(true);
     expect(mainWorld.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(true);
     expect(scripts).toEqual([]);
   });
 
-  test.each(['history.html', 'settings.html', 'error.html'])(
-    'internal page %s gets neither shim',
+  test.each(['history.html', 'settings.html', 'error.html', 'home.html'])(
+    'internal page %s gets no shim, and no message bridge',
     (file) => {
       const { mainWorld, scripts } = injected({
         href: `file:///app/pages/${file}`,
         protocol: 'file:',
         pathname: `/app/pages/${file}`,
       });
+      expect(mainWorld).toEqual([]);
+      expect(
+        global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')
+      ).toHaveLength(0);
       expect(mainWorld.some((source) => source.includes('FREEDOM_SWARM_REQUEST'))).toBe(false);
       expect(mainWorld.some((source) => source.includes('FREEDOM_RADICLE_REQUEST'))).toBe(false);
       expect(scripts).toEqual([]);
@@ -2963,7 +2899,6 @@ describe('page requests', () => {
     ethereum: { info: { name: 'Freedom', icon: '', rdns: 'baby.freedom.browser' }, source: '/* eth */' },
     ...extra,
   });
-  const ROUTES = ['ethereum:eth_blockNumber', 'swarm:swarm_readChunk', 'radicle:radicle_getCapabilities'];
 
   function load(options = {}) {
     const loaded = loadWebviewPreloadModule({ location: DAPP, ...options });
@@ -3002,10 +2937,10 @@ describe('page requests', () => {
       { isPrivateWindow: true },
       {
         location: { href: `freedom-preview://${'a'.repeat(40)}/`, protocol: 'freedom-preview:', pathname: '/' },
-        argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))],
+        argv: ['electron', bootArg(boot())],
       },
       { location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' } },
-      { subframe: true, argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))] },
+      { subframe: true, argv: ['electron', bootArg(boot())] },
     ];
     for (const options of cases) {
       const { ipcRenderer } = load(options);
@@ -3015,7 +2950,7 @@ describe('page requests', () => {
     }
   });
 
-  test('without the harness\'s routes, only the moved methods go to main', () => {
+  test('every provider method goes to main, and none to the chrome', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
     // All of window.radicle goes to main (0011 PRQ-8a to 8c), and never to
     // the chrome: an unknown method too, which main refuses.
@@ -3104,9 +3039,9 @@ describe('page requests', () => {
       ['swarm', 'swarm_noSuchMethod'],
     ]);
     ipcRenderer.invoke.mockClear();
-    // The Ethereum reads (0011 PRQ-3), connecting (PRQ-4), signing messages
-    // and typed data (PRQ-5a) and sends (PRQ-5b) go to main, and never to
-    // the chrome.
+    // All of window.ethereum goes to main (0011 PRQ-3 to 5b, and PRQ-9 for
+    // the methods main doesn't serve, which main refuses), and never to the
+    // chrome.
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 1, method: 'eth_sendTransaction', params: [{ to: '0x01' }] });
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 9, method: 'personal_sign', params: ['0x68', '0x01'] });
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 10, method: 'eth_signTypedData_v4', params: ['0x01', {}] });
@@ -3120,6 +3055,8 @@ describe('page requests', () => {
       method: 'wallet_switchEthereumChain',
       params: [{ chainId: '0x1' }],
     });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 11, method: 'eth_sign', params: ['0x01', '0x68'] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 12, method: 'wallet_watchAsset', params: [] });
     expect(
       ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request').map(([, r]) => r.method)
     ).toEqual([
@@ -3131,131 +3068,30 @@ describe('page requests', () => {
       'eth_call',
       'eth_requestAccounts',
       'wallet_switchEthereumChain',
+      'eth_sign',
+      'wallet_watchAsset',
     ]);
-    // Nothing of window.ethereum's moved methods, window.swarm or
-    // window.radicle went to the chrome.
+    // Nothing of window.ethereum, window.swarm or window.radicle went to
+    // the chrome.
     expect(ipcRenderer.sendToHost).not.toHaveBeenCalled();
   });
 
-  // The page-world source the preload ran for window.ethereum, and the
-  // methods it was told main answers (design 0011, "One deadline, main's").
-  const mainAnswered = (contextBridge) => {
-    const source = contextBridge.executeInMainWorld.mock.calls[0][0].func.toString();
-    expect(source).toContain('/* eth */');
-    return JSON.parse(/window\.__FREEDOM_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
-  };
-
-  // window.swarm's source, behind its own list (PRQ-7a).
-  const swarmMainAnswered = (contextBridge) => {
-    const source = contextBridge.executeInMainWorld.mock.calls[1][0].func.toString();
-    expect(source).toContain('FREEDOM_SWARM_REQUEST');
-    return JSON.parse(/window\.__FREEDOM_SWARM_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
-  };
-
-  test('window.swarm is told which of its methods main answers: the moved reads, and the harness\'s routes', () => {
-    const moved = swarmMainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);
-    expect(moved).toEqual([
-      'swarm_getCapabilities',
-      'swarm_readChunk',
-      'swarm_readData',
-      'swarm_readSingleOwnerChunk',
-      'swarm_readFeedEntry',
-      'swarm_listFeeds',
-      // Connecting and messaging (PRQ-7b).
-      'swarm_requestAccess',
-      'swarm_getMessagingIdentity',
-      'swarm_subscribe',
-      'swarm_unsubscribe',
-      'swarm_sendPss',
-      'swarm_sendGsoc',
-      // Publishing (PRQ-7c).
-      'swarm_publishData',
-      'swarm_publishFiles',
-      'swarm_publishChunk',
-      'swarm_getUploadStatus',
-      // Feeds and signing (PRQ-7d).
-      'swarm_createFeed',
-      'swarm_updateFeed',
-      'swarm_writeFeedEntry',
-      'swarm_writeSingleOwnerChunk',
-      'swarm_getSigningIdentity',
-    ]);
-    const routed = swarmMainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_noSuchMethod', 'ethereum:eth_sign'] }))] })
-        .contextBridge
-    );
-    expect(routed).toEqual([...moved, 'swarm_noSuchMethod']);
+  test('the page-world sources run as main handed them over, behind no list of methods', () => {
+    const { contextBridge } = load({ argv: ['electron', bootArg(boot())] });
+    const sources = contextBridge.executeInMainWorld.mock.calls.map(([{ func }]) => func.toString());
+    expect(sources).toHaveLength(3);
+    expect(sources[0]).toContain('/* eth */');
+    for (const source of sources) expect(source).not.toContain('MAIN_ANSWERED');
   });
 
-  // window.radicle's source, behind its own list (PRQ-8a).
-  const radicleMainAnswered = (contextBridge) => {
-    const source = contextBridge.executeInMainWorld.mock.calls[2][0].func.toString();
-    expect(source).toContain('FREEDOM_RADICLE_REQUEST');
-    return JSON.parse(/window\.__FREEDOM_RADICLE_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
-  };
-
-  test('window.radicle is told which of its methods main answers: the moved ones, and the harness\'s routes', () => {
-    const moved = radicleMainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);
-    expect(moved).toEqual([
-      // Reads, connecting and disconnecting (PRQ-8a).
-      'radicle_getCapabilities',
-      'radicle_getNodeStatus',
-      'radicle_listSeededRepos',
-      'radicle_requestAccess',
-      'radicle_disconnect',
-      // Seeding (PRQ-8b).
-      'radicle_seed',
-      'radicle_unseed',
-      'radicle_sync',
-      'radicle_getSeedStatus',
-      // Signing (PRQ-8c).
-      'radicle_getIdentity',
-      'radicle_createIssue',
-      'radicle_commentIssue',
-      'radicle_editIssueState',
-      'radicle_commentPatch',
-    ]);
-    const routed = radicleMainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['radicle:radicle_noSuchMethod', 'swarm:swarm_noSuchMethod'] }))] })
-        .contextBridge
-    );
-    expect(routed).toEqual([...moved, 'radicle_noSuchMethod']);
-  });
-
-  test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
-    const moved = mainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);
-    expect(moved).toContain('eth_chainId');
-    expect(moved).toContain('eth_accounts');
-    expect(moved).toContain('web3_sha3');
-    expect(moved).toContain('eth_requestAccounts');
-    expect(moved).toContain('wallet_switchEthereumChain');
-    expect(moved).toContain('personal_sign');
-    expect(moved).toContain('eth_signTypedData_v4');
-    // Sends (PRQ-5b): no page-world timer, main's deadline instead.
-    expect(moved).toContain('eth_sendTransaction');
-    expect(moved).toHaveLength(31);
-    expect(moved).not.toContain('swarm_readChunk');
-    const routed = mainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['ethereum:eth_sign', 'swarm:swarm_readChunk'] }))] })
-        .contextBridge
-    );
-    expect(routed).toEqual([...moved, 'eth_sign']);
-    // An internal page sends nothing to main, so its provider keeps every timer.
-    const internal = load({
-      location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' },
-      argv: ['electron', bootArg(boot())],
-    });
-    expect(mainAnswered(internal.contextBridge)).toEqual([]);
-  });
-
-  test('a routed method goes to main with the nonce, and main\'s answer to the page under its id', async () => {
+  test('a request goes to main with the nonce, and main\'s answer to the page under its id', async () => {
     const answers = {
       eth_blockNumber: { result: '0x10' },
       swarm_readChunk: { error: { code: 4100, message: 'Unauthorized', data: { reason: 'navigated' } } },
       radicle_getCapabilities: { result: { canSeed: false } },
     };
     const { ipcRenderer } = load({
-      argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))],
+      argv: ['electron', bootArg(boot())],
       invokeResponses: {},
     });
     ipcRenderer.invoke.mockImplementation(async (channel, request) =>
@@ -3265,8 +3101,6 @@ describe('page requests', () => {
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 11, method: 'eth_blockNumber', params: [] });
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 12, method: 'swarm_readChunk', params: { reference: 'ab' } });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 13, method: 'radicle_getCapabilities', params: {} });
-    // An unrouted method keeps today's path.
-    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 14, method: 'wallet_watchAsset', params: [] });
     await flushMicrotasks();
 
     expect(ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request')).toEqual([
@@ -3274,9 +3108,7 @@ describe('page requests', () => {
       ['page:request', { nonce, provider: 'swarm', method: 'swarm_readChunk', params: { reference: 'ab' } }],
       ['page:request', { nonce, provider: 'radicle', method: 'radicle_getCapabilities', params: {} }],
     ]);
-    expect(ipcRenderer.sendToHost.mock.calls.map(([channel, request]) => [channel, request.id, request.method])).toEqual([
-      ['dapp:provider-request', 14, 'wallet_watchAsset'],
-    ]);
+    expect(ipcRenderer.sendToHost).not.toHaveBeenCalled();
     expect(posted()).toEqual([
       { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 11, result: '0x10', error: undefined },
       { type: 'FREEDOM_SWARM_RESPONSE', id: 12, result: undefined, error: answers.swarm_readChunk.error },
@@ -3285,7 +3117,7 @@ describe('page requests', () => {
   });
 
   test('an answer for a document that has gone is dropped, and a refused invoke is an internal error', async () => {
-    const { ipcRenderer } = load({ argv: ['electron', bootArg(boot({ testPageRoutes: ROUTES }))] });
+    const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
     ipcRenderer.invoke.mockImplementation(async (channel, request) => {
       if (channel !== 'page:request') return undefined;
       if (request.method === 'swarm_readChunk') return { gone: true };
@@ -3353,7 +3185,6 @@ describe('page request sizes and tickets', () => {
     isPrivate: false,
     internalPages,
     ethereum: { info: { name: 'Freedom', icon: '', rdns: 'baby.freedom.browser' }, source: '/* eth */' },
-    testPageRoutes: ['swarm:swarm_readChunk', 'swarm:swarm_publishData', 'swarm:swarm_publishFiles'],
   };
 
   function load(answer) {

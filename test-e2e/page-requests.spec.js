@@ -35,13 +35,12 @@ const page = (title, extra = '') => ({
     </script><h1>${title}</h1>${extra}`,
 });
 
-/** Route two Swarm methods through main, served by a dispatcher that can hold. */
+/** Serve the page's Swarm requests with a dispatcher that can hold. */
 async function routeThroughMain(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
     const state = { log: [], held: {}, forged: [] };
     globalThis.__prq = state;
-    hooks.setRoutes(['swarm:swarm_readChunk', 'swarm:swarm_publishData']);
     hooks.setDispatch((context) => {
       const params = context.params || {};
       state.log.push({ id: context.id, method: context.method, tag: params.tag, requester: context.requester });
