@@ -16,6 +16,13 @@
  *
  * The tab in front is reported to main by tabs.js (`page:foreground`).
  *
+ * With the approvals document's flag on (APS-1, `FREEDOM_APPROVALS_DOCUMENT`),
+ * main sends `page:prompt` and `page:prompt-hidden` to the window's
+ * approvals document instead, and refuses this window's decisions; the
+ * badges and the count work as before. This module also tells main where
+ * the content area starts (`anchor`), so the approvals panel sits beside
+ * the content below the toolbar, where the sidebar shows prompts.
+ *
  * The sidebar is shared with the chrome's own screens (the wallet's
  * management, its own sends). A prompt main
  * shows waits while one of those holds the sidebar or a device signature is
@@ -127,10 +134,28 @@ function takeDown(handle) {
   renderer?.close(handle);
 }
 
+// Report where the content area starts, now and whenever it moves (the
+// bookmarks bar, full screen, the window's size).
+function reportAnchor(api) {
+  const body = document.querySelector?.('.app-body');
+  if (!body || typeof api.anchor !== 'function') return;
+  let last = null;
+  const report = () => {
+    const top = Math.round(body.getBoundingClientRect().top);
+    if (!Number.isFinite(top) || top === last) return;
+    last = top;
+    api.anchor(top);
+  };
+  if (typeof ResizeObserver === 'function') new ResizeObserver(report).observe(body);
+  window.addEventListener?.('resize', report);
+  report();
+}
+
 export function initPagePrompts() {
   const api = window.pagePrompts;
   if (!api) return;
   countEl = document.getElementById('wallet-prompt-count');
+  reportAnchor(api);
   api.onPending?.((message) => {
     if (typeof message?.handle !== 'string' || !Number.isInteger(message.guest)) return;
     pending.set(message.handle, message.guest);
