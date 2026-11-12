@@ -102,8 +102,10 @@ function markDelivery(err, job) {
  * sidebar, so the QR must show there, not in whichever window has focus.
  * A window that asked and has closed gets none, and the job fails with
  * REMOTE_NO_UI. An x402 payment asks for the window that hosts its tab
- * (APS-5). Without an asking window (the agent), or with the document off,
- * the focused window, as before.
+ * (APS-5), and the agent's own transfer for the agent's window (the window
+ * whose chrome owns its conversation). Without an asking window (work
+ * outside every entry point), or with the document off, the focused window,
+ * as before.
  */
 function getTargetWindow() {
   if (isApprovalsDocumentEnabled()) {

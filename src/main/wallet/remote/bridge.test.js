@@ -428,7 +428,7 @@ describe('the window that asked (design 0011, APS-4)', () => {
     expect(requestsTo(mockWebContents)).toHaveLength(0);
   });
 
-  test('without a window that asked (the agent, an x402 payment), the focused window, as before', async () => {
+  test('without a window that asked (work outside every entry point), the focused window, as before', async () => {
     process.env[FLAG] = '1';
     const pending = requestRemoteSignature(JOB, 60_000);
     expect(requestsTo(mockWebContents)).toHaveLength(1);
@@ -437,7 +437,7 @@ describe('the window that asked (design 0011, APS-4)', () => {
   });
 
   test('with the document off, the focused window, whichever window asked', async () => {
-    delete process.env[FLAG];
+    process.env[FLAG] = '0';
     const pending = runInWindow(2, () => requestRemoteSignature(JOB, 60_000));
     expect(requestsTo(mockWebContents)).toHaveLength(1);
     expect(requestsTo(otherContents)).toHaveLength(0);
