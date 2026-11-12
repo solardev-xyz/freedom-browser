@@ -4,6 +4,8 @@ const originalWindow = global.window;
 const originalDocument = global.document;
 const originalFetch = global.fetch;
 
+const ACT_KEY = `02${'ab'.repeat(32)}`;
+
 const flushMicrotasks = async () => {
   for (let i = 0; i < 6; i += 1) await Promise.resolve();
 };
@@ -45,6 +47,9 @@ const loadBeeModule = async (options = {}) => {
   const beeStatusRow = createElement('div');
   const beeStatusLabel = createElement('span');
   const beeStatusValue = createElement('span');
+  const beeActKeyText = createElement('code');
+  beeActKeyText.textContent = 'Unknown';
+  const beeActKeyCopy = createElement('button', { disabled: true });
   const body = createElement('body');
   body.appendChild(beeInfoPanel);
   const document = createDocument({
@@ -58,6 +63,8 @@ const loadBeeModule = async (options = {}) => {
       'bee-status-row': beeStatusRow,
       'bee-status-label': beeStatusLabel,
       'bee-status-value': beeStatusValue,
+      'bee-act-key-text': beeActKeyText,
+      'bee-act-key-copy': beeActKeyCopy,
     },
   });
   let statusHandler = null;
@@ -96,6 +103,16 @@ const loadBeeModule = async (options = {}) => {
       if (endpoint === '/peers') {
         return { ok: true, status: 200, data: { peers: [{ id: 'a' }, { id: 'b' }] } };
       }
+      if (endpoint === '/addresses') {
+        return {
+          ok: true,
+          status: 200,
+          data: {
+            overlay: 'f'.repeat(64),
+            publicKey: 'publicKey' in options ? options.publicKey : ACT_KEY,
+          },
+        };
+      }
       if (endpoint === '/topology') {
         return {
           ok: true,
@@ -111,8 +128,10 @@ const loadBeeModule = async (options = {}) => {
 
       return { ok: true, status: 200, data: { version: 'antd/0.5.8-abcdef' } };
     });
+  const copyText = jest.fn().mockResolvedValue(undefined);
   global.window = {
     ant: beeApi,
+    electronAPI: { copyText },
   };
   global.document = document;
 
@@ -131,6 +150,7 @@ const loadBeeModule = async (options = {}) => {
     mod,
     state,
     apiGet,
+    copyText,
     getDisplayMessage,
     debugMocks,
     setIntervalMock,
@@ -147,6 +167,8 @@ const loadBeeModule = async (options = {}) => {
       beeStatusRow,
       beeStatusLabel,
       beeStatusValue,
+      beeActKeyText,
+      beeActKeyCopy,
     },
   };
 };
@@ -299,5 +321,172 @@ describe('bee-ui', () => {
 
     expect(ctx.beeApi.stop).toHaveBeenCalled();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('User toggled Swarm Off');
+  });
+});
+
+describe('ACT public key row (#1188)', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  const openMenu = async (ctx) => {
+    ctx.state.antMenuOpen = true;
+    ctx.mod.startAntInfoPolling();
+    await flushMicrotasks();
+  };
+
+  test('shows the node /addresses publicKey and copies the full key', async () => {
+    const ctx = await loadBeeModule({ currentAntStatus: 'running', windowBee: false });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+
+    expect(ctx.apiGet).toHaveBeenCalledWith('/addresses');
+    expect(ctx.elements.beeActKeyText.textContent).toBe(`02abab…abab`);
+    expect(ctx.elements.beeActKeyText.getAttribute('title')).toBe(ACT_KEY);
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(false);
+    expect(ctx.elements.beeActKeyText.classList.contains('has-key')).toBe(true);
+
+    const timeouts = [];
+    jest.spyOn(global, 'setTimeout').mockImplementation((fn, ms) => {
+      timeouts.push([fn, ms]);
+      return timeouts.length;
+    });
+    ctx.elements.beeActKeyCopy.dispatch('click');
+    await flushMicrotasks();
+    expect(ctx.copyText).toHaveBeenCalledWith(ACT_KEY);
+    expect(ctx.elements.beeActKeyCopy.classList.contains('copied')).toBe(true);
+    // Same 1.5 s "copied" flash as the sidebar's node copy buttons.
+    expect(timeouts.map(([, ms]) => ms)).toEqual([1500]);
+    timeouts[0][0]();
+    expect(ctx.elements.beeActKeyCopy.classList.contains('copied')).toBe(false);
+  });
+
+  test.each([
+    ['a failed read', { apiGetImpl: jest.fn(async () => Promise.reject(new Error('down'))) }],
+    ['no publicKey', { publicKey: null }],
+    ['a malformed key', { publicKey: 'not-a-key' }],
+    [
+      'a non-OK reply',
+      {
+        apiGetImpl: jest.fn(async (endpoint) =>
+          endpoint === '/addresses'
+            ? { ok: false, status: 503, data: { publicKey: ACT_KEY } }
+            : { ok: true, status: 200, data: {} }
+        ),
+      },
+    ],
+  ])('%s leaves Unknown with the copy button disabled', async (_label, options) => {
+    const ctx = await loadBeeModule({ currentAntStatus: 'running', windowBee: false, ...options });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+
+    expect(ctx.elements.beeActKeyText.textContent).toBe('Unknown');
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(true);
+    ctx.elements.beeActKeyCopy.dispatch('click');
+    await flushMicrotasks();
+    expect(ctx.copyText).not.toHaveBeenCalled();
+  });
+
+  test('stopping clears the key, and a reopen reads it again from the current node', async () => {
+    let key = ACT_KEY;
+    const apiGetImpl = jest.fn(async (endpoint) =>
+      endpoint === '/addresses'
+        ? { ok: true, status: 200, data: { publicKey: key } }
+        : { ok: true, status: 200, data: {} }
+    );
+    const ctx = await loadBeeModule({ currentAntStatus: 'running', windowBee: false, apiGetImpl });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(false);
+
+    ctx.state.antMenuOpen = false;
+    ctx.mod.stopAntInfoPolling();
+    expect(ctx.elements.beeActKeyText.textContent).toBe('Unknown');
+    expect(ctx.elements.beeActKeyText.getAttribute('title')).toBeFalsy();
+    expect(ctx.elements.beeActKeyText.classList.contains('has-key')).toBe(false);
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(true);
+
+    // The endpoint moved to another node (bundled → external Bee).
+    key = `03${'cd'.repeat(32)}`;
+    await openMenu(ctx);
+    expect(ctx.elements.beeActKeyText.textContent).toBe('03cdcd…cdcd');
+    jest.spyOn(global, 'setTimeout').mockImplementation(() => 0);
+    ctx.elements.beeActKeyCopy.dispatch('click');
+    await flushMicrotasks();
+    expect(ctx.copyText).toHaveBeenCalledWith(key);
+  });
+
+  test('a reply that lands after the menu was torn down paints nothing', async () => {
+    let release;
+    const apiGetImpl = jest.fn((endpoint) =>
+      endpoint === '/addresses'
+        ? new Promise((resolve) => {
+            release = () => resolve({ ok: true, status: 200, data: { publicKey: ACT_KEY } });
+          })
+        : Promise.resolve({ ok: true, status: 200, data: {} })
+    );
+    const ctx = await loadBeeModule({ currentAntStatus: 'running', windowBee: false, apiGetImpl });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+
+    // Closed and reopened while the first read is still in flight: the panel
+    // is visible again, so only the generation check can drop the old reply.
+    ctx.state.antMenuOpen = false;
+    ctx.mod.stopAntInfoPolling();
+    const firstRelease = release;
+    ctx.state.antMenuOpen = true;
+    ctx.mod.startAntInfoPolling();
+    firstRelease();
+    await flushMicrotasks();
+    expect(ctx.elements.beeActKeyText.textContent).toBe('Unknown');
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(true);
+
+    // The current open's own reply still paints.
+    release();
+    await flushMicrotasks();
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(false);
+  });
+
+  test('a read that found the node still starting is retried once it runs', async () => {
+    let up = false;
+    const apiGetImpl = jest.fn(async (endpoint) => {
+      if (endpoint !== '/addresses') return { ok: true, status: 200, data: {} };
+      if (!up) throw new Error('Ant API unreachable');
+      return { ok: true, status: 200, data: { publicKey: ACT_KEY } };
+    });
+    const ctx = await loadBeeModule({ currentAntStatus: 'starting', windowBee: false, apiGetImpl });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+    expect(ctx.elements.beeActKeyText.textContent).toBe('Unknown');
+
+    // The menu stays open; the node comes up. The poll intervals already
+    // exist, so only updateAntUi can trigger the second read.
+    up = true;
+    ctx.mod.updateAntUi('running');
+    await flushMicrotasks();
+    expect(ctx.elements.beeActKeyText.textContent).toBe('02abab…abab');
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(false);
+
+    // Once it has the key, later status refreshes don't read again.
+    const reads = apiGetImpl.mock.calls.filter(([e]) => e === '/addresses').length;
+    ctx.mod.updateAntUi('running');
+    await flushMicrotasks();
+    expect(apiGetImpl.mock.calls.filter(([e]) => e === '/addresses').length).toBe(reads);
+  });
+
+  test('status refreshes do not stack /addresses reads while one is in flight', async () => {
+    const apiGetImpl = jest.fn((endpoint) =>
+      endpoint === '/addresses' ? new Promise(() => {}) : Promise.resolve({ ok: true, data: {} })
+    );
+    const ctx = await loadBeeModule({ currentAntStatus: 'running', windowBee: false, apiGetImpl });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+    ctx.mod.updateAntUi('running');
+    ctx.mod.updateAntUi('running');
+    await flushMicrotasks();
+    expect(apiGetImpl.mock.calls.filter(([e]) => e === '/addresses')).toHaveLength(1);
   });
 });

@@ -145,6 +145,16 @@ describe('Nodes menu placeholders (#252, #253)', () => {
     expect(spanDefault(id)).toBe('Unknown');
   });
 
+  // #1188: the Swarm ACT public key row is not a <span>, but its empty state
+  // is the same 'Unknown' as a version row, with the copy button disabled.
+  const ACT_KEY = ['bee-act-key-text', 'bee-act-key-copy'];
+
+  test('the ACT public key row starts at Unknown with its copy button disabled', () => {
+    expect(index).toMatch(/<code class="bee-act-key-text" id="bee-act-key-text">Unknown<\/code>/);
+    const button = index.match(/<button[^>]*id="bee-act-key-copy"[^>]*>/);
+    expect(button && button[0]).toMatch(/\sdisabled\b/);
+  });
+
   test('the menu shows exactly one placeholder convention per row kind', () => {
     expect(new Set(COUNTERS.map(spanDefault)).size).toBe(1);
     expect(new Set(VERSIONS.map(spanDefault)).size).toBe(1);
@@ -161,7 +171,7 @@ describe('Nodes menu placeholders (#252, #253)', () => {
       .filter((name) => name.endsWith('.js') && !name.endsWith('.test.js'));
 
     const owners = Object.fromEntries(
-      [...COUNTERS, ...VERSIONS].map((id) => [
+      [...COUNTERS, ...VERSIONS, ...ACT_KEY].map((id) => [
         id,
         modules.filter((name) => read(path.join(RENDERER, 'lib', name)).includes(id)),
       ])
@@ -171,6 +181,8 @@ describe('Nodes menu placeholders (#252, #253)', () => {
       'bee-peers-count': ['ant-ui.js'],
       'bee-network-peers': ['ant-ui.js'],
       'bee-version-text': ['ant-ui.js'],
+      'bee-act-key-text': ['ant-ui.js'],
+      'bee-act-key-copy': ['ant-ui.js'],
       'ipfs-active-requests-count': ['ipfs-ui.js'],
       'ipfs-peers-count': ['ipfs-ui.js'],
       'ipfs-version-text': ['ipfs-ui.js'],

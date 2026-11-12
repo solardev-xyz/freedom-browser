@@ -904,6 +904,31 @@
               <span class="bee-info-label">Version:</span>
               <span id="bee-version-text">Unknown</span>
             </div>
+            <!-- The node's /addresses publicKey: what a publisher adds to an
+                 ACT grantee list to share with this node (#1188). Chrome
+                 only; no page can read it. -->
+            <div
+              class="bee-info-row bee-act-key-row"
+              title="Give this key to someone so they can share access-controlled Swarm content with this node"
+            >
+              <span class="bee-info-label">ACT Public Key:</span>
+              <span class="bee-act-key">
+                <code class="bee-act-key-text" id="bee-act-key-text">Unknown</code>
+                <button
+                  type="button"
+                  class="node-copy-btn-inline bee-act-key-copy"
+                  id="bee-act-key-copy"
+                  title="Copy ACT public key"
+                  aria-label="Copy ACT public key"
+                  disabled
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                  </svg>
+                </button>
+              </span>
+            </div>
           </div>
 
           <!-- Divider -->

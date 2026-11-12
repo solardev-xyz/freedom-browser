@@ -17,7 +17,10 @@
 const log = require('../logger');
 const { getAntApiUrl } = require('../service-registry');
 
-const CHROME_ANT_ENDPOINTS = new Set(['/health', '/peers', '/topology']);
+// `/addresses` is read for its `publicKey` only, the node's ACT key the
+// Nodes menu shows with a copy button (#1188). It stays chrome-only: a stable
+// node key is a cross-site identifier, so no page-facing method exposes it.
+const CHROME_ANT_ENDPOINTS = new Set(['/addresses', '/health', '/peers', '/topology']);
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
