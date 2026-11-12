@@ -276,8 +276,9 @@ function createEthereumDispatchers(deps = {}) {
   // main: the request still open, the name checked again, and the document
   // still holding the key in the same run as the write. The agent acts
   // under the attested key, which for a DNS name over IPNS is the name.
-  async function agentAnswer(context, keyless) {
-    const { requester, method, params } = context;
+  // `params` are the request's own, or the dispatcher's checked form of them.
+  async function agentAnswer(context, keyless, params = context.params) {
+    const { requester, method } = context;
     const operation = await context.walletOperation(async ({ signal, open }) => {
       try {
         return await agentWalletRequest(

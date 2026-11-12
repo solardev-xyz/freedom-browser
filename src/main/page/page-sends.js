@@ -70,6 +70,11 @@
  * of the SafeTx's outcome (`onSafeSendSettled`): the execution's hash, or a
  * rejection when it is discarded. Leaving the board parks the SafeTx, and
  * the page waits for its outcome without holding the document's wallet slot.
+ * Each execution of it, at once or after it was parked, runs only past the
+ * request's guard (`guardSiteSafeSend`): the name, the key and the
+ * requesting document checked again. A SafeTx whose site no longer holds is
+ * not executed for the site: it stays the wallet's, with no site, and the
+ * page gets the keyless answer.
  */
 
 const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED } = require('../wallet/signing-confirmation');
@@ -149,7 +154,8 @@ function selectorOf(data) {
 }
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const HEX_DATA = /^0x[0-9a-fA-F]*$/;
+// Bytes: pairs of hex digits.
+const HEX_DATA = /^0x(?:[0-9a-fA-F]{2})*$/;
 
 /** A quantity as a decimal string, or null when absent. Throws on any other value. */
 function quantityOf(value, field) {
@@ -187,6 +193,11 @@ function txOf(params) {
     data,
     gas: quantityOf(raw.gas, 'gas'),
   };
+}
+
+/** Main's form of a checked transaction, as the agent service gets it. */
+function agentTxOf(tx) {
+  return { to: tx.to, value: tx.value, data: tx.data, ...(tx.gas ? { gas: tx.gas } : {}) };
 }
 
 /** `to` in checksummed form, as main shows an address. */
@@ -325,6 +336,12 @@ function defaultSendDependencies() {
     checkAtApproval: (tx, options) => require('../wallet/fee-check').checkAtApproval(tx, options),
     startSafeSend: (options) => require('../wallet/safe/safe-transactions').startSafeSend(options),
     onSafeSendSettled: (listener) => require('../wallet/safe/safe-transactions').onSafeSendSettled(listener),
+    guardSiteSafeSend: (safeTxHash, guard) =>
+      require('../wallet/safe/safe-transactions').guardSiteSafeSend(safeTxHash, guard),
+    siteWithdrawn: () => {
+      const { codedError, SAFE_SITE_WITHDRAWN } = require('../wallet/safe/errors');
+      return codedError('The site no longer holds this transaction', SAFE_SITE_WITHDRAWN);
+    },
   };
 }
 
@@ -669,7 +686,33 @@ function createSendDispatchers(shared, deps = {}) {
     } catch (err) {
       return failure(err);
     }
-    const settled = settledOutcome(context, ctx.walletIndex, started?.safeTxHash);
+    const safeTxHash = started?.safeTxHash;
+    const settled = settledOutcome(context, ctx.walletIndex, safeTxHash);
+    // Before each step that can execute the SafeTx, now or after it was
+    // parked: the name, the key, the grant and the requesting document, checked again
+    // in the same run as the execution, which the guard runs itself. A
+    // SafeTx whose site no longer holds isn't executed for the site: it stays
+    // the wallet's, with no site (`safe-transactions.js`), and the page gets
+    // the keyless answer. Once the request has ended, there is no guard, and
+    // the SafeTx is never executed for the site.
+    let withdraw;
+    const withdrawn = new Promise((resolve) => {
+      withdraw = () => resolve({ outcome: 'withdrawn' });
+    });
+    const stopGuard = d.guardSiteSafeSend(safeTxHash, async (execute) => {
+      const live = () => !context.signal.aborted;
+      if (
+        !live() ||
+        !(await context.nameHolds()) ||
+        !live() ||
+        !context.holdsKey() ||
+        !grantExposes(requester.key, ctx.walletIndex)
+      ) {
+        withdraw();
+        throw d.siteWithdrawn();
+      }
+      return execute();
+    });
     // The board: it signs and executes as today. Leaving it parks the
     // SafeTx, and the page waits for its outcome, without the document's
     // wallet slot.
@@ -683,8 +726,14 @@ function createSendDispatchers(shared, deps = {}) {
         context.leaveWalletSlot();
         return { board: decision };
       });
-    const first = await Promise.race([settled, board]);
-    const outcome = first.board ? await settled : first;
+    let outcome;
+    try {
+      const first = await Promise.race([settled, withdrawn, board]);
+      outcome = first.board ? await Promise.race([settled, withdrawn]) : first;
+    } finally {
+      stopGuard();
+    }
+    if (outcome.outcome === 'withdrawn') return error(NO_ADDRESS);
     if (outcome.outcome !== 'executed' || typeof outcome.hash !== 'string') return error(USER_REJECTED);
     // The SafeTx the user approved for this request has executed: its hash
     // is the page's while the document is live, whatever the name does.
@@ -742,25 +791,29 @@ function createSendDispatchers(shared, deps = {}) {
   async function send(context) {
     const { requester, params } = context;
     if (!requester.key) return error(NO_ADDRESS);
-    // No keyless answer is set on the record (`nameHolds`' option): every
-    // refusal before the send answers NO_ADDRESS itself, and after a send
-    // that passed main's gate the hash is the document's (see the header).
-    if (!(await context.nameHolds())) return error(NO_ADDRESS);
-    // A tab the agent holds: the agent service answers, within the request,
-    // and sends only past main's gate just before its send. Only a tab in
-    // custody is offered to it.
-    const agent = custody(requester.guest) ? await agentAnswer(context, {}) : null;
-    // Refused because the name moved: the keyless answer. Sent: the hash.
-    if (agent) return agent.error && !context.holdsKey() ? error(NO_ADDRESS) : agent;
-    if (!(await context.nameHolds())) return error(NO_ADDRESS);
-    const permission = getPermission(requester.key);
-    if (!permission) return error(NOT_CONNECTED);
+    // The transaction's form, checked before anything else, in custody or
+    // not: a malformed one is refused at once (-32602), and the agent gets
+    // only main's form of a well-formed one (the page's `from` and `chainId`
+    // ignored, as on main's own path).
     let tx;
     try {
       tx = txOf(params);
     } catch (err) {
       return invalid(err.message);
     }
+    // No keyless answer is set on the record (`nameHolds`' option): every
+    // refusal before the send answers NO_ADDRESS itself, and after a send
+    // that passed main's gate the hash is the document's (see the header).
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
+    // A tab the agent holds: the agent service answers, within the request,
+    // and sends only past main's gate just before its send and after its
+    // signature. Only a tab in custody is offered to it.
+    const agent = custody(requester.guest) ? await agentAnswer(context, {}, [agentTxOf(tx)]) : null;
+    // Refused because the name moved: the keyless answer. Sent: the hash.
+    if (agent) return agent.error && !context.holdsKey() ? error(NO_ADDRESS) : agent;
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
+    const permission = getPermission(requester.key);
+    if (!permission) return error(NOT_CONNECTED);
     const walletIndex = permission.walletIndex;
     // The chain this page reads (an onchain app's own), never the grant's.
     const chainId = chainIdOf(requester);
