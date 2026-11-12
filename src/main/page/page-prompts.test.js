@@ -614,8 +614,9 @@ describe('the prompt budget', () => {
   test('a window\'s own prompt is charged the request it answers too; one the walk refuses never opens', () => {
     const { api } = prompts({ window: { count: 8, bytes: 10_000 }, browser: { count: 8, bytes: 10_000 } });
     const view = { n: 1 };
+    // Its size (5,004 bytes), and 128 for each of its two values and one name.
     const charge = api.admit(1, { view, holds: { data: 'a'.repeat(5000) } });
-    expect(charge).toMatchObject({ viewBytes: sizeOf(view), heldBytes: 5004 });
+    expect(charge).toMatchObject({ viewBytes: sizeOf(view), heldBytes: 5004 + 3 * 128 });
     expect(api.admit(1, { view, holds: { data: 'a'.repeat(5000) } })).toBeNull();
     // Past the walk's values, a type it doesn't take, or a view that can't
     // be serialized: refused.
@@ -625,7 +626,7 @@ describe('the prompt budget', () => {
     const cyclic = {};
     cyclic.self = cyclic;
     expect(api.admit(1, { view: cyclic })).toBeNull();
-    expect(api.usage()).toMatchObject({ count: 1, bytes: sizeOf(view) + 5004 });
+    expect(api.usage()).toMatchObject({ count: 1, bytes: sizeOf(view) + 5004 + 3 * 128 });
   });
 
   test('a view over 4 MiB is charged in full and not kept: the prompt shows null, the fixed error', () => {

@@ -48,6 +48,7 @@
  */
 
 const { measurePageRequest } = require('../../shared/page-request-bounds');
+const { VALUE_BYTES } = require('./page-budgets');
 
 const CHANNELS = Object.freeze({
   PENDING: 'page:prompt-pending',
@@ -125,14 +126,16 @@ function viewSize(view) {
 }
 
 /**
- * The size of the request a window's own prompt answers, by the page
- * requests' walk, which stops past `max`. Infinity past it, or for a
- * request the walk refuses.
+ * What the request a window's own prompt answers is charged, as a page
+ * request is (0011, "The size and the charge"): its size by the page
+ * requests' walk, which stops past `max`, and 128 bytes for each value and
+ * property name, for their place in the heap. Infinity past `max`, or for
+ * a request the walk refuses.
  */
 function heldSize(holds, max) {
   if (holds === undefined) return 0;
   const measured = measurePageRequest(holds, max);
-  return measured.ok ? measured.size : Infinity;
+  return measured.ok ? measured.size + VALUE_BYTES * (measured.values + measured.names) : Infinity;
 }
 
 function isPlainObject(value) {
