@@ -609,6 +609,16 @@ function createApprovalsDocuments({
       record.ready = false;
       record.report = null;
     });
+    // A hidden panel never keeps the keyboard: a view takes focus as its
+    // document loads, and the chrome's keys (its shortcuts, the address
+    // bar) would go to a panel nobody sees. Focus goes back to the chrome,
+    // as when the panel hides.
+    const releaseFocus = () => {
+      if (!record.visible && safely(() => contents.isFocused(), false)) safely(() => record.window.webContents.focus());
+    };
+    contents.on('focus', releaseFocus);
+    contents.on('did-finish-load', releaseFocus);
+    window.on('focus', releaseFocus);
     contents.once('destroyed', () => forget(record));
     window.once('closed', () => {
       forget(record);
