@@ -371,7 +371,9 @@ class RadicledClient extends ServiceClient {
   }
 
   /** `rad.connect_seeds { timeout_ms }` on `gen`, watched for its
-   * `timeout_ms` + 30 s + 15 s. */
+   * `timeout_ms` + 30 s + 15 s. libradicle takes no token for it: main's
+   * cancel answers `cancelled` at once, and the service's work runs on
+   * within its own `timeout_ms`. */
   connectSeeds(gen, timeoutMs, { signal = null, fence = null } = {}) {
     if (!validTimeout(timeoutMs)) return Promise.reject(badTimeout());
     return this.requestTo(gen, 'rad.connect_seeds', { timeout_ms: timeoutMs }, CONTEXT, {
@@ -381,14 +383,24 @@ class RadicledClient extends ServiceClient {
     });
   }
 
-  /** `rad.clone { rid, timeout_ms, progress }` on `gen`, watched for its
-   * `timeout_ms` + 30 s + 15 s. `signal` is the clone's cancel. */
-  clone(gen, params, { signal = null, fence = null } = {}) {
+  /**
+   * `rad.clone { rid, timeout_ms, progress }` on `gen`, watched for its
+   * `timeout_ms` + 30 s + 15 s. `signal` is the clone's cancel (0008,
+   * Methods: it replaces `cancelClone(rid)`): main's `cancel` goes at once,
+   * and the caller waits for the service's one answer, which comes when the
+   * clone actually stops: `{ cancelled: true }` once it has started, or
+   * `cancelled` before. The watchdog runs on until that answer. `onSent(id,
+   * generation)` names the request before anything the process sends about
+   * it is read: its `rad.progress` events carry that `id`.
+   */
+  clone(gen, params, { signal = null, fence = null, onSent = null } = {}) {
     if (!validTimeout(params?.timeout_ms)) return Promise.reject(badTimeout());
     return this.requestTo(gen, 'rad.clone', params, CONTEXT, {
       watchdogMs: networkWatchdogMs(params.timeout_ms),
       signal,
+      untilResponse: true,
       fence,
+      onSent,
     });
   }
 

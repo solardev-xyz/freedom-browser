@@ -1289,13 +1289,6 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
           this.resolveStop = resolve;
         });
         this.autoStop = true;
-        this.connectSeeds = jest.fn(async () => ({
-          connected: 2,
-          target: 4,
-          attempted: 3,
-          elapsedMs: 7,
-        }));
-        this.cloneRepo = jest.fn(async () => ({ ok: true }));
         module.nodes.push(this);
         module.created.resolve(this);
         // A vault that is unlocked: the node comes up at once.
@@ -1415,8 +1408,9 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       mode: 'embedded',
     });
     await flush();
-    expect(node.connectSeeds).toHaveBeenCalledWith(15000);
-    expect(node.cloneRepo).toHaveBeenCalledWith(FREEDOM_BROWSER_RID, 120000);
+    // Through radicle-embedded.js's network operations, the service's there.
+    expect(ctx.embedded.connectSeeds).toHaveBeenCalledWith(15000);
+    expect(ctx.embedded.cloneRepo).toHaveBeenCalledWith(FREEDOM_BROWSER_RID, 120000);
     // The add-on is never touched.
     expect(ctx.embedded.start).not.toHaveBeenCalled();
     expect(ctx.takeRadicleGate).not.toHaveBeenCalled();
@@ -1700,14 +1694,15 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     node.resolveStart(true);
     await started;
     await flush();
-    expect(node.connectSeeds).toHaveBeenCalledTimes(1);
-    expect(node.cloneRepo).toHaveBeenCalledTimes(1);
+    const { connectSeeds, cloneRepo } = ctx.embedded;
+    expect(connectSeeds).toHaveBeenCalledTimes(1);
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
 
     // Down by its stats and up again, the same process: nothing more.
     node.options.onChange('restarting', node);
     node.options.onChange('running', node);
     await flush();
-    expect(node.connectSeeds).toHaveBeenCalledTimes(1);
+    expect(connectSeeds).toHaveBeenCalledTimes(1);
 
     // A crash's restart: a new process, which seeds again.
     node.options.onChange('restarting', node);
@@ -1715,10 +1710,10 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     node.options.onChange('running', node);
     await flush();
     expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'running', error: null });
-    expect(node.connectSeeds).toHaveBeenCalledTimes(2);
-    expect(node.connectSeeds).toHaveBeenLastCalledWith(15000);
-    expect(node.cloneRepo).toHaveBeenCalledTimes(2);
-    expect(node.cloneRepo).toHaveBeenLastCalledWith(FREEDOM_BROWSER_RID, 120000);
+    expect(connectSeeds).toHaveBeenCalledTimes(2);
+    expect(connectSeeds).toHaveBeenLastCalledWith(15000);
+    expect(cloneRepo).toHaveBeenCalledTimes(2);
+    expect(cloneRepo).toHaveBeenLastCalledWith(FREEDOM_BROWSER_RID, 120000);
     await ctx.mod.stopRadicle();
   });
 
@@ -1927,14 +1922,163 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         message: 'Not available on the Radicle service yet',
       },
     };
-    await expect(ctx.mod.seedRepository(FREEDOM_BROWSER_RID)).resolves.toEqual(expected);
-    await expect(ctx.mod.refetchRepository(FREEDOM_BROWSER_RID)).resolves.toEqual(expected);
+    // The unseed is a write on the service (rad.unseed): its own step.
     await expect(ctx.mod.unseedRepository(FREEDOM_BROWSER_RID)).resolves.toEqual(expected);
-    await expect(ctx.mod.getSeedFetchStatus(FREEDOM_BROWSER_RID)).resolves.toEqual(expected);
     await expect(ctx.mod.setNodeAlias('renamed')).resolves.toEqual(expected);
-    expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+    expect(ctx.embedded.cancelClone).not.toHaveBeenCalled();
     expect(ctx.embedded.unseedRepo).not.toHaveBeenCalled();
     expect(ctx.withRadicleGate).not.toHaveBeenCalled();
+  });
+
+  describe('the seed paths on the service: rad.clone with progress, and the collected reads', () => {
+    const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+    /** callScoped answering each op's value in its scope. */
+    const scoped = (answers) =>
+      jest.fn(async (op, _args, scope) => {
+        if (!Object.hasOwn(answers, op)) {
+          throw Object.assign(new Error('not found'), { code: 'not_found' });
+        }
+        return scope(answers[op], { signal: null, bytes: 1 });
+      });
+
+    async function runningService(options = {}) {
+      const ctx = load(options);
+      const started = ctx.mod.startRadicle();
+      const node = await ctx.radicledNode.created.promise;
+      node.resolveStart(true);
+      await started;
+      await flush();
+      return ctx;
+    }
+
+    test("a seed: the fetch is radicle-embedded's cloneRepoWithProgress, its statuses published, the seeder count collected", async () => {
+      const ctx = await runningService({
+        embedded: {
+          cloneRepoWithProgress: jest.fn(async (_rid, _timeout, onProgress) => {
+            onProgress({ phase: 'resolving', candidates: 21 });
+            onProgress({ phase: 'peer-failed', summary: { count: 13, reasons: ['r20'] } });
+            onProgress({ phase: 'done' });
+            return { ok: true };
+          }),
+          callScoped: scoped({
+            seeders: { seeding: 3 },
+            node_info: { connected_peers: 6, repos_total: 2, repos_error: null },
+          }),
+        },
+      });
+      const statuses = [];
+      const started = await ctx.mod.seedRepository(RID, (status) => statuses.push(status));
+      expect(started).toMatchObject({ success: true, status: { rid: RID, state: 'fetching' } });
+      await started.status.done;
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledWith(
+        RID,
+        120000,
+        expect.any(Function)
+      );
+      expect(statuses.map((s) => s.progress)).toEqual([
+        { phase: 'starting' },
+        { candidates: 21, phase: 'resolving' },
+        { phase: 'peer-failed', count: 13, reason: 'r20' },
+        { phase: 'done' },
+        { phase: 'done' },
+      ]);
+      expect(statuses.at(-1)).toMatchObject({ state: 'fetched', seedersKnown: 3 });
+      // Nothing of the add-on's.
+      expect(ctx.embedded.seeders).not.toHaveBeenCalled();
+      await ctx.mod.stopRadicle();
+    });
+
+    test('a sync: the seeding policies collected, then the same fetch; an unseeded repository fetches nothing', async () => {
+      const ctx = await runningService({
+        embedded: {
+          callScoped: scoped({
+            list_seeded_repos: [{ rid: RID }],
+            seeders: { seeding: 1 },
+            node_info: { connected_peers: 6, repos_total: 2, repos_error: null },
+          }),
+        },
+      });
+      const synced = await ctx.mod.refetchRepository(RID);
+      expect(synced).toMatchObject({ success: true });
+      await synced.status.done;
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+      await expect(
+        ctx.mod.refetchRepository('rad:z3QXuMvMmSeEX3ZgoUidZC1v5MkKE')
+      ).resolves.toMatchObject({ success: false, error: { code: 'NOT_SEEDED' } });
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+      await ctx.mod.stopRadicle();
+    });
+
+    test("a seed status read: the repository's info and its seeders, collected", async () => {
+      const ctx = await runningService({
+        embedded: { callScoped: scoped({ repo_info: { rid: RID }, seeders: { seeding: 4 } }) },
+      });
+      await expect(ctx.mod.getSeedFetchStatus(RID)).resolves.toMatchObject({
+        success: true,
+        status: { rid: RID, state: 'fetched', inStorage: true, seedersKnown: 4 },
+      });
+      expect(ctx.embedded.callScoped.mock.calls.map(([op, args]) => [op, args])).toEqual(
+        expect.arrayContaining([
+          ['repo_info', { rid: RID }],
+          ['seeders', { rid: RID }],
+        ])
+      );
+      expect(ctx.embedded.repoInfo).not.toHaveBeenCalled();
+      await ctx.mod.stopRadicle();
+    });
+
+    test('a node that is not running: refused, and nothing is fetched', async () => {
+      const ctx = load();
+      await expect(ctx.mod.seedRepository(RID)).resolves.toMatchObject({
+        success: false,
+        error: { code: 'RADICLE_NOT_RUNNING' },
+      });
+      await expect(ctx.mod.refetchRepository(RID)).resolves.toMatchObject({
+        success: false,
+        error: { code: 'RADICLE_NOT_RUNNING' },
+      });
+      expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+    });
+
+    test('private windows stay refused before anything is sent (R-9, #953)', async () => {
+      const ctx = await runningService();
+      const IPC = require('../shared/ipc-channels');
+      ctx.mod.registerRadicleIpc();
+      const privateGuest = {
+        hostWebContents: ctx.privateSender(),
+        isDestroyed: () => false,
+        send: jest.fn(),
+      };
+      const refused = {
+        success: false,
+        error: {
+          code: 'RADICLE_PRIVATE_WINDOW',
+          message: 'Seeding is not available in private windows',
+        },
+      };
+      for (const event of [
+        { sender: privateGuest },
+        { sender: { isDestroyed: () => true } },
+        null,
+      ]) {
+        expect(await ctx.handlers.get(IPC.RADICLE_SEED)(event, RID)).toEqual(refused);
+        expect(await ctx.handlers.get(IPC.RADICLE_SYNC_REPO)(event, RID)).toEqual(refused);
+      }
+      expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+      expect(ctx.embedded.callScoped).not.toHaveBeenCalledWith(
+        'list_seeded_repos',
+        expect.anything(),
+        expect.anything()
+      );
+      expect(privateGuest.send).not.toHaveBeenCalled();
+      // A public window's seed goes to the service.
+      const sender = ctx.publicSender();
+      await expect(ctx.handlers.get(IPC.RADICLE_SEED)({ sender }, RID)).resolves.toMatchObject({
+        success: true,
+      });
+      expect(ctx.embedded.cloneRepoWithProgress).toHaveBeenCalledTimes(1);
+      await ctx.mod.stopRadicle();
+    });
   });
 
   test("the binary check is freedom-radicled's; without it the start fails", async () => {
