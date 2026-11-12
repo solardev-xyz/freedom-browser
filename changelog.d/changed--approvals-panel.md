@@ -1,0 +1,4 @@
+- Approvals ask in a panel beside the page instead of in the wallet sidebar: site requests, the wallet's own sends, multi-owner signatures and x402 payments ([#1221](https://github.com/solardev-xyz/freedom-browser/pull/1221))
+  - The page makes room for the panel while it asks
+  - Approve waits half a second after a prompt appears, and Enter never approves
+  - The send form, the payment card and waiting payments stay in the sidebar
