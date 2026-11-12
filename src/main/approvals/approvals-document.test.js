@@ -221,17 +221,38 @@ function attached(env, id = 1) {
 }
 
 describe('the flag', () => {
-  test('FREEDOM_APPROVALS_DOCUMENT=1 turns it on; anything else leaves it off', () => {
-    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '1' })).toBe(true);
-    for (const value of [undefined, '', '0', 'true', 'yes', ' 1']) {
-      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value })).toBe(false);
+  test('on by default; FREEDOM_APPROVALS_DOCUMENT=0 turns it off in a development build, and nothing else does', () => {
+    const dev = { packaged: false };
+    expect(isApprovalsDocumentEnabled({}, dev)).toBe(true);
+    for (const value of [undefined, '', '1']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, dev)).toBe(true);
     }
-    expect(isApprovalsDocumentEnabled({})).toBe(false);
+    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '0' }, dev)).toBe(false);
+    // Any other value is a mistake: warned of, and the default runs.
+    for (const value of ['false', 'off', 'no', ' 0', '00']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, dev)).toBe(true);
+    }
   });
 
-  test('off by default: no document for a window, no handlers', () => {
+  test('a packaged build always runs it, whatever the environment says', () => {
+    for (const value of [undefined, '', '0', '1', 'off']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, { packaged: true })).toBe(true);
+    }
+  });
+
+  test('on with no variable set (a development build under jest)', () => {
     const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
     delete process.env.FREEDOM_APPROVALS_DOCUMENT;
+    try {
+      expect(isApprovalsDocumentEnabled()).toBe(true);
+    } finally {
+      if (saved !== undefined) process.env.FREEDOM_APPROVALS_DOCUMENT = saved;
+    }
+  });
+
+  test('turned off (=0): no document for a window, no handlers', () => {
+    const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
+    process.env.FREEDOM_APPROVALS_DOCUMENT = '0';
     try {
       expect(attachApprovalsDocument(new FakeWindow(9))).toBeNull();
       const ipc = { on: jest.fn(), handle: jest.fn() };

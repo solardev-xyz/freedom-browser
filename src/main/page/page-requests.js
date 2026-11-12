@@ -64,7 +64,7 @@
  * prompt carries main's `site`, the request's attested key, and whatever the
  * user decides, the dispatcher acts on its own record.
  *
- * With the approvals document's flag on (APS-1, APS-2, `FREEDOM_APPROVALS_DOCUMENT=1`,
+ * With the approvals document on (APS-1, APS-2; the default, `FREEDOM_APPROVALS_DOCUMENT=0` its rollback,
  * `approvals/approvals-document.js`), `page:prompt`, `page:prompt-hidden`
  * and `page:prompt-closed` go to the window's approvals document instead,
  * the chrome keeps `page:prompt-pending` and `page:prompt-closed` for its
