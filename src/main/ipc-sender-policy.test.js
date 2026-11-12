@@ -80,7 +80,7 @@ describe('isSenderAllowed', () => {
   test('a web page can never reach chrome-only channels', () => {
     for (const channel of [
       'wallet:send-transaction',
-      'wallet:sign-message',
+      'wallet:confirm-signing',
       'identity:export-mnemonic',
       'quick-unlock:unlock',
       'dapp:grant-permission',

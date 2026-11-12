@@ -47,7 +47,6 @@ const loadBoard = async () => {
     safeMessageState: jest.fn(async () => ({ success: false, error: 'no session' })),
     safeMessageSign: jest.fn(async () => ({ success: false, error: 'no session' })),
     safeMessageCancel: jest.fn(async () => ({ success: true })),
-    safeMessageComplete: jest.fn(async () => ({ success: true, signature: '0xsig' })),
   };
 
   const identityView = createElement('div');
@@ -287,7 +286,6 @@ describe("safe signing board — main's prompt (0011 PRQ-5a)", () => {
     // From main's state, by the session's token.
     expect(walletMocks.safeMessageState).toHaveBeenCalledWith(5, 'tok-1');
     expect(decisions).toEqual([{ handle: 'h1', approve: true, choices: {} }]);
-    expect(walletMocks.safeMessageComplete).not.toHaveBeenCalled();
     expect(walletMocks.safeMessageCancel).not.toHaveBeenCalled();
     expect(screen.classList.contains('hidden')).toBe(true);
   });

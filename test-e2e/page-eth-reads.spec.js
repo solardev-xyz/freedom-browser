@@ -3,9 +3,8 @@
 // and the read-only RPC methods go from the app's preload to main on
 // `page:request`, and main answers them with the chrome's answers: the
 // chain the window's switcher selected, an onchain app's own chain, a
-// keyless page's reads, a connected site's account. The chrome's old path
-// (`dapp:provider-request`) stays for rollback, but no page uses it for
-// these. A DNS name over IPNS keeps its account through main's name binding
+// keyless page's reads, a connected site's account. The chrome sees none
+// of them: since PRQ-9 it has no provider route. A DNS name over IPNS keeps its account through main's name binding
 // until the name moves off its IPNS key, and its reads go on answering with
 // no resolution.
 
@@ -141,22 +140,18 @@ const ask = (win, url, method, params = []) =>
  * What the chrome's own path answers a read with, by its own code: its
  * proxyRpcCall over the same IPC it always used.
  */
-const chromeRead = (win, chainId, method, params, origin) =>
-  win.evaluate(
-    async ({ chainId: id, method: m, params: p, origin: o }) => {
-      const data = await window.wallet.requestChain(id, m, p, { origin: o });
-      if (data?.success) return { ok: data.result };
-      let message = data?.error?.message || `All chain sources failed for chain ${id}`;
-      const availability = await window.networks.isChainAvailable(id);
-      if (availability?.available === false) {
-        const chains = await window.networks.getChains();
-        const name = chains?.success ? chains.chains?.[id]?.name : null;
-        message = `${name || `Chain ${id}`} requires an RPC provider. Please configure one in Settings.`;
-      }
-      return { code: data?.error?.code || -32603, message };
-    },
-    { chainId, method, params, origin }
-  );
+/**
+ * The window's chain, as the chain switcher reports a pick to main
+ * (`wallet:select-chain`), from a switcher that has shown every selection
+ * main made for the window. Here a chain the switcher can't offer, one with
+ * no RPC provider.
+ */
+const selectChain = (win, chainId) =>
+  win.evaluate(async (id) => {
+    const { walletState } = await import('./lib/wallet/wallet-state.js');
+    walletState.selectedChainId = id;
+    window.wallet.selectChain(id, Number.MAX_SAFE_INTEGER);
+  }, chainId);
 
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 
@@ -273,16 +268,12 @@ test('the Ethereum reads go to main, with the chrome\'s answers: the selected ch
   expect(await ask(win, DAPP, 'eth_chainId')).toEqual({ ok: '0x1' });
   expect(await ask(win, DAPP, 'net_version')).toEqual({ ok: '1' });
 
-  // A chain the chrome's switcher sets (as the old path's
-  // wallet_switchEthereumChain did) reaches main the same way.
-  await win.evaluate(async (id) => {
-    const switcher = await import('./lib/wallet/chain-switcher.js');
-    switcher.setSelectedChainId(id);
-  }, NO_RPC_CHAIN);
+  // Any chain the window selects reaches main the same way.
+  await selectChain(win, NO_RPC_CHAIN);
   expect(await ask(win, DAPP, 'eth_chainId')).toEqual({ ok: '0x7a69' });
-  // A read goes to the core on that chain, with the chrome's error text.
+  // A read goes to the core on that chain, with the error text the chrome
+  // gave.
   const read = await ask(win, DAPP, 'eth_blockNumber');
-  expect(read).toEqual(await chromeRead(win, NO_RPC_CHAIN, 'eth_blockNumber', [], DAPP));
   expect(read).toEqual({ code: expect.any(Number), message: NO_RPC });
   // Its copy for the core was charged before it was made.
   expect(await electronApp.evaluate(() => globalThis.__copies.map(({ label, inPlace }) => ({ label, inPlace })))).toEqual([
@@ -296,7 +287,7 @@ test('the Ethereum reads go to main, with the chrome\'s answers: the selected ch
   });
 
   // An onchain app keeps its own chain, whatever the window selected.
-  await win.evaluate(async () => (await import('./lib/wallet/chain-switcher.js')).setSelectedChainId(1));
+  await selectChain(win, 1);
   const onchainId = await newTab(win, electronApp, ONCHAIN_URL, `web3://${ONCHAIN}`);
   await watchOldPath(win);
   expect(await ask(win, ONCHAIN_URL, 'eth_chainId')).toEqual({ ok: '0x7a69' });
@@ -376,7 +367,7 @@ test('a DNS name over IPNS: eth_accounts answers until the name moves off its ke
   const resolved = () => electronApp.evaluate(() => globalThis.__resolved.slice());
 
   // The permission-free reads answer on, resolving nothing.
-  await win.evaluate(async (id) => (await import('./lib/wallet/chain-switcher.js')).setSelectedChainId(id), NO_RPC_CHAIN);
+  await selectChain(win, NO_RPC_CHAIN);
   expect(await ask(win, url, 'eth_chainId')).toEqual({ ok: '0x7a69' });
   expect(await ask(win, url, 'net_version')).toEqual({ ok: String(NO_RPC_CHAIN) });
   expect(await ask(win, url, 'eth_blockNumber')).toEqual({ code: expect.any(Number), message: NO_RPC });

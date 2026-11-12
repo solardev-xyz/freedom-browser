@@ -26,9 +26,8 @@ const DAPP_SIGN_ELEMENT_IDS = [
   'dapp-sign-typed-ignored',
 ];
 
-// What main hands the screen (wallet:message-view, wallet:typed-data-view;
-// freedom-core #88): read here with main's own helpers and the simulated
-// core's view.
+// What main's prompt shows (its message and typed-data views; freedom-core
+// #88): read here with main's own helpers and the simulated core's view.
 const signingUtils = require('../../../main/wallet/signing-utils.js');
 const { simulatedView } = require('../../../../test/helpers/simulated-vault-core.js');
 

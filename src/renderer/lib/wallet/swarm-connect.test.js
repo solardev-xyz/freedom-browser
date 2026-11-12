@@ -134,10 +134,6 @@ async function loadSwarmConnect() {
     swarmPermissions: {
       getPermission: jest.fn().mockResolvedValue(null),
       setAutoApprove: jest.fn().mockResolvedValue({ success: true }),
-      grantPermission: jest.fn().mockResolvedValue({ success: true }),
-    },
-    swarmProvider: {
-      execute: jest.fn().mockResolvedValue({ result: {} }),
     },
     pagePrompts: {
       decide: jest.fn().mockResolvedValue({ ok: true }),
@@ -150,13 +146,7 @@ async function loadSwarmConnect() {
         activeIdentityId: 'ident-1',
         identities: [{ id: 'ident-1', mode: 'app-scoped', stored: true }],
       }),
-      previewAppScopedIdentity: jest.fn().mockResolvedValue({
-        id: 'ident-1',
-        mode: 'app-scoped',
-        stored: true,
-      }),
       activateFeedIdentity: jest.fn().mockResolvedValue({ success: true }),
-      setFeedIdentity: jest.fn().mockResolvedValue({ identityMode: 'app-scoped' }),
     },
   };
 
@@ -529,8 +519,6 @@ describe('main\'s Swarm prompts in the chrome', () => {
     await armPrompt();
     await ctx.elements['swarm-connect-approve'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('h1', true, {});
-    expect(global.window.swarmPermissions.grantPermission).not.toHaveBeenCalled();
-    expect(global.window.swarmProvider.execute).not.toHaveBeenCalled();
     expect(screen.classList.contains('hidden')).toBe(true);
     expect(renderer.isShowing()).toBe(null);
   });
@@ -623,7 +611,6 @@ describe('main\'s Swarm prompts in the chrome', () => {
     await ctx.elements['swarm-publish-confirm'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('p1', true, { alwaysAllow: true });
     expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
-    expect(global.window.swarmProvider.execute).not.toHaveBeenCalled();
     expect(renderer.isShowing()).toBe(null);
 
     renderer.show({
@@ -680,14 +667,11 @@ describe('main\'s Swarm prompts in the chrome', () => {
     // "Create new app-scoped identity" offers main's new one, with no request.
     await handlers.onCreateAppScoped();
     expect(ctx.renderPublisherIdentitySelector.mock.calls.at(-1)[1].activeIdentityId).toBe('app-scoped:4');
-    expect(global.window.swarmFeedStore.previewAppScopedIdentity).not.toHaveBeenCalled();
     expect(ctx.elements['swarm-feed-approve'].disabled).toBe(false);
     ctx.elements['swarm-feed-auto-approve'].checked = true;
     await ctx.elements['swarm-feed-approve'].fire('click');
     expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('f1', true, { identity: 'app-scoped:4', alwaysAllow: true });
-    for (const write of ['activateFeedIdentity', 'setFeedIdentity']) {
-      expect(global.window.swarmFeedStore[write]).not.toHaveBeenCalled();
-    }
+    expect(global.window.swarmFeedStore.activateFeedIdentity).not.toHaveBeenCalled();
     expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
     expect(renderer.isShowing()).toBe(null);
 

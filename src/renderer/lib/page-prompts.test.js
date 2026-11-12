@@ -59,7 +59,6 @@ async function load() {
   const listeners = {};
   const decisions = [];
   let answerDecision = () => ({ ok: true });
-  const grantPermission = jest.fn();
   const getCachedFavicon = jest.fn(async () => 'data:image/png;base64,AAAA');
   global.window = {
     pagePrompts: {
@@ -72,7 +71,7 @@ async function load() {
         return answerDecision(handle, approve, choices);
       }),
     },
-    dappPermissions: { grantPermission, getPermission: jest.fn(async () => null) },
+    dappPermissions: { getPermission: jest.fn(async () => null) },
     electronAPI: { getCachedFavicon },
   };
 
@@ -130,7 +129,6 @@ async function load() {
     listeners,
     decisions,
     setAnswer: (fn) => (answerDecision = fn),
-    grantPermission,
     getCachedFavicon,
     sidebar,
     tabs,
@@ -201,7 +199,6 @@ describe('page prompts in the chrome (0011 PRQ-4)', () => {
     env.elements['dapp-connect-approve'].dispatch('click');
     await flush();
     expect(env.decisions).toEqual([{ handle: 'h1', approve: true, choices: { walletIndex: 1000 } }]);
-    expect(env.grantPermission).not.toHaveBeenCalled();
     expect(env.showing()).toBe(false);
   });
 
