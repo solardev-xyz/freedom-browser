@@ -1604,8 +1604,14 @@ jobs:
       # one's hello after its commit (`page-documents`, freedom-core 0011 PRQ-1),
       # the page request channels, which answer only the document that asked
       # and refuse sub-frames and private windows (`page-requests`, PRQ-2),
-      # and their sizes, tickets and measured charges (`page-budgets`, PRQ-2).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets E2E
+      # and their sizes, tickets and measured charges (`page-budgets`, PRQ-2),
+      # window.ethereum's reads, which main now answers as the chrome did
+      # (`page-eth-reads`, PRQ-3), connecting, whose prompts main holds
+      # for a background tab and shows only for the tab in front
+      # (`page-connect`, PRQ-4), and signing messages and typed data, whose
+      # tokens only main mints and whose site rules only main reads
+      # (`page-signing`, PRQ-5a).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1621,7 +1627,10 @@ jobs:
             test-e2e/history-menu.spec.js \
             test-e2e/page-documents.spec.js \
             test-e2e/page-requests.spec.js \
-            test-e2e/page-budgets.spec.js
+            test-e2e/page-budgets.spec.js \
+            test-e2e/page-eth-reads.spec.js \
+            test-e2e/page-connect.spec.js \
+            test-e2e/page-signing.spec.js
 
       - name: Upload software rendering profile
         if: always()

@@ -8,13 +8,23 @@
  * inside the page means: no `require`, no Electron APIs, no Node built-ins,
  * no access to the preload's scope.
  * Anything this file needs from the main/preload side must arrive via
- * window.postMessage or the __FREEDOM_PROVIDER_CONFIG__ preamble.
+ * window.postMessage or the __FREEDOM_PROVIDER_CONFIG__ and
+ * __FREEDOM_MAIN_ANSWERED__ preambles.
  *
  * Kept in its own file so it can be unit-tested in isolation (compile
  * via `new Function('window', SOURCE)`, evaluate against a fake window,
  * assert the provider shape).
  */
 (function () {
+  // The methods main answers (freedom-core design 0011, "One deadline,
+  // main's"): the preload sends them to main, whose deadline answers one
+  // that runs too long, so the page arms no timer of its own for them.
+  const preamble = window.__FREEDOM_MAIN_ANSWERED__;
+  delete window.__FREEDOM_MAIN_ANSWERED__;
+  const mainAnswered = new Set(
+    Array.isArray(preamble) ? preamble.filter((method) => typeof method === 'string') : []
+  );
+
   // A fallback after a partially successful early install must not replace
   // the live provider or duplicate its EIP-6963/event listeners.
   if (window.ethereum?.isFreedomBrowser) return;
@@ -75,6 +85,7 @@
           { type: 'FREEDOM_ETHEREUM_REQUEST', id, method, params: params || [] },
           '*'
         );
+        if (mainAnswered.has(method)) return;
         setTimeout(
           () => {
             if (pendingRequests.has(id)) {

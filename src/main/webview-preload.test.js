@@ -1841,7 +1841,10 @@ describe('webview-preload private windows', () => {
 
     expect(documentHandlers.DOMContentLoaded).toBeUndefined();
     expect(scripts).toHaveLength(3);
-    expect(scripts[0].textContent).toBe('/* ethereum inject source stub */');
+    // The Ethereum source behind its list of the methods main answers.
+    expect(scripts[0].textContent).toMatch(
+      /^window\.__FREEDOM_MAIN_ANSWERED__ = \[[^\n]*"eth_chainId"[^\n]*\];\n\/\* ethereum inject source stub \*\/$/
+    );
     expect(scripts[1].textContent).toContain('FREEDOM_SWARM_REQUEST');
     expect(scripts[2].textContent).toContain('FREEDOM_RADICLE_REQUEST');
     scripts.forEach((script, i) => {
@@ -2953,9 +2956,9 @@ describe('page requests', () => {
     }
   });
 
-  test('without the harness\'s routes, every request still goes through the chrome', () => {
+  test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 1, method: 'eth_blockNumber', params: [] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 1, method: 'eth_sendTransaction', params: [] });
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_readChunk', params: {} });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
@@ -2964,6 +2967,64 @@ describe('page requests', () => {
       'swarm:provider-request',
       'radicle:provider-request',
     ]);
+    // The Ethereum reads (0011 PRQ-3), connecting (PRQ-4) and signing
+    // messages and typed data (PRQ-5a) go to main, and never to the chrome.
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 9, method: 'personal_sign', params: ['0x68', '0x01'] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 10, method: 'eth_signTypedData_v4', params: ['0x01', {}] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 4, method: 'eth_chainId', params: [] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 5, method: 'eth_accounts', params: [] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 6, method: 'eth_call', params: [{ to: '0x00' }, 'latest'] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 7, method: 'eth_requestAccounts', params: [] });
+    fromPage({
+      type: 'FREEDOM_ETHEREUM_REQUEST',
+      id: 8,
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0x1' }],
+    });
+    expect(
+      ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request').map(([, r]) => r.method)
+    ).toEqual([
+      'personal_sign',
+      'eth_signTypedData_v4',
+      'eth_chainId',
+      'eth_accounts',
+      'eth_call',
+      'eth_requestAccounts',
+      'wallet_switchEthereumChain',
+    ]);
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledTimes(3);
+  });
+
+  // The page-world source the preload ran for window.ethereum, and the
+  // methods it was told main answers (design 0011, "One deadline, main's").
+  const mainAnswered = (contextBridge) => {
+    const source = contextBridge.executeInMainWorld.mock.calls[0][0].func.toString();
+    expect(source).toContain('/* eth */');
+    return JSON.parse(/window\.__FREEDOM_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
+  };
+
+  test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
+    const moved = mainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);
+    expect(moved).toContain('eth_chainId');
+    expect(moved).toContain('eth_accounts');
+    expect(moved).toContain('web3_sha3');
+    expect(moved).toContain('eth_requestAccounts');
+    expect(moved).toContain('wallet_switchEthereumChain');
+    expect(moved).toContain('personal_sign');
+    expect(moved).toContain('eth_signTypedData_v4');
+    expect(moved).toHaveLength(30);
+    expect(moved).not.toContain('eth_sendTransaction');
+    const routed = mainAnswered(
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['ethereum:eth_sendTransaction', 'swarm:swarm_readChunk'] }))] })
+        .contextBridge
+    );
+    expect(routed).toEqual([...moved, 'eth_sendTransaction']);
+    // An internal page sends nothing to main, so its provider keeps every timer.
+    const internal = load({
+      location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' },
+      argv: ['electron', bootArg(boot())],
+    });
+    expect(mainAnswered(internal.contextBridge)).toEqual([]);
   });
 
   test('a routed method goes to main with the nonce, and main\'s answer to the page under its id', async () => {

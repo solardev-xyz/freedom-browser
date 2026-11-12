@@ -35,6 +35,7 @@ import {
   setLinkStatusSide,
 } from './link-status.js';
 import { formatOnchainAppDisplayUrl } from './url-utils.js';
+import { bindPageNameForLoad } from './page-name-binding.js';
 
 const electronAPI = window.electronAPI;
 
@@ -97,6 +98,32 @@ const tabState = {
 // which webContents the run can control.
 let agentControlledTabId = null;
 const agentCustodyByTabId = new Map();
+// Open page prompts per guest webContents id (freedom-core design 0011,
+// PRQ-4): a tab whose request waits shows a badge (page-prompts.js).
+let walletPromptCounts = new Map();
+
+// The guest webContents id of a tab's webview, or null while it isn't
+// attached (Electron throws until then).
+const guestIdOf = (tab) => {
+  try {
+    const id = tab?.webview?.getWebContentsId?.();
+    return Number.isInteger(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+};
+
+// Tell main which guest is in front of this window (`page:foreground`): it
+// shows that tab's oldest waiting prompt, and holds every other tab's. Sent
+// at every switch and when the tab in front gets its guest; a tab with no
+// page reports none.
+const reportForeground = (tab) => {
+  try {
+    window.pagePrompts?.foreground?.(guestIdOf(tab));
+  } catch {
+    // Main keeps the last report.
+  }
+};
 let onAgentTabClaim = null;
 const agentCustodyListeners = new Set();
 const tabPresentationListeners = new Set();
@@ -377,6 +404,13 @@ export const getTabIdForWebview = (webview) => {
   if (raw === undefined) return null;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+// Open page prompts per guest (page-prompts.js, from main's
+// `page:prompt-pending` and `page:prompt-closed`): their tabs show a badge.
+export const setWalletPromptCounts = (counts) => {
+  walletPromptCounts = counts instanceof Map ? new Map(counts) : new Map();
+  renderTabs();
 };
 
 // The tab whose webview is guest webContents `guestId`, or null. Main names
@@ -713,6 +747,9 @@ const createWebview = (tabId, initialUrl) => {
         tab.navigationState.requestedNavigationSequence += 1;
       }
       notifyFindBarNavigationStarted(webview);
+      // A DNS-named ENS site reached without `loadTarget` (back, forward, a
+      // link from another site) keeps its name in main as it does here.
+      bindPageNameForLoad(webview, event.url);
     },
     'did-start-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
@@ -1110,8 +1147,11 @@ const createWebview = (tabId, initialUrl) => {
       if (tab?.isMuted) {
         applyMuteToWebview(tab);
       }
-      if (tabId === tabState.activeTabId && onWebviewEvent) {
-        onWebviewEvent('dom-ready', { tabId });
+      if (tabId === tabState.activeTabId) {
+        // The tab in front has its guest now (the window's first tab, or a
+        // tab switched to before its webview attached).
+        reportForeground(tab);
+        onWebviewEvent?.('dom-ready', { tabId });
       }
     },
     // Audio indicator state. Electron's <webview> emits media-started-playing /
@@ -1342,6 +1382,13 @@ const createTabElement = (tab) => {
   });
   tabEl.appendChild(audioBtn);
 
+  // A request of this tab's page waits for the user (page-prompts.js).
+  const promptBadge = document.createElement('span');
+  promptBadge.className = 'tab-prompt-badge';
+  promptBadge.dataset.test = 'tab-prompt-badge';
+  promptBadge.setAttribute('aria-hidden', 'true');
+  tabEl.appendChild(promptBadge);
+
   const agentBadge = document.createElement('button');
   agentBadge.type = 'button';
   agentBadge.className = 'tab-agent-badge';
@@ -1498,6 +1545,13 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.title = tab.kind === 'workspace-viewer' ? `${tab.title} — read-only workspace viewer` : tab.title || 'New Tab';
   tabEl.classList.toggle('agent-owned', agentCustodyByTabId.has(tab.id));
   tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
+  const promptCount = walletPromptCounts.get(guestIdOf(tab)) || 0;
+  tabEl.classList.toggle('has-wallet-prompt', promptCount > 0);
+  const promptBadge = tabEl.querySelector('.tab-prompt-badge');
+  if (promptBadge) {
+    promptBadge.textContent = promptCount > 1 ? String(promptCount) : '';
+    promptBadge.title = promptCount > 0 ? 'This page is waiting for your approval' : '';
+  }
 
   const agentBadge = tabEl.querySelector('.tab-agent-badge');
   if (agentBadge) {
@@ -2245,6 +2299,7 @@ export const switchTab = (tabId, options = {}) => {
   document.body.classList.toggle('workspace-viewer-active', tab.kind === 'workspace-viewer');
   // Clear the prior guest context when displaying renderer-owned content.
   setActiveWebview(tab.webview || null);
+  reportForeground(tab);
   tab.content?.focus?.();
 
   // Give the page keyboard focus, the way Chrome does on every tab

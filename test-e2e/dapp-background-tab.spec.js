@@ -4,9 +4,10 @@
 // get its account, its auto-approve rules, or a prompt carrying its name.
 //
 // Two real tabs, two harness-served bzz:// pages, a real (pre-seeded) vault
-// and the real main-process wallet handlers: the renderer's attribution and
-// main's check of the claimed site against the requesting guest's own URL
-// are both exercised end to end.
+// and the real main-process wallet handlers. From freedom-core design 0011
+// PRQ-5a main attests the requester and reads the site's rule itself, so
+// the chrome's claim of a site's rule is refused outright, and a background
+// tab's signing prompt waits for its tab.
 
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -119,6 +120,19 @@ function request(win, url, id, method, params = []) {
 
 const outcome = (win, url, id) => inTab(win, url, `window.__r && window.__r[${JSON.stringify(id)}]`);
 
+// A connection, written in main as main writes one (freedom-core design
+// 0011, PRQ-4): the chrome's own grant write is refused.
+const grant = (electronApp, key) =>
+  electronApp.evaluate((_electron, args) => {
+    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, 0, 100);
+  }, { root: repoRoot, key });
+// A site's signing rule, as main sets it from a prompt's "always allow"
+// (PRQ-5a): the chrome may only clear one.
+const signingRule = (electronApp, key) =>
+  electronApp.evaluate((_electron, args) => {
+    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).setSigningAutoApprove(args.key, true);
+  }, { root: repoRoot, key });
+
 async function openIn(win, url) {
   const address = win.locator('[data-test="address-input"]');
   await address.click();
@@ -147,10 +161,8 @@ test('a background tab is attributed to its own site, never the visible one', as
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
 
   // The trusted dApp: connected, signatures auto-approved.
-  await win.evaluate(async (key) => {
-    await window.dappPermissions.grantPermission(key, 0, 100);
-    await window.dappPermissions.setSigningAutoApprove(key, true);
-  }, TRUSTED_KEY);
+  await grant(electronApp, TRUSTED_KEY);
+  await signingRule(electronApp, TRUSTED_KEY);
 
   // Tab 1: the trusted dApp. Tab 2: the other site. Back to tab 1, so the
   // other site sits in a background tab while the address bar shows the
@@ -163,7 +175,7 @@ test('a background tab is attributed to its own site, never the visible one', as
   await expect(win.locator('[data-test="address-input"]')).toHaveValue(TRUSTED_URL);
 
   // Positive control: the visible trusted dApp gets its account and an
-  // auto-approved signature (main honours the claim for its own guest).
+  // auto-approved signature (main reads its rule, for its own key).
   await request(win, TRUSTED_URL, 'acc', 'eth_accounts');
   await expect.poll(() => outcome(win, TRUSTED_URL, 'acc')).toEqual({ ok: [account] });
   await request(win, TRUSTED_URL, 'sig', 'personal_sign', [MESSAGE, account]);
@@ -182,8 +194,9 @@ test('a background tab is attributed to its own site, never the visible one', as
   await expect(win.locator('#sidebar-dapp-sign')).toBeHidden();
 
   // Main does not take the renderer's word for the site either: the trusted
-  // dApp's key claimed for the background tab's guest is refused, while the
-  // same claim for the trusted tab's own guest signs.
+  // dApp's key claimed for the background tab's guest is refused, and since
+  // main reads a page's rule itself (PRQ-5a), so is the same claim for the
+  // trusted tab's own guest.
   const refused = await win.evaluate(
     async ({ url, key, message }) => {
       const guestOf = (u) =>
@@ -204,22 +217,24 @@ test('a background tab is attributed to its own site, never the visible one', as
   );
   expect(refused.borrowed).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
   expect(refused.noGuest).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-  expect(refused.own).toMatchObject({ success: true });
+  expect(refused.own).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
 
   // Once the other site is connected (no auto-approve), its signature needs
-  // a prompt — and the prompt names the other site, not the visible one.
-  await win.evaluate((key) => window.dappPermissions.grantPermission(key, 0, 100), OTHER_KEY);
+  // a prompt, which waits for its tab (PRQ-5a, as connecting does from
+  // PRQ-4) and names the other site, not the visible one.
+  await grant(electronApp, OTHER_KEY);
   await request(win, OTHER_URL, 'sig2', 'personal_sign', [MESSAGE, account]);
+  await expect(win.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/has-wallet-prompt/, { timeout: 15_000 });
+  await expect(win.locator('#sidebar-dapp-sign')).toBeHidden();
+  await expect(win.locator('[data-test="address-input"]')).toHaveValue(TRUSTED_URL);
+  // The connection banner keeps describing the visible tab.
+  await expect(win.locator('#dapp-connection-site')).toHaveText(TRUSTED_KEY);
+  await win.locator('[data-test="tab"][data-tab-id="2"]').click();
   await expect(win.locator('#sidebar-dapp-sign')).toBeVisible({ timeout: 15_000 });
   await expect(win.locator('#dapp-sign-site')).toHaveText(OTHER_KEY);
-  await expect(win.locator('[data-test="address-input"]')).toHaveValue(TRUSTED_URL);
   // Let the sidebar finish sliding in before the evidence shot.
   await expect(win.locator('#dapp-sign-reject')).toBeInViewport({ ratio: 1 });
   await win.screenshot({ path: 'test-results/dapp-background-tab-prompt.png' });
   await win.click('#dapp-sign-reject');
   await expect.poll(async () => (await outcome(win, OTHER_URL, 'sig2'))?.code).toBe(4001);
-
-  // The connection banner keeps describing the visible tab.
-  await expect(win.locator('#dapp-connection-site')).toHaveText(TRUSTED_KEY);
-  void electronApp;
 });

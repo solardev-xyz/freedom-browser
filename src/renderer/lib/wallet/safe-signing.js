@@ -21,6 +21,15 @@
  *                by returning the combined signature to the waiting
  *                dApp; closing the board cancels the request, because a
  *                dApp promise can't be parked).
+ *
+ * From freedom-core design 0011 PRQ-5a a page's Safe message is main's: main
+ * opens the session on the user's approval or the site's rule and, when a
+ * device owner must sign, shows the board as its prompt (`eth.safe_message`,
+ * through page-prompts.js). The board collects the signatures with the
+ * session's token as before; once the threshold is met it answers the
+ * handle, and main completes the session and answers the page. Closing the
+ * board rejects the request. Main hiding the prompt (another tab in front)
+ * takes the board down with the session kept, and shows it again later.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -28,6 +37,7 @@ import { escapeHtml, truncateAddress, formatRawTokenBalance, walletRecord, timeA
 import { refreshBalances } from './balance-display.js';
 import { showVaultUnlock } from './vault-unlock.js';
 import { bindExplorerLink } from './explorer-link.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 import {
   FEE_CHECK,
   FEE_CHECK_ASK_AGAIN,
@@ -56,6 +66,11 @@ let executeError = null; // {message, needsFunds}
 // {feeCheck, offer, busy}. Until the user confirms it, nothing is signed.
 let feeAsk = null;
 let signingIndex = null; // owner row with a live ceremony
+// Main's prompt the board shows (`eth.safe_message`): `{ handle }`, or null.
+let pageBoard = null;
+// While the board paints a page prompt, or opens its own vault unlock, the
+// hider that runs is its own.
+let presentingPagePrompt = false;
 let rowNotes = new Map(); // ownerIndex → {kind: 'error'|'info', text}
 let ledgerDetected = false;
 let ledgerPollTimer = null;
@@ -95,8 +110,94 @@ export function initSafeSigning() {
   titleEl = document.getElementById('safe-signing-title');
   content = document.getElementById('safe-signing-content');
 
-  registerScreenHider(() => hideScreen());
+  registerScreenHider(() => {
+    const wasVisible = isSafeSigningBoardOpen();
+    hideScreen();
+    // A page prompt another screen hides stays main's shown prompt: it is
+    // told, so it can show again once that screen is done.
+    if (wasVisible && !presentingPagePrompt && pageBoard) {
+      const { handle } = pageBoard;
+      leavePageBoard();
+      pagePromptDisplaced(handle);
+    }
+  });
   backBtn?.addEventListener('click', closeSafeSigning);
+  registerPagePromptRenderer('eth.safe_message', {
+    show: showPageSafeBoard,
+    close: closePageSafeBoard,
+    isShowing: shownPageSafeBoard,
+  });
+}
+
+/**
+ * Render main's board prompt (`page:prompt`, kind `eth.safe_message`): the
+ * session main opened for a page's Safe message, by its token. The caller
+ * shows it only while nothing else holds the sidebar (`page-prompts.js`).
+ */
+export function showPageSafeBoard(prompt) {
+  const handle = prompt?.handle;
+  const safeIndex = prompt?.view?.safeIndex;
+  const token = prompt?.view?.state?.token;
+  if (typeof handle !== 'string') return;
+  if (!Number.isInteger(safeIndex) || typeof token !== 'string') {
+    decidePageBoard(handle, false);
+    return;
+  }
+  // A message board on the chrome's own path gives way, as before.
+  abandonMessageSession();
+  boardKind = 'message';
+  pageBoard = { handle };
+  messageResolver = {
+    resolve: () => decidePageBoard(handle, true),
+    reject: () => decidePageBoard(handle, false),
+  };
+  messageToken = token;
+  messageOwner = handle;
+  presentingPagePrompt = true;
+  try {
+    // From main's state, fresh: the board may have been shown before.
+    openBoard(safeIndex, null);
+  } finally {
+    presentingPagePrompt = false;
+  }
+}
+
+/** Take down main's prompt `handle` (hidden, closed, or refused): the session stays main's. */
+export function closePageSafeBoard(handle) {
+  if (!pageBoard || pageBoard.handle !== handle) return false;
+  const wasVisible = isSafeSigningBoardOpen();
+  leavePageBoard();
+  if (wasVisible) {
+    hideScreen();
+    walletState.identityView?.classList.remove('hidden');
+    window.dispatchEvent(new CustomEvent('wallet:safe-signing-closed'));
+  }
+  return true;
+}
+
+/** The page prompt the board shows, or null. */
+export function shownPageSafeBoard() {
+  return pageBoard && isSafeSigningBoardOpen() ? pageBoard.handle : null;
+}
+
+// The board leaves main's prompt without answering it: its continuations
+// are fenced, and nothing of the session is cancelled here.
+function leavePageBoard() {
+  boardEpoch += 1;
+  pageBoard = null;
+  messageResolver = null;
+  messageToken = null;
+  messageOwner = null;
+  signingIndex = null;
+}
+
+async function decidePageBoard(handle, approve) {
+  if (pageBoard?.handle === handle) pageBoard = null;
+  try {
+    await window.pagePrompts?.decide?.(handle, approve, {});
+  } catch (err) {
+    console.error('[SafeSigning] The decision did not reach main:', err);
+  }
 }
 
 /** Whether the board subscreen is currently up (any kind). */
@@ -254,7 +355,15 @@ async function requestVaultUnlock() {
   const epoch = boardEpoch;
   let unlocked = true;
   try {
-    await showVaultUnlock('Your multi-owner transaction');
+    // The board's own step: its hider isn't another screen taking over.
+    let unlock;
+    presentingPagePrompt = true;
+    try {
+      unlock = showVaultUnlock('Your multi-owner transaction');
+    } finally {
+      presentingPagePrompt = false;
+    }
+    await unlock;
   } catch {
     unlocked = false; // user cancelled
   }
@@ -364,6 +473,14 @@ function describeRowFailure(result) {
  */
 async function completeNow() {
   const epoch = boardEpoch;
+  // A session main opened for a page: main completes it and answers the
+  // page, on the board's approval.
+  if (pageBoard) {
+    phase = 'success'; // past the busy guard in closeSafeSigning
+    settleMessage('resolve', null);
+    closeSafeSigning();
+    return;
+  }
   const result = await window.wallet.safeMessageComplete(boardSafeIndex, messageToken);
   if (isStale(epoch)) return;
   if (result.success) {

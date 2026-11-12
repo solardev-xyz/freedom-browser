@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('nodeConfig', {
 contextBridge.exposeInMainWorld('internalPages', internalPages);
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Hold a DNS name for a tab's next commit on `ipns://<key>`, which main
+  // checks against its own resolution (freedom-core design 0011, "Names
+  // over IPNS"). A send, so it reaches main before the load that follows it.
+  bindPageName: (guest, name, key) => ipcRenderer.send('page:bind-name', { guest, name, key }),
   setBzzBase: (webContentsId, baseUrl) =>
     ipcRenderer.invoke('bzz:set-base', { webContentsId, baseUrl }),
   clearBzzBase: (webContentsId) => ipcRenderer.invoke('bzz:clear-base', { webContentsId }),
@@ -782,6 +786,18 @@ contextBridge.exposeInMainWorld('wallet', {
   // Chain info
   getChain: (chainId) => ipcRenderer.invoke('wallet:get-chain', chainId),
   getChains: () => ipcRenderer.invoke('wallet:get-chains'),
+  // The chain switcher's selection (a chain id, or null for "All Chains"),
+  // which main answers pages' Ethereum reads with (freedom-core design
+  // 0011). A send, so it reaches main before anything the chrome sends a
+  // page after it.
+  selectChain: (chainId) => ipcRenderer.send('wallet:select-chain', chainId),
+  // A page's wallet_switchEthereumChain, which main ran, selected a chain
+  // for this window (PRQ-4): the switcher shows it.
+  onPageSelectedChain: (callback) => {
+    const handler = (_event, chainId) => callback(chainId);
+    ipcRenderer.on('wallet:page-selected-chain', handler);
+    return () => ipcRenderer.removeListener('wallet:page-selected-chain', handler);
+  },
   testProvider: (chainId) => ipcRenderer.invoke('wallet:test-provider', chainId),
 
   // Multi-wallet operations
@@ -1056,6 +1072,26 @@ contextBridge.exposeInMainWorld('sitePermissions', {
 contextBridge.exposeInMainWorld('externalProtocol', {
   openFromAddressBar: (url) =>
     ipcRenderer.invoke('external-protocol:open-from-address-bar', url),
+});
+
+// Page prompts (freedom-core design 0011, "The prompt protocol"; PRQ-4).
+// Main issues every prompt a page's request needs, holds a background
+// tab's until it comes to the front, and says which one this window shows;
+// the chrome renders it and answers with a decision for that handle alone.
+// The chrome reports the tab in front at its first tab and every switch.
+const onPagePrompt = (channel) => (callback) => {
+  const handler = (_event, message) => callback(message);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+};
+contextBridge.exposeInMainWorld('pagePrompts', {
+  onPending: onPagePrompt('page:prompt-pending'),
+  onPrompt: onPagePrompt('page:prompt'),
+  onHidden: onPagePrompt('page:prompt-hidden'),
+  onClosed: onPagePrompt('page:prompt-closed'),
+  decide: (handle, approve, choices) => ipcRenderer.invoke('page:decide', { handle, approve, choices }),
+  // A send, so it reaches main in order with the tab switches around it.
+  foreground: (guest) => ipcRenderer.send('page:foreground', { guest }),
 });
 
 contextBridge.exposeInMainWorld('dappPermissions', {

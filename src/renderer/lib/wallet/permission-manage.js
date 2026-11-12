@@ -72,11 +72,22 @@ export function initPermissionManage() {
   dappPermsBack?.addEventListener('click', closeDappPerms);
   dappPermsDisconnect?.addEventListener('click', handleDappDisconnect);
   registerScreenHider(() => closeDappPerms());
+  // Signing auto-approve is turned on only from a signing prompt main shows
+  // (freedom-core design 0011, PRQ-5a): here it can only be turned off.
   dappPermsSigningToggle?.addEventListener('change', async () => {
-    if (dappPermsKey) {
-      await window.dappPermissions.setSigningAutoApprove(dappPermsKey, dappPermsSigningToggle.checked);
-      updateConnectionBanner(dappPermsKey);
+    if (!dappPermsKey) return;
+    if (dappPermsSigningToggle.checked) {
+      dappPermsSigningToggle.checked = false;
+      dappPermsSigningToggle.disabled = true;
+      return;
     }
+    try {
+      await window.dappPermissions.setSigningAutoApprove(dappPermsKey, false);
+    } catch (err) {
+      console.error('[WalletUI] Turning signing auto-approve off failed:', err);
+    }
+    dappPermsSigningToggle.disabled = true;
+    updateConnectionBanner(dappPermsKey);
   });
 
   // Swarm permission screen
@@ -160,6 +171,11 @@ export async function showDappPermissions(permissionKey) {
 
   if (dappPermsSigningToggle) {
     dappPermsSigningToggle.checked = permission.autoApprove?.signing === true;
+    // Off can't be turned on here: only from a signing prompt.
+    dappPermsSigningToggle.disabled = !dappPermsSigningToggle.checked;
+    dappPermsSigningToggle.title = dappPermsSigningToggle.checked
+      ? ''
+      : 'Turn this on with “Always allow” on a signing request from this site';
   }
 
   renderTxRules(permission.autoApprove?.transactions || []);

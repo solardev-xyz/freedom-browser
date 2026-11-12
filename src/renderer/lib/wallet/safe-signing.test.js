@@ -512,3 +512,98 @@ describe("safe signing board — the executor's fee", () => {
     expect(content.innerHTML).toContain('Confirm fee and execute');
   });
 });
+
+// freedom-core design 0011, PRQ-5a: a page's Safe message is main's. Main
+// opens the session and shows the board as its prompt (`eth.safe_message`);
+// the board collects signatures with the session's token and answers the
+// handle once the threshold is met. Main completes the session.
+describe("safe signing board — main's prompt (0011 PRQ-5a)", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+    jest.restoreAllMocks();
+  });
+
+  async function loadPageBoard() {
+    const env = await loadBoard();
+    const decisions = [];
+    global.window.pagePrompts = {
+      decide: jest.fn(async (handle, approve, choices) => {
+        decisions.push({ handle, approve, choices });
+        return { ok: true };
+      }),
+    };
+    const renderer = require('../page-prompt-renderers.js').pagePromptRenderer('eth.safe_message');
+    const show = (state = messageState(), handle = 'h1') =>
+      renderer.show({ handle, guest: 3, kind: 'eth.safe_message', site: { key: 'https://app.example', label: 'https://app.example' }, view: { safeIndex: 5, state } });
+    return { ...env, decisions, renderer, show };
+  }
+
+  test('the threshold met answers the handle; main, not the chrome, completes the session', async () => {
+    const { walletMocks, screen, decisions, show } = await loadPageBoard();
+    const done = messageState({ collected: 2, owners: [{ index: 0, type: 'mnemonic', signed: true }, { index: 1, type: 'mnemonic', signed: true }] });
+    walletMocks.safeMessageState.mockResolvedValue({ success: true, state: done });
+    show();
+    await flushMicrotasks();
+    // From main's state, by the session's token.
+    expect(walletMocks.safeMessageState).toHaveBeenCalledWith(5, 'tok-1');
+    expect(decisions).toEqual([{ handle: 'h1', approve: true, choices: {} }]);
+    expect(walletMocks.safeMessageComplete).not.toHaveBeenCalled();
+    expect(walletMocks.safeMessageCancel).not.toHaveBeenCalled();
+    expect(screen.classList.contains('hidden')).toBe(true);
+  });
+
+  test('a device owner signs on the board with the token, then the handle is answered', async () => {
+    const { walletMocks, decisions, show } = await loadPageBoard();
+    const content = global.document.getElementById('safe-signing-content');
+    const signButton = createElement('button', { dataset: { signOwner: '1' } });
+    content.appendChild(signButton);
+    walletMocks.safeMessageState.mockResolvedValue({ success: true, state: messageState() });
+    walletMocks.safeMessageSign.mockResolvedValueOnce({ success: true, state: messageState() });
+    show();
+    await flushMicrotasks();
+    expect(decisions).toEqual([]);
+    const signed = messageState({ collected: 2, owners: [{ index: 0, type: 'mnemonic', signed: true }, { index: 1, type: 'mnemonic', signed: true }] });
+    walletMocks.safeMessageSign.mockResolvedValueOnce({ success: true, state: signed });
+    signButton.dispatch('click');
+    await flushMicrotasks();
+    expect(walletMocks.safeMessageSign).toHaveBeenLastCalledWith(5, 1, 'tok-1');
+    expect(decisions).toEqual([{ handle: 'h1', approve: true, choices: {} }]);
+  });
+
+  test('closing the board rejects the request', async () => {
+    const { mod, walletMocks, decisions, show } = await loadPageBoard();
+    walletMocks.safeMessageState.mockResolvedValue({ success: true, state: messageState() });
+    show();
+    await flushMicrotasks();
+    mod.closeSafeSigning();
+    await flushMicrotasks();
+    expect(decisions).toEqual([{ handle: 'h1', approve: false, choices: {} }]);
+  });
+
+  test('main hiding it takes the board down with the session kept, and shows it again from main\'s state', async () => {
+    const { walletMocks, screen, decisions, renderer, show } = await loadPageBoard();
+    walletMocks.safeMessageState.mockResolvedValue({ success: true, state: messageState() });
+    show();
+    await flushMicrotasks();
+    expect(renderer.isShowing()).toBe('h1');
+    expect(renderer.close('h1')).toBe(true);
+    expect(screen.classList.contains('hidden')).toBe(true);
+    expect(walletMocks.safeMessageCancel).not.toHaveBeenCalled();
+    expect(decisions).toEqual([]);
+    walletMocks.safeMessageState.mockClear();
+    show();
+    await flushMicrotasks();
+    expect(screen.classList.contains('hidden')).toBe(false);
+    expect(walletMocks.safeMessageState).toHaveBeenCalledWith(5, 'tok-1');
+  });
+
+  test('a view with no session is rejected', async () => {
+    const { decisions, renderer } = await loadPageBoard();
+    renderer.show({ handle: 'h2', guest: 3, kind: 'eth.safe_message', site: {}, view: { safeIndex: 5, state: {} } });
+    await flushMicrotasks();
+    expect(decisions).toEqual([{ handle: 'h2', approve: false, choices: {} }]);
+  });
+});

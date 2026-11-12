@@ -595,6 +595,34 @@ describe('a name-keyed document', () => {
     return { ...env, held, page };
   }
 
+  test('an answer read under the name goes out only while the document still holds it (PRQ-3)', async () => {
+    const resolution = { decoded: IPNS_B58 };
+    const { page, held, trace } = bound(async () => ({ type: 'ok', protocol: 'ipns', decoded: resolution.decoded }));
+    await flush();
+    const asks = [0, 1, 2, 3].map(() => page.ask('eth_accounts', []));
+    await flush();
+    const [guarded, other, unguarded, failing] = held.calls;
+    // Each one's last check holds, and three of them say what they answer
+    // if the name is gone by the time main answers.
+    expect(await guarded.context.nameHolds({ keyless: { result: [] } })).toBe(true);
+    expect(await failing.context.nameHolds({ keyless: { result: [] } })).toBe(true);
+    expect(await unguarded.context.nameHolds()).toBe(true);
+    // Then another request of the document finds the name moved, before
+    // the first ones are answered: the binding ends.
+    resolution.decoded = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+    expect(await other.context.nameHolds({ keyless: { result: [] } })).toBe(false);
+    guarded.resolve({ result: ['0x1111111111111111111111111111111111111111'] });
+    other.resolve({ result: [] });
+    unguarded.resolve({ result: 'its own' });
+    failing.resolve({ error: { code: -32603, message: 'Internal error' } });
+    expect(await asks[0]).toEqual({ result: [] });
+    expect(await asks[1]).toEqual({ result: [] });
+    // A dispatcher that gave no keyless answer, and an error, go as they are.
+    expect(await asks[2]).toEqual({ result: 'its own' });
+    expect(await asks[3]).toEqual({ error: { code: -32603, message: 'Internal error' } });
+    expect(trace.filter((e) => e.kind === 'name-lost').map((e) => e.id)).toEqual([guarded.context.id, other.context.id]);
+  });
+
   test('a request waiting for the name check is counted at once, and runs under the name', async () => {
     let answerName;
     const { page, held, requests } = bound(
@@ -684,8 +712,17 @@ describe('page:event', () => {
     expect(page.guest.sent).toEqual([]);
   });
 
-  test('until names are checked again before an event, a name-revalidated one never goes to a name-keyed document', async () => {
-    const env = setup({ resolveEnsContent: async () => ({ type: 'ok', protocol: 'ipns', decoded: IPNS_B58 }) });
+  // PRQ-4: main resolves the name again before a name-revalidated event
+  // goes to a name-keyed document (design 0011, "Events").
+  test('a name-revalidated event goes to a name-keyed document only while the name answers its IPNS key', async () => {
+    let answer = IPNS_B58;
+    const resolutions = [];
+    const env = setup({
+      resolveEnsContent: async (name) => {
+        resolutions.push(name);
+        return { type: 'ok', protocol: 'ipns', decoded: answer };
+      },
+    });
     const guest = new Guest();
     env.guests.set(guest.id, guest);
     env.requests.track(guest);
@@ -694,15 +731,51 @@ describe('page:event', () => {
     const page = env.greet(guest);
     const target = (await env.documents.attest(eventFrom(guest), page.nonce)).requester;
     expect(target.key).toBe('example.com');
+    resolutions.length = 0;
     for (const [provider, event] of [
       ['ethereum', 'accountsChanged'],
       ['swarm', 'message'],
       ['radicle', 'seedStatus'],
     ]) {
-      expect(await env.requests.sendEvent(target, provider, event, {})).toEqual({ ok: false, reason: 'name-unchecked' });
+      expect(await env.requests.sendEvent(target, provider, event, {})).toEqual({ ok: true });
     }
+    expect(resolutions).toEqual(['example.com', 'example.com', 'example.com']);
+    // A permission-free event resolves nothing.
     expect(await env.requests.sendEvent(target, 'ethereum', 'chainChanged', '0x64')).toEqual({ ok: true });
-    expect(guest.sent.map((entry) => entry.message.event)).toEqual(['chainChanged']);
+    expect(resolutions).toHaveLength(3);
+    // The name moves: the event isn't sent, and the binding ends, so the
+    // document is keyless from then on.
+    answer = 'QmSomewhereElse';
+    expect(await env.requests.sendEvent(target, 'ethereum', 'accountsChanged', [])).toEqual({ ok: false, reason: 'name-moved' });
+    expect(env.documents.holdsKey(target)).toBe(false);
+    answer = IPNS_B58;
+    expect(await env.requests.sendEvent(target, 'ethereum', 'accountsChanged', [])).toEqual({ ok: false, reason: 'name-moved' });
+    expect(guest.sent.map((entry) => entry.message.event)).toEqual(['accountsChanged', 'message', 'seedStatus', 'chainChanged']);
+  });
+
+  test('a name that moves while an event is held after its check gets no event', async () => {
+    let answer = IPNS_B58;
+    const env = setup({ resolveEnsContent: async () => ({ type: 'ok', protocol: 'ipns', decoded: answer }) });
+    const guest = new Guest();
+    env.guests.set(guest.id, guest);
+    env.requests.track(guest);
+    env.documents.bindName({ guest: guest.id, name: 'example.com', key: IPNS_KEY });
+    guest.commit(`ipns://${IPNS_KEY}/`);
+    const page = env.greet(guest);
+    const target = (await env.documents.attest(eventFrom(guest), page.nonce)).requester;
+    let release;
+    env.hooks.beforeEventSend = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    const sending = env.requests.sendEvent(target, 'ethereum', 'accountsChanged', ['0x1']);
+    await flush();
+    // Another check of the same name finds it moved, while this one waits.
+    answer = 'QmSomewhereElse';
+    expect((await env.documents.recheckName(target)).ok).toBe(false);
+    release();
+    expect(await sending).toEqual({ ok: false, reason: 'name-moved' });
+    expect(guest.sent).toEqual([]);
   });
 
   test.each([
@@ -759,8 +832,8 @@ describe('register', () => {
     const on = new Map();
     const handle = new Map();
     requests.register({ on: (channel, fn) => on.set(channel, fn), handle: (channel, fn) => handle.set(channel, fn) });
-    expect([...on.keys()]).toEqual(['page:hello']);
-    expect([...handle.keys()]).toEqual(['page:reserve', 'page:request']);
+    expect([...on.keys()]).toEqual(['page:hello', 'page:bind-name', 'page:foreground']);
+    expect([...handle.keys()]).toEqual(['page:reserve', 'page:request', 'page:decide']);
 
     const guest = new Guest();
     guests.set(guest.id, guest);

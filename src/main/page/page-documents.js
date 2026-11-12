@@ -30,7 +30,9 @@
  * standing rule would answer (design 0011, "Agent custody").
  *
  * `page-requests.js` (PRQ-2) wires `track` to the tab guests and
- * `hello`/`attest` to `page:hello` and `page:request`.
+ * `hello`/`attest` to `page:hello` and `page:request`, and (PRQ-3)
+ * `bindName` to the chrome's `page:bind-name` and `recheckName` to the
+ * methods that check the name.
  */
 
 const { getPermissionKey, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
@@ -480,6 +482,73 @@ function createPageDocuments(deps = {}) {
     };
   }
 
+  // The requester's document, while it is still its guest's current one.
+  function currentDocOf(requester) {
+    const doc = guests.get(requester?.guest)?.current;
+    if (!doc || doc.ended || doc.navigation !== requester.navigation || doc.nonce !== requester.nonce) {
+      return null;
+    }
+    return doc;
+  }
+
+  // A name that no longer answers its IPNS key ends the binding: the
+  // document is keyless from then on, and a later commit on the same key
+  // binds again only through a fresh `bindName`.
+  function endNameBinding(doc, name) {
+    doc.key = null;
+    doc.topKey = null;
+    const state = guests.get(doc.guest);
+    if (state?.binding && state.binding.name === name && doc.transportKey === `ipns://${state.binding.key}`) {
+      state.binding = null;
+    }
+  }
+
+  /**
+   * Check the name of a name-keyed document again, before a method uses
+   * anything held under it (design 0011, "Names over IPNS": checked at
+   * every use). A document with no name binding has nothing to resolve.
+   * For one with a binding, main resolves the name again and compares the
+   * answer with the document's transport key; a name that no longer
+   * answers ends the binding, as at the commit.
+   *
+   * `ok` is true when the requester may act under its key: the document is
+   * current, has a key, and it is still the requester's. `resolved` says
+   * whether a resolution was awaited, after which the caller checks the
+   * frame again (it may have moved off its transport key meanwhile).
+   *
+   * @returns {Promise<{ok: boolean, resolved: boolean}>}
+   */
+  async function recheckName(requester) {
+    const doc = currentDocOf(requester);
+    if (!doc || !doc.key || doc.key !== requester.key) return { ok: false, resolved: false };
+    if (doc.key === doc.transportKey) return { ok: true, resolved: false };
+    const name = doc.key;
+    const ipnsKey = /^ipns:\/\/([A-Za-z0-9]+)$/.exec(doc.transportKey || '')?.[1];
+    if (!ipnsKey) return { ok: false, resolved: false };
+    const serves = await nameServesIpnsKey(resolveEnsContent, name, ipnsKey);
+    // An answer counts only for its own document, and only while the name
+    // is still its key: another check may have ended the binding meanwhile.
+    if (doc.ended || doc.key !== name) return { ok: false, resolved: true };
+    if (!serves) {
+      endNameBinding(doc, name);
+      return { ok: false, resolved: true };
+    }
+    return { ok: true, resolved: true };
+  }
+
+  /**
+   * True, synchronously, while `requester`'s document is current and still
+   * acts under the requester's key. A recheck's success is an answer about
+   * an earlier moment: another check of the same name may have ended the
+   * binding since, so whoever acts on it checks this at the moment it acts.
+   * A document's key never comes back once its binding has ended (a new
+   * binding takes a new commit, so a new document), so the key alone tells.
+   */
+  function holdsKey(requester) {
+    const doc = currentDocOf(requester);
+    return Boolean(doc?.key) && doc.key === requester.key;
+  }
+
   /** Hear of every document that ends. Returns a function that stops it. */
   function onEnded(listener) {
     if (typeof listener !== 'function') return () => {};
@@ -489,12 +558,27 @@ function createPageDocuments(deps = {}) {
 
   /** True while `requester`'s document is still its guest's current one. */
   function isCurrent(requester) {
-    const doc = guests.get(requester?.guest)?.current;
-    return Boolean(doc) && !doc.ended && doc.navigation === requester.navigation &&
-      doc.nonce === requester.nonce;
+    return currentDocOf(requester) !== null;
   }
 
-  return { track, bindName, hello, attest, attestNow, isCurrent, onEnded };
+  /**
+   * Every guest's current document that has said hello and whose name check
+   * is over, as attested records, for the events main sends to every live
+   * document of a key or a window (design 0011, "Events"). A record is
+   * main's word at this moment: whoever sends to one checks it again
+   * (`isCurrent`, and the name for a name-revalidated event).
+   */
+  function liveDocuments() {
+    const out = [];
+    for (const state of guests.values()) {
+      const doc = state.current;
+      if (!doc || doc.ended || !doc.nonce || doc.naming?.pending) continue;
+      out.push(snapshot(doc));
+    }
+    return out;
+  }
+
+  return { track, bindName, hello, attest, attestNow, isCurrent, recheckName, holdsKey, onEnded, liveDocuments };
 }
 
 module.exports = {

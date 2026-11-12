@@ -30,6 +30,11 @@ const PRIVILEGED_METHODS = new Set([
   'eth_signTypedData_v4',
 ]);
 
+// The methods main serves for a page and hands to the agent attested
+// (freedom-core design 0011): connecting (PRQ-4), and messages and typed
+// data (PRQ-5a). A send still comes through the chrome until its step.
+const ATTESTED_METHODS = new Set(['eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4']);
+
 function providerError(code, message) {
   return { code, message };
 }
@@ -375,17 +380,28 @@ class AgentWalletController {
     }
 
     const pageKey = getPermissionKey(context.pageUrl);
-    const requestKey = getPermissionKey(payload.displayUrl);
-    if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) {
-      return {
-        handled: true,
-        error: providerError(4100, 'Wallet request origin did not match the page'),
-        errorCode: ERROR_CODES.POLICY_DENIED,
-      };
+    const originMismatch = {
+      handled: true,
+      error: providerError(4100, 'Wallet request origin did not match the page'),
+      errorCode: ERROR_CODES.POLICY_DENIED,
+    };
+    let permissionKey;
+    if (context.attested) {
+      // A request main attested (freedom-core design 0011, PRQ-4 and
+      // PRQ-5a): it acts under main's key (a DNS name over IPNS keeps its
+      // name), on the page this run sees on the same transport.
+      if (!ATTESTED_METHODS.has(payload.method)) return { handled: false };
+      const { key, transportKey } = context.attested;
+      if (typeof key !== 'string' || !key || !pageKey || pageKey !== transportKey) return originMismatch;
+      permissionKey = key;
+    } else {
+      const requestKey = getPermissionKey(payload.displayUrl);
+      if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) return originMismatch;
+      permissionKey = pageKey;
     }
 
     try {
-      const outcome = await this.#executeRequest(context, payload, pageKey);
+      const outcome = await this.#executeRequest(context, payload, permissionKey);
       return {
         handled: true,
         result: outcome.providerResult,
@@ -447,14 +463,20 @@ class AgentWalletController {
           'The selected wallet is unavailable'
         );
       }
-      if (permission) {
-        if (permission.walletIndex !== selected.index) {
-          this.updateWalletIndex(permissionKey, selected.index);
+      // A request main attested writes only while main still holds it: not
+      // answered (its deadline, its page gone), the name checked again, and
+      // the page still under its key in the same run as the write.
+      await this.#underMain(context, () => {
+        const current = context.attested ? this.getPermission(permissionKey) : permission;
+        if (current) {
+          if (current.walletIndex !== selected.index) {
+            this.updateWalletIndex(permissionKey, selected.index);
+          }
+          this.updateLastUsed(permissionKey, chainId);
+        } else {
+          this.grantPermission(permissionKey, selected.index, chainId);
         }
-        this.updateLastUsed(permissionKey, chainId);
-      } else {
-        this.grantPermission(permissionKey, selected.index, chainId);
-      }
+      });
       return {
         providerResult: [selected.address],
         receipt: {
@@ -621,11 +643,18 @@ class AgentWalletController {
         requiresUnlock: wallet.type === 'mnemonic',
       },
     });
-    const signer = this.getSigner(wallet.index);
-    const signature = personal
-      ? await signer.signMessage(payload.params?.[0])
-      : await signer.signTypedData(typedData);
-    this.updateLastUsed(permissionKey, chain.chainId);
+    // A request main attested signs only while main still holds it: not
+    // answered (its deadline, its page gone), the name checked again, and
+    // the page still under its key in the same run as the signature.
+    const signature = await this.#underMain(context, () => {
+      const signer = this.getSigner(wallet.index);
+      return personal ? signer.signMessage(payload.params?.[0]) : signer.signTypedData(typedData);
+    });
+    // A grant held under the attested key is touched only while main still
+    // holds the request after the signature's wait, checked the same way.
+    // The signature itself reaches the page only while its name holds, which
+    // main checks when it answers.
+    await this.#underMain(context, () => this.updateLastUsed(permissionKey, chain.chainId), { required: false });
     return {
       providerResult: signature,
       receipt: {
@@ -637,6 +666,21 @@ class AgentWalletController {
         },
       },
     };
+  }
+
+  /**
+   * Run `effect` (a grant write, a signature) for a request: at once for one
+   * of the agent's own, and for one main attested only once main's gates
+   * pass, in the same run as the last of them (`effectAllowed`), never across
+   * an await, so no other check can end the page's key between them. When
+   * they don't pass, nothing runs, and `required` throws.
+   */
+  async #underMain(context, effect, { required = true } = {}) {
+    if (!context.attested) return effect();
+    const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
+    if (ready && typeof context.effectAllowed === 'function' && context.effectAllowed() === true) return effect();
+    if (required) throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
+    return undefined;
   }
 
   async #approve(context, request) {

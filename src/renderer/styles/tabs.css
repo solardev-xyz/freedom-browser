@@ -142,6 +142,36 @@ html[data-platform='darwin'] .title-bar-spacer {
     color 0.15s ease;
 }
 
+/* A request of the tab's page waits for the user (freedom-core design 0011,
+   PRQ-4): a dot, or the count when there are several. */
+.tab-prompt-badge {
+  display: none;
+  flex: 0 0 auto;
+  min-width: 7px;
+  height: 7px;
+  padding: 0;
+  margin-right: 4px;
+  box-sizing: border-box;
+  color: var(--agent-on-accent);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 14px;
+  text-align: center;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.tab.has-wallet-prompt .tab-prompt-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab.has-wallet-prompt .tab-prompt-badge:not(:empty) {
+  height: 14px;
+  padding: 0 4px;
+}
+
 .tab-agent-badge {
   display: none;
   flex: 0 0 auto;

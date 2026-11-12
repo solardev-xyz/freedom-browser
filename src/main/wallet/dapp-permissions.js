@@ -16,6 +16,9 @@ const { normalizeOrigin } = require('../../shared/origin-utils');
 const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 
 const PERMISSIONS_FILE = 'dapp-permissions.json';
+const GRANT_REFUSED = 'A dApp connection is granted only from its own prompt';
+const CHAIN_REFUSED = 'A dApp connection’s chain is set only by the page’s own request';
+const SIGNING_RULE_REFUSED = 'Signing auto-approve is turned on only from a signing prompt';
 const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
 // In-memory cache of permissions
@@ -411,8 +414,13 @@ function registerDappPermissionsIpc() {
     return getPermission(origin);
   });
 
-  ipcMain.handle(IPC.DAPP_GRANT_PERMISSION, (_event, origin, walletIndex, chainId) => {
-    return grantPermission(origin, walletIndex, chainId);
+  // Refused for every site (freedom-core design 0011, "Grants"; PRQ-4): a
+  // connection is written by main itself, for the key it attested, from the
+  // user's decision on the prompt it issued (page/page-ethereum.js). The
+  // chrome named the site here, so a compromised chrome could connect any
+  // site to any account. Revoking stays open: it only narrows.
+  ipcMain.handle(IPC.DAPP_GRANT_PERMISSION, () => {
+    throw new Error(GRANT_REFUSED);
   });
 
   ipcMain.handle(IPC.DAPP_REVOKE_PERMISSION, (_event, origin) => {
@@ -423,16 +431,28 @@ function registerDappPermissionsIpc() {
     return getAllPermissions();
   });
 
+  // The timestamp only (freedom-core design 0011, PRQ-4). A grant's chain
+  // is written by main itself, from a page's wallet_switchEthereumChain or
+  // its connect (page/page-ethereum.js); the chrome named the site here, so
+  // a chain it supplies is refused. The signing paths still on the chrome
+  // (until PRQ-5) only mark a site used.
   ipcMain.handle(IPC.DAPP_UPDATE_LAST_USED, (_event, origin, chainId) => {
-    return updateLastUsed(origin, chainId);
+    if (chainId !== undefined) throw new Error(CHAIN_REFUSED);
+    return updateLastUsed(origin);
   });
 
   ipcMain.handle(IPC.DAPP_GET_SIGNING_AUTO_APPROVE, (_event, origin) => {
     return getSigningAutoApprove(origin);
   });
 
+  // Clearing only (freedom-core design 0011, PRQ-5): main sets a site's
+  // signing rule itself, for the requester's key, from the user's "always
+  // allow" on a signing prompt main showed (page/page-signing.js). The
+  // chrome named the site here, so a rule it sets is refused. Turning one
+  // off only narrows, and stays open.
   ipcMain.handle(IPC.DAPP_SET_SIGNING_AUTO_APPROVE, (_event, origin, enabled) => {
-    return setSigningAutoApprove(origin, enabled);
+    if (enabled !== false) throw new Error(SIGNING_RULE_REFUSED);
+    return setSigningAutoApprove(origin, false);
   });
 
   // The renderer's question before a dApp transaction: auto-approve it, or

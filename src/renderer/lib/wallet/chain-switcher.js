@@ -17,7 +17,27 @@ let chainSwitcherLogoPlaceholder;
 let chainSwitcherDropdown;
 let chainSwitcherList;
 
+/**
+ * Write the selected chain, and tell main: main answers pages' Ethereum
+ * reads (`eth_chainId`, `net_version`, the RPC reads) with this window's
+ * selection (freedom-core design 0011, PRQ-3). Told before any
+ * `chainChanged` goes to a page, so a page that asks on that event reads
+ * the new chain.
+ */
+function writeSelectedChain(chainId) {
+  walletState.selectedChainId = chainId;
+  try {
+    window.wallet?.selectChain?.(chainId);
+  } catch (err) {
+    console.error('[WalletUI] Failed to report the selected chain:', err);
+  }
+}
+
 export function initChainSwitcher() {
+  // Main starts every window on the switcher's default; report this one's
+  // (a reloaded chrome starts again from it).
+  writeSelectedChain(walletState.selectedChainId);
+
   chainSwitcherBtn = document.getElementById('chain-switcher-btn');
   chainSwitcherName = document.getElementById('chain-switcher-name');
   chainSwitcherLogo = document.getElementById('chain-switcher-logo');
@@ -26,6 +46,13 @@ export function initChainSwitcher() {
   chainSwitcherList = document.getElementById('chain-switcher-list');
 
   setupChainSwitcher();
+
+  // A page's wallet_switchEthereumChain runs in main now (freedom-core
+  // design 0011, PRQ-4), which selected the chain for this window and told
+  // the page: the switcher shows it, and tells no page again.
+  window.wallet?.onPageSelectedChain?.((chainId) => {
+    if (Number.isSafeInteger(chainId) && chainId > 0) setSelectedChainId(chainId);
+  });
 }
 
 function setupChainSwitcher() {
@@ -82,7 +109,7 @@ async function renderChainList() {
   // header and asset list don't keep filtering on a chain that's gone.
   const selected = walletState.selectedChainId;
   if (selected !== null && !walletState.registeredChains[selected]) {
-    walletState.selectedChainId = null;
+    writeSelectedChain(null);
     updateChainSwitcherDisplay();
     renderAssetList();
   }
@@ -167,7 +194,7 @@ function selectChain(chainId) {
   closeChainDropdown();
 
   const previousChainId = walletState.selectedChainId;
-  walletState.selectedChainId = chainId;
+  writeSelectedChain(chainId);
 
   updateChainSwitcherDisplay();
   renderAssetList();
@@ -225,7 +252,7 @@ export function getSelectedChainId() {
 export function setSelectedChainId(chainId) {
   if (walletState.selectedChainId === chainId) return;
 
-  walletState.selectedChainId = chainId;
+  writeSelectedChain(chainId);
   updateChainSwitcherDisplay();
   renderAssetList();
   console.log('[WalletUI] Chain switched to:', chainId);

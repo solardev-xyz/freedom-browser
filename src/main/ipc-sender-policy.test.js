@@ -94,6 +94,22 @@ describe('isSenderAllowed', () => {
     }
   });
 
+  // freedom-core design 0011, "The prompt protocol" (PRQ-4): the prompt
+  // channels are the chrome's alone. A page can't decide its own prompt or
+  // say which tab is in front.
+  test('page:decide and page:foreground take only the chrome', () => {
+    for (const channel of ['page:decide', 'page:foreground']) {
+      expect(WEBVIEW_CHANNEL_TIERS.has(channel)).toBe(false);
+      expect(isSenderAllowed(channel, chrome())).toBe(true);
+      expect(isSenderAllowed(channel, web())).toBe(false);
+      expect(isSenderAllowed(channel, web('bzz://abcd/'))).toBe(false);
+      expect(isSenderAllowed(channel, page('settings.html'))).toBe(false);
+      expect(isSenderAllowed(channel, page('home.html'))).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'webview', url: fileUrl(CHROME_INDEX) }))).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'window', url: 'https://evil.example/' }))).toBe(false);
+    }
+  });
+
   // freedom-core design 0011, "The way in": a tab's top frame only, never an
   // internal page, and, unlike every other channel, never the chrome.
   test('the page channels take a tab webview\'s top frame and refuse the chrome', () => {

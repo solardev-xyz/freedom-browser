@@ -42,11 +42,39 @@
  * `WebFrameMain.send` targets a frame, and the frame can commit a new
  * document between the check and the delivery.
  *
- * No provider method is served here yet: `dispatchers` is empty in the app,
- * so every method still takes today's path through the chrome, and the
- * preload sends none on `page:request`. The path runs through a test hook
- * only (`enablePageRequestTestHooks`), which the E2E harness turns on. Later
- * steps (PRQ-3 to PRQ-8) move each provider's methods.
+ * The app serves the Ethereum reads here (PRQ-3, `page-ethereum.js`):
+ * the preload sends those on `page:request`, and every other method still
+ * takes today's path through the chrome. The E2E harness can route and
+ * serve any method through a test hook (`enablePageRequestTestHooks`).
+ * Later steps (PRQ-4 to PRQ-8) move the rest.
+ *
+ * `page:bind-name { guest, name, key }` (the design's "Names over IPNS")
+ * comes from the chrome, before it loads `ipns://<key>` for a DNS name: it
+ * holds the name for the guest's next main-frame commit, which main checks
+ * against its own resolution (`page-documents.js`). The chrome may name only
+ * a guest it hosts.
+ *
+ * A dispatcher that needs the user opens a prompt (`context.prompt`, PRQ-4):
+ * a handle main issues, held and shown per window by `page-prompts.js`,
+ * which the chrome renders and answers with `page:decide`. The chrome
+ * reports the guest in front with `page:foreground`. One wallet prompt is
+ * pending per document at a time; a second request gets `-32002`. The
+ * prompt carries main's `site`, the request's attested key, and whatever the
+ * user decides, the dispatcher acts on its own record.
+ *
+ * A record prompts one prompt at a time, and may prompt again once its
+ * prompt is decided (PRQ-5: a vault unlock and then the signature, or a Safe
+ * message's approval and then its signing board). An approved wallet prompt
+ * keeps the document's one wallet slot for its record until main answers
+ * it, so the record's next prompt, or its effect, isn't raced by another.
+ *
+ * Main's own issuer (PRQ-5, design 0011 "Approval tokens"): a page kind's
+ * approval token is minted only for a live record whose prompt the user has
+ * just approved (`context.confirm`), bound to that prompt's handle and the
+ * requester's attested key, with the account and payload the dispatcher
+ * holds. The dispatcher spends it itself (`context.spend`), after checking
+ * the document again: a token for a document that has gone is refused and
+ * burnt. An approval mints one token.
  */
 
 const crypto = require('crypto');
@@ -66,16 +94,21 @@ const {
   timeoutError,
 } = require('./page-methods');
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
+const signingConfirmation = require('../wallet/signing-confirmation');
+const { CHANNELS: PROMPT_CHANNELS, KIND_SET, WALLET_KINDS, createPagePrompts } = require('./page-prompts');
 
 const CHANNELS = Object.freeze({
   HELLO: 'page:hello',
   RESERVE: 'page:reserve',
   REQUEST: 'page:request',
   EVENT: 'page:event',
+  BIND_NAME: 'page:bind-name',
+  ...PROMPT_CHANNELS,
 });
 
 const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
+const FOREGROUND_KEYS = new Set(['guest']);
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
@@ -100,9 +133,17 @@ const LIMIT_EXCEEDED = { code: -32005, message: 'Limit exceeded' };
 const INVALID_REQUEST = { code: -32602, message: 'Invalid parameters' };
 const INTERNAL_ERROR = { code: -32603, message: 'Internal error' };
 const UNAUTHORIZED = { code: 4100, message: 'Unauthorized' };
+// EIP-1193's "request already pending": a document's second wallet prompt.
+const PROMPT_PENDING = { code: -32002, message: 'Another wallet request is already pending' };
 
 /** A refused requester: the attestation's reason, nothing more. */
 const refusal = (reason) => errorOf(UNAUTHORIZED, { reason });
+
+function notConfirmed(reason) {
+  const err = new Error(`Signing was not confirmed: ${reason}`);
+  err.code = signingConfirmation.NOT_CONFIRMED;
+  return err;
+}
 
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -155,6 +196,28 @@ function isLive(contents) {
   }
 }
 
+// The chrome window `contents` is the chrome of, as main's own record: the
+// sender policy lets only a chrome window's top frame reach the prompt
+// channels, and this names its window.
+function defaultChromeWindowOf(contents) {
+  const { BrowserWindow } = require('electron');
+  const win = BrowserWindow.fromWebContents(contents);
+  if (!win || win.isDestroyed() || win.webContents !== contents) return null;
+  return Number.isInteger(win.id) ? win.id : null;
+}
+
+function defaultSendToWindow(windowId, channel, payload) {
+  const { BrowserWindow } = require('electron');
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+  win.webContents.send(channel, payload);
+}
+
+function defaultWatchWindow(windowId, onClosed) {
+  const { BrowserWindow } = require('electron');
+  BrowserWindow.fromId(windowId)?.once('closed', onClosed);
+}
+
 /**
  * @param {object} [options]
  * @param {object} [options.documents] page-documents.js's API.
@@ -163,9 +226,15 @@ function isLive(contents) {
  *   -> `async (context) => ({ result } | { error })`. Empty in the app.
  * @param {object} [options.hooks] test hooks, read at each use: `dispatch`
  *   serves every method with a row, `beforeEventSend(message, target)` may
- *   hold an event between main's check and the send, `onTrace(entry)` hears
- *   what main did, and `onCopy(entry)` hears each copy a dispatcher reports
- *   (`context.copied`), with whether the request's charge is in place.
+ *   hold an event between main's check and the send, `holdRequest(payload)`
+ *   may hold a request's delivery before main takes it, `onTrace(entry)`
+ *   hears what main did, and `onCopy(entry)` hears each copy a dispatcher
+ *   reports (`context.copied`), with whether the request's charge is in
+ *   place.
+ * @param {(contents: object) => number|null} [options.chromeWindowOf] the
+ *   chrome window a sender is the chrome of.
+ * @param {(windowId: number, channel: string, payload: object) => void} [options.sendToWindow]
+ *   to a window's chrome.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -177,6 +246,9 @@ function createPageRequests({
   randomHex = (bytes) => crypto.randomBytes(bytes).toString('hex'),
   setTimer = setTimeout,
   clearTimer = clearTimeout,
+  chromeWindowOf = defaultChromeWindowOf,
+  sendToWindow = defaultSendToWindow,
+  watchWindow = defaultWatchWindow,
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -191,6 +263,18 @@ function createPageRequests({
       // A test hook never changes what main does.
     }
   };
+
+  const prompts = createPagePrompts({
+    send: (windowId, channel, payload) => sendToWindow(windowId, channel, payload),
+    markShown: (entry) => markShown(entry.record),
+    decided: (entry) => decidedEntry(entry),
+    trace,
+  });
+  const watchedWindows = new Set();
+  // document key -> the record whose wallet operation outside main's
+  // prompts (the agent service's own approval) holds the document's one
+  // wallet slot (`walletOperation`).
+  const walletOperations = new Map();
 
   const budgets = createPageBudgets({
     budgets: budgetBounds,
@@ -235,6 +319,18 @@ function createPageRequests({
       released: false,
       resolve: null,
       reply: null,
+      // The answer if the document no longer holds its key when main
+      // answers (`nameHolds`).
+      keyless: undefined,
+      // What runs once the answer has reached the document (`afterAnswer`).
+      after: null,
+      // Aborted when the record is answered, for a wallet operation it runs
+      // (`walletOperation`).
+      aborter: null,
+      // The handle of the prompt the user last approved, until main's issuer
+      // mints its one token (`confirm`), and the handle that token is for.
+      approved: null,
+      tokenHandle: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -280,10 +376,30 @@ function createPageRequests({
     }
     record.answered = true;
     stopDeadline(record);
+    // A wallet operation still running for it (its deadline, its document
+    // gone) is told to stop, and its document's slot is free again.
+    if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
+    record.aborter?.abort();
     const current = documents.isCurrent(record.requester);
+    // A request that read under a name answers as a keyless document's
+    // would once the name no longer holds, checked in the same run as the
+    // reply (`nameHolds`).
+    if (current && record.keyless !== undefined && value && !value.error && !documents.holdsKey(record.requester)) {
+      trace({ kind: 'name-lost', id: record.id });
+      value = { ...record.keyless };
+    }
     record.resolve(current ? value : GONE);
     trace({ kind: current ? 'answered' : 'gone', id: record.id, value: current ? value : undefined });
+    const after = record.after;
+    record.after = null;
     release(record);
+    if (current && after && value !== GONE) {
+      try {
+        Promise.resolve(after(value)).catch(() => {});
+      } catch {
+        // What follows an answer never changes it.
+      }
+    }
     return current;
   }
 
@@ -308,6 +424,7 @@ function createPageRequests({
     record.handleClosed = reason;
     const closed = Object.freeze({ handle, window: record.window, guest: record.requester.guest, reason });
     trace({ kind: 'handle-closed', id: record.id, reason });
+    prompts.closed(handle, reason);
     for (const listener of handleListeners) {
       try {
         listener(closed);
@@ -318,10 +435,24 @@ function createPageRequests({
     return true;
   }
 
+  // A decision on a record's prompt: the handle closes, decided. An
+  // approval is what main's issuer may mint the record's token on, and an
+  // approved wallet prompt keeps the document's wallet slot for its record
+  // until main answers it.
+  function decidedEntry(entry) {
+    const { record } = entry;
+    if (entry.decided?.approve === true && !record.answered) {
+      record.approved = entry.handle;
+      if (WALLET_KINDS.has(entry.kind) && !walletOperations.has(record.key)) walletOperations.set(record.key, record);
+    }
+    closeHandle(record, CLOSED.DECIDED);
+  }
+
   // A handle for the record's prompt: 32 random bytes, scoped to its window.
+  // One at a time: the open one, or a new one once the last has closed.
   function openHandle(record) {
     if (record.answered) return null;
-    if (record.handle) return handles.get(record.handle) === record ? record.handle : null;
+    if (record.handle && handles.get(record.handle) === record) return record.handle;
     const handle = randomHex(HANDLE_BYTES);
     record.handle = handle;
     handles.set(handle, record);
@@ -359,10 +490,130 @@ function createPageRequests({
       class: record.row.class,
       params,
       isCurrent: () => documents.isCurrent(record.requester),
+      nameHolds: (options) => nameHolds(record, options),
+      holdsKey: () => documents.holdsKey(record.requester),
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
+      prompt: (spec) => prompt(record, spec),
+      confirm: (kind, accountIndex, payload, bound) => confirm(record, kind, accountIndex, payload, bound),
+      spend: (token, kind, accountIndex, payload) => spend(record, token, kind, accountIndex, payload),
+      walletOperation: (run) => walletOperation(record, run),
+      afterAnswer: (fn) => {
+        if (typeof fn === 'function' && !record.answered) record.after = fn;
+      },
+      liveDocuments: () => documents.liveDocuments(),
+      sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
       copied: (label) => copied(record, label),
     });
+  }
+
+  /**
+   * Ask the user (design 0011, "Requests and handles"): open the record's
+   * handle and hold its prompt in its window, shown while its guest is in
+   * front. `site` is main's, from the record. Settles with the decision,
+   * `{ approve, choices }` (`choices` as `spec.choices` checked them), with
+   * `{ closed: reason }` when the handle closes otherwise, or with
+   * `{ error }`, `-32002`, while the document has another wallet prompt
+   * open.
+   */
+  async function prompt(record, { kind, view = {}, choices } = {}) {
+    if (!KIND_SET.has(kind)) throw new Error(`page-requests: no prompt of kind ${kind}`);
+    if (record.answered) return { closed: CLOSED.CANCELLED };
+    if (record.handle && handles.get(record.handle) === record) {
+      throw new Error('page-requests: a record prompts one prompt at a time');
+    }
+    if (WALLET_KINDS.has(kind) && walletSlotTaken(record)) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
+      return { error: { ...PROMPT_PENDING } };
+    }
+    const handle = openHandle(record);
+    if (!handle) return { closed: CLOSED.CANCELLED };
+    const { requester } = record;
+    const entry = prompts.add({
+      handle,
+      record,
+      window: record.window,
+      guest: requester.guest,
+      document: record.key,
+      kind,
+      site: { key: requester.key, label: requester.key },
+      view,
+      choices,
+    });
+    return entry.decision;
+  }
+
+  /**
+   * Main's own issuer (design 0011, "Approval tokens"): a token of a page
+   * kind, for this live record only, on the approval of the prompt the user
+   * just decided, bound to that prompt's handle and the requester's attested
+   * key. The account and payload are the dispatcher's, from the request main
+   * holds. One approval mints one token. Throws (`SIGNING_NOT_CONFIRMED`)
+   * with nothing minted otherwise. The token never leaves main.
+   */
+  function confirm(record, kind, accountIndex, payload, bound) {
+    const handle = record.approved;
+    if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
+      throw notConfirmed('no live request approved by the user');
+    }
+    const { token } = signingConfirmation.issuePageConfirmation(
+      kind,
+      accountIndex,
+      payload,
+      { handle, key: record.requester.key },
+      bound
+    );
+    record.approved = null;
+    record.tokenHandle = handle;
+    trace({ kind: 'token-minted', id: record.id, token: kind });
+    return token;
+  }
+
+  /**
+   * Spend the record's token for the request it is about to sign: the
+   * document checked again first, and the token refused and burnt if the
+   * document has gone or no longer holds its key. Returns what the token
+   * bound (`{ hash }` for typed data).
+   */
+  function spend(record, token, kind, accountIndex, payload) {
+    if (record.answered || !documents.isCurrent(record.requester) || !documents.holdsKey(record.requester)) {
+      signingConfirmation.discardConfirmation(token);
+      throw notConfirmed('the document that asked has gone');
+    }
+    const handle = record.tokenHandle;
+    record.tokenHandle = null;
+    try {
+      return signingConfirmation.consumePageConfirmation(token, kind, accountIndex, payload, {
+        handle,
+        key: record.requester.key,
+      });
+    } finally {
+      trace({ kind: 'token-spent', id: record.id, token: kind });
+    }
+  }
+
+  // Whether a name-revalidated method may use its document's key now
+  // (design 0011, "Which methods check the name"): the document current,
+  // with a key, and for a DNS name over IPNS the name resolved again to the
+  // document's IPNS key, after which, since the resolution was awaited, the
+  // document is checked again, its frame must still be on its transport
+  // key, and the document must still hold the key: another request's check
+  // of the same name may have ended the binding while this one's answer
+  // waited to run. A document with no name binding resolves nothing.
+  //
+  // `keyless` is what the request answers if, when main answers it, its
+  // document no longer holds the key (`answer`): a dispatcher whose answer
+  // reveals what the key holds (eth_accounts' account) passes it, so no
+  // check that ran before the binding ended can let that answer out after.
+  async function nameHolds(record, { keyless } = {}) {
+    if (keyless !== undefined && record.keyless === undefined) record.keyless = keyless;
+    const checked = await documents.recheckName(record.requester);
+    const holds =
+      checked.ok &&
+      documents.holdsKey(record.requester) &&
+      (!checked.resolved || documentHolds(record.requester));
+    if (checked.resolved) trace({ kind: 'name-checked', id: record.id, holds });
+    return holds;
   }
 
   // A dispatcher made or caused a copy of the request's bytes (design 0011,
@@ -375,6 +626,107 @@ function createPageRequests({
       // A test hook never changes what main does.
     }
     return inPlace;
+  }
+
+  // Whether the record's document already has a wallet request waiting on
+  // the user: a wallet prompt of main's, or another record's wallet
+  // operation.
+  function walletSlotTaken(record) {
+    if (prompts.walletPromptOpen(record.key)) return true;
+    const holder = walletOperations.get(record.key);
+    return Boolean(holder) && holder !== record;
+  }
+
+  /**
+   * A wallet operation that asks the user somewhere other than main's
+   * prompts: the agent service's own approval, for a tab the agent holds
+   * (design 0011, "Agent custody"). It takes the document's one wallet slot
+   * as a prompt does, so the document's next wallet request gets `-32002`
+   * while it runs, and it lives within the record: `run({ signal, open })`
+   * gets a signal aborted when main answers the record (its deadline, its
+   * document gone, its window closed) and `open()`, true until then. An
+   * effect the operation makes must check `open()` first.
+   *
+   * Settles with `{ done: value }`, or `{ error }`: `-32002` while the slot
+   * is taken, or a record already answered.
+   */
+  async function walletOperation(record, run) {
+    if (record.answered) return { error: { ...INTERNAL_ERROR } };
+    if (walletSlotTaken(record)) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
+      return { error: { ...PROMPT_PENDING } };
+    }
+    walletOperations.set(record.key, record);
+    if (!record.aborter) record.aborter = new AbortController();
+    try {
+      const value = await run({ signal: record.aborter.signal, open: () => !record.answered });
+      return { done: value };
+    } finally {
+      if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
+    }
+  }
+
+  /**
+   * `page:decide` from a chrome window: a decision for the handle that
+   * window shows at this moment, and for nothing else. Answers `{ ok: true }`
+   * once the request it decided has been answered (the dispatcher has acted
+   * on it: a grant written, or nothing), or why it was refused.
+   */
+  async function decide(event, payload) {
+    let windowId;
+    try {
+      windowId = chromeWindowOf(event?.sender);
+    } catch {
+      windowId = null;
+    }
+    if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
+    const outcome = prompts.decide(windowId, payload);
+    trace({ kind: 'decide', window: windowId, ok: outcome.ok, reason: outcome.reason });
+    if (!outcome.ok) return outcome;
+    await outcome.entry.record.reply;
+    return { ok: true };
+  }
+
+  /**
+   * `page:foreground { guest }` from a chrome window: the guest now in front
+   * of that window, or `null` for a tab with no page. Only a live guest the
+   * window hosts; anything else is ignored. It only chooses which pending
+   * prompt shows.
+   */
+  function foreground(event, payload) {
+    let windowId;
+    try {
+      windowId = chromeWindowOf(event?.sender);
+    } catch {
+      windowId = null;
+    }
+    if (!Number.isInteger(windowId)) return false;
+    if (!isPlainObject(payload) || !hasOnlyKeys(payload, FOREGROUND_KEYS)) return false;
+    const { guest } = payload;
+    if (guest !== null) {
+      if (!Number.isInteger(guest)) return false;
+      try {
+        const contents = webContentsFromId(guest);
+        if (!isLive(contents) || contents.getType() !== 'webview') return false;
+        const hostId = contents.hostWebContents?.id;
+        if (!Number.isInteger(hostId) || hostId !== event.sender.id) return false;
+      } catch {
+        return false;
+      }
+    }
+    if (!watchedWindows.has(windowId)) {
+      watchedWindows.add(windowId);
+      try {
+        watchWindow(windowId, () => {
+          watchedWindows.delete(windowId);
+          prompts.forgetWindow(windowId);
+        });
+      } catch {
+        // Forgotten with the process, then.
+      }
+    }
+    prompts.foreground(windowId, guest);
+    return true;
   }
 
   async function run(record, dispatch, event, nonce, naming, params) {
@@ -400,6 +752,29 @@ function createPageRequests({
     } finally {
       settle(record);
     }
+  }
+
+  /**
+   * `page:bind-name` from the chrome: hold `name` for the next main-frame
+   * commit of `guest`, a tab of the sending chrome window, on `ipns://<key>`.
+   * Main checks the name itself at that commit; this decides nothing.
+   */
+  function bindName(event, payload) {
+    if (!isPlainObject(payload)) return false;
+    const { guest, name, key } = payload;
+    if (!Number.isInteger(guest)) return false;
+    let contents;
+    try {
+      contents = webContentsFromId(guest);
+      if (!isLive(contents) || contents.getType() !== 'webview') return false;
+      const hostId = contents.hostWebContents?.id;
+      if (!Number.isInteger(hostId) || hostId !== event?.sender?.id) return false;
+    } catch {
+      return false;
+    }
+    const bound = documents.bindName({ guest, name, key });
+    trace({ kind: 'bind-name', guest, ok: bound });
+    return bound;
   }
 
   /** `page:hello`: bind the nonce to the sender's current document. */
@@ -514,9 +889,10 @@ function createPageRequests({
   /**
    * Send `event` to the target document (an attested requester), with its
    * nonce: only an event with a row, only while the document is current,
-   * and only to its guest's main frame. Until main resolves a name again
-   * before an event (from PRQ-3), a name-revalidated event never goes to a
-   * name-keyed document.
+   * and only to its guest's main frame. A name-revalidated event goes to a
+   * name-keyed document only once main has resolved the name again to the
+   * document's IPNS key (design 0011, "Events"); a name that no longer
+   * answers ends the binding, and the event isn't sent.
    *
    * @returns {Promise<{ok: true} | {ok: false, reason: string}>}
    */
@@ -524,11 +900,16 @@ function createPageRequests({
     const row = eventRow(provider, event);
     if (!row) return { ok: false, reason: 'unlisted' };
     if (!target || !documents.isCurrent(target)) return { ok: false, reason: 'navigated' };
-    if (row.class === CLASS.NAME_REVALIDATED && target.key !== target.transportKey) {
-      return { ok: false, reason: 'name-unchecked' };
+    const named = row.class === CLASS.NAME_REVALIDATED && target.key !== target.transportKey;
+    if (named) {
+      const checked = await documents.recheckName(target);
+      if (!checked.ok || !documents.holdsKey(target) || !documentHolds(target)) {
+        return { ok: false, reason: 'name-moved' };
+      }
     }
     const message = { nonce: target.nonce, provider, event, data };
     if (typeof hooks.beforeEventSend === 'function') await hooks.beforeEventSend(message, target);
+    if (named && !documents.holdsKey(target)) return { ok: false, reason: 'name-moved' };
     const frame = liveMainFrame(target);
     if (!frame) return { ok: false, reason: 'navigated' };
     try {
@@ -563,18 +944,33 @@ function createPageRequests({
     ipcMain.on(CHANNELS.HELLO, (event, payload) => {
       hello(event, payload);
     });
+    ipcMain.on(CHANNELS.BIND_NAME, (event, payload) => {
+      bindName(event, payload);
+    });
     ipcMain.handle(CHANNELS.RESERVE, (event, payload) => reserve(event, payload));
-    ipcMain.handle(CHANNELS.REQUEST, (event, payload) => request(event, payload));
+    ipcMain.handle(CHANNELS.REQUEST, async (event, payload) => {
+      // Test only: a request held on its way in, before main takes it.
+      if (typeof hooks.holdRequest === 'function') await hooks.holdRequest(payload);
+      return request(event, payload);
+    });
+    ipcMain.handle(CHANNELS.DECIDE, (event, payload) => decide(event, payload));
+    ipcMain.on(CHANNELS.FOREGROUND, (event, payload) => {
+      foreground(event, payload);
+    });
   }
 
   return {
     track: (contents) => documents.track(contents),
+    bindName,
     hello,
     reserve,
     request,
     sendEvent,
     findHandle,
     onHandleClosed,
+    decide,
+    foreground,
+    promptState: () => prompts.state(),
     stats,
     register,
   };
@@ -585,8 +981,24 @@ function createPageRequests({
 const sharedHooks = {};
 let shared = null;
 
+// Main's own resolution of a bound name, or the harness's stand-in for it
+// (real ENS needs the network).
+function resolveBoundName(name) {
+  if (sharedHooks.enabled === true && typeof sharedHooks.resolveName === 'function') {
+    return sharedHooks.resolveName(name);
+  }
+  return require('../ens-resolver').resolveEnsContent(name);
+}
+
 function getPageRequests() {
-  if (!shared) shared = createPageRequests({ hooks: sharedHooks });
+  if (!shared) {
+    const { createEthereumDispatchers } = require('./page-ethereum');
+    shared = createPageRequests({
+      documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
+      dispatchers: createEthereumDispatchers(),
+      hooks: sharedHooks,
+    });
+  }
   return shared;
 }
 
@@ -635,6 +1047,13 @@ function enablePageRequestTestHooks() {
     setOnCopy: (hear) => {
       sharedHooks.onCopy = typeof hear === 'function' ? hear : undefined;
     },
+    setResolveName: (resolve) => {
+      sharedHooks.resolveName = typeof resolve === 'function' ? resolve : undefined;
+    },
+    setHoldRequest: (hold) => {
+      sharedHooks.holdRequest = typeof hold === 'function' ? hold : undefined;
+    },
+    promptState: () => getPageRequests().promptState(),
     sendEvent: (target, provider, event, data) => getPageRequests().sendEvent(target, provider, event, data),
     stats: () => getPageRequests().stats(),
   };
