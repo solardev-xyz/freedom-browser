@@ -6,7 +6,11 @@ const { loadSettings } = require('../settings-store');
 const { attachAutomationToHostWebContents } = require('../automation/runtime');
 const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 const { attachFullscreenChromeSync } = require('../browser-fullscreen');
-const { attachApprovalsDocument } = require('../approvals/approvals-document');
+const {
+  attachApprovalsDocument,
+  isApprovalsDocumentEnabled,
+  APPROVALS_RENDERER_ARG,
+} = require('../approvals/approvals-document');
 
 let currentWindowTitle = 'Freedom';
 
@@ -65,6 +69,17 @@ function createMainWindow(initialUrl = null, options = {}) {
   // suites under `xvfb-run -a` instead of setting this.
   const hideWindow = process.env.FREEDOM_TEST_HIDE_WINDOW === '1';
 
+  // Switches for the chrome's preload, decided here in main: the E2E harness
+  // bridge (from test-mode.js's verdict, rather than the preload reading
+  // FREEDOM_TEST_MODE itself: a packaged build honours that variable only
+  // under an honoured CDP debug port, docs/security-audit-electron.md,
+  // O-4/O-12, which the renderer cannot see), and the approvals document,
+  // beside which the chrome makes room (freedom-core design 0011, APS-2).
+  const rendererArgs = [
+    ...(require('../test-harness').isTestMode() ? [TEST_HARNESS_RENDERER_ARG] : []),
+    ...(isApprovalsDocumentEnabled() ? [APPROVALS_RENDERER_ARG] : []),
+  ];
+
   const window = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -99,14 +114,7 @@ function createMainWindow(initialUrl = null, options = {}) {
       allowRunningInsecureContent: false,
       experimentalFeatures: false,
       webviewTag: true,
-      // Tells preload.js to expose the E2E harness bridge. Decided here, from
-      // test-mode.js's verdict, rather than by the preload reading
-      // FREEDOM_TEST_MODE itself: a packaged build honours that variable only
-      // under an honoured CDP debug port (docs/security-audit-electron.md,
-      // O-4/O-12), which the renderer cannot see.
-      ...(require('../test-harness').isTestMode() && {
-        additionalArguments: [TEST_HARNESS_RENDERER_ARG],
-      }),
+      ...(rendererArgs.length > 0 && { additionalArguments: rendererArgs }),
     },
   });
 

@@ -3,7 +3,8 @@
   The approvals document (freedom-core design 0011, "The approvals document";
   APS-1). Main serves it from its own partition with a strict CSP and Trusted
   Types (src/main/approvals/approvals-document.js). Everything a prompt shows
-  is built by approvals.js from fixed templates, as text.
+  is built by approvals.js from its kind's fixed template
+  (approvals-kinds.js), as text (approvals-core.js).
 -->
 <html lang="en">
   <head>
@@ -25,11 +26,14 @@
       <p id="error" class="panel-error" role="alert" hidden>
         Freedom can't show this request. You can only reject it
       </p>
+      <p id="waiting" class="panel-waiting" role="status" hidden></p>
       <footer class="panel-actions">
         <button type="button" id="reject" class="action-reject">Reject</button>
         <button type="button" id="approve" class="action-approve">Approve</button>
       </footer>
     </main>
+    <script src="./approvals-core.js"></script>
+    <script src="./approvals-kinds.js"></script>
     <script src="./approvals.js"></script>
   </body>
 </html>

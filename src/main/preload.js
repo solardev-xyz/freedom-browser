@@ -1101,8 +1101,13 @@ contextBridge.exposeInMainWorld('pagePrompts', {
   // A send, so it reaches main in order with the tab switches around it.
   foreground: (guest) => ipcRenderer.send('page:foreground', { guest }),
   // Where the content area starts, so main places the approvals panel below
-  // the toolbar (0011 APS-1, with FREEDOM_APPROVALS_DOCUMENT=1).
+  // the toolbar (0011 APS-1).
   anchor: (top) => ipcRenderer.send('page:approvals-anchor', { top }),
+  // Whether main shows prompts in the window's approvals document, beside
+  // which the chrome makes room (APS-2). Keep the switch in sync with
+  // APPROVALS_RENDERER_ARG in approvals-document.js (a sandboxed preload
+  // cannot require it; preload.test.js pins the two together).
+  approvalsDocument: process.argv.includes('--freedom-approvals-document'),
 });
 
 contextBridge.exposeInMainWorld('dappPermissions', {

@@ -13,57 +13,35 @@
 // and serve it with a dispatcher that opens a prompt with the view the page
 // sent, so every field it shows is the page's choice.
 
-const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const { pathToFileURL } = require('url');
-const { test: base, expect } = require('./fixtures');
-const { closeApp } = require('./close-app');
+const {
+  test,
+  expect,
+  repoRoot,
+  APPROVALS_URL,
+  PAST_DELAY_MS,
+  sleep,
+  activeGuestId,
+  inGuest,
+  approvalsState,
+  approvalsTrace,
+  promptState,
+  openTab,
+  reportCount,
+  nextReport,
+  clickTooSoon,
+  decideTooSoon,
+} = require('./approvals-fixtures');
 
-const repoRoot = path.resolve(__dirname, '..');
 const A = `bzz://${'d'.repeat(64)}`;
 const B = `bzz://${'e'.repeat(64)}`;
 const FORGED_PRELOAD = path.join(__dirname, 'approvals-document-forged-preload.js');
-const APPROVALS_URL = pathToFileURL(path.join(repoRoot, 'src', 'renderer', 'approvals', 'approvals.html')).href;
 // The design's policy, word for word ("Rendering a page's data").
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; " +
   "connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; " +
   "frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
-const DELAY_MS = 500;
-// Comfortably past the delay, on a loaded CI runner too.
-const PAST_DELAY_MS = 700;
-
-const test = base.extend({
-  electronApp: async ({ userDataDir }, use) => {
-    const app = await electron.launch({
-      args: ['.'],
-      cwd: repoRoot,
-      env: {
-        ...process.env,
-        FREEDOM_TEST_MODE: '1',
-        FREEDOM_TEST_USER_DATA: userDataDir,
-        FREEDOM_APPROVALS_DOCUMENT: '1',
-        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
-        LANG: 'en_US.UTF-8',
-      },
-      timeout: 20_000,
-    });
-    await use(app);
-    await closeApp(app);
-  },
-  // The chrome: the approvals document is a page of the app as well.
-  window: async ({ electronApp }, use) => {
-    let win = null;
-    await expect
-      .poll(() => {
-        win = electronApp.windows().find((p) => p.url().includes('/renderer/index.html')) || null;
-        return Boolean(win);
-      }, { timeout: 20_000 })
-      .toBe(true);
-    await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
-    await use(win);
-  },
-});
 
 // A page that asks main for a test prompt showing the view it chooses.
 const page = (title) => ({
@@ -84,17 +62,7 @@ const page = (title) => ({
 
 const view = (title, extra = {}) => ({ title, message: `About ${title}`, rows: [{ label: 'Row', value: title }], ...extra });
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const activeGuestId = (win) =>
-  win.evaluate(() => document.querySelector('webview:not(.hidden)')?.getWebContentsId() ?? null);
-const inGuest = (electronApp, id, js) =>
-  electronApp.evaluate(({ webContents }, args) => webContents.fromId(args.id).executeJavaScript(args.js), { id, js });
 const inDoc = inGuest;
-
-const approvalsState = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_APPROVALS__.state());
-const approvalsTrace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_APPROVALS__.trace.slice());
-const promptState = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.promptState());
 const decisions = (electronApp) => electronApp.evaluate(() => globalThis.__aps.decisions.slice());
 const outcome = (electronApp, guest, tag) => inGuest(electronApp, guest, `window.__asked[${JSON.stringify(tag)}] || null`);
 
@@ -115,81 +83,9 @@ async function routeTestPrompts(electronApp) {
   });
 }
 
-/** Open a new tab on `url`, after the routes were set; returns its guest id. */
-async function openTab(electronApp, win, url) {
-  const before = await activeGuestId(win);
-  await win.locator('[data-test="new-tab-btn"]').click();
-  let id = null;
-  await expect
-    .poll(async () => {
-      id = await activeGuestId(win).catch(() => null);
-      return id !== null && id !== before;
-    })
-    .toBe(true);
-  await electronApp.evaluate(({ webContents }, args) => {
-    webContents.fromId(args.id).loadURL(args.url).catch(() => {});
-  }, { id, url });
-  await expect
-    .poll(() => inGuest(electronApp, id, 'window.__ready === true && document.readyState === "complete"').catch(() => false), {
-      timeout: 20_000,
-    })
-    .toBe(true);
-  return id;
-}
-
 /** The page asks for a prompt showing `shown`; returns at once. */
 const ask = (electronApp, guest, tag, shown) =>
   inGuest(electronApp, guest, `window.__ask(${JSON.stringify(tag)}, ${JSON.stringify(shown)})`);
-
-/** How many times the window's document has reported a prompt on screen. */
-const reportCount = async (electronApp, windowId) =>
-  (await approvalsTrace(electronApp)).filter((e) => e.kind === 'shown' && e.window === windowId).length;
-
-/**
- * Wait, in main, for the window's document to report a prompt on screen
- * (its input delay starts there) after `after` earlier reports; resolves as
- * soon as main has it, with the handle and main's time of the report.
- */
-function nextReport(electronApp, windowId, after) {
-  return electronApp.evaluate(
-    (_electron, args) =>
-      new Promise((resolve, reject) => {
-        const hooks = globalThis.__FREEDOM_TEST_APPROVALS__;
-        const deadline = Date.now() + 15_000;
-        const check = () => {
-          const reports = hooks.trace.filter((e) => e.kind === 'shown' && e.window === args.windowId);
-          if (reports.length > args.after) return resolve({ handle: reports.at(-1).handle, at: reports.at(-1).at });
-          if (Date.now() > deadline) return reject(new Error('no report'));
-          setTimeout(check, 2);
-        };
-        check();
-      }),
-    { windowId, after }
-  );
-}
-
-/** Milliseconds on main's clock since `at`. */
-const since = (electronApp, at) => electronApp.evaluate((_electron, t) => performance.now() - t, at);
-
-const docDecides = async (electronApp) =>
-  (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide').length;
-
-/**
- * Click Approve the moment main has the document's next report, inside the
- * delay: nothing reaches main, and the prompt stays. Returns its handle.
- */
-async function clickTooSoon(electronApp, docPage, windowId, after) {
-  const decidedBefore = await docDecides(electronApp);
-  const report = await nextReport(electronApp, windowId, after);
-  const box = await docPage.locator('#approve').boundingBox();
-  await docPage.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  // The click went in well inside the delay, so this tests what it says.
-  expect(await since(electronApp, report.at), 'the click went in too late to test the delay').toBeLessThan(DELAY_MS - 50);
-  await sleep(PAST_DELAY_MS);
-  expect(await docDecides(electronApp)).toBe(decidedBefore);
-  expect((await approvalsState(electronApp))[windowId].shown).toBe(report.handle);
-  return report.handle;
-}
 
 test('the approvals document: its surface, sender checks, rendering and input rules (0011 APS-1)', async ({
   electronApp,
@@ -467,12 +363,7 @@ test('the approvals document: its surface, sender checks, rendering and input ru
   // than 500 ms after its report is refused; after it, it counts.
   after = await reportCount(electronApp, windowId);
   await ask(electronApp, guest, 'six', view('six'));
-  const sixReport = await nextReport(electronApp, windowId, after);
-  expect(await docPage.evaluate((h) => window.approvals.decide(h, true, undefined), sixReport.handle)).toEqual({
-    ok: false,
-    reason: 'too-soon',
-  });
-  expect(await since(electronApp, sixReport.at)).toBeLessThan(DELAY_MS);
+  const sixReport = await decideTooSoon(electronApp, docPage, windowId, after);
   await sleep(PAST_DELAY_MS);
   expect(await docPage.evaluate((h) => window.approvals.decide(h, true, undefined), sixReport.handle)).toEqual({ ok: true });
   await expect.poll(() => outcome(electronApp, guest, 'six')).toEqual({ ok: 'approved:six' });
