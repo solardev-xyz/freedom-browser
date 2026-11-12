@@ -789,48 +789,12 @@ export function onConnectionApproval(callback) {
   _showConnectionApproval = callback;
 }
 
-/**
- * Emit accountsChanged event to a webview
- */
-export function emitAccountsChanged(webview, accounts) {
-  sendProviderEvent(webview, 'accountsChanged', accounts);
-}
-
-/**
- * Emit chainChanged event to a webview
- */
-export function emitChainChanged(webview, chainId) {
-  // The chain selector is global browser UI, but an ERC-8244 document's
-  // provider identity is fixed by its URL. Selecting another wallet chain
-  // must not emit a contradictory event into that document.
-  if (getOnchainApp(webview)) return;
-  sendProviderEvent(webview, 'chainChanged', chainId);
-}
-
-/**
- * Emit connect event to a webview
- */
-export function emitConnect(webview, chainId) {
-  sendProviderEvent(webview, 'connect', { chainId });
-}
-
-/**
- * Emit disconnect event to a webview
- */
-export function emitDisconnect(webview, error) {
-  sendProviderEvent(webview, 'disconnect', error || { code: 4900, message: 'Disconnected' });
-}
-
-/**
- * Broadcast event to all webviews (when chain changes globally, etc.)
- */
-export function broadcastProviderEvent(event, data) {
-  // This would need access to all webviews
-  // For now, just emit to active webview
-  if (activeWebview) {
-    sendProviderEvent(activeWebview, event, data);
-  }
-}
+// The chrome sends pages no Ethereum event of its own (freedom-core design
+// 0011, PRQ-6): main sends `accountsChanged` when a grant is revoked or its
+// account changes, and `chainChanged` when the chain switcher's selection
+// changes, to every live document they concern (src/main/page/page-events.js).
+// `sendProviderEvent` stays for the old request path's own events until
+// PRQ-9 removes that path.
 
 // Exported for use by swarm-provider.js and swarm-connect.js
 export { getPermissionKey, executeSign, getNavigationGeneration };

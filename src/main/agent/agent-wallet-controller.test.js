@@ -417,6 +417,73 @@ describe('AgentWalletController', () => {
       ]);
     });
 
+    // freedom-core design 0011, PRQ-6 (#1192 round 2): the controller tells
+    // main what its own write did, decided from the grant it read in the
+    // write's run and told in that run, so main queues a created grant's
+    // events at that write.
+    describe('what the connect\'s write did, told to main in its run', () => {
+      const TWO = [
+        { index: 0, name: 'Main Wallet', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+        { index: 1, name: 'Second', address: '0x2222222222222222222222222222222222222222', type: 'mnemonic' },
+      ];
+
+      test.each([
+        ['created, for a site with no grant at the write', null, 1, 'created'],
+        ['updated, for a grant on another account', { walletIndex: 0, chainId: 1 }, 1, 'updated'],
+        ['unchanged, for a grant already on that account', { walletIndex: 1, chainId: 1 }, 1, 'unchanged'],
+      ])('%s', async (_name, permission, walletIndex, grant) => {
+        const harness = createHarness({ permission, wallets: TWO });
+        const { state, gate } = racingGate();
+        const told = [];
+        const context = {
+          ...attestedContext(gate, jest.fn(async () => ({ status: 'approved', walletIndex }))),
+          grantWritten: jest.fn((effect) => told.push({ ...effect, held: state.held })),
+        };
+        const provider = await harness.controller.handleRequest(context, attestedRequest);
+        expect(provider).toMatchObject({ handled: true, result: [TWO[walletIndex].address] });
+        expect(told).toEqual([
+          { grant, walletIndex, account: TWO[walletIndex].address, chainId: 100, held: true },
+        ]);
+      });
+
+      test('decided from the grant at the write, not before the approval\'s wait', async () => {
+        const harness = createHarness({ wallets: TWO });
+        // A grant at the approval's start, revoked while it waits.
+        let current = { walletIndex: 0, chainId: 100 };
+        harness.dependencies.getPermission.mockImplementation(() => current);
+        const told = [];
+        const approve = jest.fn(async () => {
+          current = null;
+          return { status: 'approved', walletIndex: 1 };
+        });
+        const context = { ...attestedContext({}, approve), grantWritten: (effect) => told.push(effect.grant) };
+        await harness.controller.handleRequest(context, attestedRequest);
+        expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('example.com', 1, 100);
+        expect(told).toEqual(['created']);
+      });
+
+      test('nothing is told when main\'s gate refuses the write, and a failing listener undoes nothing', async () => {
+        const harness = createHarness({ wallets: TWO });
+        const told = jest.fn();
+        const refused = await harness.controller.handleRequest(
+          { ...attestedContext({ effectAllowed: jest.fn(() => false) }), grantWritten: told },
+          attestedRequest
+        );
+        expect(refused).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(told).not.toHaveBeenCalled();
+        const throwing = jest.fn(() => {
+          throw new Error('boom');
+        });
+        const provider = await harness.controller.handleRequest(
+          { ...attestedContext(), grantWritten: throwing },
+          attestedRequest
+        );
+        expect(throwing).toHaveBeenCalledTimes(1);
+        expect(provider).toMatchObject({ handled: true, result: ['0x1111111111111111111111111111111111111111'] });
+        expect(harness.dependencies.grantPermission).toHaveBeenCalledTimes(1);
+      });
+    });
+
     test.each(['personal_sign', 'eth_signTypedData_v4'])(
       '%s: the signature and its last use each run in the same run as main\'s gate',
       async (method) => {

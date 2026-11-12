@@ -99,7 +99,6 @@ async function load() {
     getActiveWebview: () => null,
     getActiveDisplayUrl: () => '',
     getPermissionKey: (url) => url || null,
-    emitAccountsChanged: jest.fn(),
     getNavigationGeneration: () => 0,
   }));
   jest.doMock('./wallet/permission-manage.js', () => ({ showDappPermissions: jest.fn() }));

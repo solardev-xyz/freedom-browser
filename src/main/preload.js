@@ -788,13 +788,14 @@ contextBridge.exposeInMainWorld('wallet', {
   getChains: () => ipcRenderer.invoke('wallet:get-chains'),
   // The chain switcher's selection (a chain id, or null for "All Chains"),
   // which main answers pages' Ethereum reads with (freedom-core design
-  // 0011). A send, so it reaches main before anything the chrome sends a
-  // page after it.
-  selectChain: (chainId) => ipcRenderer.send('wallet:select-chain', chainId),
-  // A page's wallet_switchEthereumChain, which main ran, selected a chain
-  // for this window (PRQ-4): the switcher shows it.
+  // 0011), and the number of main's latest page selection the switcher had
+  // shown, so main can refuse a pick made before it (PRQ-6).
+  selectChain: (chainId, seen) => ipcRenderer.send('wallet:select-chain', chainId, seen),
+  // `{ chainId, sequence }`: a page's wallet_switchEthereumChain, which main
+  // ran, selected a chain for this window (PRQ-4), or main shows its
+  // selection again after refusing a stale pick (PRQ-6).
   onPageSelectedChain: (callback) => {
-    const handler = (_event, chainId) => callback(chainId);
+    const handler = (_event, selection) => callback(selection);
     ipcRenderer.on('wallet:page-selected-chain', handler);
     return () => ipcRenderer.removeListener('wallet:page-selected-chain', handler);
   },
