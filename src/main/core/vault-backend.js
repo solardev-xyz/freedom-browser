@@ -423,10 +423,42 @@ const vaultBackend = {
   },
 
   /**
+   * The Radicle node key, sealed by the core to the freedom-radicled
+   * process's `recipient` (its X25519 public key for this start, base64, as
+   * `rad.hello` gave it; freedom-core design 0008, "The sealed release"):
+   * `{ enc, ciphertext }`, base64, which main passes on in `rad.identity`
+   * and never opens. Main never sees the key. Errors keep the core's codes:
+   * `no_vault` (the only answer that leads to a throwaway key), and
+   * `vault_locked` while locked, or when a lock came before the reply was
+   * handed to the core's writer (the start's boundary).
+   */
+  async sealRadicleKey(recipient) {
+    const { enc, ciphertext } = await call('nodes.seal_radicle_key', { recipient });
+    return { enc, ciphertext };
+  },
+
+  /**
+   * Calls `listener(name, data)` on the core's `vault.unlocked` and
+   * `vault.locked` events; returns its unsubscribe. With no core client,
+   * nothing is subscribed: `status()` then fails `core_unavailable`.
+   */
+  onVaultEvent(listener) {
+    const core = getCoreClient();
+    if (!core) return () => {};
+    const onEvent = (name, data) => {
+      if (name === 'vault.unlocked' || name === 'vault.locked') listener(name, data);
+    };
+    core.on('event', onEvent);
+    return () => core.removeListener('event', onEvent);
+  },
+
+  /**
    * Writes a node identity through the core's journal. `spec` is
-   * `{ node: 'bee', data_dir, api_port, p2p_port }` or
-   * `{ node: 'radicle', home, alias }`. A lost reply is resolved with
-   * `nodes.op_status`.
+   * `{ node: 'bee', data_dir, api_port, p2p_port }`,
+   * `{ node: 'radicle', home, alias }` (the key file, for the add-on), or
+   * `{ node: 'radicle', home, alias, custody: 'sealed', wipe? }` (no key
+   * file; any is removed: freedom-core design 0008, "The switch" and
+   * "Identity changes"). A lost reply is resolved with `nodes.op_status`.
    */
   async writeNodeIdentity(spec, opId) {
     try {
