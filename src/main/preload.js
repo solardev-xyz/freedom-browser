@@ -1132,20 +1132,14 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   hasMessagingGrant: (origin) => ipcRenderer.invoke('swarm:has-messaging-grant', origin),
 });
 
+// A site's manifest record, read and narrowed by the site's permission
+// screen. Main alone checks a page's manifest and decides its consent
+// (freedom-core design 0011, PRQ-7d).
 contextBridge.exposeInMainWorld('swarmManifest', {
-  check: (request) => ipcRenderer.invoke('swarm:manifest-check', request),
-  decide: (token, outcome) => ipcRenderer.invoke('swarm:manifest-decide', { token, outcome }),
   get: (origin) => ipcRenderer.invoke('swarm:manifest-get', origin),
   useIndividual: (origin, capability) =>
     ipcRenderer.invoke('swarm:manifest-use-individual', { origin, capability }),
   disconnect: (origin) => ipcRenderer.invoke('swarm:manifest-disconnect', origin),
-});
-
-contextBridge.exposeInMainWorld('swarmProvider', {
-  // meta carries renderer-only routing info (e.g. the subscribing
-  // webview's webContentsId for swarm_subscribe message delivery).
-  execute: (method, params, origin, meta) =>
-    ipcRenderer.invoke('swarm:provider-execute', { method, params, origin, meta }),
 });
 
 // Page-facing Radicle provider plumbing. Distinct from the host-chrome

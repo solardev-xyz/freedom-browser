@@ -41,6 +41,11 @@ const {
 const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const log = require('electron-log');
 
+// The chrome's feed grant main refuses (freedom-core design 0011, "Grants";
+// PRQ-7d): main grants feed access from the user's decision on its own
+// feed prompt.
+const FEED_GRANT_REFUSED = 'Swarm feed access is granted only from its own prompt';
+
 const FEEDS_FILE = 'swarm-feeds.json';
 const CURRENT_VERSION = 2;
 const MAX_IDENTITY_LABEL_BYTES = 80;
@@ -1013,31 +1018,13 @@ function registerFeedStoreIpc() {
     });
   });
 
-  // Idempotent for identity: if the origin already has an identity mode set,
-  // return the existing entry without allocating a new key index.
-  // Always grants feed access (feedGranted = true).
-  ipcMain.handle(IPC.SWARM_SET_FEED_IDENTITY, (_event, origin, identityMode) => {
-    return withOriginLock(origin, () => {
-      if (identityMode === ETHEREUM_WALLET_MODE) {
-        throw new Error(ETHEREUM_WALLET_UNAVAILABLE);
-      }
-      if (!VALID_IDENTITY_MODES.includes(identityMode)) {
-        throw new Error(`Invalid identity mode: ${identityMode}. Must be one of: ${VALID_IDENTITY_MODES.join(', ')}`);
-      }
-
-      const existing = getOriginEntry(origin);
-      // A stored ethereum-wallet identity is never granted again (#89).
-      assertFeedGrantable(origin);
-      if (existing && existing.activeIdentityId) {
-        // Identity already set — just re-grant feed access
-        if (!existing.feedGranted) {
-          grantFeedAccess(origin);
-        }
-        return getOriginEntry(origin);
-      }
-
-      return setOriginEntry(origin, { identityMode, feedGranted: true });
-    });
+  // Refused for every site (freedom-core design 0011, "Grants"; PRQ-7d): it
+  // always granted feed access, for a site the chrome named. Main grants it
+  // itself, for the key it attested, from the user's decision on its own
+  // feed prompt (page/page-swarm.js), with the identity picked there.
+  // Revoking (swarm:revoke-feed-access) stays open: it only narrows.
+  ipcMain.handle(IPC.SWARM_SET_FEED_IDENTITY, () => {
+    throw new Error(FEED_GRANT_REFUSED);
   });
 
   ipcMain.handle(IPC.SWARM_REVOKE_FEED_ACCESS, (_event, origin) => {

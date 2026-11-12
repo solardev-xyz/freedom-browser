@@ -1728,8 +1728,9 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 //
 // The Ethereum reads (PRQ-3), connecting (PRQ-4), signing messages and
 // typed data (PRQ-5a) and sends (PRQ-5b), and Swarm's reads (PRQ-7a),
-// connecting and messaging (PRQ-7b) and publishing (PRQ-7c) take the new
-// path (PAGE_ROUTES), and main answers them: their page-world
+// connecting and messaging (PRQ-7b), publishing (PRQ-7c) and feeds and
+// signing (PRQ-7d), all of window.swarm, take the new path (PAGE_ROUTES),
+// and main answers them: their page-world
 // provider arms no timer of its own, and main's deadline answers one that
 // runs too long. Each later step of the design moves its own methods. For a test, the E2E harness can route more
 // through main (`testPageRoutes`, which main puts on the boot switch only in
@@ -1750,9 +1751,9 @@ if (PAGE_REQUESTS_ENABLED) {
 // `eth_signTypedData_v4`; and sending, `eth_sendTransaction`.
 // page-ethereum.test.js keeps these the list main's Ethereum dispatcher
 // serves (src/main/page/page-ethereum.js). And window.swarm's methods that
-// need no prompt (PRQ-7a), connecting and messaging (PRQ-7b), and
-// publishing (PRQ-7c), which page-swarm.test.js keeps the list main's Swarm
-// dispatcher serves (src/main/page/page-swarm.js). A publish over 1 MiB
+// need no prompt (PRQ-7a), connecting and messaging (PRQ-7b), publishing
+// (PRQ-7c), and feeds and signing (PRQ-7d), which page-swarm.test.js keeps
+// the list main's Swarm dispatcher serves (src/main/page/page-swarm.js). A publish over 1 MiB
 // reserves its turn first (`page:reserve`, below).
 const PAGE_ROUTES = new Set([
   'ethereum:eth_requestAccounts',
@@ -1802,6 +1803,11 @@ const PAGE_ROUTES = new Set([
   'swarm:swarm_publishFiles',
   'swarm:swarm_publishChunk',
   'swarm:swarm_getUploadStatus',
+  'swarm:swarm_createFeed',
+  'swarm:swarm_updateFeed',
+  'swarm:swarm_writeFeedEntry',
+  'swarm:swarm_writeSingleOwnerChunk',
+  'swarm:swarm_getSigningIdentity',
 ]);
 const TEST_PAGE_ROUTES = new Set(
   Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
@@ -2293,42 +2299,17 @@ if (PROVIDERS_ENABLED && !isInternalPage()) {
   injectPageProvider('swarm', withMainAnsweredMethods(SWARM_INJECT_SOURCE, 'swarm'));
 }
 
-if (PROVIDERS_ENABLED) {
-  // Bridge postMessage from page to IPC (Swarm)
+// Every window.swarm method goes to main on page:request (freedom-core
+// design 0011, PRQ-7d), which answers it and sends the page its events
+// (page:event). A method main doesn't serve is refused there, as the chrome
+// refused it (4200). Nothing of window.swarm goes through the chrome.
+if (PAGE_REQUESTS_ENABLED) {
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
       const { id, method, params } = event.data;
-      if (routedToMain('swarm', method)) {
-        sendPageRequest('swarm', id, method, params);
-        return;
-      }
-      ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
+      sendPageRequest('swarm', id, method, params);
     }
-  });
-
-  // Bridge IPC responses back to page (Swarm)
-  ipcRenderer.on('swarm:provider-response', (_event, { id, result, error }) => {
-    window.postMessage(
-      {
-        type: 'FREEDOM_SWARM_RESPONSE',
-        id,
-        result,
-        error,
-      },
-      window.location.origin
-    );
-  });
-
-  ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
-    window.postMessage(
-      {
-        type: 'FREEDOM_SWARM_EVENT',
-        event,
-        data,
-      },
-      window.location.origin
-    );
   });
 }
 

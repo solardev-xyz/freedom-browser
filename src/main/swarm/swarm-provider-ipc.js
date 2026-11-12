@@ -1,42 +1,24 @@
 /**
- * Swarm Provider IPC — Main-Process Enforcement Layer
+ * Swarm Provider — Main-Process Authority
  *
- * The authority for all page-facing Swarm provider requests.
- * The renderer shows prompts and provides fast UX feedback, but this
- * module re-validates everything before executing.
+ * The authority for all page-facing Swarm provider requests: it checks
+ * grants, validates params, runs the pre-flight and dispatches.
  *
- * Single IPC handler: swarm:provider-execute
- *   Receives { method, params, origin } from renderer.
- *   Checks permissions, validates params, runs pre-flight, dispatches.
+ * Every window.swarm method reaches it through main's own dispatcher for
+ * page requests (freedom-core design 0011, PRQ-7; `page/page-swarm.js`),
+ * which calls executeSwarmMethod with the requester's attested key, after
+ * its own prompts, and passes `meta.page`: the requesting document, and the
+ * guard each write runs under. Since PRQ-7d there is no route from the
+ * chrome: `swarm:provider-execute`, which took a site from the chrome, is
+ * gone.
  *
- * Trust model for origin:
- *   The main process trusts the origin string from the renderer because:
- *   (a) The renderer is Freedom's own code, not arbitrary web content.
- *   (b) The renderer derives origin from the per-webview display URL
- *       (via getDisplayUrlForWebview), not from the page's window.location
- *       which is http://127.0.0.1:port for all dweb pages.
- *   (c) The renderer-supplied origin is the *authority* for grant checks;
- *       webContents.getURL() is used only as an independent cross-check that
- *       the subscribing/receiving document still belongs to that origin (see
- *       the delivery guard and the subscribe post-await re-check below). This
- *       works because bzz://, ipfs:// and ipns:// are served by custom
- *       protocol handlers that preserve the dweb URL — getURL() carries the
- *       dweb identity, so normalizeOrigin(getURL()) matches the renderer key.
- *       NOTE: those two guards depend on that invariant. If a future transport
- *       reintroduces gateway-URL loading (http://127.0.0.1:port) for a dweb
- *       scheme, getURL() would stop carrying the identity and the guards would
- *       fail *closed* for it (messaging blocked, not leaked) — update them here
- *       rather than assuming this comment still holds.
- *   The renderer is the only process that can map webview → tab → display URL.
- *
- * Page requests (freedom-core design 0011, PRQ-7): main's own dispatcher
- * (`page/page-swarm.js`) serves the methods it has moved straight from the
- * page's preload, and calls executeSwarmMethod with the requester's attested
- * key in place of the chrome's origin. swarm:provider-execute refuses those
- * methods; the trust model above holds only for the ones still on it.
+ * The webContents-bound subscriptions below (`webContentsId`, the
+ * did-navigate teardown, `navEpoch`) served the chrome's route, and only an
+ * executeSwarmMethod caller with no `meta.page` reaches them now: none in
+ * the app. PRQ-9 removes them.
  */
 
-const { ipcMain, webContents } = require('electron');
+const { webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
@@ -70,7 +52,6 @@ const { isNoUsableBatchError } = require('./batch-errors');
 const { resolveSwarmSigner, getIdentityMode } = require('./swarm-signer');
 const { ETHEREUM_WALLET_MODE, ETHEREUM_WALLET_UNAVAILABLE } = require('./removed-identity-mode');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
-const { isAgentPageId, autoApproveRefused } = require('../wallet/agent-tab-custody');
 const log = require('electron-log');
 
 const LIMITS = {
@@ -162,9 +143,10 @@ async function guardedEffect(meta, run) {
 // What a page's messaging effect runs instead when the grant went during
 // the method's waits: nothing.
 const MESSAGING_GONE = Symbol('messaging-grant-gone');
-// What a page's upload runs instead when the connection went during the
-// method's waits: nothing.
+// What a page's write runs instead when the connection, or the feed grant,
+// went during the method's waits: nothing.
 const CONNECTION_GONE = Symbol('connection-gone');
+const FEED_GONE = Symbol('feed-grant-gone');
 
 // A page's messaging effect, through main: the grant read again in the same
 // run as the effect, after every wait.
@@ -172,22 +154,30 @@ function whileMessagingGranted(meta, origin, run) {
   return () => (!meta?.page || hasMessagingGrant(origin) ? run() : MESSAGING_GONE);
 }
 
-// A page's upload, through main (PRQ-7c): the connection read again in the
-// same run as the upload, after every wait.
-function whileConnected(meta, origin, run) {
-  return () => (!meta?.page || getPermission(origin) ? run() : CONNECTION_GONE);
+// A page's write, through main (PRQ-7c, 7d): the connection, and for a feed
+// write the feed grant, read again in the same run as the write, after
+// every wait.
+function whileGranted(meta, origin, feed, run) {
+  return () => {
+    if (!meta?.page) return run();
+    if (!getPermission(origin)) return CONNECTION_GONE;
+    if (feed && !hasFeedGrant(origin)) return FEED_GONE;
+    return run();
+  };
 }
 
 /**
- * An upload's write to the node, for a page through main (PRQ-7c): `send`
- * runs under the page's guard (meta.page.effect), with the connection read
- * again in the same run, just before the bytes go. On the chrome's path it
- * runs at once. Resolves what `send` resolves, or null with `refuse` told
- * the page's answer and nothing sent. The services call it after their own
- * waits (the batch), so it is the last point main controls.
+ * A write to the node, for a page through main (PRQ-7c, 7d): `send` runs
+ * under the page's guard (meta.page.effect), with the connection (and for
+ * `feed`, the feed grant) read again in the same run, just before the
+ * write. Without a page it runs at once. Resolves what `send` resolves, or
+ * null with `refuse` told the page's answer and nothing written. The
+ * services call it after their own waits (the batch, the identity core's
+ * signature), so it is the last point main controls: the guard owns the
+ * write.
  */
-async function guardUpload(meta, origin, send, refuse) {
-  const out = await guardedEffect(meta, whileConnected(meta, origin, send));
+async function guardWrite(meta, origin, send, refuse, { feed = false } = {}) {
+  const out = await guardedEffect(meta, whileGranted(meta, origin, feed, send));
   if (out.refused) {
     refuse({ error: out.refused });
     return null;
@@ -196,7 +186,28 @@ async function guardUpload(meta, origin, send, refuse) {
     refuse(notConnected());
     return null;
   }
+  if (out.value === FEED_GONE) {
+    refuse(feedNotGranted());
+    return null;
+  }
   return out.value;
+}
+
+// How long a page's chunk or feed write may take at the node: the page's own
+// timer for these methods was 300 s (PRQ-7d). An upload has its own bounds
+// (page-upload.js).
+const PAGE_WRITE_MS = 300_000;
+
+/**
+ * The signal a page's chunk or feed write runs under: aborted when main
+ * answers its request (its deadline, its document gone), or past
+ * PAGE_WRITE_MS, so a node that stalls can't keep the request, and its
+ * charge, forever. None without a page.
+ */
+function writeSignal(meta) {
+  const signal = meta?.page?.signal;
+  if (!signal) return undefined;
+  return AbortSignal.any([signal, AbortSignal.timeout(PAGE_WRITE_MS)]);
 }
 
 // What an upload leaves held under the key (its tag's owner): at once on the
@@ -279,51 +290,8 @@ function notAuthorized(reason) {
   };
 }
 
-// Methods a site's auto-approve rule (publish, feeds, signing, messaging)
-// may let run without a prompt. The renderer reports the path it took in
-// `meta.approval` ('user' after a prompt, 'auto' when a rule answered) and
-// names the requesting guest in `meta.webContentsId`; main's own custody
-// reading decides whether an automatic path may run. A guest in Agent
-// custody, or an automatic request main cannot attribute to a guest of the
-// sending window, is refused — the same refusal wallet-ipc.js applies to
-// dApp auto-approve rules.
-const AUTO_APPROVABLE_METHODS = new Set([
-  'swarm_publishData',
-  'swarm_publishFiles',
-  'swarm_publishChunk',
-  'swarm_createFeed',
-  'swarm_updateFeed',
-  'swarm_writeFeedEntry',
-  'swarm_writeSingleOwnerChunk',
-  'swarm_getSigningIdentity',
-  'swarm_sendPss',
-  'swarm_sendGsoc',
-]);
-
-function agentCustodyRefusal(sender, method, meta) {
-  if (!AUTO_APPROVABLE_METHODS.has(method) || meta?.approval === 'user') return null;
-  const webContentsId = meta?.webContentsId;
-  if (
-    isAgentPageId(webContentsId) ||
-    (meta?.approval === 'auto' && autoApproveRefused(sender, webContentsId))
-  ) {
-    return notAuthorized('agent_custody');
-  }
-  return null;
-}
-
 function notConnected() {
   return notAuthorized('not_connected');
-}
-
-// The methods main serves to pages itself, from the attested requester
-// (freedom-core design 0011, PRQ-7; `page/page-swarm.js`). The preload no
-// longer sends them through the chrome, so a chrome that asks for one here
-// names a site only a page may speak for, and is refused before anything
-// runs.
-function chromeRouteRefusal(method) {
-  const { SWARM_PAGE_METHODS } = require('../page/page-swarm');
-  return SWARM_PAGE_METHODS.includes(method) ? notAuthorized('page_request_only') : null;
 }
 
 function feedNotGranted() {
@@ -483,25 +451,24 @@ function permissionFreeReadMeter(origin) {
  * Execute a Swarm provider method.
  * @param {string} method
  * @param {*} params
- * @param {string} origin - Normalized origin from renderer
- * @param {{ webContentsId?: number, approval?: 'user'|'auto', page?: object }} [meta] -
- *   Renderer-supplied routing info (trusted like origin — the renderer is
- *   Freedom's own code). swarm_subscribe uses webContentsId to target
- *   message delivery at the webview; the IPC handler checks both fields
- *   against Agent custody first (agentCustodyRefusal).
+ * @param {string} origin - The requester's attested key (page/page-swarm.js)
+ * @param {{ webContentsId?: number, page?: object }} [meta] -
  *   `page` is main's own, for a page's request through main (freedom-core
- *   design 0011, PRQ-7b; page/page-swarm.js), never the chrome's:
+ *   design 0011, PRQ-7; page/page-swarm.js):
  *   `document` names the requesting document, which a subscription is bound
  *   to and an unsubscribe is scoped to; `deliverTo(data)` sends a
  *   subscription's message to it and resolves `{ ok }`; and `effect(run)`
  *   guards the effect (a send, a subscription opened, an upload): after the
  *   method's last wait it checks the name, custody and the document again,
  *   and runs `run` in the same run as those checks, resolving `{ value }`,
- *   or `{ refused }` with nothing done. For an upload (PRQ-7c),
- *   `afterEffect(write)` runs what the upload leaves held under the key (its
- *   tag's owner) only while the name still answers, `copied(label)` hears
- *   each copy main makes of the request's bytes, and `signal`, aborted when
- *   main answers the request or its document goes, stops the upload.
+ *   or `{ refused }` with nothing done. For a write (PRQ-7c, 7d: an upload,
+ *   a feed write, a single-owner chunk), `afterEffect(write)` runs what it
+ *   leaves held under the key (a tag's owner, a feed's record) only while
+ *   the name still answers, `copied(label)` hears each copy main makes of
+ *   the request's bytes, and `signal`, aborted when main answers the
+ *   request or its document goes, stops an upload. `webContentsId`, for a
+ *   subscription with no page, is the chrome route's old target (PRQ-9
+ *   removes it).
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -592,31 +559,31 @@ async function executeSwarmMethod(method, params, origin, meta) {
     }
 
     if (method === 'swarm_createFeed') {
-      const result = await handleCreateFeed(params, normalizedOrigin);
+      const result = await handleCreateFeed(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
 
     if (method === 'swarm_updateFeed') {
-      const result = await handleUpdateFeed(params, normalizedOrigin);
+      const result = await handleUpdateFeed(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
 
     if (method === 'swarm_writeFeedEntry') {
-      const result = await handleWriteFeedEntry(params, normalizedOrigin);
+      const result = await handleWriteFeedEntry(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
 
     if (method === 'swarm_writeSingleOwnerChunk') {
-      const result = await handleWriteSingleOwnerChunk(params, normalizedOrigin);
+      const result = await handleWriteSingleOwnerChunk(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
 
     if (method === 'swarm_getSigningIdentity') {
-      const result = await handleGetSigningIdentity(normalizedOrigin);
+      const result = await handleGetSigningIdentity(normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
@@ -755,7 +722,7 @@ async function handlePublishData(params, origin, meta) {
       name: name || undefined,
       // The body as it goes to the node: a string's UTF-8, or the bytes.
       onSend: () => reportCopy(meta, 'upload'),
-      guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }),
       signal: meta?.page?.signal,
     });
     if (refused) {
@@ -950,7 +917,7 @@ async function handlePublishFiles(params, origin, meta) {
     const result = await publishFilesFromContent(normalizedFiles, {
       indexDocument,
       onSend: () => reportCopy(meta, 'upload'),
-      guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }),
       signal: meta?.page?.signal,
     });
     if (refused) {
@@ -1029,6 +996,7 @@ async function handlePublishChunk(params, origin, meta) {
 
   const { payload, error } = validateChunkPayload(params.data);
   if (error) return { error };
+  reportCopy(meta, 'payload');
 
   const span = validateSpan(params.span);
   if (!span.ok) {
@@ -1052,7 +1020,8 @@ async function handlePublishChunk(params, origin, meta) {
   try {
     const result = await publishChunk(payload, {
       span: span.value,
-      guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }),
+      signal: writeSignal(meta),
     });
     if (refused) {
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
@@ -1177,8 +1146,10 @@ async function handleReadData(params, origin) {
 
 /**
  * Handle swarm_writeSingleOwnerChunk: sign and publish an SOC.
+ * For a page through main (meta.page, PRQ-7d) the upload is its effect,
+ * guarded after the identity core's signature and the batch.
  */
-async function handleWriteSingleOwnerChunk(params, origin) {
+async function handleWriteSingleOwnerChunk(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return invalidParams('params is required');
   }
@@ -1191,6 +1162,7 @@ async function handleWriteSingleOwnerChunk(params, origin) {
 
   const { payload, error } = validateChunkPayload(params.data);
   if (error) return { error };
+  reportCopy(meta, 'payload');
 
   const span = validateSpan(params.span);
   if (!span.ok) {
@@ -1242,8 +1214,17 @@ async function handleWriteSingleOwnerChunk(params, origin) {
     bytesSize: payload.length,
   });
 
+  let refused = null;
   try {
-    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, { span: span.value });
+    const result = await writeSingleOwnerChunk(signerKey, params.identifier, payload, {
+      span: span.value,
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }, { feed: true }),
+      signal: writeSignal(meta),
+    });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
     updateEntry(historyEntry.id, {
       status: 'completed',
       reference: result.reference,
@@ -1401,8 +1382,10 @@ function unavailableIdentityError(identity) {
 /**
  * Handle swarm_getSigningIdentity: disclose origin signing address after
  * connection + feed/signing grant. Does not require Bee node readiness.
+ * For a page through main (meta.page, PRQ-7d) the disclosure is its effect,
+ * guarded after the identity core's wait.
  */
-async function handleGetSigningIdentity(origin) {
+async function handleGetSigningIdentity(origin, meta) {
   if (!hasFeedGrant(origin)) {
     return feedNotGranted();
   }
@@ -1417,12 +1400,16 @@ async function handleGetSigningIdentity(origin) {
   }
 
   try {
-    return {
-      result: {
-        owner: signerKey.owner,
-        identityMode: getIdentityMode(activeIdentity),
-      },
-    };
+    let refused = null;
+    const disclosed = await guardWrite(
+      meta,
+      origin,
+      async () => ({ owner: signerKey.owner, identityMode: getIdentityMode(activeIdentity) }),
+      (answer) => { refused = answer; },
+      { feed: true }
+    );
+    if (refused) return refused;
+    return { result: disclosed };
   } catch (err) {
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
@@ -1430,8 +1417,11 @@ async function handleGetSigningIdentity(origin) {
 
 /**
  * Handle swarm_createFeed: validate, check capability, create feed + manifest.
+ * For a page through main (meta.page, PRQ-7d) the manifest's upload is its
+ * effect, guarded after the batch, and the feed's record is kept only while
+ * the page's name still answers.
  */
-async function handleCreateFeed(params, origin) {
+async function handleCreateFeed(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return { error: { ...ERRORS.INVALID_PARAMS, message: 'params is required', data: { reason: 'invalid_params' } } };
   }
@@ -1492,15 +1482,23 @@ async function handleCreateFeed(params, origin) {
     origin,
   });
 
+  let refused = null;
   try {
-    const result = await createFeed(signerKey, topicString);
+    const result = await createFeed(signerKey, topicString, undefined, {
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }, { feed: true }),
+      signal: writeSignal(meta),
+    });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
 
-    setFeed(origin, name, {
+    await afterEffect(meta, () => setFeed(origin, name, {
       topic: result.topic,
       owner: result.owner,
       manifestReference: result.manifestReference,
       identityId: activeIdentity.id,
-    });
+    }));
 
     updateEntry(historyEntry.id, { status: 'completed', ...result });
 
@@ -1525,8 +1523,11 @@ async function handleCreateFeed(params, origin) {
 
 /**
  * Handle swarm_updateFeed: validate, check capability, update feed reference.
+ * For a page through main (meta.page, PRQ-7d) the signed update's upload is
+ * its effect, guarded after the identity core's signature, and the feed's
+ * last reference is recorded only while the page's name still answers.
  */
-async function handleUpdateFeed(params, origin) {
+async function handleUpdateFeed(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return { error: { ...ERRORS.INVALID_PARAMS, message: 'params is required', data: { reason: 'invalid_params' } } };
   }
@@ -1577,10 +1578,18 @@ async function handleUpdateFeed(params, origin) {
     origin,
   });
 
+  let refused = null;
   try {
-    const updateResult = await updateFeed(signerKey, topicString, reference);
+    const updateResult = await updateFeed(signerKey, topicString, reference, undefined, {
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }, { feed: true }),
+      signal: writeSignal(meta),
+    });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
 
-    updateFeedReference(origin, feedId, reference);
+    await afterEffect(meta, () => updateFeedReference(origin, feedId, reference));
     updateEntry(historyEntry.id, { status: 'completed', ...updateResult, reference });
 
     log.info(`[SwarmProvider] updateFeed succeeded for ${origin}: feed=${feedId}, ref=${reference}, index=${updateResult.index}`);
@@ -1602,8 +1611,11 @@ async function handleUpdateFeed(params, origin) {
 
 /**
  * Handle swarm_writeFeedEntry: validate, check capability, write payload to feed.
+ * For a page through main (meta.page, PRQ-7d) each write (a large entry's
+ * upload, then the signed chunk) is its effect, guarded after the waits
+ * before it, and each copy of the bytes is reported.
  */
-async function handleWriteFeedEntry(params, origin) {
+async function handleWriteFeedEntry(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return { error: { ...ERRORS.INVALID_PARAMS, message: 'params is required', data: { reason: 'invalid_params' } } };
   }
@@ -1626,6 +1638,7 @@ async function handleWriteFeedEntry(params, origin) {
     if (!payload) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
     }
+    reportCopy(meta, 'normalizeBytes');
   }
 
   if (index !== undefined && index !== null) {
@@ -1671,8 +1684,18 @@ async function handleWriteFeedEntry(params, origin) {
     bytesSize: Buffer.byteLength(payload),
   });
 
+  let refused = null;
   try {
-    const result = await writeFeedPayload(signerKey, topicString, payload, { index });
+    const result = await writeFeedPayload(signerKey, topicString, payload, {
+      index,
+      guard: (send) => guardWrite(meta, origin, send, (answer) => { refused = answer; }, { feed: true }),
+      copied: (label) => reportCopy(meta, label),
+      signal: writeSignal(meta),
+    });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
 
     updateEntry(historyEntry.id, { status: 'completed' });
     log.info(`[SwarmProvider] writeFeedEntry succeeded for ${origin}: feed=${name}, index=${result.index}`);
@@ -2540,7 +2563,9 @@ async function checkSwarmPreFlight() {
 }
 
 /**
- * Register the swarm:provider-execute IPC handler.
+ * Wire the subscription registry to the node and to the grants. There is no
+ * IPC handler: every window.swarm method comes through main's own page
+ * dispatcher (freedom-core design 0011, PRQ-7d).
  */
 function registerSwarmProviderIpc() {
   subscriptionRegistry.configure({
@@ -2552,14 +2577,7 @@ function registerSwarmProviderIpc() {
   // Live messaging subscriptions must not outlive the origin's grant.
   onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
 
-  ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
-    const { method, params, origin, meta } = args || {};
-    return chromeRouteRefusal(method) ||
-      agentCustodyRefusal(event?.sender, method, meta) ||
-      executeSwarmMethod(method, params, origin, meta);
-  });
-
-  log.info('[SwarmProvider] IPC handler registered');
+  log.info('[SwarmProvider] Subscriptions wired');
 }
 
 /** A page's document ended (PRQ-7b): its subscriptions end with it. */

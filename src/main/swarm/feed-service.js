@@ -202,6 +202,8 @@ async function fetchNode(bee, path) {
         // A compressed body would decode past its Content-Length.
         'accept-encoding': 'identity',
       },
+      // A client bound to a page request's signal (getBee({ signal })).
+      ...(bee.requestOptions?.signal ? { signal: bee.requestOptions.signal } : {}),
     });
   } catch (err) {
     const message = err.cause?.message ? `${err.message}: ${err.cause.message}` : err.message;
@@ -432,11 +434,30 @@ async function probeFeedHead(bee, owner, topic) {
  *
  * @param {import('./swarm-signer').SwarmSigner} signer
  */
-async function uploadFeedChunk(bee, signer, batchId, topic, index, payload, span) {
+async function uploadFeedChunk(bee, signer, batchId, topic, index, payload, span, guard = null) {
   const identifier = makeFeedIdentifier(topic, index).toUint8Array();
   const signed = await signer.signSoc({ identifier, payload, span });
-  await uploadSingleOwnerChunk(bee, batchId, { ...signed, identifier, payload });
+  // After the identity core's signature, the caller's guard owns the write
+  // (see writeGuarded): it resolves null to write nothing.
+  return writeGuarded(guard, async () => {
+    await uploadSingleOwnerChunk(bee, batchId, { ...signed, identifier, payload });
+    return true;
+  });
 }
+
+/**
+ * Run a write to the node under the caller's guard, if there is one: the
+ * caller's last check before the write (a page's name, custody, its rule,
+ * its grants; freedom-core design 0011, PRQ-7d), run after every wait of
+ * the service's own. The guard resolves what the write resolves, or null to
+ * write nothing.
+ */
+function writeGuarded(guard, write) {
+  return typeof guard === 'function' ? guard(write) : write();
+}
+
+// A write's batch lookup stops on its signal too.
+const batchRequest = (signal) => (signal ? { requestOptions: { signal } } : {});
 
 /**
  * Resolve the next available feed index using the public FeedReader API.
@@ -488,19 +509,24 @@ async function resolveNetworkNextIndex(reader, bee, owner, topic) {
  * @param {import('./swarm-signer').SwarmSigner} signer - signs in the identity core
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
- * @returns {Promise<{ topic: string, owner: string, manifestReference: string, bzzUrl: string }>}
+ * @param {{ guard?: Function, signal?: AbortSignal }} [options] - guard: the
+ *   caller's last check, run around the manifest's upload (writeGuarded),
+ *   which resolves null when it refuses. signal: a page request's, which
+ *   stops every node call of the write.
+ * @returns {Promise<{ topic: string, owner: string, manifestReference: string, bzzUrl: string }|null>}
  */
-async function createFeed(signer, topicString, batchId) {
-  const bee = getBee();
+async function createFeed(signer, topicString, batchId, options = {}) {
+  const bee = getBee({ signal: options.signal });
   const owner = new EthAddress(signer.owner);
   const topic = Topic.fromString(topicString);
 
-  const resolvedBatchId = batchId || await selectBestBatch(4096);
+  const resolvedBatchId = batchId || await selectBestBatch(4096, batchRequest(options.signal));
   if (!resolvedBatchId) {
     throw noUsableBatchError();
   }
 
-  const manifest = await bee.feed.createManifest(resolvedBatchId, topic, owner);
+  const manifest = await writeGuarded(options.guard, () => bee.feed.createManifest(resolvedBatchId, topic, owner));
+  if (manifest === null) return null;
   const manifestReference = toHex(manifest);
 
   log.info(`[FeedService] Feed created: topic=${topicString}, owner=${owner.toHex()}`);
@@ -521,17 +547,20 @@ async function createFeed(signer, topicString, batchId) {
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string} contentReference - Swarm reference to point the feed at
  * @param {string} [batchId] - Postage batch ID. Auto-selected if omitted.
- * @param {{ minIndex?: number }} [options] - minIndex: write at this index or
- *   later, for a caller that knows the feed already reached minIndex - 1.
- * @returns {Promise<{ index: number }>}
+ * @param {{ minIndex?: number, guard?: Function, signal?: AbortSignal }} [options] -
+ *   minIndex: write at this index or later, for a caller that knows the feed
+ *   already reached minIndex - 1. guard: the caller's last check, run around
+ *   the signed update's upload (writeGuarded); resolves null when it refuses.
+ *   signal: a page request's, which stops every node call of the write.
+ * @returns {Promise<{ index: number }|null>}
  */
 async function updateFeed(signer, topicString, contentReference, batchId, options = {}) {
   const minIndex = Number.isSafeInteger(options.minIndex) && options.minIndex > 0 ? options.minIndex : 0;
-  const bee = getBee();
+  const bee = getBee({ signal: options.signal });
   const topic = Topic.fromString(topicString);
   const reference = new Reference(contentReference);
 
-  const resolvedBatchId = batchId || await selectBestBatch(4096);
+  const resolvedBatchId = batchId || await selectBestBatch(4096, batchRequest(options.signal));
   if (!resolvedBatchId) {
     throw noUsableBatchError();
   }
@@ -546,9 +575,10 @@ async function updateFeed(signer, topicString, contentReference, batchId, option
     const timestamp = Buffer.alloc(8);
     timestamp.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000)));
     const payload = Buffer.concat([timestamp, Buffer.from(reference.toUint8Array())]);
-    await uploadFeedChunk(bee, signer, resolvedBatchId, topic, nextIndex, payload);
-    return { index: nextIndex };
+    const written = await uploadFeedChunk(bee, signer, resolvedBatchId, topic, nextIndex, payload, undefined, options.guard);
+    return written ? { index: nextIndex } : null;
   });
+  if (!result) return null;
 
   log.info(`[FeedService] Feed updated: topic=${topicString}, ref=${contentReference}, index=${result.index}`);
 
@@ -582,17 +612,23 @@ function unwritablePayloadError() {
  * @param {import('./swarm-signer').SwarmSigner} signer - signs in the identity core
  * @param {string} topicString - Topic string (from buildTopicString)
  * @param {string|Buffer|Uint8Array} data - Payload to write
- * @param {{ batchId?: string, index?: number }} [options]
- * @returns {Promise<{ index: number }>}
+ * @param {{ batchId?: string, index?: number, guard?: Function, copied?: Function, signal?: AbortSignal }} [options] -
+ *   guard: the caller's last check, run around each write (a large entry's
+ *   upload, then the signed chunk; writeGuarded). copied(label): told of
+ *   each copy of the payload this makes or causes (a string's UTF-8, the
+ *   upload's body), for a page request's charge. signal: a page request's,
+ *   which stops every node call of the write.
+ * @returns {Promise<{ index: number }|null>} null when the guard refused a write
  */
 async function writeFeedPayload(signer, topicString, data, options = {}) {
-  const { batchId, index } = options;
-  const bee = getBee();
+  const { batchId, index, guard } = options;
+  const copied = typeof options.copied === 'function' ? options.copied : () => {};
+  const bee = getBee({ signal: options.signal });
   const topic = Topic.fromString(topicString);
   const owner = new EthAddress(signer.owner);
 
   const dataSize = typeof data === 'string' ? Buffer.byteLength(data, 'utf-8') : data.length;
-  const resolvedBatchId = batchId || await selectBestBatch(Math.max(dataSize, 4096));
+  const resolvedBatchId = batchId || await selectBestBatch(Math.max(dataSize, 4096), batchRequest(options.signal));
   if (!resolvedBatchId) {
     throw noUsableBatchError();
   }
@@ -620,23 +656,31 @@ async function writeFeedPayload(signer, topicString, data, options = {}) {
     // As bee-js's writer: strings are UTF-8; more than one chunk goes up
     // through /bytes and the SOC wraps that upload's root chunk.
     const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+    if (typeof data === 'string') copied('payload');
+    let written;
     if (bytes.length > 4096) {
-      const upload = await bee.data.upload(resolvedBatchId, bytes);
+      const upload = await writeGuarded(guard, () => {
+        copied('upload');
+        return bee.data.upload(resolvedBatchId, bytes);
+      });
+      if (upload === null) return null;
       const root = bee.unmarshalContentAddressedChunk(await bee.chunk.download(toHex(upload.reference)));
-      await uploadFeedChunk(
+      written = await uploadFeedChunk(
         bee,
         signer,
         resolvedBatchId,
         topic,
         writeIndex,
         root.payload.toUint8Array(),
-        root.span.toBigInt()
+        root.span.toBigInt(),
+        guard
       );
     } else {
-      await uploadFeedChunk(bee, signer, resolvedBatchId, topic, writeIndex, bytes);
+      written = await uploadFeedChunk(bee, signer, resolvedBatchId, topic, writeIndex, bytes, undefined, guard);
     }
-    return { index: writeIndex };
+    return written ? { index: writeIndex } : null;
   });
+  if (!result) return null;
 
   log.info(`[FeedService] Feed payload written: topic=${topicString}, index=${result.index}`);
 

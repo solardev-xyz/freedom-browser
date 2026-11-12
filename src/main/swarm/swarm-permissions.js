@@ -31,13 +31,17 @@ const GRANT_REFUSED = 'A Swarm connection is granted only from its own prompt';
 const MESSAGING_GRANT_REFUSED = 'Swarm messaging is granted only from its own prompt';
 const MESSAGING_RULE_REFUSED = 'Messaging auto-approve is turned on only from a messaging prompt';
 const PUBLISH_RULE_REFUSED = 'Publish auto-approve is turned on only from a publish prompt';
-// The rules main alone turns on, from the user's "always allow" on the
-// prompt it showed (freedom-core design 0011, "Grants"): messaging from
-// PRQ-7b, publishing from PRQ-7c. The feed and signing rules follow with
-// their prompt (PRQ-7d).
+const FEEDS_RULE_REFUSED = 'Feed auto-approve is turned on only from a feed prompt';
+const SIGNING_RULE_REFUSED = 'Signing auto-approve is turned on only from a signing prompt';
+const RULE_REFUSED = 'Swarm auto-approve is turned on only from its own prompt';
+// Every rule is main's alone to turn on, from the user's "always allow" on
+// the prompt it showed (freedom-core design 0011, "Grants"): messaging from
+// PRQ-7b, publishing from PRQ-7c, feeds and signing from PRQ-7d.
 const RULES_ONLY_FROM_MAIN = Object.freeze({
   messaging: MESSAGING_RULE_REFUSED,
   publish: PUBLISH_RULE_REFUSED,
+  feeds: FEEDS_RULE_REFUSED,
+  signing: SIGNING_RULE_REFUSED,
 });
 
 let permissionsCache = null;
@@ -324,15 +328,13 @@ function registerSwarmPermissionsIpc() {
     return getAutoApprove(origin, type);
   });
 
-  // Messaging's rule (PRQ-7b) and publishing's (PRQ-7c) only from main:
-  // main sets each, for the requester's key, from the user's "always allow"
-  // on the prompt it showed. The chrome named the site here, so turning one
-  // on is refused; turning it off only narrows, and stays open. The feed and
-  // signing rules are still set from the chrome's own feed prompt until
-  // their step (PRQ-7d).
+  // Every rule only from main (PRQ-7b to 7d): main sets each, for the
+  // requester's key, from the user's "always allow" on the prompt it showed.
+  // The chrome named the site here, so turning any rule on is refused;
+  // turning one off only narrows, and stays open.
   ipcMain.handle(IPC.SWARM_SET_AUTO_APPROVE, (_event, origin, type, enabled) => {
-    if (Object.prototype.hasOwnProperty.call(RULES_ONLY_FROM_MAIN, type) && enabled !== false) {
-      throw new Error(RULES_ONLY_FROM_MAIN[type]);
+    if (enabled !== false) {
+      throw new Error(Object.prototype.hasOwnProperty.call(RULES_ONLY_FROM_MAIN, type) ? RULES_ONLY_FROM_MAIN[type] : RULE_REFUSED);
     }
     return withOriginLock(origin, () => setAutoApprove(origin, type, enabled));
   });
