@@ -40,6 +40,12 @@ describe('profile paths', () => {
         ...(options.fsOffload
           ? { [require.resolve('./fs-offload')]: () => options.fsOffload }
           : {}),
+        // The Radicle home's gate (radicle/radicled-gate.js), held at once
+        // unless a test says otherwise.
+        [require.resolve('./radicle/radicled-gate')]: () => ({
+          withRadicleGate:
+            options.withRadicleGate ?? (async (_home, fn) => fn({ gated: true, held: () => true })),
+        }),
       },
     }).mod;
   }
@@ -225,6 +231,29 @@ describe('profile paths', () => {
     });
   });
 
+  // freedom-core design 0008, "Spawn and lock": the service's own HOME, an
+  // empty owner-only directory of the profile's, whatever its Radicle home.
+  test("freedom-radicled's HOME: the profile's radicled-home, whichever its Radicle home", () => {
+    const appRoot = path.join(track(createTempUserDataDir()), 'Freedom');
+    const userDataDir = path.join(appRoot, 'Profiles', 'work');
+    const catalog = { source: 'catalog', appRoot, metadata: { slot: 2 } };
+    const expected = path.join(userDataDir, 'radicled-home');
+
+    const paths = loadPaths(userDataDir, { activeProfile: catalog });
+    expect(paths.RADICLED_HOME_DIR).toBe('radicled-home');
+    expect(paths.getRadicledHomeDir()).toBe(expected);
+    expect(fs.statSync(expected).isDirectory()).toBe(true);
+    expect(fs.readdirSync(expected)).toEqual([]);
+    if (process.platform !== 'win32') expect(fs.statSync(expected).mode & 0o777).toBe(0o700);
+    // The short Radicle home is elsewhere, outside userData.
+    expect(paths.getComponentDataDirs().radicleHome).toBe(path.join(appRoot, 'R', '2'));
+
+    // The legacy home, and an override, leave it where it is.
+    expect(loadPaths(userDataDir).getRadicledHomeDir()).toBe(expected);
+    process.env.FREEDOM_RADICLE_DATA = track(createTempUserDataDir());
+    expect(loadPaths(userDataDir).getRadicledHomeDir()).toBe(expected);
+  });
+
   (process.platform === 'win32' ? test.skip : test)(
     'node and identity data dirs are owner-only, older 0755 ones narrowed (K-3)',
     async () => {
@@ -407,6 +436,91 @@ describe('profile paths', () => {
       await paths.prepareRadicleDataDir();
 
       expect(fs.readdirSync(radicleDir)).toEqual(['existing']);
+    });
+
+    // freedom-core design 0008, "Spawn and lock": the carry-over writes the
+    // home, so it runs under the home's gate, from its check that the home is
+    // empty to its rename into place.
+    test('runs under the home\'s gate, taken on the short home before anything is copied', async () => {
+      const { root, userDataDir, activeProfile } = seed();
+      const radicleDir = path.join(root, 'R', '1');
+      const events = [];
+      const realOffload = jest.requireActual('./fs-offload');
+      const fsOffload = {
+        ...realOffload,
+        copyPath: async (...args) => {
+          events.push('copy');
+          return realOffload.copyPath(...args);
+        },
+      };
+      const withRadicleGate = async (home, fn) => {
+        events.push(`take ${home}`);
+        try {
+          return await fn({ gated: true, held: () => true });
+        } finally {
+          events.push(`release (home ${fs.existsSync(path.join(home, 'keys')) ? 'filled' : 'empty'})`);
+        }
+      };
+      const paths = loadPaths(userDataDir, { activeProfile, fsOffload, withRadicleGate });
+
+      await paths.prepareRadicleDataDir();
+
+      expect(events).toEqual([`take ${radicleDir}`, 'copy', 'release (home filled)']);
+    });
+
+    test('a gate another writer holds on a new, empty short home fails the carry-over, and replaces nothing', async () => {
+      const { root, userDataDir, activeProfile } = seed();
+      const radicleDir = path.join(root, 'R', '1');
+      // A service's new home: made, empty, and held.
+      fs.mkdirSync(radicleDir, { recursive: true });
+      const { ino } = fs.statSync(radicleDir);
+      const held = Object.assign(
+        new Error('The Radicle data is in use by another process. Close it and try again.'),
+        { name: 'RadicleGateError', code: 'lock_held' }
+      );
+      let refuse = true;
+      const withRadicleGate = async (_home, fn) => {
+        if (refuse) throw held;
+        return fn({ gated: true, held: () => true });
+      };
+      const paths = loadPaths(userDataDir, { activeProfile, withRadicleGate });
+
+      await expect(paths.prepareRadicleDataDir()).rejects.toBe(held);
+      expect(fs.statSync(radicleDir).ino).toBe(ino);
+      expect(fs.readdirSync(radicleDir)).toEqual([]);
+      expect(fs.readdirSync(path.join(root, 'R'))).toEqual(['1']);
+
+      // Once the home is free, the next preparation carries it over.
+      refuse = false;
+      await expect(paths.prepareRadicleDataDir()).resolves.toBe(radicleDir);
+      expect(fs.readFileSync(path.join(radicleDir, 'keys', 'radicle.pub'), 'utf-8')).toBe(
+        'public-key'
+      );
+    });
+
+    test('a gate lost during the copy replaces nothing', async () => {
+      const { root, userDataDir, activeProfile } = seed();
+      const radicleDir = path.join(root, 'R', '1');
+      let lost = false;
+      const realOffload = jest.requireActual('./fs-offload');
+      const fsOffload = {
+        ...realOffload,
+        copyPath: async (...args) => {
+          await realOffload.copyPath(...args);
+          lost = true;
+        },
+      };
+      const withRadicleGate = async (home, fn) => {
+        fs.mkdirSync(home, { recursive: true });
+        return fn({ gated: true, held: () => !lost });
+      };
+      const paths = loadPaths(userDataDir, { activeProfile, fsOffload, withRadicleGate });
+
+      await expect(paths.prepareRadicleDataDir()).rejects.toThrow(
+        "The Radicle home's lock was lost; its data was not carried over"
+      );
+      expect(fs.readdirSync(radicleDir)).toEqual([]);
+      expect(fs.readdirSync(path.join(root, 'R'))).toEqual(['1']);
     });
 
     test('does not clobber a short home that gained entries mid-copy', async () => {

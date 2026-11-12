@@ -1,0 +1,206 @@
+/**
+ * An in-process freedom-radicled for main's tests (freedom-core design
+ * 0008): fake-ipfsd.js's child, its frames, streams, credit and exits,
+ * answering the Radicle service's methods.
+ *
+ * `fakeRadicled(script)` returns a `spawn` for `RadicledClient`, the
+ * children it spawned, and what each was spawned with (`spawned`: the
+ * command, args and options, the environment among them). Each child
+ * answers what the script says, by method without `rad.` (`hello`,
+ * `identity`, `reconcile`, `start`, `stats`, `read`, …), and the default
+ * otherwise:
+ * - `hello`: `helloFor(args)`, the `--network` policy it was spawned with,
+ *   a recipient, the libradicle build and a confinement report;
+ * - `identity`, `reconcile`, `start`: their results for a fresh home;
+ * - `stats`: a running node's (`statsResult`);
+ * - `shutdown`: the process exits 0;
+ * - anything else: `unknown_method`.
+ *
+ * A handler answers through the child, as fake-ipfsd.js's do: `result`,
+ * `error`, `head` and `body`, `event`, `exit`, or nothing, to hang.
+ *
+ * As the real service does:
+ * - **it checks its environment first** (0008, "Spawn and lock"): with any
+ *   `RAD_*`, `GIT_*`, `SSH_AUTH_SOCK`, `LISTEN_*` or `XDG_CONFIG_HOME`, or
+ *   without `HOME` as an absolute directory, it exits 64 and answers
+ *   nothing (`envRefusal`);
+ * - **a start step it answers with an error ends it** (0008, Errors): after
+ *   an error reply to `rad.identity`, `rad.reconcile` or `rad.start` it
+ *   exits 0, unless the script sets `lingerAfterFailedStep` (a process
+ *   that doesn't end, for main's kill).
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { FakeIpfsdChild, networkOf } = require('./fake-ipfsd');
+const { PINNED_RADICLED_VERSION } = require('../../src/main/radicle/radicled-pin');
+
+/** The confinement a fake process reports (freedom-core design 0010). */
+const CONFINEMENT = Object.freeze({
+  mechanism: 'landlock-4+seccomp',
+  files: 'enforced',
+  exec: 'enforced',
+  ipc: 'partial',
+  network: 'none',
+  gaps: ['signals'],
+  reasons: {},
+  resolution: 'system',
+});
+
+/** A recipient as the service writes it: 32 bytes, standard base64. */
+const RECIPIENT = Buffer.alloc(32, 7).toString('base64');
+
+const HELLO = Object.freeze({
+  protocol: 1,
+  // The release main expects (`radicled-pin.js`): another is refused.
+  service_version: PINNED_RADICLED_VERSION,
+  libradicle: { version: '0.8.0', git_commit: '216ced6dddccd7cb1103b2cfda238936cd618897' },
+  recipient: RECIPIENT,
+  network: { mode: 'direct' },
+  confinement: CONFINEMENT,
+});
+
+const DID = 'did:key:z6MkfakeRadicledNode';
+const NID = 'z6MkfakeRadicledNode';
+
+/** The start steps: an error reply to one ends the process (0008, Errors). */
+const START_STEPS = new Set(['rad.identity', 'rad.reconcile', 'rad.start']);
+
+/** The hello a process spawned with `args` answers: its policy. */
+function helloFor(args = []) {
+  return { ...HELLO, network: networkOf(args) ?? HELLO.network };
+}
+
+/** A running node's `rad.stats` (freedom-core `vectors/radicle-stats.json`),
+ * with `overrides`. */
+function statsResult(overrides = {}) {
+  return {
+    node: 'running',
+    node_alive: true,
+    connected_peers: 0,
+    unit: null,
+    quarantined_count: 0,
+    pools: {
+      read: { running: 0, queued: 0, threads: 4, queue: 320 },
+      network: { running: 0, queued: 0, threads: 8, queue: 16 },
+      write: { running: 0, queued: 0, threads: 1, queue: 16, repairs: 0 },
+    },
+    budget: { output: { used: 0, limit: 268435456 } },
+    network: { mode: 'direct', nat64: { state: 'pending', prefixes: [], failures: [] } },
+    ...overrides,
+  };
+}
+
+/**
+ * Why the real service would refuse to start in `env` (its `env::check`):
+ * the class of an inherited variable it must not have, `home` for a `HOME`
+ * that isn't an absolute directory, or null.
+ */
+function envRefusal(env = {}) {
+  for (const name of Object.keys(env)) {
+    const upper = name.toUpperCase();
+    if (upper.startsWith('RAD_')) return 'rad';
+    if (upper.startsWith('GIT_')) return 'git';
+    if (upper === 'SSH_AUTH_SOCK') return 'ssh_agent';
+    if (upper.startsWith('LISTEN_')) return 'socket_activation';
+    if (upper === 'XDG_CONFIG_HOME') return 'xdg_config';
+  }
+  const home = env.HOME;
+  if (typeof home !== 'string' || !path.isAbsolute(home)) return 'home';
+  try {
+    return fs.statSync(home).isDirectory() ? null : 'home';
+  } catch {
+    return 'home';
+  }
+}
+
+class FakeRadicledChild extends FakeIpfsdChild {
+  constructor(script, args, pid, env) {
+    super(script, args, pid);
+    this.env = env;
+    // What the service's own check refuses of its environment, if anything:
+    // then it exits 64 before it reads a frame.
+    this.refused = envRefusal(env);
+    this.methods = new Map(); // id -> method, for the start steps' errors
+  }
+
+  answer(message) {
+    if (this.refused) return;
+    this.methods.set(message.id, message.method);
+    const method = message.method.replace(/^rad\./, '');
+    const handler = this.script[method];
+    if (handler) {
+      handler(message, this);
+      return;
+    }
+    switch (method) {
+      case 'hello':
+        this.result(message.id, helloFor(this.args));
+        break;
+      case 'identity':
+        this.result(message.id, {
+          did: DID,
+          nid: NID,
+          ephemeral: Boolean(message.params?.ephemeral),
+        });
+        break;
+      case 'reconcile':
+        this.result(message.id, {
+          was_dirty: false,
+          repaired: {},
+          quarantined: { count: 0, first: [] },
+        });
+        break;
+      case 'start':
+        this.result(message.id, { did: DID, nid: NID, alias: message.params?.alias ?? null });
+        break;
+      case 'stats':
+        this.result(message.id, statsResult());
+        break;
+      case 'shutdown':
+        setImmediate(() => this.exit(0));
+        break;
+      default:
+        this.error(message.id, 'unknown_method', 'unknown method');
+    }
+  }
+
+  /** An error reply; after a start step's, the process ends (exit 0). */
+  error(id, code, message = code) {
+    super.error(id, code, message);
+    if (START_STEPS.has(this.methods.get(id)) && !this.script.lingerAfterFailedStep) {
+      setImmediate(() => this.exit(0));
+    }
+  }
+}
+
+/**
+ * A `spawn` that starts fake freedom-radicled children: `script` answers,
+ * by method, for every child; `children` lists them, and `spawned` what
+ * each was spawned with. A child whose environment the real service would
+ * refuse exits 64 at once.
+ */
+function fakeRadicled(script = {}) {
+  const children = [];
+  const spawned = [];
+  const spawn = (command, args, options) => {
+    const child = new FakeRadicledChild(script, args, 6000 + children.length, options?.env);
+    children.push(child);
+    spawned.push({ command, args, options });
+    if (child.refused) setImmediate(() => child.exit(64));
+    return child;
+  };
+  return { spawn, children, spawned, script };
+}
+
+module.exports = {
+  fakeRadicled,
+  envRefusal,
+  helloFor,
+  statsResult,
+  CONFINEMENT,
+  HELLO,
+  RECIPIENT,
+  DID,
+  NID,
+};

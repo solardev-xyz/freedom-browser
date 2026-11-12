@@ -6,12 +6,14 @@
  * holds it until its stdin closes. The kernel releases it when the process
  * ends, so a main that dies releases it too.
  *
- * freedom-cored's and freedom-ipfsd's take the same arguments and give the
- * same answers: `locked`, then exit 0 at stdin's EOF; 75 when another owner
- * holds the gate after 5 s of retries, 74 for storage it refuses (a network
+ * freedom-cored's, freedom-ipfsd's and freedom-radicled's give the same
+ * answers: `locked`, then exit 0 at stdin's EOF; 75 when another owner holds
+ * the gate after 5 s of retries, 74 for storage it refuses (a network
  * filesystem, a directory that isn't the user's own, any other locking
- * error), 64 for usage. Each service's module (core/core-gate.js,
- * ipfs/ipfsd-gate.js) names its binary, its errors and its log lines.
+ * error), 64 for usage. They take the same arguments, but freedom-radicled
+ * names its directory `--home` (design 0008, "Spawn and lock"). Each
+ * service's module (core/core-gate.js, ipfs/ipfsd-gate.js,
+ * radicle/radicled-gate.js) names its binary, its errors and its log lines.
  */
 
 const { spawn: spawnProcess } = require('child_process');
@@ -44,6 +46,8 @@ const EXIT_CODES = new Map([
  * @param {object} options
  * @param {string} options.command - the binary
  * @param {string} options.dataDir - the directory its process would use
+ * @param {string} [options.dataDirFlag] - the flag that names it:
+ *   `--data-dir`, or freedom-radicled's `--home`
  * @param {string} options.lockDir - the per-user lock directory
  * @param {Function} options.gateError - (code) → the Error to reject with
  * @param {string} options.logPrefix - names the holder in log lines, e.g.
@@ -59,6 +63,7 @@ const EXIT_CODES = new Map([
 function holdLock({
   command,
   dataDir,
+  dataDirFlag = '--data-dir',
   lockDir,
   gateError,
   logPrefix,
@@ -76,7 +81,7 @@ function holdLock({
     }
     let child;
     try {
-      child = spawn(command, ['hold-lock', '--data-dir', dataDir, '--lock-dir', lockDir], {
+      child = spawn(command, ['hold-lock', dataDirFlag, dataDir, '--lock-dir', lockDir], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: scrubbedEnv(),
         windowsHide: true,

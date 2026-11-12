@@ -2106,6 +2106,245 @@ describe('profile catalog', () => {
     });
   });
 
+  // freedom-core design 0008, "Spawn and lock": a catalog profile's Radicle
+  // home (`R/<slot>`, outside its directory) goes under freedom-radicled's
+  // gate, the interim in main for design 0013's "Deletion".
+  describe("under the profile's Radicle home gate", () => {
+    const RADICLE_LOCK_LOST =
+      'The profile was deleted, but its Radicle home lock was lost during the delete';
+    const tombstones = (dir) =>
+      fs.readdirSync(dir).filter((name) => /\.deleting-\d+-\d+$/.test(name));
+
+    function devWorkProfile() {
+      const tempRoot = track(makeTempDir());
+      const appRoot = path.join(tempRoot, 'Freedom Dev', 'freedom-browser-abcdef12');
+      const options = {
+        checkoutHash: 'abcdef12',
+        defaultProfileDir: path.join(appRoot, 'Profiles', 'default'),
+        dev: true,
+      };
+      ensureProfile(appRoot, 'default', options);
+      const { record } = ensureProfile(appRoot, 'work', options);
+      const vault = path.join(record.dir, 'identity', 'vault.json');
+      fs.mkdirSync(path.dirname(vault), { recursive: true });
+      fs.writeFileSync(vault, 'secret');
+      fs.mkdirSync(path.join(record.dir, 'ipfs-data', 'freedom-ipfs'), { recursive: true });
+      const radicleDir = path.join(path.dirname(appRoot), 'R', 'abcdef12', String(record.slot));
+      fs.mkdirSync(path.join(radicleDir, 'storage'), { recursive: true });
+      fs.writeFileSync(path.join(radicleDir, 'storage', 'repo'), 'seeded');
+      return { appRoot, options, record, vault, radicleDir };
+    }
+
+    // A gate held until `lose()`.
+    function losableGate() {
+      let held = true;
+      return {
+        lose: () => {
+          held = false;
+        },
+        withRadicleGate: async (_dir, fn) => fn({ gated: true, held: () => held }),
+      };
+    }
+
+    test('takes it on R/<checkoutHash>/<slot> after the core and IPFS gates, and removes the home under it', async () => {
+      const { appRoot, options, record, radicleDir } = devWorkProfile();
+      const events = [];
+      const holding = new Set();
+      const removals = [];
+      const realRemovePath = fsOffload.removePath;
+      const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation((target, opts) => {
+        removals.push({ target, holding: [...holding] });
+        return realRemovePath(target, opts);
+      });
+      const gate = (name) => async (dir, fn) => {
+        events.push({ take: name, dir, catalogIds: loadCatalog(appRoot).profiles.map((p) => p.id) });
+        holding.add(name);
+        try {
+          return await fn({ gated: true, held: () => holding.has(name) });
+        } finally {
+          holding.delete(name);
+          events.push({ release: name });
+        }
+      };
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', {
+          ...options,
+          withCoreGate: gate('core'),
+          withIpfsGate: gate('ipfs'),
+          withRadicleGate: gate('radicle'),
+        });
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      const profileDir = path.resolve(record.dir);
+      expect(events).toEqual([
+        { take: 'core', dir: path.join(profileDir, 'identity'), catalogIds: ['default', 'work'] },
+        {
+          take: 'ipfs',
+          dir: path.join(profileDir, 'ipfs-data', 'freedom-ipfs'),
+          catalogIds: ['default', 'work'],
+        },
+        { take: 'radicle', dir: path.resolve(radicleDir), catalogIds: ['default', 'work'] },
+        { release: 'radicle' },
+        { release: 'ipfs' },
+        { release: 'core' },
+      ]);
+      expect(removals.length).toBeGreaterThan(0);
+      for (const removal of removals) expect(removal.holding).toEqual(['core', 'ipfs', 'radicle']);
+      // The home went by its tombstone, never by its own path.
+      expect(removals.map((removal) => removal.target)).not.toContain(path.resolve(radicleDir));
+      expect(fs.existsSync(radicleDir)).toBe(false);
+      expect(tombstones(path.dirname(radicleDir))).toEqual([]);
+      expect(fs.existsSync(record.dir)).toBe(false);
+    });
+
+    test('a gate another writer holds fails the delete, and changes nothing', async () => {
+      const { appRoot, options, vault, radicleDir } = devWorkProfile();
+      const held = Object.assign(
+        new Error('The Radicle data is in use by another process. Close it and try again.'),
+        { name: 'RadicleGateError', code: 'lock_held' }
+      );
+      const rmSpy = jest.spyOn(fsOffload, 'removePath');
+
+      try {
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', {
+            ...options,
+            withCoreGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+            withIpfsGate: async (_dir, fn) => fn({ gated: true, held: () => true }),
+            withRadicleGate: async () => {
+              throw held;
+            },
+          })
+        ).rejects.toBe(held);
+        expect(rmSpy).not.toHaveBeenCalled();
+      } finally {
+        rmSpy.mockRestore();
+      }
+      expect(fs.readFileSync(path.join(radicleDir, 'storage', 'repo'), 'utf-8')).toBe('seeded');
+      expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+      expect(isCatalogLockHeld(appRoot)).toBe(false);
+    });
+
+    test('a gate already lost fails the delete before anything changes', async () => {
+      const { appRoot, options, vault, radicleDir } = devWorkProfile();
+      const rmSpy = jest.spyOn(fsOffload, 'removePath');
+
+      try {
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', {
+            ...options,
+            withRadicleGate: async (_dir, fn) => fn({ gated: true, held: () => false }),
+          })
+        ).rejects.toThrow("The Radicle home's lock was lost; nothing was deleted");
+        expect(rmSpy).not.toHaveBeenCalled();
+      } finally {
+        rmSpy.mockRestore();
+      }
+      expect(fs.readFileSync(path.join(radicleDir, 'storage', 'repo'), 'utf-8')).toBe('seeded');
+      expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
+      expect(tombstones(path.dirname(radicleDir))).toEqual([]);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('lost mid-delete: a home a new holder made is spared, and the loss is reported', async () => {
+      const { appRoot, options, record, radicleDir } = devWorkProfile();
+      const { lose, withRadicleGate } = losableGate();
+      const realRemovePath = fsOffload.removePath;
+      let done = false;
+      const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation(async (target, opts) => {
+        if (!done) {
+          done = true;
+          lose();
+          fs.mkdirSync(path.join(radicleDir, 'node'), { recursive: true });
+          fs.writeFileSync(path.join(radicleDir, 'node', 'new-owner'), 'theirs');
+        }
+        return realRemovePath(target, opts);
+      });
+
+      try {
+        await expect(
+          deleteProfile(appRoot, 'work', 'Work', { ...options, withRadicleGate })
+        ).rejects.toThrow(
+          `${RADICLE_LOCK_LOST}. A process may have taken it since, so its Radicle home, if made ` +
+            'again, was left alone.'
+        );
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      expect(fs.readdirSync(radicleDir)).toEqual(['node']);
+      expect(fs.readFileSync(path.join(radicleDir, 'node', 'new-owner'), 'utf-8')).toBe('theirs');
+      expect(tombstones(path.dirname(radicleDir))).toEqual([]);
+      expect(fs.existsSync(record.dir)).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
+    test('a home made again empty under the gate still held goes too', async () => {
+      const { appRoot, options, radicleDir } = devWorkProfile();
+      const { withRadicleGate } = losableGate();
+      const realRemovePath = fsOffload.removePath;
+      let done = false;
+      // A start that waited out the gate: hold-lock and serve make the home
+      // before they try its lock.
+      const rmSpy = jest.spyOn(fsOffload, 'removePath').mockImplementation(async (target, opts) => {
+        if (!done) {
+          done = true;
+          fs.mkdirSync(radicleDir, { recursive: true });
+        }
+        return realRemovePath(target, opts);
+      });
+
+      try {
+        await deleteProfile(appRoot, 'work', 'Work', { ...options, withRadicleGate });
+      } finally {
+        rmSpy.mockRestore();
+      }
+
+      expect(done).toBe(true);
+      expect(fs.existsSync(radicleDir)).toBe(false);
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default']);
+    });
+
+    test('under its gate alone, a link in the home\'s path is refused before anything changes', async () => {
+      const { appRoot, options, record, vault } = devWorkProfile();
+      const outside = track(makeTempDir());
+      const checkoutHome = path.join(path.dirname(appRoot), 'R', 'abcdef12');
+      fs.rmSync(checkoutHome, { recursive: true, force: true });
+      fs.mkdirSync(path.join(outside, String(record.slot)), { recursive: true });
+      fs.writeFileSync(path.join(outside, String(record.slot), 'unrelated'), 'keep me');
+      fs.symlinkSync(outside, checkoutHome, process.platform === 'win32' ? 'junction' : 'dir');
+
+      await expect(
+        deleteProfile(appRoot, 'work', 'Work', {
+          ...options,
+          withRadicleGate: losableGate().withRadicleGate,
+        })
+      ).rejects.toThrow("The profile's Radicle data is reached through a link");
+
+      expect(fs.readFileSync(path.join(outside, String(record.slot), 'unrelated'), 'utf-8')).toBe(
+        'keep me'
+      );
+      expect(fs.readFileSync(vault, 'utf-8')).toBe('secret');
+      expect(loadCatalog(appRoot).profiles.map((p) => p.id)).toEqual(['default', 'work']);
+    });
+
+    test('a profile without a slot has no Radicle home, and takes no Radicle gate', async () => {
+      const { appRoot, options, record } = devWorkProfile();
+      const catalog = loadCatalog(appRoot);
+      delete catalog.profiles.find((p) => p.id === 'work').slot;
+      saveCatalog(appRoot, catalog);
+      const withRadicleGate = jest.fn((_dir, fn) => fn({ gated: true, held: () => true }));
+
+      await deleteProfile(appRoot, 'work', 'Work', { ...options, withRadicleGate });
+
+      expect(withRadicleGate).not.toHaveBeenCalled();
+      expect(fs.existsSync(record.dir)).toBe(false);
+    });
+  });
+
   describe('deleting the default profile (#124)', () => {
     test('dev layout: removes Profiles/default and its Radicle home, keeps the rest', async () => {
       const tempRoot = track(makeTempDir());

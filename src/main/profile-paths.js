@@ -7,6 +7,9 @@ const { ensurePrivateDir } = require('./private-files');
 
 const RADICLE_SOCKET_PATH_LIMIT = 100;
 const RADICLE_SHORT_HOME_DIR = 'R';
+// freedom-radicled's own `HOME` (freedom-core design 0008, "Spawn and lock"),
+// under the profile's userData directory, beside its `radicle-data`.
+const RADICLED_HOME_DIR = 'radicled-home';
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -95,34 +98,54 @@ async function sweepOrphanedRadicleStagingDirs(radicleDir) {
 // as the old synchronous copy was — when the source is empty or the
 // destination already has entries, including entries that appeared while we
 // were copying.
+//
+// It writes the home, so it runs under the home's gate (freedom-core design
+// 0008, "Spawn and lock"; radicle/radicled-gate.js), from its check that the
+// home is empty to its rename into place: a service or another build's
+// add-on holding even a new, empty home fails the carry-over, with nothing
+// replaced, rather than having its home renamed away under it. A later
+// prepareRadicleDataDir() tries again. The quick checks before the gate only
+// skip it where there is nothing to carry over.
 async function migrateProfileRadicleData(profileRadicleDir, radicleDir) {
   if (!(await hasEntriesAsync(profileRadicleDir)) || (await hasEntriesAsync(radicleDir))) {
     return;
   }
 
   await fs.promises.mkdir(path.dirname(radicleDir), { recursive: true });
-  await sweepOrphanedRadicleStagingDirs(radicleDir);
-  const stagingDir = `${radicleDir}${RADICLE_STAGING_INFIX}${process.pid}-${Date.now()}`;
-  try {
-    await fsOffload.copyPath(profileRadicleDir, stagingDir, {
-      recursive: true,
-      force: false,
-      errorOnExist: false,
-    });
-    // getRadicleDataDir may have created the destination as an empty dir in the
-    // meantime; only an *empty* one may be replaced.
+  // Required here, not at load: it loads the logger and the lock directory,
+  // which every importer of this module would otherwise load too.
+  const { withRadicleGate } = require('./radicle/radicled-gate');
+  await withRadicleGate(radicleDir, async (gate) => {
+    // Again under the gate: the home may have gained entries meanwhile.
+    if (await hasEntriesAsync(radicleDir)) return;
+    await sweepOrphanedRadicleStagingDirs(radicleDir);
+    const stagingDir = `${radicleDir}${RADICLE_STAGING_INFIX}${process.pid}-${Date.now()}`;
     try {
-      await fs.promises.rmdir(radicleDir);
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return;
-        throw err;
+      await fsOffload.copyPath(profileRadicleDir, stagingDir, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+      });
+      // A gate lost during the copy: another writer may hold the home now.
+      if (gate.gated && !gate.held()) {
+        throw new Error("The Radicle home's lock was lost; its data was not carried over");
       }
+      // getRadicleDataDir, or the gate's holder, may have created the
+      // destination as an empty dir in the meantime; only an *empty* one may
+      // be replaced.
+      try {
+        await fs.promises.rmdir(radicleDir);
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return;
+          throw err;
+        }
+      }
+      await fs.promises.rename(stagingDir, radicleDir);
+    } finally {
+      await fsOffload.removePath(stagingDir, { recursive: true, force: true });
     }
-    await fs.promises.rename(stagingDir, radicleDir);
-  } finally {
-    await fsOffload.removePath(stagingDir, { recursive: true, force: true });
-  }
+  });
 }
 
 const radicleMigrations = new Map();
@@ -283,6 +306,19 @@ async function prepareRadicleDataDir() {
   return ensurePrivateDir(radicleDir);
 }
 
+/**
+ * The empty directory freedom-radicled gets as its `HOME` (freedom-core
+ * design 0008, "Spawn and lock"), so the user's own never reaches it: the
+ * profile's `<userData>/radicled-home`, owner-only. It is the profile's,
+ * whichever Radicle home the profile has (the short one, `radicle-data` or
+ * `FREEDOM_RADICLE_DATA`): it holds no Radicle data, nothing places a socket
+ * in it, and it goes with the profile's userData directory. The service's
+ * confinement grants it read-write, beside the Radicle home (design 0010).
+ */
+function getRadicledHomeDir() {
+  return ensurePrivateDir(path.join(app.getPath('userData'), RADICLED_HOME_DIR));
+}
+
 // Each managed component's data directory: its default name under a
 // profile's userData directory, and the variable that overrides it.
 const COMPONENT_DATA_DIRS = Object.freeze({
@@ -365,6 +401,7 @@ function createProfileTempDir(prefix) {
 
 module.exports = {
   RADICLE_STAGING_INFIX,
+  RADICLED_HOME_DIR,
   createProfileTempDir,
   getAgentDataDir,
   getAntDataDir,
@@ -379,6 +416,7 @@ module.exports = {
   getProfileUserDataDir,
   getQuickUnlockCredentialPath,
   getRadicleDataDir,
+  getRadicledHomeDir,
   getTorDataDir,
   prepareRadicleDataDir,
 };

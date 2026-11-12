@@ -7,7 +7,7 @@
 
 const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
-const { ServiceClient, CoreError } = require('./service-client');
+const { ServiceClient, CoreError, scrubbedEnv } = require('./service-client');
 const { encodeFrame, FrameDecoder, KIND_JSON } = require('./frame');
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -136,35 +136,37 @@ describe('ServiceClient for a service other than the core', () => {
   });
 });
 
-describe('what a service configures, and what it shares', () => {
-  /** A client whose timers are recorded and run by hand. */
-  function timedClient(service, handler, now = () => 0) {
-    const children = [];
-    const timers = [];
-    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    const client = new ServiceClient({
-      service,
-      spawn: jest.fn(() => {
-        const child = new FakeService(handler);
-        children.push(child);
-        return child;
-      }),
-      command: '/bin/test-service',
-      args: ['serve'],
-      log,
-      now,
-      setTimer: (fn, ms) => {
-        const timer = { fn, ms, cleared: false };
-        timers.push(timer);
-        return timer;
-      },
-      clearTimer: (timer) => {
-        if (timer) timer.cleared = true;
-      },
-    });
-    return { client, children, timers, log };
-  }
+/** A client whose timers are recorded and run by hand, with `extra`
+ * options. */
+function timedClient(service, handler, now = () => 0, extra = {}) {
+  const children = [];
+  const timers = [];
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  const client = new ServiceClient({
+    service,
+    spawn: jest.fn(() => {
+      const child = new FakeService(handler);
+      children.push(child);
+      return child;
+    }),
+    command: '/bin/test-service',
+    args: ['serve'],
+    log,
+    now,
+    setTimer: (fn, ms) => {
+      const timer = { fn, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => {
+      if (timer) timer.cleared = true;
+    },
+    ...extra,
+  });
+  return { client, children, timers, log };
+}
 
+describe('what a service configures, and what it shares', () => {
   test("the kill after a stop waits the service's grace, 3 s by default", async () => {
     for (const [service, grace] of [
       [TEST_SERVICE, 3_000],
@@ -237,5 +239,307 @@ describe('what a service configures, and what it shares', () => {
     await client.start();
     await client.stop();
     expect(log.error).not.toHaveBeenCalledWith('[Test] connection failed', expect.anything());
+  });
+});
+
+describe("the process's environment", () => {
+  test('the scrubbed one by default; a client may give its own, asked at each spawn', async () => {
+    const { client } = timedClient(TEST_SERVICE, answering());
+    await client.start();
+    expect(client.spawnFn.mock.calls[0][2].env).toEqual(scrubbedEnv());
+    await client.stop();
+
+    let spawns = 0;
+    const env = jest.fn(() => ({ HOME: `/own/${++spawns}` }));
+    const {
+      client: own,
+      children,
+      timers,
+    } = timedClient(TEST_SERVICE, answering(), () => 0, { env });
+    await own.start();
+    children[0].exit(1);
+    await tick();
+    await tick();
+    timers.find((t) => !t.cleared && t.ms === 500).fn();
+    await own.whenReady();
+    expect(env).toHaveBeenCalledTimes(2);
+    expect(own.spawnFn.mock.calls.map((call) => call[2].env)).toEqual([
+      { HOME: '/own/1' },
+      { HOME: '/own/2' },
+    ]);
+    await own.stop();
+  });
+
+  test('an environment that throws fails that spawn, as a spawn error', async () => {
+    const env = () => {
+      throw new Error('no directory');
+    };
+    const { client, timers, log } = timedClient(TEST_SERVICE, answering(), () => 0, { env });
+    const exited = new Promise((resolve) => client.once('exit', resolve));
+    client.start().catch(() => {});
+    await expect(exited).resolves.toMatchObject({ cause: 'spawn' });
+    expect(log.error).toHaveBeenCalledWith('[Test] spawn failed');
+    // The crash rules apply: a restart is due.
+    expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(1);
+    await client.stop();
+  });
+});
+
+describe('a deferred spawn (deferSpawn)', () => {
+  test('waits with nothing spawned, failing nothing, then spawns once the wait ends', async () => {
+    let open = false;
+    let release;
+    const deferSpawn = jest.fn(() =>
+      open
+        ? null
+        : new Promise((resolve) => {
+            release = resolve;
+          })
+    );
+    const { client, children } = timedClient(TEST_SERVICE, answering(), () => 0, {
+      deferSpawn,
+    });
+    const failed = jest.fn();
+    client.on('failed', failed);
+    const started = client.start();
+    await tick();
+    expect(children).toHaveLength(0);
+    expect(client.state).toBe('starting');
+    expect(client.spawnDeferred).toBe(true);
+    // Another start joins the wait.
+    const again = client.start();
+    expect(deferSpawn).toHaveBeenCalledTimes(1);
+
+    open = true;
+    release();
+    await expect(started).resolves.toEqual({ protocol: 3, capabilities: [] });
+    await expect(again).resolves.toEqual({ protocol: 3, capabilities: [] });
+    // Asked again once its wait ended.
+    expect(deferSpawn).toHaveBeenCalledTimes(2);
+    expect(children).toHaveLength(1);
+    expect(client.spawnDeferred).toBe(false);
+    expect(failed).not.toHaveBeenCalled();
+    expect(client.crashTimes).toEqual([]);
+    await client.stop();
+  });
+
+  test("a crash's restart waits too, as long as it takes, and the wait is no crash", async () => {
+    let locked = false;
+    let release;
+    let now = 0;
+    const deferSpawn = () =>
+      locked
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : null;
+    const { client, children, timers } = timedClient(TEST_SERVICE, answering(), () => now, {
+      deferSpawn,
+    });
+    await client.start();
+    locked = true;
+    children[0].exit(1);
+    await tick();
+    await tick();
+    timers.find((t) => !t.cleared && t.ms === 500).fn();
+    expect(children).toHaveLength(1);
+    expect(client.spawnDeferred).toBe(true);
+    expect(client.state).toBe('starting');
+    expect(client.crashTimes).toHaveLength(1);
+    // Waiting past the crash window counts nothing, and fails nothing.
+    now = 10 * 60_000;
+    locked = false;
+    release();
+    await client.whenReady();
+    expect(children).toHaveLength(2);
+    expect(client.crashTimes).toHaveLength(1);
+    expect(client.state).toBe('ready');
+    await client.stop();
+  });
+
+  test('a stop ends the wait: nothing is spawned when it settles, and start() runs it again', async () => {
+    let release;
+    const deferSpawn = jest.fn(() =>
+      deferSpawn.mock.calls.length === 1
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : null
+    );
+    const { client, children } = timedClient(TEST_SERVICE, answering(), () => 0, {
+      deferSpawn,
+    });
+    const started = client.start().catch((e) => e);
+    await tick();
+    await client.stop();
+    expect(client.state).toBe('stopped');
+    expect(client.spawnDeferred).toBe(false);
+    expect(await started).toMatchObject({ code: 'service_unavailable' });
+    release();
+    await tick();
+    await tick();
+    expect(children).toHaveLength(0);
+    expect(client.state).toBe('stopped');
+
+    await expect(client.start()).resolves.toEqual({ protocol: 3, capabilities: [] });
+    expect(children).toHaveLength(1);
+    await client.stop();
+  });
+
+  test('a wait that rejects, or a deferral that throws, fails the client', async () => {
+    for (const [deferSpawn, reason] of [
+      [() => Promise.reject(new Error('gone')), 'spawn wait failed'],
+      [
+        () => {
+          throw new Error('broken');
+        },
+        'spawn deferral failed',
+      ],
+    ]) {
+      const { client, children } = timedClient(TEST_SERVICE, answering(), () => 0, {
+        deferSpawn,
+      });
+      const failed = new Promise((resolve) => client.once('failed', resolve));
+      const started = client.start().catch((e) => e);
+      await expect(failed).resolves.toBe(reason);
+      expect(await started).toMatchObject({ code: 'service_unavailable' });
+      expect(children).toHaveLength(0);
+      expect(client.state).toBe('failed');
+    }
+  });
+
+  test('beforeSpawn is still the last word, after the wait', async () => {
+    const order = [];
+    let release;
+    const deferSpawn = () => {
+      order.push('defer');
+      return order.length === 1
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : null;
+    };
+    const beforeSpawn = () => {
+      order.push('check');
+      return 'the grant is refused';
+    };
+    const { client, children } = timedClient(TEST_SERVICE, answering(), () => 0, {
+      deferSpawn,
+      beforeSpawn,
+    });
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    client.start().catch(() => {});
+    await tick();
+    expect(order).toEqual(['defer']);
+    release();
+    await expect(failed).resolves.toBe('spawn refused');
+    expect(order).toEqual(['defer', 'defer', 'check']);
+    expect(children).toHaveLength(0);
+  });
+});
+
+// freedom-core design 0008, Errors: a start step the service answers with
+// an error ends the process, which exits 0; main has read the error.
+describe("exit 0 after a start step's error (endsOnError)", () => {
+  /** A service whose `test.step` is answered with `reply(message, child)`. */
+  const stepping = (reply) => (message, child) => {
+    if (message.method === 'test.step') reply(message, child);
+    else answering()(message, child);
+  };
+  const refuse = (message, child) =>
+    child.reply({
+      type: 'response',
+      id: message.id,
+      error: { code: 'start_failed', message: 'it did not start' },
+    });
+  const step = (client, options = { endsOnError: true }) =>
+    client.requestTo(client.current, 'test.step', {}, { caller: 'shell' }, options);
+
+  test('main closes stdin and arms the kill; the exit 0 fails the client, with no restart', async () => {
+    const { client, children, timers } = timedClient(TEST_SERVICE, stepping(refuse));
+    await client.start();
+    const gen = client.current;
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    const exits = [];
+    client.on('exit', (exit) => exits.push(exit));
+    await expect(step(client)).rejects.toMatchObject({
+      code: 'start_failed',
+      message: 'it did not start',
+    });
+    // The generation is ending: nothing more goes to it.
+    expect(gen.ending).toBe(true);
+    expect(client.serves(gen)).toBe(false);
+    expect(timers.some((t) => t.ms === 3_000)).toBe(true);
+    // The fake exits 0 once its stdin closes.
+    await expect(failed).resolves.toBe('start step failed');
+    expect(exits).toEqual([{ code: 0, signal: null, cause: 'start_failed' }]);
+    expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(0);
+    expect(children).toHaveLength(1);
+    // A start from there spawns a fresh process.
+    await expect(client.start()).resolves.toEqual({ protocol: 3, capabilities: [] });
+    expect(children).toHaveLength(2);
+    await client.stop();
+  });
+
+  test('the error read from what stdout still held after the exit counts too', async () => {
+    const { client, children } = timedClient(
+      TEST_SERVICE,
+      stepping((message, child) => {
+        child.emit('exit', 0, null);
+        refuse(message, child);
+        setImmediate(() => {
+          child.stdout.end();
+          child.emit('close', 0, null);
+        });
+      })
+    );
+    await client.start();
+    const failed = new Promise((resolve) => client.once('failed', resolve));
+    const exits = [];
+    client.on('exit', (exit) => exits.push(exit));
+    await expect(step(client)).rejects.toMatchObject({ code: 'start_failed' });
+    await expect(failed).resolves.toBe('start step failed');
+    expect(exits).toEqual([{ code: 0, signal: null, cause: 'start_failed' }]);
+    expect(children).toHaveLength(1);
+  });
+
+  test('exit 0 is a crash otherwise: after a step that succeeded, or an error not marked', async () => {
+    for (const [reply, options] of [
+      [
+        (message, child) => child.reply({ type: 'response', id: message.id, result: {} }),
+        undefined,
+      ],
+      [refuse, {}],
+    ]) {
+      const { client, children, timers } = timedClient(TEST_SERVICE, stepping(reply));
+      await client.start();
+      await step(client, options).catch(() => {});
+      children[0].exit(0);
+      await tick();
+      await tick();
+      expect(client.state).toBe('starting');
+      expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(1);
+      await client.stop();
+    }
+  });
+
+  test("another end after a step's error is judged as usual: exit 70 is a crash", async () => {
+    const { client, timers } = timedClient(
+      TEST_SERVICE,
+      stepping((message, child) => {
+        refuse(message, child);
+        child.exit(70);
+      })
+    );
+    await client.start();
+    const exits = [];
+    client.on('exit', (exit) => exits.push(exit));
+    await expect(step(client)).rejects.toMatchObject({ code: 'start_failed' });
+    await tick();
+    await tick();
+    expect(exits).toMatchObject([{ code: 70 }]);
+    expect(client.state).toBe('starting');
+    expect(timers.filter((t) => !t.cleared && t.ms === 500)).toHaveLength(1);
+    await client.stop();
   });
 });

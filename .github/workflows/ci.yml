@@ -251,7 +251,8 @@ jobs:
   # runner per target. `migration` runs on the three desktop OS families
   # (macos-15 stands in for the former macos-latest, the same arm64 image),
   # and freedom-ipfs has no mac-x64 build. `ipfsd` is this runner's
-  # freedom-ipfsd binary, published for mac-arm64, linux-x64 and win-x64.
+  # freedom-ipfsd binary, published for mac-arm64, linux-x64 and win-x64;
+  # `radicled` its freedom-radicled binary, published for every target.
   native-addons:
     needs: code-changed
     if: ${{ !cancelled() && needs.code-changed.outputs.code != 'false' }}
@@ -265,6 +266,7 @@ jobs:
             ipfs: darwin-arm64
             ipfsd: mac-arm64/freedom-ipfsd
             radicle: mac-arm64
+            radicled: mac-arm64/freedom-radicled
             radicle_flags: --mac --arm64
             myotis: darwin-arm64
             myotis_addon: myotis-bin/mac-arm64/myotis-node.node
@@ -274,6 +276,7 @@ jobs:
             ipfs: ''
             ipfsd: ''
             radicle: mac-x64
+            radicled: mac-x64/freedom-radicled
             radicle_flags: --mac --x64
             myotis: darwin-x64
             myotis_addon: myotis-bin/mac-x64/myotis-node.node
@@ -283,6 +286,7 @@ jobs:
             ipfs: linux-x64
             ipfsd: linux-x64/freedom-ipfsd
             radicle: linux-x64
+            radicled: linux-x64/freedom-radicled
             radicle_flags: --linux --x64
             myotis: linux-x64
             myotis_addon: myotis-bin/linux-x64/myotis-node.node
@@ -292,6 +296,7 @@ jobs:
             ipfs: linux-arm64
             ipfsd: ''
             radicle: linux-arm64
+            radicled: linux-arm64/freedom-radicled
             radicle_flags: --linux --arm64
             myotis: linux-arm64
             myotis_addon: myotis-bin/linux-arm64/myotis-node.node
@@ -301,6 +306,7 @@ jobs:
             ipfs: win32-x64
             ipfsd: win-x64/freedom-ipfsd.exe
             radicle: win-x64
+            radicled: win-x64/freedom-radicled.exe
             radicle_flags: --win --x64
             myotis: win32-x64
             myotis_addon: myotis-bin/win-x64/myotis-node.node
@@ -489,6 +495,17 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: node scripts/check-radicle-addon.js radicle-bin/${{ matrix.radicle }}/libradicle.node
 
+      # A development build runs the add-on under freedom-radicled's
+      # hold-lock on its home (design 0008, Rollback): with the binary here,
+      # the contract suite below runs the add-on under the real gate.
+      - name: Download freedom-radicled binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-radicled.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       # The Radicle backend contract (freedom-core design 0008, "Tests
       # first"): the golden vectors and the exports' contract, against this
       # runner's add-on and the fixture's snapshot, with no network
@@ -500,6 +517,28 @@ jobs:
         run: npx jest src/main/radicle-backend.contract.test.js
         env:
           FREEDOM_RADICLE_CONTRACT_BACKEND: addon
+
+      # The Radicle home's gate against the same binary (design 0008, "Spawn
+      # and lock"): a second owner refused; hold-lock and the add-on refused
+      # while a service holds the home; a profile delete and the alias
+      # rewrite refused while another process holds it; and the add-on,
+      # downloaded above, under hold-lock.
+      - name: freedom-radicled gate (real binary)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/radicle/radicled-gate.integration.test.js
+        env:
+          FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
+
+      # The service's client against the same binary (design 0008, "Process
+      # model" and Errors): rad.hello with its confinement, in an
+      # environment that holds what the service refuses (RAD_*, GIT_*,
+      # SSH_AUTH_SOCK, the user's HOME); a start step's error, then exit 0
+      # and no restart; and the start steps before the node, with no network.
+      - name: freedom-radicled client (real binary)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/radicle/radicled-client.integration.test.js
+        env:
+          FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
 
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
@@ -816,10 +855,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      # Nothing runs freedom-radicled yet (freedom-core design 0008, step 6
-      # on): this is the one per-PR run of its real fetch on all three OSes,
-      # Windows' ZIP path included, with the pinned digest and build
-      # provenance checked as release.yml checks them.
+      # Main runs only freedom-radicled's hold-lock, the Radicle home's gate
+      # (freedom-core design 0008, "Spawn and lock"), which a development
+      # build takes where the binary is: this is the per-PR run of its real
+      # fetch on all three OSes, Windows' ZIP path included, with the pinned
+      # digest and build provenance checked as release.yml checks them.
       - name: Download freedom-radicled binaries
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         timeout-minutes: 7
