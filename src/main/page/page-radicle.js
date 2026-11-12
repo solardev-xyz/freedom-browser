@@ -209,6 +209,7 @@ function defaultDependencies() {
     grantSigning: (key) => permissions().grantSigning(key),
     setAutoApprove: (key, type, enabled) => permissions().setAutoApprove(key, type, enabled),
     validateWrite: (method, params) => require('../radicle/cob-service').validateWrite(method, params),
+    writeRefusal: () => require('../radicle-manager').radicleWriteRefusal(),
   };
 }
 
@@ -231,6 +232,7 @@ function createRadicleDispatchers(deps = {}) {
     grantSigning,
     setAutoApprove,
     validateWrite,
+    writeRefusal,
   } = { ...defaultDependencies(), ...deps };
 
   // Whether the agent holds the tab now. Unknown custody counts as custody:
@@ -536,6 +538,14 @@ function createRadicleDispatchers(deps = {}) {
           ...(err?.reason ? { data: { reason: err.reason } } : {}),
         },
       };
+    }
+    // Under the Radicle service, a node running with a throwaway key can't
+    // publish (freedom-core design 0008, `needs_vault`): refused before the
+    // write's prompt, with executeRadicleMethod's answer, which main gives
+    // again just before the write if the node restarts meanwhile.
+    const refusal = writeRefusal();
+    if (refusal) {
+      return { error: { code: 4900, message: refusal.message, data: { reason: refusal.reason } } };
     }
     // A standing rule is chosen only outside Agent custody, read live now.
     // A request that goes to its prompt keeps it, whatever custody does
