@@ -86,7 +86,7 @@ describe('the selected chain in main (freedom-core design 0011, PRQ-3)', () => {
     const windowFromId = (id) => (id === 4 ? win : null);
     expect(selectChainForPage(4, 1, { windowFromId })).toBe(true);
     expect(selectedChainOf(4)).toBe(1);
-    expect(win.webContents.send).toHaveBeenCalledWith(PAGE_SELECTED_CHANNEL, 1);
+    expect(win.webContents.send).toHaveBeenCalledWith(PAGE_SELECTED_CHANNEL, { chainId: 1, sequence: 1 });
     expect(PAGE_SELECTED_CHANNEL).toBe('wallet:page-selected-chain');
     // Not "All Chains", not a malformed chain, not a window that has gone.
     expect(selectChainForPage(4, null, { windowFromId })).toBe(false);
@@ -163,5 +163,96 @@ describe('the chrome\'s selection is told to main\'s listeners (0011 PRQ-6)', ()
     expect(heard).toEqual([1]);
     for (const stop of stops) stop();
     expect(onChromeSelection(null)()).toBeUndefined();
+  });
+});
+
+// freedom-core design 0011, PRQ-6: a page's switch and the user's pick are
+// two writers of a window's selection. Main numbers its page selections;
+// the chrome reports the number it last showed, and main refuses a pick made
+// before the switcher showed main's latest, and shows it again.
+describe('a page\'s switch and the user\'s pick, ordered (0011 PRQ-6)', () => {
+  beforeEach(() => resetSelectedChains());
+
+  function setupWindow() {
+    const ipc = fakeIpc();
+    const toChrome = [];
+    const chrome = { send: jest.fn((channel, payload) => toChrome.push([channel, payload])), isDestroyed: () => false };
+    const win = new FakeWindow(1);
+    win.webContents = chrome;
+    registerSelectedChainIpc(ipc, { windowOf: (sender) => (sender === chrome ? win : null) });
+    const heard = [];
+    const stop = onChromeSelection((change) => heard.push(change));
+    const pageSelects = (chainId) => selectChainForPage(1, chainId, { windowFromId: () => win });
+    const chromeReports = (chainId, seen) => ipc.emit(CHANNEL, { sender: chrome }, chainId, seen);
+    return { win, toChrome, heard, stop, pageSelects, chromeReports };
+  }
+
+  test('each page selection is numbered for its window, and the chrome told the number', () => {
+    const env = setupWindow();
+    env.pageSelects(1);
+    env.pageSelects(10);
+    expect(env.toChrome).toEqual([
+      [PAGE_SELECTED_CHANNEL, { chainId: 1, sequence: 1 }],
+      [PAGE_SELECTED_CHANNEL, { chainId: 10, sequence: 2 }],
+    ]);
+    env.stop();
+  });
+
+  test('a pick made before the switcher showed the page\'s selection is refused, and the selection shown again', () => {
+    const env = setupWindow();
+    env.pageSelects(1);
+    // The user picks "All Chains" from a switcher that still shows Gnosis.
+    env.chromeReports(null, 0);
+    expect(selectedChainOf(1)).toBe(1);
+    expect(env.heard).toEqual([]);
+    expect(env.toChrome).toEqual([
+      [PAGE_SELECTED_CHANNEL, { chainId: 1, sequence: 1 }],
+      [PAGE_SELECTED_CHANNEL, { chainId: 1, sequence: 1 }],
+    ]);
+    // A report with no number counts as one that saw none.
+    env.chromeReports(10);
+    expect(selectedChainOf(1)).toBe(1);
+    expect(env.toChrome).toHaveLength(3);
+    // Once it has shown it, the user's pick counts.
+    env.chromeReports(null, 1);
+    expect(selectedChainOf(1)).toBeNull();
+    expect(env.heard).toEqual([{ window: 1, previous: 1, next: null }]);
+    expect(env.toChrome).toHaveLength(3);
+    env.stop();
+  });
+
+  test('a pick that reached main first counts, and the page\'s later selection then wins', () => {
+    const env = setupWindow();
+    env.chromeReports(10, 0);
+    expect(env.heard).toEqual([{ window: 1, previous: 100, next: 10 }]);
+    env.pageSelects(1);
+    expect(selectedChainOf(1)).toBe(1);
+    expect(env.toChrome).toEqual([[PAGE_SELECTED_CHANNEL, { chainId: 1, sequence: 1 }]]);
+    env.stop();
+  });
+
+  test('a malformed pick is ignored, refused or not; a closed window starts again from no number', () => {
+    const env = setupWindow();
+    env.pageSelects(1);
+    env.chromeReports('nonsense', 0);
+    env.chromeReports(0, 5);
+    expect(env.toChrome).toHaveLength(1);
+    expect(selectedChainOf(1)).toBe(1);
+    env.win.emit('closed');
+    env.chromeReports(10, 0);
+    expect(selectedChainOf(1)).toBe(10);
+    expect(env.toChrome).toHaveLength(1);
+    env.stop();
+  });
+
+  test('a reloaded chrome\'s starting report is refused, and it is shown the window\'s selection, "All Chains" included', () => {
+    const env = setupWindow();
+    env.pageSelects(1);
+    env.chromeReports(null, 1);
+    // The chrome reloads: its switcher starts from Gnosis and no number.
+    env.chromeReports(100, 0);
+    expect(selectedChainOf(1)).toBeNull();
+    expect(env.toChrome.at(-1)).toEqual([PAGE_SELECTED_CHANNEL, { chainId: null, sequence: 1 }]);
+    env.stop();
   });
 });

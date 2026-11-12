@@ -19,6 +19,11 @@ let chainSwitcherLogoPlaceholder;
 let chainSwitcherDropdown;
 let chainSwitcherList;
 
+// The number of main's latest page selection this switcher has shown
+// (freedom-core design 0011, PRQ-6). Reported with every pick, so main can
+// refuse one made before the switcher showed it.
+let seenSequence = 0;
+
 /**
  * Write the selected chain, and tell main: main answers pages' Ethereum
  * reads (`eth_chainId`, `net_version`, the RPC reads) with this window's
@@ -29,14 +34,22 @@ let chainSwitcherList;
 function writeSelectedChain(chainId) {
   walletState.selectedChainId = chainId;
   try {
-    window.wallet?.selectChain?.(chainId);
+    window.wallet?.selectChain?.(chainId, seenSequence);
   } catch (err) {
     console.error('[WalletUI] Failed to report the selected chain:', err);
   }
 }
 
-/** Show a chain main selected: main has it already, so nothing goes back. */
-function showSelectedChain(chainId) {
+/**
+ * Show a selection main made, `{ chainId, sequence }`, unless this switcher
+ * has shown a newer one. Main has it already, so nothing goes back.
+ */
+function showMainSelection(selection) {
+  const sequence = selection?.sequence;
+  const chainId = selection?.chainId;
+  if (!Number.isSafeInteger(sequence) || sequence <= seenSequence) return;
+  if (chainId !== null && !(Number.isSafeInteger(chainId) && chainId > 0)) return;
+  seenSequence = sequence;
   if (walletState.selectedChainId === chainId) return;
   walletState.selectedChainId = chainId;
   updateChainSwitcherDisplay();
@@ -59,11 +72,10 @@ export function initChainSwitcher() {
 
   // A page's wallet_switchEthereumChain runs in main now (freedom-core
   // design 0011, PRQ-4), which selected the chain for this window and told
-  // its pages: the switcher shows it, and reports nothing back. A report
-  // would reach main after any later change and select this chain again.
-  window.wallet?.onPageSelectedChain?.((chainId) => {
-    if (Number.isSafeInteger(chainId) && chainId > 0) showSelectedChain(chainId);
-  });
+  // its pages: the switcher shows it, and reports nothing back. Main
+  // numbers its selections, and refuses a pick made before the switcher
+  // showed its latest, which it then shows again (PRQ-6).
+  window.wallet?.onPageSelectedChain?.(showMainSelection);
 }
 
 function setupChainSwitcher() {

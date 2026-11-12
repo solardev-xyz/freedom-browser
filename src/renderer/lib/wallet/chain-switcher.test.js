@@ -61,7 +61,7 @@ describe('chain switcher: the selection reaches main', () => {
     };
     global.window = {
       wallet: {
-        selectChain: jest.fn((chainId) => log.push(['main', chainId])),
+        selectChain: jest.fn((chainId, seen) => log.push(seen ? ['main', chainId, seen] : ['main', chainId])),
         onPageSelectedChain: jest.fn((listener) => {
           pageSelected = listener;
           return () => {};
@@ -127,23 +127,154 @@ describe('chain switcher: the selection reaches main', () => {
   test('a chain main selected for a page\'s switch shows in the switcher, and nothing goes back to main', () => {
     log.length = 0;
     expect(typeof pageSelected).toBe('function');
-    pageSelected(1);
+    pageSelected({ chainId: 1, sequence: 1 });
     expect(walletState.selectedChainId).toBe(1);
     expect(elements.get('chain-switcher-name').textContent).toBe('Ethereum');
-    // Main selected it already: a report back would reach main after any
-    // later change and select this chain again (PRQ-6).
+    // Main selected it already (PRQ-6).
     expect(log).toEqual([]);
-    pageSelected('0x64');
-    pageSelected(0);
+    for (const bad of [1, '0x64', { chainId: '0x64', sequence: 2 }, { chainId: 0, sequence: 2 }, { chainId: 10 }, null]) {
+      pageSelected(bad);
+    }
     expect(walletState.selectedChainId).toBe(1);
-    // The user's next pick reaches main as ever.
+    // The user's next pick reaches main with the number it last showed.
     switcher.setSelectedChainId(100);
-    expect(log).toEqual([['main', 100]]);
+    expect(log).toEqual([['main', 100, 1]]);
+  });
+
+  test('a selection of main\'s no newer than the last shown is ignored', () => {
+    pageSelected({ chainId: 1, sequence: 2 });
+    switcher.setSelectedChainId(100);
+    // A copy of an earlier one, or an older one, arriving after the pick.
+    pageSelected({ chainId: 1, sequence: 2 });
+    pageSelected({ chainId: 1, sequence: 1 });
+    expect(walletState.selectedChainId).toBe(100);
+    // A newer one shows, "All Chains" included.
+    pageSelected({ chainId: null, sequence: 3 });
+    expect(walletState.selectedChainId).toBeNull();
+    expect(elements.get('chain-switcher-name').textContent).toBe('All Chains');
   });
 
   test('a chrome without the API still switches', () => {
     delete window.wallet;
     switcher.setSelectedChainId(1);
     expect(walletState.selectedChainId).toBe(1);
+  });
+});
+
+// freedom-core design 0011, PRQ-6: the switcher against main's own
+// selected-chain module. A page's switch and the user's pick race; main's
+// messages to the chrome wait until the test delivers them, so each
+// interleaving is run exactly. However they interleave, the switcher, main
+// and the pages end on the same chain.
+describe('chain switcher and main: a page\'s switch and the user\'s pick, in either order', () => {
+  let main;
+  let walletState;
+  let elements;
+  let inbox;
+  let told;
+  let stopTelling;
+  let deliverTo;
+  const win = { id: 1, isDestroyed: () => false, once: () => {} };
+
+  async function start(before = () => {}) {
+    jest.resetModules();
+    elements = new Map();
+    inbox = [];
+    told = [];
+    jest.doMock('./balance-display.js', () => ({
+      renderAssetList: jest.fn(),
+      loadChainRegistry: jest.fn(async () => {}),
+    }));
+    main = require('../../../main/wallet/selected-chain.js');
+    main.resetSelectedChains();
+    const handlers = {};
+    const chrome = { send: (_channel, payload) => inbox.push(payload), isDestroyed: () => false };
+    win.webContents = chrome;
+    main.registerSelectedChainIpc({ on: (channel, handler) => (handlers[channel] = handler) }, { windowOf: () => win });
+    // What main tells the window's pages of a pick (page-events.js).
+    stopTelling = main.onChromeSelection((change) => told.push(change.next));
+    before();
+    global.document = {
+      getElementById: (id) => {
+        if (!elements.has(id)) elements.set(id, element());
+        return elements.get(id);
+      },
+      createElement: () => element(),
+      addEventListener: jest.fn(),
+    };
+    global.window = {
+      wallet: {
+        selectChain: (chainId, seen) => handlers['wallet:select-chain']({ sender: chrome }, chainId, seen),
+        onPageSelectedChain: (listener) => {
+          deliverTo = listener;
+          return () => {};
+        },
+      },
+      networks: { getAvailableChains: jest.fn(async () => ({ success: true, chains: { 1: {}, 100: {} } })) },
+    };
+    ({ walletState } = await import('./wallet-state.js'));
+    walletState.registeredChains = { 1: { name: 'Ethereum' }, 100: { name: 'Gnosis Chain' } };
+    walletState.selectedChainId = 100;
+    const switcher = await import('./chain-switcher.js');
+    switcher.initChainSwitcher();
+    return switcher;
+  }
+
+  afterEach(() => {
+    stopTelling?.();
+    main?.resetSelectedChains();
+    delete global.document;
+    delete global.window;
+  });
+
+  const pageSelects = (chainId) => main.selectChainForPage(1, chainId, { windowFromId: () => win });
+  const deliver = () => {
+    while (inbox.length) deliverTo(inbox.shift());
+  };
+  async function userPicks(index) {
+    elements.get('chain-switcher-btn').listeners.get('click')();
+    await flush();
+    elements.get('chain-switcher-list').children[index].listeners.get('click')();
+  }
+
+  test('the page\'s switch reaches main first, the user picks before the switcher shows it: all end on the page\'s chain', async () => {
+    await start();
+    pageSelects(1);
+    // Items: "All Chains", Ethereum, Gnosis. The switcher still shows Gnosis.
+    await userPicks(0);
+    expect(walletState.selectedChainId).toBeNull();
+    // Main refused the pick: the pages were told nothing of it.
+    expect(main.selectedChainOf(1)).toBe(1);
+    expect(told).toEqual([]);
+    deliver();
+    expect(walletState.selectedChainId).toBe(1);
+    expect(elements.get('chain-switcher-name').textContent).toBe('Ethereum');
+    // The user picks again, from a switcher that shows main's chain: it counts.
+    await userPicks(0);
+    expect(main.selectedChainOf(1)).toBeNull();
+    expect(walletState.selectedChainId).toBeNull();
+    expect(told).toEqual([null]);
+  });
+
+  test('the user\'s pick reaches main first, then the page\'s switch: all end on the page\'s chain', async () => {
+    await start();
+    await userPicks(0);
+    expect(told).toEqual([null]);
+    pageSelects(1);
+    deliver();
+    expect(main.selectedChainOf(1)).toBe(1);
+    expect(walletState.selectedChainId).toBe(1);
+  });
+
+  test('a reloaded chrome shows the selection main kept', async () => {
+    await start(() => {
+      pageSelects(1);
+      inbox.length = 0;
+    });
+    // Its starting report of Gnosis was made before it showed main's.
+    expect(main.selectedChainOf(1)).toBe(1);
+    deliver();
+    expect(walletState.selectedChainId).toBe(1);
+    expect(told).toEqual([]);
   });
 });
