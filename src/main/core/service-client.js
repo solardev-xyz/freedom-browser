@@ -14,7 +14,15 @@
  * - restarts after 0.5 s, 2 s, then 10 s, until three crashes within 60 s;
  * - no restart after a protocol mismatch, a requested stop, or the exit
  *   codes that mean "don't retry" (64 usage, 74 storage, 75 lock held, 77
- *   confinement).
+ *   confinement);
+ * - no restart after exit 0 that follows a start step's error (a request
+ *   sent with `endsOnError`; freedom-core design 0008, Errors): the process
+ *   answered the error and ended, as it said it would, and main has read
+ *   the error;
+ * - a deferred spawn (`deferSpawn`): before each spawn, restarts included,
+ *   the caller may make the client wait, with nothing running, which
+ *   neither fails it nor counts as a crash (0008: a start on a locked vault
+ *   waits for the unlock).
  *
  * **Generations.** Each child is one `Generation` record: its pending
  * requests, its writer budget, its decoder, stderr and timers. Its lifecycle
@@ -467,6 +475,10 @@ class Generation {
     this.timers = new Set();
     this.helloTimer = null;
     this.ready = false; // a valid handshake completed while live
+    this.readyAt = null; // when (`now()`) the handshake completed
+    // A start step answered with an error (`endsOnError`): the process ends
+    // after it, and its exit 0 is no crash.
+    this.stepFailed = false;
     this.exited = false; // the process is gone (stdout may still drain)
     this.retired = false; // stdio closed; nothing more is accepted
     this.ending = false; // we killed it or asked it to stop
@@ -475,7 +487,9 @@ class Generation {
     this.killAttempts = 0;
     this.distrusted = false; // a protocol fault: its output is ignored
     this.stdinEnded = false;
-    this.cause = null; // shutdown | mismatch | protocol | transport | handshake_timeout | spawn
+    // shutdown | mismatch | protocol | transport | handshake_timeout | spawn | hang |
+    // start_failed
+    this.cause = null;
     this.exitCode = null;
     this.exitSignal = null;
   }
@@ -509,6 +523,15 @@ class ServiceClient extends EventEmitter {
    * @param {Function} [options.beforeSpawn] - () => null, or why the process
    *   may not be spawned now: checked before every spawn, restarts
    *   included. A refusal spawns nothing and fails the client.
+   * @param {Function} [options.deferSpawn] - () => null, or a promise the
+   *   spawn waits for: asked before every spawn, restarts included, before
+   *   `beforeSpawn`, and again each time a wait ends. While it waits nothing
+   *   runs, the client stays `starting` with its waiters, and nothing counts
+   *   as a crash. A stop ends the wait: nothing is spawned when it settles.
+   *   A wait that rejects, or a call that throws, fails the client.
+   * @param {Function} [options.env] - () => the process's environment, for
+   *   each spawn; the scrubbed one (`scrubbedEnv`) by default. It may
+   *   throw, which fails that spawn as a spawn error.
    */
   constructor(options) {
     super();
@@ -519,6 +542,8 @@ class ServiceClient extends EventEmitter {
     this.maxPending = options.service.maxPending ?? MAX_PENDING;
     this.spawnFn = options.spawn;
     this.beforeSpawn = options.beforeSpawn ?? null;
+    this.deferSpawn = options.deferSpawn ?? null;
+    this.env = options.env ?? scrubbedEnv;
     this.command = options.command;
     this.args = options.args;
     this.log = options.log || console;
@@ -537,6 +562,8 @@ class ServiceClient extends EventEmitter {
     this.stopRequested = false;
     this.crashTimes = [];
     this.restartTimer = null;
+    // The deferred spawn's wait in progress (`deferSpawn`), or null.
+    this.spawnWait = null;
     this.readyWaiters = [];
     this.stopWaiters = [];
     // Requests waiting for readiness, and their serialized parameter bytes.
@@ -673,13 +700,27 @@ class ServiceClient extends EventEmitter {
    * anything the process sends is read: the request's envelope ID and the
    * generation's number, which the process's own requests about this one
    * name (design 0009, `shell.dweb_get`'s `for`). It must not throw.
+   *
+   * `endsOnError` marks a start step (freedom-core design 0008, Errors):
+   * the process answers its error and then exits 0. Once the process has
+   * answered it with an error, the generation is ending: main sends it
+   * nothing more, closes its stdin, and kills it after the service's
+   * shutdown grace if it hasn't exited; and its exit 0 then is no crash, so
+   * the client fails without a restart (`startStepFailed`).
    */
   requestTo(
     gen,
     method,
     params = {},
     context = { caller: 'chrome' },
-    { watchdogMs = null, signal = null, untilResponse = false, fence = null, onSent = null } = {}
+    {
+      watchdogMs = null,
+      signal = null,
+      untilResponse = false,
+      fence = null,
+      onSent = null,
+      endsOnError = false,
+    } = {}
   ) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
     return this.send(gen, method, params, context, {
@@ -688,6 +729,7 @@ class ServiceClient extends EventEmitter {
       untilResponse,
       fence,
       onSent,
+      endsOnError,
     });
   }
 
@@ -711,6 +753,8 @@ class ServiceClient extends EventEmitter {
    */
   stop() {
     this.stopRequested = true;
+    // A deferred spawn's wait ends: nothing is spawned when it settles.
+    this.spawnWait = null;
     if (this.restartTimer) {
       this.clearTimer(this.restartTimer);
       this.restartTimer = null;
@@ -752,9 +796,15 @@ class ServiceClient extends EventEmitter {
     return new Promise((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
   }
 
+  /** Whether the client waits to spawn (`deferSpawn`), with nothing running. */
+  get spawnDeferred() {
+    return this.spawnWait !== null;
+  }
+
   // ---- generations ----
 
   spawnGeneration() {
+    if (this.deferSpawn && this.waitToSpawn()) return;
     // The caller's last word before each spawn, a restart's too (design
     // 0010, step 7: main's check of a service's grant).
     let refused;
@@ -776,7 +826,7 @@ class ServiceClient extends EventEmitter {
     try {
       child = this.spawnFn(this.command, this.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: scrubbedEnv(),
+        env: this.env(),
         windowsHide: true,
       });
     } catch {
@@ -820,6 +870,41 @@ class ServiceClient extends EventEmitter {
       { caller: 'shell' },
       { control: true, onReply: (outcome) => this.onHelloReply(gen, outcome) }
     );
+  }
+
+  /**
+   * The deferred spawn (`deferSpawn`): true while the spawn waits, the
+   * client `starting` with nothing running, or once the client has failed;
+   * false to spawn now. A wait that ends asks again, so the spawn waits as
+   * long as the caller says.
+   */
+  waitToSpawn() {
+    let wait;
+    try {
+      wait = this.deferSpawn();
+    } catch {
+      this.current = null;
+      this.fail('spawn deferral failed');
+      return true;
+    }
+    if (!wait || typeof wait.then !== 'function') return false;
+    const waiting = {};
+    this.spawnWait = waiting;
+    this.current = null;
+    this.state = STATE.STARTING;
+    const resume = (ended) => {
+      // A stop, or a later start's own wait, took over.
+      if (this.spawnWait !== waiting) return;
+      this.spawnWait = null;
+      if (this.stopRequested) return;
+      if (ended) this.spawnGeneration();
+      else this.fail('spawn wait failed');
+    };
+    Promise.resolve(wait).then(
+      () => resume(true),
+      () => resume(false)
+    );
+    return true;
   }
 
   onHelloReply(gen, outcome) {
@@ -872,6 +957,7 @@ class ServiceClient extends EventEmitter {
     }
     if (this.stopRequested || gen !== this.current) return;
     gen.ready = true;
+    gen.readyAt = this.now();
     this.hello = hello;
     this.state = STATE.READY;
     this.emit('ready', hello);
@@ -961,6 +1047,12 @@ class ServiceClient extends EventEmitter {
       this.fail('protocol mismatch');
       return;
     }
+    // The end a start step's error announced (0008, Errors): main read the
+    // error, and the process exited as it said it would.
+    if (gen.stepFailed && code === 0) {
+      this.fail('start step failed');
+      return;
+    }
     if (code !== null && NO_RESTART_EXIT_CODES.has(code)) {
       this.fail(`exit code ${code}`);
       return;
@@ -1005,6 +1097,25 @@ class ServiceClient extends EventEmitter {
 
   rejectReadyWaiters(reason) {
     for (const waiter of this.readyWaiters.splice(0)) waiter.reject(this.unavailable(reason));
+  }
+
+  /**
+   * A start step's error (`endsOnError`) from the process: it ends after
+   * answering (0008, Errors), so the generation is ending. Main sends it
+   * nothing more and closes its stdin, and kills it after the service's
+   * shutdown grace if it hasn't exited by then. Its exit 0 then fails the
+   * client without a restart (`retire`); any other end is judged as usual.
+   */
+  startStepFailed(gen) {
+    if (gen.retired || gen.stepFailed) return;
+    gen.stepFailed = true;
+    gen.cause = gen.cause || 'start_failed';
+    // Gone already, its reply read from what stdout still held.
+    if (gen.exited) return;
+    gen.ending = true;
+    this.fence(gen);
+    this.endStdin(gen);
+    this.timer(gen, () => this.kill(gen), this.service.shutdownGraceMs ?? SHUTDOWN_GRACE_MS);
   }
 
   /** Ends a generation we no longer trust: records why, then kills it. */
@@ -1108,6 +1219,7 @@ class ServiceClient extends EventEmitter {
       fence = null,
       stream = false,
       onSent = null,
+      endsOnError = false,
     } = options || {};
     // Callback-style callers get every outcome through the callback.
     const refuse = (error) => {
@@ -1180,6 +1292,7 @@ class ServiceClient extends EventEmitter {
       entry.stream = true;
       entry.signal = signal;
     }
+    if (endsOnError) entry.endsOnError = true;
     // Sent for a private window, as its async context says, and in which
     // private session (private/private-log-context.js): see `privacyOf`.
     entry.private = isPrivateLogContext();
@@ -1857,6 +1970,8 @@ class ServiceClient extends EventEmitter {
     }
     if (entry.stream && hasResult) outcome = { result: { result: message.result, body } };
     gen.pending.delete(id);
+    // A start step's error: the process ends after it.
+    if (hasError && entry.endsOnError) this.startStepFailed(gen);
     entry.settle(outcome);
     return undefined;
   }
