@@ -405,15 +405,22 @@
     if (doc.visibilityState === 'visible') rearm();
   });
 
-  // The chrome's theme: main sets the app's colour scheme from Settings >
-  // Appearance, and the chrome's tokens key the light palette on this.
+  // Settings > Appearance, which main sends (it doesn't reach
+  // `prefers-color-scheme` on every platform): 'system' follows the OS. The
+  // chrome's tokens key the light palette on this attribute.
   const dark = root.matchMedia('(prefers-color-scheme: dark)');
+  let theme = 'system';
   const applyTheme = () => {
-    if (dark.matches) doc.documentElement.removeAttribute('data-theme');
+    const isDark = theme === 'dark' || (theme !== 'light' && dark.matches);
+    if (isDark) doc.documentElement.removeAttribute('data-theme');
     else doc.documentElement.setAttribute('data-theme', 'light');
   };
   applyTheme();
   dark.addEventListener('change', applyTheme);
+  bridge.onTheme((message) => {
+    theme = message?.theme === 'light' || message?.theme === 'dark' ? message.theme : 'system';
+    applyTheme();
+  });
 
   setButtons();
   bridge.ready();

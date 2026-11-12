@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld(
     onHidden: listen('page:prompt-hidden'),
     onClosed: listen('page:prompt-closed'),
     onMoved: listen('approvals:moved'),
+    onTheme: listen('approvals:theme'),
     ready: () => ipcRenderer.send('approvals:ready'),
     shown: (handle) => ipcRenderer.send('approvals:shown', { handle }),
     decide: (handle, approve, choices) => ipcRenderer.invoke('approvals:decide', { handle, approve, choices }),

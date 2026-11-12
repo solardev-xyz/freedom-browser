@@ -24,6 +24,7 @@
  *   page:prompt-hidden   main -> document  { handle }
  *   page:prompt-closed   main -> document  { handle, reason } (and to the chrome)
  *   approvals:moved      main -> document  the panel moved or was resized
+ *   approvals:theme      main -> document  { theme }: Settings > Appearance
  *   approvals:ready      document -> main  its listeners are set: send what shows
  *   approvals:shown      document -> main  { handle }: the prompt is on screen
  *                                          and the document's input delay started
@@ -102,6 +103,7 @@ const CHANNELS = Object.freeze({
   HIDDEN: 'page:prompt-hidden',
   CLOSED: 'page:prompt-closed',
   MOVED: 'approvals:moved',
+  THEME: 'approvals:theme',
   READY: 'approvals:ready',
   SHOWN: 'approvals:shown',
   DECIDE: 'approvals:decide',
@@ -235,6 +237,10 @@ function defaultChromeWindowOf(contents) {
  * @param {(contents: object) => number|null} [options.chromeWindowOf]
  * @param {(file: string) => Promise<Buffer>} [options.readFile]
  * @param {() => number} [options.now] a monotonic clock, in ms.
+ * @param {() => string} [options.themeSetting] Settings > Appearance:
+ *   'light', 'dark' or 'system'. The setting doesn't reach
+ *   `prefers-color-scheme` on every platform, so the document is told.
+ * @param {(listener: (theme: string) => void) => void} [options.onThemeChange]
  * @param {(entry: object) => void} [options.onTrace]
  */
 function createApprovalsDocuments({
@@ -244,6 +250,8 @@ function createApprovalsDocuments({
   chromeWindowOf = defaultChromeWindowOf,
   readFile = (file) => fs.promises.readFile(file),
   now = () => performance.now(),
+  themeSetting = () => 'system',
+  onThemeChange = () => {},
   onTrace = () => {},
   log = console,
 } = {}) {
@@ -405,11 +413,12 @@ function createApprovalsDocuments({
       record.report = null;
       safely(() => contents.reload());
     });
-    contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-      if (isMainFrame && !isInPlace) {
-        record.ready = false;
-        record.report = null;
-      }
+    // A committed document of its own (main's reload, or a load main didn't
+    // make) is a new document: it says when it is ready. A navigation that
+    // was refused never commits.
+    contents.on('did-navigate', () => {
+      record.ready = false;
+      record.report = null;
     });
     contents.once('destroyed', () => forget(record));
     window.once('closed', () => {
@@ -498,6 +507,7 @@ function createApprovalsDocuments({
     record.ready = true;
     record.report = null;
     trace({ kind: 'ready', window: record.windowId });
+    deliver(record, CHANNELS.THEME, { theme: safely(() => themeSetting(), 'system') });
     if (record.shown) {
       arm(record);
       deliver(record, CHANNELS.PROMPT, record.shown);
@@ -515,7 +525,7 @@ function createApprovalsDocuments({
       return { ok: false, reason: 'not-shown' };
     }
     record.report = { handle, at: now() };
-    trace({ kind: 'shown', window: record.windowId, handle });
+    trace({ kind: 'shown', window: record.windowId, handle, at: record.report.at });
     return { ok: true };
   }
 
@@ -568,6 +578,9 @@ function createApprovalsDocuments({
   }
 
   function register(ipcMain) {
+    onThemeChange((theme) => {
+      for (const record of byWindow.values()) deliver(record, CHANNELS.THEME, { theme });
+    });
     ipcMain.on(CHANNELS.READY, (event) => {
       ready(event);
     });
@@ -607,8 +620,14 @@ let shared = null;
 
 function getApprovalsDocuments() {
   if (!shared) {
+    const settings = require('../settings-store');
     shared = createApprovalsDocuments({
       decide: (windowId, payload) => require('../page/page-requests').getPageRequests().decideInWindow(windowId, payload),
+      themeSetting: () => settings.loadSettings().theme,
+      onThemeChange: (listener) =>
+        settings.onSettingsChanged((merged, previous) => {
+          if (merged?.theme !== previous?.theme) listener(merged?.theme);
+        }),
       onTrace: (entry) => sharedHooks.onTrace?.(entry),
       log: require('../logger'),
     });
