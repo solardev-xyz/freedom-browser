@@ -33,6 +33,16 @@
  *    per-requester queue, wait and run timeouts, abort when the page goes
  *    away), a read that has ended starts no further native call, and a
  *    response over MAX_RESPONSE_CHARS is refused.
+ *  - On the freedom-radicled service (`FREEDOM_RADICLE_BACKEND=service`,
+ *    development builds only; freedom-core design 0008, "Reads take
+ *    admission and cancel", deviations `rad-admission`, `read-deadline` and
+ *    `size-caps`): reads take main's dweb admission in place of
+ *    rad-read-admission.js (radicle-api-protocol.js's `serveAdmitted`), for
+ *    the request's whole life, its streamed body included. The page going
+ *    away (the handoff token's abort, below) or its session closing sends
+ *    the service `cancel`, before the head or during the body. The service
+ *    bounds each read (60 s to its head, its caps), so main's
+ *    MAX_RESPONSE_CHARS and run timeout are the add-on's only.
  */
 
 const { randomUUID } = require('node:crypto');
@@ -44,8 +54,9 @@ const {
   redactedFailure,
 } = require('../private/private-log-context');
 const { isDisabledForProfile } = require('../radicle-manager');
-const { decodeRepoApiPath, serveRepoApi } = require('../radicle-api-protocol');
+const { decodeRepoApiPath, serveRepoApi, serveAdmitted } = require('../radicle-api-protocol');
 const { createRadReadAdmission, RadReadRefused } = require('./rad-read-admission');
+const { radicleBackendKind } = require('./radicle-backend-kind');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 
 // The most JSON text one `rad:` response carries (a blob, a diff, a tree).
@@ -232,10 +243,15 @@ function jsonErrorResponse(status, message) {
 }
 
 /**
- * Core handler, exported for testability. `fetchImpl` defaults to global
- * fetch but tests can inject a stub.
+ * Core handler, exported for testability. `session` names the requester's
+ * session for the add-on's admission; `partition` is a private session's
+ * partition (null for the default session), whose dweb admission the read
+ * takes on the service.
  */
-async function handleRadRequest(request, { session = 'default', webSession = null } = {}) {
+async function handleRadRequest(
+  request,
+  { session = 'default', webSession = null, partition = null } = {}
+) {
   const method = (request.method || 'GET').toUpperCase();
   if (!ALLOWED_METHODS.has(method)) {
     return jsonErrorResponse(405, 'method not allowed');
@@ -258,6 +274,22 @@ async function handleRadRequest(request, { session = 'default', webSession = nul
   const claim = claimRead(request, webSession);
   if (claim.ended) return jsonErrorResponse(503, 'request cancelled');
   const { signal, webContentsId, release } = claim;
+  if (radicleBackendKind() === 'service') {
+    // The read's abort matters until its body is over, so its token is kept
+    // until then (`onEnd`), not just until the answer is made.
+    try {
+      return await serveAdmitted(
+        { partition, signal, onEnd: release },
+        (admitted) =>
+          serveRepoApi(built.rid, built.path, { method, search: built.search, admitted }),
+        jsonErrorResponse
+      );
+    } catch (err) {
+      // The page is gone; nobody reads this.
+      if (err?.name === 'AbortError') return jsonErrorResponse(503, 'request cancelled');
+      throw err;
+    }
+  }
   try {
     // `work` ends when the page goes away or the run deadline passes: the
     // serving pipeline then starts no further native call (R-3).
@@ -309,7 +341,11 @@ function registerRadProtocol(targetSession, { privatePartition = null } = {}) {
     const session = privatePartition || 'default';
     targetSession.protocol.handle('rad', (request) =>
       runWithPrivateLogContext(isPrivate, () =>
-        handleRadRequest(request, { session, webSession: targetSession })
+        handleRadRequest(request, {
+          session,
+          webSession: targetSession,
+          partition: privatePartition,
+        })
       )
     );
     log.info('[rad-protocol] handler registered');

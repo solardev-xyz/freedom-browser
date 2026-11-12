@@ -23,14 +23,19 @@
  *   would seal it (`radicle-seal.js`), so the home holds no key file (the
  *   service refuses one: 0008, "The switch"). It runs under a SOCKS policy
  *   at a closed loopback port, and the manager's background seeds and
- *   clone answer without dialling. Main's code for what it doesn't serve
+ *   clone answer without dialling: a clone would write a seeding policy
+ *   into the fixture's home. With `{ networkOnBinary: true }` they run on
+ *   the binary instead, for radicled-network.integration.test.js; nothing
+ *   leaves the machine either way. Main's code for what it doesn't serve
  *   yet stays on the add-on (`lacks`).
  *
  * Each backend serves one Radicle home (`home`), restored from the
  * fixture's snapshot, and returns:
  *
- * - `manager`, `embedded`, `api` (`radicle-api-protocol.js`) and `rad`
- *   (`radicle/rad-protocol.js`), loaded together in one module registry;
+ * - `manager`, `embedded`, `api` (`radicle-api-protocol.js`), `rad`
+ *   (`radicle/rad-protocol.js`) and `admission` (main's dweb admission,
+ *   `dweb/fetch-admission.js`, which the handlers take on the service),
+ *   loaded together in one module registry;
  * - `readText(op, args)`: a `rad.read` op's JSON text, exactly as the
  *   backend produces it, or a rejection with its error's message. This is
  *   the contract boundary: the suite compares the text byte for byte. For
@@ -44,7 +49,9 @@
  *   returns the function that undoes it. On the service, which composes
  *   `node_info` itself, the next `node_info` answers as the service does
  *   when that part fails: `listRepos` gives `repos_total: null` with the
- *   message as `repos_error`, and `status` fails the read;
+ *   message as `repos_error`, and `status` fails the read, or the next
+ *   `status` read, whichever comes first (radapi's `/` reads `status`
+ *   alone);
  * - `getConnections()`: the manager's answer, as the vectors record it (on
  *   the service, without its diagnostics, `confinement` and `service`);
  * - `stop()` and `close()`.
@@ -52,6 +59,7 @@
  * Network operations are not part of the suite: `connectSeeds` and the
  * clones answer without dialling, and the home names no peer
  * (`radicle-fixture.js`). Nothing leaves the machine.
+ * radicled-network.integration.test.js runs them on the binary.
  *
  * `BACKENDS` lists, beside each loader:
  * - `honours`: the design's features beyond today's contract that the
@@ -64,7 +72,8 @@
  *   by case: the design's deviation, why, and `differs(record, vector)`,
  *   which holds when its answer differs from the vector in that way and no
  *   other. A listed case that matches its vector fails, until it is
- *   removed from the list.
+ *   removed from the list. `handlerDeviations(fx)` lists the handler
+ *   vectors' the same way, for the fixture `fx`.
  *
  * The pending tests use what only the service has:
  * - `call(method, params)` for its methods;
@@ -225,6 +234,7 @@ async function loadAddonBackend({ home }) {
   };
   const api = require(path.join(SRC, 'radicle-api-protocol.js'));
   const rad = require(path.join(SRC, 'radicle', 'rad-protocol.js'));
+  const admission = require(path.join(SRC, 'dweb', 'fetch-admission.js'));
   const addon = require(embedded.getAddonPath());
 
   // A handler answer's body, or a rejection with its error's message.
@@ -265,6 +275,7 @@ async function loadAddonBackend({ home }) {
     embedded,
     api,
     rad,
+    admission,
     log,
     async start() {
       const status = await manager.startRadicle();
@@ -348,7 +359,7 @@ function readReply(text) {
   };
 }
 
-async function loadRadicledBackend({ home }) {
+async function loadRadicledBackend({ home, networkOnBinary = false }) {
   const binary = radicledBinary();
   if (!fs.existsSync(binary)) {
     throw new Error(
@@ -425,17 +436,24 @@ async function loadRadicledBackend({ home }) {
             nodes.push(this);
           }
 
-          // Not dialled: the suite runs no network operation.
-          async connectSeeds() {
+          // Not dialled: the suite runs no network operation, unless asked.
+          async connectSeeds(timeoutMs, options) {
+            if (networkOnBinary) return super.connectSeeds(timeoutMs, options);
             return { connected: 0, attempted: 0, targetReached: false };
           }
 
-          async cloneRepo() {
+          async clone(rid, timeoutMs, options) {
+            if (networkOnBinary) return super.clone(rid, timeoutMs, options);
             throw notDialled();
           }
 
           async read(op, args, options) {
-            const failure = op === 'node_info' ? nodeInfoFailure : null;
+            // The next node_info, or for a failed `status` the next status
+            // read too (radapi's `/` reads it alone), answers the failure.
+            const failure =
+              op === 'node_info' || (op === 'status' && nodeInfoFailure?.name === 'status')
+                ? nodeInfoFailure
+                : null;
             if (!failure) return super.read(op, args, options);
             nodeInfoFailure = null;
             if (failure.name === 'status') {
@@ -456,6 +474,7 @@ async function loadRadicledBackend({ home }) {
   const embedded = require(path.join(SRC, 'radicle-embedded.js'));
   const api = require(path.join(SRC, 'radicle-api-protocol.js'));
   const rad = require(path.join(SRC, 'radicle', 'rad-protocol.js'));
+  const admission = require(path.join(SRC, 'dweb', 'fetch-admission.js'));
   const current = () => {
     const node = nodes.at(-1);
     const gen = node?.liveActive()?.gen;
@@ -471,6 +490,7 @@ async function loadRadicledBackend({ home }) {
     embedded,
     api,
     rad,
+    admission,
     log,
     async start() {
       const status = await manager.startRadicle();
@@ -585,18 +605,60 @@ const RADICLED_DEVIATIONS = {
 };
 
 /**
+ * The handlers' answers freedom-radicled gives otherwise, by design, for the
+ * fixture `fx`: as RADICLED_DEVIATIONS, by handler vector.
+ */
+const radicledHandlerDeviations = (fx) => ({
+  [`rad GET /commits/${fx.commits.second}`]: {
+    deviation: 'size-caps',
+    reason:
+      "The second commit's diff is too_large on the service ('commit second' above), so the " +
+      "handler answers 413 with main's fixed text, where v0.8.0 answered the diff.",
+    // As JSON: a header entry is an array of another realm's (undici's).
+    differs: (record, vector) =>
+      JSON.stringify(record) ===
+        JSON.stringify({
+          status: 413,
+          headers: vector.headers,
+          body: JSON.stringify({ error: 'repository data too large to serve here' }),
+        }) &&
+      vector.status === 200 &&
+      vector.body.includes('"path":"big.bin","diff":{"type":"binary"}'),
+  },
+});
+
+/**
  * The backends, each with the features it honours. A feature's pending
- * tests run against a backend that lists it here.
+ * tests run against a backend that lists it here. `handlerDeviations(fx)`
+ * is `deviations`' for the handler vectors, whose names hold the fixture's
+ * commits.
  */
 const BACKENDS = {
-  addon: { load: loadAddonBackend, honours: [], lacks: [], hooks: [], deviations: {} },
+  addon: {
+    load: loadAddonBackend,
+    honours: [],
+    lacks: [],
+    hooks: [],
+    deviations: {},
+    handlerDeviations: () => ({}),
+  },
   // The release binary: no test hooks (they are a debug build's).
   radicled: {
     load: loadRadicledBackend,
-    honours: ['call-stream', 'call-scoped', 'node-info', 'dirty-marker', 'quarantine'],
-    lacks: ['handlers', 'parsed-reads', 'network', 'writes', 'import'],
+    honours: [
+      'call-stream',
+      'call-scoped',
+      'node-info',
+      'dirty-marker',
+      'quarantine',
+      'size-caps',
+      // Its test needs the scriptedClone hook (plan C4), which no release has.
+      'progress-summary',
+    ],
+    lacks: ['parsed-reads', 'writes', 'import'],
     hooks: [],
     deviations: RADICLED_DEVIATIONS,
+    handlerDeviations: radicledHandlerDeviations,
   },
 };
 

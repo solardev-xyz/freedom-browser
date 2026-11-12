@@ -5,6 +5,17 @@
  * worker pool. This module keeps that promise out of IPC request lifetimes so
  * window.radicle can start a fetch without keeping an IPC request open.
  * Internal Freedom pages also receive each transition as it happens.
+ *
+ * **A summary of peer failures** (freedom-core design 0008, Progress,
+ * deviation `progress-summary`): on the freedom-radicled service, a clone's
+ * peer failures past 8 unwritten ones come folded into one event,
+ * `{ phase: 'peer-failed', summary: { count, reasons } }`, with the count
+ * and the 4 most recent reasons, oldest first, and no `nid`. Each of its
+ * reasons is a recent attempt with `nid: null`, and its status's progress
+ * is `{ phase: 'peer-failed', count, reason }`, `reason` the most recent:
+ * the summary's own object never leaves this module, so a page sees its
+ * texts only where the provider gives each error text its fixed form
+ * (`progress.reason`, `recentAttempts[].error`).
  */
 
 const log = require('../logger');
@@ -49,6 +60,24 @@ function publicStatus(record) {
   return status;
 }
 
+/**
+ * A peer-failed event's summary (see the module's doc): `{ count, reasons
+ * }`, its count of failures and its string reasons, or null for a single
+ * failure. A `summary` that isn't one counts no failure and names no
+ * reason.
+ */
+function failureSummary(progress) {
+  if (!Object.hasOwn(progress, 'summary')) return null;
+  const { summary } = progress;
+  const count =
+    summary && Number.isSafeInteger(summary.count) && summary.count > 0 ? summary.count : 0;
+  const reasons =
+    summary && Array.isArray(summary.reasons)
+      ? summary.reasons.filter((reason) => typeof reason === 'string')
+      : [];
+  return { count, reasons };
+}
+
 function startFetch(rid, { fetchRepo, getSeeders, onStatus }) {
   const existing = records.get(rid);
   if (existing?.state === 'fetching') {
@@ -77,15 +106,28 @@ function startFetch(rid, { fetchRepo, getSeeders, onStatus }) {
   const onProgress = (progress) => {
     if (record.cancelled || records.get(rid) !== record || !progress?.phase) return;
     const previous = record.progress;
-    record.progress = { ...progress };
-    if (progress.phase === 'peer-failed') {
-      record.recentAttempts.push({
-        nid: progress.nid,
-        ok: false,
-        error: progress.reason,
-        at: Date.now(),
-      });
+    const summary = progress.phase === 'peer-failed' ? failureSummary(progress) : null;
+    if (summary) {
+      record.progress = {
+        phase: 'peer-failed',
+        count: summary.count,
+        reason: summary.reasons.at(-1) ?? null,
+      };
+      for (const reason of summary.reasons) {
+        record.recentAttempts.push({ nid: null, ok: false, error: reason, at: Date.now() });
+      }
       record.recentAttempts = record.recentAttempts.slice(-5);
+    } else {
+      record.progress = { ...progress };
+      if (progress.phase === 'peer-failed') {
+        record.recentAttempts.push({
+          nid: progress.nid,
+          ok: false,
+          error: progress.reason,
+          at: Date.now(),
+        });
+        record.recentAttempts = record.recentAttempts.slice(-5);
+      }
     }
     if (progress.phase === 'done' && previous?.nid) {
       record.recentAttempts.push({ nid: previous.nid, ok: true, at: Date.now() });

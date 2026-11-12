@@ -41,10 +41,32 @@
  *     allowance isn't reused while it may still hold the value.
  * - **Other callers** (the manager, cob-service.js, the provider, the
  *   GitHub bridge) aren't admitted by main's dweb admission, which the
- *   handlers' reads will take. Together they hold at most 64 requests
+ *   handlers' reads take. Together they hold at most 64 requests
  *   outstanding at the service, with 64 more waiting in main for one to
  *   end; a call past that fails `busy`. A request is outstanding until its
  *   body ends: read to its end, cancelled or failed.
+ * - **The handlers' reads** (`rad:` and `radapi:`, radicle-api-protocol.js)
+ *   hold a slot of main's dweb admission (dweb/fetch-admission.js) for
+ *   their request's whole life, its body included, and say so with
+ *   `admitted: true`: they take none of the other callers' slots.
+ *
+ * - **The network operations** (0008, Methods `rad.connect_seeds` and
+ *   `rad.clone`, Progress): `connectSeeds(timeoutMs)` is today's seed
+ *   report, and `cloneRepo` and `cloneRepoWithProgress` a clone, `{ ok:
+ *   true }` or `{ cancelled: true }`, its `rad.progress` events, each
+ *   libradicle's JSON text, handed to the callback in order, the terminal
+ *   one last, before the clone settles. Each holds one of the other
+ *   callers' slots until its answer.
+ *   - **`cancelClone(rid)`** replaces the add-on's token found by RID: it
+ *     cancels the requests of the progress clones of `rid` (the add-on
+ *     registered no other), and answers `{ cancelled }`, whether there was
+ *     one. The cancel goes at once; the clone settles when it actually
+ *     stops, `{ cancelled: true }`, as the add-on's did: the service
+ *     answers once libradicle has returned, a fetch in flight finishing
+ *     first. A clone cancelled before it started (waiting for a slot here,
+ *     or queued in the service) settles `{ cancelled: true }` at once.
+ *   - The service's own end of a clone, its deadline (`deadline`) or its
+ *     stop (`stopped`), is an error, as any other of the service's.
  *
  * Every failure carries the service's code, or main's: `stopped` with no
  * node running, `busy`, `too_large`, `cancelled`, and `internal` for a
@@ -120,6 +142,21 @@ function tooLarge(op, cap) {
 
 function badReply(message) {
   return new CoreError('internal', `freedom-radicled answered a read ${message}`);
+}
+
+function badNetworkReply(method) {
+  return new CoreError(
+    'internal',
+    `freedom-radicled answered ${method} with a result main can't read`
+  );
+}
+
+/** A clone's answer as the add-on gave it: `{ ok: true }` or `{ cancelled:
+ * true }`; any other is `internal`. */
+function cloneOutcome(result) {
+  if (isObject(result) && result.ok === true) return { ok: true };
+  if (isObject(result) && result.cancelled === true) return { cancelled: true };
+  throw badNetworkReply('rad.clone');
 }
 
 /** Calls `fn` once, however many times the function it returns is called. */
@@ -347,15 +384,20 @@ class RadicleServiceBackend {
       setTimer,
       clearTimer,
     });
+    // The progress clones in flight, by RID, as `cancelClone` finds them:
+    // rid -> Set of their cancels.
+    this.clones = new Map();
   }
 
   /**
    * A read passed through: `{ head: { content_type, bytes }, body }`, `body`
    * a byte stream of exactly `bytes` bytes of JSON. Until the body is over
    * (read to its end, cancelled or failed), the read holds one of the other
-   * callers' slots.
+   * callers' slots, unless it is `admitted`: a handler's read, whose request
+   * holds a slot of main's dweb admission instead.
    */
-  async callStream(op, args = {}, { signal = null } = {}) {
+  async callStream(op, args = {}, { signal = null, admitted = false } = {}) {
+    if (admitted) return this.read(op, args, signal);
     const release = await this.slots.take({ signal });
     let read;
     try {
@@ -395,10 +437,11 @@ class RadicleServiceBackend {
   /**
    * A collected result, parsed in a scope: resolves to what `scope(value,
    * { signal })` resolves to. Only the ops in COLLECTED_CAPS, each under
-   * its cap; see the module's doc for the budget and ownership.
+   * its cap; see the module's doc for the budget and ownership. `admitted`
+   * is callStream's: a handler's read, in its request's dweb slot.
    */
-  async callScoped(op, args, scope, { signal = null } = {}) {
-    return this.scoped(op, args, scope, { signal, leaves: false });
+  async callScoped(op, args, scope, { signal = null, admitted = false } = {}) {
+    return this.scoped(op, args, scope, { signal, admitted, leaves: false });
   }
 
   /**
@@ -426,7 +469,7 @@ class RadicleServiceBackend {
   }
 
   /** callScoped's work; `leaves` lets the value itself out (`keep`). */
-  async scoped(op, args, scope, { signal, leaves }) {
+  async scoped(op, args, scope, { signal, admitted = false, leaves }) {
     const cap = Object.hasOwn(COLLECTED_CAPS, op) ? COLLECTED_CAPS[op] : null;
     if (cap === null) {
       throw new CoreError('invalid_argument', `${op} isn't a collected result: stream it`);
@@ -437,7 +480,7 @@ class RadicleServiceBackend {
     let bytes;
     let reader = null;
     try {
-      const { head, body } = await this.callStream(op, args, { signal });
+      const { head, body } = await this.callStream(op, args, { signal, admitted });
       reader = body.getReader();
       bytes = head.bytes;
       if (bytes > cap) throw tooLarge(op, cap);
@@ -462,6 +505,98 @@ class RadicleServiceBackend {
       throw new CoreError('invalid_argument', `${op}'s value can't leave its scope: use it there`);
     }
     return result;
+  }
+
+  /**
+   * `rad.connect_seeds { timeout_ms }` on the running node: today's report,
+   * the object libradicle's `json::seed_report` writes. One of the other
+   * callers' slots until its answer.
+   */
+  async connectSeeds(timeoutMs, { signal = null } = {}) {
+    return this.withSlot(signal, async (node) => {
+      const report = await node.connectSeeds(timeoutMs, { signal });
+      if (!isObject(report)) throw badNetworkReply('rad.connect_seeds');
+      return report;
+    });
+  }
+
+  /** A clone of `rid`, without progress (the manager's background clone):
+   * `{ ok: true }`. `cancelClone` doesn't find it, as it found no such
+   * clone on the add-on. */
+  cloneRepo(rid, timeoutMs) {
+    return this.clone(rid, timeoutMs, null);
+  }
+
+  /**
+   * A clone of `rid` with progress: `onProgress(text)` for each event, its
+   * JSON text, until the clone settles, `{ ok: true }` or `{ cancelled: true
+   * }` (`cancelClone`).
+   */
+  cloneRepoWithProgress(rid, timeoutMs, onProgress) {
+    if (typeof onProgress !== 'function') {
+      return Promise.reject(new TypeError('cloneRepoWithProgress needs a progress callback'));
+    }
+    return this.clone(rid, timeoutMs, onProgress);
+  }
+
+  /**
+   * Cancels the progress clones of `rid` in flight: `{ cancelled }`, whether
+   * there was one. They settle once they stop.
+   */
+  cancelClone(rid) {
+    const cancels = this.clones.get(rid);
+    if (!cancels) return { cancelled: false };
+    for (const cancel of cancels) cancel.abort();
+    return { cancelled: true };
+  }
+
+  /** `rad.clone` on the running node; with `onProgress`, registered under
+   * `rid` for `cancelClone` until it settles. */
+  async clone(rid, timeoutMs, onProgress) {
+    const cancel = onProgress ? new AbortController() : null;
+    const signal = cancel?.signal ?? null;
+    if (cancel) this.register(rid, cancel);
+    try {
+      return await this.withSlot(signal, async (node) =>
+        cloneOutcome(await node.clone(rid, timeoutMs, { onProgress, signal }))
+      );
+    } catch (err) {
+      // Main's cancel before the clone started: the slot's wait, or the
+      // service, answered `cancelled`. Nothing was fetched.
+      if (signal?.aborted && err?.code === 'cancelled') return { cancelled: true };
+      throw err;
+    } finally {
+      if (cancel) this.unregister(rid, cancel);
+    }
+  }
+
+  register(rid, cancel) {
+    let cancels = this.clones.get(rid);
+    if (!cancels) {
+      cancels = new Set();
+      this.clones.set(rid, cancels);
+    }
+    cancels.add(cancel);
+  }
+
+  unregister(rid, cancel) {
+    const cancels = this.clones.get(rid);
+    if (!cancels) return;
+    cancels.delete(cancel);
+    if (cancels.size === 0) this.clones.delete(rid);
+  }
+
+  /** `work(node)` on the running node, holding one of the other callers'
+   * slots until it settles; `signal` gives up the wait for one. */
+  async withSlot(signal, work) {
+    const release = await this.slots.take({ signal });
+    try {
+      const node = this.node();
+      if (!node) throw new CoreError('stopped', NOT_RUNNING);
+      return await work(node);
+    } finally {
+      release();
+    }
   }
 
   /** The collection budget's use: `{ held, limit }`, in bytes. */

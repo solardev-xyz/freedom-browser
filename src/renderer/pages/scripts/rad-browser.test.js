@@ -279,3 +279,19 @@ describe('resolveRevision', () => {
     expect(resolveRevision(null, null)).toEqual({ sha: null, pinned: false });
   });
 });
+
+describe('seedProgressText', () => {
+  const { seedProgressText } = loadHelpers(['seedProgressText']);
+
+  test("a peer's failure names its position; a summary of several, their count", () => {
+    expect(
+      seedProgressText({ progress: { phase: 'peer-failed', nid: 'z6Mk', index: 2, total: 5 } })
+    ).toBe('Trying another seed (2/5)…');
+    expect(
+      seedProgressText({ progress: { phase: 'peer-failed', count: 12, reason: 'refused' } })
+    ).toBe('12 seeds failed; trying another…');
+    expect(seedProgressText({ progress: { phase: 'peer-failed', count: 1, reason: 'x' } })).toBe(
+      '1 seed failed; trying another…'
+    );
+  });
+});

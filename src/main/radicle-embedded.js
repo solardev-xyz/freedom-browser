@@ -26,13 +26,20 @@
  *   of collected results, whose callers use the value there;
  * - **`identity` and `status`** are collected and handed out, as 0008 lets
  *   a value under 4 KiB outlive its scope (a larger one is `too_large`);
+ * - **the network operations** are the service's methods: `connectSeeds`
+ *   is `rad.connect_seeds`, `cloneRepo` and `cloneRepoWithProgress` are
+ *   `rad.clone`, whose `rad.progress` events reach the callback parsed, as
+ *   the add-on's did, and `cancelClone(rid)` cancels the request of that
+ *   RID's progress clone, which then settles `{ cancelled: true }` once it
+ *   stops;
  * - **every other export** answers "Not available on the Radicle service
  *   yet" (`RADICLE_SERVICE_UNSUPPORTED`) until its own step moves it: the
  *   other collected results as values (`repoInfo`, `seeders`,
  *   `listSeededRepos`, `listRepos`), whose callers move into scopes; the
- *   handlers' parsed and `*Raw` reads (they move to `callStream`); the
- *   network operations, the writes and the import. `isStarted` says whether
- *   the service node runs.
+ *   handlers' parsed and `*Raw` reads, which the `rad:` and `radapi:`
+ *   handlers don't call on the service (they read through `callStream`
+ *   and `callScoped`, in their request's dweb admission); the writes and
+ *   the import. `isStarted` says whether the service node runs.
  */
 
 const { AsyncLocalStorage } = require('node:async_hooks');
@@ -193,10 +200,13 @@ function serviceOnly(name) {
  * A read passed through on the service (0008, "JSON results"): `{ head:
  * { content_type, bytes }, body }`, `body` a byte stream of the JSON. For
  * the handlers' reads. `signal`, or the body's `cancel()`, cancels it.
+ * `admitted`: the caller's request holds a slot of main's dweb admission
+ * (the `rad:` and `radapi:` handlers), so the read takes none of the other
+ * callers' (radicle/radicle-service-backend.js).
  */
-function callStream(op, args = {}, { signal = null } = {}) {
+function callStream(op, args = {}, { signal = null, admitted = false } = {}) {
   try {
-    return serviceOnly('callStream').callStream(op, args, { signal });
+    return serviceOnly('callStream').callStream(op, args, { signal, admitted });
   } catch (err) {
     return Promise.reject(err);
   }
@@ -208,11 +218,11 @@ function callStream(op, args = {}, { signal = null } = {}) {
  * main's collection budget holds it until the scope settles. The value
  * itself can't be what the scope resolves to: it is used there. Only the
  * closed list of small results (radicle/radicle-service-backend.js's
- * COLLECTED_CAPS).
+ * COLLECTED_CAPS). `admitted` is callStream's.
  */
-function callScoped(op, args, scope, { signal = null } = {}) {
+function callScoped(op, args, scope, { signal = null, admitted = false } = {}) {
   try {
-    return serviceOnly('callScoped').callScoped(op, args, scope, { signal });
+    return serviceOnly('callScoped').callScoped(op, args, scope, { signal, admitted });
   } catch (err) {
     return Promise.reject(err);
   }
@@ -341,10 +351,11 @@ function isStarted() {
 
 const connectSeeds = (timeoutMs = 15000) => call('connectSeeds', timeoutMs);
 const cloneRepo = (rid, timeoutMs = 120000) => call('cloneRepo', rid, timeoutMs);
-async function cloneRepoWithProgress(rid, timeoutMs = 120000, onProgress = () => {}) {
-  const a = loadAddon();
-  if (!a) throw new Error('radicle addon not available');
-  const raw = await a.cloneRepoWithProgress(rid, timeoutMs, (eventRaw) => {
+
+/** A clone's progress callback for each event's JSON text, parsed, as the
+ * add-on and the service both hand it on. */
+function parsedProgress(onProgress) {
+  return (eventRaw) => {
     try {
       onProgress(JSON.parse(eventRaw));
     } catch (err) {
@@ -356,10 +367,24 @@ async function cloneRepoWithProgress(rid, timeoutMs = 120000, onProgress = () =>
         redactForLog(err.message)
       );
     }
-  });
+  };
+}
+
+async function cloneRepoWithProgress(rid, timeoutMs = 120000, onProgress = () => {}) {
+  const a = loadAddon();
+  if (!a) throw new Error('radicle addon not available');
+  const raw = await a.cloneRepoWithProgress(rid, timeoutMs, parsedProgress(onProgress));
   return parseResult(raw);
 }
 const cancelClone = (rid) => call('cancelClone', rid);
+
+// The network operations on the service (0008, Methods): the same
+// arguments, defaults and results.
+const serviceConnectSeeds = async (timeoutMs = 15000) => service().connectSeeds(timeoutMs);
+const serviceCloneRepo = async (rid, timeoutMs = 120000) => service().cloneRepo(rid, timeoutMs);
+const serviceCloneRepoWithProgress = async (rid, timeoutMs = 120000, onProgress = () => {}) =>
+  service().cloneRepoWithProgress(rid, timeoutMs, parsedProgress(onProgress));
+const serviceCancelClone = async (rid) => service().cancelClone(rid);
 const unseedRepo = (rid) => call('unseedRepo', rid);
 const listRepos = () => call('listRepos');
 const listSeededRepos = () => call('listSeededRepos');
@@ -511,11 +536,16 @@ module.exports = {
   start: routed('start', start),
   shutdown: routed('shutdown', shutdown),
   isStarted: () => (onService() ? serviceStarted() : isStarted()),
-  // Network operations, writes and the import: their own steps.
-  connectSeeds: routed('connectSeeds', connectSeeds),
-  cloneRepo: routed('cloneRepo', cloneRepo),
-  cloneRepoWithProgress: routed('cloneRepoWithProgress', cloneRepoWithProgress),
-  cancelClone: routed('cancelClone', cancelClone),
+  // The network operations: the service's methods.
+  connectSeeds: routed('connectSeeds', connectSeeds, serviceConnectSeeds),
+  cloneRepo: routed('cloneRepo', cloneRepo, serviceCloneRepo),
+  cloneRepoWithProgress: routed(
+    'cloneRepoWithProgress',
+    cloneRepoWithProgress,
+    serviceCloneRepoWithProgress
+  ),
+  cancelClone: routed('cancelClone', cancelClone, serviceCancelClone),
+  // Writes and the import: their own steps.
   unseedRepo: routed('unseedRepo', unseedRepo),
   createIssue: routed('createIssue', createIssue),
   commentIssue: routed('commentIssue', commentIssue),
@@ -531,7 +561,8 @@ module.exports = {
   listSeededRepos: routed('listSeededRepos', listSeededRepos),
   repoInfo: routed('repoInfo', repoInfo),
   seeders: routed('seeders', seeders),
-  // The handlers' reads: callStream on the service.
+  // The handlers' reads on the add-on: on the service, the handlers read
+  // through callStream instead (radicle-api-protocol.js).
   issues: routed('issues', issues),
   issue: routed('issue', issue),
   patches: routed('patches', patches),

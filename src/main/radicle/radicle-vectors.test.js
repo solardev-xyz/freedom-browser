@@ -26,8 +26,10 @@
  *
  * What only the service has (`source: design`: the progress queue, the
  * `rad.stats` results, `rad.blob`'s ranges and refusals, the service's
- * answers) has no `main` to replay here; later PRs run every file again
- * against main's service path.
+ * answers) has no `main` to replay here. Main's service path runs the files
+ * again below: radicle-reads.json and radicle-blob.json (B7, B8), and
+ * radicle-network.json with the service's progress queue (B9); the others
+ * with their steps.
  *
  * **Drift.** A case main no longer answers as recorded fails, unless it is
  * listed in KNOWN_STALE: main changed it on purpose, and freedom-core
@@ -312,3 +314,390 @@ const nodeInfoCases = readsVectors?.cases.filter((c) => c.op === 'node_info') ??
     );
   }
 );
+
+/**
+ * The radapi handlers' answers on main's service path (the radicled plan's
+ * B8): each radicle-reads.json case's endpoint (the same serveRepoApi path,
+ * listing or node endpoint the add-on replay asks), and each
+ * radicle-blob.json file's and error's `/blob/`, over a fake service node
+ * that answers the case's op as the service would (`serviceAnswer`; for
+ * node_info, `status` as the add-on's text and `node_info` as `expect`).
+ *
+ * Main must send one `rad.read` with the case's op and args (node_info's
+ * `/` the collected `status`, and `/api/v1/stats` the composed
+ * `node_info`), answer as it did over the add-on, status and body byte for
+ * byte, and log its own `[radapi]` lines as it did. What the add-on's
+ * composition logged (`[RadicleEmbedded] seeders() failed`) is the
+ * service's now. The one difference by design: a read past a byte bound is
+ * 413 on the service (deviation `size-caps`), where the add-on's was a 500.
+ */
+const blobVectors = vectors['radicle-blob.json'];
+(readsVectors ? describe : describe.skip)(
+  "radicle-reads.json's and radicle-blob.json's HTTP answers through main's service path",
+  () => {
+    let previousBackend;
+    let main;
+    beforeAll(() => {
+      previousBackend = process.env.FREEDOM_RADICLE_BACKEND;
+      process.env.FREEDOM_RADICLE_BACKEND = 'service';
+      main = harness.loadServiceReadsMain();
+    });
+    afterAll(() => {
+      if (previousBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+      else process.env.FREEDOM_RADICLE_BACKEND = previousBackend;
+    });
+
+    /** The reference's answer, as the service path gives it: 413 for a
+     * byte bound (size-caps), else the same. */
+    const onService = (recorded) => {
+      if (recorded.status === 200) return recorded;
+      const { error } = JSON.parse(recorded.body);
+      return harness.TOO_LARGE_TEXT.test(error) ? { ...recorded, status: 413 } : recorded;
+    };
+    const ownLines = (warnings) => warnings.filter((line) => line.startsWith('[radapi] '));
+
+    test('some failures are byte bounds, each a 413 on the service', () => {
+      const bounded = readsVectors.cases.filter(
+        (c) => c.op !== 'node_info' && onService(c.main).status === 413
+      );
+      expect(bounded.map((c) => c.id).length).toBeGreaterThan(0);
+    });
+
+    // describe.skip still runs this callback, so the table can't read a
+    // missing radicle-reads.json.
+    test.each(readsVectors ? readsVectors.cases.map((c) => [c.id, c]) : [['(no radicle-reads.json)', null]])(
+      '%s: the radapi answer, from one rad.read',
+      async (_id, c) => {
+        const replay = await harness.runServiceRead(main, c);
+        expect(replay.unscripted).toEqual([]);
+        if (c.op === 'node_info') {
+          expect(replay.calls).toEqual([
+            { op: 'status', args: {} },
+            { op: 'node_info', args: c.args },
+          ]);
+          expect(replay.main).toStrictEqual({ root: c.main.root, stats: c.main.stats });
+        } else {
+          expect(replay.calls).toEqual([{ op: c.op, args: c.args }]);
+          const expected = onService({ status: c.main.status, body: c.main.body });
+          expect(replay.main).toStrictEqual(expected);
+          expect(JSON.stringify(replay.main)).toBe(JSON.stringify(expected));
+        }
+        expect(replay.warnings).toEqual(ownLines(c.main.warnings));
+      }
+    );
+
+    // Each file's blob_at text, and each error's code and message as the
+    // service answers it (rad.blob's `expect`: the same libradicle error).
+    const blobCases = blobVectors
+      ? [
+          ...blobVectors.files
+            .filter((file) => file.main)
+            .map((file) => [
+              `files/${file.path}`,
+              file.path,
+              { body: harness.blobText(file) },
+              file.main,
+            ]),
+          ...blobVectors.errors.map((error) => [
+            `errors/${error.id}`,
+            error.path,
+            { error: error.expect.error },
+            error.main,
+          ]),
+        ]
+      : [['(no radicle-blob.json)', null, null, null]];
+    (blobVectors ? test.each : test.skip.each)(blobCases)(
+      '%s: /blob/ from one blob_at',
+      async (_id, filePath, answer, recorded) => {
+        const replay = await harness.runServiceBlob(main, answer, filePath);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.calls).toEqual([
+          { op: 'blob_at', args: { rid: harness.RID, revision: harness.REV, path: filePath } },
+        ]);
+        expect(replay.main).toStrictEqual(recorded);
+        expect(replay.warnings).toEqual(
+          recorded.status === 500
+            ? [`[radapi] ${harness.RID} /blob/${harness.REV}/${filePath} → ${answer.error.message}`]
+            : []
+        );
+      }
+    );
+  }
+);
+
+/**
+ * radicle-network.json on main's service path (the radicled plan's B9):
+ * the same manager and seed status, over a fake service node whose
+ * `rad.connect_seeds` and `rad.clone` answer as the service would.
+ *
+ * - **`reports`:** the background network start over the service's answer
+ *   (`expect`): the same log lines as over the add-on, and the same calls,
+ *   each as the service routes it (`serviceCalls`);
+ * - **`progress`:** each clone's events, as the texts of its `rad.progress`
+ *   events, then its result: the same statuses, byte for byte;
+ * - **`queue`:** what the service writes for a clone's progress, its queue's
+ *   envelopes (`written`), through `seed-status.js`: each event's status,
+ *   the summary event as `{ phase, count, reason }` with its reasons as
+ *   recent attempts, every failure counted, and the terminal's status last;
+ * - **`results`:** each clone's end as the service answers it: the same last
+ *   status where the service's text is the add-on's, its own text where it
+ *   isn't (a repository the gate holds closed), and for `nothing` the
+ *   deadline's or the stop's answer, a failure with the service's text,
+ *   where libradicle's cancel was the add-on's `cancelled`.
+ */
+const networkVectors = vectors['radicle-network.json'];
+
+/**
+ * The add-on calls a case recorded, each as the service routes it: the
+ * seeds and the clones are its methods, `getConnections`' counts one
+ * composed `node_info` read (its `status` and `listRepos`), a seeder count
+ * a collected `seeders` read, and the peer count after the seeds the node's
+ * own stats (no call).
+ */
+function serviceCalls(addonCalls) {
+  const out = [];
+  for (const { export: name, args } of addonCalls) {
+    switch (name) {
+      case 'connectSeeds':
+        out.push({ method: 'rad.connect_seeds', params: { timeout_ms: args[0] } });
+        break;
+      case 'cloneRepo':
+        out.push({
+          method: 'rad.clone',
+          params: { rid: args[0], timeout_ms: args[1], progress: false },
+        });
+        break;
+      case 'cloneRepoWithProgress':
+        out.push({
+          method: 'rad.clone',
+          params: { rid: args[0], timeout_ms: args[1], progress: true },
+        });
+        break;
+      case 'listRepos':
+        out.push({ op: 'node_info', args: {} });
+        break;
+      case 'seeders':
+        out.push({ op: 'seeders', args: { rid: args[0] } });
+        break;
+      case 'status':
+        break;
+      default:
+        throw new Error(`no service route for the add-on's ${name}`);
+    }
+  }
+  return out;
+}
+
+/** The lines main logs of its own, without the add-on's loading. */
+const mainLines = (lines) => lines.filter((line) => !line.startsWith('[RadicleEmbedded] Loaded'));
+
+(networkVectors ? describe : describe.skip)(
+  "radicle-network.json through main's service path",
+  () => {
+    let previousBackend;
+    let main;
+    beforeAll(() => {
+      previousBackend = process.env.FREEDOM_RADICLE_BACKEND;
+      process.env.FREEDOM_RADICLE_BACKEND = 'service';
+      main = harness.loadServiceNetworkMain();
+    });
+    afterAll(() => {
+      if (previousBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+      else process.env.FREEDOM_RADICLE_BACKEND = previousBackend;
+    });
+
+    // describe.skip still runs this callback: the tables can't read a
+    // missing file.
+    const cases = (name) =>
+      networkVectors ? networkVectors[name].map((c) => [c.id, c]) : [[`(no ${name})`, null]];
+
+    test.each(cases('reports'))(
+      'reports/%s: the background start over the service answer',
+      async (_id, c) => {
+        const replay = await harness.runServiceReport(main, c);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.unanswered).toBe(0);
+        expect(replay.main.calls).toEqual(serviceCalls(c.main.calls));
+        expect(replay.main.infos).toEqual(mainLines(c.main.infos));
+        expect(replay.main.warnings).toEqual(mainLines(c.main.warnings));
+      }
+    );
+
+    test.each(cases('progress'))(
+      'progress/%s: the same statuses, byte for byte',
+      async (_id, c) => {
+        const replay = await harness.runServiceProgress(main, c);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.unanswered).toBe(0);
+        expect(replay.main.statuses).toStrictEqual(c.main.statuses);
+        expect(JSON.stringify(replay.main.statuses)).toBe(JSON.stringify(c.main.statuses));
+        // The same calls, as the service routes them. The node info the
+        // fetch's steps push is one read at a time, joined while one is in
+        // flight: how many there are follows how long each takes, which the
+        // service's reads and the add-on's don't share (see KNOWN_STALE).
+        const expected = serviceCalls(c.main.calls);
+        const isInfo = (call) => call.op === 'node_info';
+        expect(replay.main.calls.filter((call) => !isInfo(call))).toEqual(
+          expected.filter((call) => !isInfo(call))
+        );
+        expect(replay.main.calls.filter(isInfo).length).toBeGreaterThanOrEqual(
+          expected.filter(isInfo).length
+        );
+        expect(replay.main.warnings).toEqual(mainLines(c.main.warnings));
+      }
+    );
+
+    test.each(cases('queue'))(
+      'queue/%s: what the service writes, through seed-status.js',
+      async (_id, c) => {
+        const replay = await harness.runServiceQueue(main, c);
+        expect(replay.unscripted).toEqual([]);
+        const { statuses, events: texts } = replay.main;
+        const events = texts.map((text) => JSON.parse(text));
+        // A status for each event, in order, between the start and the end.
+        expect(statuses).toHaveLength(events.length + 2);
+        expect(statuses[0].progress).toEqual({ phase: 'starting' });
+        events.forEach((event, i) => {
+          const { progress, state } = statuses[i + 1];
+          expect(state).toBe('fetching');
+          if (event.summary) {
+            expect(progress).toEqual({
+              phase: 'peer-failed',
+              count: event.summary.count,
+              reason: event.summary.reasons.at(-1),
+            });
+          } else {
+            expect(progress).toEqual(event);
+          }
+        });
+        // Every failure counted: the singles, and each summary's count.
+        const failures = events.filter((e) => e.phase === 'peer-failed');
+        const written = failures.reduce((n, e) => n + (e.summary ? e.summary.count : 1), 0);
+        const counted = statuses
+          .filter((s) => s.progress?.phase === 'peer-failed')
+          .reduce((n, s) => n + ('count' in s.progress ? s.progress.count : 1), 0);
+        expect(counted).toBe(written);
+        // Each failure's reasons, the summary's among them, are recent
+        // attempts; none names an nid it doesn't have.
+        const reasons = failures.flatMap((e) => (e.summary ? e.summary.reasons : [e.reason]));
+        const last = statuses.at(-1);
+        expect(last.recentAttempts.filter((a) => !a.ok).map((a) => a.error)).toEqual(
+          reasons.slice(-last.recentAttempts.filter((a) => !a.ok).length)
+        );
+        for (const status of statuses) {
+          for (const attempt of status.recentAttempts) expect(attempt).toHaveProperty('nid');
+          expect(status.progress).not.toHaveProperty('summary');
+        }
+        // The terminal's status last.
+        const terminal = events.at(-1).phase;
+        const state =
+          { done: 'fetched', cancelled: 'cancelled', failed: 'failed' }[terminal] ?? 'fetched';
+        expect(last.state).toBe(state);
+      }
+    );
+
+    const resultCases = networkVectors
+      ? networkVectors.results.flatMap((c) =>
+          c.expect.nothing
+            ? [
+                [`${c.id} (deadline)`, c, 'deadline'],
+                [`${c.id} (stop)`, c, 'stop'],
+              ]
+            : [[c.id, c, null]]
+        )
+      : [['(no results)', null, null]];
+    test.each(resultCases)(
+      "results/%s: the last status for the service's answer",
+      async (_id, c, ending) => {
+        const replay = await harness.runServiceResult(main, c, ending);
+        expect(replay.unscripted).toEqual([]);
+        const recorded = c.main.final;
+        const error = c.expect.error ?? (c.expect.nothing ? harness.SERVICE_ENDINGS[ending] : null);
+        let expected = recorded;
+        if (error && error.message !== recorded.lastError) {
+          // The service's own text: a closed repository's, or its deadline's
+          // or stop's, where the add-on answered libradicle's.
+          expected = {
+            ...recorded,
+            state: 'failed',
+            progress: { phase: 'failed', reason: error.message },
+            lastError: error.message,
+          };
+        }
+        expect(replay.main.final).toStrictEqual(expected);
+        expect(JSON.stringify(replay.main.final)).toBe(JSON.stringify(expected));
+        expect(replay.main.warnings).toEqual(
+          error ? [`[seed-status] ${harness.RID} fetch failed: ${error.message}`] : []
+        );
+      }
+    );
+
+    test("the service's own texts are the deliberate differences: a closed repository's, and the deadline's and the stop's", () => {
+      const differ = networkVectors.results
+        .filter(
+          (c) =>
+            c.expect.nothing ||
+            (c.expect.error && c.expect.error.message !== c.main.final.lastError)
+        )
+        .map((c) => c.id);
+      expect(differ).toEqual([
+        'cancelled-by-the-deadline-or-the-stop',
+        'gated-namespace',
+        'gated-cache',
+        'gated-repairing',
+      ]);
+    });
+  }
+);
+
+/**
+ * The fake service's progress queue (test/helpers/fake-radicled-progress.js,
+ * which radicle-service-network.test.js runs a clone through) against the
+ * service's: each `queue` case's envelopes, byte for byte, where nothing is
+ * cut (the model cuts nothing, and refuses an event that would need it).
+ */
+const { ProgressQueue, envelope } = require('../../../test/helpers/fake-radicled-progress');
+(networkVectors ? describe : describe.skip)("the fake service's progress queue", () => {
+  const expand = (reason) =>
+    reason && typeof reason === 'object' && reason.$repeat
+      ? reason.$repeat[0].repeat(reason.$repeat[1])
+      : reason;
+  /** What the model writes for case `c`, or null where it would cut. */
+  const modelled = (c) => {
+    const queue = new ProgressQueue(c.request_id);
+    const out = [];
+    const take = () => {
+      const text = queue.take();
+      if (text !== null) out.push(envelope(c.request_id, text));
+      return text;
+    };
+    try {
+      for (const step of c.steps) {
+        if (step.emit) queue.push({ ...step.emit, reason: expand(step.emit.reason) });
+        else for (let i = 0; i < step.take; i += 1) take();
+      }
+    } catch (err) {
+      if (/cuts no event/.test(err.message)) return null;
+      throw err;
+    }
+    while (take() !== null);
+    return out;
+  };
+
+  test("writes the service's envelopes for every case it can, among them the summary's", () => {
+    const uncut = networkVectors.queue.filter((c) => modelled(c) !== null).map((c) => c.id);
+    expect(uncut).toEqual(
+      expect.arrayContaining([
+        'phases-keep-the-latest',
+        'failures-keep-their-place',
+        'eight-failures-then-a-summary',
+        'a-summary-folds-while-it-waits',
+        'the-terminal-comes-last',
+      ])
+    );
+    for (const c of networkVectors.queue) {
+      const out = modelled(c);
+      if (out !== null) expect([c.id, out]).toEqual([c.id, c.written]);
+    }
+  });
+});
