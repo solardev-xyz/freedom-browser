@@ -53,8 +53,9 @@ const VALUE_BYTES = 128;
 // Main's own bookkeeping of every request while it holds it: the record, the
 // dispatcher's context and its promises, and the IPC event the request
 // keeps. The two uploads' copies are counted exactly, so without it their
-// measured peaks passed their charges by a few KiB.
-const REQUEST_BYTES = 16 * 1024;
+// measured peaks passed their charges by a few KiB. 16 KiB left about 7 KiB
+// of spare locally, and a CI run measured 1.8 KiB over, so it is 32 KiB.
+const REQUEST_BYTES = 32 * 1024;
 
 // Large requests (design 0011, "The numbers", proposed).
 const TICKETS = Object.freeze({ turns: 2, waiting: 16, unusedMs: 30_000, bytes: 32 });
