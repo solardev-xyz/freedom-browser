@@ -95,7 +95,7 @@ import { initAgentUi } from './lib/agent-ui.js';
 import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
-import { initWalletUi, openPublishSetupFromPage } from './lib/wallet-ui.js';
+import { initWalletUi, openPublishSetupFromPage, routeToPublishSetup } from './lib/wallet-ui.js';
 import { initPagePrompts } from './lib/page-prompts.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
@@ -799,6 +799,11 @@ listenForFullscreenChanges();
 
 // Internal pages can deep-link into the sidebar publish-setup checklist.
 electronAPI.onOpenPublishSetup?.(openPublishSetupFromPage);
+// A page's Swarm write that main answered failed because publishing isn't
+// set up: the setup screen, naming the site, as for the chrome's own path.
+electronAPI.onPublishSetupNeeded?.((payload) => {
+  if (typeof payload?.origin === 'string' && payload.origin) routeToPublishSetup(payload.origin, payload.reason ?? null);
+});
 
 // Initialize update notification toast
 function initUpdateNotifications() {

@@ -107,11 +107,23 @@ export function initPermissionManage() {
   swarmPermsBack?.addEventListener('click', closeSwarmPerms);
   swarmPermsDisconnect?.addEventListener('click', handleSwarmDisconnect);
   registerScreenHider(() => closeSwarmPerms());
+  // Publishing's rule is turned on only with "Always allow" on a publish
+  // prompt main shows (freedom-core design 0011, PRQ-7c): here it can only
+  // be turned off.
   swarmPermsPublishToggle?.addEventListener('change', async () => {
-    if (swarmPermsKey) {
-      await window.swarmPermissions.setAutoApprove(swarmPermsKey, 'publish', swarmPermsPublishToggle.checked);
-      updateSwarmConnectionBanner(swarmPermsKey);
+    if (!swarmPermsKey) return;
+    if (swarmPermsPublishToggle.checked) {
+      swarmPermsPublishToggle.checked = false;
+      syncSwarmPublishToggle();
+      return;
     }
+    try {
+      await window.swarmPermissions.setAutoApprove(swarmPermsKey, 'publish', false);
+    } catch (err) {
+      console.error('[WalletUI] Turning off Swarm publish auto-approve failed:', err);
+    }
+    syncSwarmPublishToggle();
+    updateSwarmConnectionBanner(swarmPermsKey);
   });
   swarmPermsFeedsToggle?.addEventListener('change', async () => {
     if (swarmPermsKey) {
@@ -277,6 +289,7 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
 
   if (swarmPermsPublishToggle) {
     swarmPermsPublishToggle.checked = permission.autoApprove?.publish === true;
+    syncSwarmPublishToggle();
   }
   if (swarmPermsFeedsToggle) {
     swarmPermsFeedsToggle.checked = permission.autoApprove?.feeds === true;
@@ -338,7 +351,10 @@ async function renderManifestGrant(origin) {
 
 async function refreshSwarmPermissionControls(origin) {
   const permission = await window.swarmPermissions.getPermission(origin);
-  if (swarmPermsPublishToggle) swarmPermsPublishToggle.checked = permission?.autoApprove?.publish === true;
+  if (swarmPermsPublishToggle) {
+    swarmPermsPublishToggle.checked = permission?.autoApprove?.publish === true;
+    syncSwarmPublishToggle();
+  }
   if (swarmPermsFeedsToggle) swarmPermsFeedsToggle.checked = permission?.autoApprove?.feeds === true;
   if (swarmPermsSigningToggle) swarmPermsSigningToggle.checked = permission?.autoApprove?.signing === true;
   if (swarmPermsMessagingToggle) {
@@ -355,6 +371,15 @@ function syncSwarmMessagingToggle() {
   swarmPermsMessagingToggle.title = swarmPermsMessagingToggle.checked
     ? ''
     : 'This site asks for messaging access when it first sends or receives a message';
+}
+
+// Off can't be turned on here: only from a publish prompt.
+function syncSwarmPublishToggle() {
+  if (!swarmPermsPublishToggle) return;
+  swarmPermsPublishToggle.disabled = !swarmPermsPublishToggle.checked;
+  swarmPermsPublishToggle.title = swarmPermsPublishToggle.checked
+    ? ''
+    : 'Turn this on with “Always allow” on a publish request from this site';
 }
 
 export function closeSwarmPerms() {

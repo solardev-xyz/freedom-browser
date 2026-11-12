@@ -291,8 +291,8 @@ export function initSwarmConnect() {
   setupSwarmMessagingScreen();
   setupSwarmFeedScreen();
 
-  // Main's own prompts for a page's requests (PRQ-7b): connecting, and
-  // messaging access and sends.
+  // Main's own prompts for a page's requests: connecting, and messaging
+  // access and sends (PRQ-7b), and publishing (PRQ-7c).
   registerPagePromptRenderer(
     'swarm.connect',
     pagePromptRenderer(
@@ -318,6 +318,20 @@ export function initSwarmConnect() {
         };
       },
       closeSwarmMessagingApproval
+    )
+  );
+  registerPagePromptRenderer(
+    'swarm.publish',
+    pagePromptRenderer(
+      swarmPublishQueue,
+      () => swarmPublishScreen,
+      (prompt) => ({
+        handle: prompt.handle,
+        permissionKey: siteOf(prompt),
+        view: prompt.view || {},
+        method: prompt.view?.method,
+      }),
+      closeSwarmPublishApproval
     )
   );
 }
@@ -581,11 +595,53 @@ export function showSwarmPublishApproval(permissionKey, params, resolve, reject,
   swarmPublishQueue.show({ permissionKey, params, resolve, reject, method });
 }
 
-function presentSwarmPublishApproval({ permissionKey, params, method }) {
+// Main's view of a page's upload (PRQ-7c): what it measured, and the
+// page's own text only as far as main bounded it.
+function presentPageUploadView(view) {
+  const count = Number.isSafeInteger(view.count) ? view.count : 0;
+  const size = Number.isSafeInteger(view.size) ? view.size : 0;
+  if (view.kind === 'files') {
+    if (swarmPublishType) swarmPublishType.textContent = `${count} file${count !== 1 ? 's' : ''}`;
+    if (swarmPublishSize) swarmPublishSize.textContent = formatBytes(size);
+    if (swarmPublishPathsRow && swarmPublishPaths) {
+      const paths = Array.isArray(view.paths) ? view.paths.filter((p) => typeof p === 'string') : [];
+      const more = count > paths.length ? ` \u2026and ${count - paths.length} more` : '';
+      swarmPublishPaths.textContent = paths.join(', ') + more;
+      swarmPublishPathsRow.classList.remove('hidden');
+    }
+    swarmPublishNameRow?.classList.add('hidden');
+    return;
+  }
+  if (swarmPublishType) {
+    swarmPublishType.textContent =
+      view.kind === 'chunk' ? 'Swarm chunk' : (typeof view.contentType === 'string' ? view.contentType : 'unknown');
+  }
+  if (swarmPublishSize) swarmPublishSize.textContent = formatBytes(size);
+  if (swarmPublishNameRow && swarmPublishName) {
+    if (view.kind === 'data' && typeof view.name === 'string') {
+      swarmPublishName.textContent = view.name;
+      swarmPublishNameRow.classList.remove('hidden');
+    } else {
+      swarmPublishNameRow.classList.add('hidden');
+    }
+  }
+  swarmPublishPathsRow?.classList.add('hidden');
+}
+
+function presentSwarmPublishApproval({ permissionKey, params, method, handle, view }) {
   if (swarmPublishAutoApproveCheckbox) swarmPublishAutoApproveCheckbox.checked = false;
 
   if (swarmPublishSite) {
     swarmPublishSite.textContent = permissionKey || 'Unknown';
+  }
+
+  if (handle) {
+    presentPageUploadView(view || {});
+    hideAllSubscreens();
+    walletState.identityView?.classList.add('hidden');
+    swarmPublishScreen?.classList.remove('hidden');
+    openSidebarPanel();
+    return;
   }
 
   const isFileMode = Array.isArray(params?.files);
@@ -651,6 +707,12 @@ async function approveSwarmPublish(pending) {
   // presents any queued one, which resets it.
   const alwaysAllow = !!swarmPublishAutoApproveCheckbox?.checked;
 
+  if (pending.handle) {
+    // Main sets the rule, for the site it attested, and publishes.
+    await decidePagePrompt(pending.handle, true, { alwaysAllow });
+    return;
+  }
+
   if (alwaysAllow && permissionKey) {
     await window.swarmPermissions.setAutoApprove(permissionKey, 'publish', true);
     console.log('[SwarmConnect] Auto-approve publish enabled for:', permissionKey);
@@ -661,6 +723,10 @@ async function approveSwarmPublish(pending) {
 }
 
 function rejectSwarmPublish(pending) {
+  if (pending.handle) {
+    decidePagePrompt(pending.handle, false);
+    return;
+  }
   const { reject } = pending;
   reject({ code: 4001, message: 'User rejected publish' });
   console.log('[SwarmConnect] Publish rejected');

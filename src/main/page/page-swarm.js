@@ -69,7 +69,31 @@
  * the moved methods: the preload no longer sends them there, and a chrome
  * that names a site for them asks for something only a page may.
  *
- * PRQ-7c moves publishing and feeds, with their prompts.
+ * PRQ-7c: publishing, with its prompt (`swarm.publish`):
+ *
+ *   - `swarm_publishData`, `swarm_publishFiles`, `swarm_publishChunk`: the
+ *     manifest checked first, as for messaging; a site that isn't
+ *     connected is refused; otherwise main prompts (`swarm.publish`, with
+ *     main's view of what the page would publish), unless the site's
+ *     publish rule answers, which it never does for a tab in Agent custody,
+ *     read live: when the rule is chosen, and again just before the upload,
+ *     after its last wait. "Always allow", the prompt's one choice, sets
+ *     the rule, by main. The upload is the effect: the name, custody, the
+ *     rule, the connection and the document are checked just before it, in
+ *     the same run (`meta.page.effect`). An upload that went out after a
+ *     passing check answers with its reference, even if the name moves
+ *     afterwards, as a send answers as sent; what it leaves held under the
+ *     key, the tag's owner, is recorded only while the name still answers
+ *     (`meta.page.afterEffect`). The two large uploads arrive on their
+ *     tickets (`page:reserve`), and each copy main makes of their bytes is
+ *     reported against the request's charge (`meta.page.copied`).
+ *   - `swarm_getUploadStatus`: the tag's owner is held under the key, so
+ *     the name is resolved before the read and again before the answer.
+ *   - A write the node refuses because publishing isn't set up (`4900`
+ *     with a setup reason) takes the user to the setup screen, as the
+ *     chrome did: main tells the requesting window's chrome.
+ *
+ * PRQ-7d moves feeds and signing, with their prompts.
  */
 
 /** PRQ-7a: the methods that need no prompt and no manifest check. */
@@ -94,8 +118,21 @@ const SWARM_MESSAGING_METHODS = Object.freeze([
   'swarm_sendGsoc',
 ]);
 
+/** PRQ-7c: publishing. */
+const SWARM_PUBLISH_METHODS = Object.freeze([
+  'swarm_publishData',
+  'swarm_publishFiles',
+  'swarm_publishChunk',
+  'swarm_getUploadStatus',
+]);
+
 /** Every method main's Swarm dispatcher serves, and so the preload routes to main. */
-const SWARM_PAGE_METHODS = Object.freeze([...SWARM_READ_METHODS, ...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS]);
+const SWARM_PAGE_METHODS = Object.freeze([
+  ...SWARM_READ_METHODS,
+  ...SWARM_CONNECT_METHODS,
+  ...SWARM_MESSAGING_METHODS,
+  ...SWARM_PUBLISH_METHODS,
+]);
 
 // The permission-free ones: the key is a rate, never authority.
 const PERMISSION_FREE = new Set(['swarm_readChunk', 'swarm_readData', 'swarm_readSingleOwnerChunk']);
@@ -108,8 +145,23 @@ const NO_WAIT = new Set(['swarm_listFeeds']);
 // The sends a site's messaging rule may answer.
 const SEND_METHODS = new Set(['swarm_sendPss', 'swarm_sendGsoc']);
 
+// The uploads a site's publish rule may answer.
+const UPLOAD_METHODS = new Set(['swarm_publishData', 'swarm_publishFiles', 'swarm_publishChunk']);
+
+// The writes that need publishing set up, and the node's reasons that say
+// it isn't (`checkSwarmPreFlight`): a failure for one of them takes the
+// user to the setup screen, as the chrome's swarm-provider.js did.
+const SETUP_ROUTED = new Set([...UPLOAD_METHODS, ...SEND_METHODS]);
+const SETUP_REASONS = new Set(['node-stopped', 'node-not-ready', 'ultra-light-mode', 'no-usable-stamps']);
+
 // What a messaging prompt may show of a topic: what the method accepts.
 const MAX_TOPIC_BYTES = 256;
+// What a publish prompt may show of the page's own text (a content type, a
+// name): one bound for each, past which it isn't shown. A path is shown only
+// as the method accepts it (`LIMITS.maxPathBytes`), and at most three.
+const MAX_VIEW_TEXT_BYTES = 256;
+const MAX_VIEW_PATH_BYTES = 100;
+const VIEW_PATHS = 3;
 
 // The chrome's answer while the Identity & Wallet switch is off.
 const DISCONNECTED = Object.freeze({ code: 4900, message: 'Swarm provider is not available' });
@@ -124,6 +176,7 @@ const NO_ADDRESS = Object.freeze({
 // them.
 const NOT_CONNECTED = Object.freeze({ code: 4100, message: 'Origin not authorized. Call swarm_requestAccess first.' });
 const CONNECT_REJECTED = Object.freeze({ code: 4001, message: 'User rejected Swarm access' });
+const PUBLISH_REJECTED = Object.freeze({ code: 4001, message: 'User rejected publish' });
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
 const MANIFEST_UNRESOLVED = Object.freeze({ code: 4900, message: 'Could not refresh this app’s permission manifest' });
 // As main answers a request Agent custody refuses.
@@ -158,6 +211,48 @@ function payloadBytes(data) {
   if (data && typeof data === 'object' && data.type === 'Buffer' && Array.isArray(data.data)) return data.data.length;
   return null;
 }
+
+// The page's text, if it is a string within `max` UTF-8 bytes.
+const boundedText = (value, max) =>
+  typeof value === 'string' && value.length > 0 && Buffer.byteLength(value, 'utf-8') <= max ? value : undefined;
+
+/**
+ * The publish prompt's view (design 0011, "What a prompt shows"): the method
+ * and the kind of upload, main's own; of the page's, the sizes main measured,
+ * and its text only as far as each field's bound: a data upload's content
+ * type and name, and the first paths of a files upload, each as the method
+ * accepts a path.
+ */
+function publishView(method, params) {
+  if (method === 'swarm_publishFiles') {
+    const files = Array.isArray(params?.files) ? params.files : [];
+    let size = 0;
+    const paths = [];
+    for (const file of files) {
+      size += payloadBytes(file?.bytes) ?? 0;
+      if (paths.length < VIEW_PATHS) {
+        const shown = boundedText(file?.path, MAX_VIEW_PATH_BYTES);
+        if (shown !== undefined) paths.push(shown);
+      }
+    }
+    return { method, kind: 'files', count: files.length, size, paths };
+  }
+  const size = payloadBytes(params?.data) ?? 0;
+  if (method === 'swarm_publishChunk') return { method, kind: 'chunk', size };
+  const view = { method, kind: 'data', size };
+  const contentType = boundedText(params?.contentType, MAX_VIEW_TEXT_BYTES);
+  if (contentType !== undefined) view.contentType = contentType;
+  const name = boundedText(params?.name, MAX_VIEW_TEXT_BYTES);
+  if (name !== undefined) view.name = name;
+  return view;
+}
+
+// "Always allow", where a prompt offers it, and nothing else.
+const alwaysAllowChoice = (raw) =>
+  Object.keys(raw).every((name) => name === 'alwaysAllow') &&
+  (raw.alwaysAllow === undefined || typeof raw.alwaysAllow === 'boolean')
+    ? { alwaysAllow: raw.alwaysAllow === true }
+    : null;
 
 /**
  * The messaging prompt's view (design 0011, "What a prompt shows"): the
@@ -197,6 +292,15 @@ function defaultDependencies() {
     inCustody: (guest) => require('./page-signing').guestInCustody(guest),
     endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
     endDocumentSubscription: (document, id) => provider().endDocumentSubscription(document, id),
+    routeToSetup: (requester, reason) => {
+      const { BrowserWindow } = require('electron');
+      const win = BrowserWindow.fromId(requester.window);
+      if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+      win.webContents.send(require('../../shared/ipc-channels').SWARM_PUBLISH_SETUP_NEEDED, {
+        origin: requester.key,
+        reason,
+      });
+    },
   };
 }
 
@@ -224,6 +328,7 @@ function createSwarmDispatchers(deps = {}) {
     inCustody,
     endDocumentSubscriptions,
     endDocumentSubscription,
+    routeToSetup,
   } = { ...defaultDependencies(), ...deps };
 
   // document key -> { eager, promise }: the manifest check, once per document.
@@ -423,16 +528,43 @@ function createSwarmDispatchers(deps = {}) {
 
   /**
    * The effect's guard (`meta.page.effect`): after the method's last wait,
-   * the name again, then custody for a send the rule answered, the rule
-   * itself, and the document's key, and the effect in the same run.
+   * the name again, then, for a request a rule answered (`rule`, the rule's
+   * type), custody and the rule itself, and the document's key, and the
+   * effect in the same run.
    */
-  async function guardEffect(context, nameCheck, ruled, run) {
+  async function guardEffect(context, nameCheck, rule, run) {
     const { requester } = context;
     if (!(await context.nameHolds(nameCheck))) return { refused: error(NO_ADDRESS).error };
-    if (ruled && custody(requester.guest)) return { refused: error(AGENT_CUSTODY).error };
-    if (ruled && getAutoApprove(requester.key, 'messaging') !== true) return { refused: error(RULE_OFF).error };
+    if (rule && custody(requester.guest)) return { refused: error(AGENT_CUSTODY).error };
+    if (rule && getAutoApprove(requester.key, rule) !== true) return { refused: error(RULE_OFF).error };
     if (!context.holdsKey()) return { refused: error(NO_ADDRESS).error };
     return { value: await run() };
+  }
+
+  /**
+   * What an effect that has happened leaves held under the key (an
+   * upload's tag owner, `meta.page.afterEffect`): written only while the
+   * name still answers, in the same run as the check that the document
+   * holds its key. Resolves whether it was written.
+   */
+  async function afterEffect(context, write) {
+    if (!(await context.nameHolds({}))) return false;
+    if (!context.holdsKey()) return false;
+    write();
+    return true;
+  }
+
+  // A write the node refused because publishing isn't set up: the setup
+  // screen, in the requesting window, while the document is still there.
+  function routeSetupFailure(context, out) {
+    const reason = out?.error?.data?.reason;
+    if (!SETUP_ROUTED.has(context.method) || out?.error?.code !== 4900 || !SETUP_REASONS.has(reason)) return;
+    if (!context.isCurrent()) return;
+    try {
+      routeToSetup(context.requester, reason);
+    } catch {
+      // The page has its answer either way.
+    }
   }
 
   async function messaging(context) {
@@ -476,11 +608,7 @@ function createSwarmDispatchers(deps = {}) {
         kind: 'swarm.messaging',
         view: messagingView(method, params, false),
         // "Always allow", the send prompt's one choice.
-        choices: (raw) =>
-          Object.keys(raw).every((name) => name === 'alwaysAllow') &&
-          (raw.alwaysAllow === undefined || typeof raw.alwaysAllow === 'boolean')
-            ? { alwaysAllow: raw.alwaysAllow === true }
-            : null,
+        choices: alwaysAllowChoice,
       });
       if (decision.error) return { error: decision.error };
       if (decision.closed || decision.approve !== true) return error(USER_REJECTED);
@@ -501,12 +629,13 @@ function createSwarmDispatchers(deps = {}) {
       // The request stands; the timestamp didn't change.
     }
     const document = documentKeyOf(requester);
-    const page = { document, effect: (run) => guardEffect(context, nameCheck, ruled, run) };
+    const page = { document, effect: (run) => guardEffect(context, nameCheck, ruled ? 'messaging' : null, run) };
     if (method === 'swarm_subscribe') {
       armDocument(context);
       page.deliverTo = (data) => context.sendEvent(requester, 'message', data);
     }
     const out = await execute(method, params, key, { page });
+    routeSetupFailure(context, out);
     if (out.error || isSend) return out;
     // After the method's wait: what reveals or binds the key goes out only
     // while the name still answers.
@@ -516,6 +645,93 @@ function createSwarmDispatchers(deps = {}) {
       }
       return error(NO_ADDRESS);
     }
+    return out;
+  }
+
+  /**
+   * An upload (PRQ-7c): the manifest, the connection, then the site's
+   * publish rule or main's prompt, and the upload under the effect's guard.
+   */
+  async function publish(context) {
+    const { requester, method, params } = context;
+    const key = requester.key;
+    if (!key) return error(NO_ADDRESS);
+    // An upload that went out after a passing check answers with its
+    // reference, even if the name moves afterwards: the content is on the
+    // network for the request the user approved, and its reference is
+    // public. Every refusal before it answers keyless.
+    const nameCheck = {};
+    if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    const manifest = await manifestFresh(context, nameCheck, false);
+    if (manifest.error) return { error: manifest.error };
+    if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    const permission = getPermission(key);
+    if (!permission) return error(NOT_CONNECTED);
+    // A standing rule is chosen only outside Agent custody, read live now.
+    // A request that goes to its prompt keeps it, whatever custody does
+    // next; one the rule answers reads custody again just before its upload.
+    const ruled = permission.autoApprove?.publish === true && !custody(requester.guest);
+    if (!ruled) {
+      const decision = await context.prompt({
+        kind: 'swarm.publish',
+        view: publishView(method, params),
+        // "Always allow", the publish prompt's one choice.
+        choices: alwaysAllowChoice,
+      });
+      if (decision.error) return { error: decision.error };
+      if (decision.closed || decision.approve !== true) return error(PUBLISH_REJECTED);
+      if (decision.choices.alwaysAllow) {
+        let written;
+        try {
+          written = await writeUnderKey(context, nameCheck, () => setAutoApprove(key, 'publish', true));
+        } catch (err) {
+          return { error: failure(err, 'Failed to save the publish rule') };
+        }
+        if (!written) return error(NO_ADDRESS);
+      }
+    }
+    // The site's last use, as the chrome marked it before each call.
+    try {
+      if (!(await writeUnderKey(context, nameCheck, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+    } catch {
+      // The request stands; the timestamp didn't change.
+    }
+    const out = await execute(method, params, key, {
+      page: {
+        document: documentKeyOf(requester),
+        effect: (run) => guardEffect(context, nameCheck, ruled ? 'publish' : null, run),
+        afterEffect: (write) => afterEffect(context, write),
+        copied: (label) => context.copied(label),
+      },
+    });
+    routeSetupFailure(context, out);
+    return out;
+  }
+
+  /**
+   * `swarm_getUploadStatus` (PRQ-7c): a tag's progress, for the site that
+   * owns the tag. The tag's owner is held under the key, so the name is
+   * resolved before the read and again before the answer goes out.
+   */
+  async function uploadStatus(context) {
+    const { requester, method, params } = context;
+    const key = requester.key;
+    if (!key) return error(NO_ADDRESS);
+    const keyless = { keyless: error(NO_ADDRESS) };
+    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    const manifest = await manifestFresh(context, keyless, false);
+    if (manifest.error) return { error: manifest.error };
+    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    if (!getPermission(key)) return error(NOT_CONNECTED);
+    try {
+      if (!(await writeUnderKey(context, keyless, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+    } catch {
+      // The request stands; the timestamp didn't change.
+    }
+    // From here to the read of the tag's owner, one run.
+    if (!context.holdsKey()) return error(NO_ADDRESS);
+    const out = await execute(method, params, key);
+    if (!(await context.nameHolds(keyless)) || !context.holdsKey()) return error(NO_ADDRESS);
     return out;
   }
 
@@ -540,6 +756,9 @@ function createSwarmDispatchers(deps = {}) {
   dispatchers['swarm:swarm_requestAccess'] = serve(requestAccess);
   for (const method of SWARM_MESSAGING_METHODS) {
     dispatchers[`swarm:${method}`] = serve(method === 'swarm_unsubscribe' ? unsubscribe : messaging);
+  }
+  for (const method of SWARM_PUBLISH_METHODS) {
+    dispatchers[`swarm:${method}`] = serve(UPLOAD_METHODS.has(method) ? publish : uploadStatus);
   }
   return dispatchers;
 }
@@ -577,6 +796,7 @@ module.exports = {
   SWARM_READ_METHODS,
   SWARM_CONNECT_METHODS,
   SWARM_MESSAGING_METHODS,
+  SWARM_PUBLISH_METHODS,
   SWARM_PAGE_METHODS,
   createSwarmDispatchers,
   registerSwarmPageEvents,

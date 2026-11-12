@@ -18,6 +18,8 @@ const { isPrivateWebContents } = require('../private/private-windows');
 const log = require('electron-log');
 const { isBatchNotYetKnownError, BATCH_NOT_YET_KNOWN_MESSAGE } = require('./ant-storage-api');
 const { createPickTokenStore } = require('./publish-pick-tokens');
+const { getAntApiUrl } = require('../service-registry');
+const pageUpload = require('./page-upload');
 
 // What the user reads when a publish fails. A batch bought moments ago that
 // storer peers have not synced yet gets a "try again shortly" sentence
@@ -128,6 +130,39 @@ async function publishData(data, options = {}) {
 }
 
 /**
+ * A page's raw data (window.swarm's publishData, a string or a Buffer), as
+ * publishData uploads it, but sent by page-upload.js, which makes no copy of
+ * the body (freedom-core design 0011, "The size and the charge"; PRQ-7c).
+ *
+ * `guard(send)`, if given, runs the write itself once the batch is chosen:
+ * the caller's last check before anything reaches the node (a page's name,
+ * custody, its rule). It resolves what `send` resolves, or null to send
+ * nothing, and then this resolves null. `onSend` is told just before the
+ * body goes to the node.
+ */
+async function publishPageData(data, options = {}) {
+  const apiUrl = getAntApiUrl();
+  if (!apiUrl) throw new Error('Swarm node is not ready');
+  const sizeEstimate = Buffer.byteLength(data);
+  const batchId = await selectBestBatch(sizeEstimate, { requireCapacity: true });
+
+  if (!batchId) {
+    throw noUsableBatchError();
+  }
+
+  const send = () => {
+    options.onSend?.();
+    return pageUpload.uploadData(apiUrl, batchId, data, {
+      name: options.name,
+      contentType: options.contentType,
+    });
+  };
+  const result = options.guard ? await options.guard(send) : await send();
+  if (!result) return null;
+  return normalizeUploadResult(result, batchId, sizeEstimate);
+}
+
+/**
  * Publish a file from a filesystem path.
  */
 async function publishFile(filePath, options = {}) {
@@ -224,12 +259,18 @@ async function publishCollection(files, options = {}) {
 
 /**
  * Publish a collection of in-memory files (window.swarm's publishFiles) as a
- * Swarm directory manifest, through publishCollection: each tar entry is
- * named by the page's own `/`-separated path, on every platform, and nothing
- * is written to disk. Written under a temp directory instead, the files were
- * named by bee-js with the platform's path.join, so on Windows a nested
- * `assets/app.js` reached the node as `assets\app.js` and a nested
- * indexDocument matched nothing (#1052).
+ * Swarm directory manifest: each tar entry is named by the page's own
+ * `/`-separated path, on every platform, and nothing is written to disk.
+ * Written under a temp directory instead, the files were named by bee-js
+ * with the platform's path.join, so on Windows a nested `assets/app.js`
+ * reached the node as `assets\app.js` and a nested indexDocument matched
+ * nothing (#1052).
+ *
+ * The archive is the one publishCollection uploads through bee-js, sent by
+ * page-upload.js instead, in views of the page's bytes: bee-js' tar writer
+ * copied each file twice more, and fetch its stream's chunks, past the
+ * upload's charge (freedom-core design 0011, "The size and the charge";
+ * PRQ-7c). `guard` and `onSend` are as for publishPageData.
  *
  * The batch is chosen here, so that having none reads as noUsableBatchError,
  * as for the other page uploads.
@@ -239,16 +280,27 @@ async function publishCollection(files, options = {}) {
  * Files with non-standard names should use appropriate extensions.
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
- * @param {{ indexDocument?: string }} options
+ * @param {{ indexDocument?: string, guard?: Function, onSend?: () => void }} options
  */
 async function publishFilesFromContent(files, options = {}) {
+  const apiUrl = getAntApiUrl();
+  if (!apiUrl) throw new Error('Swarm node is not ready');
   const totalSize = files.reduce((total, file) => total + file.bytes.byteLength, 0);
   const batchId = await selectBestBatch(totalSize, { requireCapacity: true });
   if (!batchId) {
     throw noUsableBatchError();
   }
 
-  return publishCollection(files, { batchId, indexDocument: options.indexDocument });
+  const indexDocument =
+    options.indexDocument ||
+    (files.some((item) => item.path === 'index.html') ? 'index.html' : undefined);
+  const send = () => {
+    options.onSend?.();
+    return pageUpload.uploadCollection(apiUrl, batchId, files, { indexDocument });
+  };
+  const result = options.guard ? await options.guard(send) : await send();
+  if (!result) return null;
+  return normalizeUploadResult(result, batchId, totalSize);
 }
 
 /**
@@ -490,6 +542,7 @@ module.exports = {
   normalizeUploadResult,
   normalizeTag,
   publishData,
+  publishPageData,
   publishFile,
   publishDirectory,
   publishCollection,

@@ -130,7 +130,14 @@ async function publishChunk(data, options = {}) {
   const chunk = bee.makeContentAddressedChunk(data, options.span);
   const batchId = await selectChunkBatch();
 
-  await bee.chunk.upload(batchId, chunk, { pin: true, deferred: false });
+  // `guard(send)`, if given, runs the upload once the batch is chosen: the
+  // caller's last check before the node (a page's name, custody, its rule,
+  // PRQ-7c). It resolves null to send nothing, and then so does this.
+  const send = async () => {
+    await bee.chunk.upload(batchId, chunk, { pin: true, deferred: false });
+    return true;
+  };
+  if (!(options.guard ? await options.guard(send) : await send())) return null;
 
   return {
     reference: toHex(chunk.address),

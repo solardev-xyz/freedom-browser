@@ -1728,8 +1728,8 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 //
 // The Ethereum reads (PRQ-3), connecting (PRQ-4), signing messages and
 // typed data (PRQ-5a) and sends (PRQ-5b), and Swarm's reads (PRQ-7a),
-// connecting and messaging (PRQ-7b) take the new path (PAGE_ROUTES), and
-// main answers them: their page-world
+// connecting and messaging (PRQ-7b) and publishing (PRQ-7c) take the new
+// path (PAGE_ROUTES), and main answers them: their page-world
 // provider arms no timer of its own, and main's deadline answers one that
 // runs too long. Each later step of the design moves its own methods. For a test, the E2E harness can route more
 // through main (`testPageRoutes`, which main puts on the boot switch only in
@@ -1750,9 +1750,10 @@ if (PAGE_REQUESTS_ENABLED) {
 // `eth_signTypedData_v4`; and sending, `eth_sendTransaction`.
 // page-ethereum.test.js keeps these the list main's Ethereum dispatcher
 // serves (src/main/page/page-ethereum.js). And window.swarm's methods that
-// need no prompt (PRQ-7a), and connecting and messaging (PRQ-7b), which
-// page-swarm.test.js keeps the list main's Swarm dispatcher serves
-// (src/main/page/page-swarm.js).
+// need no prompt (PRQ-7a), connecting and messaging (PRQ-7b), and
+// publishing (PRQ-7c), which page-swarm.test.js keeps the list main's Swarm
+// dispatcher serves (src/main/page/page-swarm.js). A publish over 1 MiB
+// reserves its turn first (`page:reserve`, below).
 const PAGE_ROUTES = new Set([
   'ethereum:eth_requestAccounts',
   'ethereum:wallet_switchEthereumChain',
@@ -1797,6 +1798,10 @@ const PAGE_ROUTES = new Set([
   'swarm:swarm_unsubscribe',
   'swarm:swarm_sendPss',
   'swarm:swarm_sendGsoc',
+  'swarm:swarm_publishData',
+  'swarm:swarm_publishFiles',
+  'swarm:swarm_publishChunk',
+  'swarm:swarm_getUploadStatus',
 ]);
 const TEST_PAGE_ROUTES = new Set(
   Array.isArray(WEBVIEW_BOOT?.testPageRoutes)

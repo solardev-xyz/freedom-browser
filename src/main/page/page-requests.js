@@ -43,7 +43,7 @@
  * document between the check and the delivery.
  *
  * The app serves Ethereum's methods here (PRQ-3 to PRQ-5, `page-ethereum.js`)
- * and Swarm's reads, connecting and messaging (PRQ-7a and 7b,
+ * and Swarm's reads, connecting, messaging and publishing (PRQ-7a to 7c,
  * `page-swarm.js`): the preload sends those on `page:request`, and every
  * other method still takes today's path through the chrome. The E2E harness can route and serve any method through a
  * test hook (`enablePageRequestTestHooks`). Later steps (the rest of PRQ-7,
