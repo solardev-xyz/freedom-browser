@@ -42,6 +42,21 @@
   const record = (fields, { optional = [] } = {}) =>
     Object.freeze({ type: 'record', fields: Object.freeze(fields), optional: Object.freeze([...optional]) });
   const nullable = (schema) => Object.freeze({ type: 'nullable', schema });
+  // One of several shapes (a view that differs by its kind of request).
+  const anyOf = (...schemas) => Object.freeze({ type: 'anyOf', schemas: Object.freeze(schemas) });
+  // Plain JSON to a depth: the core's typed-data view, which keeps its own
+  // bounds (design 0002, #88); the whole view is still at most 256 KiB.
+  const json = ({ depth = 32 } = {}) => Object.freeze({ type: 'json', depth });
+
+  function isJson(value, depth) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (depth <= 0) return false;
+    if (Array.isArray(value)) {
+      return Object.keys(value).length === value.length && value.every((item) => isJson(item, depth - 1));
+    }
+    return isPlainObject(value) && Object.keys(value).every((key) => isJson(value[key], depth - 1));
+  }
 
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
@@ -67,6 +82,10 @@
         return schema.values.includes(value);
       case 'nullable':
         return value === null || conforms(value, schema.schema, depth);
+      case 'anyOf':
+        return schema.schemas.some((option) => conforms(value, option, depth));
+      case 'json':
+        return isJson(value, schema.depth);
       case 'list':
         if (!Array.isArray(value) || value.length > schema.max) return false;
         if (Object.keys(value).length !== value.length) return false;
@@ -236,6 +255,19 @@
     /** A fixed line of the document's own copy. */
     const note = (value, className = 'note') => textNode('p', className, value);
 
+    /** A warning of the document's own copy. */
+    const warning = (value) => textNode('p', 'warning', value);
+
+    /** A list of the document's own lines, under its own lead. */
+    function bullets(lead, items) {
+      const wrap = node('div', 'bullets');
+      if (lead) wrap.append(textNode('p', 'bullets-lead', lead));
+      const listNode = node('ul', 'bullets-list');
+      for (const item of items) listNode.append(textNode('li', 'bullets-item', item));
+      wrap.append(listNode);
+      return wrap;
+    }
+
     /** A section heading of the document's own copy. */
     const section = (value) => textNode('h2', 'section', value);
 
@@ -255,11 +287,12 @@
       const fieldset = node('fieldset', 'choices');
       const inputs = [];
       for (const option of options) {
-        const row = node('label', 'choice');
+        const row = node('label', option.disabled ? 'choice disabled' : 'choice');
         const input = node('input');
         input.type = 'radio';
         input.name = name;
-        input.checked = option.value === selected;
+        input.disabled = option.disabled === true;
+        input.checked = option.value === selected && option.disabled !== true;
         inputs.push([input, option.value]);
         const words = node('span', 'choice-words');
         words.append(textNode('span', 'choice-label', visible(option.label)));
@@ -268,10 +301,13 @@
         fieldset.append(row);
       }
       const value = () => {
-        const checked = inputs.find(([input]) => input.checked);
+        const checked = inputs.find(([input]) => input.checked && !input.disabled);
         return checked ? checked[1] : undefined;
       };
-      return { element: fieldset, value };
+      const onChange = (listener) => {
+        for (const [input] of inputs) input.addEventListener('change', () => listener(value()));
+      };
+      return { element: fieldset, value, onChange };
     }
 
     /** A checkbox with fixed copy. Returns the element and its reader. */
@@ -295,7 +331,7 @@
       return { element: row, input, value: () => String(input.value || '') };
     }
 
-    return { node, own, page, note, section, group, radios, checkbox, password };
+    return { node, own, page, note, warning, bullets, section, group, radios, checkbox, password };
   }
 
   return Object.freeze({
@@ -303,7 +339,7 @@
     MAX_VIEW_BYTES,
     CUT_AT,
     INPUT_EVENTS,
-    schema: Object.freeze({ text, integer, boolean, oneOf, list, record, nullable }),
+    schema: Object.freeze({ text, integer, boolean, oneOf, list, record, nullable, anyOf, json }),
     isPlainObject,
     conforms,
     viewBytes,
