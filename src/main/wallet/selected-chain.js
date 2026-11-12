@@ -14,7 +14,21 @@
  * A page's `wallet_switchEthereumChain` is main's from PRQ-4
  * (`page/page-ethereum.js`): main selects the chain for the page's window
  * itself (`selectChainForPage`) and tells that window's chrome
- * (`wallet:page-selected-chain`), whose switcher then shows it.
+ * (`wallet:page-selected-chain`), whose switcher then shows it, and reports
+ * nothing back.
+ *
+ * Two writers, ordered (PRQ-6). Main numbers each page's selection per
+ * window (`sequence`) and sends the number with it. The chrome reports its
+ * own selection with the number it last saw, and main refuses a report
+ * made before the chrome saw main's latest page selection: the user picked
+ * from a switcher that didn't show it yet. Main then tells that chrome its
+ * selection and number again, so the switcher, main and the pages agree.
+ * The chrome ignores a selection no newer than the last it saw.
+ *
+ * The user's own selection is told to the window's pages by main from PRQ-6
+ * (`page/page-events.js`, which listens with `onChromeSelection`): main
+ * sends `chainChanged` to every live document of the window whose chain
+ * follows the selection. The chrome sends no page an event.
  *
  * A window that has reported nothing has the switcher's default, Gnosis
  * (100). `null` is the switcher's "All Chains", which reads as Gnosis too.
@@ -23,7 +37,8 @@
  */
 
 const CHANNEL = 'wallet:select-chain';
-// main -> chrome: a page's switch selected this chain for the window.
+// main -> chrome: `{ chainId, sequence }`, a page's switch selected this
+// chain for the window, or (after a stale report) the window's selection.
 const PAGE_SELECTED_CHANNEL = 'wallet:page-selected-chain';
 
 // The chain switcher's own default (`walletState.selectedChainId`).
@@ -31,7 +46,12 @@ const DEFAULT_SELECTED_CHAIN_ID = 100;
 
 // window id -> chain id, or null for "All Chains"
 const selected = new Map();
+// window id -> the number of main's latest page selection for it
+const sequences = new Map();
 const watched = new Set();
+// Called with { window, previous, next } when a window's chrome changes its
+// selection (`wallet:select-chain`).
+const chromeListeners = new Set();
 
 const isChainId = (value) => Number.isSafeInteger(value) && value > 0;
 
@@ -50,7 +70,22 @@ function selectChain(windowId, chainId) {
 
 function forgetWindow(windowId) {
   selected.delete(windowId);
+  sequences.delete(windowId);
   watched.delete(windowId);
+}
+
+function sequenceOf(windowId) {
+  return sequences.get(windowId) || 0;
+}
+
+function tell(contents, windowId) {
+  try {
+    if (!contents.isDestroyed?.()) {
+      contents.send(PAGE_SELECTED_CHANNEL, { chainId: selectedChainOf(windowId), sequence: sequenceOf(windowId) });
+    }
+  } catch {
+    // The window is closing; its selection goes with it.
+  }
 }
 
 function watch(win) {
@@ -79,26 +114,38 @@ function selectChainForPage(
   }
   if (!win || win.isDestroyed?.()) return false;
   if (!selectChain(windowId, chainId)) return false;
+  sequences.set(windowId, sequenceOf(windowId) + 1);
   watch(win);
-  try {
-    if (!win.webContents.isDestroyed?.()) win.webContents.send(PAGE_SELECTED_CHANNEL, chainId);
-  } catch {
-    // The window is closing; its selection goes with it.
-  }
+  if (win.webContents) tell(win.webContents, windowId);
   return true;
 }
 
 /**
+ * Hear of every change a window's chrome makes to its selection, the
+ * user's pick in its switcher (`{ window, previous, next }`), but not of a
+ * page's switch, which tells its own pages. Returns a function that stops
+ * it.
+ */
+function onChromeSelection(listener) {
+  if (typeof listener !== 'function') return () => {};
+  chromeListeners.add(listener);
+  return () => chromeListeners.delete(listener);
+}
+
+/**
  * `wallet:select-chain`, a `send` from the chrome (the sender policy lets
- * only the chrome call a channel no webview tier lists). Sent before the
- * chrome tells a page of the change, on the same pipe, so a page that asks
- * on its `chainChanged` reads the new chain.
+ * only the chrome call a channel no webview tier lists): `(chainId, seen)`,
+ * `seen` the number of the latest page selection the chrome had shown. A
+ * report with an older number is refused, and the chrome told the window's
+ * selection again. Main records an accepted selection before it tells any
+ * page (`onChromeSelection`), so a page that asks on its `chainChanged`
+ * reads the new chain.
  */
 function registerSelectedChainIpc(
   ipcMain = require('electron').ipcMain,
   { windowOf = (contents) => require('electron').BrowserWindow.fromWebContents(contents) } = {}
 ) {
-  ipcMain.on(CHANNEL, (event, chainId) => {
+  ipcMain.on(CHANNEL, (event, chainId, seen) => {
     let win;
     try {
       win = windowOf(event.sender);
@@ -106,14 +153,33 @@ function registerSelectedChainIpc(
       return;
     }
     if (!win || win.isDestroyed?.() || !Number.isInteger(win.id)) return;
+    if (chainId !== null && !isChainId(chainId)) return;
+    const seenSequence = Number.isSafeInteger(seen) && seen > 0 ? seen : 0;
+    if (seenSequence < sequenceOf(win.id)) {
+      // Picked from a switcher that hadn't shown main's latest page
+      // selection yet: main keeps it, and shows it to that chrome again.
+      if (event.sender && typeof event.sender.send === 'function') tell(event.sender, win.id);
+      return;
+    }
+    const previous = selectedChainOf(win.id);
     if (!selectChain(win.id, chainId)) return;
     watch(win);
+    if (previous === chainId) return;
+    const change = Object.freeze({ window: win.id, previous, next: chainId });
+    for (const listener of chromeListeners) {
+      try {
+        listener(change);
+      } catch {
+        // One listener's failure must not keep the others from hearing it.
+      }
+    }
   });
 }
 
 /** Test only: forget every window's selection. */
 function resetSelectedChains() {
   selected.clear();
+  sequences.clear();
   watched.clear();
 }
 
@@ -124,6 +190,7 @@ module.exports = {
   selectedChainOf,
   selectChain,
   selectChainForPage,
+  onChromeSelection,
   registerSelectedChainIpc,
   resetSelectedChains,
 };

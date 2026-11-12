@@ -3038,6 +3038,7 @@ describe('FreedomAgentService', () => {
       attested: { key: 'https://app.example', transportKey: 'https://app.example' },
       beforeEffect: jest.fn(async () => true),
       effectAllowed: jest.fn(() => true),
+      grantWritten: jest.fn(),
     };
     const response = service.handleWalletRequest(
       'tab_assigned',
@@ -3051,10 +3052,75 @@ describe('FreedomAgentService', () => {
       attested: pageRequest.attested,
       beforeEffect: pageRequest.beforeEffect,
       effectAllowed: pageRequest.effectAllowed,
+      grantWritten: pageRequest.grantWritten,
     });
     // Main answers the request (its deadline): the approval is withdrawn.
     answered.abort();
     await expect(response).resolves.toEqual({ handled: true, error: { code: 4001, message: 'withdrawn' } });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  // freedom-core design 0011, PRQ-6 (#1192 round 3): the page's answer
+  // follows the controller's effect with nothing waited on between them,
+  // so main's deadline can't land there. The Agent's steering comes after
+  // the answer; the run and its browser actions still wait for it.
+  test('a page request\'s answer doesn\'t wait on the Agent\'s steering; the run and its browser actions still do', async () => {
+    const fake = createFakeSession();
+    let releaseSteer;
+    fake.session.steer.mockImplementation(() => new Promise((resolve) => (releaseSteer = resolve)));
+    const barriers = [];
+    const scopedController = {
+      execute: jest.fn(),
+      prepareResume: jest.fn(async () => ({ ok: true })),
+      getActiveTabId: jest.fn(() => 'tab_assigned'),
+      getWorkspaceState: jest.fn(() => ({ tabIds: ['tab_assigned'], activeTabId: 'tab_assigned' })),
+      setExternalApprovalBarrier: jest.fn((promise) => barriers.push(promise)),
+    };
+    const walletController = {
+      handleRequest: jest.fn(async () => ({
+        handled: true,
+        result: ['0x1111111111111111111111111111111111111111'],
+        receipt: { wallet: { action: 'connected', origin: 'https://app.example', chainId: 100 } },
+      })),
+    };
+    const { service } = createService(fake, {
+      controller: {
+        execute: jest.fn(),
+        getPageState: jest.fn(() => ({ tabId: 'tab_assigned', url: 'https://app.example/swap', navigationId: 4 })),
+      },
+      createControllerScope: jest.fn(async () => scopedController),
+      walletController,
+    });
+    await service.start(startOptions());
+
+    const answered = new AbortController();
+    const response = service.handleWalletRequest(
+      'tab_assigned',
+      { method: 'eth_requestAccounts', params: [], chainId: 100 },
+      {
+        signal: answered.signal,
+        attested: { key: 'https://app.example', transportKey: 'https://app.example' },
+        beforeEffect: jest.fn(async () => true),
+        effectAllowed: jest.fn(() => true),
+        grantWritten: jest.fn(),
+      }
+    );
+    // The answer arrives while the steering is still held.
+    await expect(response).resolves.toEqual({ handled: true, result: ['0x1111111111111111111111111111111111111111'] });
+    expect(fake.session.steer).toHaveBeenCalledWith(expect.stringContaining('Freedom wallet event (trusted browser result)'));
+    expect(typeof releaseSteer).toBe('function');
+    // The browser's actions wait for the steering too.
+    expect(barriers).toHaveLength(1);
+    let barrierDone = false;
+    barriers[0].then(() => (barrierDone = true));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(barrierDone).toBe(false);
+    releaseSteer();
+    await barriers[0];
+    expect(barrierDone).toBe(true);
 
     fake.prompt.resolve();
     await service.waitForIdle();

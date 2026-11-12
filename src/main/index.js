@@ -480,6 +480,7 @@ const { registerRadicleProviderIpc } = require('./radicle/radicle-provider-ipc')
 const { registerPageRequestsIpc } = require('./page/page-requests');
 const { setAgentWalletRoute } = require('./page/page-ethereum');
 const { registerSelectedChainIpc } = require('./wallet/selected-chain');
+const { registerPageEvents } = require('./page/page-events');
 const { registerFeedStoreIpc } = require('./swarm/feed-store');
 const { registerPermissionManifestIpc } = require('./swarm/permission-manifests');
 const { registerGithubBridgeIpc, cleanupTempDirs } = require('./github-bridge');
@@ -710,6 +711,9 @@ async function bootstrap() {
       agentRuntime?.handlePageWalletRequest?.(guestId, request, options) ?? { handled: false }
   );
   registerSelectedChainIpc();
+  // The chain switcher's chainChanged, and accountsChanged when a grant is
+  // revoked or its account changes, go from main to the pages (0011 PRQ-6).
+  registerPageEvents();
   registerFeedStoreIpc();
   registerPermissionManifestIpc();
 
