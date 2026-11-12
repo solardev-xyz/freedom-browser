@@ -634,6 +634,35 @@ describe('hang watchdogs: the deadline + 15 s', () => {
     expect(JSON.parse(text)).toEqual({ ok: true });
   });
 
+  test("rad.read's head opens its body though it doesn't say body: true, as freedom-radicled writes it", async () => {
+    const reads = [];
+    const gen = await ready({ read: (m) => reads.push(m) });
+    const text = '{"rid":"rad:z1","name":"reads"}';
+    const head = client.read(gen, 'repo_info', { rid: RID });
+    await settle();
+    expect(reads[0].params).toEqual({ op: 'repo_info', args: { rid: RID } });
+    child(0).readReply(reads[0].id, text);
+    const { result, body } = await head;
+    expect(result).toEqual({ content_type: 'application/json', bytes: text.length });
+    expect(await new Response(body).text()).toBe(text);
+    // An error reply opens nothing.
+    const failed = client.read(gen, 'repo_info', { rid: RID });
+    await settle();
+    child(0).error(reads[1].id, 'not_found', 'repository not found');
+    await expect(failed).rejects.toMatchObject({ code: 'not_found' });
+    // A head that crossed main's cancel: its frames are dropped, and the
+    // process is fine.
+    const controller = new AbortController();
+    const cancelled = client.read(gen, 'repo_info', { rid: RID }, { signal: controller.signal });
+    await settle();
+    controller.abort();
+    child(0).readReply(reads[2].id, Buffer.alloc(300_000, 0x20));
+    await expect(cancelled).rejects.toMatchObject({ code: 'cancelled' });
+    await settle();
+    expect(client.serves(gen)).toBe(true);
+    expect(client.streamStats(gen)).toMatchObject({ bodies: 0, ringBytes: 0 });
+  });
+
   test("a network call's watchdog: its timeout_ms + 45 s, within what a timer holds", async () => {
     expect(networkWatchdogMs(0)).toBe(45_000);
     expect(networkWatchdogMs(15_000)).toBe(60_000);

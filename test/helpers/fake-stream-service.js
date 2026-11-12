@@ -12,6 +12,9 @@
  *   pushed as the window allows; with `abort_at`, aborted with `code` once
  *   that many bytes are queued;
  * - `fake.no_body`: a head with `body: false`;
+ * - `fake.unsaid { length }`: a head that doesn't say `body: true`
+ *   (`{ content_type, bytes }`, as freedom-radicled's `rad.read` writes it)
+ *   but opens its stream all the same, then the body as `fake.body`'s;
  * - `fake.error`: the error reply `busy`;
  * - `fake.hang`: no answer, until main's cancel;
  * - `fake.stats`: what the service holds: its live requests, held bytes,
@@ -113,6 +116,14 @@ function onRequest({ id, method, params = {} }) {
         abortAt: params.abort_at ?? null,
         code: params.code ?? 'internal',
       });
+      break;
+    case 'fake.unsaid':
+      sender.head(
+        id,
+        result(id, { content_type: 'application/json', bytes: params.length }),
+        true
+      );
+      producers.set(id, { length: params.length, offered: 0, abortAt: null, code: 'internal' });
       break;
     case 'fake.no_body':
       sender.head(id, result(id, { status: 204, body: false }), false);

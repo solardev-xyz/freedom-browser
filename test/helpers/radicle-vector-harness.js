@@ -28,6 +28,12 @@
  * add-on answers synchronously, as the generator's does, and the loaders keep
  * its load order (a file's first case loads the add-on, and logs it).
  *
+ * **On the service path** (the radicled plan's B7 on): the same modules with
+ * `FREEDOM_RADICLE_BACKEND=service`, over a fake service node whose
+ * `rad.read` answers each op with the vector's service text (its `expect`):
+ * `loadServiceReadsMain` and `runServiceNodeInfo`, for `node_info`'s
+ * `connections` today; the handlers' answers follow with their own step.
+ *
  * Lives under `test/helpers/` (outside `src/**`) so electron-builder never
  * packages it.
  */
@@ -263,6 +269,85 @@ async function runRead(main, c) {
     main: asJson({ ...result, calls: world.calls, warnings: world.warnings }),
     ...leftovers(world),
   };
+}
+
+// ---- radicle-reads.json on the service path (the radicled plan's B7) ----
+
+/** The libradicle build a fake service node reports (freedom-radicled
+ * v0.1.0's hello reports 0.8.0). */
+const SERVICE_LIBRADICLE = '0.8.0';
+const SET_SERVICE_NODE =
+  'module.exports.__setServiceNode = (node) => { serviceNode = node; ' +
+  'embedded.setServiceNodeSource(() => serviceNode); currentState = STATUS.RUNNING; };';
+
+/** A `rad.read` reply of `text`, as the client hands one over. */
+function readReply(text) {
+  const bytes = Buffer.from(text);
+  return {
+    result: { content_type: 'application/json', bytes: bytes.length },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+  };
+}
+
+/**
+ * Main's manager on the service path, its node running: a fake service node
+ * whose `rad.read` answers what `world.reads` scripts, by op (`{ body }`, or
+ * `{ error: { message } }`, which the service answers as `failed`); the log
+ * keeps warnings only. Call within FREEDOM_RADICLE_BACKEND=service.
+ */
+function loadServiceReadsMain() {
+  const world = { script: [], calls: [], warnings: [], infos: [], unscripted: [], reads: {} };
+  const addon = scriptedAddon(world, { reuse: true });
+  const log = {
+    info() {},
+    debug() {},
+    error() {},
+    log() {},
+    warn: (...parts) => world.warnings.push(join(parts)),
+  };
+  const embedded = loadEmbedded(log, addon);
+  const { CoreError } = require(path.join(ROOT, 'src/main/core/service-client.js'));
+  const node = {
+    generation: 1,
+    version: SERVICE_LIBRADICLE,
+    confinement: { mechanism: 'test' },
+    buildInfo: () => ({ service: { version: '0.1.0' } }),
+    streamStats: () => null,
+    async read(op, args) {
+      world.calls.push({ op, args });
+      const answer = Object.hasOwn(world.reads, op) ? world.reads[op] : null;
+      if (!answer) {
+        world.unscripted.push({ op, args });
+        throw new CoreError('failed', `unscripted ${op}`);
+      }
+      if (answer.error) throw new CoreError('failed', answer.error.message);
+      return readReply(answer.body);
+    },
+  };
+  const manager = loadWithInternals(
+    'src/main/radicle-manager.js',
+    [],
+    managerStubs(log, embedded, {}),
+    SET_SERVICE_NODE
+  );
+  manager.__setServiceNode(node);
+  return { world, manager, node };
+}
+
+/** A `radicle-reads.json` `node_info` case through the manager on the
+ * service: `getConnections` over the case's `expect`, the reads it sent,
+ * and what it logged. */
+async function runServiceNodeInfo(main, c) {
+  const { world, manager } = main;
+  resetWorld(world, []);
+  world.reads = { node_info: c.expect };
+  const connections = await manager.getConnections();
+  return asJson({ connections, calls: world.calls, warnings: world.warnings, unscripted: world.unscripted });
 }
 
 /** The add-on's `blobAt` text for a `radicle-blob.json` file (libradicle's
@@ -551,6 +636,9 @@ module.exports = {
   loadWithInternals,
   loadReadsMain,
   runRead,
+  loadServiceReadsMain,
+  runServiceNodeInfo,
+  SERVICE_LIBRADICLE,
   blobText,
   runBlob,
   loadNetworkMain,

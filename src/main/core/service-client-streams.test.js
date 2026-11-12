@@ -116,6 +116,36 @@ describe('ServiceClient streams', () => {
     expect(client.streamStats().outstanding).toBe(0);
   });
 
+  test("a head that doesn't say body: true opens a body when its request's `opens` says so", async () => {
+    const id = nextId();
+    const { result, body: stream } = await client.callStream(
+      'fake.unsaid',
+      { length: 300_000 },
+      undefined,
+      { opens: (head) => typeof head?.bytes === 'number' }
+    );
+    expect(result).toEqual({ content_type: 'application/json', bytes: 300_000 });
+    const { bytes, error } = await readAll(stream.getReader());
+    expect(error).toBeNull();
+    expect(bytes.equals(body(id, 0, 300_000))).toBe(true);
+    expect(client.streamStats()).toEqual({ outstanding: 0, ringBytes: 0, bodies: 0, outbox: 0 });
+    // An error reply still opens nothing.
+    await expect(
+      client.callStream('fake.error', {}, undefined, { opens: () => true })
+    ).rejects.toMatchObject({ code: 'busy' });
+    expect(client.streamStats().outstanding).toBe(0);
+  });
+
+  test("without `opens`, such a head opens nothing, and its data is a protocol fault", async () => {
+    const generation = client.current;
+    await expect(client.callStream('fake.unsaid', { length: 1000 })).resolves.toEqual({
+      result: { content_type: 'application/json', bytes: 1000 },
+      body: null,
+    });
+    await waitFor(() => generation.retired || generation.exited, 'the generation to end');
+    expect(log.error).toHaveBeenCalled();
+  });
+
   test('a paused reader: main holds one ring, the service waits within the window', async () => {
     const id = nextId();
     const { body: stream } = await client.callStream('fake.body', { length: 2 * 1024 * 1024 });
