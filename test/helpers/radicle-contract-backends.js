@@ -23,7 +23,10 @@
  *   would seal it (`radicle-seal.js`), so the home holds no key file (the
  *   service refuses one: 0008, "The switch"). It runs under a SOCKS policy
  *   at a closed loopback port, and the manager's background seeds and
- *   clone answer without dialling. Main's code for what it doesn't serve
+ *   clone answer without dialling: a clone would write a seeding policy
+ *   into the fixture's home. With `{ networkOnBinary: true }` they run on
+ *   the binary instead, for radicled-network.integration.test.js; nothing
+ *   leaves the machine either way. Main's code for what it doesn't serve
  *   yet stays on the add-on (`lacks`).
  *
  * Each backend serves one Radicle home (`home`), restored from the
@@ -56,6 +59,7 @@
  * Network operations are not part of the suite: `connectSeeds` and the
  * clones answer without dialling, and the home names no peer
  * (`radicle-fixture.js`). Nothing leaves the machine.
+ * radicled-network.integration.test.js runs them on the binary.
  *
  * `BACKENDS` lists, beside each loader:
  * - `honours`: the design's features beyond today's contract that the
@@ -355,7 +359,7 @@ function readReply(text) {
   };
 }
 
-async function loadRadicledBackend({ home }) {
+async function loadRadicledBackend({ home, networkOnBinary = false }) {
   const binary = radicledBinary();
   if (!fs.existsSync(binary)) {
     throw new Error(
@@ -432,12 +436,14 @@ async function loadRadicledBackend({ home }) {
             nodes.push(this);
           }
 
-          // Not dialled: the suite runs no network operation.
-          async connectSeeds() {
+          // Not dialled: the suite runs no network operation, unless asked.
+          async connectSeeds(timeoutMs, options) {
+            if (networkOnBinary) return super.connectSeeds(timeoutMs, options);
             return { connected: 0, attempted: 0, targetReached: false };
           }
 
-          async cloneRepo() {
+          async clone(rid, timeoutMs, options) {
+            if (networkOnBinary) return super.clone(rid, timeoutMs, options);
             throw notDialled();
           }
 
@@ -639,8 +645,17 @@ const BACKENDS = {
   // The release binary: no test hooks (they are a debug build's).
   radicled: {
     load: loadRadicledBackend,
-    honours: ['call-stream', 'call-scoped', 'node-info', 'dirty-marker', 'quarantine', 'size-caps'],
-    lacks: ['parsed-reads', 'network', 'writes', 'import'],
+    honours: [
+      'call-stream',
+      'call-scoped',
+      'node-info',
+      'dirty-marker',
+      'quarantine',
+      'size-caps',
+      // Its test needs the scriptedClone hook (plan C4), which no release has.
+      'progress-summary',
+    ],
+    lacks: ['parsed-reads', 'writes', 'import'],
     hooks: [],
     deviations: RADICLED_DEVIATIONS,
     handlerDeviations: radicledHandlerDeviations,
