@@ -16,21 +16,24 @@
  * - **`callScoped(op, args, scope, { signal })`** is for callers that need
  *   a parsed value, and only for the closed list of small results, each
  *   with its cap (`COLLECTED_CAPS`): 64 KiB for `status`, `identity`,
- *   `repo_info`, `seeders` and the composed `node_info`, and 4 MiB for
- *   `list_seeded_repos` and `list_repos`. A head over its cap is
- *   `too_large`, and nothing of its body is read. Any other op is refused:
- *   no caller parses a whole body outside a scope.
+ *   `repo_info`, `seeders` and the composed `node_info`, and 3 MiB for
+ *   `list_seeded_repos` and `list_repos` (see CHARGE_PER_BYTE). A head over
+ *   its cap is `too_large`, and nothing of its body is read. Any other op
+ *   is refused: no caller parses a whole body outside a scope.
  *   - **The collection budget**, 16 MiB, is main's for what collecting
  *     holds: the bytes being collected and the parsed value. A call reserves
  *     as its bytes arrive: at its head, which says how many follow, before
- *     any of them is collected. It reserves twice the head's length, its
- *     text and the value parsed from it, and waits, in the order the calls
- *     came, while that doesn't fit. A call that can't reserve within 5 s
- *     fails `busy`.
- *   - **The scope** is the value's lifetime: `scope(value, { signal })` is
- *     called once the body is parsed, and the reservation is released when
- *     what it returns settles. A value the scope returns is no longer
- *     charged.
+ *     any of them is collected. It reserves CHARGE_PER_BYTE times the head's
+ *     length, what its text and the value parsed from it can hold at worst,
+ *     and waits, in the order the calls came, while that doesn't fit. A call
+ *     that can't reserve within 5 s fails `busy`.
+ *   - **The scope** is the value's lifetime: `scope(value, { signal, bytes
+ *     })` is called once the body is parsed (`bytes`, its JSON's length),
+ *     and the reservation is released when what it returns settles. The
+ *     value can't leave the scope: a scope that resolves to the value itself
+ *     is refused (`invalid_argument`). Only `keep` hands one out: an
+ *     `identity` or `status` whose JSON is under 4 KiB, which 0008 lets
+ *     outlive its scope uncharged.
  *   - **Before the handoff,** an abort cancels the call: the read is
  *     cancelled, and what was reserved is released at once (`cancelled`).
  *     **After it,** the scope owns the value: the abort reaches it as
@@ -54,23 +57,48 @@ const { CoreError, isObject } = require('../core/service-client');
 const KIB = 1024;
 const MIB = 1024 * KIB;
 
-/** The collected results and their caps (0008, "JSON results"). */
+/**
+ * The collected results and their caps (0008, "JSON results"). The two
+ * listings' are 3 MiB, under 0008's 4 MiB: at CHARGE_PER_BYTE, the worst
+ * 3 MiB listing is charged 15 MiB, which fits the 16 MiB budget; a 4 MiB
+ * one, charged 20 MiB, never would.
+ */
 const COLLECTED_CAPS = Object.freeze({
   status: 64 * KIB,
   identity: 64 * KIB,
   repo_info: 64 * KIB,
   seeders: 64 * KIB,
   node_info: 64 * KIB,
-  list_seeded_repos: 4 * MIB,
-  list_repos: 4 * MIB,
+  list_seeded_repos: 3 * MIB,
+  list_repos: 3 * MIB,
 });
 /** Main's collection budget: what collected results hold, in all. */
 const COLLECTION_BUDGET_BYTES = 16 * MIB;
 /** How long a collecting call waits for room in the budget. */
 const RESERVE_WAIT_MS = 5_000;
-/** What a collected result is charged per byte of its JSON: the text, and
- * the value parsed from it. */
-const CHARGE_PER_BYTE = 2;
+/**
+ * What a collected result is charged per byte of its JSON, for every shape
+ * the service writes: the decoded text and the value parsed from it, held
+ * together from the parse until the scope settles (V8 slices a listing's
+ * strings out of the text, so its value keeps the whole text alive).
+ * Measured, not assumed (test/helpers/radicle-collected-heap.js, which
+ * radicle-service-backend.test.js runs), each shape at its cap in its worst
+ * form, the heap and what lies outside it:
+ * - a listing whose strings are long and held at two bytes a character, as
+ *   is the text (one character past U+00FF anywhere makes it so): 4.24
+ *   times its JSON in Node's V8, 4.09 in Electron's;
+ * - an object-dense listing, entries with two-character names in such a
+ *   text: 4.03, and 3.42 in Electron; with empty or null names, 3.49;
+ * - each 64 KiB shape filled by one such string: 4.00; `repo_info`'s allow
+ *   list of DIDs: 2.37.
+ * 5 leaves a margin over the worst of these for V8's versions and what the
+ * measurement misses. Twice the JSON, this step's first guess, isn't a bound.
+ */
+const CHARGE_PER_BYTE = 5;
+/** The collected results that may outlive their scope, uncharged, when
+ * their JSON is under KEEP_BYTES (0008: `identity`, `status`). */
+const KEEPABLE = new Set(['identity', 'status']);
+const KEEP_BYTES = 4 * KIB;
 /** The other callers' requests outstanding at the service, and waiting in
  * main for one of them to end. */
 const MAX_OUTSTANDING = 64;
@@ -370,6 +398,35 @@ class RadicleServiceBackend {
    * its cap; see the module's doc for the budget and ownership.
    */
   async callScoped(op, args, scope, { signal = null } = {}) {
+    return this.scoped(op, args, scope, { signal, leaves: false });
+  }
+
+  /**
+   * A collected `identity` or `status` that outlives its scope, uncharged
+   * from then on: only one whose JSON is under 4 KiB (0008, "JSON
+   * results"); a larger one is `too_large`. Every other result is used
+   * inside `callScoped`.
+   */
+  keep(op, args, { signal = null } = {}) {
+    if (!KEEPABLE.has(op)) {
+      return Promise.reject(
+        new CoreError('invalid_argument', `${op}'s value can't outlive its scope: use callScoped`)
+      );
+    }
+    const scope = (value, { bytes }) => {
+      if (bytes >= KEEP_BYTES) {
+        throw new CoreError(
+          'too_large',
+          `${op}'s value is ${bytes} bytes; only one under ${KEEP_BYTES} outlives its scope`
+        );
+      }
+      return value;
+    };
+    return this.scoped(op, args, scope, { signal, leaves: true });
+  }
+
+  /** callScoped's work; `leaves` lets the value itself out (`keep`). */
+  async scoped(op, args, scope, { signal, leaves }) {
     const cap = Object.hasOwn(COLLECTED_CAPS, op) ? COLLECTED_CAPS[op] : null;
     if (cap === null) {
       throw new CoreError('invalid_argument', `${op} isn't a collected result: stream it`);
@@ -377,13 +434,15 @@ class RadicleServiceBackend {
     if (typeof scope !== 'function') throw new TypeError('callScoped needs a scope');
     let release = null;
     let value;
+    let bytes;
     let reader = null;
     try {
       const { head, body } = await this.callStream(op, args, { signal });
       reader = body.getReader();
-      if (head.bytes > cap) throw tooLarge(op, cap);
-      release = await this.budget.reserve(head.bytes * CHARGE_PER_BYTE, { signal });
-      value = await collect(reader, head.bytes);
+      bytes = head.bytes;
+      if (bytes > cap) throw tooLarge(op, cap);
+      release = await this.budget.reserve(bytes * CHARGE_PER_BYTE, { signal });
+      value = await collect(reader, bytes);
       reader = null;
       if (signal?.aborted) throw cancelled();
     } catch (err) {
@@ -392,18 +451,17 @@ class RadicleServiceBackend {
       throw err;
     }
     // The handoff: the scope owns the value, and its reservation stays
-    // until the scope settles.
+    // until the scope settles. The value doesn't leave it.
+    let result;
     try {
-      return await scope(value, { signal });
+      result = await scope(value, { signal, bytes });
     } finally {
       release();
     }
-  }
-
-  /** callScoped with a scope that returns the value: for a caller that
-   * keeps it, which is then no longer charged. */
-  collect(op, args, { signal = null } = {}) {
-    return this.callScoped(op, args, (value) => value, { signal });
+    if (!leaves && result === value && typeof value === 'object' && value !== null) {
+      throw new CoreError('invalid_argument', `${op}'s value can't leave its scope: use it there`);
+    }
+    return result;
   }
 
   /** The collection budget's use: `{ held, limit }`, in bytes. */
@@ -427,11 +485,10 @@ class RadicleServiceBackend {
 }
 
 /**
- * Reads `reader` to its end, exactly `bytes` bytes of JSON, and parses it.
- * The text is decoded chunk by chunk, so no copy of the whole body is made
- * beside it.
+ * Reads `reader` to its end, exactly `bytes` bytes of JSON, as text. It is
+ * decoded chunk by chunk, so no copy of the whole body is made beside it.
  */
-async function collect(reader, bytes) {
+async function readText(reader, bytes) {
   const decoder = new StringDecoder('utf8');
   let text = '';
   let received = 0;
@@ -443,7 +500,12 @@ async function collect(reader, bytes) {
     text += decoder.write(value);
   }
   if (received !== bytes) throw badReply('with a body shorter than its head said');
-  text += decoder.end();
+  return text + decoder.end();
+}
+
+/** Reads `reader` to its end, exactly `bytes` bytes of JSON, and parses it. */
+async function collect(reader, bytes) {
+  const text = await readText(reader, bytes);
   try {
     return JSON.parse(text);
   } catch {
@@ -459,6 +521,10 @@ module.exports = {
   COLLECTION_BUDGET_BYTES,
   RESERVE_WAIT_MS,
   CHARGE_PER_BYTE,
+  KEEPABLE,
+  KEEP_BYTES,
   MAX_OUTSTANDING,
   MAX_WAITING,
+  // How a collected body is decoded, for the heap measurement.
+  readText,
 };

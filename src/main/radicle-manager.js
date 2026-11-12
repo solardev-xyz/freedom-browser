@@ -641,9 +641,12 @@ function requireRunning() {
     : failure('RADICLE_NOT_RUNNING', 'Radicle node is not running');
 }
 
+// The seed paths' reads. Under the service each is collected, its value
+// used inside its scope (0008, "JSON results"): none leaves it.
 async function repoExists(rid) {
   try {
-    await embedded.repoInfo(rid);
+    if (onService()) await embedded.callScoped('repo_info', { rid }, async () => {});
+    else await embedded.repoInfo(rid);
     return true;
   } catch {
     return false;
@@ -651,6 +654,9 @@ async function repoExists(rid) {
 }
 
 async function getSeederCount(rid) {
+  if (onService()) {
+    return embedded.callScoped('seeders', { rid }, async (info) => info?.seeding);
+  }
   return (await embedded.seeders(rid)).seeding;
 }
 
@@ -690,9 +696,12 @@ async function seedRepository(rid, onStatus) {
 }
 
 async function isSeeded(fullRid) {
+  const seeded = (repos) => Array.isArray(repos) && repos.some((repo) => repo?.rid === fullRid);
   try {
-    const repos = await embedded.listSeededRepos();
-    return Array.isArray(repos) && repos.some((repo) => repo?.rid === fullRid);
+    if (onService()) {
+      return await embedded.callScoped('list_seeded_repos', {}, async (repos) => seeded(repos));
+    }
+    return seeded(await embedded.listSeededRepos());
   } catch (err) {
     log.warn(
       `[Radicle] Could not read seeding policies for ${redactForLog(fullRid)}:`,
@@ -1070,6 +1079,10 @@ module.exports = {
   hasInjectedIdentity,
   getCurrentStatus,
   getConnections,
+  // The seed paths' reads, for their tests.
+  repoExists,
+  getSeederCount,
+  isSeeded,
   seedRepository,
   unseedRepository,
   getSeedFetchStatus,

@@ -11,9 +11,14 @@
  *   stream, and nothing of them is collected;
  * - the caps: at its cap a result is parsed, one byte past it is
  *   `too_large`, its body cancelled unread;
+ * - the charge: every shape the service writes, at its cap and in its worst
+ *   form, holds no more in main's heap than it is charged (measured in a
+ *   child process, test/helpers/radicle-collected-heap.js);
+ * - a value can't outlive its scope uncharged: only an `identity` or
+ *   `status` under 4 KiB is kept past it;
  * - the 16 MiB collection budget: `busy` once a call has waited 5 s;
  * - an aborted collect releases its bytes at once;
- * - a paused 4 MiB scope, aborted, keeps its reservation until its callback
+ * - a paused 3 MiB scope, aborted, keeps its reservation until its callback
  *   settles, and a new call can't use it;
  * - the other callers' 64 outstanding and 64 waiting.
  *
@@ -25,6 +30,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 jest.mock('electron', () => ({ app: { isPackaged: false } }), { virtual: true });
 jest.mock('../service-grant', () => ({ radicleGrantRefusal: jest.fn(() => null) }));
@@ -35,10 +41,24 @@ const {
   COLLECTED_CAPS,
   COLLECTION_BUDGET_BYTES,
   RESERVE_WAIT_MS,
+  CHARGE_PER_BYTE,
+  KEEPABLE,
+  KEEP_BYTES,
   MAX_OUTSTANDING,
   MAX_WAITING,
 } = require('./radicle-service-backend');
 const { fakeRadicled } = require('../../../test/helpers/fake-radicled');
+const { SHAPES: HEAP_SHAPES } = require('../../../test/helpers/radicle-collected-heap');
+
+const HEAP_SCRIPT = path.join(
+  __dirname,
+  '..',
+  '..',
+  '..',
+  'test',
+  'helpers',
+  'radicle-collected-heap.js'
+);
 
 const KIB = 1024;
 const MIB = 1024 * KIB;
@@ -286,33 +306,38 @@ describe('callStream: a read passed through', () => {
 });
 
 describe('callScoped: the collected results', () => {
-  test('the closed list, with its caps: 64 KiB, and 4 MiB for the two listings', () => {
+  test('the closed list, with its caps: 64 KiB, and 3 MiB for the two listings', () => {
     expect(COLLECTED_CAPS).toEqual({
       status: 64 * KIB,
       identity: 64 * KIB,
       repo_info: 64 * KIB,
       seeders: 64 * KIB,
       node_info: 64 * KIB,
-      list_seeded_repos: 4 * MIB,
-      list_repos: 4 * MIB,
+      list_seeded_repos: 3 * MIB,
+      list_repos: 3 * MIB,
     });
     expect(COLLECTION_BUDGET_BYTES).toBe(16 * MIB);
     expect(RESERVE_WAIT_MS).toBe(5_000);
+    expect(CHARGE_PER_BYTE).toBe(5);
+    // The worst listing at its cap fits the budget, alone.
+    expect(COLLECTED_CAPS.list_repos * CHARGE_PER_BYTE).toBeLessThanOrEqual(16 * MIB);
+    expect(2 * COLLECTED_CAPS.list_repos * CHARGE_PER_BYTE).toBeGreaterThan(16 * MIB);
   });
 
-  test('each at its cap is parsed in the scope; one byte past it is too_large, its body cancelled unread, and the scope never runs', async () => {
+  test('each at its cap is parsed in the scope, charged its measured worst; one byte past it is too_large, its body cancelled unread, and the scope never runs', async () => {
     let size = 0;
     const { child, backend } = await running((m, c) => c.readReply(m.id, jsonOf(size)));
     for (const [op, cap] of Object.entries(COLLECTED_CAPS)) {
       size = cap;
-      let held = null;
-      const value = await backend.callScoped(op, {}, async (parsed) => {
-        held = backend.collectionBudget().held;
+      let seen = null;
+      const value = await backend.callScoped(op, {}, async (parsed, { bytes }) => {
+        seen = { held: backend.collectionBudget().held, bytes };
         return parsed.pad.length;
       });
       expect(value).toBe(cap - '{"pad":""}'.length);
-      // The text and the value parsed from it, while the scope runs.
-      expect(held).toBe(2 * cap);
+      // The text and the value parsed from it, at their measured worst, while
+      // the scope runs; the scope is told the JSON's length.
+      expect(seen).toEqual({ held: CHARGE_PER_BYTE * cap, bytes: cap });
       expect(backend.collectionBudget().held).toBe(0);
 
       size = cap + 1;
@@ -340,61 +365,116 @@ describe('callScoped: the collected results', () => {
     expect(reads(child)).toHaveLength(0);
   });
 
-  test('the 16 MiB budget: past the cap too_large, then a call with no room waits 5 s and is busy', async () => {
-    const listing = jsonOf(4 * MIB);
-    const { child, backend, clock } = await running((m, c) => c.readReply(m.id, listing));
-    // Two 4 MiB listings fill it: each is charged its text and its value.
-    const scopes = [deferred(), deferred()];
-    const held = scopes.map((scope) =>
-      track(backend.callScoped('list_seeded_repos', {}, () => scope.promise))
-    );
-    await settle(60);
-    expect(backend.collectionBudget()).toEqual({ held: 16 * MIB, limit: 16 * MIB });
+  test("a value can't outlive its scope uncharged: a scope that returns it is refused, and its bytes released", async () => {
+    const { backend } = await running((m, c) => c.readReply(m.id, '[{"rid":"rad:z1"}]'));
+    for (const op of ['list_repos', 'list_seeded_repos', 'repo_info', 'seeders', 'node_info']) {
+      await expect(backend.callScoped(op, {}, async (value) => value)).rejects.toMatchObject({
+        code: 'invalid_argument',
+      });
+      expect(backend.collectionBudget().held).toBe(0);
+      // What it computes from the value is the call's.
+      await expect(
+        backend.callScoped(op, {}, async (value) => value.map((repo) => repo.rid))
+      ).resolves.toEqual(['rad:z1']);
+    }
+    // Only identity and status are kept (below), and nothing else.
+    for (const op of ['list_repos', 'list_seeded_repos', 'repo_info', 'seeders', 'node_info']) {
+      await expect(backend.keep(op, {})).rejects.toMatchObject({ code: 'invalid_argument' });
+    }
+  });
 
-    // A third: its head comes, and it waits for room, its body unread.
-    const third = track(backend.callScoped('list_repos', {}, async () => 'third'));
+  test('identity and status are kept past their scope only under 4 KiB, uncharged', async () => {
+    let size = 0;
+    const { backend } = await running((m, c) => c.readReply(m.id, jsonOf(size)));
+    expect([...KEEPABLE].sort()).toEqual(['identity', 'status']);
+    expect(KEEP_BYTES).toBe(4 * KIB);
+    for (const op of ['identity', 'status']) {
+      size = KEEP_BYTES - 1;
+      const kept = await backend.keep(op, {});
+      expect(kept.pad).toHaveLength(KEEP_BYTES - 1 - '{"pad":""}'.length);
+      expect(backend.collectionBudget().held).toBe(0);
+      size = KEEP_BYTES;
+      await expect(backend.keep(op, {})).rejects.toMatchObject({ code: 'too_large' });
+      expect(backend.collectionBudget().held).toBe(0);
+    }
+  });
+
+  test('the measured worst of every shape the service writes is within its charge (test/helpers/radicle-collected-heap.js)', () => {
+    const run = spawnSync(process.execPath, ['--expose-gc', HEAP_SCRIPT], {
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    expect(run.stderr).toBe('');
+    expect(run.status).toBe(0);
+    const measured = run.stdout
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(measured.map((m) => m.shape)).toEqual(Object.keys(HEAP_SHAPES));
+    for (const { shape, op, bytes, held } of measured) {
+      // Each shape at its op's cap (the 64 KiB ones over 32 copies).
+      const copies = COLLECTED_CAPS[op] <= 64 * KIB ? 32 : 1;
+      expect({ shape, atCap: bytes / copies > COLLECTED_CAPS[op] * 0.98 }).toEqual({
+        shape,
+        atCap: true,
+      });
+      expect({ shape, held: held <= CHARGE_PER_BYTE * bytes }).toEqual({ shape, held: true });
+    }
+    // The worst listing really is past twice its length, this step's first
+    // guess.
+    const listings = measured.filter((m) => m.op.startsWith('list_'));
+    expect(Math.max(...listings.map((m) => m.held / m.bytes))).toBeGreaterThan(3);
+  }, 180_000);
+
+  test('the 16 MiB budget: past the cap too_large, then a call with no room waits 5 s and is busy', async () => {
+    // A 3 MiB listing, charged 15 MiB, nearly fills it; a 2 MiB one, 10 MiB.
+    const { child, backend, clock } = await running((m, c) =>
+      c.readReply(m.id, jsonOf(m.params.op === 'list_seeded_repos' ? 3 * MIB : 2 * MIB))
+    );
+    const scope = deferred();
+    const held = track(backend.callScoped('list_seeded_repos', {}, () => scope.promise));
     await settle(60);
-    expect(third.settled).toBe(false);
+    expect(backend.collectionBudget()).toEqual({ held: 15 * MIB, limit: 16 * MIB });
+
+    // Another: its head comes, and it waits for room, its body unread.
+    const second = track(backend.callScoped('list_repos', {}, async () => 'second'));
+    await settle(60);
+    expect(second.settled).toBe(false);
     await clock.advance(RESERVE_WAIT_MS - 1);
-    expect(third.settled).toBe(false);
+    expect(second.settled).toBe(false);
     await clock.advance(1);
-    expect(third.error).toMatchObject({ code: 'busy' });
+    expect(second.error).toMatchObject({ code: 'busy' });
     await settle();
-    expect(child.cancels).toEqual([reads(child)[2].id]);
-    expect(backend.collectionBudget().held).toBe(16 * MIB);
+    expect(child.cancels).toEqual([reads(child)[1].id]);
+    expect(backend.collectionBudget().held).toBe(15 * MIB);
 
     // A call that gets room within its 5 s goes on.
-    const fourth = track(backend.callScoped('list_repos', {}, async () => 'fourth'));
+    const third = track(backend.callScoped('list_repos', {}, async () => 'third'));
     await settle(60);
     await clock.advance(RESERVE_WAIT_MS - 1);
-    expect(fourth.settled).toBe(false);
-    scopes[0].resolve('first');
+    expect(third.settled).toBe(false);
+    scope.resolve('first');
     await settle(60);
-    expect(fourth.value).toBe('fourth');
-    expect(held[0].value).toBe('first');
-
-    scopes[1].resolve('second');
-    await settle();
-    expect(held[1].value).toBe('second');
+    expect(third.value).toBe('third');
+    expect(held.value).toBe('first');
     expect(backend.collectionBudget().held).toBe(0);
     expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
   }, 30_000);
 
   test('waiting calls are let in in the order they came', async () => {
-    const listing = jsonOf(4 * MIB);
-    const { backend } = await running((m, c) => c.readReply(m.id, listing));
+    const { backend } = await running((m, c) =>
+      c.readReply(m.id, jsonOf(m.params.op === 'list_seeded_repos' ? 3 * MIB : 2 * MIB))
+    );
     const order = [];
-    const scopes = [deferred(), deferred()];
-    for (const scope of scopes) {
-      void backend.callScoped('list_seeded_repos', {}, () => scope.promise);
-    }
+    const scope = deferred();
+    void backend.callScoped('list_seeded_repos', {}, () => scope.promise);
     await settle(60);
+    // Each 10 MiB: one at a time, as each settles.
     const waiting = ['a', 'b', 'c'].map((name) =>
       backend.callScoped('list_repos', {}, async () => order.push(name))
     );
     await settle(60);
-    scopes[0].resolve();
-    scopes[1].resolve();
+    scope.resolve();
     await Promise.all(waiting);
     expect(order).toEqual(['a', 'b', 'c']);
     expect(backend.collectionBudget().held).toBe(0);
@@ -405,7 +485,7 @@ describe('callScoped: the collected results', () => {
     const { child, backend } = await running((m, c) => {
       read = m;
       // Its head, and part of its body: the rest never comes.
-      c.readHead(m.id, 4 * MIB);
+      c.readHead(m.id, 3 * MIB);
       c.sender.push(m.id, Buffer.alloc(CHUNK, 0x20));
       c.pump();
     });
@@ -413,7 +493,7 @@ describe('callScoped: the collected results', () => {
     const scope = jest.fn();
     const call = backend.callScoped('list_repos', {}, scope, { signal: controller.signal });
     await settle(60);
-    expect(backend.collectionBudget().held).toBe(8 * MIB);
+    expect(backend.collectionBudget().held).toBe(15 * MIB);
     controller.abort();
     await expect(call).rejects.toMatchObject({ code: 'cancelled' });
     expect(backend.collectionBudget().held).toBe(0);
@@ -424,12 +504,11 @@ describe('callScoped: the collected results', () => {
   });
 
   test('an abort while a call waits for room leaves the queue: cancelled, its read cancelled', async () => {
-    const listing = jsonOf(4 * MIB);
-    const { child, backend } = await running((m, c) => c.readReply(m.id, listing));
-    const scopes = [deferred(), deferred()];
-    for (const scope of scopes) {
-      void backend.callScoped('list_seeded_repos', {}, () => scope.promise);
-    }
+    const { child, backend } = await running((m, c) =>
+      c.readReply(m.id, jsonOf(m.params.op === 'list_seeded_repos' ? 3 * MIB : 2 * MIB))
+    );
+    const scope = deferred();
+    void backend.callScoped('list_seeded_repos', {}, () => scope.promise);
     await settle(60);
     const controller = new AbortController();
     const waiting = backend.callScoped('list_repos', {}, async () => {}, {
@@ -439,16 +518,17 @@ describe('callScoped: the collected results', () => {
     controller.abort();
     await expect(waiting).rejects.toMatchObject({ code: 'cancelled' });
     await settle();
-    expect(child.cancels).toEqual([reads(child)[2].id]);
-    expect(backend.collectionBudget().held).toBe(16 * MIB);
-    for (const scope of scopes) scope.resolve();
+    expect(child.cancels).toEqual([reads(child)[1].id]);
+    expect(backend.collectionBudget().held).toBe(15 * MIB);
+    scope.resolve();
     await settle();
     expect(backend.collectionBudget().held).toBe(0);
   }, 30_000);
 
-  test("a paused 4 MiB scope, then aborted: its allowance stays reserved until the callback settles, and a new call can't use it", async () => {
-    const listing = jsonOf(4 * MIB);
-    const { backend, clock } = await running((m, c) => c.readReply(m.id, listing));
+  test("a paused 3 MiB scope, then aborted: its allowance stays reserved until the callback settles, and a new call can't use it", async () => {
+    const { backend, clock } = await running((m, c) =>
+      c.readReply(m.id, jsonOf(m.params.op === 'list_seeded_repos' ? 3 * MIB : 2 * MIB))
+    );
     const controller = new AbortController();
     const paused = deferred();
     let seen = null;
@@ -463,18 +543,16 @@ describe('callScoped: the collected results', () => {
         { signal: controller.signal }
       )
     );
-    const other = deferred();
-    void backend.callScoped('list_seeded_repos', {}, () => other.promise);
     await settle(60);
-    expect(backend.collectionBudget().held).toBe(16 * MIB);
+    expect(backend.collectionBudget().held).toBe(15 * MIB);
 
     // The abort reaches the scope as its signal; the value is still its.
     controller.abort();
     await settle();
     expect(seen.signal.aborted).toBe(true);
-    expect(seen.value.pad).toHaveLength(4 * MIB - '{"pad":""}'.length);
+    expect(seen.value.pad).toHaveLength(3 * MIB - '{"pad":""}'.length);
     expect(first.settled).toBe(false);
-    expect(backend.collectionBudget().held).toBe(16 * MIB);
+    expect(backend.collectionBudget().held).toBe(15 * MIB);
 
     // A new call finds no room while the callback holds the value.
     const next = track(backend.callScoped('list_repos', {}, async () => 'next'));
@@ -487,20 +565,16 @@ describe('callScoped: the collected results', () => {
     await settle(60);
     expect(first.value).toBe('done');
     expect(next.value).toBe('next');
-    other.resolve();
-    await settle();
     expect(backend.collectionBudget().held).toBe(0);
   }, 30_000);
 
-  test("a scope's rejection is the call's, its bytes released; collect keeps the value", async () => {
+  test("a scope's rejection is the call's, its bytes released", async () => {
     const { backend } = await running((m, c) => c.readReply(m.id, '{"did":"did:key:z6Mk"}'));
     await expect(
       backend.callScoped('identity', {}, async () => {
         throw new Error('the scope failed');
       })
     ).rejects.toThrow('the scope failed');
-    expect(backend.collectionBudget().held).toBe(0);
-    await expect(backend.collect('identity', {})).resolves.toEqual({ did: 'did:key:z6Mk' });
     expect(backend.collectionBudget().held).toBe(0);
   });
 

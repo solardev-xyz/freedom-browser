@@ -86,6 +86,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
 const { loadMainModule } = require('./main-process-test-utils');
 const { fixtureSeed } = require('./radicle-fixture');
 const { sealRadicleKey } = require('./radicle-seal');
@@ -136,11 +137,14 @@ const FEATURES = [
  * The parts of today's contract, each a group of the suite's tests, that a
  * backend may not serve:
  * - `handlers`: the `rad:` and `radapi:` handlers' answers;
- * - `parsed-reads`: the handlers' reads as parsed values or as text
- *   (`tree`, `treeAt`, `blob`, `blobAt`, `commits`, `commit`, `issues`,
- *   `issue`, `patches`, `patch`, `remotes`, `repoStats`, the `*Raw`
- *   exports, `readme` and `readmeAt`). The service streams them
- *   (`callStream`) and parses only the collected results;
+ * - `parsed-reads`: reads handed out as parsed values or as text, outside
+ *   a scope: the handlers' (`tree`, `treeAt`, `blob`, `blobAt`, `commits`,
+ *   `commit`, `issues`, `issue`, `patches`, `patch`, `remotes`,
+ *   `repoStats`, the `*Raw` exports, `readme` and `readmeAt`), and the
+ *   collected `repoInfo`, `seeders`, `listSeededRepos` and `listRepos`.
+ *   The service streams the first (`callStream`), and parses the others
+ *   only inside a scope (`callScoped`); only `identity` and `status` leave
+ *   theirs, under 4 KiB;
  * - `network`: seeds, clones and their cancel;
  * - `writes`: the COB writes and unseeding;
  * - `import`: `importRepo`.
@@ -526,17 +530,20 @@ async function loadRadicledBackend({ home }) {
   };
 }
 
-/** An error record whose message is libradicle's not-found for `kind`'s
- * unknown ID, as the service's libradicle words it. */
-const cobNotFound = (kind) => (record, vector) =>
-  typeof vector.error === 'string' &&
-  /not found/i.test(vector.error) &&
-  record.error === `node thread: ${kind} ${'0'.repeat(40)} not found` &&
-  Object.keys(record).length === 1;
+/** The unknown ID the COB vectors read. */
+const UNKNOWN_COB = '0'.repeat(40);
+/** v0.8.0's text for an unknown COB, as the vectors record it. */
+const ADDON_COB_NOT_FOUND = `revspec '${UNKNOWN_COB}' not found; class=Reference (4); code=NotFound (-3)`;
+
+/** Whether `record` is exactly `expected`, and `vector` exactly what v0.8.0
+ * recorded, `recorded`: the one difference, pinned on both sides. */
+const exactly = (expected, recorded) => (record, vector) =>
+  isDeepStrictEqual(record, expected) && isDeepStrictEqual(vector, recorded);
 
 /**
  * The golden read vectors freedom-radicled answers otherwise (see the
- * module's doc): each case, the deviation, why, and the only difference.
+ * module's doc): each case, the deviation, why, and the only difference,
+ * pinned to the service's exact record.
  */
 const RADICLED_DEVIATIONS = {
   'commit second': {
@@ -545,25 +552,35 @@ const RADICLED_DEVIATIONS = {
       "The second commit adds the fixture's 70 MiB file. Its diff loads that blob, and the " +
       "service's walk charges what it loads to its 16 MiB budget for loads, so the read is " +
       'too_large (413 at the handlers), where v0.8.0 answered the diff.',
+    // The vector's body is v0.8.0's diff, recorded; the service's answer is
+    // the blob's exact size against the walk's 16 MiB of loads.
     differs: (record, vector) =>
+      isDeepStrictEqual(record, { error: '73400320 bytes is over the limit of 16777216' }) &&
+      Object.keys(vector).length === 1 &&
       typeof vector.body === 'string' &&
-      /^\d+ bytes is over the limit of 16777216$/.test(record.error ?? '') &&
-      Object.keys(record).length === 1,
+      vector.body.includes('"path":"big.bin","diff":{"type":"binary"}'),
   },
-  // Not one of 0008's named deviations: the libradicle the service links
-  // words this error otherwise than v0.8.0 did.
+  // The libradicle the service links words an unknown COB's not-found
+  // otherwise than v0.8.0 did: 404 at the handlers either way. To be named
+  // in 0008 as `libradicle-text`.
   'issue unknown': {
     deviation: 'libradicle-text',
     reason:
       "An unknown issue is libradicle's not-found either way (404 at the handlers), worded " +
       "by the libradicle the service links, which names the COB it didn't find, where " +
       "v0.8.0's named the revspec it failed to resolve.",
-    differs: cobNotFound('issue'),
+    differs: exactly(
+      { error: `node thread: issue ${UNKNOWN_COB} not found` },
+      { error: ADDON_COB_NOT_FOUND }
+    ),
   },
   'patch unknown': {
     deviation: 'libradicle-text',
     reason: "As for an unknown issue: libradicle's not-found, worded by the service's libradicle.",
-    differs: cobNotFound('patch'),
+    differs: exactly(
+      { error: `node thread: patch ${UNKNOWN_COB} not found` },
+      { error: ADDON_COB_NOT_FOUND }
+    ),
   },
 };
 

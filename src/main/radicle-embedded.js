@@ -20,16 +20,17 @@
  * development builds only; freedom-core design 0008, "Main's side"), the
  * exports keep their shapes, and the reads go to the service node
  * radicle-manager.js runs, through radicle/radicle-service-backend.js:
- * - **the collected results** (`repoInfo`, `seeders`, `identity`, `status`,
- *   `listSeededRepos`, `listRepos`) are `callScoped` reads under their
- *   caps and main's collection budget, their values returned out of the
- *   scope;
  * - **`callStream`, `callScoped`**, `collectionBudget` and `streamStats`
  *   are the service's own routes: a head and a body stream for the
- *   handlers' reads, and a parsed value inside a scope for the rest;
+ *   handlers' reads, and a parsed value inside a scope for the closed list
+ *   of collected results, whose callers use the value there;
+ * - **`identity` and `status`** are collected and handed out, as 0008 lets
+ *   a value under 4 KiB outlive its scope (a larger one is `too_large`);
  * - **every other export** answers "Not available on the Radicle service
  *   yet" (`RADICLE_SERVICE_UNSUPPORTED`) until its own step moves it: the
- *   handlers' parsed and `*Raw` reads (they move to `callStream`), the
+ *   other collected results as values (`repoInfo`, `seeders`,
+ *   `listSeededRepos`, `listRepos`), whose callers move into scopes; the
+ *   handlers' parsed and `*Raw` reads (they move to `callStream`); the
  *   network operations, the writes and the import. `isStarted` says whether
  *   the service node runs.
  */
@@ -179,8 +180,9 @@ function routed(name, addonRoute, serviceRoute = null) {
   };
 }
 
-/** A collected result on the service, its value returned out of the scope. */
-const collected = (op, args) => service().collect(op, args);
+/** A collected `identity` or `status` on the service, under 4 KiB, handed
+ * out of its scope. */
+const kept = (op) => service().keep(op, {});
 
 function serviceOnly(name) {
   if (!onService()) throw new Error(`${name} is the Radicle service's: the add-on has no streams`);
@@ -202,9 +204,11 @@ function callStream(op, args = {}, { signal = null } = {}) {
 
 /**
  * A collected result on the service, parsed in a scope: resolves to what
- * `scope(value, { signal })` resolves to, once the value is parsed; main's
- * collection budget holds it until then. Only the closed list of small
- * results (radicle/radicle-service-backend.js's COLLECTED_CAPS).
+ * `scope(value, { signal, bytes })` resolves to, once the value is parsed;
+ * main's collection budget holds it until the scope settles. The value
+ * itself can't be what the scope resolves to: it is used there. Only the
+ * closed list of small results (radicle/radicle-service-backend.js's
+ * COLLECTED_CAPS).
  */
 function callScoped(op, args, scope, { signal = null } = {}) {
   try {
@@ -518,15 +522,15 @@ module.exports = {
   editIssueState: routed('editIssueState', editIssueState),
   commentPatch: routed('commentPatch', commentPatch),
   importRepo: routed('importRepo', importRepo),
-  // The collected results (0008, "JSON results").
-  listRepos: routed('listRepos', listRepos, () => collected('list_repos', {})),
-  listSeededRepos: routed('listSeededRepos', listSeededRepos, () =>
-    collected('list_seeded_repos', {})
-  ),
-  identity: routed('identity', identity, () => collected('identity', {})),
-  repoInfo: routed('repoInfo', repoInfo, (rid) => collected('repo_info', { rid })),
-  status: routed('status', status, () => collected('status', {})),
-  seeders: routed('seeders', seeders, (rid) => collected('seeders', { rid })),
+  // The collected results that may outlive their scope (0008, "JSON
+  // results"); the others are read in callScoped, where their callers use
+  // them.
+  identity: routed('identity', identity, () => kept('identity')),
+  status: routed('status', status, () => kept('status')),
+  listRepos: routed('listRepos', listRepos),
+  listSeededRepos: routed('listSeededRepos', listSeededRepos),
+  repoInfo: routed('repoInfo', repoInfo),
+  seeders: routed('seeders', seeders),
   // The handlers' reads: callStream on the service.
   issues: routed('issues', issues),
   issue: routed('issue', issue),

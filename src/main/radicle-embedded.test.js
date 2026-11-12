@@ -9,13 +9,39 @@ const os = require('os');
 const fs = require('fs');
 
 const REQUIRED_FAKE_EXPORTS = [
-  'start', 'shutdown', 'connectSeeds', 'cloneRepo', 'cloneRepoWithProgress',
-  'cancelClone', 'unseedRepo', 'listRepos', 'listSeededRepos',
-  'issues', 'issue', 'patches', 'patch',
-  'identity', 'createIssue', 'commentIssue', 'editIssueState', 'commentPatch',
-  'importRepo', 'repoInfo', 'commits', 'commit', 'tree', 'treeAt', 'blob', 'blobAt',
-  'remotes', 'repoStats', 'status', 'seeders',
-].map((name) => `${name}: async () => JSON.stringify({ ok: true }),`).join('');
+  'start',
+  'shutdown',
+  'connectSeeds',
+  'cloneRepo',
+  'cloneRepoWithProgress',
+  'cancelClone',
+  'unseedRepo',
+  'listRepos',
+  'listSeededRepos',
+  'issues',
+  'issue',
+  'patches',
+  'patch',
+  'identity',
+  'createIssue',
+  'commentIssue',
+  'editIssueState',
+  'commentPatch',
+  'importRepo',
+  'repoInfo',
+  'commits',
+  'commit',
+  'tree',
+  'treeAt',
+  'blob',
+  'blobAt',
+  'remotes',
+  'repoStats',
+  'status',
+  'seeders',
+]
+  .map((name) => `${name}: async () => JSON.stringify({ ok: true }),`)
+  .join('');
 
 describe('radicle-embedded addon loading', () => {
   afterEach(() => {
@@ -24,11 +50,7 @@ describe('radicle-embedded addon loading', () => {
   });
 
   test('is unavailable when no addon binary exists anywhere', () => {
-    process.env.FREEDOM_RADICLE_ADDON = path.join(
-      os.tmpdir(),
-      'does-not-exist',
-      'libradicle.node'
-    );
+    process.env.FREEDOM_RADICLE_ADDON = path.join(os.tmpdir(), 'does-not-exist', 'libradicle.node');
     jest.isolateModules(() => {
       const embedded = require('./radicle-embedded');
       // Note: falls through to radicle-bin/ and the sibling dev checkout;
@@ -135,9 +157,9 @@ describe('radicle-embedded addon loading', () => {
     await jest.isolateModulesAsync(async () => {
       const embedded = require('./radicle-embedded');
       const onProgress = jest.fn();
-      await expect(
-        embedded.cloneRepoWithProgress('rad:zAbc', 1234, onProgress)
-      ).resolves.toEqual({ ok: true });
+      await expect(embedded.cloneRepoWithProgress('rad:zAbc', 1234, onProgress)).resolves.toEqual({
+        ok: true,
+      });
       expect(onProgress).toHaveBeenCalledWith({ phase: 'resolving', candidates: 2 });
       await expect(embedded.cancelClone('rad:zAbc')).resolves.toEqual({ cancelled: true });
     });
@@ -243,7 +265,8 @@ describe('raw reads (#514)', () => {
       await expect(embedded.blobAtRaw('rad:zAbc', 'r', 'x')).rejects.toThrow(
         'the path does not exist'
       );
-    }));
+    })
+  );
 
   test('reject a non-string addon result', () =>
     withFakeAddon('commit: async () => undefined,', async (embedded) => {
@@ -251,17 +274,20 @@ describe('raw reads (#514)', () => {
     }));
 
   test('readmeAtRaw splices `path` into the blob text, equal to readmeAt', () =>
-    withFakeAddon(`${TREE}blobAt: async () => ${JSON.stringify(`${BLOB}\n`)},`, async (embedded) => {
-      const raw = await embedded.readmeAtRaw('rad:zAbc', 'r');
-      expect(raw.startsWith(BLOB.slice(0, -1))).toBe(true);
-      expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc', 'r'));
-      expect(JSON.parse(raw)).toEqual({
-        binary: false,
-        name: 'README.md',
-        content: BIG,
-        path: 'README.md',
-      });
-    }));
+    withFakeAddon(
+      `${TREE}blobAt: async () => ${JSON.stringify(`${BLOB}\n`)},`,
+      async (embedded) => {
+        const raw = await embedded.readmeAtRaw('rad:zAbc', 'r');
+        expect(raw.startsWith(BLOB.slice(0, -1))).toBe(true);
+        expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc', 'r'));
+        expect(JSON.parse(raw)).toEqual({
+          binary: false,
+          name: 'README.md',
+          content: BIG,
+          path: 'README.md',
+        });
+      }
+    ));
 
   test('readmeAtRaw: a `path` already in the blob is overridden, as the spread does', () =>
     withFakeAddon(
@@ -524,9 +550,10 @@ describe('shutdown proof (R-8)', () => {
 });
 
 // Under FREEDOM_RADICLE_BACKEND=service (freedom-core design 0008, "Main's
-// side"; plan B7): the exports keep their shapes; the collected results go
-// to the service node's reads (radicle/radicle-service-backend.js), the rest
-// say they aren't on the service yet, and the add-on is never loaded.
+// side"; plan B7): the exports keep their shapes; identity and status are
+// collected and kept under 4 KiB, callScoped and callStream are the service
+// node's reads (radicle/radicle-service-backend.js), the rest say they
+// aren't on the service yet, and the add-on is never loaded.
 describe('on the freedom-radicled service', () => {
   let embedded;
   let reads;
@@ -572,22 +599,40 @@ describe('on the freedom-radicled service', () => {
   });
 
   test.each([
-    ['repoInfo', ['rad:z1'], 'repo_info', { rid: 'rad:z1' }],
-    ['seeders', ['rad:z1'], 'seeders', { rid: 'rad:z1' }],
-    ['identity', [], 'identity', {}],
-    ['status', [], 'status', {}],
-    ['listSeededRepos', [], 'list_seeded_repos', {}],
-    ['listRepos', [], 'list_repos', {}],
-  ])('%s is a collected read of %s, its value the parsed result', async (name, args, op, sent) => {
-    await expect(embedded[name](...args)).resolves.toEqual({ op, args: sent });
-    expect(reads).toEqual([{ op, args: sent }]);
+    ['identity', 'identity'],
+    ['status', 'status'],
+  ])('%s is a collected read of %s, kept under 4 KiB', async (name, op) => {
+    await expect(embedded[name]()).resolves.toEqual({ op, args: {} });
+    expect(reads).toEqual([{ op, args: {} }]);
     expect(embedded.collectionBudget()).toEqual({ held: 0, limit: 16 * 1024 * 1024 });
+  });
+
+  test('identity and status of 4 KiB or more are too_large to keep', async () => {
+    const big = { op: 'identity', alias: 'x'.repeat(4096) };
+    node.read.mockImplementationOnce(async () => {
+      const bytes = Buffer.from(JSON.stringify(big));
+      return {
+        result: { content_type: 'application/json', bytes: bytes.length },
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+      };
+    });
+    await expect(embedded.identity()).rejects.toMatchObject({ code: 'too_large' });
+    expect(embedded.collectionBudget().held).toBe(0);
   });
 
   test("callScoped and callStream are the service backend's", async () => {
     await expect(embedded.callScoped('node_info', {}, async (value) => value.op)).resolves.toBe(
       'node_info'
     );
+    // The value is used in its scope, not handed out of it.
+    await expect(
+      embedded.callScoped('list_repos', {}, async (value) => value)
+    ).rejects.toMatchObject({ code: 'invalid_argument' });
     const { head, body } = await embedded.callStream('commit', { rid: 'rad:z1', revision: 'a' });
     expect(head).toEqual({ content_type: 'application/json', bytes: expect.any(Number) });
     expect(JSON.parse(await new Response(body).text())).toEqual({
@@ -598,6 +643,11 @@ describe('on the freedom-radicled service', () => {
   });
 
   test.each([
+    // Collected, but used only inside a scope: their callers move into one.
+    'repoInfo',
+    'seeders',
+    'listSeededRepos',
+    'listRepos',
     'start',
     'shutdown',
     'connectSeeds',

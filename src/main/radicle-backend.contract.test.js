@@ -100,16 +100,9 @@ function partTest(part, name, fn, timeout) {
   (lacking ? test.skip : test)(name, fn, timeout);
 }
 
-/** The collected results: read parsed on every backend (0008, "JSON
- * results"). */
-const COLLECTED = new Set([
-  'repo_info',
-  'seeders',
-  'identity',
-  'status',
-  'list_seeded_repos',
-  'list_repos',
-]);
+/** The reads every backend hands out parsed: on the service, only the
+ * collected results that may outlive their scope (0008, "JSON results"). */
+const KEPT = new Set(['identity', 'status']);
 
 const tempDir = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const removeDir = (dir) =>
@@ -301,7 +294,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       ([, vector]) => vector.class !== 'composed'
     );
     for (const [name, vector] of readVectors) {
-      const part = COLLECTED.has(vector.op) ? null : 'parsed-reads';
+      const part = KEPT.has(vector.op) ? null : 'parsed-reads';
       partTest(part, `${name}: parsed as the vector, or rejected with its error`, async () => {
         const call = EMBEDDED_READS[vector.op](backend.embedded, vector.args);
         if ('error' in vector) {
@@ -498,8 +491,15 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       async () => {
         for (const name of ['identity', 'status', 'repo_info', 'list_seeded_repos']) {
           const { op, args, body } = VECTORS.reads[name];
-          const value = await backend.embedded.callScoped(op, args, async (parsed) => parsed);
-          expect(value).toEqual(JSON.parse(body));
+          // The value is used in its scope; it can't be what the scope returns.
+          const used = await backend.embedded.callScoped(op, args, async (parsed) => {
+            expect(parsed).toEqual(JSON.parse(body));
+            return 'used';
+          });
+          expect(used).toBe('used');
+          await expect(
+            backend.embedded.callScoped(op, args, async (parsed) => parsed)
+          ).rejects.toMatchObject({ code: 'invalid_argument' });
         }
         expect(backend.embedded.collectionBudget()).toEqual({ held: 0, limit: 16 * MIB });
       }
@@ -514,8 +514,9 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           ['identity', {}, 64 * KIB],
           ['repo_info', { rid: fx.rid }, 64 * KIB],
           ['seeders', { rid: fx.rid }, 64 * KIB],
-          ['list_seeded_repos', {}, 4 * MIB],
-          ['list_repos', {}, 4 * MIB],
+          // 3 MiB: the worst listing's measured charge fits the budget.
+          ['list_seeded_repos', {}, 3 * MIB],
+          ['list_repos', {}, 3 * MIB],
         ];
         for (const [op, args, cap] of capped) {
           for (const [bytes, accepted] of [
