@@ -1127,6 +1127,26 @@
                 <span id="radicle-sandbox-text">Unknown</span>
               </div>
             </div>
+            <!-- Radicle's repair on the freedom-radicled service (freedom-core
+                 design 0008, "The deadline" and "The escape"): "still
+                 repairing" with Retry, and each repository Radicle couldn't
+                 repair, with Remove. radicle-repair-ui.js builds the entries;
+                 their names are the repositories' data. -->
+            <div class="radicle-repair" id="radicle-repair" hidden>
+              <p
+                id="radicle-repairing-message"
+                class="radicle-repair-message warning"
+                role="status"
+                hidden
+              >
+                Radicle is still repairing its data
+              </p>
+              <button id="radicle-repair-retry" class="radicle-repair-button" type="button" hidden>
+                Retry
+              </button>
+              <ul id="radicle-quarantine-list" class="radicle-quarantine-list" hidden></ul>
+              <p id="radicle-quarantine-more" class="radicle-quarantine-more" hidden></p>
+            </div>
           </div>
 
           <div id="tor-nodes-section">

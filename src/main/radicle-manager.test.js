@@ -591,6 +591,30 @@ test('IPC keeps profile gating and RID validation', async () => {
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
+test('under the add-on, the repair state is empty and Remove is refused, sending nothing (plan B13)', async () => {
+  const ctx = loadManager();
+  const IPC = require('../shared/ipc-channels');
+  await ctx.mod.startRadicle();
+  ctx.mod.registerRadicleIpc();
+  expect(ctx.handlers.get(IPC.RADICLE_GET_REPAIR)()).toEqual({
+    repairing: false,
+    count: 0,
+    entries: [],
+  });
+  await expect(
+    ctx.handlers.get(IPC.RADICLE_REMOVE_QUARANTINED)(
+      {},
+      'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',
+      '0'.repeat(32)
+    )
+  ).resolves.toMatchObject({ success: false, error: { code: 'QUARANTINE_NOT_SHOWN' } });
+  expect(
+    ctx.statusSend.mock.calls.filter(([channel]) => channel === IPC.RADICLE_REPAIR_UPDATE)
+  ).toEqual([]);
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
 test('IPC refuses seeding and sync from private windows, failing closed (R-9)', async () => {
   const ctx = loadManager();
   const IPC = require('../shared/ipc-channels');
@@ -1324,6 +1348,16 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       buildInfo() {
         return { service: { name: 'freedom-radicled', version: '0.1.0' } };
       }
+      // Plan B13: a clean quarantine record, unless a test sets one.
+      quarantineReport() {
+        return this.report ?? { count: 0, first: [] };
+      }
+      quarantinedCount() {
+        return this.report?.count ?? 0;
+      }
+      writeTarget() {
+        return { gen: { number: this.generation } };
+      }
     }
     module.RadicledNode = FakeRadicledNode;
     return module;
@@ -1443,6 +1477,67 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     ctx.node().resolveStart(true);
     await expect(retry).resolves.toEqual({ status: 'running', error: null });
     await ctx.mod.stopRadicle();
+  });
+
+  // Plan B13 (0008, "The deadline"): "still repairing" is the repair
+  // state's, with Retry, the manager's start; radicle-quarantine.test.js
+  // and radicle-service-quarantine.test.js hold the quarantine.
+  test('a start that ends on the deadline shows "still repairing"; a stop or the next start clears it', async () => {
+    const ctx = load();
+    ctx.mod.registerRadicleIpc();
+    const repairUpdates = () =>
+      ctx.statusSend.mock.calls
+        .filter(([channel]) => channel === 'radicle:repairUpdate')
+        .map(([, snapshot]) => snapshot.repairing);
+    const started = ctx.mod.startRadicle();
+    await flush();
+    const first = ctx.node();
+    first.failureReason = 'Radicle is still repairing its data';
+    first.failureCode = 'deadline';
+    first.resolveStart(false);
+    await started;
+    expect(ctx.handlers.get('radicle:getRepair')()).toEqual({
+      repairing: true,
+      count: 0,
+      entries: [],
+    });
+    expect(repairUpdates()).toEqual([true]);
+
+    // Retry: the next start clears it as it begins.
+    const retry = ctx.mod.startRadicle();
+    await flush();
+    expect(ctx.mod.getRadicleRepair().repairing).toBe(false);
+    ctx.node().resolveStart(true);
+    await retry;
+    expect(repairUpdates()).toEqual([true, false]);
+
+    // Another start step's error shows no repair.
+    await ctx.mod.stopRadicle();
+    const again = ctx.mod.startRadicle();
+    await flush();
+    ctx.node().failureReason = 'failed to bind';
+    ctx.node().failureCode = 'start_failed';
+    ctx.node().resolveStart(false);
+    await again;
+    expect(ctx.mod.getRadicleRepair().repairing).toBe(false);
+  });
+
+  test('a node that gives up on the deadline after it ran shows "still repairing" too', async () => {
+    const ctx = load();
+    const started = ctx.mod.startRadicle();
+    await flush();
+    const node = ctx.node();
+    node.resolveStart(true);
+    await started;
+    node.failureCode = 'deadline';
+    node.options.onFailure('Radicle is still repairing its data', node);
+    expect(ctx.mod.getCurrentStatus()).toEqual({
+      status: 'error',
+      error: 'Radicle is still repairing its data',
+    });
+    expect(ctx.mod.getRadicleRepair().repairing).toBe(true);
+    await ctx.mod.stopRadicle();
+    expect(ctx.mod.getRadicleRepair().repairing).toBe(false);
   });
 
   test('a stop takes a start over at once, whatever it waits for (an unlock): no error on the way', async () => {

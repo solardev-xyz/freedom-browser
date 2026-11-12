@@ -230,6 +230,114 @@
   color: var(--muted);
 }
 
+/* Radicle's repair (radicle-repair-ui.js): "still repairing" with Retry, and
+   each repository Radicle couldn't repair, with Remove. Shown whatever the
+   node's state, since "still repairing" is an error state; the menu itself
+   scrolls when the list is long (#324). */
+.radicle-repair {
+  padding: 4px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.radicle-repair[hidden],
+.radicle-repair-message[hidden],
+.radicle-repair-button[hidden],
+.radicle-quarantine-list[hidden],
+.radicle-quarantine-more[hidden],
+.radicle-quarantine-confirm[hidden],
+.radicle-quarantine-error[hidden] {
+  display: none;
+}
+
+.radicle-repair-message {
+  margin: 0;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.radicle-repair-message.warning {
+  border-left: 2px solid var(--warning-fg);
+  padding-left: 8px;
+}
+
+.radicle-repair-button {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.radicle-repair-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Destructive: outlined in --danger, never filled (#259, #284). */
+.radicle-quarantine-remove {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.radicle-quarantine-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.radicle-quarantine-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.radicle-quarantine-detail,
+.radicle-quarantine-warning,
+.radicle-quarantine-more {
+  margin: 0;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding-left: 10px;
+}
+
+.radicle-quarantine-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 10px;
+}
+
+.radicle-quarantine-warning {
+  padding-left: 0;
+  color: var(--text);
+}
+
+.radicle-quarantine-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.radicle-quarantine-error {
+  margin: 0;
+  padding-left: 10px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--danger);
+}
+
 /* Disable hover highlight on toggle menu items */
 .bee-toggle:hover,
 .ipfs-toggle:hover,

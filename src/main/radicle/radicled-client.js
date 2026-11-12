@@ -428,12 +428,14 @@ class RadicledClient extends ServiceClient {
     });
   }
 
-  /** `rad.remove_repo { rid, qid }` on `gen`, watched for 60 s + 15 s. */
-  removeRepo(gen, rid, qid, { signal = null, fence = null } = {}) {
+  /** `rad.remove_repo { rid, qid }` on `gen`, watched for 60 s + 15 s;
+   * `onSent` as for `write`. */
+  removeRepo(gen, rid, qid, { signal = null, fence = null, onSent = null } = {}) {
     return this.requestTo(gen, 'rad.remove_repo', { rid, qid }, CONTEXT, {
       watchdogMs: WATCHDOG_MS['rad.remove_repo'],
       signal,
       fence,
+      onSent,
     });
   }
 }

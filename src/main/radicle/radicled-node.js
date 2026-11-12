@@ -79,6 +79,15 @@
  * - **Diagnostics** (design 0010, step 5): hello's confinement is logged at
  *   each spawn, and the build info and confinement are kept for the nodes
  *   panel.
+ * - **The quarantine** (0008, "The escape", Main's view; plan B13): each
+ *   generation keeps its `rad.reconcile` report of the quarantine, `{ count,
+ *   first }` with up to 16 entries, and the count its stats replies give
+ *   (`quarantined_count`), telling `onQuarantine` when that changes.
+ *   `quarantineList` is `rad.quarantine_list { page }` on the running
+ *   generation, and `removeRepo` is `rad.remove_repo { rid, qid }` on the
+ *   generation its caller picked, a write as `write` is: `not_quarantined`
+ *   proves nothing was removed, and an answer it can't prove is
+ *   `outcome_unknown`.
  */
 
 const fs = require('fs');
@@ -99,6 +108,8 @@ const STATS_FRESH_MS = 15_000;
 const DEFAULT_ALIAS = 'FreedomBrowser';
 const UNAVAILABLE = 'radicle_unavailable';
 const DIRECT = Object.freeze({ mode: 'direct' });
+// The most quarantine entries `rad.reconcile` reports (0008, Bounds).
+const REPORT_ENTRIES = 16;
 
 // The manager's error texts. None names a path.
 const EXITED = 'freedom-radicled exited';
@@ -136,6 +147,9 @@ const WRITE_REFUSALS = new Set([
   'failed',
   'not_found',
   'unknown_method',
+  // `rad.remove_repo`: no record of the repository has that `qid`, and
+  // nothing was removed (0008, "The escape").
+  'not_quarantined',
 ]);
 
 /** A write's `outcome_unknown`, as main answers it. */
@@ -151,6 +165,22 @@ const STEP_MESSAGES = new Set([
   'no_identity',
   'invalid_argument',
 ]);
+
+/**
+ * `rad.reconcile`'s report of the quarantine (0008, Methods): `{ count,
+ * first }`, `first` up to 16 entries as the service wrote them (the manager
+ * checks each), or null when the reply has no count.
+ */
+function reconcileQuarantine(report) {
+  const quarantined = report?.quarantined;
+  if (!isObject(quarantined)) return null;
+  const { count, first } = quarantined;
+  if (!Number.isSafeInteger(count) || count < 0) return null;
+  return Object.freeze({
+    count,
+    first: Object.freeze(Array.isArray(first) ? first.slice(0, REPORT_ENTRIES) : []),
+  });
+}
 
 /** What the manager shows for a start step's error `err`. */
 function stepFailure(err) {
@@ -229,6 +259,9 @@ class RadicledNode {
    *   after it was running
    * @param {Function} [options.onChange] - (state, node): `restarting`,
    *   `running` again, and `waiting` (for the vault's unlock)
+   * @param {Function} [options.onQuarantine] - (count, node) when the
+   *   running generation's stats count another number of quarantined
+   *   repositories than it last did
    * @param {string} [options.command] - the binary
    * @param {Function} [options.spawn] - child_process.spawn (injectable)
    * @param {string|null} [options.serviceVersion] - the release hello must
@@ -251,6 +284,7 @@ class RadicledNode {
     network = DIRECT,
     onFailure = null,
     onChange = null,
+    onQuarantine = null,
     command = null,
     spawn = spawnProcess,
     serviceVersion = undefined,
@@ -271,6 +305,7 @@ class RadicledNode {
     this.network = network;
     this.onFailure = onFailure;
     this.onChange = onChange;
+    this.onQuarantine = onQuarantine;
     this.command = command;
     this.spawn = spawn;
     this.serviceVersion = serviceVersion;
@@ -468,6 +503,28 @@ class RadicledNode {
     return this.client.connectSeeds(active.gen, timeoutMs, { signal });
   }
 
+  /** The running generation's `rad.reconcile` report of the quarantine
+   * (0008, "The escape", Main's view): `{ count, first }`, up to 16 entries
+   * as the service wrote them, or null. */
+  quarantineReport() {
+    return this.liveActive()?.quarantine ?? null;
+  }
+
+  /** How many repositories the quarantine record holds, by the running
+   * generation's last word: its last stats reply's `quarantined_count`, or
+   * else its report's count; null with none, or no generation running. */
+  quarantinedCount() {
+    return this.liveActive()?.quarantinedCount ?? null;
+  }
+
+  /** `rad.quarantine_list { page }` on the running generation: `{ entries,
+   * next_page }`, up to 64 entries. With no generation running, `stopped`. */
+  quarantineList(page, { signal = null } = {}) {
+    const active = this.liveActive();
+    if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    return this.client.quarantineList(active.gen, page, { signal });
+  }
+
   /**
    * `rad.read { op, args }` on the running generation (0008, "JSON
    * results"): `{ result, body }`, the head and its JSON body as a byte
@@ -553,6 +610,13 @@ class RadicledNode {
   /** `rad.unseed { rid }` on `target`, as `write`. */
   unseed(target, rid) {
     return this.mutate(target, (gen, onSent) => this.client.unseed(gen, rid, { onSent }));
+  }
+
+  /** `rad.remove_repo { rid, qid }` on `target`, as `write` (0008, "The
+   * escape"): `{ removed: true }`, or `not_quarantined` when no record of
+   * `rid` has that `qid`, and nothing was removed. */
+  removeRepo(target, rid, qid) {
+    return this.mutate(target, (gen, onSent) => this.client.removeRepo(gen, rid, qid, { onSent }));
   }
 
   /** A write on `target`'s generation, `send(gen, onSent)`, its outcome as
@@ -769,9 +833,10 @@ class RadicledNode {
       return;
     }
     if (!this.carries(client, gen)) return;
+    const quarantine = reconcileQuarantine(report);
     this.log.info('[Radicle] freedom-radicled reconciled the Radicle data', {
       was_dirty: Boolean(report?.was_dirty),
-      quarantined: Number.isInteger(report?.quarantined?.count) ? report.quarantined.count : null,
+      quarantined: quarantine?.count ?? null,
     });
 
     // 6. rad.start.
@@ -794,6 +859,10 @@ class RadicledNode {
         alias: typeof started?.alias === 'string' ? started.alias : null,
         ephemeral,
       }),
+      // Its reconciliation's report of the quarantine, and the count its
+      // stats replies give from then on.
+      quarantine,
+      quarantinedCount: quarantine?.count ?? null,
     };
     this.log.info('[Radicle] freedom-radicled node started', { ephemeral });
     // 7. Running once a stats reply says the node is alive.
@@ -934,6 +1003,20 @@ class RadicledNode {
     if (active !== this.active || !isObject(result)) return;
     this.stats = { active, at: this.now(), result };
     this.checkUp();
+    this.noteQuarantined(active, result.quarantined_count);
+  }
+
+  /** The stats' count of quarantined repositories, kept for `active`, and
+   * `onQuarantine` told when it changes. */
+  noteQuarantined(active, count) {
+    if (!Number.isSafeInteger(count) || count < 0 || count === active.quarantinedCount) return;
+    active.quarantinedCount = count;
+    if (typeof this.onQuarantine !== 'function' || active !== this.liveActive()) return;
+    try {
+      this.onQuarantine(count, this);
+    } catch (err) {
+      this.log.warn('[Radicle] freedom-radicled quarantine callback failed:', err.message);
+    }
   }
 
   /** Readiness, applied: running while up (0008, Main's side). */
@@ -1060,6 +1143,8 @@ module.exports = {
   GRANT_REFUSED,
   KEY_UNAVAILABLE,
   REPAIRING,
+  REPORT_ENTRIES,
+  reconcileQuarantine,
   KEY_FILE_AGAIN,
   START_FAILED,
   OUTCOME_UNKNOWN,
