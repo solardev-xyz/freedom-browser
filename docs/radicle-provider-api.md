@@ -63,10 +63,11 @@ streams replication transitions for seed/sync actions started by this origin.
 Freedom sends `connect`, `disconnect` and `seedStatus` to every open page of
 the site, whichever page or screen granted or revoked the access, or started
 or watched the fetch. A page whose address is a DNS name served over IPNS
-hears them only while the name still serves that IPNS key. Freedom keeps the
-latest `seedStatus` of each repository for a page while an earlier one is on
-its way, at most 64 repositories, so a page always hears a repository's
-latest state but may miss one between.
+hears them only while the name still serves that IPNS key. While an earlier
+`seedStatus` is on its way to a page, Freedom keeps for each repository how
+its last fetch ended (`fetched`, `failed` or `cancelled`) and its latest
+status after that, for at most 64 repositories: a page always hears how a
+fetch ended, and a repository's latest state, but may miss steps between.
 
 The page's requests go straight to Freedom's main process, which decides who
 asked from the page itself, never from the browser UI, and shows the

@@ -60,9 +60,11 @@
  *   - `seedStatus` goes to every live document of the site's key, from main
  *     (`setSeedStatusSink`), each delivery to a name-keyed document only once
  *     the name answers again. Each document has its own queue, one delivery
- *     at a time, holding the latest status of each repository and at most
- *     `SEED_STATUS_QUEUE` repositories: a newer status replaces an older one,
- *     and past the bound the oldest waiting goes.
+ *     at a time, holding for each repository how its last fetch ended
+ *     (fetched, failed or cancelled), if that hasn't gone yet, and its latest
+ *     status after that, for at most `SEED_STATUS_QUEUE` repositories: a
+ *     newer status replaces an older one but never an ending, and past the
+ *     bound the oldest waiting repository goes.
  *
  * Signing still takes the chrome's path until its part moves it (PRQ-8c).
  */
@@ -82,8 +84,11 @@ const RADICLE_PAGE_METHODS = Object.freeze([...RADICLE_READ_METHODS, ...RADICLE_
 // The node actions a prompt or the site's node rule answers.
 const NODE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
 
-// The repositories whose latest status waits, at most, for one document.
+// The repositories whose statuses wait, at most, for one document.
 const SEED_STATUS_QUEUE = 64;
+// The states a fetch ends in (seed-status.js). A fetch that starts after
+// one begins a new record, with no trace of how the last one ended.
+const SEED_ENDINGS = new Set(['fetched', 'failed', 'cancelled']);
 
 // A method whose only use of the key comes before any wait: the answer is
 // checked against the key in the same run as it is made, with nothing to
@@ -379,9 +384,13 @@ function createRadicleDispatchers(deps = {}) {
  * `seedStatus` from main (design 0011, "Events"; PRQ-8b): each site's seed
  * status to every live document of its key. Each document has its own
  * queue, sent one at a time through `sendEvent` (with the document's nonce,
- * and to a name-keyed document only once the name answers again). The queue
- * holds the latest status of each repository, in the order of their last
- * change, and at most `max` repositories; past it the oldest goes. A
+ * and to a name-keyed document only once the name answers again). For each
+ * repository the queue holds at most two statuses: how its last fetch ended
+ * (fetched, failed or cancelled), until it has gone, and the latest status
+ * after it. A newer status replaces the latest one, and a newer ending
+ * replaces both, so a document always hears how a fetch ended before a
+ * later fetch's start, but a fetch's steps may be cut short. At most `max`
+ * repositories wait; past it the oldest waiting goes, with its statuses. A
  * document that has gone, or whose name has moved, has its queue dropped.
  *
  * @param {{ liveDocuments: Function, sendEvent: Function }} requests
@@ -390,8 +399,31 @@ function createRadicleDispatchers(deps = {}) {
  */
 function createSeedStatusDelivery(requests, { normalizeKey, max = SEED_STATUS_QUEUE } = {}) {
   const normalize = normalizeKey || ((key) => require('../../shared/origin-utils').normalizeOrigin(key));
-  // `${guest}:${navigation}` -> { doc, waiting: Map<rid, status>, sending }
+  // `${guest}:${navigation}` -> { doc, waiting: Map<slot, status>, sending },
+  // a slot `end:<rid>` (an ending) or `now:<rid>` (the latest status after it).
   const outboxes = new Map();
+  const ridOf = (slot) => slot.slice(4);
+
+  // Queue a repository's status behind everything waiting. An ending takes
+  // the place of the repository's statuses waiting; any other status that
+  // of its latest one, behind its ending.
+  function enqueue(waiting, rid, status) {
+    if (SEED_ENDINGS.has(status.state)) {
+      waiting.delete(`now:${rid}`);
+      waiting.delete(`end:${rid}`);
+      waiting.set(`end:${rid}`, status);
+    } else {
+      waiting.delete(`now:${rid}`);
+      waiting.set(`now:${rid}`, status);
+    }
+    const rids = new Set([...waiting.keys()].map(ridOf));
+    while (rids.size > max) {
+      const oldest = ridOf(waiting.keys().next().value);
+      waiting.delete(`end:${oldest}`);
+      waiting.delete(`now:${oldest}`);
+      rids.delete(oldest);
+    }
+  }
 
   const sameKey = (doc, key) => {
     if (!doc.key) return false;
@@ -408,8 +440,8 @@ function createSeedStatusDelivery(requests, { normalizeKey, max = SEED_STATUS_QU
     const { doc } = outbox;
     try {
       while (outbox.waiting.size > 0 && outboxes.get(id) === outbox) {
-        const [rid, status] = outbox.waiting.entries().next().value;
-        outbox.waiting.delete(rid);
+        const [slot, status] = outbox.waiting.entries().next().value;
+        outbox.waiting.delete(slot);
         const outcome = await requests.sendEvent(doc, 'radicle', 'seedStatus', status);
         // A document that has gone, or whose name has moved, hears no more.
         if (!outcome?.ok) {
@@ -444,11 +476,7 @@ function createSeedStatusDelivery(requests, { normalizeKey, max = SEED_STATUS_QU
         outbox = { doc, waiting: new Map(), sending: false };
         outboxes.set(id, outbox);
       }
-      // The latest status of a repository replaces the one waiting, and
-      // goes behind the others.
-      outbox.waiting.delete(rid);
-      outbox.waiting.set(rid, status);
-      while (outbox.waiting.size > max) outbox.waiting.delete(outbox.waiting.keys().next().value);
+      enqueue(outbox.waiting, rid, status);
       void pump(id, outbox);
     }
   };

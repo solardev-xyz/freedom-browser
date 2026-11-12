@@ -596,7 +596,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
     expect(reloaded.heard()).toEqual([]);
   });
 
-  test('each document\'s queue holds the latest status of at most its bound of repositories, sent one at a time', async () => {
+  test('each document\'s queue holds the statuses of at most its bound of repositories, sent one at a time', async () => {
     const env = setup();
     connect(NAME);
     const page = await env.named();
@@ -608,7 +608,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
     emit(mockStatusOf(rid(0), 'fetching'));
     await flush();
     for (let i = 1; i <= 100; i += 1) emit(mockStatusOf(rid(i), 'fetching'));
-    // A newer status of one waiting replaces it, and goes last.
+    // An ending of one waiting replaces its status, and goes last.
     emit(mockStatusOf(rid(50), 'fetched'));
     env.gate.held = null;
     held.resolve();
@@ -619,6 +619,58 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
     expected.push(mockStatusOf(rid(50), 'fetched'));
     expect(SEED_STATUS_QUEUE).toBe(64);
     expect(seedStatuses(page)).toEqual(expected);
+  });
+
+  // Codex round 1 on #1203: a fetch that starts after another ended begins
+  // a new record with no trace of the last one's ending, so an ending never
+  // gives way to a later fetch's status.
+  test('an ending waiting for a document is kept ahead of a later fetch another document starts', async () => {
+    const env = setup();
+    connect(KEY_A);
+    const page = env.tab(`${KEY_A}/app`);
+    const other = env.tab(`${KEY_A}/other`, { front: false });
+    await page.ask('radicle_getSeedStatus', { rid: RID });
+    // The page's first delivery is held between main's check and its send.
+    let release;
+    env.hooks.beforeEventSend = (_message, target) =>
+      target.guest === page.guest.id
+        ? new Promise((resolve) => {
+          release = resolve;
+        })
+        : undefined;
+    emit(mockStatusOf(RID, 'fetching'));
+    await flush();
+    // The first fetch ends while the page's delivery waits; the other
+    // document then starts the next one.
+    emit({ ...mockStatusOf(RID, 'failed'), lastError: 'the fetch failed' });
+    expect(await other.ask('radicle_sync', { rid: RID })).toEqual({ result: { rid: RID, status: mockStatusOf(RID, 'fetching') } });
+    env.hooks.beforeEventSend = undefined;
+    release();
+    await flush();
+    const heard = [mockStatusOf(RID, 'fetching'), { ...mockStatusOf(RID, 'failed'), lastError: 'the fetch failed' }, mockStatusOf(RID, 'fetching')];
+    expect(seedStatuses(page)).toEqual(heard);
+    expect(seedStatuses(other)).toEqual(heard);
+  });
+
+  test('a newer ending replaces the one waiting, and the steps between', async () => {
+    const env = setup();
+    connect(NAME);
+    const page = await env.named();
+    await page.ask('radicle_getSeedStatus', { rid: RID });
+    const held = deferred();
+    env.gate.held = held.promise;
+    emit(mockStatusOf(RID, 'fetching'));
+    await flush();
+    emit(mockStatusOf(RID, 'fetched'));
+    emit(mockStatusOf(RID, 'fetching'));
+    expect(seedStatuses(page)).toEqual([]);
+    emit(mockStatusOf(RID, 'cancelled'));
+    emit(mockStatusOf(RID, 'fetching'));
+    env.gate.held = null;
+    held.resolve();
+    await flush();
+    await flush();
+    expect(seedStatuses(page)).toEqual([mockStatusOf(RID, 'fetching'), mockStatusOf(RID, 'cancelled'), mockStatusOf(RID, 'fetching')]);
   });
 
   test('a navigated document hears no later status, and a disconnect ends the site\'s subscription', async () => {
