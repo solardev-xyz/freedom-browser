@@ -303,7 +303,39 @@ describe('page prompts in the chrome (0011 PRQ-4)', () => {
 
   test('a kind the chrome doesn\'t render yet is ignored', async () => {
     const env = await load();
-    env.listeners.prompt({ ...prompt('h1'), kind: 'eth.sign' });
+    env.listeners.prompt({ ...prompt('h1'), kind: 'swarm.publish' });
     expect(env.showing()).toBe(false);
+  });
+
+  // PRQ-5a: the signing, unlock and board screens register themselves.
+  test('a kind a screen registered shows there, comes down when main hides it, and shows again once displaced', async () => {
+    jest.useFakeTimers();
+    const env = await load();
+    const registry = await import('./page-prompt-renderers.js');
+    let current = null;
+    const screen = {
+      show: jest.fn((p) => (current = p.handle)),
+      close: jest.fn((handle) => {
+        if (current === handle) current = null;
+        return true;
+      }),
+      isShowing: () => current,
+    };
+    registry.registerPagePromptRenderer('eth.sign', screen);
+    env.listeners.prompt({ ...prompt('h1'), kind: 'eth.sign' });
+    expect(screen.show).toHaveBeenCalledTimes(1);
+    expect(env.showing()).toBe(false);
+    // Another screen takes the sidebar: it shows again once that is done.
+    current = null;
+    env.otherScreenTakesOver();
+    registry.pagePromptDisplaced('h1');
+    jest.advanceTimersByTime(1000);
+    expect(screen.show).toHaveBeenCalledTimes(1);
+    env.otherScreenDone();
+    jest.advanceTimersByTime(300);
+    expect(screen.show).toHaveBeenCalledTimes(2);
+    env.listeners.hidden({ handle: 'h1' });
+    expect(screen.close).toHaveBeenCalledWith('h1');
+    expect(current).toBeNull();
   });
 });

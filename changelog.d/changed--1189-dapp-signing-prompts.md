@@ -1,0 +1,4 @@
+- A dApp's signature request in a background tab now waits for you to switch to it, as a connect request does, instead of opening the wallet sidebar over the tab you're on ([#1189](https://github.com/solardev-xyz/freedom-browser/pull/1189))
+  - A signature request you haven't seen after a minute is closed and the page is told it timed out; one you're looking at waits for your answer
+  - A signature that fails after you approve it, on a hardware wallet or a phone, now tells the page and closes the request, so the site can ask again
+  - "Auto-approve signatures" on a site's permission screen can now only be turned off; turn it on with "Always allow" on one of the site's signature requests

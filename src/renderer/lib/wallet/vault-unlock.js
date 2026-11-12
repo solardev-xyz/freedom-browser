@@ -7,11 +7,18 @@
  * identity mode choice, no action details, no auto-approve checkbox.
  *
  * Returns a promise that resolves on successful unlock or rejects on cancel.
+ *
+ * From freedom-core design 0011 PRQ-5a, a page's request under a site's rule
+ * that finds the vault locked is main's prompt (`vault.unlock`, through
+ * page-prompts.js): this screen renders it for the site main attested, and
+ * answers the handle once the vault is unlocked, or with a rejection when
+ * the user cancels. The unlock itself stays here until APS-2.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { open as openSidebarPanel } from '../sidebar.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 
 let screen;
 let siteLabel;
@@ -25,6 +32,10 @@ let passwordSubmit;
 let errorEl;
 
 let pending = null; // { resolve, reject }
+// Main's prompt this screen shows, `{ handle, deciding }`, or null.
+let pagePending = null;
+// While the screen paints a page prompt, the hider it runs is its own.
+let presentingPagePrompt = false;
 
 export function initVaultUnlock() {
   screen = document.getElementById('sidebar-vault-unlock');
@@ -45,9 +56,26 @@ export function initVaultUnlock() {
       pending.reject({ code: 4001, message: 'User dismissed unlock prompt' });
       pending = null;
     }
+    // A page prompt another screen hides stays main's shown prompt: it is
+    // told, so it can show again once that screen is done.
+    if (!presentingPagePrompt && pagePending && !pagePending.deciding) {
+      const { handle } = pagePending;
+      pagePending = null;
+      walletState.identityView?.classList.remove('hidden');
+      pagePromptDisplaced(handle);
+    }
+  });
+  registerPagePromptRenderer('vault.unlock', {
+    show: showPageVaultUnlock,
+    close: closePageVaultUnlock,
+    isShowing: shownPageVaultUnlock,
   });
 
   const dismiss = () => {
+    if (pagePending) {
+      decidePageUnlock(false);
+      return;
+    }
     if (pending) {
       pending.reject({ code: 4001, message: 'User cancelled unlock' });
       pending = null;
@@ -102,6 +130,61 @@ export function showVaultUnlock(permissionKey) {
 
     checkUnlockMethods();
   });
+}
+
+/**
+ * Render main's unlock prompt (`page:prompt`, kind `vault.unlock`) for the
+ * site main attested. The caller shows it only while nothing else holds the
+ * sidebar (`page-prompts.js`).
+ */
+export function showPageVaultUnlock(prompt) {
+  // An unlock on the chrome's own path gives way, as to a newer request.
+  if (pending) {
+    pending.reject({ code: 4001, message: 'Superseded by new unlock request' });
+    pending = null;
+  }
+  pagePending = { handle: prompt.handle, deciding: false };
+  if (siteLabel) siteLabel.textContent = prompt?.site?.label || prompt?.site?.key || 'Unknown';
+  hideError();
+  if (passwordInput) passwordInput.value = '';
+  presentingPagePrompt = true;
+  try {
+    hideAllSubscreens();
+  } finally {
+    presentingPagePrompt = false;
+  }
+  walletState.identityView?.classList.add('hidden');
+  screen?.classList.remove('hidden');
+  openSidebarPanel();
+  checkUnlockMethods();
+}
+
+/** Take down main's prompt `handle` (hidden, closed, or refused). */
+export function closePageVaultUnlock(handle) {
+  if (!pagePending || pagePending.handle !== handle) return false;
+  pagePending = null;
+  close();
+  return true;
+}
+
+/** The page prompt the screen shows, or null. */
+export function shownPageVaultUnlock() {
+  return pagePending && screen && !screen.classList.contains('hidden') ? pagePending.handle : null;
+}
+
+// Answer main's prompt: unlocked, or cancelled. Main checks the vault
+// itself before anything is signed.
+async function decidePageUnlock(approve) {
+  const request = pagePending;
+  if (!request || request.deciding) return;
+  request.deciding = true;
+  if (pagePending === request) pagePending = null;
+  close();
+  try {
+    await window.pagePrompts?.decide?.(request.handle, approve, {});
+  } catch (err) {
+    console.error('[VaultUnlock] The decision did not reach main:', err);
+  }
 }
 
 async function checkUnlockMethods() {
@@ -169,6 +252,10 @@ async function handlePasswordUnlock() {
 }
 
 function onUnlockSuccess() {
+  if (pagePending) {
+    decidePageUnlock(true);
+    return;
+  }
   if (!pending) return;
   const { resolve } = pending;
   pending = null;

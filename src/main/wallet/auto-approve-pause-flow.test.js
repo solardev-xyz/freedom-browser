@@ -537,21 +537,16 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     expect(signed()).toBe(1);
   });
 
+  // Main reads a page's signing rule itself now (freedom-core design 0011,
+  // PRQ-5a: page/page-signing.js), from the site's signing flag alone, which
+  // the pause never touches.
   test("message signing isn't paused: it pays nothing", async () => {
     const running = start();
     running.permissions.setSigningAutoApprove(SWAP, true);
     refusedOnce();
     await running.autoSend(SWAP);
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
-
-    await expect(
-      running.handlers['wallet:sign-message'](
-        CHROME_EVENT,
-        'hello',
-        0,
-        fromTab({ autoApprove: SWAP })
-      )
-    ).resolves.toMatchObject({ success: true, signature: expect.stringMatching(/^0x/) });
+    expect(running.permissions.getSigningAutoApprove(SWAP)).toBe(true);
   });
 });
 

@@ -362,12 +362,143 @@ describe('AgentWalletController', () => {
       expect(harness.dependencies.grantPermission).not.toHaveBeenCalled();
     });
 
-    test('only a connect comes attested: another method is left to its own path', async () => {
+    // Main's gate and the effect share one run: a losing check of the page's
+    // name queued right behind the gate (here: `effectAllowed` ends the key
+    // in the next microtask) never lands between them. `beforeEffect` is the
+    // name checked again, which holds each time it is asked.
+    function racingGate() {
+      const state = { held: true };
+      return {
+        state,
+        gate: {
+          beforeEffect: jest.fn(async () => {
+            state.held = true;
+            return true;
+          }),
+          effectAllowed: jest.fn(() => {
+            const now = state.held;
+            queueMicrotask(() => {
+              state.held = false;
+            });
+            return now;
+          }),
+        },
+      };
+    }
+
+    test('the connect\'s grant write runs in the same run as main\'s last gate', async () => {
+      const harness = createHarness();
+      const { state, gate } = racingGate();
+      const atWrite = [];
+      harness.dependencies.grantPermission.mockImplementation(() => atWrite.push(state.held));
+      const provider = await harness.controller.handleRequest(attestedContext(gate), attestedRequest);
+      expect(provider).toMatchObject({ handled: true });
+      expect(atWrite).toEqual([true]);
+    });
+
+    test('the connect\'s update of an existing grant runs in the same run as main\'s last gate', async () => {
+      const harness = createHarness({
+        permission: { walletIndex: 1, chainId: 1 },
+        wallets: [
+          { index: 0, name: 'Main Wallet', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+          { index: 1, name: 'Second', address: '0x2222222222222222222222222222222222222222', type: 'mnemonic' },
+        ],
+      });
+      const { state, gate } = racingGate();
+      const atWrite = [];
+      harness.dependencies.updateWalletIndex.mockImplementation(() => atWrite.push(['wallet', state.held]));
+      harness.dependencies.updateLastUsed.mockImplementation(() => atWrite.push(['lastUsed', state.held]));
+      const pick = jest.fn(async () => ({ status: 'approved', walletIndex: 0 }));
+      const provider = await harness.controller.handleRequest(attestedContext(gate, pick), attestedRequest);
+      expect(provider).toMatchObject({ handled: true, result: ['0x1111111111111111111111111111111111111111'] });
+      expect(atWrite).toEqual([
+        ['wallet', true],
+        ['lastUsed', true],
+      ]);
+    });
+
+    test.each(['personal_sign', 'eth_signTypedData_v4'])(
+      '%s: the signature and its last use each run in the same run as main\'s gate',
+      async (method) => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const { state, gate } = racingGate();
+        const atEffect = [];
+        harness.signer.signMessage.mockImplementation(async () => {
+          atEffect.push(['signature', state.held]);
+          return '0xsignature';
+        });
+        harness.signer.signTypedData.mockImplementation(async () => {
+          atEffect.push(['signature', state.held]);
+          return '0xtyped';
+        });
+        harness.dependencies.updateLastUsed.mockImplementation(() => atEffect.push(['lastUsed', state.held]));
+        const params =
+          method === 'personal_sign'
+            ? ['0x68656c6c6f', '0x1111111111111111111111111111111111111111']
+            : ['0x1111111111111111111111111111111111111111', { domain: { chainId: 100 }, types: { Mail: [{ name: 'a', type: 'uint256' }] }, primaryType: 'Mail', message: { a: 1 } }];
+        const provider = await harness.controller.handleRequest(attestedContext(gate), { method, params, chainId: 100 });
+        expect(provider).toMatchObject({ handled: true });
+        expect(atEffect).toEqual([
+          ['signature', true],
+          ['lastUsed', true],
+        ]);
+      }
+    );
+
+    // PRQ-5a: messages and typed data come attested too, and sign only once
+    // main's checks pass, just before the signature.
+    describe.each([
+      ['personal_sign', ['0x68656c6c6f', '0x1111111111111111111111111111111111111111'], 'signMessage'],
+      [
+        'eth_signTypedData_v4',
+        [
+          '0x1111111111111111111111111111111111111111',
+          { domain: { chainId: 100 }, types: { Mail: [{ name: 'a', type: 'uint256' }] }, primaryType: 'Mail', message: { a: 1 } },
+        ],
+        'signTypedData',
+      ],
+    ])('%s main attested', (method, params, signerMethod) => {
+      test("signs under main's key once main's checks pass", async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true) };
+        const provider = await harness.controller.handleRequest(attestedContext(gate), { method, params, chainId: 100 });
+        expect(provider).toMatchObject({ handled: true });
+        expect(provider.receipt.wallet.origin).toBe('example.com');
+        expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
+        expect(harness.signer[signerMethod]).toHaveBeenCalledTimes(1);
+        // Both before the signature, and again before the grant's last use.
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
+        expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
+        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100);
+      });
+
+      test("the name moving during the signature: signed, but the grant's last use untouched", async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect }), { method, params, chainId: 100 });
+        expect(provider).toMatchObject({ handled: true });
+        expect(harness.signer[signerMethod]).toHaveBeenCalledTimes(1);
+        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
+      });
+
+      test.each([
+        ['main has answered the request, or the name moved', { beforeEffect: jest.fn(async () => false) }],
+        ['the page left its key in the run of the signature', { effectAllowed: jest.fn(() => false) }],
+      ])('signs nothing when %s', async (_name, gate) => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const provider = await harness.controller.handleRequest(attestedContext(gate), { method, params, chainId: 100 });
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(harness.signer[signerMethod]).not.toHaveBeenCalled();
+        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
+      });
+    });
+
+    test('only a connect and a signature come attested: a send is left to its own path', async () => {
       const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
       const approval = jest.fn(async () => 'approved');
       const provider = await harness.controller.handleRequest(attestedContext({}, approval), {
-        method: 'personal_sign',
-        params: ['0x68656c6c6f', '0x1111111111111111111111111111111111111111'],
+        method: 'eth_sendTransaction',
+        params: [{ to: '0x1111111111111111111111111111111111111111', value: '0x1' }],
         chainId: 100,
       });
       expect(provider).toEqual({ handled: false });

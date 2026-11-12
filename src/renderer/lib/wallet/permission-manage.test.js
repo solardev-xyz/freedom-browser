@@ -352,3 +352,43 @@ describe('permission-manage x402 subscreen', () => {
     expect(ctx.identityView.classList.contains('hidden')).toBe(false);
   });
 });
+
+// freedom-core design 0011, PRQ-5a: main sets a site's signing rule from the
+// user's "always allow" on a signing prompt. Here it can only be turned off.
+describe('permission-manage: the signing rule can only be turned off here (0011 PRQ-5a)', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test('an off rule shows disabled; an on rule turns off, and stays off', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = ctx.elements['dapp-perms-signing-toggle'];
+    global.window.dappPermissions.getPermission.mockResolvedValue({ walletIndex: 0, autoApprove: { signing: false } });
+    await ctx.mod.showDappPermissions('https://app.example');
+    expect(toggle.checked).toBe(false);
+    expect(toggle.disabled).toBe(true);
+
+    global.window.dappPermissions.getPermission.mockResolvedValue({ walletIndex: 0, autoApprove: { signing: true } });
+    await ctx.mod.showDappPermissions('https://app.example');
+    expect(toggle.checked).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    toggle.checked = false;
+    await toggle.fire('change');
+    await Promise.resolve();
+    expect(global.window.dappPermissions.setSigningAutoApprove).toHaveBeenCalledWith('https://app.example', false);
+    expect(toggle.disabled).toBe(true);
+  });
+
+  test('turning it on asks main for nothing', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = ctx.elements['dapp-perms-signing-toggle'];
+    global.window.dappPermissions.getPermission.mockResolvedValue({ walletIndex: 0, autoApprove: { signing: false } });
+    await ctx.mod.showDappPermissions('https://app.example');
+    toggle.checked = true;
+    await toggle.fire('change');
+    expect(toggle.checked).toBe(false);
+    expect(global.window.dappPermissions.setSigningAutoApprove).not.toHaveBeenCalled();
+  });
+});

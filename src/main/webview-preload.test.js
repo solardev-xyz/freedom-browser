@@ -2958,7 +2958,7 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 1, method: 'personal_sign', params: [] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 1, method: 'eth_sendTransaction', params: [] });
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_readChunk', params: {} });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
@@ -2967,8 +2967,10 @@ describe('page requests', () => {
       'swarm:provider-request',
       'radicle:provider-request',
     ]);
-    // The Ethereum reads (0011 PRQ-3) and connecting (PRQ-4) go to main,
-    // and never to the chrome.
+    // The Ethereum reads (0011 PRQ-3), connecting (PRQ-4) and signing
+    // messages and typed data (PRQ-5a) go to main, and never to the chrome.
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 9, method: 'personal_sign', params: ['0x68', '0x01'] });
+    fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 10, method: 'eth_signTypedData_v4', params: ['0x01', {}] });
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 4, method: 'eth_chainId', params: [] });
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 5, method: 'eth_accounts', params: [] });
     fromPage({ type: 'FREEDOM_ETHEREUM_REQUEST', id: 6, method: 'eth_call', params: [{ to: '0x00' }, 'latest'] });
@@ -2981,7 +2983,15 @@ describe('page requests', () => {
     });
     expect(
       ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request').map(([, r]) => r.method)
-    ).toEqual(['eth_chainId', 'eth_accounts', 'eth_call', 'eth_requestAccounts', 'wallet_switchEthereumChain']);
+    ).toEqual([
+      'personal_sign',
+      'eth_signTypedData_v4',
+      'eth_chainId',
+      'eth_accounts',
+      'eth_call',
+      'eth_requestAccounts',
+      'wallet_switchEthereumChain',
+    ]);
     expect(ipcRenderer.sendToHost).toHaveBeenCalledTimes(3);
   });
 
@@ -3000,14 +3010,15 @@ describe('page requests', () => {
     expect(moved).toContain('web3_sha3');
     expect(moved).toContain('eth_requestAccounts');
     expect(moved).toContain('wallet_switchEthereumChain');
-    expect(moved).toHaveLength(28);
-    expect(moved).not.toContain('personal_sign');
+    expect(moved).toContain('personal_sign');
+    expect(moved).toContain('eth_signTypedData_v4');
+    expect(moved).toHaveLength(30);
     expect(moved).not.toContain('eth_sendTransaction');
     const routed = mainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['ethereum:personal_sign', 'swarm:swarm_readChunk'] }))] })
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['ethereum:eth_sendTransaction', 'swarm:swarm_readChunk'] }))] })
         .contextBridge
     );
-    expect(routed).toEqual([...moved, 'personal_sign']);
+    expect(routed).toEqual([...moved, 'eth_sendTransaction']);
     // An internal page sends nothing to main, so its provider keeps every timer.
     const internal = load({
       location: { href: 'file:///app/pages/home.html', protocol: 'file:', pathname: '/app/pages/home.html' },

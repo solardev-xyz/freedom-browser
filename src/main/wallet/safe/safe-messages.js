@@ -21,6 +21,12 @@
  * complete/cancel call must present. Another page can neither observe,
  * resume, nor replace a live session — it is told to wait. Sessions of
  * pages that navigated away or closed are dropped automatically.
+ *
+ * A session main opens for a page's request (freedom-core design 0011,
+ * PRQ-5: `page/page-signing.js`, `{ owner: 'main' }`) is never resumed by
+ * another start, and only main completes it: the chrome's signing board
+ * collects its device signatures with the session token, and main hands the
+ * signature to the page that asked.
  */
 
 const { randomUUID } = require('crypto');
@@ -235,7 +241,8 @@ function getSafeMessageState(safeIndex, token) {
  *   webContents id)
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
-async function startSafeMessage({ safeIndex, request, display, requester }) {
+async function startSafeMessage({ safeIndex, request, display, requester, owner = null }) {
+  const mainOwned = owner === 'main';
   const initial = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
   // against before activation. Only a verified check's mark counts
@@ -278,7 +285,7 @@ async function startSafeMessage({ safeIndex, request, display, requester }) {
 
   const existing = getSession(safeIndex);
   if (existing) {
-    if (existing.hash === hash && sameRequester(existing.requester, requester)) {
+    if (!mainOwned && !existing.mainOwned && existing.hash === hash && sameRequester(existing.requester, requester)) {
       // The identical request from the SAME page again (retried without
       // navigating) — resume: the collected signatures are still valid
       // for this hash.
@@ -310,6 +317,7 @@ async function startSafeMessage({ safeIndex, request, display, requester }) {
       display,
       signatures: [],
       createdAt: Date.now(),
+      mainOwned,
     };
     setSession(safeIndex, entry);
     attachRequesterLifecycle(safeIndex, entry);
@@ -345,13 +353,19 @@ async function signSafeMessage(safeIndex, ownerIndex, token) {
  *
  * @param {number} safeIndex
  * @param {string} token - The session token from startSafeMessage
+ * @param {{chrome?: boolean}} [options] - `chrome`: the chrome asks
+ *   (`wallet:safe-message-complete`), which may not complete a session
+ *   main opened for a page's request
  * @returns {{signature: string}}
  */
-function completeSafeMessage(safeIndex, token) {
+function completeSafeMessage(safeIndex, token, { chrome = false } = {}) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
   const entry = requireSession(safeIndex, token);
+  if (chrome && entry.mainOwned) {
+    throw new Error('This signature request is answered by the browser itself');
+  }
   if (entry.signatures.length < entry.threshold) {
     throw new Error(
       `Not enough signatures yet (${entry.signatures.length} of ${entry.threshold})`

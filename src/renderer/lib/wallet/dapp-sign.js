@@ -2,6 +2,16 @@
  * dApp Message Signing Module
  *
  * Message signing approval screen for dApp-initiated signing requests.
+ *
+ * From freedom-core design 0011 PRQ-5a a page's signature is main's: main
+ * shows its prompt (`eth.sign`, through page-prompts.js) and this screen
+ * renders main's view, the site main attested and what main says the
+ * request signs, and answers the handle (`page:decide`) with the one choice
+ * it offers, "always allow". Main mints the approval's token and signs. An
+ * approved signature on a device keeps the screen, its Sign button showing
+ * the device step, until main has answered the page. The old path
+ * (`showDappSignApproval`) stays for rollback until PRQ-9; main refuses its
+ * token.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -33,6 +43,7 @@ import {
   isDappPromptShowing,
   requestPendingError,
 } from './dapp-prompt-guard.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 
 // DOM references
 let dappSignScreen;
@@ -61,6 +72,8 @@ let dappSignTypedIgnored;
 // there is no cancellation path once it starts — rejecting behind it
 // would settle the dApp promise with 4001 while the device still signs.
 let dappSignPending = null;
+// While the screen paints a page prompt, the hider it runs is its own.
+let presentingPagePrompt = false;
 
 export function initDappSign() {
   dappSignScreen = document.getElementById('sidebar-dapp-sign');
@@ -84,8 +97,18 @@ export function initDappSign() {
   dappSignTypedWarningText = document.getElementById('dapp-sign-typed-warning-text');
   dappSignTypedIgnored = document.getElementById('dapp-sign-typed-ignored');
 
-  // Register screen hider
-  registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
+  // Register screen hider. A page prompt another screen hides stays main's
+  // shown prompt: it is told, so it can show again once that screen is done.
+  registerScreenHider(() => {
+    dappSignScreen?.classList.add('hidden');
+    const request = dappSignPending;
+    if (!presentingPagePrompt && request?.handle && !request.deciding) {
+      dappSignPending = null;
+      walletState.identityView?.classList.remove('hidden');
+      pagePromptDisplaced(request.handle);
+    }
+  });
+  registerPagePromptRenderer('eth.sign', { show: showPageSign, close: closePageSign, isShowing: shownPageSign });
   // Showing an undecided message: newcomers wait (dapp-prompt-guard.js).
   registerDappPrompt(
     () => dappSignPending !== null && Boolean(dappSignScreen) && !dappSignScreen.classList.contains('hidden')
@@ -95,21 +118,17 @@ export function initDappSign() {
 }
 
 function setupDappSignScreen() {
-  if (dappSignBackBtn) {
-    dappSignBackBtn.addEventListener('click', () => {
-      if (dappSignPending?.signing) return;
-      rejectDappSign();
-      closeDappSign();
-    });
-  }
-
-  if (dappSignRejectBtn) {
-    dappSignRejectBtn.addEventListener('click', () => {
-      if (dappSignPending?.signing) return;
-      rejectDappSign();
-      closeDappSign();
-    });
-  }
+  const reject = () => {
+    if (dappSignPending?.signing || dappSignPending?.deciding) return;
+    if (dappSignPending?.handle) {
+      decidePageSign(dappSignPending, false);
+      return;
+    }
+    rejectDappSign();
+    closeDappSign();
+  };
+  dappSignBackBtn?.addEventListener('click', reject);
+  dappSignRejectBtn?.addEventListener('click', reject);
 
   if (dappSignApproveBtn) {
     dappSignApproveBtn.addEventListener('click', approveDappSign);
@@ -388,8 +407,130 @@ async function handleDappSignPasswordUnlock() {
   }
 }
 
+/**
+ * Render main's signing prompt (`page:prompt`, kind `eth.sign`): the site
+ * main attested, the account and chain, and what main says the request
+ * signs (#88). The page's own text and images aren't shown. The caller
+ * shows it only while nothing else holds the sidebar (`page-prompts.js`).
+ */
+export function showPageSign(prompt) {
+  const view = prompt?.view || {};
+  const account = view.account || {};
+  const previous = dappSignPending;
+  const request = {
+    handle: prompt.handle,
+    walletIndex: account.index,
+    method: view.method,
+    safe: account.type === 'safe',
+    deciding: false,
+    signing: false,
+  };
+  dappSignPending = request;
+  // An old-path request still being prepared gives way, as before.
+  if (previous && !previous.handle && !previous.signing) {
+    previous.reject({ code: 4001, message: 'Replaced by a newer request' });
+  }
+  if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
+  setDappSignCancelEnabled(true);
+  if (dappSignApproveBtn) dappSignApproveBtn.textContent = 'Sign';
+  hideDappSignError();
+  if (dappSignSite) dappSignSite.textContent = prompt?.site?.label || prompt?.site?.key || 'Unknown';
+  dappSignRawWarning?.classList.add('hidden');
+  dappSignTypedWarning?.classList.add('hidden');
+  dappSignTypedIgnored?.classList.add('hidden');
+  try {
+    if (view.method === 'personal_sign') {
+      displayPersonalSignMessage(view.message);
+    } else {
+      displayTypedDataView(view.typedData, view.chain?.id, view.chains);
+    }
+  } catch (err) {
+    // What can't be shown is never signed.
+    console.error('[WalletUI] A signing prompt main sent can’t be shown:', err);
+    dappSignPending = null;
+    decideHandle(request.handle, false);
+    return;
+  }
+  document.getElementById('dapp-sign-safe-note')?.classList.toggle('hidden', !request.safe);
+  // Sign waits for the unlock check (a vault account needs the vault open).
+  if (dappSignApproveBtn) dappSignApproveBtn.disabled = true;
+  checkDappSignUnlockStatus(request);
+
+  presentingPagePrompt = true;
+  try {
+    hideAllSubscreens();
+  } finally {
+    presentingPagePrompt = false;
+  }
+  walletState.identityView?.classList.add('hidden');
+  dappSignScreen?.classList.remove('hidden');
+  openSidebarPanel();
+}
+
+/**
+ * Take down main's prompt `handle` (hidden, closed, or refused). An approved
+ * signature on its device keeps the screen until main answers.
+ */
+export function closePageSign(handle) {
+  const request = dappSignPending;
+  if (!request?.handle || request.handle !== handle) return false;
+  if (request.signing) return true;
+  closeDappSign();
+  return true;
+}
+
+/** The page prompt the screen shows, or null. */
+export function shownPageSign() {
+  return dappSignPending?.handle && dappSignScreen && !dappSignScreen.classList.contains('hidden')
+    ? dappSignPending.handle
+    : null;
+}
+
+async function decideHandle(handle, approve, choices = {}) {
+  try {
+    return await window.pagePrompts?.decide?.(handle, approve, choices);
+  } catch (err) {
+    console.error('[WalletUI] The decision did not reach main:', err);
+    return null;
+  }
+}
+
+// Answer main's prompt: the decision counts only for the handle main shows
+// at this moment. Main signs, and answers once the page has its answer.
+// A Safe's approval goes on to its signing board, which main shows next.
+async function decidePageSign(request, approve) {
+  if (request.deciding) return;
+  request.deciding = true;
+  const alwaysAllow = approve && Boolean(dappSignAutoApproveCheckbox?.checked);
+  if (approve && !request.safe) {
+    // The signature may be a device's: nothing may paint over it.
+    request.signing = true;
+    beginSignatureFlight(request);
+    if (dappSignApproveBtn) {
+      dappSignApproveBtn.disabled = true;
+      dappSignApproveBtn.textContent = signingButtonLabel(request.walletIndex);
+    }
+    setDappSignCancelEnabled(false);
+  }
+  if (!approve || request.safe) {
+    if (dappSignPending === request) closeDappSign();
+  }
+  try {
+    await decideHandle(request.handle, approve, approve ? { alwaysAllow } : {});
+  } finally {
+    request.signing = false;
+    request.deciding = false;
+    endSignatureFlight(request);
+    if (dappSignPending === request) closeDappSign();
+  }
+}
+
 async function approveDappSign() {
   if (!dappSignPending || dappSignPending.signing) return;
+  if (dappSignPending.handle) {
+    await decidePageSign(dappSignPending, true);
+    return;
+  }
 
   const request = dappSignPending;
   const { permissionKey, walletIndex, method, params, resolve, webview } = request;
