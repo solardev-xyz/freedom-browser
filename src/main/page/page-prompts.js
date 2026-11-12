@@ -175,8 +175,11 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
   /**
    * Hold a new prompt. `decision` settles with `{ approve, choices }` when
    * the user decides it, or `{ closed: reason }` when it closes otherwise.
+   * `released`, when given, settles once what the decision started is done
+   * (a vault unlock's attempt), and the decision's invocation is answered
+   * then rather than when its whole request is (`page-requests.js`).
    */
-  function add({ handle, record, window: windowId, guest, document, kind, site, view, choices }) {
+  function add({ handle, record, window: windowId, guest, document, kind, site, view, choices, released }) {
     let settle;
     const decision = new Promise((resolve) => {
       settle = resolve;
@@ -194,6 +197,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
       order: ++lastOrder,
       shownOnce: false,
       decided: null,
+      released: released instanceof Promise ? released : null,
       settle,
       decision,
     };

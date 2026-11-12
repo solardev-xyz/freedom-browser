@@ -719,22 +719,44 @@ function createPageRequests({
   async function unlockPrompt(record, { view = {} } = {}) {
     let shown = view;
     for (;;) {
-      const decision = await promptOnce(record, { kind: 'vault.unlock', view: shown, choices: passwordChoices });
-      if (decision.error || decision.closed || decision.approve !== true) return decision;
+      // The password goes from the decision's check straight to this
+      // attempt: the decision main keeps carries no choices, and the
+      // decision's invocation is answered once the attempt is done, so
+      // nothing holds a password past its own attempt (Codex, #1208).
+      let password = null;
+      let attemptDone;
+      const released = new Promise((resolve) => {
+        attemptDone = resolve;
+      });
+      const choices = (raw) => {
+        const checked = passwordChoices(raw);
+        if (!checked) return null;
+        password = checked.password;
+        return {};
+      };
+      let decision;
       try {
-        await unlockVault(decision.choices.password);
-      } catch {
-        trace({ kind: 'unlock-failed', id: record.id });
-        if (record.answered) return { closed: CLOSED.CANCELLED };
-        shown = { ...view, failed: true };
-        continue;
+        decision = await promptOnce(record, { kind: 'vault.unlock', view: shown, choices, released });
+        if (decision.error || decision.closed || decision.approve !== true) return decision;
+        const attempt = password;
+        password = null;
+        try {
+          await unlockVault(attempt);
+        } catch {
+          trace({ kind: 'unlock-failed', id: record.id });
+          if (record.answered) return { closed: CLOSED.CANCELLED };
+          shown = { ...view, failed: true };
+          continue;
+        }
+      } finally {
+        attemptDone();
       }
       trace({ kind: 'unlocked', id: record.id });
       return Object.freeze({ approve: true, choices: Object.freeze({}), from: decision.from });
     }
   }
 
-  async function promptOnce(record, { kind, view = {}, choices } = {}) {
+  async function promptOnce(record, { kind, view = {}, choices, released } = {}) {
     const testKind = kind === TEST_KIND && hooks.testPrompts === true;
     if (!KIND_SET.has(kind) && !testKind) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
@@ -758,6 +780,7 @@ function createPageRequests({
       site: { key: requester.key, label: requester.key },
       view,
       choices,
+      released,
     });
     return entry.decision;
   }
@@ -931,11 +954,14 @@ function createPageRequests({
     return decideIn(windowId, payload, 'chrome');
   }
 
+  // A decision is answered once the request it decided has been, or, for a
+  // vault unlock, once its attempt is: its invocation, and the password its
+  // payload carried, go no further than that.
   async function decideIn(windowId, payload, from) {
     const outcome = prompts.decide(windowId, payload, from);
     trace({ kind: 'decide', window: windowId, from, ok: outcome.ok, reason: outcome.reason });
     if (!outcome.ok) return outcome;
-    await outcome.entry.record.reply;
+    await (outcome.entry.released || outcome.entry.record.reply);
     return { ok: true };
   }
 

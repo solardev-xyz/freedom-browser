@@ -1529,6 +1529,67 @@ describe('with the approvals document on (0011 APS-2)', () => {
     expect(open.prompts().map((p) => p.kind)).toEqual(['eth.sign']);
   });
 
+  // Codex on #1208: a password lives no longer than its own attempt. The
+  // decision's invocation is answered once the attempt is done, not when
+  // the request is, and nothing main keeps (the prompt's decision, the
+  // record, the trace, a pending invocation) holds the decision's payload.
+  test('a password is held only for its own attempt: wrong ones don\'t pile up, and none outlives the unlock', async () => {
+    const v8 = require('v8');
+    const vm = require('vm');
+    v8.setFlagsFromString('--expose-gc');
+    const gc = vm.runInNewContext('gc');
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    const collected = async (refs) => {
+      for (let i = 0; i < 5; i += 1) {
+        await tick();
+        gc();
+      }
+      return refs.map((ref) => ref.deref() === undefined);
+    };
+
+    const env = setup({ approvalsDocument: true });
+    env.connect();
+    env.state.unlocked = false;
+    const page = env.tab();
+    let settled = false;
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]).then((value) => {
+      settled = true;
+      return value;
+    });
+    await flush();
+    // Each attempt's payload is made here and only weakly kept by the test.
+    const attempt = (password) => {
+      const payload = { handle: env.lastPrompt().handle, approve: true, choices: { password } };
+      return { refs: [new WeakRef(payload), new WeakRef(payload.choices)], answered: env.requests.decideInWindow(1, payload) };
+    };
+    const wrong = [];
+    for (const password of ['wrong one', 'wrong two', 'wrong three']) {
+      const { refs, answered } = attempt(password);
+      // Answered once the attempt is done, with the request still open.
+      expect(await answered).toEqual({ ok: true });
+      expect(settled).toBe(false);
+      await flush();
+      expect(env.lastPrompt()).toMatchObject({ kind: 'vault.unlock', view: { failed: true } });
+      wrong.push(...refs);
+    }
+    expect(await collected(wrong)).toEqual(wrong.map(() => true));
+
+    const right = attempt('right password');
+    expect(await right.answered).toEqual({ ok: true });
+    await flush();
+    // The signature's prompt waits, the request still open; the unlock's
+    // payload is gone all the same.
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    expect(settled).toBe(false);
+    expect(await collected(right.refs)).toEqual([true, true]);
+    const kept = JSON.stringify([env.traced, env.requests.promptState(), env.sent]);
+    for (const password of ['wrong one', 'wrong two', 'wrong three', 'right password']) expect(kept).not.toContain(password);
+    expect(env.unlockAttempts).toEqual(['wrong one', 'wrong two', 'wrong three', 'right password']);
+
+    await env.decide(env.lastPrompt().handle, true, {});
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+  });
+
   test('the document off: no unlock first, as the chrome\'s screen unlocks in place', async () => {
     const env = setup();
     env.connect();
