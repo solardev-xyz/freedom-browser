@@ -162,27 +162,86 @@ function nextReport(electronApp, windowId, after) {
   );
 }
 
-/** Milliseconds on main's clock since `at`. */
-const since = (electronApp, at) => electronApp.evaluate((_electron, t) => performance.now() - t, at);
-
 const docDecides = async (electronApp) =>
   (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide').length;
+
+// The decisions that reached main from the window's document.
+const decidesIn = async (electronApp, windowId) =>
+  (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide' && e.window === windowId);
+
+// How many times an early-input probe runs before it gives up.
+const EARLY_PROBES = 5;
+
+/** While on, main refuses every decision that passes its own checks ('held'). */
+const holdDecisions = (electronApp, on) =>
+  electronApp.evaluate((_electron, value) => globalThis.__FREEDOM_TEST_APPROVALS__.holdDecisions(value), on);
+
+/**
+ * Send the window's document its prompt again, as main does when the
+ * document loads: it renders it afresh (focus on Reject, the delay started
+ * again) and reports it on screen again.
+ */
+const reshow = (electronApp, windowId) =>
+  electronApp.evaluate((_electron, id) => globalThis.__FREEDOM_TEST_APPROVALS__.reshow(id), windowId);
+
+/**
+ * Probe the input delay on the prompt the window's document reports next,
+ * with no bound on the host's latency (Codex, #1210). Main holds every
+ * decision meanwhile, so one that a slow host let in after the delay
+ * decides nothing: `attempt(report)` says whether it went in early, and if
+ * not, the probe runs again on the prompt shown afresh (`reshow`). A delay
+ * that let every attempt in fails after EARLY_PROBES, a fast host's too.
+ */
+async function probeEarly(electronApp, windowId, after, attempt) {
+  await holdDecisions(electronApp, true);
+  try {
+    let reports = after;
+    for (let probe = 1; ; probe += 1) {
+      const report = await nextReport(electronApp, windowId, reports);
+      if (await attempt(report)) return report;
+      expect(probe, `each of ${EARLY_PROBES} attempts went in after the delay`).toBeLessThan(EARLY_PROBES);
+      reports = await reportCount(electronApp, windowId);
+      expect(await reshow(electronApp, windowId)).toBe(true);
+    }
+  } finally {
+    await holdDecisions(electronApp, false);
+  }
+}
 
 /**
  * Click Approve the moment main has the document's next report, inside the
  * delay: nothing reaches main, and the prompt stays. Returns its handle.
  */
 async function clickTooSoon(electronApp, docPage, windowId, after) {
-  const decidedBefore = await docDecides(electronApp);
-  const report = await nextReport(electronApp, windowId, after);
-  const box = await docPage.locator('#approve').boundingBox();
-  await docPage.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  // The click went in well inside the delay, so this tests what it says.
-  expect(await since(electronApp, report.at), 'the click went in too late to test the delay').toBeLessThan(DELAY_MS - 50);
-  await sleep(PAST_DELAY_MS);
-  expect(await docDecides(electronApp)).toBe(decidedBefore);
-  expect((await approvalsState(electronApp))[windowId].shown).toBe(report.handle);
+  const report = await probeEarly(electronApp, windowId, after, async ({ handle }) => {
+    const before = (await decidesIn(electronApp, windowId)).length;
+    const approve = docPage.locator('#approve');
+    const box = await approve.boundingBox();
+    await docPage.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await sleep(PAST_DELAY_MS);
+    // A click the document let in has had main's answer by now.
+    await expect(approve).toBeEnabled();
+    expect((await approvalsState(electronApp))[windowId].shown).toBe(handle);
+    const reached = (await decidesIn(electronApp, windowId)).slice(before);
+    // Let in after the delay (a slow host): refused by main, decided nothing.
+    for (const entry of reached) expect(['held', 'too-soon']).toContain(entry.reason);
+    return reached.length === 0;
+  });
   return report.handle;
+}
+
+/**
+ * Send an approval straight from the document the moment main has its
+ * report: main refuses it as too soon. Returns the report.
+ */
+async function decideTooSoon(electronApp, docPage, windowId, after) {
+  return probeEarly(electronApp, windowId, after, async ({ handle }) => {
+    const result = await docPage.evaluate((h) => window.approvals.decide(h, true, undefined), handle);
+    // Sent after the delay (a slow host): held, decided nothing.
+    if (result?.reason === 'held') return false;
+    expect(result).toEqual({ ok: false, reason: 'too-soon' });
+    return true;
+  });
 }
 
 module.exports = {
@@ -205,7 +264,9 @@ module.exports = {
   openTab,
   reportCount,
   nextReport,
-  since,
   docDecides,
+  holdDecisions,
+  reshow,
   clickTooSoon,
+  decideTooSoon,
 };

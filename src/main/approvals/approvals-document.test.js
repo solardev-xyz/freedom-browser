@@ -672,6 +672,22 @@ describe('main\'s prompts in the document', () => {
     ]);
   });
 
+  test('for the E2E\'s early-input probe: the prompt shown, sent again, with main\'s delay started again', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    expect(env.docs.reshow(1)).toBe(false);
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.advance(INPUT_DELAY_MS);
+    expect(env.docs.reshow(1)).toBe(true);
+    expect(contents.sent.at(-1)).toEqual([CHANNELS.PROMPT, prompt()]);
+    expect(env.docs.state()[1].reported).toBeNull();
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'not-reported' });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
+    expect(env.docs.reshow(2)).toBe(false);
+  });
+
   test('Settings > Appearance reaches every ready document', () => {
     const env = setup();
     const one = attached(env, 1);

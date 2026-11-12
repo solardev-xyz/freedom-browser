@@ -679,6 +679,21 @@ function createApprovalsDocuments({
     });
   }
 
+  /**
+   * For the E2E's early-input probe: the prompt the window shows, sent to
+   * its document again as `ready` sends it, so the document renders it
+   * afresh and reports it again; main's delay starts again too.
+   */
+  function reshow(windowId) {
+    const record = byWindow.get(windowId);
+    if (!record?.ready || !record.shown) return false;
+    record.report = null;
+    arm(record);
+    trace({ kind: 'reshow', window: windowId, handle: record.shown.handle });
+    deliver(record, CHANNELS.PROMPT, record.shown);
+    return true;
+  }
+
   /** For tests and diagnostics: each window's panel. */
   function state() {
     const out = {};
@@ -697,7 +712,7 @@ function createApprovalsDocuments({
     return out;
   }
 
-  return { attach, send, ready, shown, decide: decideFrom, anchor, register, state, serve };
+  return { attach, send, ready, shown, decide: decideFrom, anchor, register, reshow, state, serve };
 }
 
 // The app's one instance, and its test hooks: inert until the E2E harness
@@ -709,7 +724,13 @@ function getApprovalsDocuments() {
   if (!shared) {
     const settings = require('../settings-store');
     shared = createApprovalsDocuments({
-      decide: (windowId, payload) => require('../page/page-requests').getPageRequests().decideInWindow(windowId, payload),
+      // Held only by the E2E's early-input probe (`holdDecisions`), after
+      // main's own checks: a click its host's latency made late is refused,
+      // and probed again, rather than deciding the prompt.
+      decide: (windowId, payload) =>
+        sharedHooks.holdDecisions === true
+          ? Promise.resolve({ ok: false, reason: 'held' })
+          : require('../page/page-requests').getPageRequests().decideInWindow(windowId, payload),
       themeSetting: () => settings.loadSettings().theme,
       onThemeChange: (listener) =>
         settings.onSettingsChanged((merged, previous) => {
@@ -744,6 +765,11 @@ function enableApprovalsTestHooks() {
   };
   return {
     trace,
+    // Refuse every decision that passes main's checks, while on.
+    holdDecisions: (on) => {
+      sharedHooks.holdDecisions = on === true;
+    },
+    reshow: (windowId) => getApprovalsDocuments().reshow(windowId),
     enabled: () => isApprovalsDocumentEnabled(),
     state: () => getApprovalsDocuments().state(),
     partition: PARTITION,
