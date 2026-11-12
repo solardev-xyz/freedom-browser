@@ -564,15 +564,10 @@ describe('permission manifests', () => {
 
   // freedom-core design 0006, "Other callers": the in-process bzz: handler is
   // told which session the manifest is fetched on, and whether it is private.
-  test("fetches the manifest on the asking window's session, with its private context", async () => {
-    registerPermissionManifestIpc();
+  test("fetches the manifest on the asking page's session, with its private context", async () => {
     mockHandleBzzRequest.mockResolvedValue(responseFor({}, 404));
     const check = (origin) =>
-      ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, {
-        origin,
-        committedUrl: `bzz://${origin}/`,
-        eager: true,
-      });
+      checkPageManifest({ key: origin, url: `bzz://${origin}/`, guest: liveSender(), eager: true });
 
     mockPrivatePartition = 'private-1';
     await check('private-app.eth');
@@ -597,19 +592,18 @@ describe('permission manifests', () => {
   // The window is read when its check comes in, not when the origin's lock
   // lets the check run: a private window that closes while its check waits
   // gets no fetch at all, least of all one on the default session.
-  test("a check queued behind the origin's lock fetches nothing once its window has gone", async () => {
-    registerPermissionManifestIpc();
+  test("a check queued behind the origin's lock fetches nothing once its page has gone", async () => {
     let releaseFirst;
     mockHandleBzzRequest.mockImplementationOnce(
       () => new Promise((resolve) => { releaseFirst = resolve; })
     );
-    const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
-    const first = ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, request);
+    const request = { key: 'app.eth', url: 'bzz://app.eth/', eager: true };
+    const first = checkPageManifest({ ...request, guest: liveSender() });
     await Promise.resolve();
 
     mockPrivatePartition = 'private-1';
     const privateSender = liveSender();
-    const queued = ipcHandlers['swarm:manifest-check']({ sender: privateSender }, request);
+    const queued = checkPageManifest({ ...request, guest: privateSender });
     // The private window closes while its check waits for the lock.
     privateSender.destroyed = true;
     mockPrivatePartition = null;
@@ -620,40 +614,28 @@ describe('permission manifests', () => {
     expect(mockHandleBzzRequest).toHaveBeenCalledTimes(1);
   });
 
-  test('a sender that is gone, or private without a partition, is refused at once', async () => {
-    registerPermissionManifestIpc();
-    const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
-    const check = async (event) => ipcHandlers['swarm:manifest-check'](event, request);
+  test('a page that is gone, or private without a partition, is refused at once', async () => {
+    const request = { key: 'app.eth', url: 'bzz://app.eth/', eager: true };
+    const check = async (guest) => checkPageManifest({ ...request, guest });
     const destroyed = liveSender();
     destroyed.destroyed = true;
-    expect(await check({ sender: destroyed })).toEqual({ kind: 'unresolved' });
-    expect(await check({})).toEqual({ kind: 'unresolved' });
+    expect(await check(destroyed)).toEqual({ kind: 'unresolved' });
+    expect(await check(undefined)).toEqual({ kind: 'unresolved' });
     // Known private, its partition no longer named: never the default session.
     mockPrivateWindow = true;
-    expect(await check({ sender: liveSender() })).toEqual({ kind: 'unresolved' });
+    expect(await check(liveSender())).toEqual({ kind: 'unresolved' });
     expect(mockHandleBzzRequest).not.toHaveBeenCalled();
   });
 
-  test('serializes concurrent manifest IPC checks for the same origin', async () => {
-    registerPermissionManifestIpc();
+  test('serializes concurrent page manifest checks for the same origin', async () => {
     let releaseFirst;
     mockHandleBzzRequest
       .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
       .mockResolvedValue(responseFor(manifest({ publish: { why: 'Publish releases' } })));
 
-    const first = ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, {
-      origin: 'app.eth',
-      committedUrl: 'bzz://app.eth/',
-      navigationKey: 'tab-1:1',
-      eager: true,
-    });
+    const first = checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/', guest: liveSender(), eager: true });
     await Promise.resolve();
-    const second = ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, {
-      origin: 'app.eth',
-      committedUrl: 'bzz://app.eth/',
-      navigationKey: 'tab-2:1',
-      eager: true,
-    });
+    const second = checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/other', guest: liveSender(), eager: true });
     await Promise.resolve();
 
     expect(mockHandleBzzRequest).toHaveBeenCalledTimes(1);
@@ -781,107 +763,38 @@ describe('permission manifests for a page through main', () => {
   });
 });
 
-// Codex round 1 on #1194: the chrome's still-open manifest channels and
-// main's page consents (PRQ-7b) share no token, and the chrome's flow
-// writes none of what only main grants.
-describe('permission manifests: the chrome\'s flow and main\'s page consents kept apart', () => {
-  const check = (origin, eager = true) =>
-    ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, { origin, committedUrl: `bzz://${origin}/`, eager });
-  const decide = (token, outcome) => ipcHandlers['swarm:manifest-decide']({}, { token, outcome });
-  const pageCheck = (origin) => checkPageManifest({ key: origin, url: `bzz://${origin}/`, guest: liveSender(), eager: true });
-  const pageDecide = (origin, token, outcome) =>
-    decidePageManifest(origin, token, outcome, { recheck: async () => true, holds: () => true });
-
+// freedom-core design 0011, PRQ-7d: the chrome has no manifest check or
+// decide. Main checks a page's manifest and decides its consent itself; the
+// chrome reads a site's record and narrows it.
+describe('permission manifests: no check or decide for the chrome', () => {
   beforeEach(() => {
     registerPermissionManifestIpc();
   });
 
-  test('the chrome can\'t obtain or decide a page\'s consent, and a page can\'t decide the chrome\'s', async () => {
-    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ feeds: { why: 'Update the app feed' } })));
-    const page = await pageCheck('app.eth');
-    const chrome = await check('app.eth');
-    expect(page.kind).toBe('consent');
-    expect(chrome.kind).toBe('consent');
-    // The same consent, and still two tokens: the chrome is never handed
-    // the page's, as it was handed a sibling tab's.
-    expect(chrome.token).not.toBe(page.token);
-    await expect(decide(page.token, 'allow')).rejects.toThrow('Manifest consent expired');
-    expect(mockPermissionState['app.eth']).toBeUndefined();
-    expect(mockFeedState['app.eth']).toBeUndefined();
-    await expect(pageDecide('app.eth', chrome.token, 'allow')).rejects.toThrow('Manifest consent expired');
-    // Nor for another key.
-    await expect(pageDecide('other.eth', page.token, 'allow')).rejects.toThrow('Manifest consent expired');
-    expect(mockPermissionState['app.eth']).toBeUndefined();
-    expect(await pageDecide('app.eth', page.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    expect(mockPermissionState['app.eth']).toMatchObject({ autoApprove: { feeds: true } });
-    expect(mockFeedState['app.eth']).toEqual({ identity: true, granted: true });
-  });
-
-  test('the chrome\'s allow writes none of the connection, the messaging grant, messaging\'s rule or publishing\'s; main\'s check asks for them after', async () => {
+  test('the chrome\'s check and decide channels are gone; reading and narrowing stay', async () => {
+    expect(ipcHandlers['swarm:manifest-check']).toBeUndefined();
+    expect(ipcHandlers['swarm:manifest-decide']).toBeUndefined();
+    expect(Object.keys(ipcHandlers).filter((channel) => channel.startsWith('swarm:manifest-')).sort()).toEqual([
+      'swarm:manifest-disconnect',
+      'swarm:manifest-get',
+      'swarm:manifest-use-individual',
+    ]);
+    // Main's own check asks for every capability, and its allow grants them.
     mockHandleBzzRequest.mockImplementation(async () =>
       responseFor(manifest({ publish: { why: 'Publish releases' }, feeds: { why: 'Update the app feed' }, messaging: { why: 'Chat' } }))
     );
-    const chrome = await check('app.eth');
-    // The chrome's sheet asks for neither messaging nor publishing (PRQ-7c).
-    expect(chrome.model.changed.map((row) => row.key)).toEqual(['feeds']);
-    expect(await decide(chrome.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    const page = await checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/', guest: liveSender(), eager: true });
+    expect(page.model.changed.map((row) => row.key)).toEqual(['publish', 'feeds', 'messaging']);
+    expect(await decidePageManifest('app.eth', page.token, 'allow', { recheck: async () => true, holds: () => true })).toEqual({
+      allowed: true,
+      mode: 'allow',
+    });
+    expect(mockPermissionState['app.eth']).toMatchObject({ messaging: true, autoApprove: { publish: true, feeds: true, messaging: true } });
+    expect(mockFeedState['app.eth']).toEqual({ identity: true, granted: true });
+    // The chrome narrows: a disconnect withdraws the connection and the feed grant.
+    await ipcHandlers['swarm:manifest-disconnect']({}, 'app.eth');
     expect(mockPermissionState['app.eth']).toBeUndefined();
-
-    // The chrome's 'individual' writes no connection either.
-    const individual = await check('solo.eth');
-    expect(await decide(individual.token, 'individual')).toEqual({ allowed: true, mode: 'individual' });
-    expect(mockPermissionState['solo.eth']).toBeUndefined();
-
-    // Connected by main.
-    mockPermissionState['app.eth'] = { origin: 'app.eth', autoApprove: {} };
-    expect(mockPermissionState['app.eth'].messaging).toBeUndefined();
-    const record = getRecord('app.eth');
-    expect(record.acknowledged.messaging).toBeUndefined();
-    expect(record.acknowledged.publish).toBeUndefined();
-    for (const projection of ['connection', 'messagingGrant', 'autoApprove.messaging', 'autoApprove.publish']) {
-      expect({ projection, managed: record.managed?.[projection] }).toEqual({ projection, managed: undefined });
-    }
-    // Main's own check asks for them, and its allow grants them.
-    const page = await pageCheck('app.eth');
-    expect(page.model.changed.map((row) => row.key)).toEqual(['publish', 'messaging']);
-    expect(await pageDecide('app.eth', page.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    expect(mockPermissionState['app.eth']).toMatchObject({ messaging: true, autoApprove: { messaging: true, publish: true } });
-  });
-
-  test('a manifest of only what main grants (messaging, publishing) asks the chrome nothing', async () => {
-    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ messaging: { why: 'Chat' } })));
-    expect(await check('chat.eth')).toEqual({ kind: 'ready' });
-    expect(mockPermissionState['chat.eth']).toBeUndefined();
-    expect((await pageCheck('chat.eth')).kind).toBe('consent');
-    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
-    expect(await check('pub.eth')).toEqual({ kind: 'ready' });
-    expect(mockPermissionState['pub.eth']).toBeUndefined();
-    expect((await pageCheck('pub.eth')).kind).toBe('consent');
-  });
-
-  test('two sheets for one consent, the chrome\'s and a page\'s or two pages\': the later answer fails as stale, never silently', async () => {
-    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ feeds: { why: 'Update the app feed' } })));
-    // A page's first, then the chrome's.
-    let page = await pageCheck('a.eth');
-    let chrome = await check('a.eth');
-    expect(await pageDecide('a.eth', page.token, 'individual')).toEqual({ allowed: true, mode: 'individual' });
-    await expect(decide(chrome.token, 'allow')).rejects.toThrow('Manifest consent is stale');
-    expect(mockPermissionState['a.eth']?.autoApprove?.feeds).not.toBe(true);
-    expect(mockFeedState['a.eth']?.granted).not.toBe(true);
-
-    // The chrome's first, then a page's.
-    page = await pageCheck('b.eth');
-    chrome = await check('b.eth');
-    expect(await decide(chrome.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    await expect(pageDecide('b.eth', page.token, 'individual')).rejects.toThrow('Manifest consent is stale');
-
-    // Two pages': two tokens, and the second answer isn't the first's replay.
-    const first = await pageCheck('c.eth');
-    const second = await pageCheck('c.eth');
-    expect(second.token).not.toBe(first.token);
-    expect(await pageDecide('c.eth', first.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    await expect(pageDecide('c.eth', second.token, 'deny')).rejects.toThrow('Manifest consent is stale');
-    await expect(pageDecide('c.eth', first.token, 'allow')).rejects.toThrow('Manifest consent expired');
+    expect(mockFeedState['app.eth'].granted).toBe(false);
   });
 });
 

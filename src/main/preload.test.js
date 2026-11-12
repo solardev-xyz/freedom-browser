@@ -133,7 +133,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(31);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(30);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -162,7 +162,6 @@ describe('preload', () => {
       'dappPermissions',
       'swarmPermissions',
       'swarmManifest',
-      'swarmProvider',
       'radiclePermissions',
       'radicleProvider',
       'swarmFeedStore',
@@ -502,20 +501,6 @@ describe('preload', () => {
         ['origin.eth'],
         IPC.SWARM_REVOKE_MESSAGING,
         ['origin.eth'],
-      ],
-      [
-        exposures.swarmManifest,
-        'check',
-        [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }],
-        IPC.SWARM_MANIFEST_CHECK,
-        [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }],
-      ],
-      [
-        exposures.swarmManifest,
-        'decide',
-        ['token', 'allow'],
-        IPC.SWARM_MANIFEST_DECIDE,
-        [{ token: 'token', outcome: 'allow' }],
       ],
       [exposures.swarmManifest, 'get', ['origin.eth'], IPC.SWARM_MANIFEST_GET, ['origin.eth']],
       [exposures.swarmManifest, 'useIndividual', ['origin.eth', 'feeds'], IPC.SWARM_MANIFEST_USE_INDIVIDUAL, [{ origin: 'origin.eth', capability: 'feeds' }]],

@@ -1793,14 +1793,19 @@ describe('webview-preload private windows', () => {
     });
 
     const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
-    for (const channel of providerChannels) {
+    for (const channel of providerChannels.filter((name) => !name.startsWith('swarm:'))) {
       expect(onChannels).toContain(channel);
     }
+    // window.swarm's answers and events come from main (page:event), never
+    // from the chrome (freedom-core design 0011, PRQ-7d).
+    expect(onChannels).toContain('page:event');
+    expect(onChannels).not.toContain('swarm:provider-response');
+    expect(onChannels).not.toContain('swarm:provider-event');
 
     const messageListeners = global.window.addEventListener.mock.calls.filter(
       ([event]) => event === 'message'
     );
-    // ethereum, swarm and radicle page→host bridges.
+    // ethereum, swarm (to main) and radicle page bridges.
     expect(messageListeners).toHaveLength(3);
 
     // #683: all three providers run in the main world at document start —
@@ -2985,13 +2990,9 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_createFeed', params: {} });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
-    expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual([
-      'swarm:provider-request',
-      'radicle:provider-request',
-    ]);
+    expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
     // Swarm's reads (0011 PRQ-7a) go to main, and never to the chrome.
     for (const [id, method] of [
       [21, 'swarm_getCapabilities'],
@@ -3005,6 +3006,14 @@ describe('page requests', () => {
       [28, 'swarm_publishFiles'],
       [29, 'swarm_publishChunk'],
       [30, 'swarm_getUploadStatus'],
+      // Feeds and signing (PRQ-7d), and a method main doesn't serve, which
+      // main refuses: nothing of window.swarm goes to the chrome.
+      [31, 'swarm_createFeed'],
+      [32, 'swarm_updateFeed'],
+      [33, 'swarm_writeFeedEntry'],
+      [34, 'swarm_writeSingleOwnerChunk'],
+      [35, 'swarm_getSigningIdentity'],
+      [36, 'swarm_noSuchMethod'],
     ]) {
       fromPage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: {} });
     }
@@ -3021,6 +3030,12 @@ describe('page requests', () => {
       ['swarm', 'swarm_publishFiles'],
       ['swarm', 'swarm_publishChunk'],
       ['swarm', 'swarm_getUploadStatus'],
+      ['swarm', 'swarm_createFeed'],
+      ['swarm', 'swarm_updateFeed'],
+      ['swarm', 'swarm_writeFeedEntry'],
+      ['swarm', 'swarm_writeSingleOwnerChunk'],
+      ['swarm', 'swarm_getSigningIdentity'],
+      ['swarm', 'swarm_noSuchMethod'],
     ]);
     ipcRenderer.invoke.mockClear();
     // The Ethereum reads (0011 PRQ-3), connecting (PRQ-4), signing messages
@@ -3051,7 +3066,7 @@ describe('page requests', () => {
       'eth_requestAccounts',
       'wallet_switchEthereumChain',
     ]);
-    expect(ipcRenderer.sendToHost).toHaveBeenCalledTimes(2);
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledTimes(1);
   });
 
   // The page-world source the preload ran for window.ethereum, and the
@@ -3090,12 +3105,18 @@ describe('page requests', () => {
       'swarm_publishFiles',
       'swarm_publishChunk',
       'swarm_getUploadStatus',
+      // Feeds and signing (PRQ-7d).
+      'swarm_createFeed',
+      'swarm_updateFeed',
+      'swarm_writeFeedEntry',
+      'swarm_writeSingleOwnerChunk',
+      'swarm_getSigningIdentity',
     ]);
     const routed = swarmMainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_createFeed', 'ethereum:eth_sign'] }))] })
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_noSuchMethod', 'ethereum:eth_sign'] }))] })
         .contextBridge
     );
-    expect(routed).toEqual([...moved, 'swarm_createFeed']);
+    expect(routed).toEqual([...moved, 'swarm_noSuchMethod']);
   });
 
   test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
@@ -3142,7 +3163,7 @@ describe('page requests', () => {
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 12, method: 'swarm_readChunk', params: { reference: 'ab' } });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 13, method: 'radicle_getCapabilities', params: {} });
     // An unrouted method keeps today's path.
-    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 14, method: 'swarm_createFeed', params: {} });
+    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 14, method: 'radicle_seed', params: {} });
     await flushMicrotasks();
 
     expect(ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request')).toEqual([
@@ -3151,7 +3172,7 @@ describe('page requests', () => {
       ['page:request', { nonce, provider: 'radicle', method: 'radicle_getCapabilities', params: {} }],
     ]);
     expect(ipcRenderer.sendToHost.mock.calls).toEqual([
-      ['swarm:provider-request', { id: 14, method: 'swarm_createFeed', params: {} }],
+      ['radicle:provider-request', { id: 14, method: 'radicle_seed', params: {} }],
     ]);
     expect(posted()).toEqual([
       { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 11, result: '0x10', error: undefined },

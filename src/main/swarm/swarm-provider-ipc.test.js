@@ -201,14 +201,12 @@ registerSwarmProviderIpc();
 
 const { SWARM_PAGE_METHODS } = require('../page/page-swarm');
 
-// The methods main serves to pages itself (freedom-core design 0011, PRQ-7)
-// run through executeSwarmMethod, which page/page-swarm.js calls with the
-// requester's attested key; the chrome's handler refuses them (below). Every
-// other method still comes through the handler.
+// Every window.swarm method comes through main's page dispatcher
+// (freedom-core design 0011, PRQ-7; page/page-swarm.js), which calls
+// executeSwarmMethod with the requester's attested key. There is no chrome
+// route.
 async function invokeProvider(method, params, origin, meta) {
-  if (SWARM_PAGE_METHODS.includes(method)) return executeSwarmMethod(method, params, origin, meta);
-  const handler = ipcHandlers['swarm:provider-execute'];
-  return handler({}, { method, params, origin, meta });
+  return executeSwarmMethod(method, params, origin, meta);
 }
 
   function mockV2FeedCapability(origin, activeIdentityId = 'app-scoped:2') {
@@ -264,90 +262,34 @@ describe('swarm-provider-ipc', () => {
     mockGetPublishReadiness.mockReset().mockResolvedValue({ ok: false, reason: 'node-stopped' });
   });
 
-  test('registers swarm:provider-execute handler', () => {
-    expect(ipcHandlers['swarm:provider-execute']).toBeDefined();
-  });
-
-  // A forged chrome origin (design 0011, PRQ-7): the methods main serves to
-  // pages from the attested requester are refused on the chrome's route,
-  // whatever site it names, before anything is read.
-  test('swarm:provider-execute refuses every method main serves to pages, for any site, with nothing read', async () => {
-    mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: {} });
-    mockGetAllFeeds.mockReturnValue({ chat: { topic: 'a'.repeat(64), owner: 'b'.repeat(40), manifestReference: 'c'.repeat(64) } });
-    const handler = ipcHandlers['swarm:provider-execute'];
-    expect(SWARM_PAGE_METHODS).toEqual([
+  // freedom-core design 0011, PRQ-7d: every method is main's, and the
+  // chrome's route, which took a site from it, is gone.
+  test('registers no chrome route, and main\'s dispatcher serves every method it knows', () => {
+    expect(ipcHandlers['swarm:provider-execute']).toBeUndefined();
+    expect(Object.keys(ipcHandlers).filter((channel) => channel.startsWith('swarm:'))).toEqual([]);
+    expect([...SWARM_PAGE_METHODS].sort()).toEqual([
+      'swarm_createFeed',
       'swarm_getCapabilities',
-      'swarm_readChunk',
-      'swarm_readData',
-      'swarm_readSingleOwnerChunk',
-      'swarm_readFeedEntry',
-      'swarm_listFeeds',
-      'swarm_requestAccess',
       'swarm_getMessagingIdentity',
-      'swarm_subscribe',
-      'swarm_unsubscribe',
-      'swarm_sendPss',
-      'swarm_sendGsoc',
+      'swarm_getSigningIdentity',
+      'swarm_getUploadStatus',
+      'swarm_listFeeds',
+      'swarm_publishChunk',
       'swarm_publishData',
       'swarm_publishFiles',
-      'swarm_publishChunk',
-      'swarm_getUploadStatus',
+      'swarm_readChunk',
+      'swarm_readData',
+      'swarm_readFeedEntry',
+      'swarm_readSingleOwnerChunk',
+      'swarm_requestAccess',
+      'swarm_sendGsoc',
+      'swarm_sendPss',
+      'swarm_subscribe',
+      'swarm_unsubscribe',
+      'swarm_updateFeed',
+      'swarm_writeFeedEntry',
+      'swarm_writeSingleOwnerChunk',
     ]);
-    for (const origin of ['myapp.eth', 'https://app.example', `bzz://${'a'.repeat(64)}`]) {
-      for (const method of SWARM_PAGE_METHODS) {
-        const answer = await handler({}, {
-          method,
-          params: {
-            reference: 'a'.repeat(64),
-            name: 'chat',
-            kind: 'pss',
-            topic: 'room',
-            subscriptionId: 'x',
-            data: 'hello',
-            contentType: 'text/plain',
-            files: [{ path: 'index.html', bytes: Buffer.from('x') }],
-            tagUid: 7,
-          },
-          origin,
-          meta: { webContentsId: 9, approval: 'user' },
-        });
-        expect({ origin, method, answer }).toEqual({
-          origin,
-          method,
-          answer: {
-            error: {
-              code: 4100,
-              message: 'The origin is not authorized for this operation',
-              data: { reason: 'page_request_only' },
-            },
-          },
-        });
-      }
-    }
-    expect(mockGetAllFeeds).not.toHaveBeenCalled();
-    expect(mockGetFeed).not.toHaveBeenCalled();
-    expect(mockGetPermission).not.toHaveBeenCalled();
-    expect(mockReadChunk).not.toHaveBeenCalled();
-    expect(mockReadSingleOwnerChunk).not.toHaveBeenCalled();
-    expect(mockReadDataRoot).not.toHaveBeenCalled();
-    expect(mockReadFeedPayload).not.toHaveBeenCalled();
-    expect(mockGetPublishReadiness).not.toHaveBeenCalled();
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockRegistrySubscribe).not.toHaveBeenCalled();
-    expect(mockRegistryUnsubscribe).not.toHaveBeenCalled();
-    expect(mockSendPss).not.toHaveBeenCalled();
-    expect(mockSendGsoc).not.toHaveBeenCalled();
-    expect(mockGetMessagingIdentity).not.toHaveBeenCalled();
-    expect(mockPublishData).not.toHaveBeenCalled();
-    expect(mockPublishFilesFromContent).not.toHaveBeenCalled();
-    expect(mockPublishChunk).not.toHaveBeenCalled();
-    expect(mockGetUploadStatus).not.toHaveBeenCalled();
-    expect(mockAddEntry).not.toHaveBeenCalled();
-    // A method still on the chrome's route keeps it.
-    expect((await handler({}, { method: 'swarm_createFeed', params: {}, origin: 'myapp.eth' })).error).toMatchObject({
-      code: -32602,
-      message: 'Feed name must be a non-empty string',
-    });
   });
 
   describe('method dispatch', () => {
@@ -485,52 +427,6 @@ describe('swarm-provider-ipc', () => {
       mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
       mockGetPublishReadiness.mockResolvedValueOnce({ ok: true });
     }
-
-    test('Agent custody refuses an auto-approved write on the chrome\'s route; a prompted one runs', async () => {
-      // Publishing is main's own (PRQ-7c, page-swarm-publish.test.js); the
-      // chrome's route keeps its custody check for the feed writes still on it.
-      const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
-      const chrome = { id: 1 };
-      const guest = { ...fakeWebContents(), hostWebContents: chrome };
-      mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
-      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', autoApprove: { feeds: true } });
-      mockHasFeedGrant.mockReturnValue(true);
-      mockGetOriginEntry.mockReturnValue({ activeIdentityId: 'app-scoped:1', identities: {}, feeds: {} });
-      const existing = { owner: 'ab'.repeat(20), topic: 'c'.repeat(64), manifestReference: 'd'.repeat(64) };
-      mockGetFeed.mockReturnValue(existing);
-      const handler = ipcHandlers['swarm:provider-execute'];
-      const call = (meta) => handler(
-        { sender: chrome },
-        { method: 'swarm_createFeed', params: { name: 'chat' }, origin: 'myapp.eth', meta }
-      );
-      setAgentPageCustody(guest, true);
-      try {
-        for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
-          const refused = await call(meta);
-          expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-        }
-        expect(mockGetFeed).not.toHaveBeenCalled();
-
-        const prompted = await call({ webContentsId: 9, approval: 'user' });
-        expect(prompted.result).toMatchObject({ feedId: 'chat', owner: existing.owner });
-      } finally {
-        setAgentPageCustody(guest, false);
-      }
-
-      const owned = await call({ webContentsId: 9, approval: 'auto' });
-      expect(owned.result).toMatchObject({ feedId: 'chat' });
-      // An automatic request main cannot tie to a guest of this window is refused.
-      for (const meta of [{ approval: 'auto' }, { webContentsId: 10, approval: 'auto' }]) {
-        const refused = await call(meta);
-        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-      }
-      const otherWindow = await handler(
-        { sender: { id: 2 } },
-        { method: 'swarm_createFeed', params: { name: 'chat' }, origin: 'myapp.eth', meta: { webContentsId: 9, approval: 'auto' } }
-      );
-      expect(otherWindow.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-      expect(mockGetFeed).toHaveBeenCalledTimes(2);
-    });
 
     test('a batch the network does not know yet is node-not-ready, not an internal error', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
@@ -1048,7 +944,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_publishChunk', { data: 'hello' }, 'myapp.eth');
 
       expect(result.result).toEqual({ reference: VALID_REF });
-      expect(mockPublishChunk).toHaveBeenCalledWith(Buffer.from('hello'), { span: undefined, guard: expect.any(Function) });
+      expect(mockPublishChunk).toHaveBeenCalledWith(Buffer.from('hello'), { span: undefined, guard: expect.any(Function), signal: undefined });
       expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
         type: 'chunk',
         name: 'CAC chunk',
@@ -1436,7 +1332,11 @@ describe('swarm-provider-ipc', () => {
         owner: VALID_OWNER,
         identifier: VALID_IDENTIFIER,
       });
-      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith(signerFor('0xkey'), VALID_IDENTIFIER, Buffer.from('hello'), { span: undefined });
+      expect(mockWriteSingleOwnerChunk).toHaveBeenCalledWith(signerFor('0xkey'), VALID_IDENTIFIER, Buffer.from('hello'), {
+        span: undefined,
+        guard: expect.any(Function),
+        signal: undefined,
+      });
       expect(mockAddEntry).toHaveBeenCalledWith(expect.objectContaining({
         type: 'soc',
         name: 'SOC chunk',
@@ -1746,7 +1646,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.result.owner).toBe('0xOwnerAddr');
       expect(result.result.bzzUrl).toBe('bzz://manifesthex');
       expect(result.result.identityMode).toBe('app-scoped');
-      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xpublisherkey'), 'myapp.eth/blog');
+      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xpublisherkey'), 'myapp.eth/blog', undefined, { guard: expect.any(Function), signal: undefined });
       expect(mockSetFeed).toHaveBeenCalledWith('myapp.eth', 'blog', expect.objectContaining({
         topic: 'topichex',
         owner: '0xOwnerAddr',
@@ -1768,7 +1668,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_createFeed', { name: 'blog' }, 'myapp.eth');
 
       expect(result.result.identityMode).toBe('bee-wallet');
-      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xbeekey'), 'myapp.eth/blog');
+      expect(mockCreateFeed).toHaveBeenCalledWith(signerFor('0xbeekey'), 'myapp.eth/blog', undefined, { guard: expect.any(Function), signal: undefined });
       expect(mockGetPublisherKey).not.toHaveBeenCalled();
     });
 
@@ -1893,7 +1793,7 @@ describe('swarm-provider-ipc', () => {
       expect(result.result.reference).toBe(VALID_REF);
       expect(result.result.bzzUrl).toBe('bzz://mref');
       expect(result.result.index).toBe(7);
-      expect(mockUpdateFeed).toHaveBeenCalledWith(signerFor('0xpubkey'), 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith(signerFor('0xpubkey'), 'myapp.eth/blog', VALID_REF, undefined, { guard: expect.any(Function), signal: undefined });
       expect(mockUpdateFeedReference).toHaveBeenCalledWith('myapp.eth', 'blog', VALID_REF);
     });
 
@@ -1913,7 +1813,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result.index).toBe(8);
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockUpdateFeed).toHaveBeenCalledWith(signerFor('0xpubkey1'), 'myapp.eth/blog', VALID_REF);
+      expect(mockUpdateFeed).toHaveBeenCalledWith(signerFor('0xpubkey1'), 'myapp.eth/blog', VALID_REF, undefined, { guard: expect.any(Function), signal: undefined });
     });
 
     // #89: a feed bound to a stored ethereum-wallet identity fails with the
@@ -2052,7 +1952,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello' }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 0 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey'), 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey'), 'myapp.eth/feed', 'hello', { index: undefined, guard: expect.any(Function), copied: expect.any(Function), signal: undefined });
     });
 
     test('writes feed entry with the identity that created the feed', async () => {
@@ -2071,7 +1971,7 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result).toEqual({ index: 0 });
       expect(mockGetPublisherKey).toHaveBeenCalledWith(1);
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey1'), 'myapp.eth/feed', 'hello', { index: undefined });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey1'), 'myapp.eth/feed', 'hello', { index: undefined, guard: expect.any(Function), copied: expect.any(Function), signal: undefined });
     });
 
     test.each([['ready', true], ['stopped', false]])('refuses a feed entry for a feed bound to a stored browser wallet identity, node %s (#89)', async (_label, ready) => {
@@ -2103,7 +2003,7 @@ describe('swarm-provider-ipc', () => {
       const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data: 'hello', index: 5 }, 'myapp.eth');
 
       expect(result.result).toEqual({ index: 5 });
-      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey'), 'myapp.eth/feed', 'hello', { index: 5 });
+      expect(mockWriteFeedPayload).toHaveBeenCalledWith(signerFor('0xkey'), 'myapp.eth/feed', 'hello', { index: 5, guard: expect.any(Function), copied: expect.any(Function), signal: undefined });
     });
 
     test('records publish history on success', async () => {

@@ -897,7 +897,7 @@ describe('the chrome\'s grant writes (0011 PRQ-7b, "Grants")', () => {
     expect(permissions.getPermission(KEY_A)).toBeNull();
   });
 
-  test('swarm:set-auto-approve refused for turning messaging on, accepted for turning it off; the rules still on the chrome stay open', async () => {
+  test('swarm:set-auto-approve refused for turning messaging on, accepted for turning it off', async () => {
     connect(KEY_A);
     expect(() => invoke('swarm:set-auto-approve', KEY_A, 'messaging', true)).toThrow(
       'Messaging auto-approve is turned on only from a messaging prompt'
@@ -907,8 +907,8 @@ describe('the chrome\'s grant writes (0011 PRQ-7b, "Grants")', () => {
     permissions.setAutoApprove(KEY_A, 'messaging', true);
     expect(await invoke('swarm:set-auto-approve', KEY_A, 'messaging', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'messaging')).toBe(false);
-    // The feed prompt is still the chrome's until PRQ-7d; publishing's is
-    // main's from PRQ-7c (page-swarm-publish.test.js).
-    expect(await invoke('swarm:set-auto-approve', KEY_A, 'feeds', true)).toBe(true);
+    // Every other rule is main's too from PRQ-7c and 7d
+    // (page-swarm-publish.test.js, page-swarm-feeds.test.js).
+    expect(() => invoke('swarm:set-auto-approve', KEY_A, 'feeds', true)).toThrow('Feed auto-approve is turned on only from a feed prompt');
   });
 });

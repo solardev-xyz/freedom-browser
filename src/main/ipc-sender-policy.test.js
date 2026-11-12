@@ -85,7 +85,7 @@ describe('isSenderAllowed', () => {
       'quick-unlock:unlock',
       'dapp:grant-permission',
       'permissions:prompt-response',
-      'swarm:provider-execute',
+      'swarm:set-feed-identity',
     ]) {
       expect(isSenderAllowed(channel, web())).toBe(false);
       expect(isSenderAllowed(channel, web('bzz://abcd/'))).toBe(false);
