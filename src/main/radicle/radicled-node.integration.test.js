@@ -48,7 +48,6 @@ const { vaultBackend } = require('../core/vault-backend');
 const guard = require('../core/node-identity-guard');
 const { getLockDir } = require('../service-locks');
 const { RadicledNode } = require('./radicled-node');
-const { deriveAllKeys } = require('../../../test/legacy-identity/derivation');
 
 const radicled = process.env.FREEDOM_RADICLED_PATH;
 const cored = process.env.FREEDOM_CORED_PATH;
@@ -67,6 +66,40 @@ async function closedPort() {
   const { port } = server.address();
   await new Promise((resolve) => server.close(resolve));
   return port;
+}
+
+/**
+ * The Radicle key the core derives from `mnemonic` (freedom-core design
+ * 0008, "Keys"): SLIP-0010's Ed25519 key at m/44'/73404'/0'/0'/0' of its
+ * BIP-39 seed. Derived here with Node's own primitives (src/ doesn't use the
+ * legacy JS identity stack), and checked against the core's public key.
+ */
+function radicleSeed(mnemonic) {
+  const seed = crypto.pbkdf2Sync(
+    Buffer.from(mnemonic.normalize('NFKD')),
+    Buffer.from('mnemonic'),
+    2048,
+    64,
+    'sha512'
+  );
+  let digest = crypto.createHmac('sha512', 'ed25519 seed').update(seed).digest();
+  for (const index of [44, 73404, 0, 0, 0]) {
+    const data = Buffer.alloc(37);
+    digest.copy(data, 1, 0, 32);
+    data.writeUInt32BE((index | 0x80000000) >>> 0, 33);
+    digest = crypto.createHmac('sha512', digest.subarray(32)).update(data).digest();
+  }
+  return digest.subarray(0, 32);
+}
+
+/** The Ed25519 public key of a 32-byte seed. */
+function publicKeyOf(seed) {
+  const key = crypto.createPrivateKey({
+    key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  return crypto.createPublicKey(key).export({ format: 'der', type: 'spki' }).subarray(-32);
 }
 
 /** Every pattern the key's bytes could take in text or bytes: raw, hex and
@@ -245,10 +278,9 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
       expect(node.isUp()).toBe(false);
 
       // The key the core released: the vault's derived Radicle key.
-      const { radicleKey } = deriveAllKeys(ABANDON);
-      const key = Buffer.from(radicleKey.privateKey);
+      const key = radicleSeed(ABANDON);
       expect(key).toHaveLength(32);
-      expect(Buffer.from(radicleKey.publicKey).toString('hex')).toBe(derived.radicle.public_key);
+      expect(publicKeyOf(key).toString('hex')).toBe(derived.radicle.public_key);
       // The recorder heard the start (a control), and never the key.
       const heard = Buffer.concat(recorded);
       expect(heard.includes(Buffer.from('rad.identity'))).toBe(true);
