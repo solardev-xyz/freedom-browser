@@ -9,39 +9,13 @@ const os = require('os');
 const fs = require('fs');
 
 const REQUIRED_FAKE_EXPORTS = [
-  'start',
-  'shutdown',
-  'connectSeeds',
-  'cloneRepo',
-  'cloneRepoWithProgress',
-  'cancelClone',
-  'unseedRepo',
-  'listRepos',
-  'listSeededRepos',
-  'issues',
-  'issue',
-  'patches',
-  'patch',
-  'identity',
-  'createIssue',
-  'commentIssue',
-  'editIssueState',
-  'commentPatch',
-  'importRepo',
-  'repoInfo',
-  'commits',
-  'commit',
-  'tree',
-  'treeAt',
-  'blob',
-  'blobAt',
-  'remotes',
-  'repoStats',
-  'status',
-  'seeders',
-]
-  .map((name) => `${name}: async () => JSON.stringify({ ok: true }),`)
-  .join('');
+  'start', 'shutdown', 'connectSeeds', 'cloneRepo', 'cloneRepoWithProgress',
+  'cancelClone', 'unseedRepo', 'listRepos', 'listSeededRepos',
+  'issues', 'issue', 'patches', 'patch',
+  'identity', 'createIssue', 'commentIssue', 'editIssueState', 'commentPatch',
+  'importRepo', 'repoInfo', 'commits', 'commit', 'tree', 'treeAt', 'blob', 'blobAt',
+  'remotes', 'repoStats', 'status', 'seeders',
+].map((name) => `${name}: async () => JSON.stringify({ ok: true }),`).join('');
 
 describe('radicle-embedded addon loading', () => {
   afterEach(() => {
@@ -50,7 +24,11 @@ describe('radicle-embedded addon loading', () => {
   });
 
   test('is unavailable when no addon binary exists anywhere', () => {
-    process.env.FREEDOM_RADICLE_ADDON = path.join(os.tmpdir(), 'does-not-exist', 'libradicle.node');
+    process.env.FREEDOM_RADICLE_ADDON = path.join(
+      os.tmpdir(),
+      'does-not-exist',
+      'libradicle.node'
+    );
     jest.isolateModules(() => {
       const embedded = require('./radicle-embedded');
       // Note: falls through to radicle-bin/ and the sibling dev checkout;
@@ -157,9 +135,9 @@ describe('radicle-embedded addon loading', () => {
     await jest.isolateModulesAsync(async () => {
       const embedded = require('./radicle-embedded');
       const onProgress = jest.fn();
-      await expect(embedded.cloneRepoWithProgress('rad:zAbc', 1234, onProgress)).resolves.toEqual({
-        ok: true,
-      });
+      await expect(
+        embedded.cloneRepoWithProgress('rad:zAbc', 1234, onProgress)
+      ).resolves.toEqual({ ok: true });
       expect(onProgress).toHaveBeenCalledWith({ phase: 'resolving', candidates: 2 });
       await expect(embedded.cancelClone('rad:zAbc')).resolves.toEqual({ cancelled: true });
     });
@@ -265,8 +243,7 @@ describe('raw reads (#514)', () => {
       await expect(embedded.blobAtRaw('rad:zAbc', 'r', 'x')).rejects.toThrow(
         'the path does not exist'
       );
-    })
-  );
+    }));
 
   test('reject a non-string addon result', () =>
     withFakeAddon('commit: async () => undefined,', async (embedded) => {
@@ -274,20 +251,17 @@ describe('raw reads (#514)', () => {
     }));
 
   test('readmeAtRaw splices `path` into the blob text, equal to readmeAt', () =>
-    withFakeAddon(
-      `${TREE}blobAt: async () => ${JSON.stringify(`${BLOB}\n`)},`,
-      async (embedded) => {
-        const raw = await embedded.readmeAtRaw('rad:zAbc', 'r');
-        expect(raw.startsWith(BLOB.slice(0, -1))).toBe(true);
-        expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc', 'r'));
-        expect(JSON.parse(raw)).toEqual({
-          binary: false,
-          name: 'README.md',
-          content: BIG,
-          path: 'README.md',
-        });
-      }
-    ));
+    withFakeAddon(`${TREE}blobAt: async () => ${JSON.stringify(`${BLOB}\n`)},`, async (embedded) => {
+      const raw = await embedded.readmeAtRaw('rad:zAbc', 'r');
+      expect(raw.startsWith(BLOB.slice(0, -1))).toBe(true);
+      expect(JSON.parse(raw)).toEqual(await embedded.readmeAt('rad:zAbc', 'r'));
+      expect(JSON.parse(raw)).toEqual({
+        binary: false,
+        name: 'README.md',
+        content: BIG,
+        path: 'README.md',
+      });
+    }));
 
   test('readmeAtRaw: a `path` already in the blob is overridden, as the spread does', () =>
     withFakeAddon(

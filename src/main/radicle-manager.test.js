@@ -1767,6 +1767,48 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     expect(source()).toBeNull();
   });
 
+  test("the seed paths' reads are collected, each value used in its scope: repoInfo, seeders, listSeededRepos", async () => {
+    const answers = {
+      repo_info: { rid: 'rad:zRepoOne', name: 'one' },
+      seeders: { seeding: 5 },
+      list_seeded_repos: [{ rid: 'rad:zRepoOne' }, { rid: 'rad:zRepoTwo' }],
+    };
+    const results = [];
+    const ctx = load({
+      embedded: {
+        callScoped: jest.fn(async (op, _args, scope) => {
+          if (!answers[op]) throw Object.assign(new Error('not found'), { code: 'not_found' });
+          const value = answers[op];
+          const result = await scope(value, { signal: null, bytes: 1 });
+          // What leaves the scope is the caller's own answer, not the value.
+          results.push(result);
+          expect(result).not.toBe(value);
+          return result;
+        }),
+      },
+    });
+    await expect(ctx.mod.repoExists('rad:zRepoOne')).resolves.toBe(true);
+    await expect(ctx.mod.getSeederCount('rad:zRepoOne')).resolves.toBe(5);
+    await expect(ctx.mod.isSeeded('rad:zRepoTwo')).resolves.toBe(true);
+    await expect(ctx.mod.isSeeded('rad:zRepoThree')).resolves.toBe(false);
+    expect(ctx.embedded.callScoped.mock.calls.map(([op, args]) => [op, args])).toEqual([
+      ['repo_info', { rid: 'rad:zRepoOne' }],
+      ['seeders', { rid: 'rad:zRepoOne' }],
+      ['list_seeded_repos', {}],
+      ['list_seeded_repos', {}],
+    ]);
+    expect(results).toEqual([undefined, 5, true, false]);
+    // A read that fails: no repository, and not seeded.
+    delete answers.repo_info;
+    delete answers.list_seeded_repos;
+    await expect(ctx.mod.repoExists('rad:zRepoOne')).resolves.toBe(false);
+    await expect(ctx.mod.isSeeded('rad:zRepoOne')).resolves.toBe(false);
+    // Nothing of the add-on's.
+    for (const name of ['repoInfo', 'seeders', 'listSeededRepos']) {
+      expect(ctx.embedded[name]).not.toHaveBeenCalled();
+    }
+  });
+
   test("getConnections: node_info's three contracts (0008, Tests first)", async () => {
     const answers = [];
     const ctx = load({
