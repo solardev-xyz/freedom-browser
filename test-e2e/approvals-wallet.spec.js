@@ -295,12 +295,17 @@ const ACCEPT = {
 async function startPaywall(electronApp) {
   const paid = [];
   const server = http.createServer((req, res) => {
+    const html = (title) => `<!doctype html><title>${title}</title><h1>${title}</h1>`;
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`${html('home')}<script>window.__ready = true</script>`);
+      return;
+    }
     if (req.url !== '/article') {
       res.writeHead(404);
       res.end();
       return;
     }
-    const html = (title) => `<!doctype html><title>${title}</title><h1>${title}</h1>`;
     const signature = req.headers['payment-signature'];
     if (signature) {
       paid.push(signature);
@@ -368,8 +373,12 @@ test('a 402 paid from the panel: main\'s view, the chrome refused, the panel\'s 
       }));
     }, { accept: ACCEPT, url: paywall.url });
 
-    // The page's 402 opens the payment card in the sidebar.
-    const guest = await openTab(electronApp, win, paywall.url, 'document.title === "402"');
+    // The page's 402 opens the payment card in the sidebar: the tab opens
+    // on the site first, so the tab switch is over when the 402 comes.
+    const guest = await openTab(electronApp, win, `${paywall.origin}/`);
+    await electronApp.evaluate(({ webContents }, args) => {
+      webContents.fromId(args.guest).loadURL(args.url).catch(() => {});
+    }, { guest, url: paywall.url });
     await expect(win.locator('#sidebar-x402-approval')).toBeVisible();
     await expect(win.locator('#x402-approval-approve')).toBeEnabled();
 
