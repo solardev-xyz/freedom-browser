@@ -111,6 +111,9 @@ function loadWebviewPreloadModule(options = {}) {
   global.document = document;
   const windowFetch = options.fetch || jest.fn();
   const windowCaptureHandlers = {};
+  // Every window listener, capture or not, with its options (the swipe
+  // listener is a passive bubble-phase one).
+  const windowHandlers = {};
   // Only `(prefers-color-scheme: dark)` is queried, by the internal-page theme
   // bootstrap. The list is a single live object, so a spec can flip `matches`
   // and fire `mediaChangeHandlers` to model the desktop switching scheme.
@@ -123,6 +126,7 @@ function loadWebviewPreloadModule(options = {}) {
     location,
     getSelection: jest.fn(() => selection),
     addEventListener: jest.fn((event, handler, useCapture) => {
+      (windowHandlers[event] ||= []).push({ handler, options: useCapture });
       if (useCapture === true) {
         windowCaptureHandlers[event] = handler;
       }
@@ -188,6 +192,7 @@ function loadWebviewPreloadModule(options = {}) {
     documentHandlers,
     documentCaptureHandlers,
     windowCaptureHandlers,
+    windowHandlers,
     exposures: contextBridge.exposedValues,
     ipcRenderer,
     location,
@@ -2869,5 +2874,598 @@ describe('webview-preload digit-row zoom report', () => {
     onKeydown(keydown({ code: 'Minus' }));
     jest.runAllTimers();
     expect(reports(ipcRenderer)).toHaveLength(1);
+  });
+});
+
+describe('webview-preload two-finger swipe between pages (#980)', () => {
+  const webLocation = { href: 'https://example.com/b', protocol: 'https:', pathname: '/b' };
+  const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const originalGetComputedStyle = global.getComputedStyle;
+
+  // An element as the scroll checks read it; `style` is its computed style.
+  const element = ({ scrollWidth = 1000, clientWidth = 1000, scrollLeft = 0, style = {} } = {}) => ({
+    nodeType: 1,
+    scrollWidth,
+    clientWidth,
+    scrollLeft,
+    style: {
+      display: 'block',
+      overflowX: 'visible',
+      overflowY: 'visible',
+      overscrollBehaviorX: 'auto',
+      contain: 'none',
+      direction: 'ltr',
+      writingMode: 'horizontal-tb',
+      flexDirection: 'row',
+      ...style,
+    },
+  });
+
+  function setup({ platform = 'darwin', subframe = false, root, body, path = [], dpr = 2 } = {}) {
+    Object.defineProperty(process, 'platform', { value: platform });
+    const ctx = loadWebviewPreloadModule({ location: webLocation, subframe });
+    const html = root || element();
+    const bodyElement = body || element();
+    global.document.scrollingElement = html;
+    global.document.documentElement = html;
+    global.document.body = bodyElement;
+    global.window.devicePixelRatio = dpr;
+    global.getComputedStyle = (node) => node.style;
+    const [listener] = ctx.windowHandlers.wheel || [];
+    let now = 1000;
+    // A trusted trackpad wheel event; `gap` is the time since the last one.
+    const wheel = (deltaX, deltaY = 0, { gap = 16, ...overrides } = {}) => {
+      now += gap;
+      const event = {
+        isTrusted: true,
+        deltaMode: 0,
+        deltaX,
+        deltaY,
+        wheelDeltaX: Math.round(-deltaX * 3 / dpr) || 0,
+        shiftKey: false,
+        ctrlKey: false,
+        defaultPrevented: false,
+        timeStamp: now,
+        composedPath: () => [...path, bodyElement, html, global.document, global.window],
+        ...overrides,
+      };
+      listener.handler(event);
+      return event;
+    };
+    const raw = () =>
+      ctx.ipcRenderer.sendToHost.mock.calls.filter(([channel]) => channel.startsWith('swipe-nav:'));
+    // The messages without `sinceStart`, which tests of its own check.
+    const sent = () =>
+      raw().map(([channel, payload]) => {
+        const fields = { ...payload };
+        delete fields.sinceStart;
+        return Object.keys(fields).length ? [channel, fields] : [channel];
+      });
+    return { ...ctx, listener, wheel, sent, raw };
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    Object.defineProperty(process, 'platform', originalPlatform);
+    global.getComputedStyle = originalGetComputedStyle;
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  test('listens passively in the main frame on macOS only', () => {
+    expect(setup().listener.options).toEqual({ passive: true });
+    expect(setup({ platform: 'linux' }).listener).toBeUndefined();
+    expect(setup({ platform: 'win32' }).listener).toBeUndefined();
+    expect(setup({ subframe: true }).listener).toBeUndefined();
+  });
+
+  test('reports a swipe past the left edge as back, growing, then its end', () => {
+    const { wheel, sent } = setup();
+    wheel(-4);
+    jest.advanceTimersByTime(0);
+    // Not decided before it has moved SWIPE_AXIS_LOCK_PX.
+    expect(sent()).toEqual([]);
+    wheel(-6);
+    jest.advanceTimersByTime(0);
+    wheel(-20);
+    jest.advanceTimersByTime(0);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10 }],
+      ['swipe-nav:update', { direction: 'back', distance: 30 }],
+    ]);
+    // Reversing shrinks the distance; the end comes after a pause.
+    wheel(12);
+    jest.advanceTimersByTime(149);
+    expect(sent()).toHaveLength(3);
+    jest.advanceTimersByTime(1);
+    expect(sent().slice(2)).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 18 }],
+      ['swipe-nav:end', { direction: 'back', distance: 18 }],
+    ]);
+  });
+
+  test('reports a swipe past the right edge as forward', () => {
+    const root = element({ scrollWidth: 2000, clientWidth: 1000, scrollLeft: 1000 });
+    const { wheel, sent } = setup({ root });
+    wheel(10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'forward', distance: 10 }],
+      ['swipe-nav:end', { direction: 'forward', distance: 10 }],
+    ]);
+  });
+
+  test('leaves a swipe to the page while the page can still scroll that way', () => {
+    const root = element({ scrollWidth: 2000, clientWidth: 1000, scrollLeft: 1000 });
+    const { wheel, sent } = setup({ root });
+    wheel(-10);
+    wheel(-40);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('leaves it to a scroller under the pointer that can still move', () => {
+    const scroller = element({
+      scrollWidth: 800,
+      clientWidth: 400,
+      scrollLeft: 100,
+      style: { overflowX: 'auto' },
+    });
+    const { wheel, sent } = setup({ path: [{ nodeType: 3 }, scroller] });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+
+    // At its own left edge the scroll chains on to the page, which cannot
+    // scroll either: back.
+    scroller.scrollLeft = 0;
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent().map(([channel]) => channel)).toEqual(['swipe-nav:update', 'swipe-nav:end']);
+  });
+
+  test('ignores overflowing content that is not a scroll container', () => {
+    const wide = element({ scrollWidth: 800, clientWidth: 400, scrollLeft: 100 });
+    const { wheel, sent } = setup({ path: [wide] });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent().map(([channel]) => channel)).toEqual(['swipe-nav:update', 'swipe-nav:end']);
+  });
+
+  test('an overflow:hidden wrapper that stops the chain keeps the swipe', () => {
+    const wrapper = element({ style: { overflowX: 'hidden', overscrollBehaviorX: 'contain' } });
+    const { wheel, sent } = setup({ path: [wrapper] });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    // Without the property it is just clipped content, not in the way.
+    wrapper.style.overscrollBehaviorX = 'auto';
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(0);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 10 }]);
+  });
+
+  test.each([
+    ['a scroller under the pointer', 'inner'],
+    ['the document', 'root'],
+    ['the body', 'body'],
+  ])('respects overscroll-behavior-x on %s, as Chrome does', (_label, where) => {
+    for (const value of ['contain', 'none']) {
+      const style = { overflowX: 'auto', overscrollBehaviorX: value };
+      const { wheel, sent } = setup({
+        path: where === 'inner' ? [element({ style })] : [],
+        root: where === 'root' ? element({ style }) : undefined,
+        body: where === 'body' ? element({ style }) : undefined,
+      });
+      wheel(-10);
+      jest.advanceTimersByTime(200);
+      expect(sent()).toEqual([]);
+    }
+  });
+
+  test('reads right-to-left scroll positions from the right edge', () => {
+    // Chromium: 0 at the start (right edge), negative toward the left. The
+    // body inherits the document's direction.
+    const root = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      scrollLeft: 0,
+      style: { direction: 'rtl' },
+    });
+    const body = element({ style: { direction: 'rtl' } });
+    const { wheel, sent } = setup({ root, body });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'forward', distance: 10 }]);
+  });
+
+  test('a page whose root hides its overflow cannot scroll sideways', () => {
+    const root = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      scrollLeft: 500,
+      style: { overflowX: 'hidden' },
+    });
+    const { wheel, sent } = setup({ root });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 10 }]);
+  });
+
+  test('a mostly vertical gesture stays the page’s to its end', () => {
+    const { wheel, sent } = setup();
+    wheel(-3, 10);
+    wheel(-50);
+    wheel(-50);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    // A new gesture after the pause is decided afresh.
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(0);
+    expect(sent()).toEqual([['swipe-nav:update', { direction: 'back', distance: 10 }]]);
+  });
+
+  test.each([
+    ['a notched mouse wheel', { wheelDeltaX: 60 }],
+    ['a three-notch mouse wheel at 2x', { wheelDeltaX: 180 }],
+    ['shift-scroll', { shiftKey: true }],
+    ['pinch zoom', { ctrlKey: true }],
+    ['a page-made event', { isTrusted: false }],
+    ['a line-mode wheel', { deltaMode: 1 }],
+  ])('%s is not a swipe', (_label, overrides) => {
+    const { wheel, sent } = setup();
+    for (let i = 0; i < 5; i += 1) wheel(-20, 0, overrides);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('a swipe that starts with whole-tick events waits for a fractional one', () => {
+    const { wheel, sent } = setup();
+    // 40 and 80 px at 2x are exactly one and two ticks.
+    wheel(-40, 0, { wheelDeltaX: 60 });
+    wheel(-80, 0, { wheelDeltaX: 120 });
+    jest.advanceTimersByTime(0);
+    expect(sent()).toEqual([]);
+    wheel(-30);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 150 }],
+      ['swipe-nav:end', { direction: 'back', distance: 150 }],
+    ]);
+  });
+
+  test('a mostly vertical mouse wheel is the page’s at once', () => {
+    const { wheel, sent, ipcRenderer } = setup();
+    wheel(0, 40, { wheelDeltaX: 0 });
+    wheel(-30, 40);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    expect(ipcRenderer.sendToHost).not.toHaveBeenCalled();
+  });
+
+  test('a fractional tick count is a trackpad', () => {
+    const { wheel, sent } = setup();
+    // 7 px at 2x: 7 / 40 ticks, reported as 21 / 2 ≈ 11.
+    wheel(-7, 0, { wheelDeltaX: 11 });
+    wheel(-7, 0, { wheelDeltaX: 11 });
+    jest.advanceTimersByTime(200);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 14 }]);
+  });
+
+  test('a page that cancels a wheel event takes the gesture back', () => {
+    const { wheel, sent } = setup();
+    wheel(-10);
+    jest.advanceTimersByTime(0);
+    const cancelled = wheel(-10);
+    // A page listener later in the dispatch cancels it.
+    cancelled.defaultPrevented = true;
+    jest.advanceTimersByTime(0);
+    wheel(-30);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10 }],
+      ['swipe-nav:cancel'],
+    ]);
+  });
+
+  test('reports the distance as of each event, so one the page cancels never counts', () => {
+    // Two events land before their checks run; the page cancels the second.
+    // The chrome navigates as soon as a reported distance is far enough, so
+    // the first event's update must not include the second's movement.
+    const { wheel, sent } = setup();
+    wheel(-10);
+    jest.advanceTimersByTime(0);
+    wheel(-20);
+    const cancelled = wheel(-40);
+    cancelled.defaultPrevented = true;
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10 }],
+      ['swipe-nav:update', { direction: 'back', distance: 30 }],
+      ['swipe-nav:cancel'],
+    ]);
+  });
+
+  test("each message says how long ago its gesture's first wheel event came", () => {
+    // A page busy loading gets its wheel events late; the chrome uses this to
+    // tell the end of a swipe that already navigated from a new one.
+    const { wheel, raw } = setup();
+    const first = performance.now() - 40;
+    wheel(-10, 0, { timeStamp: first });
+    jest.advanceTimersByTime(0);
+    wheel(-10, 0, { timeStamp: first + 16 });
+    jest.advanceTimersByTime(0);
+    const cancelled = wheel(-10, 0, { timeStamp: first + 32 });
+    cancelled.defaultPrevented = true;
+    jest.advanceTimersByTime(0);
+    expect(raw()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10, sinceStart: 40 }],
+      ['swipe-nav:update', { direction: 'back', distance: 20, sinceStart: 40 }],
+      ['swipe-nav:cancel', { sinceStart: 40 }],
+    ]);
+
+    // The next gesture counts from its own first event, end included.
+    jest.advanceTimersByTime(300);
+    wheel(-10, 0, { timeStamp: performance.now() - 5 });
+    jest.advanceTimersByTime(0);
+    jest.advanceTimersByTime(150);
+    expect(raw().slice(3)).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10, sinceStart: 5 }],
+      ['swipe-nav:end', { direction: 'back', distance: 10, sinceStart: 155 }],
+    ]);
+  });
+
+  test('a page that cancels before the gesture is decided keeps it quietly', () => {
+    const { wheel, sent } = setup();
+    const cancelled = wheel(-4);
+    cancelled.defaultPrevented = true;
+    jest.advanceTimersByTime(0);
+    wheel(-20);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('a body that scrolls on its own keeps the swipe while it can move', () => {
+    // <html> clips, so the body's overflow stays its own (no propagation).
+    const root = element({ style: { overflowX: 'hidden' } });
+    const body = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      scrollLeft: 300,
+      style: { overflowX: 'auto' },
+    });
+    const { wheel, sent } = setup({ root, body });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    body.scrollLeft = 0;
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 10 }]);
+  });
+
+  test("a body's overflow is the viewport's while <html> leaves its own visible", () => {
+    // Propagated: the body's `hidden` stops the viewport scrolling, even with
+    // the document scrolled.
+    const root = element({ scrollWidth: 2000, clientWidth: 1000, scrollLeft: 300 });
+    const body = element({ style: { overflowX: 'hidden' } });
+    const { wheel, sent } = setup({ root, body });
+    wheel(-10);
+    jest.advanceTimersByTime(0);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 10 }]);
+  });
+
+  test.each([
+    ['<html> clips only vertically', { overflowY: 'clip' }, {}],
+    ['<html> has layout containment', { contain: 'layout' }, {}],
+    ['the body has paint containment', {}, { contain: 'paint' }],
+  ])('the body scrolls on its own when %s', (_label, htmlStyle, bodyStyle) => {
+    const root = element({ style: htmlStyle });
+    const body = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      scrollLeft: 300,
+      style: { overflowX: 'auto', ...bodyStyle },
+    });
+    const { wheel, sent } = setup({ root, body });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('a reversed flex row scrolls from its right edge', () => {
+    const style = { display: 'flex', flexDirection: 'row-reverse', overflowX: 'auto' };
+    // At its start (0, the right edge) it can still scroll left: back stays
+    // the page's, forward does not.
+    const row = element({ scrollWidth: 2000, clientWidth: 1000, scrollLeft: 0, style });
+    const { wheel, sent } = setup({ path: [row] });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(0);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'forward', distance: 10 }]);
+  });
+
+  test('a negative position means a right-edge origin whatever the styles say', () => {
+    const scroller = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      scrollLeft: -300,
+      style: { overflowX: 'auto' },
+    });
+    const { wheel, sent } = setup({ path: [scroller] });
+    wheel(-10);
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('an <html> and body that disagree on direction leave position 0 to the page', () => {
+    // Which one the viewport writes in depends on propagation and
+    // containment, so neither way is assumed.
+    const root = element({ scrollWidth: 2000, clientWidth: 1000, scrollLeft: 0 });
+    const body = element({ style: { direction: 'rtl' } });
+    const { wheel, sent } = setup({ root, body });
+    wheel(-10);
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('a vertical writing mode at position 0 is left to the page either way', () => {
+    const scroller = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      style: { overflowX: 'auto', writingMode: 'vertical-rl' },
+    });
+    const { wheel, sent } = setup({ path: [scroller] });
+    wheel(-10);
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    // Away from 0 the sign says where the origin is: at the far left of a
+    // right-origin scroller, Back is past its edge.
+    scroller.scrollLeft = -1000;
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(0);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 10 }]);
+  });
+
+  test('a flex column that wraps in reverse scrolls from its right edge', () => {
+    const style = {
+      display: 'flex',
+      flexDirection: 'column',
+      flexWrap: 'wrap-reverse',
+      overflowX: 'auto',
+    };
+    const columns = element({ scrollWidth: 2000, clientWidth: 1000, style });
+    const { wheel, sent } = setup({ path: [columns] });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+    wheel(10, 0, { gap: 200 });
+    jest.advanceTimersByTime(0);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'forward', distance: 10 }]);
+  });
+
+  test.each([
+    ['size', { contain: 'size' }],
+    ['inline-size', { contain: 'inline-size' }],
+    ['style', { contain: 'style' }],
+    ['content-visibility', { contentVisibility: 'auto' }],
+    ['an inline-size container type', { containerType: 'inline-size' }],
+    ['a size container type', { containerType: 'size' }],
+  ])('%s containment on the body keeps its overflow its own', (_label, bodyStyle) => {
+    const body = element({
+      scrollWidth: 2000,
+      clientWidth: 1000,
+      scrollLeft: 300,
+      style: { overflowX: 'auto', ...bodyStyle },
+    });
+    const { wheel, sent } = setup({ body });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('a gesture the page took at its start stays the page’s after reaching the edge', () => {
+    const scroller = element({
+      scrollWidth: 800,
+      clientWidth: 400,
+      scrollLeft: 40,
+      style: { overflowX: 'auto' },
+    });
+    const { wheel, sent } = setup({ path: [scroller] });
+    // A whole-tick first event leaves the gesture undecided while it scrolls
+    // the carousel to its edge.
+    wheel(-40, 0, { wheelDeltaX: 60 });
+    scroller.scrollLeft = 0;
+    wheel(-30);
+    wheel(-30);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+
+    // The same with a first movement too small to decide on.
+    scroller.scrollLeft = 3;
+    wheel(-4, 0, { gap: 200 });
+    scroller.scrollLeft = 0;
+    wheel(-30);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+  });
+
+  test('a custom element that may hide a closed shadow root keeps the swipe', () => {
+    const host = { ...element(), localName: 'x-carousel', shadowRoot: null };
+    const { wheel, sent } = setup({ path: [host] });
+    wheel(-10);
+    jest.advanceTimersByTime(200);
+    expect(sent()).toEqual([]);
+
+    // An open shadow root is in composedPath() itself, so it is checked there.
+    host.shadowRoot = {};
+    wheel(-10, 0, { gap: 200 });
+    jest.advanceTimersByTime(0);
+    expect(sent()[0]).toEqual(['swipe-nav:update', { direction: 'back', distance: 10 }]);
+  });
+
+  test('a trackpad event that happens to be whole ticks does not end a swipe', () => {
+    const { wheel, sent } = setup();
+    wheel(-30);
+    wheel(-30);
+    // 40 px at 2x is exactly one tick.
+    wheel(-40, 0, { wheelDeltaX: 60 });
+    jest.advanceTimersByTime(200);
+    expect(sent().map(([channel]) => channel)).toEqual([
+      'swipe-nav:update',
+      'swipe-nav:update',
+      'swipe-nav:update',
+      'swipe-nav:end',
+    ]);
+    expect(sent()[3][1]).toEqual({ direction: 'back', distance: 100 });
+  });
+
+  test('a cancel still being checked when the next gesture starts is settled first', () => {
+    const { wheel, sent } = setup();
+    wheel(-10);
+    jest.advanceTimersByTime(0);
+    // The page cancels this one, and the next event arrives after the pause
+    // before the deferred check has run.
+    wheel(-10).defaultPrevented = true;
+    wheel(-12, 0, { gap: 151 });
+    jest.advanceTimersByTime(0);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10 }],
+      ['swipe-nav:cancel'],
+      ['swipe-nav:update', { direction: 'back', distance: 12 }],
+    ]);
+    // The cancelled gesture never reports an end; the new one does.
+    jest.advanceTimersByTime(200);
+    expect(sent().slice(3)).toEqual([['swipe-nav:end', { direction: 'back', distance: 12 }]]);
+  });
+
+  test('a pause ends one gesture before the next event starts another', () => {
+    const { wheel, sent } = setup();
+    wheel(-10);
+    jest.advanceTimersByTime(0);
+    // Arrives after the pause, before the end timer ran.
+    wheel(-12, 0, { gap: 151 });
+    jest.advanceTimersByTime(0);
+    expect(sent()).toEqual([
+      ['swipe-nav:update', { direction: 'back', distance: 10 }],
+      ['swipe-nav:end', { direction: 'back', distance: 10 }],
+      ['swipe-nav:update', { direction: 'back', distance: 12 }],
+    ]);
   });
 });

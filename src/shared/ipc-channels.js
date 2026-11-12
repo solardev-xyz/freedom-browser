@@ -124,6 +124,9 @@ module.exports = {
   // private window before injecting the wallet providers.
   PRIVATE_IS_PRIVATE: 'private:is-private',
   WINDOW_GET_PLATFORM: 'window:get-platform',
+  // chrome → main: whether two-finger swipes go back/forward (#980).
+  WINDOW_GET_SWIPE_NAVIGATION: 'window:get-swipe-navigation',
+  WINDOW_AWAIT_SWIPE_SCROLL_END: 'window:await-swipe-scroll-end',
   WINDOW_GET_BUTTON_LAYOUT: 'window:get-button-layout',
 
   // App

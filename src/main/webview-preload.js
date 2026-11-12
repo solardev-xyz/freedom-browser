@@ -1070,6 +1070,300 @@ document.addEventListener(
 document.addEventListener('mouseleave', () => sendLinkStatusZone(false));
 window.addEventListener('blur', () => sendLinkStatusZone(false));
 
+// ============================================
+// Two-finger swipe between pages (macOS, #980)
+// ============================================
+//
+// Chrome and Safari go back when a two-finger sideways scroll runs past the
+// page's left edge, and forward past its right edge. Electron leaves that to
+// the embedder, and the main process cannot see how far a scroll went (its
+// `input-event` names the gesture events without their deltas, probed on
+// Electron 45), so the page measures it here and the chrome
+// (renderer/lib/swipe-navigation.js) draws the arrow and navigates.
+//
+// The page never sees the trackpad's gesture phases, so a gesture is a run of
+// wheel events with no pause longer than SWIPE_GESTURE_GAP_MS; the momentum
+// events macOS sends after the fingers lift belong to the same run, so a flick
+// counts its momentum, as in Safari. Each gesture is decided once, when it has
+// moved SWIPE_AXIS_LOCK_PX: it is the page's, and nothing is reported, when
+// - it is mostly vertical;
+// - it is shift-scroll or pinch zoom (see isPlainScroll); one that looks like
+//   a notched mouse wheel rather than a trackpad waits (see looksNotched);
+// - something under the pointer can still scroll that way, stops scroll
+//   chaining with `overscroll-behavior-x` (which also keeps Chrome from
+//   navigating), or may hide a scroller from it (see pageKeepsSwipe), either
+//   at its first sideways movement or when it is decided;
+// - the page cancels any of its wheel events (maps, canvas apps).
+// Otherwise it reports the distance past the edge as it grows, and the end.
+// Each message also says how long ago the gesture's first wheel event came
+// (`sinceStart`): once a swipe has navigated, the chrome drops gestures that
+// began before that swipe's scroll was over, such as the arriving page's
+// share of it, which a page busy loading hears only late.
+// Listening is passive, so scrolling never waits on it.
+const SWIPE_GESTURE_GAP_MS = 150;
+const SWIPE_AXIS_LOCK_PX = 8;
+// A gesture counts as sideways when its horizontal travel is at least this
+// many times its vertical travel when it is decided.
+const SWIPE_AXIS_RATIO = 2;
+
+// Shift turns a vertical wheel sideways, ctrl marks a pinch, and a page can
+// dispatch wheel events of its own.
+const isPlainScroll = (event) =>
+  event.isTrusted && event.deltaMode === 0 && !event.shiftKey && !event.ctrlKey;
+
+// A notched mouse wheel moves in whole ticks: Chromium sets the event's tick
+// count from the wheel's raw notches and Blink reports it as
+// `wheelDeltaX = ticks * 120 / devicePixelRatio`. Trackpads and other smooth
+// devices get pixels / 40 ticks, which is whole only when the pixels happen to
+// be a multiple of 40 (web_input_event_builders_mac.mm, wheel_event.cc). So a
+// sideways gesture whose events all looked notched so far stays undecided
+// until one does not, and a decided swipe is never undone by one.
+function looksNotched(event) {
+  const ticks = (Math.abs(event.wheelDeltaX || 0) * (window.devicePixelRatio || 1)) / 120;
+  return ticks >= 0.99 && Math.abs(ticks - Math.round(ticks)) < 0.01;
+}
+
+// Where `element`'s horizontal scroll origin is: 'left', or 'right', where
+// Chromium reports positions from 0 down to -max; null when that cannot be
+// told. A position away from 0 says so by its sign. At 0 only unambiguous
+// styles decide: horizontal lines running one way in every style in
+// `writings` (the viewport's come from both <html> and the body), flipped by a
+// reversed flex row, or by wrap-reverse on a flex column whose lines then run
+// right to left. Vertical writing modes, and an <html> and body that disagree,
+// are left unknown, and the caller treats unknown as able to scroll.
+function scrollOrigin(element, style, writings) {
+  if (element.scrollLeft < 0) return 'right';
+  if (element.scrollLeft > 0) return 'left';
+  if (writings.some((writing) => (writing.writingMode || 'horizontal-tb') !== 'horizontal-tb')) {
+    return null;
+  }
+  const directions = new Set(writings.map((writing) => writing.direction || 'ltr'));
+  if (directions.size !== 1) return null;
+  const rtl = directions.has('rtl');
+  const flex = style.display === 'flex' || style.display === 'inline-flex';
+  const column = /^column/.test(style.flexDirection || '');
+  const flipped =
+    flex &&
+    ((!column && style.flexDirection === 'row-reverse') ||
+      (column && style.flexWrap === 'wrap-reverse'));
+  return rtl !== flipped ? 'right' : 'left';
+}
+
+// Whether `element` can scroll further toward `direction` ('back' is toward
+// its left edge).
+function canScrollToward(element, direction, style, writings = [style]) {
+  const max = element.scrollWidth - element.clientWidth;
+  if (!(max > 1)) return false;
+  const origin = scrollOrigin(element, style, writings);
+  if (origin === null) return true;
+  const fromLeft = origin === 'right' ? max + element.scrollLeft : element.scrollLeft;
+  return direction === 'back' ? fromLeft > 1 : fromLeft < max - 1;
+}
+
+const keepsScrollChain = (style) =>
+  style.overscrollBehaviorX === 'contain' || style.overscrollBehaviorX === 'none';
+const scrollsSideways = (overflowX) => overflowX === 'auto' || overflowX === 'scroll';
+// Any containment stops overflow propagation (CSS Containment 2), including
+// what content-visibility and a size container type imply without showing in
+// the computed `contain`.
+const setTo = (value, unset) => typeof value === 'string' && value !== '' && value !== unset;
+const isContained = (style) =>
+  setTo(style.contain, 'none') ||
+  setTo(style.contentVisibility, 'visible') ||
+  setTo(style.containerType, 'normal');
+
+// Whether the body's overflow is the viewport's (CSS Overflow 3, overflow
+// propagation): <html> leaves both axes visible, and neither element is
+// contained. Otherwise the body is a scroller like any other.
+function bodyOverflowIsViewports(htmlStyle, bodyStyle) {
+  return (
+    htmlStyle.overflowX === 'visible' &&
+    htmlStyle.overflowY === 'visible' &&
+    bodyStyle.display !== 'none' &&
+    !isContained(htmlStyle) &&
+    !isContained(bodyStyle)
+  );
+}
+
+// Whether the page keeps a sideways scroll toward `direction` that started
+// over `event`'s target: a scroll container on the way up can still move that
+// way, or one stops the chain there.
+//
+// A closed shadow root hides its insides from composedPath(), which then ends
+// at its host, and nothing outside it hears its scrolls (Electron 45 has no
+// `overscroll` event either). A custom element as the target with no open
+// shadow root may be such a host, so the page keeps the swipe there; a closed
+// root on a built-in element such as <div> cannot be told apart.
+function pageKeepsSwipe(event, direction) {
+  const html = document.documentElement;
+  const body = document.body;
+  const root = document.scrollingElement || html;
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  const target = path.find((node) => node?.nodeType === 1);
+  if (target && target.localName?.includes('-') && !target.shadowRoot) return true;
+  const htmlStyle = html ? getComputedStyle(html) : null;
+  const bodyStyle = body ? getComputedStyle(body) : null;
+  const bodyIsViewport =
+    !!htmlStyle && !!bodyStyle && bodyOverflowIsViewports(htmlStyle, bodyStyle);
+  for (const node of path) {
+    if (!node || node.nodeType !== 1 || node === root || node === html) continue;
+    if (node === body && bodyIsViewport) continue;
+    const style = getComputedStyle(node);
+    // `hidden` still makes a scroll container, which stops the chain when it
+    // says so, though the user cannot scroll it.
+    if (style.overflowX === 'hidden' && keepsScrollChain(style)) return true;
+    if (!scrollsSideways(style.overflowX)) continue;
+    if (keepsScrollChain(style) || canScrollToward(node, direction, style)) return true;
+  }
+  for (const style of [htmlStyle, bodyStyle]) {
+    if (style && keepsScrollChain(style)) return true;
+  }
+  const viewportOverflowX = bodyIsViewport ? bodyStyle.overflowX : htmlStyle?.overflowX;
+  if (viewportOverflowX === 'hidden' || viewportOverflowX === 'clip') return false;
+  if (!root) return false;
+  // The viewport is not a flex container; its writing comes from <html> or
+  // the body, and the two must agree for a position of 0 to be read.
+  const writings = [htmlStyle, bodyStyle].filter(Boolean);
+  return canScrollToward(root, direction, {}, writings);
+}
+
+let swipeGesture = null;
+let swipeGestureEndTimer = null;
+
+// Durations only: the page's clock and the chrome's are not comparable.
+const swipeMessage = (gesture, fields = {}) => ({
+  ...fields,
+  sinceStart: Math.max(0, performance.now() - gesture.startedAt),
+});
+
+function reportSwipeEnd(gesture) {
+  if (gesture.reported && gesture.state !== 'page') {
+    ipcRenderer.sendToHost(
+      'swipe-nav:end',
+      swipeMessage(gesture, { direction: gesture.state, distance: gesture.distance })
+    );
+  }
+}
+
+// The end waits for the gesture's last cancellation checks (deferSwipeCheck),
+// so a page that cancelled its final wheel event is never reported as letting
+// a swipe through.
+function endSwipeGesture() {
+  clearTimeout(swipeGestureEndTimer);
+  swipeGestureEndTimer = null;
+  const gesture = swipeGesture;
+  swipeGesture = null;
+  if (!gesture) return;
+  gesture.ended = true;
+  if (gesture.pendingChecks === 0) reportSwipeEnd(gesture);
+}
+
+function handOverSwipeGesture(gesture) {
+  if (gesture.reported && gesture.state !== 'page') {
+    ipcRenderer.sendToHost('swipe-nav:cancel', swipeMessage(gesture));
+  }
+  gesture.state = 'page';
+}
+
+function onSwipeWheel(event) {
+  if (swipeGesture && event.timeStamp - swipeGesture.lastAt > SWIPE_GESTURE_GAP_MS) {
+    endSwipeGesture();
+  }
+  if (!swipeGesture) {
+    swipeGesture = {
+      state: 'pending',
+      startedAt: event.timeStamp,
+      sumX: 0,
+      sumY: 0,
+      notched: true,
+      checkedStart: false,
+      distance: 0,
+      reported: false,
+      ended: false,
+      pendingChecks: 0,
+    };
+  }
+  const gesture = swipeGesture;
+  gesture.lastAt = event.timeStamp;
+  clearTimeout(swipeGestureEndTimer);
+  swipeGestureEndTimer = setTimeout(endSwipeGesture, SWIPE_GESTURE_GAP_MS);
+  if (gesture.state === 'page') return;
+
+  if (!isPlainScroll(event)) {
+    handOverSwipeGesture(gesture);
+    return;
+  }
+  if (gesture.state === 'pending') {
+    // Like Chrome's scroll latching: a gesture whose first sideways movement
+    // the page could take stays the page's, even once it has scrolled the
+    // page to its edge before being decided.
+    if (!gesture.checkedStart && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      gesture.checkedStart = true;
+      if (pageKeepsSwipe(event, event.deltaX < 0 ? 'back' : 'forward')) {
+        gesture.state = 'page';
+        return;
+      }
+    }
+    gesture.sumX += event.deltaX;
+    gesture.sumY += event.deltaY;
+    if (event.deltaX !== 0 && !looksNotched(event)) gesture.notched = false;
+    const travel = Math.abs(gesture.sumX) + Math.abs(gesture.sumY);
+    if (
+      travel >= SWIPE_AXIS_LOCK_PX &&
+      Math.abs(gesture.sumX) < SWIPE_AXIS_RATIO * Math.abs(gesture.sumY)
+    ) {
+      gesture.state = 'page';
+      return;
+    }
+    if (travel < SWIPE_AXIS_LOCK_PX || gesture.notched) {
+      deferSwipeCheck(event, gesture);
+      return;
+    }
+    const direction = gesture.sumX < 0 ? 'back' : 'forward';
+    if (pageKeepsSwipe(event, direction)) {
+      gesture.state = 'page';
+      return;
+    }
+    gesture.state = direction;
+    gesture.distance = Math.abs(gesture.sumX);
+  } else {
+    gesture.distance += gesture.state === 'back' ? -event.deltaX : event.deltaX;
+  }
+  deferSwipeCheck(event, gesture, true);
+}
+
+// The page's own wheel listeners run after this one when they sit on
+// `window` too, so whether it cancelled the event is read once dispatch is
+// over (the same deferral as the context-menu interceptor above). Each check
+// touches only its own gesture, and the last one of an ended gesture sends
+// its end. An update reports the distance as of its own event: later events
+// may still be cancelled when it runs, and the chrome navigates as soon as
+// the distance is far enough.
+function deferSwipeCheck(event, gesture, report = false) {
+  gesture.pendingChecks += 1;
+  const distance = gesture.distance;
+  setTimeout(() => {
+    gesture.pendingChecks -= 1;
+    if (gesture.state !== 'page') {
+      if (event.defaultPrevented) {
+        handOverSwipeGesture(gesture);
+      } else if (report) {
+        gesture.reported = true;
+        ipcRenderer.sendToHost(
+          'swipe-nav:update',
+          swipeMessage(gesture, { direction: gesture.state, distance })
+        );
+      }
+    }
+    if (gesture.ended && gesture.pendingChecks === 0) reportSwipeEnd(gesture);
+  }, 0);
+}
+
+// `process` is the sandboxed preload's own binding (see readWebviewBoot).
+if (typeof process !== 'undefined' && process.platform === 'darwin') {
+  window.addEventListener('wheel', onSwipeWheel, { passive: true });
+}
+
 // Expose APIs to internal pages (guarded for safety)
 contextBridge.exposeInMainWorld('freedomAPI', {
   // History

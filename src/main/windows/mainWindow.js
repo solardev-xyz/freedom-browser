@@ -6,6 +6,7 @@ const { loadSettings } = require('../settings-store');
 const { attachAutomationToHostWebContents } = require('../automation/runtime');
 const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 const { attachFullscreenChromeSync } = require('../browser-fullscreen');
+const { attachThreeFingerSwipe } = require('../swipe-navigation');
 
 let currentWindowTitle = 'Freedom';
 
@@ -163,6 +164,7 @@ function createMainWindow(initialUrl = null, options = {}) {
 
   // Hide the chrome while the window is full screen (#78).
   attachFullscreenChromeSync(window);
+  attachThreeFingerSwipe(window);
 
   window.on('page-title-updated', (event) => {
     event.preventDefault();

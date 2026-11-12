@@ -154,6 +154,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 ## Navigation Controls
 
 - **Back/Forward**: Standard browser history navigation per tab.
+- **Swipe between pages (macOS)**: A two-finger sideways swipe on the trackpad that scrolls past the page's left edge goes back, and one past its right edge goes forward (with natural scrolling on, swipe right to go back). An arrow slides in from the page's edge, and the page changes as soon as it fills in, without waiting for the scroll's momentum to end; the rest of that scroll then never goes back a second time. Follows System Settings → Trackpad → More Gestures → **Swipe between pages**, including its three-finger form. A page that scrolls sideways, cancels the scroll or sets `overscroll-behavior-x` keeps the gesture, and a swipe that starts over an embedded frame from another site does not navigate.
 - **Reload**: Refresh the current page (uses cache; hard reload bypasses it). On error pages, retries the original URL.
 - **Stop**: Cancel page loading mid-request.
 - **Home**: Return to the welcome page.

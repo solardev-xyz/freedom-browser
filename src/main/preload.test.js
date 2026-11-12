@@ -163,6 +163,14 @@ describe('preload', () => {
       [exposures.electronAPI, 'awaitSwarmProbe', ['probe-1'], IPC.BZZ_AWAIT_PROBE, [{ id: 'probe-1' }]],
       [exposures.electronAPI, 'cancelSwarmProbe', ['probe-1'], IPC.BZZ_CANCEL_PROBE, [{ id: 'probe-1' }]],
       [exposures.electronAPI, 'getPlatform', [], IPC.WINDOW_GET_PLATFORM, []],
+      [exposures.electronAPI, 'getSwipeNavigation', [], IPC.WINDOW_GET_SWIPE_NAVIGATION, []],
+      [
+        exposures.electronAPI,
+        'awaitSwipeScrollEnd',
+        [7],
+        IPC.WINDOW_AWAIT_SWIPE_SCROLL_END,
+        [7],
+      ],
       [exposures.electronAPI, 'getActiveProfile', [], IPC.PROFILE_GET_ACTIVE, []],
       [exposures.electronAPI, 'listProfiles', [], IPC.PROFILE_LIST, []],
       [

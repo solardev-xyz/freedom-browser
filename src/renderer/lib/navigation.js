@@ -78,6 +78,11 @@ import {
   buildInternalPageUrl,
 } from './page-urls.js';
 import { clearHistoryTraversal, goBackInHistory, goForwardInHistory } from './history-traversal.js';
+import {
+  cancelSwipeNavigation,
+  handleSwipeNavigationMessage,
+  initSwipeNavigation,
+} from './swipe-navigation.js';
 import { grantContinueOnce, hasContinueOnceGrant } from './name-continue-grants.js';
 import { isTezosDomainHost } from './origin-utils.js';
 import {
@@ -3511,6 +3516,7 @@ export const initNavigation = () => {
         break;
 
       case 'ipc-message': {
+        if (handleSwipeNavigationMessage(data.channel, data.args?.[0])) break;
         if (data.channel === 'ens:continue-unverified') {
           const name = data.args?.[0]?.name;
           if (name) {
@@ -3627,6 +3633,7 @@ export const initNavigation = () => {
       }
 
       case 'tab-switched': {
+        cancelSwipeNavigation();
         // Save address bar state to previous tab before switching. The
         // per-tab view-source record (`prev.isViewingSource`) is owned by
         // tabs.js' did-navigate handler and is already up to date — we
@@ -3802,6 +3809,17 @@ export const initNavigation = () => {
   electronAPI?.onHistoryForward?.(() => {
     if (isActiveTabAgentOwned()) return;
     goForwardInHistory(getActiveWebview());
+  });
+
+  // Two-finger swipe past a page's edge (#980): the same traversal and the
+  // same Agent gate. Three-finger swipes arrive as History > Back / Forward.
+  initSwipeNavigation({
+    getActiveWebview,
+    isNavigationBlocked: isActiveTabAgentOwned,
+    goBack: goBackInHistory,
+    goForward: goForwardInHistory,
+    getSwipeSettings: () => electronAPI?.getSwipeNavigation?.() ?? { twoFinger: false },
+    awaitScrollEnd: (webview) => electronAPI?.awaitSwipeScrollEnd?.(webview.getWebContentsId()),
   });
 
   // Keyboard shortcuts — resolved through the shared shortcut registry so
