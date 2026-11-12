@@ -60,14 +60,17 @@ window.radicle.removeListener(event, handler);
 
 `connect` fires on access grant, `disconnect` on revocation, and `seedStatus`
 streams replication transitions for seed/sync actions started by this origin.
-Freedom sends `connect` and `disconnect` to every open page of the site,
-whichever page or screen granted or revoked the access. A page whose address
-is a DNS name served over IPNS hears them only while the name still serves
-that IPNS key.
+Freedom sends `connect`, `disconnect` and `seedStatus` to every open page of
+the site, whichever page or screen granted or revoked the access, or started
+or watched the fetch. A page whose address is a DNS name served over IPNS
+hears them only while the name still serves that IPNS key. Freedom keeps the
+latest `seedStatus` of each repository for a page while an earlier one is on
+its way, at most 64 repositories, so a page always hears a repository's
+latest state but may miss one between.
 
 The page's requests go straight to Freedom's main process, which decides who
 asked from the page itself, never from the browser UI, and shows the
-connection prompt (freedom-core design 0011). A request from a tab in the
+connection and seeding prompts (freedom-core design 0011). A request from a tab in the
 background waits until you switch to that tab, with a dot on the tab and a
 count on the wallet button. One whose prompt hasn't shown within its time
 limit is closed with `-32603` "Request timed out"; a prompt on screen waits
@@ -194,7 +197,16 @@ Both prompt per repository (unless the origin's `node` auto-approve is
 on): seeding commits disk and bandwidth, and unseeding drops a policy the
 user chose — a connected origin can already enumerate what to target with
 `radicle_listSeededRepos`. A rejected prompt returns 4001 and the node is
-never touched.
+never touched. An `rid` the method doesn't accept is refused (-32602,
+`invalid_rid`) with no prompt.
+
+No prompt turns the `node` rule on, and the browser can only turn it off.
+On a tab Freedom Agent holds the rule never applies: each seed and unseed
+prompts. Freedom checks the page again just before the node is touched,
+after the prompt: a page that has navigated, a site whose access was
+revoked meanwhile (`4100`, `not_connected`), a tab that entered Agent
+custody while the rule answered (`4100`, `agent_custody`), or a rule turned
+off meanwhile (`4100`, `not_auto_approved`) leaves the node untouched.
 
 ### `radicle_getSeedStatus { rid }` (connection tier)
 
@@ -235,7 +247,8 @@ immediately with `{ rid, status }`; follow `seedStatus` events for progress.
 Only repos the node already has a seeding policy for are accepted: the
 fetch writes that policy as it replicates, so allowing an unknown RID
 here would be a promptless `radicle_seed`. An unseeded RID rejects with
--32602 and `data.reason: 'not_seeded'`.
+-32602 and `data.reason: 'not_seeded'`. Freedom checks the page again
+after it has read the seeding policy, just before the fetch starts.
 
 ### `radicle_getIdentity` → `{ did, nid, alias }` (signing tier)
 
