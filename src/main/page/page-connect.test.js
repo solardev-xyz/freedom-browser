@@ -404,7 +404,10 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
   // AgentWalletController, as the agent service calls it, with an approval
   // the test answers.
   describe('a tab the agent holds, inside the request\'s life', () => {
-    function withAgent(env, { pageUrl = null, withdrawOnAbort = false } = {}) {
+    // `holdAfter`: a promise the route waits on after the controller's
+    // effect, before it answers, as the agent service once waited on the
+    // Agent's steering: the request can end there.
+    function withAgent(env, { pageUrl = null, withdrawOnAbort = false, holdAfter = null } = {}) {
       const approvals = [];
       env.state.walletIndexUpdates = [];
       const controller = new AgentWalletController({
@@ -422,8 +425,8 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
         }),
         getChain: (chainId) => ({ chainId, name: 'Gnosis Chain', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
       });
-      env.state.agent = (guestId, request, options) =>
-        controller.handleRequest(
+      env.state.agent = async (guestId, request, options) => {
+        const outcome = await controller.handleRequest(
           {
             tabId: `tab_${guestId}`,
             // The page the agent's run sees in that tab.
@@ -441,6 +444,9 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
           },
           request
         );
+        if (holdAfter) await holdAfter;
+        return outcome;
+      };
       return approvals;
     }
 
@@ -545,6 +551,77 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       // The agent's page heard main's connect once, and no "first" connect
       // of its own.
       expect(page.guest.events).toEqual([['accountsChanged', [ACCOUNT]]]);
+    });
+
+    // #1192 round 3: a grant the agent wrote whose request then ended
+    // without its answer. The grant exists, so the key's other pages hear
+    // it; the page that asked, which never got the account, hears nothing.
+    describe('the request ends after the agent\'s write, before its answer', () => {
+      function written() {
+        const env = setup();
+        let release;
+        const holdAfter = new Promise((resolve) => (release = resolve));
+        const approvals = withAgent(env, { holdAfter });
+        const other = env.tab(`${KEY_A}/other`, { front: false });
+        const inWindow2 = env.tab(`${KEY_A}/x`, { window: 2, front: false });
+        const elsewhere = env.tab(OTHER, { front: false });
+        const page = env.tab();
+        return { env, approvals, release, other, inWindow2, elsewhere, page };
+      }
+
+      async function writeAndHold({ env, approvals, page }) {
+        const answer = page.ask('eth_requestAccounts');
+        await flush();
+        approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+        await flush();
+        // Written, and the answer held behind it.
+        expect(env.state.grants).toEqual([{ key: KEY_A, walletIndex: 1, chainId: 100 }]);
+        // Wrapped: an async function returning the answer itself would wait for it.
+        return { answer };
+      }
+
+      test('its deadline: the page hears "Request timed out" and no event; the key\'s other pages hear the account', async () => {
+        const t = written();
+        const { answer } = await writeAndHold(t);
+        t.env.expire();
+        expect(await answer).toEqual({ error: { message: 'Request timed out' } });
+        await flush();
+        t.release();
+        await flush();
+        expect(t.page.guest.events).toEqual([]);
+        expect(t.other.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+        expect(t.inWindow2.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+        expect(t.elsewhere.guest.events).toEqual([]);
+        expect(t.env.state.grants).toHaveLength(1);
+      });
+
+      test('its tab closed: the page gets no answer and no event; the key\'s other pages hear the account', async () => {
+        const t = written();
+        const { answer } = await writeAndHold(t);
+        t.page.guest.destroyed = true;
+        t.page.guest.emit('destroyed');
+        expect(await answer).toEqual({ gone: true });
+        await flush();
+        t.release();
+        await flush();
+        expect(t.page.guest.events).toEqual([]);
+        expect(t.other.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+        expect(t.inWindow2.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+        expect(t.elsewhere.guest.events).toEqual([]);
+      });
+
+      test('answered in time: the page hears the account and connect, once', async () => {
+        const t = written();
+        const { answer } = await writeAndHold(t);
+        t.release();
+        expect(await answer).toEqual({ result: [SECOND] });
+        await flush();
+        expect(t.page.guest.events).toEqual([
+          ['accountsChanged', [SECOND]],
+          ['connect', { chainId: '0x64' }],
+        ]);
+        expect(t.other.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+      });
     });
 
     test('a connected site\'s agent approval writes no new grant, so sends no new-grant events (an account change is the grant store\'s to tell)', async () => {
