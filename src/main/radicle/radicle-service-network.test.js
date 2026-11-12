@@ -171,12 +171,14 @@ async function running({ connectSeeds = null, ...script } = {}) {
   await settle();
   expect(node.generation).not.toBeNull();
   let embedded;
+  let log;
   jest.isolateModules(() => {
     embedded = require('../radicle-embedded');
     seedStatus = require('./seed-status');
+    log = require('../logger');
   });
   embedded.setServiceNodeSource(() => node);
-  return { service, child: service.children[0], node, embedded, runs };
+  return { service, child: service.children[0], node, embedded, runs, log };
 }
 
 describe('connectSeeds: rad.connect_seeds', () => {
@@ -293,8 +295,7 @@ describe('a clone: rad.clone and its progress', () => {
   });
 
   test("an event that isn't JSON is logged, redacted, and dropped; the next still come", async () => {
-    const log = require('../logger');
-    const { child, embedded, runs } = await running();
+    const { child, embedded, runs, log } = await running();
     const seen = [];
     const done = embedded.cloneRepoWithProgress(RID, 120000, (event) => seen.push(event));
     await settle();

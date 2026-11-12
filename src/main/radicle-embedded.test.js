@@ -530,6 +530,8 @@ describe('shutdown proof (R-8)', () => {
 // aren't on the service yet, and the add-on is never loaded.
 describe('on the freedom-radicled service', () => {
   let embedded;
+  // The logger the module loaded with.
+  let embeddedLog;
   let reads;
   let generation;
 
@@ -562,6 +564,7 @@ describe('on the freedom-radicled service', () => {
     generation = 1;
     jest.isolateModules(() => {
       embedded = require('./radicle-embedded');
+      embeddedLog = require('./logger');
     });
     embedded.setServiceNodeSource(() => node);
   });
@@ -624,10 +627,6 @@ describe('on the freedom-radicled service', () => {
     'listRepos',
     'start',
     'shutdown',
-    'connectSeeds',
-    'cloneRepo',
-    'cloneRepoWithProgress',
-    'cancelClone',
     'unseedRepo',
     'createIssue',
     'commentIssue',
@@ -663,6 +662,85 @@ describe('on the freedom-radicled service', () => {
       export: name,
     });
     expect(reads).toEqual([]);
+  });
+
+  describe('the network operations: the service node\'s rad.connect_seeds and rad.clone', () => {
+    /** The node's network calls, each answered as the test says. */
+    let calls;
+    beforeEach(() => {
+      calls = [];
+      node.connectSeeds = jest.fn(async (timeoutMs, options) => {
+        calls.push(['connectSeeds', timeoutMs, options]);
+        return { attempted: 1, connected: 1, target: 1, targetReached: true, elapsedMs: 3, failures: [] };
+      });
+      node.clone = jest.fn(
+        (rid, timeoutMs, { onProgress = null, signal = null } = {}) =>
+          new Promise((resolve, reject) => {
+            calls.push({ rid, timeoutMs, onProgress, signal, resolve, reject });
+          })
+      );
+    });
+    afterEach(() => {
+      delete node.connectSeeds;
+      delete node.clone;
+    });
+
+    test('connectSeeds: 15000 by default, the report as the service gave it', async () => {
+      await expect(embedded.connectSeeds()).resolves.toMatchObject({ connected: 1 });
+      await expect(embedded.connectSeeds(5000)).resolves.toMatchObject({ connected: 1 });
+      expect(calls.map(([, timeoutMs]) => timeoutMs)).toEqual([15000, 5000]);
+      expect(reads).toEqual([]);
+    });
+
+    test('cloneRepo: no progress, 120000 by default', async () => {
+      const done = embedded.cloneRepo('rad:z1');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(calls[0]).toMatchObject({ rid: 'rad:z1', timeoutMs: 120000, onProgress: null, signal: null });
+      calls[0].resolve({ ok: true });
+      await expect(done).resolves.toEqual({ ok: true });
+    });
+
+    test("cloneRepoWithProgress: each event's text parsed for the callback; one that isn't JSON is logged, redacted, and dropped", async () => {
+      const events = [];
+      const done = embedded.cloneRepoWithProgress('rad:z1', 1234, (event) => events.push(event));
+      await new Promise((resolve) => setImmediate(resolve));
+      const [call] = calls;
+      expect(call).toMatchObject({ rid: 'rad:z1', timeoutMs: 1234 });
+      call.onProgress('{"candidates":2,"phase":"resolving"}');
+      call.onProgress('{"phase":');
+      call.onProgress('{"phase":"peer-failed","summary":{"count":12,"reasons":["r"]}}');
+      call.resolve({ ok: true });
+      await expect(done).resolves.toEqual({ ok: true });
+      expect(events).toEqual([
+        { candidates: 2, phase: 'resolving' },
+        { phase: 'peer-failed', summary: { count: 12, reasons: ['r'] } },
+      ]);
+      expect(embeddedLog.warn).toHaveBeenCalledWith(
+        '[RadicleEmbedded] Ignoring invalid clone progress event:',
+        expect.any(String)
+      );
+    });
+
+    test("cancelClone: the RID's progress clone, whose cancel settles it { cancelled: true }; none, { cancelled: false }", async () => {
+      await expect(embedded.cancelClone('rad:z1')).resolves.toEqual({ cancelled: false });
+      const done = embedded.cloneRepoWithProgress('rad:z1', 1234, () => {});
+      await new Promise((resolve) => setImmediate(resolve));
+      const [call] = calls;
+      expect(call.signal.aborted).toBe(false);
+      await expect(embedded.cancelClone('rad:z2')).resolves.toEqual({ cancelled: false });
+      await expect(embedded.cancelClone('rad:z1')).resolves.toEqual({ cancelled: true });
+      expect(call.signal.aborted).toBe(true);
+      // The node answers when the clone stops.
+      call.resolve({ cancelled: true });
+      await expect(done).resolves.toEqual({ cancelled: true });
+      await expect(embedded.cancelClone('rad:z1')).resolves.toEqual({ cancelled: false });
+    });
+
+    test('the add-on is never loaded for them', async () => {
+      await embedded.connectSeeds();
+      await embedded.cancelClone('rad:z1');
+      expect(embedded.getAddonPath()).toBeNull();
+    });
   });
 
   test("isStarted is the service node's: a generation that serves", () => {
