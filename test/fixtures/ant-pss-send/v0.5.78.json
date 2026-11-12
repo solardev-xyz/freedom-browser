@@ -5,8 +5,8 @@
     "Ant checks the recipient before the batch: a recipient it can parse gets the batch error, one it cannot gets \"invalid recipient public key\".",
     "The key is the public key of private key 0x1111...11 (32 bytes of 0x11)."
   ],
-  "ant": "antd/0.5.77",
-  "recordedAt": "2026-11-07",
+  "ant": "antd/0.5.78",
+  "recordedAt": "2026-11-11",
   "topic": "chat",
   "topicHex": "7d37ee8427bc4ef7fa6c30bba155020c46b01043618747ed07cb611ab74a11ee",
   "targets": "abcd",
