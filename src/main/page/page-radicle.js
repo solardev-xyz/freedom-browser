@@ -54,7 +54,7 @@ const RADICLE_PAGE_METHODS = Object.freeze([...RADICLE_READ_METHODS, ...RADICLE_
 
 // A method whose only use of the key comes before any wait: the answer is
 // checked against the key in the same run as it is made, with nothing to
-// resolve again.
+// resolve again. It is also the one read that needs no connection.
 const NO_WAIT = new Set(['radicle_getCapabilities']);
 
 // A keyless document's answer to a method that uses the key, as the chrome
@@ -64,7 +64,10 @@ const NO_ADDRESS = Object.freeze({
   message: 'This page has no address to connect from yet',
   data: Object.freeze({ reason: 'no_address' }),
 });
-// The chrome's answer to a rejected prompt (radicle-consent.js).
+// The chrome's answers, as its radicle-provider.js gave them: a method that
+// needs the connection, for a site without one, and a rejected prompt
+// (radicle-consent.js).
+const NOT_CONNECTED = Object.freeze({ code: 4100, message: 'Origin not authorized. Call radicle_requestAccess first.' });
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
 // executeRadicleMethod's answer while Radicle is off for this profile.
 const PROFILE_DISABLED = Object.freeze({
@@ -149,6 +152,8 @@ function createRadicleDispatchers(deps = {}) {
     // executeRadicleMethod's first run), one run: no other check can end
     // the binding in between.
     if (!context.holdsKey()) return error(NO_ADDRESS);
+    // The chrome refused an unconnected site first, with its own answer.
+    if (!NO_WAIT.has(method) && !getPermission(requester.key)) return error(NOT_CONNECTED);
     const out = await execute(method, params, requester.key);
     if (!NO_WAIT.has(method) && !(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     return out;
@@ -194,6 +199,7 @@ function createRadicleDispatchers(deps = {}) {
   async function disconnect(context) {
     const { requester } = context;
     if (!requester.key) return error(NO_ADDRESS);
+    if (!getPermission(requester.key)) return error(NOT_CONNECTED);
     return execute('radicle_disconnect', {}, requester.key);
   }
 

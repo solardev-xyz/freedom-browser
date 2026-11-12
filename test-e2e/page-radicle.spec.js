@@ -120,8 +120,7 @@ test('reads, connecting and disconnecting through main: main\'s prompt in the si
   await start(win, DAPP, 'refused', 'radicle_getNodeStatus');
   await expect.poll(() => outcome(win, DAPP, 'refused')).toEqual({
     code: 4100,
-    message: 'Origin not connected',
-    data: { reason: 'not_connected' },
+    message: 'Origin not authorized. Call radicle_requestAccess first.',
   });
 
   await start(win, DAPP, 'access', 'radicle_requestAccess');

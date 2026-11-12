@@ -82,7 +82,8 @@ const NO_ADDRESS = {
   error: { code: 4100, message: 'This page has no address to connect from yet', data: { reason: 'no_address' } },
 };
 const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
-const NOT_CONNECTED = { error: { code: 4100, message: 'Origin not connected', data: { reason: 'not_connected' } } };
+// The chrome's answer for a site without the connection, as main keeps it.
+const NOT_CONNECTED = { error: { code: 4100, message: 'Origin not authorized. Call radicle_requestAccess first.' } };
 const CAPABILITIES = (reason) => ({
   specVersion: '0.2',
   canUseNode: reason === null,
@@ -303,6 +304,10 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
       // Not connected: the reads that need the connection are refused.
       expect(await page.ask('radicle_getCapabilities')).toEqual({ result: CAPABILITIES('not-connected') });
       expect(await page.ask('radicle_getNodeStatus')).toEqual(NOT_CONNECTED);
+      expect(await page.ask('radicle_listSeededRepos')).toEqual(NOT_CONNECTED);
+      expect(await page.ask('radicle_disconnect')).toEqual(NOT_CONNECTED);
+      expect(manager.getConnections).not.toHaveBeenCalled();
+      expect(embedded.listSeededRepos).not.toHaveBeenCalled();
       connect(key);
       permissions.grantSigning(key);
       expect({ url, answer: await page.ask('radicle_getCapabilities') }).toEqual({ url, answer: { result: CAPABILITIES(null) } });
@@ -310,6 +315,7 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
         result: { running: true, status: 'running', peers: 3, alias: 'me', nid: 'z6MkTest' },
       });
       expect(await page.ask('radicle_listSeededRepos')).toEqual({ result: [{ rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }] });
+      jest.clearAllMocks();
       // Another key's grant is never this page's.
       expect(permissions.getPermission(key).lastUsed).toEqual(expect.any(Number));
     }
