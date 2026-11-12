@@ -42,6 +42,7 @@ const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focu
 const { isProfileLocked } = require('./profile-lock');
 const { withCoreGate } = require('./core/core-gate');
 const { withIpfsGate } = require('./ipfs/ipfsd-gate');
+const { withRadicleGate } = require('./radicle/radicled-gate');
 const { relaunchArgs } = require('./launch-urls');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
@@ -614,10 +615,12 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
     // It is removed under every gate it has, the core's first: its core
     // still running on its identity directory fails the delete (freedom-core
     // design 0001, "Lifetime lock"; core/core-gate.js), and so does a writer
-    // holding its IPFS data directory's gate (design 0007; ipfs/ipfsd-gate.js).
+    // holding its IPFS data directory's gate (design 0007; ipfs/ipfsd-gate.js)
+    // or its Radicle home's (design 0008; radicle/radicled-gate.js).
     const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName, {
       withCoreGate,
       withIpfsGate,
+      withRadicleGate,
     });
     if (!result) {
       return failure(

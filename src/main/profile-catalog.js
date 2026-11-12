@@ -1027,6 +1027,21 @@ async function gatedPlace(dataRoot, gatedDirs, { otherRoots = [], radicle = null
   return { root, nodes, fences };
 }
 
+/**
+ * The Radicle home's fence, for a delete that holds its gate (freedom-core
+ * design 0008, "Spawn and lock"; 0013, "Deletion"): the catalog profile's
+ * home (`radicle.dir`, `R/<slot>`), outside the profile's directory, which
+ * the fence moves aside with the gated directories inside it
+ * (fenceAndCommit). Its path must be free of links at every step below its
+ * app-owned base (`radicle.base`), as gatedPlace requires, so the move and
+ * the removal reach the directory its gate covers; anything else is refused
+ * before anything changes.
+ */
+async function radicleHomeFence(radicle, gate) {
+  await refuseLinksBelow(radicle.base, radicle.dir);
+  return { dir: radicle.dir, what: 'Radicle data', gate };
+}
+
 // Which of `place`'s directories on the way to a gated one a directory is,
 // by identity (-1 for none): the data root's is 0. A gated directory itself
 // is never walked into.
@@ -1079,7 +1094,8 @@ async function removeSparing(dir, place, index, { skip = null, keepRoot = false 
 }
 
 // What a delete's callback gets where no gate is held (a development build
-// without freedom-cored or freedom-ipfsd).
+// without freedom-cored, freedom-ipfsd or freedom-radicled, or a profile
+// with no Radicle home of its own).
 const UNGATED = Object.freeze({ gated: false, held: () => false });
 
 // Whether a gate the delete took has been lost since: its holder ended
@@ -1128,10 +1144,12 @@ function moveBack(moved, cause) {
 
 /**
  * The delete's first change, made under every gate it holds (freedom-core
- * designs 0001 and 0007, "Lifetime lock"): each gated directory (`fences`,
- * gatedPlace) moves aside to its tombstone (`tombstoneOf`), and `commit`
- * drops the profile from the catalog. The gates are checked first, the
- * core's first, and the moves and `commit` follow with nothing awaited: a
+ * designs 0001 and 0007, "Lifetime lock"; 0008, "Spawn and lock"): each
+ * gated directory (`fences`: gatedPlace's, then the Radicle home's,
+ * radicleHomeFence) moves aside to its tombstone (`tombstoneOf`), and
+ * `commit` drops the profile from the catalog. Resolves to the moves, each
+ * fence with its `tombstone`. The gates are checked first, the core's
+ * first, and the moves and `commit` follow with nothing awaited: a
  * gate lost before then fails the delete with nothing changed. A move or
  * `commit` that fails has the moves before it put back in that same step
  * (`moveBack`); a Windows refusal (FENCE_RETRY_CODES) is waited out and the
@@ -1145,7 +1163,7 @@ function moveBack(moved, cause) {
  * (reportLostGates). The tombstones go with the rest. What remains is the
  * moment between a holder ending and main hearing of it.
  */
-async function fenceAndCommit(fences, { coreGate, ipfsGate }, commit) {
+async function fenceAndCommit(fences, { coreGate, ipfsGate, radicleGate = UNGATED }, commit) {
   const moves = fences.map((fence) => ({ ...fence, tombstone: tombstoneOf(fence.dir) }));
   for (let attempt = 1; ; attempt += 1) {
     if (gateLost(coreGate)) {
@@ -1153,6 +1171,9 @@ async function fenceAndCommit(fences, { coreGate, ipfsGate }, commit) {
     }
     if (gateLost(ipfsGate)) {
       throw new Error("The IPFS data directory's lock was lost; nothing was deleted");
+    }
+    if (gateLost(radicleGate)) {
+      throw new Error("The Radicle home's lock was lost; nothing was deleted");
     }
     const moved = [];
     try {
@@ -1165,7 +1186,7 @@ async function fenceAndCommit(fences, { coreGate, ipfsGate }, commit) {
         }
       }
       commit();
-      return;
+      return moves;
     } catch (err) {
       moveBack(moved, err);
       if (!FENCE_RETRY_CODES.has(err.code) || attempt >= FENCE_ATTEMPTS) throw err;
@@ -1200,13 +1221,19 @@ function removeEmptyRemade(place, { keepRoot = false } = {}) {
 const LOST_GATES = [
   ['coreGate', 'core lock', 'identity directory'],
   ['ipfsGate', 'IPFS data lock', 'IPFS data directory'],
+  ['radicleGate', 'Radicle home lock', 'Radicle home'],
 ];
+
+// "a", "a and b", "a, b and c".
+function listed(names) {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+}
 
 function reportLostGates(gates) {
   const lost = LOST_GATES.filter(([key]) => gateLost(gates[key]));
   if (lost.length === 0) return;
-  const locks = lost.map(([, lock]) => lock).join(' and ');
-  const dirs = lost.map(([, , dir]) => dir).join(' and ');
+  const locks = listed(lost.map(([, lock]) => lock));
+  const dirs = listed(lost.map(([, , dir]) => dir));
   const [were, them] = lost.length > 1 ? ['were', 'them'] : ['was', 'it'];
   throw new Error(
     `The profile was deleted, but its ${locks} ${were} lost during the delete. A process ` +
@@ -1295,9 +1322,17 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
     // the add-on under hold-lock) fails the delete before anything is
     // changed, rather than having its directory removed under it.
     //
+    // A catalog profile's Radicle home (`R/<slot>`, outside its directory)
+    // goes under freedom-radicled's gate (design 0008, "Spawn and lock"):
+    // `withRadicleGate(dir, fn)` holds it while `fn` runs, so a writer that
+    // holds it (the service, the add-on under hold-lock, the core writing
+    // an identity there) fails the delete before anything is changed. Taken
+    // last: the core's lifetime lock, then the nodes' gates. This is main's
+    // interim for design 0013's "Deletion", which holds every gate.
+    //
     // A gate is held for the whole delete only while its holder lives. So
-    // under both, each gated directory moves aside before anything else
-    // changes (fenceAndCommit), and a holder lost after that leaves the
+    // under all of them, each gated directory moves aside before anything
+    // else changes (fenceAndCommit), and a holder lost after that leaves the
     // removal nothing of a new holder's to reach: a core started meanwhile
     // finds a new, empty identity directory, which is spared, and the delete
     // reports the loss.
@@ -1313,13 +1348,14 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       : null;
     const withCoreGate = options.withCoreGate ?? ((_dir, fn) => fn(UNGATED));
     const withIpfsGate = options.withIpfsGate ?? ((_dir, fn) => fn(UNGATED));
-    const removeUnderGates = async (coreGate, ipfsGate) => {
-      // Held: the layout must be the app's own (gatedPlace refuses anything
-      // else, before any change); each gated directory moves aside as the
-      // catalog changes, in one step under both gates (fenceAndCommit); and
-      // the removal never touches one again under any name, sparing any
-      // directory made again in its place (removeSparing). Without a gate,
-      // today's removal, unchanged.
+    const withRadicleGate = options.withRadicleGate ?? ((_dir, fn) => fn(UNGATED));
+    const removeUnderGates = async (coreGate, ipfsGate, radicleGate) => {
+      // Held: the layout must be the app's own (gatedPlace and
+      // radicleHomeFence refuse anything else, before any change); each
+      // gated directory moves aside as the catalog changes, in one step
+      // under every gate (fenceAndCommit); and the removal never touches one
+      // again under any name, sparing any directory made again in its place
+      // (removeSparing). Without a gate, today's removal, unchanged.
       const gatedDirs = [];
       if (coreGate.gated) {
         gatedDirs.push({ dir: identityDir, what: 'identity data', gate: coreGate });
@@ -1337,7 +1373,11 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
         gatedDirs.length > 0
           ? await gatedPlace(dataRoot, gatedDirs, { otherRoots, radicle })
           : null;
-      await fenceAndCommit(place?.fences ?? [], { coreGate, ipfsGate }, () => {
+      const radicleFence =
+        radicleGate.gated && radicle ? await radicleHomeFence(radicle, radicleGate) : null;
+      const fences = [...(place?.fences ?? []), ...(radicleFence ? [radicleFence] : [])];
+      const gates = { coreGate, ipfsGate, radicleGate };
+      const moves = await fenceAndCommit(fences, gates, () => {
         catalog.profiles.splice(recordIndex, 1);
         try {
           saveCatalog(appRoot, catalog);
@@ -1365,15 +1405,17 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
        * otherwise a later profile that reuses the freed slot could inherit the old
        * Radicle identity, node database, and seeded repository state.
        *
-       * It isn't one of the gated directories the fence moves. The profile's
-       * core writes it only when main asks, or to finish a journal from its
-       * identity directory, which the fence has moved: a core started since,
-       * on a new, empty identity directory, has no vault and no journal, so
-       * nothing of its own to write here. freedom-radicled's home gate
-       * (design 0013) is what will cover it.
+       * Under freedom-radicled's gate, the fence has moved it aside
+       * (radicleHomeFence), and its tombstone goes; a home made again since
+       * is spared. Without that gate (a development build without the
+       * binary), it goes by its path, as before.
        */
       if (resolvedRadicleDir) {
-        await fsOffload.removePath(resolvedRadicleDir, { recursive: true, force: true });
+        const fenced = radicleFence && moves.find((move) => move.gate === radicleGate);
+        await fsOffload.removePath(fenced ? fenced.tombstone : resolvedRadicleDir, {
+          recursive: true,
+          force: true,
+        });
         // Also any staging copy an interrupted legacy `radicle-data/` carry-over
         // left next to it (profile-paths.js, `<slot>.migrating-<pid>-<ts>`) —
         // otherwise its GBs outlive the profile.
@@ -1381,14 +1423,32 @@ async function deleteProfile(appRoot, profileId, expectedDisplayName, options = 
       }
 
       if (place) removeEmptyRemade(place, { keepRoot: sharesAppRoot });
-      reportLostGates({ coreGate, ipfsGate });
+      // A Radicle home made again since the fence, under its gate still
+      // held: a start that waited out the gate made it, empty (hold-lock and
+      // serve do). Under a gate lost meanwhile, it may be a new holder's,
+      // and stays.
+      if (radicleFence?.gate.held()) {
+        try {
+          fs.rmdirSync(radicleFence.dir);
+        } catch {
+          // Not there, or not empty.
+        }
+      }
+      reportLostGates(gates);
       return {
         catalog,
         record,
       };
     };
+    // Only a catalog profile with a slot has a Radicle home of its own.
+    const underRadicleGate = (fn) =>
+      resolvedRadicleDir ? withRadicleGate(resolvedRadicleDir, fn) : fn(UNGATED);
     return withCoreGate(identityDir, (coreGate = UNGATED) =>
-      withIpfsGate(ipfsDataDir, (ipfsGate = UNGATED) => removeUnderGates(coreGate, ipfsGate))
+      withIpfsGate(ipfsDataDir, (ipfsGate = UNGATED) =>
+        underRadicleGate((radicleGate = UNGATED) =>
+          removeUnderGates(coreGate, ipfsGate, radicleGate)
+        )
+      )
     );
   });
 }

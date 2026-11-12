@@ -723,6 +723,46 @@ describe('profile resolver', () => {
     expect(fs.existsSync(created.record.dir)).toBe(false);
   });
 
+  // freedom-core design 0008, "Spawn and lock": the caller's gate on the
+  // profile's Radicle home (`R/<slot>`) is taken last, under the others.
+  test("deletes under the caller's Radicle gate, on the profile's R/<slot> home, after the other gates", async () => {
+    const userDataDir = track(makeTempDir());
+    const app = createAppMock({ isPackaged: true, userDataDir });
+    const {
+      createProfileForActiveApp,
+      deleteProfileForActiveApp,
+      getActiveProfile,
+      initializeProfile,
+    } = require('./profile-resolver');
+    initializeProfile(app, { argv: ['electron', '.'], env: {}, now: '2026-05-25T00:00:00.000Z' });
+    const created = createProfileForActiveApp({ displayName: 'Work' });
+    const radicleDir = path.join(getActiveProfile().appRoot, 'R', String(created.record.slot));
+    fs.mkdirSync(path.join(radicleDir, 'storage'), { recursive: true });
+    const order = [];
+    const gate = (name) =>
+      jest.fn(async (dir, fn) => {
+        order.push({ gate: name, dir });
+        return fn();
+      });
+    const withCoreGate = gate('core');
+    const withIpfsGate = gate('ipfs');
+    const withRadicleGate = jest.fn(async (dir, fn) => {
+      order.push({ gate: 'radicle', dir, present: fs.existsSync(radicleDir) });
+      return fn({ gated: true, held: () => true });
+    });
+
+    await deleteProfileForActiveApp('work', 'Work', {
+      withCoreGate,
+      withIpfsGate,
+      withRadicleGate,
+    });
+
+    expect(order.map((entry) => entry.gate)).toEqual(['core', 'ipfs', 'radicle']);
+    expect(order[2]).toEqual({ gate: 'radicle', dir: radicleDir, present: true });
+    expect(fs.existsSync(created.record.dir)).toBe(false);
+    expect(fs.existsSync(radicleDir)).toBe(false);
+  });
+
   // #124: once another profile exists, the default one can be deleted, and
   // nothing that used to assume it exists may bring it back.
   test('deletes the packaged default profile from another profile and never resurrects it', async () => {

@@ -73,6 +73,13 @@ jest.mock('../radicle-embedded', () => ({
   identity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   getVersion: jest.fn(() => '0.8.0'),
 }));
+// The home's gate (radicled-gate.js) stays out of it: a development build
+// without freedom-radicled, which goes on ungated.
+jest.mock('./radicled-gate', () => ({
+  takeRadicleGate: async () => null,
+  withRadicleGate: async (_home, fn) => fn({ gated: false, held: () => false }),
+  switchedHomeRefusal: () => null,
+}));
 jest.mock('./radicle-permissions', () => ({
   getPermission: jest.fn(),
   hasSigningGrant: jest.fn(() => true),

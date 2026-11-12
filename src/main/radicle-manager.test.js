@@ -47,6 +47,44 @@ function loadManager(options = {}) {
   };
   const statusSend = jest.fn();
   const windows = options.windows || [{ webContents: { send: statusSend } }];
+  // freedom-radicled's hold-lock on the home (radicle/radicled-gate.js),
+  // faked: a take resolves to a hold at once, as an uncontended holder's
+  // does, after `options.gateTake({ home, signal })` if given (which may
+  // wait, or throw another writer's refusal); an aborted signal gives it up,
+  // as hold-lock.js's does. `gate.holds` is every hold taken, and
+  // `gate.events` each take and release, in order.
+  const gate = { holds: [], events: [] };
+  const gateError = (code, message) =>
+    Object.assign(new Error(message), { name: 'RadicleGateError', code });
+  const takeRadicleGate = jest.fn(async (home, { signal = null, onLost = null } = {}) => {
+    if (signal?.aborted) throw gateError('cancelled', "Taking the Radicle home's lock was cancelled");
+    if (options.gateTake) await options.gateTake({ home, signal, gateError });
+    const hold = {
+      home,
+      released: false,
+      lost: false,
+      release: jest.fn(async () => {
+        if (!hold.released) gate.events.push('release');
+        hold.released = true;
+      }),
+      // Its holder ends unreleased (killed).
+      lose: () => {
+        hold.lost = true;
+        onLost?.({ code: null, signal: 'SIGKILL' });
+      },
+    };
+    gate.holds.push(hold);
+    gate.events.push('take');
+    return hold;
+  });
+  const withRadicleGate = jest.fn(async (home, fn) => {
+    const hold = await takeRadicleGate(home);
+    try {
+      return await fn({ gated: true, held: () => !hold.lost });
+    } finally {
+      await hold.release();
+    }
+  });
 
   // The real private-window registry decides who is private (R-9).
   const windowFixture = createPrivateWindowFixture();
@@ -72,6 +110,11 @@ function loadManager(options = {}) {
   }));
   jest.doMock('./radicle-embedded', () => embedded);
   jest.doMock('./service-registry', () => registry);
+  jest.doMock('./radicle/radicled-gate', () => ({
+    ...jest.requireActual('./radicle/radicled-gate'),
+    takeRadicleGate,
+    withRadicleGate,
+  }));
 
   const mod = require('./radicle-manager');
   // The core has started and reported no pending node recovery.
@@ -85,6 +128,9 @@ function loadManager(options = {}) {
     handlers,
     dataDir,
     statusSend,
+    gate,
+    takeRadicleGate,
+    withRadicleGate,
     lookup: windowFixture.lookup,
     publicSender: windowFixture.publicSender,
     privateSender: () => windowFixture.privateSender(privateWindows),
@@ -281,10 +327,11 @@ test('a stop during native startup shuts the completed runtime down once', async
   const start = jest.fn(() => new Promise((resolve) => { finishStart = resolve; }));
   const ctx = loadManager({ embedded: { start } });
   const starting = ctx.mod.startRadicle();
-  const stopping = ctx.mod.stopRadicle();
-  // Startup awaits the Radicle home first (prepareRadicleDataDir), so give it
-  // a few microtask turns to reach embedded.start.
+  // Startup awaits the Radicle home first (prepareRadicleDataDir), then its
+  // gate, so give it a few microtask turns to reach embedded.start. A stop
+  // asked for before then gives the start up instead (below).
   for (let i = 0; i < 20 && !finishStart; i += 1) await Promise.resolve();
+  const stopping = ctx.mod.stopRadicle();
   finishStart({ did: 'did:key:z6MkNative' });
   await Promise.all([starting, stopping]);
   expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
@@ -831,5 +878,288 @@ describe('re-key critical section (R-8)', () => {
     expect(ctx.mod.getCurrentStatus().status).toBe('running');
     await ctx.mod.stopRadicle();
     fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+});
+
+// freedom-core design 0008, "Spawn and lock" and Rollback: the add-on is a
+// writer the home's gate excludes, as the service is. It holds the gate from
+// before its start until its shutdown proves it stopped; the alias rewrite
+// holds it with the node stopped; and the add-on never starts on a home the
+// service has switched.
+describe("the Radicle home's gate", () => {
+  const flush = async (rounds = 20) => {
+    for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  // The wrapper's ordering (radicle-embedded.js), with each call recorded in
+  // `ctx.gate.events` beside the gate's takes and releases.
+  function modelNode(ctx, { shutdownFails = false } = {}) {
+    const node = { started: false };
+    ctx.embedded.isStarted.mockImplementation(() => node.started);
+    ctx.embedded.start.mockImplementation(async () => {
+      ctx.gate.events.push('start');
+      node.started = true;
+      return { did: 'did:key:z6MkNative' };
+    });
+    ctx.embedded.shutdown.mockImplementation(async () => {
+      if (!node.started) return { ok: true };
+      ctx.gate.events.push('shutdown');
+      if (node.shutdownFails ?? shutdownFails) throw new Error('shutdown failed');
+      node.started = false;
+      return { ok: true };
+    });
+    return node;
+  }
+
+  test('the add-on holds it on its home from before its start until its proved shutdown', async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+    expect(ctx.takeRadicleGate).toHaveBeenCalledWith(ctx.dataDir, expect.any(Object));
+    expect(ctx.gate.events).toEqual(['take', 'start']);
+
+    await expect(ctx.mod.stopRadicle()).resolves.toEqual({ status: 'stopped', error: null });
+    expect(ctx.gate.events).toEqual(['take', 'start', 'shutdown', 'release']);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a shutdown that proves nothing keeps the gate; a later proved one lets it go', async () => {
+    const ctx = loadManager();
+    const node = modelNode(ctx, { shutdownFails: true });
+    await ctx.mod.startRadicle();
+
+    await expect(ctx.mod.stopRadicle()).resolves.toEqual({
+      status: 'error',
+      error: 'shutdown failed',
+    });
+    expect(ctx.gate.holds[0].released).toBe(false);
+
+    node.shutdownFails = false;
+    await expect(ctx.mod.stopRadicle()).resolves.toEqual({ status: 'stopped', error: null });
+    expect(ctx.gate.holds[0].released).toBe(true);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('the add-on is refused while another writer (a service) holds the home', async () => {
+    const held = 'The Radicle data is in use by another process. Close it and try again.';
+    const ctx = loadManager({
+      gateTake: async ({ gateError }) => {
+        throw gateError('lock_held', held);
+      },
+    });
+    modelNode(ctx);
+
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'error', error: held });
+    expect(ctx.embedded.start).not.toHaveBeenCalled();
+    expect(ctx.registry.updateService).not.toHaveBeenCalledWith(
+      'radicle',
+      expect.objectContaining({ mode: 'embedded' })
+    );
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test("a stop gives up a start waiting out another writer's gate, at once", async () => {
+    let waiting = null;
+    const ctx = loadManager({
+      // hold-lock retrying against another holder, until the signal.
+      gateTake: ({ signal, gateError }) =>
+        new Promise((_resolve, reject) => {
+          waiting = true;
+          signal.addEventListener('abort', () =>
+            reject(gateError('cancelled', "Taking the Radicle home's lock was cancelled"))
+          );
+        }),
+    });
+    modelNode(ctx);
+
+    const starting = ctx.mod.startRadicle();
+    await flush();
+    expect(waiting).toBe(true);
+    const stopping = ctx.mod.stopRadicle();
+
+    await expect(starting).resolves.toEqual({ status: 'stopped', error: null });
+    await expect(stopping).resolves.toEqual({ status: 'stopped', error: null });
+    expect(ctx.embedded.start).not.toHaveBeenCalled();
+    expect(ctx.gate.holds).toEqual([]);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a stop asked for in the same turn as a start gives the start up before its gate wait', async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+
+    const starting = ctx.mod.startRadicle();
+    const stopping = ctx.mod.stopRadicle();
+
+    await expect(starting).resolves.toEqual({ status: 'stopped', error: null });
+    await expect(stopping).resolves.toEqual({ status: 'stopped', error: null });
+    expect(ctx.embedded.start).not.toHaveBeenCalled();
+    expect(ctx.gate.holds).toEqual([]);
+    // A start asked for after the stop runs.
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+    await ctx.mod.stopRadicle();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a start that fails lets its gate go', async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    ctx.embedded.start.mockRejectedValueOnce(new Error('storage is locked'));
+
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({
+      status: 'error',
+      error: 'storage is locked',
+    });
+    expect(ctx.gate.events).toEqual(['take', 'release']);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test("a gate lost under the running node stops it, with the loss as its error", async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    await ctx.mod.startRadicle();
+
+    ctx.gate.holds[0].lose();
+    await flush();
+
+    expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
+    expect(ctx.mod.getCurrentStatus()).toEqual({
+      status: 'error',
+      error: 'freedom-radicled hold-lock exited',
+    });
+    // A start takes the gate again.
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+    expect(ctx.gate.holds).toHaveLength(2);
+    await ctx.mod.stopRadicle();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('a gate lost while the node starts: it never runs ungated', async () => {
+    const ctx = loadManager();
+    const node = modelNode(ctx);
+    ctx.embedded.start.mockImplementationOnce(async () => {
+      ctx.gate.holds[0].lose();
+      node.started = true;
+      return { did: 'did:key:z6MkNative' };
+    });
+
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({
+      status: 'error',
+      error: 'freedom-radicled hold-lock exited',
+    });
+    expect(ctx.embedded.shutdown).toHaveBeenCalledTimes(1);
+    expect(node.started).toBe(false);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('the alias is written under the gate, with the node stopped, and the node restarts', async () => {
+    const ctx = loadManager();
+    const node = modelNode(ctx);
+    await ctx.mod.startRadicle();
+    const configPath = path.join(ctx.dataDir, 'config.json');
+    ctx.withRadicleGate.mockImplementationOnce(async (home, fn) => {
+      // The node has stopped, and let its own gate go, before this is taken.
+      expect(home).toBe(ctx.dataDir);
+      expect(node.started).toBe(false);
+      expect(ctx.gate.holds.every((hold) => hold.released)).toBe(true);
+      ctx.gate.events.push('alias gate');
+      const result = await fn({ gated: true, held: () => true });
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).node.alias).toBe('renamed');
+      ctx.gate.events.push('alias released');
+      return result;
+    });
+
+    await expect(ctx.mod.setNodeAlias('renamed')).resolves.toEqual(
+      expect.objectContaining({ success: true })
+    );
+    expect(ctx.gate.events).toEqual([
+      'take',
+      'start',
+      'shutdown',
+      'release',
+      'alias gate',
+      'alias released',
+      'take',
+      'start',
+    ]);
+    await ctx.mod.stopRadicle();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test('an alias rewrite refused by another holder of the gate writes nothing', async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    const held = 'The Radicle data is in use by another process. Close it and try again.';
+    ctx.withRadicleGate.mockImplementationOnce(async () => {
+      throw Object.assign(new Error(held), { name: 'RadicleGateError', code: 'lock_held' });
+    });
+
+    await expect(ctx.mod.setNodeAlias('renamed')).resolves.toMatchObject({
+      success: false,
+      error: { code: 'ALIAS_WRITE_FAILED', message: held },
+    });
+    expect(fs.existsSync(path.join(ctx.dataDir, 'config.json'))).toBe(false);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  test("an alias rewrite whose gate is lost before the write doesn't write", async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    ctx.withRadicleGate.mockImplementationOnce(async (_home, fn) =>
+      fn({ gated: true, held: () => false })
+    );
+
+    await expect(ctx.mod.setNodeAlias('renamed')).resolves.toMatchObject({
+      success: false,
+      error: {
+        code: 'ALIAS_WRITE_FAILED',
+        message: "The Radicle home's lock was lost; the alias was not written",
+      },
+    });
+    expect(fs.existsSync(path.join(ctx.dataDir, 'config.json'))).toBe(false);
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  describe('a home the service has switched', () => {
+    const { SWITCHED_HOME_MESSAGE } = jest.requireActual('./radicle/radicled-gate');
+    const write = (home, rel, content = '') => {
+      fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true });
+      fs.writeFileSync(path.join(home, rel), content);
+    };
+
+    test.each([
+      ['its reconciliation record', 'node/reconcile.db'],
+      ['the dirty marker the switch leaves', 'node/dirty'],
+    ])('without keys/radicle, and with %s: the add-on is refused, under the gate', async (_what, rel) => {
+      const ctx = loadManager();
+      modelNode(ctx);
+      write(ctx.dataDir, rel);
+
+      await expect(ctx.mod.startRadicle()).resolves.toEqual({
+        status: 'error',
+        error: SWITCHED_HOME_MESSAGE,
+      });
+      expect(ctx.embedded.start).not.toHaveBeenCalled();
+      expect(ctx.gate.events).toEqual(['take', 'release']);
+      fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+    });
+
+    test.each([
+      ['a home the service never ran (a profile without a vault)', []],
+      ['a home with keys/radicle, where the service has run', ['keys/radicle', 'node/reconcile.db']],
+    ])('%s: the add-on starts', async (_what, files) => {
+      const ctx = loadManager();
+      modelNode(ctx);
+      for (const rel of files) write(ctx.dataDir, rel, 'x');
+      if (files.includes('keys/radicle')) {
+        fs.chmodSync(path.join(ctx.dataDir, 'keys'), 0o700);
+        fs.chmodSync(path.join(ctx.dataDir, 'keys', 'radicle'), 0o600);
+      }
+
+      await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+      await ctx.mod.stopRadicle();
+      fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+    });
   });
 });
