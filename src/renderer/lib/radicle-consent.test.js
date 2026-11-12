@@ -1,8 +1,7 @@
 /**
- * Tests for the Radicle consent subscreen — specifically the owner binding:
- * a pending prompt is owned by the webview whose document requested it, and
- * dismissRadicleConsent(owner) rejects it only for that owner (used when the
- * requesting document navigates away or its tab closes).
+ * Tests for the Radicle consent subscreen: it renders main's prompts for a
+ * page's window.radicle requests (freedom-core design 0011) and answers
+ * them by handle.
  */
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
@@ -49,215 +48,6 @@ const loadConsent = async () => {
 
   return { mod, elementsById, sidebarMocks, walletStateMocks, renderers };
 };
-
-describe('radicle-consent owner binding', () => {
-  afterEach(() => {
-    global.document = originalDocument;
-    jest.restoreAllMocks();
-  });
-
-  test('dismissRadicleConsent(owner) rejects the pending prompt of that owner', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-
-    const promptPromise = mod.showRadicleConnect('https://app.example', owner);
-    mod.dismissRadicleConsent(owner);
-
-    await expect(promptPromise).rejects.toEqual({
-      code: 4001,
-      message: 'User rejected the request',
-    });
-    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(true);
-  });
-
-  test('dismissRadicleConsent with a different owner is a no-op', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-    const otherWebview = createElement('webview');
-
-    const promptPromise = mod.showRadicleSigningApproval('https://app.example', owner);
-    let settled = false;
-    promptPromise.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      }
-    );
-
-    mod.dismissRadicleConsent(otherWebview);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(settled).toBe(false);
-    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
-
-    // Approval still works afterwards — the prompt was untouched.
-    elementsById['radicle-consent-approve'].dispatch('click');
-    await expect(promptPromise).resolves.toBeUndefined();
-  });
-
-  test('dismissRadicleConsent without a pending prompt is a no-op', async () => {
-    const { mod } = await loadConsent();
-    expect(() => mod.dismissRadicleConsent(createElement('webview'))).not.toThrow();
-  });
-
-  test('the per-write prompt shows the exact content to be signed', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-
-    const promptPromise = mod.showRadicleSignedWriteApproval(
-      'https://app.example',
-      'radicle_createIssue',
-      { rid: 'rad:zExample', title: '<b>Bug</b>', description: 'Steps to reproduce' },
-      owner
-    );
-
-    expect(elementsById['radicle-consent-title'].textContent).toBe('Open this issue as you?');
-    expect(elementsById['radicle-consent-wants'].textContent).toBe(
-      'asks to open an issue in rad:zExample'
-    );
-    expect(elementsById['radicle-consent-allows'].children.map((li) => li.textContent)).toEqual([
-      'Title: <b>Bug</b>',
-      'Description: Steps to reproduce',
-    ]);
-    const warning = elementsById['radicle-consent-warning'].textContent;
-    expect(warning).toContain('signed with your Radicle identity');
-    expect(warning).toContain('public and permanent');
-    expect(warning).not.toContain('Freedom Agent');
-    expect(elementsById['radicle-consent-approve'].textContent).toBe('Open issue');
-    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
-    // The site's "always allow writes" rule is offered, off.
-    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(false);
-    expect(elementsById['radicle-consent-always-label'].textContent).toContain('Always allow');
-    expect(elementsById['radicle-consent-always'].checked).toBe(false);
-
-    elementsById['radicle-consent-approve'].dispatch('click');
-    await expect(promptPromise).resolves.toEqual({ alwaysAllow: false });
-    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
-  });
-
-  test('the per-write prompt reports the "always allow" checkbox as approved', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-    const params = { rid: 'rad:zExample', issueId: 'cccc', body: 'Hi' };
-
-    // Shown because main's limit stopped an automatic write: the box is checked.
-    let promptPromise = mod.showRadicleSignedWriteApproval(
-      'https://app.example',
-      'radicle_commentIssue',
-      params,
-      owner,
-      { alwaysAllow: true }
-    );
-    expect(elementsById['radicle-consent-always'].checked).toBe(true);
-    elementsById['radicle-consent-always'].checked = false;
-    elementsById['radicle-consent-approve'].dispatch('click');
-    await expect(promptPromise).resolves.toEqual({ alwaysAllow: false });
-
-    promptPromise = mod.showRadicleSignedWriteApproval(
-      'https://app.example',
-      'radicle_commentIssue',
-      params,
-      owner
-    );
-    elementsById['radicle-consent-always'].checked = true;
-    elementsById['radicle-consent-approve'].dispatch('click');
-    await expect(promptPromise).resolves.toEqual({ alwaysAllow: true });
-  });
-
-  test('on a tab in Agent custody the per-write prompt offers no rule', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-
-    const promptPromise = mod.showRadicleSignedWriteApproval(
-      'https://app.example',
-      'radicle_createIssue',
-      { rid: 'rad:zExample', title: 'Bug', description: 'Steps' },
-      owner,
-      { agentHeld: true }
-    );
-
-    const warning = elementsById['radicle-consent-warning'].textContent;
-    expect(warning).toContain('Freedom Agent');
-    expect(warning).toContain('public and permanent');
-    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
-
-    elementsById['radicle-consent-approve'].dispatch('click');
-    await expect(promptPromise).resolves.toBeUndefined();
-  });
-
-  test('other prompts never show the "always allow" checkbox', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-
-    const promptPromise = mod.showRadicleSigningApproval('https://app.example', owner);
-    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
-    elementsById['radicle-consent-approve'].dispatch('click');
-    await expect(promptPromise).resolves.toBeUndefined();
-  });
-
-  test('the per-write prompt names every parameter main signs with', async () => {
-    const { mod, elementsById } = await loadConsent();
-    const owner = createElement('webview');
-    const lines = () => elementsById['radicle-consent-allows'].children.map((li) => li.textContent);
-    const show = (method, params) => {
-      const promptPromise = mod.showRadicleSignedWriteApproval(
-        'https://app.example',
-        method,
-        params,
-        owner
-      );
-      const seen = {
-        title: elementsById['radicle-consent-title'].textContent,
-        wants: elementsById['radicle-consent-wants'].textContent,
-        allows: lines(),
-      };
-      elementsById['radicle-consent-approve'].dispatch('click');
-      return promptPromise.then(() => seen);
-    };
-
-    // commentPatch is signed against revisionId when given, not patchId.
-    const patch = await show('radicle_commentPatch', {
-      rid: 'rad:zExample',
-      patchId: 'aaaa',
-      revisionId: 'bbbb',
-      body: 'LGTM',
-    });
-    expect(patch.wants).toBe(
-      'asks to comment on revision bbbb (the page says it belongs to patch aaaa) in rad:zExample'
-    );
-    expect(patch.allows).toEqual(['Comment: LGTM']);
-    const plainPatch = await show('radicle_commentPatch', {
-      rid: 'rad:zExample',
-      patchId: 'aaaa',
-      body: 'x',
-    });
-    expect(plainPatch.wants).toBe('asks to comment on patch aaaa in rad:zExample');
-
-    const labelled = await show('radicle_createIssue', {
-      rid: 'rad:zExample',
-      title: 'T',
-      description: 'D',
-      labels: ['bug', 'a, b'],
-    });
-    expect(labelled.allows).toEqual(['Title: T', 'Description: D', 'Label: bug', 'Label: a, b']);
-
-    const reply = await show('radicle_commentIssue', {
-      rid: 'rad:zExample',
-      issueId: 'cccc',
-      body: 'Me too',
-      replyTo: 'dddd',
-    });
-    expect(reply.allows).toEqual(['Comment: Me too', 'In reply to comment dddd']);
-
-    // An unknown signed write never borrows another method's summary.
-    const unknown = await show('radicle_somethingNew', { rid: 'rad:zExample', x: 1 });
-    expect(unknown.title).toBe('Sign this as you?');
-    expect(unknown.allows).toEqual(['Parameters: {"rid":"rad:zExample","x":1}']);
-  });
-});
 
 // freedom-core design 0011, PRQ-8a: main's own prompt for a page's request
 // (`radicle.connect`) shows in this screen, from main's site and view, and
@@ -336,8 +126,8 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
     expect(window.pagePrompts.decide).not.toHaveBeenCalled();
   });
 
-  test('another screen taking the sidebar reports main\'s prompt displaced, and an old-path prompt on screen makes it wait', async () => {
-    const { mod, walletStateMocks, renderers } = await loadConsent();
+  test('another screen taking the sidebar reports main\'s prompt displaced', async () => {
+    const { walletStateMocks, renderers } = await loadConsent();
     const displaced = [];
     renderers.onPagePromptDisplaced((handle) => displaced.push(handle));
     const renderer = renderers.pagePromptRenderer('radicle.connect');
@@ -349,15 +139,6 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
     expect(displaced).toEqual([PROMPT.handle]);
     expect(renderer.isShowing()).toBeNull();
     expect(window.pagePrompts.decide).not.toHaveBeenCalled();
-
-    // A prompt of the chrome's own path on screen: main's waits.
-    const owner = {};
-    const old = mod.showRadicleSigningApproval('https://app.example', owner);
-    renderer.show({ ...PROMPT, handle: 'k'.repeat(64) });
-    expect(displaced).toEqual([PROMPT.handle, 'k'.repeat(64)]);
-    expect(renderer.isShowing()).toBeNull();
-    mod.dismissRadicleConsent(owner);
-    await expect(old).rejects.toEqual({ code: 4001, message: 'User rejected the request' });
   });
 
   // PRQ-8b: a seed or an unseed, naming its repository as main checked it.
@@ -413,15 +194,20 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
     renderer.show({
       ...PROMPT,
       kind: 'radicle.sign',
-      view: { mode: 'write', method: 'radicle_createIssue', rid, title: 'Bug', description: 'Steps', labels: ['ui'], agentHeld: false, alwaysAllow: true },
+      view: { mode: 'write', method: 'radicle_createIssue', rid, title: '<b>Bug</b>', description: 'Steps', labels: ['ui'], agentHeld: false, alwaysAllow: true },
     });
     expect(elementsById['radicle-consent-title'].textContent).toBe('Open this issue as you?');
     expect(elementsById['radicle-consent-wants'].textContent).toBe(`asks to open an issue in ${rid}`);
     expect(elementsById['radicle-consent-allows'].children.map((li) => li.textContent)).toEqual([
-      'Title: Bug',
+      'Title: <b>Bug</b>',
       'Description: Steps',
       'Label: ui',
     ]);
+    const warning = elementsById['radicle-consent-warning'].textContent;
+    expect(warning).toContain('signed with your Radicle identity');
+    expect(warning).toContain('public and permanent');
+    expect(warning).not.toContain('Freedom Agent');
+    expect(elementsById['radicle-consent-approve'].textContent).toBe('Open issue');
     expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(false);
     expect(elementsById['radicle-consent-always'].checked).toBe(true);
     elementsById['radicle-consent-always'].checked = false;
@@ -429,6 +215,67 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
     elementsById['radicle-consent-approve'].dispatch('click');
     expect(window.pagePrompts.decide).toHaveBeenCalledWith(PROMPT.handle, true, { alwaysAllow: false });
     expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+
+    // Off when the rule is off; the box the user checks is the answer.
+    const next = { ...PROMPT, handle: 'w'.repeat(64), kind: 'radicle.sign' };
+    renderer.show({ ...next, view: { mode: 'write', method: 'radicle_commentIssue', rid, issueId: 'cccc', body: 'Hi', agentHeld: false, alwaysAllow: false } });
+    expect(elementsById['radicle-consent-always'].checked).toBe(false);
+    elementsById['radicle-consent-always'].checked = true;
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenLastCalledWith(next.handle, true, { alwaysAllow: true });
+  });
+
+  test('radicle.sign in write mode names every parameter main signs with', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.sign');
+    let n = 0;
+    const show = (method, params) => {
+      n += 1;
+      renderer.show({ ...PROMPT, handle: String(n).repeat(64), kind: 'radicle.sign', view: { mode: 'write', method, ...params } });
+      return {
+        title: elementsById['radicle-consent-title'].textContent,
+        wants: elementsById['radicle-consent-wants'].textContent,
+        allows: elementsById['radicle-consent-allows'].children.map((li) => li.textContent),
+      };
+    };
+
+    // commentPatch is signed against revisionId when given, not patchId.
+    const patch = show('radicle_commentPatch', {
+      rid: 'rad:zExample',
+      patchId: 'aaaa',
+      revisionId: 'bbbb',
+      body: 'LGTM',
+    });
+    expect(patch.wants).toBe(
+      'asks to comment on revision bbbb (the page says it belongs to patch aaaa) in rad:zExample'
+    );
+    expect(patch.allows).toEqual(['Comment: LGTM']);
+    const plainPatch = show('radicle_commentPatch', { rid: 'rad:zExample', patchId: 'aaaa', body: 'x' });
+    expect(plainPatch.wants).toBe('asks to comment on patch aaaa in rad:zExample');
+
+    const labelled = show('radicle_createIssue', {
+      rid: 'rad:zExample',
+      title: 'T',
+      description: 'D',
+      labels: ['bug', 'a, b'],
+    });
+    expect(labelled.allows).toEqual(['Title: T', 'Description: D', 'Label: bug', 'Label: a, b']);
+
+    const reply = show('radicle_commentIssue', {
+      rid: 'rad:zExample',
+      issueId: 'cccc',
+      body: 'Me too',
+      replyTo: 'dddd',
+    });
+    expect(reply.allows).toEqual(['Comment: Me too', 'In reply to comment dddd']);
+
+    const state = show('radicle_editIssueState', { rid: 'rad:zExample', issueId: 'cccc', state: 'closed' });
+    expect(state).toEqual({
+      title: 'Change this issue as you?',
+      wants: 'asks to change issue cccc in rad:zExample',
+      allows: ['Set its state to closed'],
+    });
   });
 
   test('radicle.sign for a tab in Agent custody offers no rule, says so, and answers with no choice', async () => {
@@ -449,7 +296,7 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
   test('a radicle.sign view off its form shows nothing', async () => {
     const { elementsById, renderers } = await loadConsent();
     const renderer = renderers.pagePromptRenderer('radicle.sign');
-    for (const view of [{}, { mode: 'write', method: 'radicle_seed', rid: 'rad:z1' }, { mode: 'other' }]) {
+    for (const view of [{}, { mode: 'write', method: 'radicle_seed', rid: 'rad:z1' }, { mode: 'write', method: 'radicle_somethingNew', rid: 'rad:z1' }, { mode: 'other' }]) {
       renderer.show({ ...PROMPT, kind: 'radicle.sign', view });
       expect({ view, hidden: elementsById['sidebar-radicle-consent'].classList.contains('hidden') }).toEqual({ view, hidden: true });
     }
