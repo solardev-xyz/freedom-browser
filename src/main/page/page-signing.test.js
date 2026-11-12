@@ -668,6 +668,19 @@ describe("main's issuer: a page token only for a live record, bound to its handl
 describe("the site's rule, read by main for the request it holds", () => {
   const ruled = (env, key = KEY_A, walletIndex = 0) => env.connect(key, walletIndex, { autoApprove: { signing: true } });
 
+  test("a page's concurrent signatures under the rule all sign: none waits on a wallet slot", async () => {
+    const env = setup();
+    ruled(env);
+    const page = env.tab();
+    const answers = await Promise.all([
+      page.ask('personal_sign', [MESSAGE, ACCOUNT]),
+      page.ask('personal_sign', [MESSAGE, ACCOUNT]),
+      page.ask('eth_signTypedData_v4', [ACCOUNT, TYPED]),
+    ]);
+    expect(answers).toEqual([{ result: '0xmsgsig' }, { result: '0xmsgsig' }, { result: '0xtypedsig' }]);
+    expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+  });
+
   test('the rule answers with no prompt, and marks the site used', async () => {
     const env = setup();
     ruled(env);
@@ -1046,6 +1059,13 @@ describe("a Safe's message, in a session main owns", () => {
 describe('a tab the agent holds: its signature inside the request', () => {
   function withAgent(env, { withdrawOnAbort = false } = {}) {
     const approvals = [];
+    // The agent drives only tabs in its custody.
+    const realTab = env.tab;
+    env.tab = (...args) => {
+      const page = realTab(...args);
+      env.state.custody.add(page.guest.id);
+      return page;
+    };
     const controller = new AgentWalletController({
       identityManager: { getDerivedWallets: async () => env.state.wallets, getActiveWalletIndex: () => 0 },
       getPermission: (key) => env.state.permissions.get(key) || null,

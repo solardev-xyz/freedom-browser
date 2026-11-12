@@ -14,10 +14,10 @@
  *      connect from yet"). A DNS name over IPNS is checked again before the
  *      key is first used, after every wait, and just before the effect; a
  *      name that has moved answers as a keyless document's would.
- *   2. A tab the agent holds is answered by the agent service, within the
- *      request (`walletOperation`): it holds the document's wallet slot, is
- *      withdrawn when main answers the request, and signs only once main's
- *      checks pass just before the signature.
+ *   2. A tab in Agent custody is offered to the agent service, which
+ *      answers within the request (`walletOperation`): it holds the
+ *      document's wallet slot, is withdrawn when main answers the request,
+ *      and signs only once main's checks pass just before the signature.
  *   3. The site must be connected; a Safe signs only on Gnosis.
  *   4. The site's signing rule ("always allow"), read by main for the
  *      requester's key, is chosen only outside Agent custody, read live,
@@ -396,7 +396,10 @@ function createSigningDispatchers(shared, deps = {}) {
     const keyless = { keyless: error(NO_ADDRESS) };
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     // A tab the agent holds: the agent service answers, within the request.
-    const agent = await agentAnswer(context, keyless);
+    // Only a tab in custody is offered to it (the agent registers custody on
+    // every tab it drives), so a page's other requests, its rule-answered
+    // signatures among them, don't wait on the agent's wallet slot.
+    const agent = custody(requester.guest) ? await agentAnswer(context, keyless) : null;
     if (agent) return context.holdsKey() ? agent : error(NO_ADDRESS);
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     const permission = getPermission(requester.key);
