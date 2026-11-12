@@ -594,3 +594,57 @@ describe('signing-confirmation', () => {
     expect(_outstandingCount()).toBe(1);
   });
 });
+
+// freedom-core design 0011, "Approval tokens": the page kinds have one
+// issuer, main's page dispatcher, and their binding gains the prompt's handle
+// and the requester's attested key.
+describe('page tokens (0011 PRQ-5a)', () => {
+  const sc = require('./signing-confirmation');
+  const HANDLE = 'c'.repeat(64);
+  const SITE = 'https://app.example';
+  beforeEach(() => sc._reset());
+
+  test('the page kinds: a dApp send, a message, typed data, a Safe message, and a Safe send that names a site', () => {
+    for (const kind of ['dapp-send', 'sign-message', 'sign-typed-data', 'safe-message']) {
+      expect(sc.isPageKind(kind, {})).toBe(true);
+    }
+    expect(sc.isPageKind('safe-send', { origin: SITE })).toBe(true);
+    expect(sc.isPageKind('safe-send', {})).toBe(false);
+    for (const kind of ['wallet-send', 'intent-resend', 'intent-replace', 'intent-close', 'executor-send', 'x402-payment']) {
+      expect(sc.isPageKind(kind, { origin: SITE })).toBe(false);
+    }
+  });
+
+  test("main's issuer mints only a page kind, with its handle and key", () => {
+    expect(() => sc.issuePageConfirmation('wallet-send', 0, { chainId: 100, to: SITE }, { handle: HANDLE, key: SITE })).toThrow(
+      /Not a page confirmation kind/
+    );
+    expect(() => sc.issuePageConfirmation('safe-send', 0, { tx: { to: '0x01' }, chainId: 100 }, { handle: HANDLE, key: SITE })).toThrow(
+      /Not a page confirmation kind/
+    );
+    for (const page of [null, {}, { handle: HANDLE }, { key: SITE }, { handle: 'xyz', key: SITE }, { handle: HANDLE, key: '' }]) {
+      expect(() => sc.issuePageConfirmation('sign-message', 0, '0x68', page)).toThrow(/needs its/);
+    }
+    expect(sc._outstandingCount()).toBe(0);
+  });
+
+  test('a page token is spent once, for its handle, its key and its request', () => {
+    const page = { handle: HANDLE, key: SITE };
+    const mint = () => sc.issuePageConfirmation('sign-message', 0, '0x68', page).token;
+    expect(sc.consumePageConfirmation(mint(), 'sign-message', 0, '0x68', page)).toEqual({});
+    const token = mint();
+    sc.consumePageConfirmation(token, 'sign-message', 0, '0x68', page);
+    expect(() => sc.consumePageConfirmation(token, 'sign-message', 0, '0x68', page)).toThrow(/already used/);
+    for (const [index, payload, other] of [
+      [0, '0x68', { handle: 'd'.repeat(64), key: SITE }],
+      [0, '0x68', { handle: HANDLE, key: 'https://other.example' }],
+      [1, '0x68', page],
+      [0, '0x69', page],
+    ]) {
+      expect(() => sc.consumePageConfirmation(mint(), 'sign-message', index, payload, other)).toThrow(/differs/);
+    }
+    // Typed data keeps the core's hash, handed back when it is spent.
+    const typed = sc.issuePageConfirmation('sign-typed-data', 0, { a: 1 }, page, { hash: `0x${'ee'.repeat(32)}` });
+    expect(sc.consumePageConfirmation(typed.token, 'sign-typed-data', 0, { a: 1 }, page)).toEqual({ hash: `0x${'ee'.repeat(32)}` });
+  });
+});

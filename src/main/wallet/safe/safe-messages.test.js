@@ -637,3 +637,45 @@ describe('getSafeMessageState / cancelSafeMessage', () => {
     expect(discardSession(5)).toBe(false); // idempotent
   });
 });
+
+// freedom-core design 0011, PRQ-5a: a session main opens for a page's
+// request is main's to answer. Nothing resumes it, and the chrome can't
+// complete it: its board only collects the device owners' signatures.
+describe('a session main owns', () => {
+  const startOwned = (requester = TAB_A) =>
+    startSafeMessage({
+      safeIndex: 5,
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester,
+      owner: 'main',
+    });
+
+  test('the same request from the same page never resumes it', async () => {
+    const first = await startOwned();
+    await expect(startOwned()).rejects.toMatchObject({ code: SAFE_MESSAGE_EXISTS });
+    await expect(startPersonal()).rejects.toMatchObject({ code: SAFE_MESSAGE_EXISTS });
+    expect(getSafeMessageState(5, first.token)).not.toBeNull();
+  });
+
+  test("nor does a session main owns resume the chrome's", async () => {
+    const chromes = await startPersonal();
+    await expect(startOwned()).rejects.toMatchObject({ code: SAFE_MESSAGE_EXISTS });
+    expect(getSafeMessageState(5, chromes.token)).not.toBeNull();
+  });
+
+  test('the chrome may sign it on its board, but only main completes it', async () => {
+    const { token } = await startOwned();
+    await signSafeMessage(5, 2, token);
+    expect(() => completeSafeMessage(5, token, { chrome: true })).toThrow(/answered by the browser itself/);
+    expect(getSafeMessageState(5, token)).toMatchObject({ collected: 2 });
+    const { signature } = completeSafeMessage(5, token);
+    expect(signature).toBe(buildSignatureBytes([signatureOf(0), signatureOf(2)]));
+  });
+
+  test("the chrome's own session is still the chrome's to complete", async () => {
+    const { token } = await startPersonal();
+    await signSafeMessage(5, 2, token);
+    expect(completeSafeMessage(5, token, { chrome: true }).signature).toMatch(/^0x/);
+  });
+});

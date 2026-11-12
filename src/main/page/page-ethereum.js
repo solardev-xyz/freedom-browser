@@ -40,6 +40,12 @@
  *     chain. Name-revalidated: after the name has moved, it is refused with
  *     nothing changed.
  *
+ * Signing (PRQ-5a, `page-signing.js`): `personal_sign` and
+ * `eth_signTypedData_v4`, from every account kind, a Safe's messages
+ * included. Main reads the site's signing rule itself, with Agent custody
+ * read live, prompts otherwise (`eth.sign`), and mints and spends the
+ * approval's token with its own issuer.
+ *
  * A document with no key is refused both, as the chrome refused them:
  * "This page has no address to connect from yet".
  *
@@ -49,6 +55,7 @@
  */
 
 const { ETHEREUM_RPC_READS } = require('./page-methods');
+const { SIGNING_METHODS, createSigningDispatchers } = require('./page-signing');
 
 // What the chrome's getCurrentChainId falls back to: Gnosis.
 const FALLBACK_CHAIN_ID = 100;
@@ -73,8 +80,15 @@ const ETHEREUM_READ_METHODS = Object.freeze(['eth_chainId', 'net_version', 'eth_
 /** And PRQ-4's: connecting. */
 const ETHEREUM_CONNECT_METHODS = Object.freeze(['eth_requestAccounts', 'wallet_switchEthereumChain']);
 
+/** And PRQ-5a's: messages and typed data. */
+const ETHEREUM_SIGNING_METHODS = SIGNING_METHODS;
+
 /** Every method main's Ethereum dispatcher serves, and so the preload routes to main. */
-const ETHEREUM_PAGE_METHODS = Object.freeze([...ETHEREUM_READ_METHODS, ...ETHEREUM_CONNECT_METHODS]);
+const ETHEREUM_PAGE_METHODS = Object.freeze([
+  ...ETHEREUM_READ_METHODS,
+  ...ETHEREUM_CONNECT_METHODS,
+  ...ETHEREUM_SIGNING_METHODS,
+]);
 
 // How main reaches the agent service for a tab it holds (index.js sets it
 // once the agent runtime exists): `(guestId, request, { signal, attested,
@@ -142,6 +156,7 @@ function holdsBinary(params) {
  *   dispatchers, keyed `ethereum:<method>`, for `createPageRequests`.
  */
 function createEthereumDispatchers(deps = {}) {
+  const signingDeps = deps.signing || {};
   const {
     identityWalletEnabled,
     selectedChainOf,
@@ -435,12 +450,18 @@ function createEthereumDispatchers(deps = {}) {
     'ethereum:wallet_switchEthereumChain': serve(switchChain),
   };
   for (const method of ETHEREUM_RPC_READS) dispatchers[`ethereum:${method}`] = serve(read);
+  const signing = createSigningDispatchers(
+    { getPermission, updateLastUsed, walletList, chainIdOf, chainName, networks, agentAnswer },
+    signingDeps
+  );
+  for (const [route, dispatch] of Object.entries(signing)) dispatchers[route] = serve(dispatch);
   return dispatchers;
 }
 
 module.exports = {
   ETHEREUM_READ_METHODS,
   ETHEREUM_CONNECT_METHODS,
+  ETHEREUM_SIGNING_METHODS,
   ETHEREUM_PAGE_METHODS,
   FALLBACK_CHAIN_ID,
   createEthereumDispatchers,

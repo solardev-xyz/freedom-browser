@@ -42,6 +42,8 @@ const {
   addTransactionAutoApprove,
   isTransactionAutoApproved,
   removeTransactionAutoApprove,
+  getSigningAutoApprove,
+  setSigningAutoApprove,
   registerDappPermissionsIpc,
   _resetCache,
 } = require('./dapp-permissions');
@@ -405,5 +407,34 @@ describe('dapp-permissions — the chrome writes no grant (0011 PRQ-4)', () => {
     // A site with no grant gets none.
     expect(ipcHandlers['dapp:update-last-used']({}, 'https://other.example')).toBe(false);
     expect(getPermission('https://other.example')).toBeNull();
+  });
+});
+
+// freedom-core design 0011, PRQ-5a: main sets a site's signing rule itself,
+// from the user's "always allow" on the signing prompt it showed
+// (page/page-signing.js). The chrome can only clear one.
+describe('dapp-permissions — the chrome sets no signing rule (0011 PRQ-5a)', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    registerDappPermissionsIpc();
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test('dapp:set-signing-auto-approve is refused for setting a rule, and writes nothing', () => {
+    grantPermission('https://swap.example', 0, 100);
+    for (const enabled of [true, 'true', 1, undefined, null]) {
+      expect(() => ipcHandlers['dapp:set-signing-auto-approve']({}, 'https://swap.example', enabled)).toThrow(
+        'Signing auto-approve is turned on only from a signing prompt'
+      );
+    }
+    expect(getSigningAutoApprove('https://swap.example')).toBe(false);
+  });
+
+  test('clearing a rule is still accepted', () => {
+    grantPermission('https://swap.example', 0, 100);
+    setSigningAutoApprove('https://swap.example', true);
+    expect(ipcHandlers['dapp:set-signing-auto-approve']({}, 'https://swap.example', false)).toBe(true);
+    expect(getSigningAutoApprove('https://swap.example')).toBe(false);
   });
 });

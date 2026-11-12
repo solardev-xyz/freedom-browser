@@ -556,7 +556,6 @@ function createPageRequests({
     if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
       throw notConfirmed('no live request approved by the user');
     }
-    record.approved = null;
     const { token } = signingConfirmation.issuePageConfirmation(
       kind,
       accountIndex,
@@ -564,6 +563,7 @@ function createPageRequests({
       { handle, key: record.requester.key },
       bound
     );
+    record.approved = null;
     record.tokenHandle = handle;
     trace({ kind: 'token-minted', id: record.id, token: kind });
     return token;

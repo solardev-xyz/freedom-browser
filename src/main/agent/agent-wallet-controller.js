@@ -30,6 +30,11 @@ const PRIVILEGED_METHODS = new Set([
   'eth_signTypedData_v4',
 ]);
 
+// The methods main serves for a page and hands to the agent attested
+// (freedom-core design 0011): connecting (PRQ-4), and messages and typed
+// data (PRQ-5a). A send still comes through the chrome until its step.
+const ATTESTED_METHODS = new Set(['eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4']);
+
 function providerError(code, message) {
   return { code, message };
 }
@@ -382,11 +387,10 @@ class AgentWalletController {
     };
     let permissionKey;
     if (context.attested) {
-      // A request main attested (freedom-core design 0011, PRQ-4): it acts
-      // under main's key (a DNS name over IPNS keeps its name), on the page
-      // this run sees on the same transport. Only connecting has moved to
-      // main so far.
-      if (payload.method !== 'eth_requestAccounts') return { handled: false };
+      // A request main attested (freedom-core design 0011, PRQ-4 and
+      // PRQ-5a): it acts under main's key (a DNS name over IPNS keeps its
+      // name), on the page this run sees on the same transport.
+      if (!ATTESTED_METHODS.has(payload.method)) return { handled: false };
       const { key, transportKey } = context.attested;
       if (typeof key !== 'string' || !key || !pageKey || pageKey !== transportKey) return originMismatch;
       permissionKey = key;
@@ -462,12 +466,7 @@ class AgentWalletController {
       // A request main attested writes only while main still holds it: not
       // answered (its deadline, its page gone), the name checked again, and
       // the page still under its key in the same run as the write.
-      if (context.attested) {
-        const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
-        if (!ready || typeof context.effectAllowed !== 'function' || context.effectAllowed() !== true) {
-          throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
-        }
-      }
+      await this.#mainAllows(context);
       const current = context.attested ? this.getPermission(permissionKey) : permission;
       if (current) {
         if (current.walletIndex !== selected.index) {
@@ -643,11 +642,17 @@ class AgentWalletController {
         requiresUnlock: wallet.type === 'mnemonic',
       },
     });
+    // A request main attested signs only while main still holds it: not
+    // answered (its deadline, its page gone), the name checked again, and
+    // the page still under its key in the same run as the signature.
+    await this.#mainAllows(context);
     const signer = this.getSigner(wallet.index);
     const signature = personal
       ? await signer.signMessage(payload.params?.[0])
       : await signer.signTypedData(typedData);
-    this.updateLastUsed(permissionKey, chain.chainId);
+    // A grant held under the attested key is touched only while the page
+    // still holds it.
+    if (!context.attested || context.effectAllowed() === true) this.updateLastUsed(permissionKey, chain.chainId);
     return {
       providerResult: signature,
       receipt: {
@@ -659,6 +664,15 @@ class AgentWalletController {
         },
       },
     };
+  }
+
+  // For a request main attested: main's gates, just before the effect.
+  async #mainAllows(context) {
+    if (!context.attested) return;
+    const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
+    if (!ready || typeof context.effectAllowed !== 'function' || context.effectAllowed() !== true) {
+      throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
+    }
   }
 
   async #approve(context, request) {
