@@ -17,8 +17,12 @@
 const { test, expect } = require('./fixtures');
 
 // All six nodes on, so the Nodes menu renders every section — the state the
-// overflow was reported in.
+// overflow was reported in. The approvals panel off (the rollback,
+// FREEDOM_APPROVALS_DOCUMENT=0): with it on, a window keeps the panel's
+// minimum size (480x360, freedom-core design 0011), and these tests bound
+// the popovers in windows smaller than that.
 test.use({
+  approvalsPanel: false,
   seedSettings: {
     startAntAtLaunch: true,
     startIpfsAtLaunch: true,
