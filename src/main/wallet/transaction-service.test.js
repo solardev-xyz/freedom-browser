@@ -198,6 +198,65 @@ describe('signAndSendTransaction (signer-based)', () => {
     console.log.mockRestore();
   });
 
+  // Codex round 3 on #1191: a held execution's resend checks at its handoff,
+  // after the account's lock, not before waiting for it.
+  it("a keyed resend waits for the account's lock first, then its guard checks and takes the handoff", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    const reservations = require('./nonce-reservations');
+    const params = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '0',
+      gasLimit: '21000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      chainId: 100,
+    };
+    const intentKey = `safe-exec:100:0x${'6f'.repeat(32)}`;
+    const context = { kind: 'safe-send', origin: 'https://app.example' };
+    // Committed under the site, then not sent: held under its key.
+    mockBroadcastRawTransaction.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
+    });
+    await expect(signAndSendTransaction(params, signer, { intentKey, context })).rejects.toThrow();
+    const intent = mockIntentStore.byKey(intentKey);
+    const handoffs = mockIntentStore.get(intent.intentId).handoffs.length;
+    const broadcasts = mockBroadcastRawTransaction.mock.calls.length;
+    // Another send of the executor account holds its lock.
+    let releaseLock;
+    let lockTaken;
+    const taken = new Promise((resolve) => {
+      lockTaken = resolve;
+    });
+    const holding = reservations.withAccountLock({ chainId: 100, sender: testWallet.address }, () => {
+      lockTaken();
+      return new Promise((resolve) => {
+        releaseLock = resolve;
+      });
+    });
+    await taken;
+    // The site held when the execution started (its earlier check passed).
+    let holds = true;
+    const refusal = Object.assign(new Error('the site no longer holds it'), { code: 'SAFE_SITE_WITHDRAWN' });
+    const guardCommit = jest.fn(async (effect) => {
+      if (!holds) throw refusal;
+      return effect();
+    });
+    const resending = signAndSendTransaction(params, signer, { intentKey, context, guardCommit });
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    // Waiting for the lock: the guard hasn't checked yet.
+    expect(guardCommit).not.toHaveBeenCalled();
+    holds = false; // the site is withdrawn while the resend waits
+    releaseLock();
+    await holding;
+    await expect(resending).rejects.toBe(refusal);
+    expect(guardCommit).toHaveBeenCalledTimes(1);
+    expect(mockIntentStore.get(intent.intentId).handoffs).toHaveLength(handoffs);
+    expect(mockBroadcastRawTransaction).toHaveBeenCalledTimes(broadcasts);
+    console.error.mockRestore();
+    console.log.mockRestore();
+  });
+
   it('a phone signs and broadcasts in one step: it has no guard point', async () => {
     const guardCommit = jest.fn();
     const phone = { sendTransaction: jest.fn(async () => ({ hash: '0xphone' })) };
