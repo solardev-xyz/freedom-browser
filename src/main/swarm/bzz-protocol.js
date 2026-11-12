@@ -46,7 +46,8 @@
  *    retried. A 200 HEAD always carries `Accept-Ranges: bytes` (see
  *    `withHeadAcceptRanges`).
  *    Multi-range is passed through as the node answers it and is not part
- *    of the contract. See docs/swarm-range-requests.md.
+ *    of the contract. See docs/protocols/swarm.md,
+ *    "Byte ranges on `bzz://`".
  */
 
 const log = require('../logger');
