@@ -1,0 +1,4 @@
+- A site in a background tab that asks to connect to your Radicle node now waits for you to switch to it, with a dot on its tab and a count on the wallet button, instead of opening the sidebar over the tab you're on ([#1202](https://github.com/solardev-xyz/freedom-browser/pull/1202))
+  - A request you haven't seen within five minutes is closed and the page is told it timed out; one you're looking at waits for your answer
+  - Disconnecting a site's Radicle access now tells every open page of the site, not only the page that disconnected
+  - No connection prompt shows while Radicle is disabled for the profile
