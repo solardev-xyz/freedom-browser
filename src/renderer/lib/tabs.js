@@ -140,7 +140,11 @@ const reportForeground = (tab) => {
 const renderApprovalsSpace = () => {
   if (window.pagePrompts?.approvalsDocument !== true) return;
   const space = document.getElementById('approvals-space');
-  const open = !chromePromptShown && frontGuest !== null && (walletPromptCounts.get(frontGuest) || 0) > 0;
+  // The window's own prompts (the wallet's) count under `null` and show
+  // whichever tab is in front.
+  const ownPrompts = (walletPromptCounts.get(null) || 0) > 0;
+  const guestPrompts = frontGuest !== null && (walletPromptCounts.get(frontGuest) || 0) > 0;
+  const open = !chromePromptShown && (ownPrompts || guestPrompts);
   space?.classList.toggle('open', open);
 };
 
@@ -1571,7 +1575,9 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.title = tab.kind === 'workspace-viewer' ? `${tab.title} — read-only workspace viewer` : tab.title || 'New Tab';
   tabEl.classList.toggle('agent-owned', agentCustodyByTabId.has(tab.id));
   tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
-  const promptCount = walletPromptCounts.get(guestIdOf(tab)) || 0;
+  // A tab's own guest only: the window's own prompts (`null`) badge no tab.
+  const promptGuest = guestIdOf(tab);
+  const promptCount = promptGuest === null ? 0 : walletPromptCounts.get(promptGuest) || 0;
   tabEl.classList.toggle('has-wallet-prompt', promptCount > 0);
   const promptBadge = tabEl.querySelector('.tab-prompt-badge');
   if (promptBadge) {

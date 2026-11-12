@@ -237,6 +237,15 @@ function panelBounds({ width, height }, top) {
   return { x: w - panelWidth, y, width: panelWidth, height: h - y };
 }
 
+// An approved prompt for an account that signs on a device: the panel stays
+// up, saying where to confirm, until the decision's request is answered
+// (APS-3; the chrome's screens held their device label the same way).
+const DEVICES = new Set(['ledger', 'remote']);
+const deviceOf = (prompt) => {
+  const type = prompt?.view?.account?.type;
+  return typeof type === 'string' && DEVICES.has(type) ? type : null;
+};
+
 /** Whether bounds leave the panel room for a whole, actionable prompt. */
 const panelFits = (bounds) =>
   Boolean(bounds) && bounds.width >= MIN_PANEL_WIDTH && bounds.height >= MIN_PANEL_HEIGHT;
@@ -448,6 +457,8 @@ function createApprovalsDocuments({
       visible: false,
       shown: null,
       report: null,
+      // `{ handle, device }` while an approval for a device's account signs.
+      waiting: null,
       armedAt: -Infinity,
       top: DEFAULT_TOP,
       bounds: null,
@@ -506,6 +517,7 @@ function createApprovalsDocuments({
       const message = outgoingPrompt(payload);
       record.shown = message;
       record.report = null;
+      record.waiting = null;
       show(record);
       trace({ kind: 'prompt', window: windowId, handle });
       deliver(record, CHANNELS.PROMPT, message);
@@ -520,7 +532,8 @@ function createApprovalsDocuments({
       if (record.shown?.handle === handle) {
         record.shown = null;
         record.report = null;
-        hide(record);
+        // Approved for a device: the panel stays up while it signs.
+        if (record.waiting?.handle !== handle) hide(record);
       }
       trace({ kind: 'closed', window: windowId, handle });
       deliver(record, CHANNELS.CLOSED, { handle, reason: payload?.reason });
@@ -613,11 +626,19 @@ function createApprovalsDocuments({
         return out({ ok: false, reason: 'too-soon' });
       }
     }
+    // Approved for an account that signs on a device: the panel keeps
+    // saying where to confirm until the request is answered.
+    const device = payload.approve ? deviceOf(record.shown) : null;
+    if (device) record.waiting = { handle: payload.handle, device };
     let result;
     try {
       result = await decide(record.windowId, payload);
     } catch {
       result = { ok: false, reason: 'failed' };
+    }
+    if (device && record.waiting?.handle === payload.handle) {
+      record.waiting = null;
+      if (!record.shown) hide(record);
     }
     return out(isPlainObject(result) ? result : { ok: false, reason: 'failed' });
   }
@@ -664,6 +685,7 @@ function createApprovalsDocuments({
         top: record.top,
         shown: record.shown ? record.shown.handle : null,
         reported: record.report ? record.report.handle : null,
+        waiting: record.waiting ? record.waiting.device : null,
       };
     }
     return out;

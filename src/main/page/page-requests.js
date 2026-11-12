@@ -138,6 +138,17 @@ const PASSWORD_KEYS = new Set(['password']);
 // and a send's only says the board was left. The wallet's own Safe flow
 // moves in APS-3.
 const CHROME_KINDS = new Set(['eth.safe_message', 'eth.safe_send']);
+// The wallet's own prompts (APS-3): the window's, not a page's.
+const WALLET_PROMPT_KINDS = new Set([
+  'wallet.send',
+  'wallet.safe_send',
+  'wallet.intent_resend',
+  'wallet.intent_replace',
+  'wallet.intent_close',
+  'wallet.executor_send',
+]);
+// What a wallet prompt shows where a page's shows its site.
+const WALLET_SITE = Object.freeze({ key: 'freedom:wallet', label: 'Your wallet' });
 // The longest vault password a decision may carry.
 const MAX_PASSWORD_LENGTH = 1024;
 
@@ -338,8 +349,9 @@ function createPageRequests({
 
   const prompts = createPagePrompts({
     send: sendPromptMessage,
-    markShown: (entry) => markShown(entry.record),
-    decided: (entry) => decidedEntry(entry),
+    // A window's own prompt (the wallet's, `walletPrompt`) has no record.
+    markShown: (entry) => (entry.record ? markShown(entry.record) : true),
+    decided: (entry) => (entry.record ? decidedEntry(entry) : prompts.closed(entry.handle, CLOSED.DECIDED)),
     trace,
   });
   const watchedWindows = new Set();
@@ -786,6 +798,34 @@ function createPageRequests({
   }
 
   /**
+   * The wallet's own prompt (design 0011, APS-3): a prompt of the window
+   * itself, which no page asked for, shown in its approvals document when
+   * nothing older is, whichever tab is in front. Settles with the decision,
+   * `{ approve, choices }`, or `{ closed: reason }`. Only with the
+   * approvals document on; it then decides alone.
+   */
+  function walletPrompt(windowId, { kind, view = {}, choices } = {}) {
+    if (!approvals) return Promise.resolve({ closed: CLOSED.CANCELLED });
+    if (!WALLET_PROMPT_KINDS.has(kind)) throw new Error(`page-requests: no wallet prompt of kind ${kind}`);
+    if (!Number.isInteger(windowId)) return Promise.resolve({ closed: CLOSED.CLOSED });
+    watch(windowId);
+    const handle = randomHex(HANDLE_BYTES);
+    trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
+    const entry = prompts.add({
+      handle,
+      record: null,
+      window: windowId,
+      guest: null,
+      document: null,
+      kind,
+      site: WALLET_SITE,
+      view,
+      choices,
+    });
+    return entry.decision;
+  }
+
+  /**
    * Main's own issuer (design 0011, "Approval tokens"): a token of a page
    * kind, for this live record only, on the approval of the prompt the user
    * just decided, bound to that prompt's handle and the requester's attested
@@ -1003,19 +1043,23 @@ function createPageRequests({
         return false;
       }
     }
-    if (!watchedWindows.has(windowId)) {
-      watchedWindows.add(windowId);
-      try {
-        watchWindow(windowId, () => {
-          watchedWindows.delete(windowId);
-          prompts.forgetWindow(windowId);
-        });
-      } catch {
-        // Forgotten with the process, then.
-      }
-    }
+    watch(windowId);
     prompts.foreground(windowId, guest);
     return true;
+  }
+
+  // Forget a window's prompts when it closes: its own close with it.
+  function watch(windowId) {
+    if (watchedWindows.has(windowId)) return;
+    watchedWindows.add(windowId);
+    try {
+      watchWindow(windowId, () => {
+        watchedWindows.delete(windowId);
+        prompts.forgetWindow(windowId);
+      });
+    } catch {
+      // Forgotten with the process, then.
+    }
   }
 
   async function run(record, dispatch, event, nonce, naming, params) {
@@ -1280,6 +1324,7 @@ function createPageRequests({
     onHandleClosed,
     decide,
     decideInWindow,
+    walletPrompt,
     foreground,
     promptState: () => prompts.state(),
     stats,

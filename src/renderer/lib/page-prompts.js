@@ -166,7 +166,9 @@ export function initPagePrompts() {
   countEl = document.getElementById('wallet-prompt-count');
   reportAnchor(api);
   api.onPending?.((message) => {
-    if (typeof message?.handle !== 'string' || !Number.isInteger(message.guest)) return;
+    // A guest's prompt, or the window's own (the wallet's, `guest: null`,
+    // APS-3), which shows in the approvals panel whichever tab is in front.
+    if (typeof message?.handle !== 'string' || !(Number.isInteger(message.guest) || message.guest === null)) return;
     pending.set(message.handle, message.guest);
     paintCounts();
   });

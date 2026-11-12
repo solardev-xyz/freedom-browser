@@ -127,11 +127,12 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     }
   };
 
-  // The window's oldest open prompt of the guest in front, or null.
+  // The window's oldest open prompt of the guest in front, or of the
+  // window itself (the wallet's own, APS-3, which no tab asked for), or null.
   function oldestInFront(windowId, front) {
-    if (front === null) return null;
     for (const entry of open.values()) {
-      if (entry.window === windowId && entry.guest === front) return entry;
+      if (entry.window !== windowId) continue;
+      if (entry.guest === null || (front !== null && entry.guest === front)) return entry;
     }
     return null;
   }
@@ -289,8 +290,11 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     return { ok: true, entry };
   }
 
-  /** Forget a closed window. */
+  /** Forget a closed window. Its own prompts (the wallet's) close with it. */
   function forgetWindow(windowId) {
+    for (const entry of [...open.values()]) {
+      if (entry.window === windowId && entry.guest === null) closed(entry.handle, 'closed');
+    }
     windows.delete(windowId);
   }
 
