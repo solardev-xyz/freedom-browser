@@ -284,6 +284,37 @@ describe('payments waiting: Send again', () => {
     expect(markup(elements)).toContain('Sent, waiting for confirmation');
   });
 
+  test('with the approvals panel on, a stale confirmation is asked again only when the payment was replaced (APS-4)', async () => {
+    const payment = held();
+    const { mod, elements } = await load([payment]);
+    window.pagePrompts = { approvalsDocument: true };
+    await mod.openHeldPayments();
+    const stale = (intent) => ({
+      success: false,
+      code: 'SIGNING_NOT_CONFIRMED',
+      error: 'Signing was not confirmed',
+      intentId: payment.intentId,
+      intent,
+    });
+    const resendHashes = () =>
+      window.wallet.confirmSigning.mock.calls.filter(([kind]) => kind === 'intent-resend').map(([, , binding]) => binding.hash);
+    // Lapsed with nothing changed: no second prompt the user didn't cause.
+    window.wallet.intentResend.mockResolvedValueOnce(stale({ ...payment }));
+    await mod.handleAction('resend', payment);
+    expect(resendHashes()).toEqual([payment.hash]);
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(1);
+    expect(markup(elements)).toContain('Signing was not confirmed');
+    // Replaced meanwhile: asked again once, for main's latest transaction
+    // (whose prompt says why).
+    const replaced = { ...payment, hash: `0x${'cd'.repeat(32)}` };
+    window.wallet.intentResend
+      .mockResolvedValueOnce(stale(replaced))
+      .mockResolvedValueOnce(stale({ ...replaced, hash: `0x${'ef'.repeat(32)}` }));
+    await mod.handleAction('resend', payment);
+    expect(resendHashes()).toEqual([payment.hash, payment.hash, replaced.hash]);
+    expect(window.wallet.intentResend).toHaveBeenCalledTimes(3);
+  });
+
   test('a confirmation main refuses to mint sends nothing', async () => {
     const payment = held();
     const { mod, elements } = await load([payment]);
@@ -438,6 +469,22 @@ describe('payments waiting: the fee check on a replacement (design 0005, A)', ()
       { feeAcknowledged: true }
     );
     expect(window.wallet.intentReplace).toHaveBeenCalled();
+  });
+
+  test('with the approvals panel on, raised fees far above today’s go to the panel at the first press (APS-4)', async () => {
+    const { elements, payment, mod } = await offered(ABOVE);
+    window.pagePrompts = { approvalsDocument: true };
+    await mod.handleAction('replace', payment);
+    // The verdict still shows, and nothing here asks again.
+    expect(markup(elements)).toContain("This network fee is 20× today's network fee.");
+    expect(markup(elements)).not.toContain('Send anyway');
+    await mod.handleAction('confirm-replace', payment);
+    // One press, and no acknowledgement of the chrome's: the panel asks,
+    // twice for such a fee, itself.
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+    expect(window.wallet.confirmSigning.mock.calls[0]).toHaveLength(3);
+    expect(window.wallet.confirmSigning.mock.calls[0][0]).toBe('intent-replace');
+    expect(window.wallet.intentReplace).toHaveBeenCalledTimes(1);
   });
 
   test('raised fees newly above at the press: nothing signed, and the step asks again', async () => {

@@ -257,6 +257,348 @@ test.describe('with a vault', () => {
   });
 });
 
+// APS-4: a view over 256 KiB (here a 300 KiB message) is no longer only
+// rejectable: main sends it in parts the panel asks for, the panel checks
+// the joined view and shows it in full, and only then reports it shown.
+test.describe('with a vault, a view over 256 KiB', () => {
+  test.use({ withVault: true });
+
+  test('a 300 KiB message shows in full in the panel, from parts, and its approval signs it (0011 APS-4)', async ({
+    electronApp,
+    window: win,
+    harness,
+  }) => {
+    test.setTimeout(180_000);
+    await harness.setContentFixture(`${A}/`, dappPage('dapp'));
+    const windowId = await chromeWindowId(electronApp);
+    const docPage = await approvalsPage(electronApp);
+    const guest = await openTab(electronApp, win, `${A}/`);
+    const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
+    const ask = (id, method, params = []) =>
+      inGuest(electronApp, guest, `window.__ask(${JSON.stringify(id)}, ${JSON.stringify(method)}, ${JSON.stringify(params)})`);
+    const answer = (id) => inGuest(electronApp, guest, `window.__asked[${JSON.stringify(id)}] || null`);
+
+    let after = await reportCount(electronApp, windowId);
+    await ask('connect', 'eth_requestAccounts');
+    await nextReport(electronApp, windowId, after);
+    await sleep(PAST_DELAY_MS);
+    await docPage.click('#approve');
+    await expect.poll(() => answer('connect')).toEqual({ ok: [account] });
+
+    const lines = [];
+    for (let i = 0; lines.join('\n').length < 300 * 1024; i += 1) lines.push(`Freedom large message, line ${i}: the panel shows every line.`);
+    const text = lines.join('\n');
+    const hex = `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+    after = await reportCount(electronApp, windowId);
+    await ask('large', 'personal_sign', [hex, account]);
+    await nextReport(electronApp, windowId, after);
+    await expect(docPage.locator('#heading')).toHaveText('Unlock Vault');
+    await sleep(PAST_DELAY_MS);
+    await docPage.fill('input[type="password"]', VAULT_PASSWORD);
+    after = await reportCount(electronApp, windowId);
+    await docPage.click('#approve');
+    const sign = (await nextReport(electronApp, windowId, after)).handle;
+    await expect(docPage.locator('#heading')).toHaveText('Sign Message');
+    // Shown in full: the cut line, and every character in the scrolling box.
+    await expect(docPage.locator('#body')).toContainText('more characters below');
+    const full = await docPage.evaluate(() => {
+      const box = document.querySelector('#body .field-full');
+      return { length: box.textContent.length, head: box.textContent.slice(0, 60), tail: box.textContent.slice(-60) };
+    });
+    expect(full).toEqual({ length: text.length, head: text.slice(0, 60), tail: text.slice(-60) });
+    await expect(docPage.locator('#error')).toBeHidden();
+    // The view came in parts, each asked for before the prompt was reported.
+    const trace = await approvalsTrace(electronApp);
+    const parts = trace.filter((e) => e.kind === 'view-part' && e.handle === sign);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.map((e) => e.index)).toEqual(parts.map((_e, i) => i));
+    const shownAt = trace.findIndex((e) => e.kind === 'shown' && e.handle === sign);
+    expect(trace.findIndex((e) => e.kind === 'view-part' && e.handle === sign && e.index === parts.length - 1)).toBeLessThan(shownAt);
+    const prompt = trace.find((e) => e.kind === 'prompt' && e.handle === sign);
+    expect(prompt).toBeTruthy();
+    // The chrome still can't decide it; the panel's approval signs the whole message.
+    expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { alwaysAllow: false }), sign)).toEqual({
+      ok: false,
+      reason: 'approvals-document',
+    });
+    await docPage.screenshot({ path: test.info().outputPath('approvals-large-view.png') });
+    await sleep(PAST_DELAY_MS);
+    await docPage.click('#approve');
+    await expect.poll(async () => (await answer('large'))?.ok || null, { timeout: 15_000 }).toMatch(/^0x[0-9a-f]{130}$/i);
+    expect(verifyMessage(text, (await answer('large')).ok)).toBe(account);
+  });
+});
+
+// Codex, #1216 round 1: a prompt's view replaced under the same handle
+// (`page-prompts.update()`) while the panel reads its parts. As main hands
+// out the old view's first part, the new view goes in, and main holds the
+// new prompt's message back a moment, as a slow delivery would: the panel's
+// next read of the old view reaches main after the new view is in. Main
+// gives it nothing (that revision is stale), the panel joins nothing and
+// shows nothing of it, then reads the new view and shows it whole.
+test('a view replaced under the same handle while the panel reads its parts is never joined across revisions (0011 APS-4)', async ({
+  electronApp,
+  window: win,
+  harness,
+}) => {
+  test.setTimeout(180_000);
+  await harness.setContentFixture(`${A}/`, testPage('dapp a'));
+  const windowId = await chromeWindowId(electronApp);
+  const docPage = await approvalsPage(electronApp);
+  await electronApp.evaluate(({ webContents }) => {
+    const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
+    const approvals = globalThis.__FREEDOM_TEST_APPROVALS__;
+    // Over 256 KiB of the test kind's JSON (a control character is six
+    // bytes there), and A and B the same shape: A's first part joined to
+    // B's others would parse and fit the schema.
+    const large = (name, code) => {
+      const fill = String.fromCharCode(code).repeat(4096);
+      return {
+        title: `Large ${name}`,
+        message: fill,
+        rows: Array.from({ length: 16 }, (_v, i) => ({ label: `Row ${i}`, value: fill })),
+      };
+    };
+    const doc = webContents.getAllWebContents().find((contents) => contents.getURL() === approvals.url);
+    const send = doc.send.bind(doc);
+    const state = { replaced: false, held: 0 };
+    globalThis.__APS4_REPLACED__ = state;
+    hooks.setDispatch(async (context) => {
+      const { tag } = context.params || {};
+      approvals.trace.push = function replaceOnFirstPart(entry, ...rest) {
+        const out = Array.prototype.push.call(this, entry, ...rest);
+        if (!state.replaced && entry?.kind === 'view-part' && entry.index === 0) {
+          state.replaced = true;
+          delete approvals.trace.push;
+          doc.send = (channel, ...args) => {
+            if (channel !== 'page:prompt') return send(channel, ...args);
+            state.held += 1;
+            setTimeout(() => send(channel, ...args), 1500);
+            return undefined;
+          };
+          context.updatePrompt(large('B', 2));
+          delete doc.send;
+        }
+        return out;
+      };
+      const decision = await context.prompt({ kind: 'test.prompt', view: large('A', 1) });
+      if (decision.approve === true) return { result: `approved:${tag}` };
+      return { error: { code: 4001, message: decision.closed ? `closed:${decision.closed}` : 'User rejected the request' } };
+    });
+  });
+  const guest = await openTab(electronApp, win, `${A}/`);
+  const after = await reportCount(electronApp, windowId);
+  await inGuest(electronApp, guest, `window.__ask('large', ${JSON.stringify(view('large'))})`);
+  const { handle } = await nextReport(electronApp, windowId, after);
+  expect(await electronApp.evaluate(() => globalThis.__APS4_REPLACED__)).toEqual({ replaced: true, held: 1 });
+
+  const trace = (await approvalsTrace(electronApp)).filter((e) => e.handle === handle);
+  const prompts = trace.filter((e) => e.kind === 'prompt');
+  expect(prompts.length).toBe(2);
+  const [a, b] = prompts.map((e) => e.revision);
+  expect(b).toBeGreaterThan(a);
+  expect(prompts[1].parts).toBeGreaterThan(1);
+  // A's read went on after B was in, and got nothing: stale.
+  const stale = trace.filter((e) => e.kind === 'view-part-stale');
+  expect(stale.length).toBeGreaterThan(0);
+  expect(stale.every((e) => e.revision === a)).toBe(true);
+  // Every part main gave once B was in is B's, each once, in order; A had
+  // its first part only.
+  const sinceB = trace.slice(trace.indexOf(prompts[1]));
+  const given = sinceB.filter((e) => e.kind === 'view-part');
+  expect(given.map((e) => [e.revision, e.index])).toEqual(Array.from({ length: prompts[1].parts }, (_v, i) => [b, i]));
+  expect(trace.filter((e) => e.kind === 'view-part' && e.revision === a).map((e) => e.index)).toEqual([0]);
+  // Reported shown once, for B, after its last part; nothing of A was.
+  expect(trace.filter((e) => e.kind === 'shown').map((e) => e.revision)).toEqual([b]);
+  expect(sinceB.findIndex((e) => e.kind === 'shown')).toBeGreaterThan(sinceB.indexOf(given.at(-1)));
+
+  // The panel shows B, whole: its title and every row, nothing of A.
+  const escapeOf = (code) => `${String.fromCharCode(92)}u{${code.toString(16).toUpperCase().padStart(4, '0')}}`;
+  const shown = await docPage.evaluate(() => document.querySelector('#body').textContent);
+  expect(shown).toContain('Large B');
+  expect(shown).not.toContain('Large A');
+  expect(shown).toContain(escapeOf(2));
+  expect(shown).not.toContain(escapeOf(1));
+  await expect(docPage.locator('#error')).toBeHidden();
+  await expect(docPage.locator('#approve')).toBeVisible();
+
+  // Straight from the document: a read of A now gets no part; B's does.
+  const read = (revision, index) =>
+    docPage.evaluate(([h, r, i]) => window.approvals.viewPart(h, r, i), [handle, revision, index]);
+  expect(await read(a, 1)).toEqual({ ok: false, reason: 'stale' });
+  const partOfB = await read(b, 1);
+  expect(partOfB.ok).toBe(true);
+  const jsonEscape = (code) => `${String.fromCharCode(92)}u000${code}`;
+  expect(partOfB.part).toContain(jsonEscape(2));
+  expect(partOfB.part).not.toContain(jsonEscape(1));
+
+  // B's approval stands.
+  await sleep(PAST_DELAY_MS);
+  await docPage.click('#approve');
+  await expect.poll(() => outcome(electronApp, guest, 'large')).toEqual({ ok: 'approved:large' });
+});
+
+// Codex, #1216 round 2: the revision binds every delivery, not only a view in
+// parts. A view in parts replaced by an inline one under the same handle, the
+// new message held back as before: the old read is stale, so the panel drops
+// that load rather than show (and report) its fixed error, and then shows B.
+test('a view in parts replaced by an inline one under the same handle: the stale load is dropped, not shown as the error (0011 APS-4)', async ({
+  electronApp,
+  window: win,
+  harness,
+}) => {
+  test.setTimeout(180_000);
+  await harness.setContentFixture(`${A}/`, testPage('dapp a'));
+  const windowId = await chromeWindowId(electronApp);
+  const docPage = await approvalsPage(electronApp);
+  // Whether the panel ever shows its fixed error, however briefly.
+  await docPage.evaluate(() => {
+    const error = document.querySelector('#error');
+    window.__errorSeen = !error.hidden;
+    new MutationObserver(() => {
+      if (!error.hidden) window.__errorSeen = true;
+    }).observe(error, { attributes: true, attributeFilter: ['hidden'] });
+  });
+  await electronApp.evaluate(({ webContents }) => {
+    const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
+    const approvals = globalThis.__FREEDOM_TEST_APPROVALS__;
+    const fill = String.fromCharCode(1).repeat(4096);
+    const largeA = { title: 'Large A', message: fill, rows: Array.from({ length: 16 }, (_v, i) => ({ label: `Row ${i}`, value: fill })) };
+    const doc = webContents.getAllWebContents().find((contents) => contents.getURL() === approvals.url);
+    const send = doc.send.bind(doc);
+    const state = { replaced: false, held: 0 };
+    globalThis.__APS4_REPLACED__ = state;
+    hooks.setDispatch(async (context) => {
+      const { tag } = context.params || {};
+      approvals.trace.push = function replaceOnFirstPart(entry, ...rest) {
+        const out = Array.prototype.push.call(this, entry, ...rest);
+        if (!state.replaced && entry?.kind === 'view-part' && entry.index === 0) {
+          state.replaced = true;
+          delete approvals.trace.push;
+          doc.send = (channel, ...args) => {
+            if (channel !== 'page:prompt') return send(channel, ...args);
+            state.held += 1;
+            setTimeout(() => send(channel, ...args), 1500);
+            return undefined;
+          };
+          context.updatePrompt({ title: 'Small B', message: 'About B', rows: [] });
+          delete doc.send;
+        }
+        return out;
+      };
+      const decision = await context.prompt({ kind: 'test.prompt', view: largeA });
+      if (decision.approve === true) return { result: `approved:${tag}` };
+      return { error: { code: 4001, message: decision.closed ? `closed:${decision.closed}` : 'User rejected the request' } };
+    });
+  });
+  const guest = await openTab(electronApp, win, `${A}/`);
+  const after = await reportCount(electronApp, windowId);
+  await inGuest(electronApp, guest, `window.__ask('swap', ${JSON.stringify(view('swap'))})`);
+  const { handle } = await nextReport(electronApp, windowId, after);
+  expect(await electronApp.evaluate(() => globalThis.__APS4_REPLACED__)).toEqual({ replaced: true, held: 1 });
+
+  const trace = (await approvalsTrace(electronApp)).filter((e) => e.handle === handle);
+  const prompts = trace.filter((e) => e.kind === 'prompt');
+  expect(prompts.map((e) => e.parts > 0)).toEqual([true, false]);
+  const [a, b] = prompts.map((e) => e.revision);
+  expect(b).toBeGreaterThan(a);
+  // A's read went on after B was in: stale, never `not-shown`.
+  const stale = trace.filter((e) => e.kind === 'view-part-stale');
+  expect(stale.length).toBeGreaterThan(0);
+  expect(stale.every((e) => e.revision === a)).toBe(true);
+  expect(trace.filter((e) => e.kind === 'view-part').map((e) => [e.revision, e.index])).toEqual([[a, 0]]);
+  // The panel never showed A's fixed error, and never reported A: one
+  // report, B's.
+  expect(await docPage.evaluate(() => window.__errorSeen)).toBe(false);
+  expect(trace.filter((e) => e.kind === 'shown-ignored')).toEqual([]);
+  expect(trace.filter((e) => e.kind === 'shown').map((e) => e.revision)).toEqual([b]);
+
+  await expect(docPage.locator('#body')).toContainText('Small B');
+  await expect(docPage.locator('#body')).not.toContainText('Large A');
+  await expect(docPage.locator('#error')).toBeHidden();
+  await expect(docPage.locator('#approve')).toBeVisible();
+  await sleep(PAST_DELAY_MS);
+  await docPage.click('#approve');
+  await expect.poll(() => outcome(electronApp, guest, 'swap')).toEqual({ ok: 'approved:swap' });
+});
+
+// The same for two inline views: A is on screen and reported; B goes in under
+// the same handle and its message is held back; the panel, still showing A,
+// reports it again (its window resized). That report names A's revision, so it
+// never counts for B: Approve, clicked on A past every delay, is refused, and
+// only B, once it shows and is reported, can be approved.
+test('an inline view replaced by an inline one under the same handle: A\'s late report never counts for B (0011 APS-4)', async ({
+  electronApp,
+  window: win,
+  harness,
+}) => {
+  test.setTimeout(180_000);
+  await harness.setContentFixture(`${A}/`, testPage('dapp a'));
+  const windowId = await chromeWindowId(electronApp);
+  const docPage = await approvalsPage(electronApp);
+  await electronApp.evaluate(() => {
+    const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
+    hooks.setDispatch(async (context) => {
+      const { tag } = context.params || {};
+      globalThis.__APS4_CONTEXT__ = context;
+      const decision = await context.prompt({ kind: 'test.prompt', view: { title: 'Small A', message: 'About A', rows: [] } });
+      if (decision.approve === true) return { result: `approved:${tag}` };
+      return { error: { code: 4001, message: decision.closed ? `closed:${decision.closed}` : 'User rejected the request' } };
+    });
+  });
+  const guest = await openTab(electronApp, win, `${A}/`);
+  const after = await reportCount(electronApp, windowId);
+  await inGuest(electronApp, guest, `window.__ask('swap', ${JSON.stringify(view('swap'))})`);
+  const { handle } = await nextReport(electronApp, windowId, after);
+  await expect(docPage.locator('#body')).toContainText('Small A');
+
+  // B goes in under the same handle; its message reaches the document 3 s
+  // late.
+  await electronApp.evaluate(({ webContents }) => {
+    const approvals = globalThis.__FREEDOM_TEST_APPROVALS__;
+    const doc = webContents.getAllWebContents().find((contents) => contents.getURL() === approvals.url);
+    const send = doc.send.bind(doc);
+    doc.send = (channel, ...args) => {
+      if (channel !== 'page:prompt') return send(channel, ...args);
+      setTimeout(() => send(channel, ...args), 3000);
+      return undefined;
+    };
+    globalThis.__APS4_CONTEXT__.updatePrompt({ title: 'Small B', message: 'About B', rows: [] });
+    delete doc.send;
+  });
+  const prompts = (await approvalsTrace(electronApp)).filter((e) => e.handle === handle && e.kind === 'prompt');
+  expect(prompts.length).toBe(2);
+  const [a, b] = prompts.map((e) => e.revision);
+  expect(b).toBeGreaterThan(a);
+
+  // The panel, showing A, reports it again: for A's revision, ignored.
+  await docPage.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await expect
+    .poll(async () => (await approvalsTrace(electronApp)).filter((e) => e.kind === 'shown-ignored' && e.handle === handle).map((e) => e.revision))
+    .toEqual([a]);
+  expect((await approvalsState(electronApp))[windowId]).toMatchObject({ shown: handle, revision: b, reported: null });
+  // Past every delay, Approve on A: refused, A still on screen.
+  await sleep(PAST_DELAY_MS);
+  const decides = (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide').length;
+  await docPage.click('#approve');
+  await expect
+    .poll(async () => (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide').slice(decides))
+    .toEqual([expect.objectContaining({ ok: false, reason: 'not-reported' })]);
+  await expect(docPage.locator('#body')).toContainText('Small A');
+  expect(await outcome(electronApp, guest, 'swap')).toEqual({ pending: true });
+
+  // B arrives, is reported for its own revision, and its approval stands.
+  await expect
+    .poll(async () => (await approvalsTrace(electronApp)).filter((e) => e.kind === 'shown' && e.handle === handle).map((e) => e.revision), {
+      timeout: 15_000,
+    })
+    .toEqual([a, b]);
+  await expect(docPage.locator('#body')).toContainText('Small B');
+  await sleep(PAST_DELAY_MS);
+  await docPage.click('#approve');
+  await expect.poll(() => outcome(electronApp, guest, 'swap')).toEqual({ ok: 'approved:swap' });
+});
+
 // --- Hostile data, in every field a page chooses, for every dApp kind ---------
 
 const cp = (code) => String.fromCodePoint(code);

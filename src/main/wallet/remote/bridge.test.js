@@ -13,6 +13,8 @@ const mockWindow = { webContents: mockWebContents };
 
 let mockFocusedWindow = mockWindow;
 let mockAllWindows = [mockWindow];
+// BrowserWindow.fromId's windows, by id.
+const mockWindowsById = new Map();
 const mockIpcMainHandlers = {};
 
 jest.mock('electron', () => ({
@@ -27,6 +29,7 @@ jest.mock('electron', () => ({
   BrowserWindow: {
     getFocusedWindow: () => mockFocusedWindow,
     getAllWindows: () => mockAllWindows,
+    fromId: (id) => mockWindowsById.get(id) ?? null,
   },
 }));
 
@@ -364,5 +367,81 @@ describe("the phone's error answers to a payment it may hold", () => {
     const internal = { rpcCode: -32603, message: 'Internal error' };
     await expect(answer(PAYMENT, internal, { sent: false })).resolves.toBe('REMOTE_UNKNOWN');
     await expect(answer(JOB, internal)).resolves.toBe('REMOTE_UNKNOWN');
+  });
+});
+
+describe('the window that asked (design 0011, APS-4)', () => {
+  const { runInWindow } = require('../../windows/request-window');
+  const FLAG = 'FREEDOM_APPROVALS_DOCUMENT';
+  const otherContents = { id: 9, isDestroyed: jest.fn(() => false), send: jest.fn() };
+  const otherWindow = { id: 2, webContents: otherContents, isDestroyed: jest.fn(() => false) };
+  let saved;
+
+  beforeEach(() => {
+    saved = process.env[FLAG];
+    otherContents.send.mockClear();
+    otherWindow.isDestroyed.mockReturnValue(false);
+    mockWindowsById.clear();
+    mockWindowsById.set(2, otherWindow);
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[FLAG];
+    else process.env[FLAG] = saved;
+  });
+
+  const requestsTo = (contents) => contents.send.mock.calls.filter(([channel]) => channel === 'remote-signer:request');
+
+  test('with the document on, the job goes to the window that asked, not the focused one', async () => {
+    process.env[FLAG] = '1';
+    // Window 2 asks; window 1 (mockWindow) has focus.
+    const pending = runInWindow(2, () => requestRemoteSignature(JOB, 60_000));
+    expect(requestsTo(otherContents)).toHaveLength(1);
+    expect(requestsTo(mockWebContents)).toHaveLength(0);
+    const { jobId } = requestsTo(otherContents)[0][1];
+    // Only the chrome it went to may answer.
+    respond(7, { jobId, result: '0xfocused' });
+    respond(9, { jobId, result: '0xasked' });
+    await expect(pending).resolves.toBe('0xasked');
+  });
+
+  test('the window is found however many awaits lie between the entry point and the job', async () => {
+    process.env[FLAG] = '1';
+    const pending = runInWindow(2, async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
+      return requestRemoteSignature(JOB, 60_000);
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(requestsTo(otherContents)).toHaveLength(1);
+    respond(9, { jobId: requestsTo(otherContents)[0][1].jobId, result: '0xok' });
+    await expect(pending).resolves.toBe('0xok');
+  });
+
+  test('a window that asked and has closed gets nothing, and no other window does', async () => {
+    process.env[FLAG] = '1';
+    otherWindow.isDestroyed.mockReturnValue(true);
+    await expect(runInWindow(2, () => requestRemoteSignature(JOB))).rejects.toMatchObject({ code: 'REMOTE_NO_UI' });
+    mockWindowsById.clear();
+    await expect(runInWindow(2, () => requestRemoteSignature(JOB))).rejects.toMatchObject({ code: 'REMOTE_NO_UI' });
+    expect(requestsTo(otherContents)).toHaveLength(0);
+    expect(requestsTo(mockWebContents)).toHaveLength(0);
+  });
+
+  test('without a window that asked (the agent, an x402 payment), the focused window, as before', async () => {
+    process.env[FLAG] = '1';
+    const pending = requestRemoteSignature(JOB, 60_000);
+    expect(requestsTo(mockWebContents)).toHaveLength(1);
+    respond(7, { jobId: sentJobId(), result: '0xok' });
+    await expect(pending).resolves.toBe('0xok');
+  });
+
+  test('with the document off, the focused window, whichever window asked', async () => {
+    delete process.env[FLAG];
+    const pending = runInWindow(2, () => requestRemoteSignature(JOB, 60_000));
+    expect(requestsTo(mockWebContents)).toHaveLength(1);
+    expect(requestsTo(otherContents)).toHaveLength(0);
+    respond(7, { jobId: sentJobId(), result: '0xok' });
+    await expect(pending).resolves.toBe('0xok');
   });
 });

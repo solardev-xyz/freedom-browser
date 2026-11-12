@@ -53,7 +53,7 @@ import {
   HELD,
   REPLACE,
 } from './intent-texts.js';
-import { FEE_CHECK, FEE_CHECK_ASK_AGAIN, fetchFeeCheck } from './fee-check.js';
+import { FEE_CHECK, FEE_CHECK_ASK_AGAIN, fetchFeeCheck, panelConfirmsFees } from './fee-check.js';
 
 const ERC20_TRANSFER = '0xa9059cbb';
 // Where a held payment leaves a gap later sends wait behind (D11).
@@ -292,7 +292,7 @@ function renderPayment(payment) {
     const symbol = chain.nativeSymbol || 'ETH';
     const text = `${REPLACE.newFee(maxFeeOf(payment, step.fees), symbol)}. ${REPLACE.note}`;
     const { note: feeNote, kind } = replacementFeeNote(step);
-    const asking = step.feeCheck?.above && !step.acknowledged && step.asking;
+    const asking = step.feeCheck?.above && !step.acknowledged && step.asking && !panelConfirmsFees();
     const confirmLabel = busy
       ? replacingLabel(payment)
       : asking
@@ -347,7 +347,7 @@ function replacementFeeNote(step) {
   if (!verdict.above) {
     return { note: `${FEE_CHECK.compared(verdict.ratio, verdict.oneEndpoint)}.`, kind: 'info' };
   }
-  const ask = step.asking && !step.acknowledged ? ` ${FEE_CHECK.askAgain}` : '';
+  const ask = step.asking && !step.acknowledged && !panelConfirmsFees() ? ` ${FEE_CHECK.askAgain}` : '';
   return { note: `${FEE_CHECK.above(verdict.ratio)}${ask}`, kind: 'warning' };
 }
 
@@ -488,13 +488,15 @@ async function replace(payment) {
   if (!fees) return;
   if (isSignatureInFlight()) return;
   // A fee far above today's network fee is confirmed twice: the first press
-  // asks again.
-  if (feeCheck?.above && !acknowledged && !asking) {
+  // asks again. With the approvals panel on, the panel asks, twice for such
+  // a fee, and this press goes straight on to it (design 0011, APS-4).
+  const panel = panelConfirmsFees();
+  if (!panel && feeCheck?.above && !acknowledged && !asking) {
     active = { ...active, asking: true };
     render();
     return;
   }
-  const confirmed = Boolean(feeCheck?.above && !acknowledged && asking) || Boolean(acknowledged);
+  const confirmed = !panel && (Boolean(feeCheck?.above && !acknowledged && asking) || Boolean(acknowledged));
   const flight = { intentId: payment.intentId };
   active = {
     intentId: payment.intentId,

@@ -109,11 +109,14 @@ const {
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const signingConfirmation = require('../wallet/signing-confirmation');
+const { runInWindow } = require('../windows/request-window');
 const {
   CHANNELS: PROMPT_CHANNELS,
   KIND_SET,
   TEST_KIND,
   WALLET_KINDS,
+  PROMPT_BUDGETS,
+  LIMIT_EXCEEDED: PROMPT_LIMIT_EXCEEDED,
   createPagePrompts,
 } = require('./page-prompts');
 
@@ -300,6 +303,7 @@ function createPageRequests({
   dispatchers = {},
   hooks = {},
   budgets: budgetBounds = BUDGETS,
+  promptBudgets = PROMPT_BUDGETS,
   tickets: ticketBounds = TICKETS,
   randomHex = (bytes) => crypto.randomBytes(bytes).toString('hex'),
   setTimer = setTimeout,
@@ -360,7 +364,11 @@ function createPageRequests({
     // A window's own prompt (the wallet's, `walletPrompt`) has no record.
     markShown: (entry) => (entry.record ? markShown(entry.record) : true),
     decided: (entry) => (entry.record ? decidedEntry(entry) : prompts.closed(entry.handle, CLOSED.DECIDED)),
+    // A changed view past the prompt budget (`page-prompts.js` `update`).
+    cancel: (entry) =>
+      entry.record ? closeHandle(entry.record, CLOSED.CANCELLED) : prompts.closed(entry.handle, CLOSED.CANCELLED),
     trace,
+    budgets: promptBudgets,
   });
   const watchedWindows = new Set();
   // document key -> the record whose wallet operation outside main's
@@ -842,21 +850,42 @@ function createPageRequests({
       trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
       return { error: { ...PROMPT_PENDING } };
     }
-    const handle = openHandle(record);
-    if (!handle) return { closed: CLOSED.CANCELLED };
-    const { requester } = record;
-    const entry = prompts.add({
-      handle,
-      record,
-      window: record.window,
-      guest: requester.guest,
-      document: record.key,
-      kind,
-      site: { key: requester.key, label: requester.key },
-      view,
-      choices,
-      released,
-    });
+    // Room for its view in the prompt budget (0011, "Prompt views"), taken
+    // before the handle opens: past it, the page gets `-32005` and nothing
+    // opens. The request itself is charged already.
+    const charge = prompts.admit(record.window, { view });
+    if (!charge) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'budget' });
+      return { error: { ...PROMPT_LIMIT_EXCEEDED } };
+    }
+    // The charge passes to the prompt once `add` holds it; until then it is
+    // ours, and a throw on the way (the handle's random bytes, say) lets it
+    // go and closes a handle that opened, so no charge outlives its prompt.
+    let handle = null;
+    let entry = null;
+    try {
+      handle = openHandle(record);
+      if (!handle) return { closed: CLOSED.CANCELLED };
+      const { requester } = record;
+      entry = prompts.add({
+        handle,
+        record,
+        window: record.window,
+        guest: requester.guest,
+        document: record.key,
+        kind,
+        site: { key: requester.key, label: requester.key },
+        view,
+        choices,
+        released,
+        charge,
+      });
+    } finally {
+      if (!entry) {
+        prompts.release(charge);
+        if (handle) closeHandle(record, CLOSED.CANCELLED);
+      }
+    }
     return entry.decision;
   }
 
@@ -872,25 +901,47 @@ function createPageRequests({
    * the prompt shown again), and the decision's invocation is answered then.
    * A window closed meanwhile (during the caller's fee check, say) gets no
    * prompt: it closes at once.
+   *
+   * It has no request record either, so nothing else bounds it: its view,
+   * and `holds`, the request it answers (the chrome's, which its caller
+   * keeps while it waits), are charged to the prompt budget (0011, "Prompt
+   * views"). Past it, it settles at once with `{ error }`, `-32005`, and
+   * nothing opens.
    */
-  function walletPrompt(windowId, { kind, view = {}, choices, released } = {}) {
+  function walletPrompt(windowId, { kind, view = {}, choices, released, holds } = {}) {
     if (!approvals) return Promise.resolve({ closed: CLOSED.CANCELLED });
     if (!WALLET_PROMPT_KINDS.has(kind)) throw new Error(`page-requests: no wallet prompt of kind ${kind}`);
     if (!Number.isInteger(windowId) || !watch(windowId)) return Promise.resolve({ closed: CLOSED.CLOSED });
-    const handle = randomHex(HANDLE_BYTES);
-    trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
-    const entry = prompts.add({
-      handle,
-      record: null,
-      window: windowId,
-      guest: null,
-      document: null,
-      kind,
-      site: WALLET_SITE,
-      view,
-      choices,
-      released: released instanceof Promise ? released : Promise.resolve(),
-    });
+    const charge = prompts.admit(windowId, { view, holds });
+    if (!charge) {
+      trace({ kind: 'wallet-prompt-refused', window: windowId, prompt: kind, reason: 'budget' });
+      return Promise.resolve({ error: { ...PROMPT_LIMIT_EXCEEDED } });
+    }
+    // As promptOnce: the charge is ours until `add` holds it.
+    let handle = null;
+    let entry = null;
+    try {
+      handle = randomHex(HANDLE_BYTES);
+      trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
+      entry = prompts.add({
+        handle,
+        record: null,
+        window: windowId,
+        guest: null,
+        document: null,
+        kind,
+        site: WALLET_SITE,
+        view,
+        choices,
+        released: released instanceof Promise ? released : Promise.resolve(),
+        charge,
+      });
+    } finally {
+      if (!entry) {
+        prompts.release(charge);
+        if (handle) prompts.closed(handle, CLOSED.CANCELLED);
+      }
+    }
     return entry.decision;
   }
 
@@ -1151,7 +1202,9 @@ function createPageRequests({
       if (record.answered) return;
       let out;
       try {
-        out = await dispatch(contextOf(record, params));
+        // For the window that hosts the tab: a phone account's job shows
+        // its QR in that window's sidebar (APS-4, `request-window.js`).
+        out = await runInWindow(record.window, () => dispatch(contextOf(record, params)));
       } catch (err) {
         out = { error: { code: err?.code, message: err?.message, data: err?.data } };
       }
@@ -1402,6 +1455,7 @@ function createPageRequests({
     walletUnlock,
     foreground,
     promptState: () => prompts.state(),
+    promptUsage: () => prompts.usage(),
     stats,
     register,
   };

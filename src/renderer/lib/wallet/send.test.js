@@ -1226,6 +1226,22 @@ describe('send review: the fee check at confirmation (design 0005, A)', () => {
     expect(window.wallet.sendTransaction).toHaveBeenCalled();
   });
 
+  test('with the approvals panel on, a fee far above today’s goes to the panel at the first press (APS-4)', async () => {
+    const { elements } = await review(ABOVE);
+    window.pagePrompts = { approvalsDocument: true };
+    expect(elements['send-fee-warning-text'].textContent).toBe(
+      "This network fee is 20× today's network fee."
+    );
+    // One press: main asks in the panel, twice for such a fee, and reads no
+    // acknowledgement of the chrome's.
+    await confirm(elements);
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+    expect(window.wallet.confirmSigning.mock.calls[0][0]).toBe('wallet-send');
+    expect(window.wallet.confirmSigning.mock.calls[0]).toHaveLength(3);
+    expect(elements['send-confirm-btn'].textContent).not.toBe('Send anyway');
+    expect(window.wallet.sendTransaction).toHaveBeenCalledTimes(1);
+  });
+
   test("a fee newly above at the press: main mints nothing, and the review asks again", async () => {
     const { elements } = await review();
     window.wallet.confirmSigning

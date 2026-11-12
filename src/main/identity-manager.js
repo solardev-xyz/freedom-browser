@@ -26,6 +26,7 @@ const { getActiveProfile } = require('./profile-resolver');
 const { VAULT_LOCKED_MESSAGE, isVaultLockedError } = require('./wallet/vault-errors');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./wallet/ledger/errors');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./wallet/remote/errors');
+const { forSenderWindow } = require('./windows/request-window');
 const { vaultBackend } = require('./core/vault-backend');
 const {
   blockNode,
@@ -2232,24 +2233,26 @@ function registerIdentityIpc() {
   });
 
   // Add a remote (phone) account (address reported over openlv)
-  ipcMain.handle('wallet:add-remote-wallet', async (_event, name, address) => {
+  // Both run for the window that asked (APS-4): the phone's QR shows in
+  // its sidebar.
+  ipcMain.handle('wallet:add-remote-wallet', forSenderWindow(async (_event, name, address) => {
     try {
       const wallet = await addRemoteWallet(name, address);
       return { success: true, wallet };
     } catch (err) {
       return { success: false, error: err.message, code: err.code };
     }
-  });
+  }));
 
   // Check an existing phone account on the phone (#1078)
-  ipcMain.handle('wallet:check-remote-wallet', async (_event, index) => {
+  ipcMain.handle('wallet:check-remote-wallet', forSenderWindow(async (_event, index) => {
     try {
       const wallet = await checkRemoteWallet(index);
       return { success: true, wallet };
     } catch (err) {
       return { success: false, error: err.message, code: err.code };
     }
-  });
+  }));
 
   // Rename wallet
   ipcMain.handle('wallet:rename-wallet', async (_event, index, newName) => {
