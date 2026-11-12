@@ -1588,7 +1588,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       const after = broadcastStatuses(ctx).slice(before);
       expect(after).not.toContain('starting');
       expect(after).not.toContain('running');
-      expect(after.at(-1)).toBe('stopped');
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'stopped', error: null });
     });
 
     test('vault locked: the stop completes, with no restart left waiting for an unlock', async () => {
