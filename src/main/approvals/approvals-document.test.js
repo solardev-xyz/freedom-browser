@@ -10,6 +10,7 @@ const { pathToFileURL } = require('url');
 const approvals = require('./approvals-document');
 const { createPageDocuments } = require('../page/page-documents');
 const { createPageRequests } = require('../page/page-requests');
+const { createWalletApprovals, REJECTED } = require('./wallet-approvals');
 
 const {
   createApprovalsDocuments,
@@ -746,6 +747,7 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null } =
   const toChrome = [];
   const contexts = [];
   const windowWatchers = [];
+  const closedWindows = new Set();
   const documents = createPageDocuments({
     isPrivateWebContents: () => false,
     isChromeIndexUrl: (url) => url === CHROME_URL,
@@ -769,7 +771,12 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null } =
     clearTimer: () => {},
     chromeWindowOf: (contents) => (contents?.id >= 500 && contents.id < 600 ? contents.id - 500 : null),
     sendToWindow: (windowId, channel, payload) => toChrome.push([windowId, channel, payload]),
-    watchWindow: (windowId, fn) => windowWatchers.push([windowId, fn]),
+    // As Electron's: a closed window is not watched, and says so.
+    watchWindow: (windowId, fn) => {
+      if (closedWindows.has(windowId)) return false;
+      windowWatchers.push([windowId, fn]);
+      return true;
+    },
     approvals: flag ? env.docs : null,
   });
   env.decide.mockImplementation((windowId, payload) => requests.decideInWindow(windowId, payload));
@@ -790,7 +797,10 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null } =
   }
 
   const chromeChannels = () => toChrome.map(([, channel]) => channel);
-  const closeWindow = (windowId) => windowWatchers.filter(([id]) => id === windowId).forEach(([, fn]) => fn());
+  const closeWindow = (windowId) => {
+    closedWindows.add(windowId);
+    windowWatchers.filter(([id]) => id === windowId).forEach(([, fn]) => fn());
+  };
   return { ...env, requests, tab, toChrome, chromeChannels, contexts, guests, closeWindow };
 }
 
@@ -1042,7 +1052,8 @@ describe('APS-3: the window\'s own prompts', () => {
     });
     env.docs.shown(eventFrom(contents), { handle: shown.handle });
     env.advance(INPUT_DELAY_MS);
-    await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true });
+    // Answered: a window's prompt has no request (Codex, #1210).
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true })).toEqual({ ok: true });
     expect(await decision).toEqual({ approve: true, choices: {}, from: 'approvals' });
 
     // A page's prompt shown first keeps its place; the wallet's waits.
@@ -1064,10 +1075,138 @@ describe('APS-3: the window\'s own prompts', () => {
     expect(await waiting).toEqual({ closed: 'closed' });
   });
 
+  test('a window closed before its prompt opens gets none, watched or not', async () => {
+    const env = withPageRequests();
+    attached(env);
+    env.closeWindow(1);
+    expect(await env.requests.walletPrompt(1, { kind: 'wallet.send', view: {} })).toEqual({ closed: 'closed' });
+    // Watched (a tab reported in front), then closed.
+    const second = attached(env, 2);
+    env.requests.foreground({ sender: { id: 502 } }, { guest: null });
+    env.closeWindow(2);
+    expect(await env.requests.walletPrompt(2, { kind: 'wallet.send', view: {} })).toEqual({ closed: 'closed' });
+    expect(second.contents.sent).toEqual([]);
+    expect(env.requests.promptState()[1]).toBeUndefined();
+    expect(env.requests.promptState()[2]).toBeUndefined();
+  });
+
   test('not a wallet kind, or the document off: no prompt', async () => {
     const env = withPageRequests({ flag: false });
     expect(await env.requests.walletPrompt(1, { kind: 'wallet.send', view: {} })).toEqual({ closed: 'cancelled' });
     const on = withPageRequests();
     expect(() => on.requests.walletPrompt(1, { kind: 'eth.send', view: {} })).toThrow('no wallet prompt');
+  });
+});
+
+// The real path: wallet-approvals.js asking through page-requests.js's
+// `walletPrompt`, decided in the document (Codex, #1210, findings 1 and 4).
+describe('APS-3: the wallet\'s own approvals, through walletPrompt to the document', () => {
+  const ACCOUNT = '0x1111111111111111111111111111111111111111';
+  const TO = '0x2222222222222222222222222222222222222222';
+  const WALLETS = [
+    { index: 0, name: 'Main Wallet', address: ACCOUNT, type: 'mnemonic' },
+    { index: 1, name: 'Ledger', address: TO, type: 'ledger' },
+  ];
+  const SEND = { chainId: 100, to: TO, value: '1', data: '0x', gasLimit: '21000', gasPrice: '1000000000' };
+  const BELOW = { maxCost: '21000000000000', comparable: true, ratio: '1.0', above: false, oneEndpoint: false, basis: 'header', autoApprove: true };
+  const chrome = { id: 501 };
+
+  function walletApprovals(env, { checkFees = async () => BELOW, atPress = [] } = {}) {
+    return createWalletApprovals({
+      walletPrompt: (windowId, spec) => env.requests.walletPrompt(windowId, spec),
+      chromeWindowOf: (contents) => (contents?.id >= 500 && contents.id < 600 ? contents.id - 500 : null),
+      getDerivedWallets: async () => WALLETS,
+      checkFees,
+      checkAtApproval: async () => (atPress.length ? atPress.shift() : { ...BELOW, askAgain: false }),
+    });
+  }
+
+  // The document's report of the prompt it shows, and main's delay past.
+  async function onScreen(env, contents) {
+    await flush();
+    const [channel, shown] = contents.sent.at(-1);
+    expect(channel).toBe(CHANNELS.PROMPT);
+    env.docs.shown(eventFrom(contents), { handle: shown.handle });
+    env.advance(INPUT_DELAY_MS);
+    return shown;
+  }
+
+  test('an approval is answered once the token is minted, a Ledger account\'s too, with no wait on the device', async () => {
+    const env = withPageRequests();
+    const { contents, view } = attached(env);
+    const order = [];
+    let minted;
+    const minting = new Promise((resolve) => (minted = resolve));
+    const confirmed = walletApprovals(env).confirm({ sender: chrome, kind: 'wallet-send', index: 1, payload: SEND, feeChecked: true }, async () => {
+      order.push('mint');
+      await minting;
+      order.push('minted');
+      return { token: 'token' };
+    });
+    const shown = await onScreen(env, contents);
+    expect(shown.view.account).toEqual({ index: 1, name: 'Ledger', address: TO, type: 'ledger' });
+    const decided = env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true }).then((result) => {
+      order.push('answered');
+      return result;
+    });
+    await flush();
+    // The device's step comes after, with the token, on the chrome's
+    // screen: the panel doesn't wait on it, and goes.
+    expect(env.docs.state()[1]).toMatchObject({ waiting: null, shown: null, visible: false });
+    expect(view.visible).toBe(false);
+    expect(order).toEqual(['mint']);
+    minted();
+    expect(await decided).toEqual({ ok: true });
+    expect(order).toEqual(['mint', 'minted', 'answered']);
+    expect(await confirmed).toEqual({ token: 'token', approved: true });
+  });
+
+  test('a rejection is answered, and mints nothing; a fee asked again is answered as it asks, and its second press mints', async () => {
+    const env = withPageRequests();
+    const { contents } = attached(env);
+    const mint = jest.fn(() => ({ token: 'token' }));
+    const rejected = walletApprovals(env).confirm({ sender: chrome, kind: 'wallet-send', index: 0, payload: SEND, feeChecked: true }, mint);
+    let shown = await onScreen(env, contents);
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false })).toEqual({ ok: true });
+    expect(await rejected).toEqual(REJECTED);
+    expect(mint).not.toHaveBeenCalled();
+
+    const above = { ...BELOW, ratio: '4.5', above: true, autoApprove: false };
+    const twice = walletApprovals(env, { atPress: [{ ...above, askAgain: true }, { ...above, askAgain: false }] }).confirm(
+      { sender: chrome, kind: 'wallet-send', index: 0, payload: SEND, feeChecked: true },
+      mint
+    );
+    shown = await onScreen(env, contents);
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true })).toEqual({ ok: true });
+    expect(mint).not.toHaveBeenCalled();
+    const again = await onScreen(env, contents);
+    expect(again.handle).not.toBe(shown.handle);
+    expect(again.view.feeAskAgain).toBe(true);
+    expect(await env.docs.decide(eventFrom(contents), { handle: again.handle, approve: true })).toEqual({ ok: true });
+    expect(await twice).toEqual({ token: 'token', approved: true });
+    expect(mint).toHaveBeenCalledTimes(1);
+  });
+
+  test('its window closed during the fee check and account lookup: no prompt, and the confirmation settles', async () => {
+    for (const watched of [false, true]) {
+      const env = withPageRequests();
+      const { contents } = attached(env);
+      if (watched) env.requests.foreground({ sender: chrome }, { guest: null });
+      let feesIn;
+      const fees = new Promise((resolve) => (feesIn = resolve));
+      const mint = jest.fn(() => ({ token: 'token' }));
+      let settled = null;
+      walletApprovals(env, { checkFees: () => fees })
+        .confirm({ sender: chrome, kind: 'wallet-send', index: 0, payload: SEND, feeChecked: true }, mint)
+        .then((outcome) => (settled = outcome));
+      await flush();
+      env.closeWindow(1);
+      feesIn(BELOW);
+      await flush();
+      expect(settled).toEqual(REJECTED);
+      expect(mint).not.toHaveBeenCalled();
+      expect(contents.sent).toEqual([]);
+      expect(env.requests.promptState()[1]).toBeUndefined();
+    }
   });
 });

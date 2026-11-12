@@ -512,6 +512,22 @@ describe('the wallet\'s own kinds', () => {
     expect(render('wallet.intent_replace', WALLET['wallet.intent_replace']).body.textContent).toContain('You confirm this on your Ledger');
   });
 
+  // Codex, #1210: the wallet's own decision is answered once its token is
+  // minted, and the device step comes after, on the chrome's screen.
+  test('an approval waits on a device for a page\'s prompt only, never for the wallet\'s own', () => {
+    const on = (type) => ({ ...ACCOUNT, type });
+    expect(kinds.deviceOf(checkMessage(message('eth.send', { ...VIEWS['eth.send'], account: on('ledger') })))).toBe('ledger');
+    expect(kinds.deviceOf(checkMessage(message('eth.send', { ...VIEWS['eth.send'], account: on('remote') })))).toBe('remote');
+    expect(kinds.deviceOf(checkMessage(message('eth.send', VIEWS['eth.send'])))).toBeNull();
+    for (const kind of ['wallet.send', 'wallet.intent_replace', 'wallet.executor_send']) {
+      const prompt = checkMessage(message(kind, { ...WALLET[kind], account: on('ledger') }));
+      expect(prompt.valid).toBe(true);
+      expect(kinds.deviceOf(prompt)).toBeNull();
+    }
+    expect(kinds.deviceOf(checkMessage(message('eth.send', { ...VIEWS['eth.send'], account: on('ledger'), extra: 1 })))).toBeNull();
+    expect(kinds.deviceOf(null)).toBeNull();
+  });
+
   test('off its schema: an unknown field, a bad hash, a page\'s choice in the account, a guest named', () => {
     expect(checkMessage({ ...message('wallet.send', WALLET['wallet.send']), guest: 4 }).valid).toBe(false);
     expect(checkMessage({ ...message('eth.connect', VIEWS['eth.connect']), guest: null }).valid).toBe(false);

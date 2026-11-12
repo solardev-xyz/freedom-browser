@@ -507,16 +507,24 @@ describe('signing handlers require a main-side confirmation', () => {
       feeCheck.checkAtApproval.mockClear();
       const asked = [];
       let answer = { approved: true };
+      let mintedBeforeAnswer = null;
       mockWalletApprovals = {
-        confirm: jest.fn(async (request) => {
+        // As wallet-approvals.js: the token is minted on the approval,
+        // before the panel's decision is answered.
+        confirm: jest.fn(async (request, onApproved) => {
           asked.push(request);
-          return answer;
+          if (!answer.approved) return answer;
+          const before = confirmations._outstandingCount();
+          const minted = await onApproved();
+          mintedBeforeAnswer = confirmations._outstandingCount() === before + 1;
+          return { ...minted, approved: true };
         }),
       };
       const chromeEvent = { sender: { id: 501 } };
       const outstanding = confirmations._outstandingCount();
       const approved = await handlers['wallet:confirm-signing'](chromeEvent, 'wallet-send', null, TX, { feeAcknowledged: true });
-      expect(approved).toMatchObject({ success: true, token: expect.any(String) });
+      expect(approved).toMatchObject({ success: true, token: expect.any(String), expiresAt: expect.any(Number) });
+      expect(mintedBeforeAnswer).toBe(true);
       expect(asked).toEqual([{ sender: chromeEvent.sender, kind: 'wallet-send', index: 0, payload: TX, feeChecked: true }]);
       // The fee is asked in the panel: the chrome's acknowledgement isn't read.
       expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();

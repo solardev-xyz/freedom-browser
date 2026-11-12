@@ -95,9 +95,11 @@
     ledger: 'Confirm on your Ledger…',
     remote: 'Confirm on your phone: its code is in the sidebar…',
   });
+  // A page's prompt only: the wallet's own is answered once its token is
+  // minted, and the chrome's screen says where to confirm after that.
   const deviceOf = (prompt) => {
-    const type = prompt?.view?.account?.type;
-    return Object.prototype.hasOwnProperty.call(WAITING_COPY, type) ? type : null;
+    const device = kinds.deviceOf(prompt);
+    return device !== null && Object.prototype.hasOwnProperty.call(WAITING_COPY, device) ? device : null;
   };
 
   function stopWaiting() {

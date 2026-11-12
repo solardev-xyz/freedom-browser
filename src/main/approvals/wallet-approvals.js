@@ -31,6 +31,17 @@ const PROMPT_KINDS = Object.freeze({
 
 const REJECTED = Object.freeze({ approved: false, error: 'User rejected the request', code: 'USER_REJECTED' });
 const NO_WINDOW = Object.freeze({ approved: false, error: 'This window has no approvals document', code: 'NO_WINDOW' });
+const NO_ACCOUNT = Object.freeze({
+  approved: false,
+  error: "This request's account isn't in the wallet",
+  code: 'ACCOUNT_UNKNOWN',
+});
+
+// The kinds whose token binds the index of the account that signs: the
+// panel must show that very account, from main's wallet list, or nothing
+// is asked. An intent's kinds bind its sender's address instead, which a
+// held payment may keep after its account has left the wallet.
+const INDEX_BOUND = new Set(['wallet-send', 'safe-send', 'executor-send']);
 
 // ERC-20's transfer(address,uint256): the recipient and the amount, read
 // from the data main binds, so the panel says what a token send does.
@@ -100,17 +111,27 @@ function createWalletApprovals({
   checkFees,
   checkAtApproval,
 }) {
+  // The account as main's wallet list has it. By index (the account a
+  // token signs with): null unless the list is read and has it. By address
+  // (an intent's sender): the address alone, `unknown`, when it isn't.
   async function accountOf({ index = null, address = null } = {}) {
+    const byIndex = index !== null;
+    if (byIndex && !Number.isSafeInteger(index)) return null;
     let wallets;
     try {
-      wallets = (await getDerivedWallets()) || [];
+      wallets = await getDerivedWallets();
     } catch {
+      wallets = null;
+    }
+    if (!Array.isArray(wallets)) {
+      if (byIndex) return null;
       wallets = [];
     }
     const wanted = typeof address === 'string' ? address.toLowerCase() : null;
     const wallet = wallets.find((candidate) =>
-      index !== null ? candidate?.index === index : wanted !== null && String(candidate?.address).toLowerCase() === wanted
+      byIndex ? candidate?.index === index : wanted !== null && String(candidate?.address).toLowerCase() === wanted
     );
+    if (!wallet && byIndex) return null;
     if (!wallet) return { index: null, name: '', address: typeof address === 'string' ? address : null, type: 'unknown' };
     return {
       index: wallet.index,
@@ -136,14 +157,22 @@ function createWalletApprovals({
     return { id: chainId, name, symbol: symbol || 'ETH' };
   }
 
-  /** Main's view of the request, for its kind's template in the document. */
+  /**
+   * Main's view of the request, for its kind's template in the document.
+   * Null for an index-bound kind whose account main can't show.
+   */
   async function viewOf(kind, index, payload, { verdict, askAgain }) {
     const feeCheck = verdict ? { ...verdict } : null;
+    let account = null;
+    if (INDEX_BOUND.has(kind)) {
+      account = Number.isSafeInteger(index) ? await accountOf({ index }) : null;
+      if (!account) return null;
+    }
     switch (kind) {
       case 'wallet-send': {
         const tx = txOf(payload);
         return {
-          account: await accountOf({ index }),
+          account,
           chain: chainOf(payload.chainId),
           tx,
           transfer: transferOf(tx),
@@ -154,7 +183,7 @@ function createWalletApprovals({
       }
       case 'safe-send': {
         const tx = txOf(payload.tx);
-        return { account: await accountOf({ index }), chain: chainOf(payload.chainId), tx, transfer: transferOf(tx) };
+        return { account, chain: chainOf(payload.chainId), tx, transfer: transferOf(tx) };
       }
       case 'intent-resend':
         return {
@@ -185,7 +214,7 @@ function createWalletApprovals({
         };
       case 'executor-send':
         return {
-          account: await accountOf({ index }),
+          account,
           chain: chainOf(payload.chainId),
           tx: txOf(payload),
           fee: feeOf(payload),
@@ -207,12 +236,24 @@ function createWalletApprovals({
 
   /**
    * Ask the user in `sender`'s window's approvals document. Resolves with
-   * `{ approved: true }` only on their approval there, the fee confirmed
-   * again when it is above the threshold at the press.
+   * `{ approved: true, ...onApproved() }` only on their approval there, the
+   * fee confirmed again when it is above the threshold at the press; with
+   * a refusal, and nothing asked, for an index-bound kind whose account
+   * main can't show.
+   *
+   * Each prompt's decision is released (`page-requests.js` `walletPrompt`)
+   * once what it started is done: a rejection at once, an approval whose
+   * fee is asked again once main has the verdict that asks, and any other
+   * approval once `onApproved` (the token's mint) has run, or thrown. The
+   * panel's invocation is answered then. The device step comes after, with
+   * the token, on the chrome's screen (design 0011: "Device steps keep
+   * today's paths after the decision").
    *
    * @param {object} request `{ sender, kind, index, payload, feeChecked }`
+   * @param {() => object} [onApproved] run on the approval, before it is
+   *   released; what it returns joins the answer.
    */
-  async function confirm({ sender, kind, index, payload, feeChecked }) {
+  async function confirm({ sender, kind, index, payload, feeChecked }, onApproved = () => ({})) {
     const promptKind = PROMPT_KINDS[kind];
     if (!promptKind) throw new Error(`wallet-approvals: not a wallet kind: ${kind}`);
     let windowId;
@@ -226,20 +267,34 @@ function createWalletApprovals({
     let askAgain = false;
     for (;;) {
       const view = await viewOf(kind, index, payload, { verdict, askAgain });
-      const decision = await walletPrompt(windowId, {
-        kind: promptKind,
-        view,
-        choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+      if (!view) return NO_ACCOUNT;
+      let release;
+      const released = new Promise((resolve) => {
+        release = resolve;
       });
-      if (decision?.approve !== true) return REJECTED;
-      if (!feeChecked) return { approved: true };
-      // The fee at the press (design 0005, A): above the threshold and not
-      // yet confirmed again, the prompt is shown again, asking.
-      const atPress = await checkAtApproval(payload, { acknowledged: askAgain });
-      if (!atPress?.askAgain) return { approved: true };
-      verdict = { ...atPress };
-      delete verdict.askAgain;
-      askAgain = true;
+      try {
+        const decision = await walletPrompt(windowId, {
+          kind: promptKind,
+          view,
+          choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+          released,
+        });
+        if (decision?.approve !== true) return REJECTED;
+        if (feeChecked) {
+          // The fee at the press (design 0005, A): above the threshold and
+          // not yet confirmed again, the prompt is shown again, asking.
+          const atPress = await checkAtApproval(payload, { acknowledged: askAgain });
+          if (atPress?.askAgain) {
+            verdict = { ...atPress };
+            delete verdict.askAgain;
+            askAgain = true;
+            continue;
+          }
+        }
+        return { ...(await onApproved()), approved: true };
+      } finally {
+        release();
+      }
     }
   }
 
@@ -276,4 +331,4 @@ function getWalletApprovals() {
   return shared;
 }
 
-module.exports = { PROMPT_KINDS, REJECTED, createWalletApprovals, getWalletApprovals, transferOf };
+module.exports = { PROMPT_KINDS, REJECTED, NO_ACCOUNT, createWalletApprovals, getWalletApprovals, transferOf };

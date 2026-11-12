@@ -1035,5 +1035,18 @@
       : { handle, kind: null, site: null, view: null, valid: false };
   }
 
-  return Object.freeze({ KINDS, SITE, checkMessage, typedDataText, units });
+  /**
+   * The device an approval of this checked prompt waits on while main signs
+   * (`ledger`, `remote`), or null. A page's prompt only: the wallet's own
+   * (`wallet.*`) is answered once its token is minted, and the device step
+   * comes after, on the chrome's screen (design 0011: "Device steps keep
+   * today's paths after the decision").
+   */
+  function deviceOf(prompt) {
+    if (!prompt?.valid || typeof prompt.kind !== 'string' || prompt.kind.startsWith('wallet.')) return null;
+    const type = prompt.view?.account?.type;
+    return type === 'ledger' || type === 'remote' ? type : null;
+  }
+
+  return Object.freeze({ KINDS, SITE, checkMessage, deviceOf, typedDataText, units });
 });

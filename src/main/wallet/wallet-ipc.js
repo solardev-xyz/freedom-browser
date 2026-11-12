@@ -502,16 +502,19 @@ function registerWalletIpc() {
       const approvals = walletApprovals.PROMPT_KINDS[kind] ? walletApprovals.getWalletApprovals() : null;
       if (approvals) {
         bindingFor(kind, index, payload);
-        const outcome = await approvals.confirm({
-          sender: event?.sender,
-          kind,
-          index,
-          payload,
-          feeChecked: FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index),
-        });
+        // Minted on the approval, before the panel's decision is answered.
+        const outcome = await approvals.confirm(
+          {
+            sender: event?.sender,
+            kind,
+            index,
+            payload,
+            feeChecked: FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index),
+          },
+          () => issueConfirmation(kind, index, payload)
+        );
         if (!outcome.approved) return { success: false, error: outcome.error, code: outcome.code };
-        const { token, expiresAt } = issueConfirmation(kind, index, payload);
-        return { success: true, token, expiresAt };
+        return { success: true, token: outcome.token, expiresAt: outcome.expiresAt };
       }
       if (FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index)) {
         const verdict = await checkAtApproval(payload, {

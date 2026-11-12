@@ -4,7 +4,7 @@
 // request the token binds, and is answered yes only on the user's approval
 // there; a fee above the threshold is asked again in the panel itself.
 
-const { createWalletApprovals, PROMPT_KINDS, REJECTED, transferOf } = require('./wallet-approvals');
+const { createWalletApprovals, PROMPT_KINDS, REJECTED, NO_ACCOUNT, transferOf } = require('./wallet-approvals');
 const kinds = require('../../renderer/approvals/approvals-kinds.js');
 
 const ACTIVE = '0x1111111111111111111111111111111111111111';
@@ -29,7 +29,7 @@ const PAYLOADS = {
   'executor-send': [0, { chainId: 100, to: SAFE, value: '0', data: '0x6a761202', gasLimit: '90000', gasPrice: '2000000000' }],
 };
 
-function setup({ verdict = BELOW, atPress = [] } = {}) {
+function setup({ verdict = BELOW, atPress = [], wallets = async () => WALLETS } = {}) {
   const prompts = [];
   const decisions = [];
   const answers = [...atPress];
@@ -43,7 +43,7 @@ function setup({ verdict = BELOW, atPress = [] } = {}) {
       return decisions.length ? decisions.shift() : { approve: true, choices: {} };
     }),
     chromeWindowOf: (contents) => (contents?.id >= 500 ? contents.id - 500 : null),
-    getDerivedWallets: async () => WALLETS,
+    getDerivedWallets: wallets,
     chainName: (chainId) => (chainId === 100 ? 'Gnosis Chain' : null),
     nativeSymbol: (chainId) => (chainId === 100 ? 'xDAI' : null),
     checkFees: jest.fn(async () => verdict),
@@ -113,6 +113,94 @@ describe('the six wallet kinds ask in the window\'s panel', () => {
     const env = setup();
     expect(await env.approvals.confirm({ sender: chrome, kind: 'wallet-send', index: 0, payload: SEND, feeChecked: false })).toEqual({ approved: true });
     expect(env.prompts[0].view.feeCheck).toBeNull();
+  });
+});
+
+// Codex, #1210: the panel's invocation is answered once its decision is
+// acted on, and a window's prompt has no request of its own to wait for.
+describe('each decision is released once what it started is done', () => {
+  const settledYet = async (promise) => {
+    let settled = false;
+    promise.then(() => (settled = true));
+    await new Promise((resolve) => setImmediate(resolve));
+    return settled;
+  };
+
+  test('an approval once the token is minted; a rejection at once; a fee asked again once main has its verdict', async () => {
+    const env = setup();
+    let releasedAtMint = null;
+    const outcome = await env.approvals.confirm({ sender: chrome, kind: 'wallet-send', index: 0, payload: SEND, feeChecked: true }, async () => {
+      releasedAtMint = await settledYet(env.prompts[0].released);
+      return { token: 'token', expiresAt: 1 };
+    });
+    expect(outcome).toEqual({ token: 'token', expiresAt: 1, approved: true });
+    expect(env.prompts[0].released).toBeInstanceOf(Promise);
+    expect(releasedAtMint).toBe(false);
+    expect(await settledYet(env.prompts[0].released)).toBe(true);
+
+    const rejected = setup();
+    rejected.decisions.push({ approve: false, choices: {} });
+    const mint = jest.fn();
+    expect(await rejected.approvals.confirm({ sender: chrome, kind: 'intent-close', index: null, payload: PAYLOADS['intent-close'][1] }, mint)).toEqual(REJECTED);
+    expect(mint).not.toHaveBeenCalled();
+    expect(await settledYet(rejected.prompts[0].released)).toBe(true);
+
+    // A mint that throws is released all the same.
+    const failing = setup();
+    await expect(
+      failing.approvals.confirm({ sender: chrome, kind: 'safe-send', index: 1000, payload: PAYLOADS['safe-send'][1] }, () => {
+        throw new Error('mint failed');
+      })
+    ).rejects.toThrow('mint failed');
+    expect(await settledYet(failing.prompts[0].released)).toBe(true);
+
+    const twice = setup({ verdict: ABOVE });
+    let firstReleasedAtSecond = null;
+    expect(
+      await twice.approvals.confirm({ sender: chrome, kind: 'wallet-send', index: 0, payload: SEND, feeChecked: true }, async () => {
+        firstReleasedAtSecond = await settledYet(twice.prompts[0].released);
+        return {};
+      })
+    ).toEqual({ approved: true });
+    expect(twice.prompts).toHaveLength(2);
+    expect(firstReleasedAtSecond).toBe(true);
+  });
+});
+
+// Codex, #1210: a token that binds an account's index is asked for only
+// with that account, as main's wallet list has it, in the panel.
+describe('an index-bound kind whose account main can\'t show asks nothing', () => {
+  test.each(['wallet-send', 'safe-send', 'executor-send'])('%s: the wallet list unreadable, or no account at its index', async (kind) => {
+    const [index, payload] = PAYLOADS[kind];
+    const bound = kind === 'wallet-send' ? 0 : index;
+    const feeChecked = kind !== 'safe-send';
+    const unreadable = setup({
+      wallets: async () => {
+        throw new Error('vault meta unreadable');
+      },
+    });
+    expect(await unreadable.approvals.confirm({ sender: chrome, kind, index: bound, payload, feeChecked })).toEqual(NO_ACCOUNT);
+    expect(unreadable.prompts).toHaveLength(0);
+    const notAList = setup({ wallets: async () => null });
+    expect(await notAList.approvals.confirm({ sender: chrome, kind, index: bound, payload, feeChecked })).toEqual(NO_ACCOUNT);
+    for (const missing of [7, null, '0', 1.5]) {
+      const env = setup();
+      expect(await env.approvals.confirm({ sender: chrome, kind, index: missing, payload, feeChecked })).toEqual(NO_ACCOUNT);
+      expect(env.prompts).toHaveLength(0);
+    }
+    expect(NO_ACCOUNT).toMatchObject({ approved: false, code: 'ACCOUNT_UNKNOWN' });
+  });
+
+  test('an intent\'s sender may have left the wallet: its address shows, as not in this wallet', async () => {
+    const env = setup({
+      wallets: async () => {
+        throw new Error('vault meta unreadable');
+      },
+    });
+    const [, payload] = PAYLOADS['intent-close'];
+    expect(await env.approvals.confirm({ sender: chrome, kind: 'intent-close', index: null, payload })).toEqual({ approved: true });
+    expect(env.prompts[0].view.account).toEqual({ index: null, name: '', address: ACTIVE, type: 'unknown' });
+    expect(kinds.checkMessage(message('wallet.intent_close', env.prompts[0].view)).valid).toBe(true);
   });
 });
 

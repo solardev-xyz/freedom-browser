@@ -255,9 +255,13 @@ function defaultSendToWindow(windowId, channel, payload) {
   win.webContents.send(channel, payload);
 }
 
+// Whether the window is open: only then is its close watched.
 function defaultWatchWindow(windowId, onClosed) {
   const { BrowserWindow } = require('electron');
-  BrowserWindow.fromId(windowId)?.once('closed', onClosed);
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return false;
+  win.once('closed', onClosed);
+  return true;
 }
 
 /**
@@ -829,12 +833,17 @@ function createPageRequests({
    * nothing older is, whichever tab is in front. Settles with the decision,
    * `{ approve, choices }`, or `{ closed: reason }`. Only with the
    * approvals document on; it then decides alone.
+   *
+   * It has no request to answer, so `released` says when what its decision
+   * started is done (`wallet-approvals.js`: the token minted, or refused, or
+   * the prompt shown again), and the decision's invocation is answered then.
+   * A window closed meanwhile (during the caller's fee check, say) gets no
+   * prompt: it closes at once.
    */
-  function walletPrompt(windowId, { kind, view = {}, choices } = {}) {
+  function walletPrompt(windowId, { kind, view = {}, choices, released } = {}) {
     if (!approvals) return Promise.resolve({ closed: CLOSED.CANCELLED });
     if (!WALLET_PROMPT_KINDS.has(kind)) throw new Error(`page-requests: no wallet prompt of kind ${kind}`);
-    if (!Number.isInteger(windowId)) return Promise.resolve({ closed: CLOSED.CLOSED });
-    watch(windowId);
+    if (!Number.isInteger(windowId) || !watch(windowId)) return Promise.resolve({ closed: CLOSED.CLOSED });
     const handle = randomHex(HANDLE_BYTES);
     trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
     const entry = prompts.add({
@@ -847,6 +856,7 @@ function createPageRequests({
       site: WALLET_SITE,
       view,
       choices,
+      released: released instanceof Promise ? released : Promise.resolve(),
     });
     return entry.decision;
   }
@@ -1027,7 +1037,8 @@ function createPageRequests({
     const outcome = prompts.decide(windowId, payload, from);
     trace({ kind: 'decide', window: windowId, from, ok: outcome.ok, reason: outcome.reason });
     if (!outcome.ok) return outcome;
-    await (outcome.entry.released || outcome.entry.record.reply);
+    // A window's own prompt always has `released`; a page's has its record.
+    await (outcome.entry.released || outcome.entry.record?.reply);
     return { ok: true };
   }
 
@@ -1075,17 +1086,21 @@ function createPageRequests({
   }
 
   // Forget a window's prompts when it closes: its own close with it.
+  // Whether the window is open and watched; one closed already is not.
   function watch(windowId) {
-    if (watchedWindows.has(windowId)) return;
-    watchedWindows.add(windowId);
+    if (watchedWindows.has(windowId)) return true;
+    let open;
     try {
-      watchWindow(windowId, () => {
-        watchedWindows.delete(windowId);
-        prompts.forgetWindow(windowId);
-      });
+      open =
+        watchWindow(windowId, () => {
+          watchedWindows.delete(windowId);
+          prompts.forgetWindow(windowId);
+        }) !== false;
     } catch {
-      // Forgotten with the process, then.
+      open = false;
     }
+    if (open) watchedWindows.add(windowId);
+    return open;
   }
 
   async function run(record, dispatch, event, nonce, naming, params) {

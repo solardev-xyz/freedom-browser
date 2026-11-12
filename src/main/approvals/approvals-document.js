@@ -237,11 +237,17 @@ function panelBounds({ width, height }, top) {
   return { x: w - panelWidth, y, width: panelWidth, height: h - y };
 }
 
-// An approved prompt for an account that signs on a device: the panel stays
-// up, saying where to confirm, until the decision's request is answered
-// (APS-3; the chrome's screens held their device label the same way).
+// An approved page prompt for an account that signs on a device: the panel
+// stays up, saying where to confirm, until the decision's request is
+// answered, which main signs in (APS-3; the chrome's screens held their
+// device label the same way). The wallet's own prompts (`wallet.*`) don't:
+// their decision is answered once the token is minted, and the device step
+// comes after, with that token, on the chrome's screen, which says where to
+// confirm (design 0011: "Device steps keep today's paths after the
+// decision").
 const DEVICES = new Set(['ledger', 'remote']);
 const deviceOf = (prompt) => {
+  if (typeof prompt?.kind !== 'string' || prompt.kind.startsWith('wallet.')) return null;
   const type = prompt?.view?.account?.type;
   return typeof type === 'string' && DEVICES.has(type) ? type : null;
 };
