@@ -12,6 +12,7 @@
 // `executeJavaScript` without its gesture flag is a script with no gesture.
 
 const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 const { evalInWebview } = require('./permission-fixtures');
 
 const SITE = `bzz://${SAMPLE_BZZ_HASH}`;
@@ -287,7 +288,7 @@ test('"Always allow" survives a restart and is removed in Settings > Privacy and
   // Restart on the same profile.
   await electronApp.close();
   const app = await relaunchApp();
-  const win = await app.firstWindow();
+  const win = await chromeWindow(app);
   await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
   // Whatever tabs were restored, work from a fresh one.
   await win.locator('[data-test="new-tab-btn"]').click();

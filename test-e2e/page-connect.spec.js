@@ -5,7 +5,8 @@
 // `page:foreground` report and holds it while the tab is in the background
 // (a badge on the tab, a count on the wallet button), takes a decision only
 // for the handle it shows at that moment, and writes the grant itself. The
-// chrome renders the prompt and writes no grant.
+// window's approvals panel shows the prompt and decides it (design 0011,
+// APS-2); the chrome's decision is refused, and it writes no grant.
 
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -13,6 +14,7 @@ const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { APPROVALS_URL, approvalsPage, approvalsState, decideInPanel, panelArmed } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -191,8 +193,20 @@ async function switchTo(win, tabId) {
   await expect(win.locator('[data-test="tab"].active')).toHaveAttribute('data-tab-id', String(tabId));
 }
 
-const connectScreen = (win) => win.locator('#sidebar-dapp-connect');
 const count = (win) => win.locator('[data-test="wallet-prompt-count"]');
+
+// The window's approvals panel: what it shows, the handle main shows in
+// it, and its own decision for a handle. The chrome's is refused (APS-1).
+const CHROME_REFUSED = { ok: false, reason: 'approvals-document' };
+const heading = (panel) => panel.locator('#heading');
+const panelSite = (panel) => panel.locator('#site');
+const panelShows = async (electronApp, windowId) => (await approvalsState(electronApp))[windowId]?.shown ?? null;
+const panelDecide = (panel, handle, choices) =>
+  panel.evaluate(({ h, c }) => window.approvals.decide(h, true, c), { h: handle, c: choices });
+async function expectConnect(panel, key) {
+  await expect(heading(panel)).toHaveText('Connect', { timeout: 15_000 });
+  await expect(panelSite(panel)).toHaveText(key);
+}
 
 async function fixtures(harness) {
   for (const [key, title] of [[KEY_A, 'dapp a'], [KEY_B, 'dapp b'], [KEY_C, 'dapp c']]) {
@@ -219,26 +233,30 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   await openIn(win, `${KEY_A}/`);
   const guestA = await guestOf(win, KEY_A);
   const windowId = await windowIdOf(electronApp, guestA);
+  const panel = await approvalsPage(electronApp);
   await start(win, KEY_A, 'connect', 'eth_requestAccounts');
-  // In front: main shows it, and the chrome renders main's site.
-  await expect(connectScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-connect-site')).toHaveText(KEY_A);
+  // In front: main shows it, and the panel renders main's site.
+  await expectConnect(panel, KEY_A);
   await expect(count(win)).toHaveText('1');
   await expect(tabButton(win, 1)).toHaveClass(/has-wallet-prompt/);
   const [handle] = (await promptState(electronApp))[windowId].open;
   expect((await promptState(electronApp))[windowId].shown).toBe(handle);
+  expect(await panelShows(electronApp, windowId)).toBe(handle);
 
-  // A decision names no site and can't move the grant to another.
-  expect(
-    await win.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0, site: 'bzz://' + 'b'.repeat(64) }), handle)
-  ).toEqual({ ok: false, reason: 'invalid' });
-  await expect(connectScreen(win)).toBeVisible();
+  // The chrome can't decide it. The panel's decision names no site and
+  // can't move the grant to another.
+  expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0 }), handle)).toEqual(CHROME_REFUSED);
+  await panelArmed(electronApp, windowId);
+  expect(await panelDecide(panel, handle, { walletIndex: 0, site: 'bzz://' + 'b'.repeat(64) })).toEqual({
+    ok: false,
+    reason: 'invalid',
+  });
+  expect(await panelShows(electronApp, windowId)).toBe(handle);
   expect(await outcome(win, KEY_A, 'connect')).toEqual({ pending: true });
 
-  // Let the sidebar finish sliding in before the evidence shot.
-  await expect(win.locator('#dapp-connect-reject')).toBeInViewport({ ratio: 1 });
   await win.screenshot({ path: test.info().outputPath('page-connect-prompt.png') });
-  await win.click('#dapp-connect-approve');
+  await panel.screenshot({ path: test.info().outputPath('page-connect-panel.png') });
+  await decideInPanel(electronApp, { heading: 'Connect', panel, windowId });
   await expect.poll(() => outcome(win, KEY_A, 'connect')).toEqual({ ok: [account] });
   // Main wrote the grant, for the requester's key, and told the page.
   expect(await grantOf(win, KEY_A)).toMatchObject({ origin: KEY_A, walletIndex: 0, chainId: 100 });
@@ -247,7 +265,7 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
     ['accountsChanged', [account]],
     ['connect', { chainId: '0x64' }],
   ]);
-  await expect(connectScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
   await expect(count(win)).toBeHidden();
   await expect(tabButton(win, 1)).not.toHaveClass(/has-wallet-prompt/);
   // Connected: the next request answers at once.
@@ -278,8 +296,7 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   await newTab(win, electronApp, `${KEY_B}/`);
   const guestB = await guestOf(win, KEY_B);
   await start(win, KEY_B, 'first', 'eth_requestAccounts');
-  await expect(connectScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-connect-site')).toHaveText(KEY_B);
+  await expectConnect(panel, KEY_B);
   await start(win, KEY_B, 'second', 'eth_requestAccounts');
   await expect.poll(() => outcome(win, KEY_B, 'second')).toEqual({
     code: -32002,
@@ -287,8 +304,9 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   });
   const [handleB] = (await promptState(electronApp))[windowId].open;
 
-  // Another window's chrome: its decision for this window's handle is
-  // refused, and its report of this window's guest is ignored.
+  // Another window: its chrome's decision and its panel's for this
+  // window's handle are refused, and its report of this window's guest is
+  // ignored.
   await win.evaluate(() => window.electronAPI.newWindow());
   let win2;
   await expect
@@ -301,10 +319,15 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
     )
     .toBe(true);
   await win2.waitForSelector('[data-test="address-input"]', { state: 'visible' });
-  expect(await win2.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0 }), handleB)).toEqual({
-    ok: false,
-    reason: 'closed',
-  });
+  expect(await win2.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0 }), handleB)).toEqual(CHROME_REFUSED);
+  let panel2;
+  await expect
+    .poll(() => {
+      panel2 = electronApp.windows().find((p) => p !== panel && p.url() === APPROVALS_URL);
+      return Boolean(panel2);
+    })
+    .toBe(true);
+  expect(await panelDecide(panel2, handleB, { walletIndex: 0 })).toEqual({ ok: false, reason: 'not-shown' });
   await win2.evaluate((guest) => window.pagePrompts.foreground(guest), guestA);
   await win.waitForTimeout(300);
   const state = await promptState(electronApp);
@@ -317,7 +340,7 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   // A page can't report its own tab in front or decide its own prompt: the
   // sender policy gives it neither channel.
   await switchTo(win, 1);
-  await expect(connectScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
   await electronApp.evaluate(({ webContents }, args) => {
     globalThis.__forged = [];
     const guest = webContents.fromId(args.guest);
@@ -346,8 +369,8 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
 
   // Back on B, the user rejects it.
   await switchTo(win, 2);
-  await expect(connectScreen(win)).toBeVisible();
-  await win.click('#dapp-connect-reject');
+  await expectConnect(panel, KEY_B);
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
   await expect.poll(() => outcome(win, KEY_B, 'first')).toEqual(REJECTED);
   expect(await grantOf(win, KEY_B)).toBeNull();
 });
@@ -377,8 +400,9 @@ test('a background tab\'s prompt waits for its tab; switching away hides it and 
   await expect(count(win)).toHaveText('1');
   await expect(tabButton(win, 2)).toHaveClass(/has-wallet-prompt/);
   await expect(tabButton(win, 1)).not.toHaveClass(/has-wallet-prompt/);
+  const panel = await approvalsPage(electronApp);
   await win.waitForTimeout(500);
-  await expect(connectScreen(win)).toBeHidden();
+  expect(await panelShows(electronApp, windowId)).toBeNull();
   expect(await sidebarOpen()).toBe(false);
   const [handleB] = (await promptState(electronApp))[windowId].open;
   expect(await promptMessages(electronApp, windowId, 'page:prompt-pending')).toEqual([{ handle: handleB, guest: guestB }]);
@@ -387,38 +411,34 @@ test('a background tab\'s prompt waits for its tab; switching away hides it and 
 
   // The user switches to B: its prompt opens.
   await switchTo(win, 2);
-  await expect(connectScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-connect-site')).toHaveText(KEY_B);
+  await expectConnect(panel, KEY_B);
 
   // A asks while B's shows: A waits; B's isn't refused or replaced.
   await start(win, KEY_A, 'a', 'eth_requestAccounts');
   await expect(count(win)).toHaveText('2');
   await expect(tabButton(win, 1)).toHaveClass(/has-wallet-prompt/);
-  await expect(win.locator('#dapp-connect-site')).toHaveText(KEY_B);
+  await expect(panelSite(panel)).toHaveText(KEY_B);
   const handleA = (await promptState(electronApp))[windowId].open.find((h) => h !== handleB);
 
   // Switching away hides B's (it keeps its place) and shows A's.
   await switchTo(win, 1);
-  await expect(win.locator('#dapp-connect-site')).toHaveText(KEY_A);
+  await expectConnect(panel, KEY_A);
   expect(await promptMessages(electronApp, windowId, 'page:prompt-hidden')).toEqual([{ handle: handleB }]);
   expect((await promptState(electronApp))[windowId]).toEqual({ front: guestA, shown: handleA, open: [handleB, handleA] });
   // B's decision, sent after the report of A: refused, nothing done.
-  expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0 }), handleB)).toEqual({
-    ok: false,
-    reason: 'not-shown',
-  });
+  await panelArmed(electronApp, windowId);
+  expect(await panelDecide(panel, handleB, { walletIndex: 0 })).toEqual({ ok: false, reason: 'not-shown' });
   expect(await outcome(win, KEY_B, 'b')).toEqual({ pending: true });
   expect(await grantOf(win, KEY_B)).toBeNull();
-  await win.click('#dapp-connect-reject');
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
   await expect.poll(() => outcome(win, KEY_A, 'a')).toEqual(REJECTED);
   await expect(count(win)).toHaveText('1');
-  await expect(connectScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
 
   // Back to B: its prompt shows again, and now its decision counts.
   await switchTo(win, 2);
-  await expect(connectScreen(win)).toBeVisible();
-  await expect(win.locator('#dapp-connect-site')).toHaveText(KEY_B);
-  await win.click('#dapp-connect-approve');
+  await expectConnect(panel, KEY_B);
+  await decideInPanel(electronApp, { panel, windowId });
   await expect.poll(() => outcome(win, KEY_B, 'b')).toEqual({ ok: [account] });
   expect(await grantOf(win, KEY_B)).toMatchObject({ origin: KEY_B, walletIndex: 0 });
   expect(await grantOf(win, KEY_A)).toBeNull();
@@ -447,11 +467,8 @@ test('a background tab\'s prompt waits for its tab; switching away hides it and 
   });
   await switchTo(win, 3);
   await win.waitForTimeout(500);
-  await expect(connectScreen(win)).toBeHidden();
-  expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0 }), handleC)).toEqual({
-    ok: false,
-    reason: 'closed',
-  });
+  expect(await panelShows(electronApp, windowId)).toBeNull();
+  expect(await panelDecide(panel, handleC, { walletIndex: 0 })).toEqual({ ok: false, reason: 'not-shown' });
   expect(await grantOf(win, KEY_C)).toBeNull();
 
   // Its tab closes.
@@ -525,11 +542,9 @@ test('a held prompt\'s deadline is main\'s, from its arrival: the page hears onl
   // for it does nothing.
   await switchTo(win, 2);
   await win.waitForTimeout(500);
-  await expect(connectScreen(win)).toBeHidden();
+  expect(await panelShows(electronApp, windowId)).toBeNull();
   expect(await promptMessages(electronApp, windowId, 'page:prompt')).toEqual([]);
-  expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { walletIndex: 0 }), handle)).toEqual({
-    ok: false,
-    reason: 'closed',
-  });
+  const panel = await approvalsPage(electronApp);
+  expect(await panelDecide(panel, handle, { walletIndex: 0 })).toEqual({ ok: false, reason: 'not-shown' });
   expect(await grantOf(win, KEY_B)).toBeNull();
 });

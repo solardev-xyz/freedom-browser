@@ -9,11 +9,14 @@
 //
 // Driven through the real renderer screen: the main-process IPC the screen
 // talks to is replaced for this app instance, and the send handler is left
-// hanging to hold the UI in the device-prompt state. A page's prompts are
-// main's (freedom-core design 0011): main sends them to the chrome
-// (`page:prompt`), which renders them once the sidebar is free.
+// hanging to hold the UI in the device-prompt state. The send's own
+// confirmation is decided in the window's approvals panel (freedom-core
+// design 0011), which needs the Ledger account in main's wallet list. The
+// page prompts below are sent to the chrome's own screens, which main uses
+// only with the panel off (FREEDOM_APPROVALS_DOCUMENT=0, the rollback): they
+// still must not take the sidebar from a live device confirmation.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
 const LEDGER = {
   index: 1000000,
@@ -109,82 +112,91 @@ async function openSendOnLedger(window, recipient) {
   await expect(window.locator('#send-review-view')).toBeVisible();
 }
 
-test('a dApp request cannot take the sidebar from an in-flight send confirmation', async ({
-  electronApp,
-  window,
-}) => {
-  await stubMainIpc(electronApp);
-  await openSendOnLedger(window, RECIPIENT);
+test.describe('with the Ledger account in main\'s wallet list', () => {
+  test.use({ vaultWallets: { wallets: [LEDGER], activeWalletIndex: LEDGER.index } });
 
-  await window.click('#send-confirm-btn');
+  test('a dApp request cannot take the sidebar from an in-flight send confirmation', async ({
+    electronApp,
+    window,
+  }) => {
+    await stubMainIpc(electronApp);
+    await openSendOnLedger(window, RECIPIENT);
 
-  // The device prompt is up: the screen says so and Back is closed off.
-  await expect(window.locator('#send-pending-view')).toBeVisible();
-  await expect(window.locator('#send-pending-view .send-pending-title'))
-    .toHaveText('Confirm on your Ledger');
-  await expect(window.locator('#send-back')).toBeDisabled();
-  await window.screenshot({ path: 'test-results/send-ledger-in-flight.png' });
+    await window.click('#send-confirm-btn');
+    // Approved in the panel, with main's view of the send.
+    const panel = await approvalsPage(electronApp);
+    await expect(panel.locator('#heading')).toHaveText('Confirm Send');
+    await expect(panel.locator('#body')).toContainText(LEDGER.address);
+    await decideInPanel(electronApp, { panel });
 
-  // Main now shows a page's signature, then its connect, while the device
-  // prompt for the send is still up: each waits for the sidebar.
-  await sendPagePrompt(electronApp, {
-    handle: 'a'.repeat(64),
-    guest: 1,
-    kind: 'eth.sign',
-    site: SITE,
-    view: {
-      method: 'personal_sign',
-      message: { hex: '0xdeadbeef', rawHash: false },
-      account: { index: LEDGER.index, type: 'ledger' },
-      chain: { id: 8453 },
-    },
-  });
-  await sendPagePrompt(electronApp, {
-    handle: 'b'.repeat(64),
-    guest: 1,
-    kind: 'eth.connect',
-    site: SITE,
-    view: { accounts: [LEDGER], defaultIndex: LEDGER.index },
-  });
-  // Several of the waiting prompts' retries pass.
-  await window.waitForTimeout(1000);
+    // The device prompt is up: the screen says so and Back is closed off.
+    await expect(window.locator('#send-pending-view')).toBeVisible();
+    await expect(window.locator('#send-pending-view .send-pending-title'))
+      .toHaveText('Confirm on your Ledger');
+    await expect(window.locator('#send-back')).toBeDisabled();
+    await window.screenshot({ path: 'test-results/send-ledger-in-flight.png' });
 
-  // Neither screen took the sidebar; the send confirmation is untouched.
-  await expect(window.locator('#sidebar-dapp-sign')).toBeHidden();
-  await expect(window.locator('#sidebar-dapp-connect')).toBeHidden();
-  await expect(window.locator('#sidebar-send')).toBeVisible();
-  await expect(window.locator('#send-pending-view')).toBeVisible();
-  await expect(window.locator('#send-back')).toBeDisabled();
-  await window.screenshot({ path: 'test-results/send-ledger-dapp-request-refused.png' });
-
-  // A stray Back click (or a tab switch / sidebar close, which both land on
-  // closeSend) must not tear the screen down either.
-  await window.evaluate(async () => {
-    document.getElementById('send-back').click();
-    const send = await import('./lib/wallet/send.js');
-    send.closeSend();
-  });
-  await expect(window.locator('#sidebar-send')).toBeVisible();
-  await expect(window.locator('#send-pending-view')).toBeVisible();
-
-  // The device approves: the send reports success on its own screen, where
-  // the user can actually see it.
-  await electronApp.evaluate(() => {
-    globalThis.__resolveLedgerSend({
-      success: true,
-      hash: '0xfeedface',
-      explorerUrl: 'https://basescan.org/tx/0xfeedface',
-      recorded: true,
+    // Main now shows a page's signature, then its connect, while the device
+    // prompt for the send is still up: each waits for the sidebar.
+    await sendPagePrompt(electronApp, {
+      handle: 'a'.repeat(64),
+      guest: 1,
+      kind: 'eth.sign',
+      site: SITE,
+      view: {
+        method: 'personal_sign',
+        message: { hex: '0xdeadbeef', rawHash: false },
+        account: { index: LEDGER.index, type: 'ledger' },
+        chain: { id: 8453 },
+      },
     });
+    await sendPagePrompt(electronApp, {
+      handle: 'b'.repeat(64),
+      guest: 1,
+      kind: 'eth.connect',
+      site: SITE,
+      view: { accounts: [LEDGER], defaultIndex: LEDGER.index },
+    });
+    // Several of the waiting prompts' retries pass.
+    await window.waitForTimeout(1000);
+
+    // Neither screen took the sidebar; the send confirmation is untouched.
+    await expect(window.locator('#sidebar-dapp-sign')).toBeHidden();
+    await expect(window.locator('#sidebar-dapp-connect')).toBeHidden();
+    await expect(window.locator('#sidebar-send')).toBeVisible();
+    await expect(window.locator('#send-pending-view')).toBeVisible();
+    await expect(window.locator('#send-back')).toBeDisabled();
+    await window.screenshot({ path: 'test-results/send-ledger-dapp-request-refused.png' });
+
+    // A stray Back click (or a tab switch / sidebar close, which both land on
+    // closeSend) must not tear the screen down either.
+    await window.evaluate(async () => {
+      document.getElementById('send-back').click();
+      const send = await import('./lib/wallet/send.js');
+      send.closeSend();
+    });
+    await expect(window.locator('#sidebar-send')).toBeVisible();
+    await expect(window.locator('#send-pending-view')).toBeVisible();
+
+    // The device approves: the send reports success on its own screen, where
+    // the user can actually see it.
+    await electronApp.evaluate(() => {
+      globalThis.__resolveLedgerSend({
+        success: true,
+        hash: '0xfeedface',
+        explorerUrl: 'https://basescan.org/tx/0xfeedface',
+        recorded: true,
+      });
+    });
+    await expect(window.locator('#send-success-view')).toBeVisible();
+    await expect(window.locator('#sidebar-send')).toBeVisible();
+    await expect(window.locator('#send-back')).toBeEnabled();
+    // The page's prompt still waits: the sidebar isn't back on the wallet.
+    await window.waitForTimeout(600);
+    await expect(window.locator('#sidebar-dapp-connect')).toBeHidden();
+    await expect(window.locator('#sidebar-send')).toBeVisible();
+    await window.screenshot({ path: 'test-results/send-ledger-success-visible.png' });
   });
-  await expect(window.locator('#send-success-view')).toBeVisible();
-  await expect(window.locator('#sidebar-send')).toBeVisible();
-  await expect(window.locator('#send-back')).toBeEnabled();
-  // The page's prompt still waits: the sidebar isn't back on the wallet.
-  await window.waitForTimeout(600);
-  await expect(window.locator('#sidebar-dapp-connect')).toBeHidden();
-  await expect(window.locator('#sidebar-send')).toBeVisible();
-  await window.screenshot({ path: 'test-results/send-ledger-success-visible.png' });
 });
 
 // The other direction: an `ethereum:` tip link is page-reachable and routes

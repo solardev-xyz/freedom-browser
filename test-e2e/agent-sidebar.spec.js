@@ -1,5 +1,6 @@
 const { configureOllamaAgent, openProviderSettings, closeProviderSettings } = require('./agent-provider-fixture');
 const { test: baseTest, expect } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
 const http = require('http');
@@ -439,7 +440,7 @@ for (const database of ['agent-history.sqlite', 'agent-node-operations.sqlite', 
     const damaged = Buffer.from('Corrupt database fixture: preserve these bytes');
     fs.writeFileSync(databasePath, damaged);
     const app = await relaunchApp();
-    const window = await app.firstWindow();
+    const window = await chromeWindow(app);
     await expect(window.locator('[data-test="address-input"]')).toBeVisible();
     await window.locator('[data-test="agent-toggle-btn"]').click();
     await expect(window.locator('#agent-provider-message')).toContainText('Agent storage is unavailable');
@@ -1731,7 +1732,7 @@ test('AI Settings configures hosted and local models and reports the run lifecyc
     timeout: 20_000,
   });
   try {
-    const reopenedWindow = await reopened.firstWindow();
+    const reopenedWindow = await chromeWindow(reopened);
     await reopenedWindow.waitForLoadState('domcontentloaded');
     await reopenedWindow.waitForSelector('[data-test="address-input"]', { state: 'visible' });
     await useWideAgentViewport(reopened, reopenedWindow);

@@ -23,6 +23,7 @@ const os = require('os');
 
 const { isPackagedRun, packagedLaunchTarget, launchApp } = require('./packaged-launch');
 const { closeApp } = require('./close-app');
+const { chromeWindow } = require('./chrome-window');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -203,7 +204,7 @@ const test = base.extend({
   },
 
   window: async ({ electronApp }, use) => {
-    const win = await electronApp.firstWindow();
+    const win = await chromeWindow(electronApp);
     await win.waitForLoadState('domcontentloaded');
     await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
     await use(win);

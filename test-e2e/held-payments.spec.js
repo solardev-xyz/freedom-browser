@@ -7,10 +7,13 @@
 // intent").
 //
 // Driven through the real renderer screens and the real confirmation
-// handler; the intent handlers are replaced for this app instance. Writes
-// screenshots of each new surface in both themes to test-results/.
+// handler; the intent handlers are replaced for this app instance. Each
+// confirmation is decided in the window's approvals panel (freedom-core
+// design 0011), which shows main's view of exactly the held payment it
+// binds. Writes screenshots of each new surface in both themes to
+// test-results/.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
 const LEDGER = {
   index: 1000000,
@@ -236,8 +239,15 @@ test('waiting payments are listed, sent again and replaced, each confirmed as it
   await expect(rowOf(window, DAPP).locator('[data-action="replace"]')).toHaveCount(0);
   await shootBothThemes(window, 'held-payments-list');
 
-  // The user's own payment: Send again at the press.
+  // The user's own payment: Send again at the press, approved in the panel,
+  // which shows the held payment as main holds it.
+  const panel = await approvalsPage(electronApp);
   await rowOf(window, STUCK).locator('[data-action="resend"]').click();
+  await expect(panel.locator('#heading')).toHaveText('Send again');
+  await expect(panel.locator('#body')).toContainText(STUCK.hash);
+  await expect(panel.locator('#body')).toContainText(`Nonce${STUCK.nonce}`);
+  expect(await electronApp.evaluate(() => globalThis.__resends.length)).toBe(0);
+  await decideInPanel(electronApp, { heading: 'Send again', panel });
   await expect.poll(() => electronApp.evaluate(() => globalThis.__resends.length)).toBe(1);
 
   // A dApp's payment asks once more, naming the site.
@@ -247,6 +257,8 @@ test('waiting payments are listed, sent again and replaced, each confirmed as it
   );
   await shootBothThemes(window, 'held-payments-dapp-confirm');
   await rowOf(window, DAPP).locator('[data-action="confirm-resend"]').click();
+  await expect(panel.locator('#body')).toContainText(DAPP.hash);
+  await decideInPanel(electronApp, { heading: 'Send again', panel });
   await expect.poll(() => electronApp.evaluate(() => globalThis.__resends.length)).toBe(2);
 
   // A refusal over fees: the new fee is shown before anything is signed.
@@ -256,6 +268,10 @@ test('waiting payments are listed, sent again and replaced, each confirmed as it
   await shootBothThemes(window, 'held-payments-replace');
   expect(await electronApp.evaluate(() => globalThis.__replacements)).toEqual([]);
   await rowOf(window, UNDERPRICED).locator('[data-action="confirm-replace"]').click();
+  await expect(panel.locator('#heading')).toHaveText('Replace with a higher fee');
+  await expect(panel.locator('#body')).toContainText(`Nonce${UNDERPRICED.nonce}`);
+  expect(await electronApp.evaluate(() => globalThis.__replacements)).toEqual([]);
+  await decideInPanel(electronApp, { heading: 'Replace with a higher fee', panel });
   await expect(rowOf(window, UNDERPRICED)).toContainText('Replaced with a higher fee');
 
   const calls = await electronApp.evaluate(() => ({
@@ -335,6 +351,13 @@ test("a payment the wallet couldn't confirm lists its hashes; closing it asks on
   expect(await electronApp.evaluate(() => globalThis.__closes)).toEqual([]);
 
   await used.locator('[data-action="confirm-close"]').click();
+  // Asked in the panel, with every hash main holds for it.
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Close payment');
+  for (const { hash } of USED.couldntConfirm.hashes)
+    await expect(panel.locator('#body')).toContainText(hash);
+  expect(await electronApp.evaluate(() => globalThis.__closes)).toEqual([]);
+  await decideInPanel(electronApp, { heading: 'Close payment', panel });
   await expect(window.locator('#held-payments-list .held-payment-row')).toHaveCount(1);
   await expect(window.locator('#held-payments-count')).toHaveText('1');
   expect(await electronApp.evaluate(() => globalThis.__closes)).toEqual([
@@ -372,71 +395,82 @@ test('the send review warns when the payment would wait behind a held one', asyn
 
 // #710 review: the list is fetched before it opens. A reply that arrives
 // after a Ledger approval took the sidebar must not paint the list over the
-// live device prompt.
-test('a delayed opening of the list stays shut under a live device approval', async ({
-  electronApp,
-  window,
-}) => {
-  await stubMainIpc(electronApp, [STUCK]);
-  await electronApp.evaluate(
-    ({ ipcMain }, intents) => {
-      const replace = (channel, handler) => {
-        ipcMain.removeHandler(channel);
-        ipcMain.handle(channel, handler);
-      };
-      globalThis.__holdNextList = false;
-      replace('wallet:intents-list', () => {
-        if (!globalThis.__holdNextList) return { success: true, intents };
+// live device prompt. The send's confirmation is decided in the panel, which
+// shows the Ledger account from main's own wallet list.
+test.describe("with the Ledger account in main's wallet list", () => {
+  test.use({ vaultWallets: { wallets: [LEDGER], activeWalletIndex: LEDGER.index } });
+
+  test('a delayed opening of the list stays shut under a live device approval', async ({
+    electronApp,
+    window,
+  }) => {
+    await stubMainIpc(electronApp, [STUCK]);
+    await electronApp.evaluate(
+      ({ ipcMain }, intents) => {
+        const replace = (channel, handler) => {
+          ipcMain.removeHandler(channel);
+          ipcMain.handle(channel, handler);
+        };
         globalThis.__holdNextList = false;
-        return new Promise((resolve) => {
-          globalThis.__releaseList = () => resolve({ success: true, intents });
+        replace('wallet:intents-list', () => {
+          if (!globalThis.__holdNextList) return { success: true, intents };
+          globalThis.__holdNextList = false;
+          return new Promise((resolve) => {
+            globalThis.__releaseList = () => resolve({ success: true, intents });
+          });
         });
-      });
-      // The device prompt: never answers on its own.
-      replace(
-        'wallet:send-transaction',
-        () =>
-          new Promise((resolve) => {
-            globalThis.__answerDevice = resolve;
-          })
-      );
-    },
-    [STUCK]
-  );
-  await showIdentity(window);
-
-  await electronApp.evaluate(() => {
-    globalThis.__holdNextList = true;
-  });
-  await window.click('#held-payments-row');
-  await expect.poll(() => electronApp.evaluate(() => Boolean(globalThis.__releaseList))).toBe(true);
-
-  // Meanwhile a send starts its Ledger approval.
-  await window.evaluate(async (recipient) => {
-    const send = await import('./lib/wallet/send.js');
-    send.openSend({ recipient, chainId: 8453 });
-  }, RECIPIENT);
-  await window.fill('#send-amount', '0.001');
-  await window.click('#send-continue-btn');
-  await expect(window.locator('#send-review-view')).toBeVisible();
-  await window.click('#send-confirm-btn');
-  await expect(window.locator('#send-pending-view')).toBeVisible();
-  const inFlight = () =>
-    window.evaluate(async () =>
-      (await import('./lib/wallet/signature-flight.js')).isSignatureInFlight()
+        // The device prompt: never answers on its own.
+        replace(
+          'wallet:send-transaction',
+          () =>
+            new Promise((resolve) => {
+              globalThis.__answerDevice = resolve;
+            })
+        );
+      },
+      [STUCK]
     );
-  await expect.poll(inFlight).toBe(true);
+    await showIdentity(window);
 
-  await electronApp.evaluate(() => globalThis.__releaseList());
-  // Give the late reply its chance to paint.
-  await window.waitForTimeout(300);
-  await expect(window.locator('#sidebar-held-payments')).toBeHidden();
-  await expect(window.locator('#sidebar-send')).toBeVisible();
-  expect(await inFlight()).toBe(true);
+    await electronApp.evaluate(() => {
+      globalThis.__holdNextList = true;
+    });
+    await window.click('#held-payments-row');
+    await expect
+      .poll(() => electronApp.evaluate(() => Boolean(globalThis.__releaseList)))
+      .toBe(true);
 
-  await electronApp.evaluate(() =>
-    globalThis.__answerDevice({ success: false, error: 'Rejected on the Ledger' })
-  );
+    // Meanwhile a send starts its Ledger approval.
+    await window.evaluate(async (recipient) => {
+      const send = await import('./lib/wallet/send.js');
+      send.openSend({ recipient, chainId: 8453 });
+    }, RECIPIENT);
+    await window.fill('#send-amount', '0.001');
+    await window.click('#send-continue-btn');
+    await expect(window.locator('#send-review-view')).toBeVisible();
+    await window.click('#send-confirm-btn');
+    const panel = await approvalsPage(electronApp);
+    await expect(panel.locator('#heading')).toHaveText('Confirm Send');
+    await expect(panel.locator('#body')).toContainText(LEDGER.address);
+    await decideInPanel(electronApp, { heading: 'Confirm Send', panel });
+    await expect(window.locator('#send-pending-view')).toBeVisible();
+    const inFlight = () =>
+      window.evaluate(async () =>
+        (await import('./lib/wallet/signature-flight.js')).isSignatureInFlight()
+      );
+    await expect.poll(inFlight).toBe(true);
+
+    await electronApp.evaluate(() => globalThis.__releaseList());
+    // Give the late reply its chance to paint.
+    await window.waitForTimeout(300);
+    await expect(window.locator('#sidebar-held-payments')).toBeHidden();
+    await expect(window.locator('#sidebar-send')).toBeVisible();
+    expect(await inFlight()).toBe(true);
+
+    await electronApp.evaluate(() =>
+      globalThis.__answerDevice({ success: false, error: 'Rejected on the Ledger' })
+    );
+  });
 });
 
 test('a primary button keeps its fill when hovered, in both themes', async ({

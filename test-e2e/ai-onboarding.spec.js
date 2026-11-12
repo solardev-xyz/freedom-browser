@@ -1,5 +1,6 @@
 const http = require('http');
 const { test, expect } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 const { configureOllamaAgent } = require('./agent-provider-fixture');
 
 // An absent choice must remain off even when the rest of the harness opts in.
@@ -216,7 +217,7 @@ test('invitation dismissal persists across a real restart without enabling AI', 
   const restarted = await relaunchApp();
   const restartedHome = await guest(restarted, 'home');
   await expect(restartedHome.locator('#ai-invitation')).toBeHidden();
-  const chrome = await restarted.firstWindow();
+  const chrome = await chromeWindow(restarted);
   await expect(chrome.locator('#agent-toggle-btn')).toBeHidden();
 });
 

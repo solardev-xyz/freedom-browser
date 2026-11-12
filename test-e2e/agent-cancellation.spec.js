@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { test, expect } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 
 const MODEL_ID = 'freedom-cancellation-fixture';
 const SLOW_NAVIGATION_URL = 'https://agent-cancellation.test/slow-navigation';
@@ -501,7 +502,7 @@ test('a project chat persists its first model and resumes it after a real restar
   expect(configured.ok).toBe(true);
   await electronApp.close();
   const restarted = await relaunchApp();
-  const chrome = await restarted.firstWindow();
+  const chrome = await chromeWindow(restarted);
   await chrome.waitForSelector('#agent-toggle-btn', { state: 'visible' });
   const restored = await chrome.evaluate(id => window.electronAPI.openAgentSession(id), before.state.conversationId);
   expect(restored).toMatchObject({ ok: true, state: { providerId: 'ollama', modelId: MODEL_ID } });

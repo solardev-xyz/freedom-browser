@@ -8,10 +8,14 @@
 //
 // This is the layer the jest suites can't see: renderer wiring, IPC arg
 // shapes, button/card states, the wizard, and the send flow's Safe
-// branch — all un-mocked.
+// branch — all un-mocked. The send's confirmation, the Safe's board and an
+// executor's fee are asked in the window's approvals panel (freedom-core
+// design 0011, APS-3 and APS-3b); the summary of an executed send shows in
+// the sidebar.
 
 const { Wallet, parseEther } = require('ethers');
 const { test, expect, safeE2eAvailable, VAULT_PASSWORD } = require('./safe-fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 test.skip(
   !safeE2eAvailable(),
@@ -75,9 +79,10 @@ async function fundSafe(win, anvil, safeAddress) {
   await expect(win.locator('#asset-list')).toContainText('1', { timeout: 60_000 });
 }
 
-/** Fill the Send form for 0.5 xDAI to a new address and confirm it; the
- * signing board takes over. Resolves with the recipient. */
-async function sendFromSafe(win) {
+/** Fill the Send form for 0.5 xDAI to a new address and confirm it, the
+ * confirmation approved in the panel; main's board takes over. Resolves with
+ * the recipient. */
+async function sendFromSafe(win, electronApp) {
   const recipient = Wallet.createRandom().address;
   await win.click('#wallet-send-btn');
   await win.fill('#send-recipient', recipient);
@@ -91,8 +96,29 @@ async function sendFromSafe(win) {
   // Vault was unlocked for activation, so no unlock gate here.
   await expect(win.locator('#send-confirm-btn')).toBeEnabled({ timeout: 15_000 });
   await win.click('#send-confirm-btn');
-  await expect(win.locator('#sidebar-safe-signing')).toBeVisible({ timeout: 30_000 });
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Confirm Transaction', { timeout: 30_000 });
+  await expect(panel.locator('#body')).toContainText(recipient);
+  await expect(panel.locator('#body')).toContainText('0.5 xDAI');
+  await decideInPanel(electronApp, { panel });
   return recipient;
+}
+
+/**
+ * An executor's fee asked in the panel ('Confirm the network fee'):
+ * approved, and approved again while main asks again, until `done` holds.
+ */
+async function confirmFeesInPanel(electronApp, done) {
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  for (let i = 0; i < 90 && !(await done()); i += 1) {
+    const shown = (await approvalsState(electronApp))[windowId]?.shown;
+    if (shown && (await panel.locator('#heading').textContent()) === 'Confirm the network fee') {
+      await decideInPanel(electronApp, { panel, windowId });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  expect(await done()).toBe(true);
 }
 
 /** The money actually moved on the fork (allow a block for inclusion). */
@@ -104,7 +130,7 @@ async function expectReceived(anvil, recipient) {
     .toBe(parseEther('0.5'));
 }
 
-test('create, activate, and send from a Safe account', async ({ window: win, anvil }) => {
+test('create, activate, and send from a Safe account', async ({ window: win, anvil, electronApp }) => {
   test.setTimeout(300_000);
   const safeAddress = await createFundedSafe(win, anvil);
   const card = win.locator('#safe-status-card');
@@ -131,11 +157,12 @@ test('create, activate, and send from a Safe account', async ({ window: win, anv
   // --- Send xDAI out of the Safe ------------------------------------------
 
   await fundSafe(win, anvil, safeAddress);
-  const recipient = await sendFromSafe(win);
+  const recipient = await sendFromSafe(win, electronApp);
 
-  // Confirm hands over to the signing board; with a 1-of-2 vault owner
-  // the free signature meets the threshold and execution runs on its own:
-  // the executor's fee is like today's (the harness's fee reference).
+  // Confirm hands over to main's board; with a 1-of-2 vault owner the free
+  // signature meets the threshold and execution runs on its own: the
+  // executor's fee is like today's (the harness's fee reference). The
+  // sidebar shows the executed send.
   await expect(win.locator('#safe-signing-title')).toHaveText('Transaction sent', {
     timeout: 90_000,
   });
@@ -173,6 +200,12 @@ test("a Safe's activation and execution wait for the user to confirm their fee",
   // Nothing was deployed while it waits.
   expect(await anvil.rpc('eth_getCode', [safeAddress, 'latest'])).toBe('0x');
   await win.click('#safe-status-confirm-fee');
+  // The card's confirmation asks in the panel, with main's verdict.
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Confirm the network fee', { timeout: 30_000 });
+  await expect(panel.locator('#body')).toContainText("Couldn't compare this fee with today's network fee");
+  expect(await anvil.rpc('eth_getCode', [safeAddress, 'latest'])).toBe('0x');
+  await confirmFeesInPanel(electronApp, () => win.locator('#wallet-send-btn').isEnabled());
   await expect(win.locator('#wallet-send-btn')).toBeEnabled({ timeout: 90_000 });
   await expect(card).toBeHidden();
   const code = await anvil.rpc('eth_getCode', [safeAddress, 'latest']);
@@ -192,12 +225,12 @@ test("a Safe's activation and execution wait for the user to confirm their fee",
     },
   });
   await fundSafe(win, anvil, safeAddress);
-  const recipient = await sendFromSafe(win);
-  const board = win.locator('#safe-signing-content');
-  await expect(board).toContainText('Confirm the network fee', { timeout: 60_000 });
-  await expect(board).toContainText(/Up to [\d.]+ xDAI/);
+  const recipient = await sendFromSafe(win, electronApp);
+  // The board's execution waits for the executor's fee, asked in the panel.
+  await expect(panel.locator('#heading')).toHaveText('Confirm the network fee', { timeout: 60_000 });
+  await expect(panel.locator('#body')).toContainText(/Up to [\d.]+ xDAI/);
   expect(BigInt(await anvil.rpc('eth_getBalance', [recipient, 'latest']))).toBe(0n);
-  await win.click('#safe-signing-confirm-fee');
+  await confirmFeesInPanel(electronApp, async () => (await win.locator('#safe-signing-title').textContent()) === 'Transaction sent');
   await expect(win.locator('#safe-signing-title')).toHaveText('Transaction sent', {
     timeout: 90_000,
   });

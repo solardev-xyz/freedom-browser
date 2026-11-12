@@ -403,45 +403,53 @@ test.describe('renderer screenshots', () => {
         surfaces.tookEverySurface();
       });
 
-      test(`wallet screens (${theme})`, async ({ electronApp, window }) => {
-        test.setTimeout(300_000);
-        const ctx = { app: electronApp, win: window };
-        const guest = [window.locator('webview')];
-        const surfaces = surfaceGroup(theme, 'wallet screens');
-        const shot = (name) => snap(surfaces, window, `${theme}-${name}`, { mask: guest });
+      // The chrome's own wallet and prompt screens: with the approvals panel
+      // on (freedom-core design 0011) the send's confirmation and every
+      // page's prompt ask in the panel, and these screens are the rollback's
+      // (FREEDOM_APPROVALS_DOCUMENT=0), so they are pinned with it off.
+      test.describe('the chrome\'s own prompt screens', () => {
+        test.use({ approvalsPanel: false });
 
-        const resolve = await recipes.stubWalletIpc(ctx);
-        await recipes.sendForm(ctx);
-        await shot('12-send-form');
-        await window.fill('#send-amount', '0.001');
-        await window.click('#send-continue-btn');
-        await window.waitForSelector('#send-review-view', { state: 'visible' });
-        await shot('13-send-review');
-        await window.click('#send-confirm-btn');
-        await window.waitForSelector('#send-pending-view', { state: 'visible' });
-        await shot('14-send-pending');
-        await resolve({ success: true, hash: '0xfeedface', recorded: true });
-        await window.waitForSelector('#send-success-view', { state: 'visible' });
-        await shot('15-send-success');
+        test(`wallet screens (${theme})`, async ({ electronApp, window }) => {
+          test.setTimeout(300_000);
+          const ctx = { app: electronApp, win: window };
+          const guest = [window.locator('webview')];
+          const surfaces = surfaceGroup(theme, 'wallet screens');
+          const shot = (name) => snap(surfaces, window, `${theme}-${name}`, { mask: guest });
 
-        await recipes.dappTxApproval(ctx);
-        await shot('16-dapp-tx');
-        await recipes.dappSign(ctx);
-        await shot('17-dapp-sign');
-        await recipes.dappConnect(ctx);
-        await shot('18-dapp-connect');
-        for (const [i, kind] of ['connect', 'publish', 'messaging', 'feed'].entries()) {
-          await recipes.swarmApproval(ctx, kind);
-          await shot(`${19 + i}-swarm-${kind}`);
-        }
-        await recipes.dappPermissions(ctx);
-        await shot('23-dapp-permissions');
-        // A Safe's own transactions, stopped for their fee (design 0005, A).
-        await recipes.safeExecuteFee(ctx);
-        await shot('28-safe-execute-fee');
-        await recipes.safeActivateFee(ctx);
-        await shot('29-safe-activate-fee');
-        surfaces.tookEverySurface();
+          const resolve = await recipes.stubWalletIpc(ctx);
+          await recipes.sendForm(ctx);
+          await shot('12-send-form');
+          await window.fill('#send-amount', '0.001');
+          await window.click('#send-continue-btn');
+          await window.waitForSelector('#send-review-view', { state: 'visible' });
+          await shot('13-send-review');
+          await window.click('#send-confirm-btn');
+          await window.waitForSelector('#send-pending-view', { state: 'visible' });
+          await shot('14-send-pending');
+          await resolve({ success: true, hash: '0xfeedface', recorded: true });
+          await window.waitForSelector('#send-success-view', { state: 'visible' });
+          await shot('15-send-success');
+
+          await recipes.dappTxApproval(ctx);
+          await shot('16-dapp-tx');
+          await recipes.dappSign(ctx);
+          await shot('17-dapp-sign');
+          await recipes.dappConnect(ctx);
+          await shot('18-dapp-connect');
+          for (const [i, kind] of ['connect', 'publish', 'messaging', 'feed'].entries()) {
+            await recipes.swarmApproval(ctx, kind);
+            await shot(`${19 + i}-swarm-${kind}`);
+          }
+          await recipes.dappPermissions(ctx);
+          await shot('23-dapp-permissions');
+          // A Safe's own transactions, stopped for their fee (design 0005, A).
+          await recipes.safeExecuteFee(ctx);
+          await shot('28-safe-execute-fee');
+          await recipes.safeActivateFee(ctx);
+          await shot('29-safe-activate-fee');
+          surfaces.tookEverySurface();
+        });
       });
 
       test(`internal pages and interstitials (${theme})`, async ({ electronApp, window }) => {

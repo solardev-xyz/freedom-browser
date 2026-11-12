@@ -27,6 +27,7 @@ const VAULT_PASSWORD = 'Freedom-E2E-Remote-Signing-2026!';
 
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
 const { closeApp } = require('./close-app');
+const { chromeWindow } = require('./chrome-window');
 
 function startBridgeServer() {
   const server = createBridgeServer();
@@ -113,7 +114,7 @@ const test = base.extend({
   },
 
   window: async ({ electronApp }, use) => {
-    const window = await electronApp.firstWindow();
+    const window = await chromeWindow(electronApp);
     await window.waitForLoadState('domcontentloaded');
     await use(window);
   },

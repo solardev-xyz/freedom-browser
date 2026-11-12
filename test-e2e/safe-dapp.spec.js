@@ -8,10 +8,13 @@
 // Uses a 1-of-2 vault Safe: the free vault signature meets the
 // threshold, exercising the instant-signature path for messages and the
 // board's auto-execution for transactions. (Device-owner board rows are
-// covered by safe-phone.spec.js — same board machinery.)
+// covered by safe-phone.spec.js — same board machinery.) Every prompt is
+// decided in the window's approvals panel (freedom-core design 0011, APS-2
+// and APS-3b), and main runs the board.
 
 const { Wallet, parseEther, hashMessage, Interface } = require('ethers');
 const { test, expect, safeE2eAvailable, VAULT_PASSWORD } = require('./safe-fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 test.skip(
   !safeE2eAvailable(),
@@ -100,11 +103,15 @@ test('a dApp connects a Safe, gets an EIP-1271 signature, and sends through the 
       .catch((e) => { window.__accErr = String(e?.message || e); });
     true
   `);
-  await expect(win.locator('#sidebar-dapp-connect')).toBeVisible({ timeout: 30_000 });
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  const heading = panel.locator('#heading');
+  const body = panel.locator('#body');
+  await expect(heading).toHaveText('Connect', { timeout: 30_000 });
   // The active account (the Safe) is the default — with the honest caveat.
-  await expect(win.locator('#dapp-connect-wallet-name')).toHaveText('Dapp Safe');
-  await expect(win.locator('#dapp-connect-safe-note')).toBeVisible();
-  await win.click('#dapp-connect-approve');
+  await expect(panel.locator('label.choice', { has: panel.locator('input:checked') }).locator('.choice-label')).toHaveText('Dapp Safe');
+  await expect(body).toContainText("Multi-owner account: works on Gnosis Chain and signs as a smart contract.");
+  await decideInPanel(electronApp, { panel, windowId });
 
   await expect
     .poll(() => inWebview(win, 'JSON.stringify(window.__acc || window.__accErr)'), {
@@ -123,9 +130,9 @@ test('a dApp connects a Safe, gets an EIP-1271 signature, and sends through the 
       .catch((e) => { window.__sigErr = String(e?.message || e); });
     true
   `);
-  await expect(win.locator('#sidebar-dapp-sign')).toBeVisible({ timeout: 30_000 });
-  await expect(win.locator('#dapp-sign-safe-note')).toBeVisible();
-  await win.click('#dapp-sign-approve');
+  await expect(heading).toHaveText('Sign Message', { timeout: 30_000 });
+  await expect(body).toContainText('This multi-owner account signs as a smart contract.');
+  await decideInPanel(electronApp, { panel, windowId });
 
   // 1-of-2: the free vault signature completes the session instantly.
   await expect
@@ -157,19 +164,27 @@ test('a dApp connects a Safe, gets an EIP-1271 signature, and sends through the 
       .catch((e) => { window.__txErr = String(e?.message || e); });
     true
   `);
-  await expect(win.locator('#sidebar-dapp-tx')).toBeVisible({ timeout: 30_000 });
-  await expect(win.locator('#dapp-tx-fee')).toContainText('Paid by', { timeout: 30_000 });
-  await win.click('#dapp-tx-approve');
+  await expect(heading).toHaveText('Confirm Transaction', { timeout: 30_000 });
+  await expect(body).toContainText('Paid by an owner account', { timeout: 30_000 });
+  await decideInPanel(electronApp, { panel, windowId });
 
-  // The board takes over; the free signature meets the threshold and
-  // execution runs on its own — the dApp receives the execution hash.
-  await expect(win.locator('#safe-signing-title')).toHaveText('Transaction sent', {
-    timeout: 90_000,
-  });
-  await expect
-    .poll(() => inWebview(win, 'window.__tx || window.__txErr'), { timeout: 30_000 })
-    .toMatch(/^0x[0-9a-f]{64}$/i);
-  await win.click('#safe-signing-done');
+  // Main's board takes over; the free signature meets the threshold and
+  // execution runs on its own — the dApp receives the execution hash. An
+  // executor's fee the fee check stops for is asked in the panel.
+  let hash = null;
+  for (let i = 0; i < 90 && !hash; i += 1) {
+    hash = await inWebview(win, 'window.__tx || window.__txErr');
+    if (hash) break;
+    const shown = (await approvalsState(electronApp))[windowId]?.shown;
+    if (shown && (await heading.textContent()) === 'Confirm the network fee') {
+      await decideInPanel(electronApp, { panel, windowId });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  expect(hash).toMatch(/^0x[0-9a-f]{64}$/i);
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId].visible).toBe(false);
+  // A page's send leaves the sidebar alone: its hash went to the page.
+  await expect(win.locator('#sidebar-safe-signing')).toBeHidden();
 
   await expect
     .poll(async () => BigInt(await anvil.rpc('eth_getBalance', [recipient, 'latest'])), {

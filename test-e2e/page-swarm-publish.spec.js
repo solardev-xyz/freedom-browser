@@ -2,8 +2,8 @@
 // design 0011, step PRQ-7c): `swarm_publishData`, `swarm_publishFiles`,
 // `swarm_publishChunk` and `swarm_getUploadStatus` go from the app's preload
 // to main on `page:request`, a large upload on its ticket (`page:reserve`).
-// Main shows the publish prompt (`swarm.publish`), which the chrome renders
-// in its sidebar and answers by handle; main sets the publish rule on
+// Main shows the publish prompt (`swarm.publish`), which the window's
+// approvals panel renders and answers by handle (design 0011, APS-2); main sets the publish rule on
 // "always allow", reads it itself, and uploads for the page's attested key.
 // The chrome's rule write is refused, and it has no route.
 //
@@ -15,6 +15,7 @@
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 const { measurePageRequest, pageRequestMaxBytes } = require('../src/shared/page-request-bounds');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -224,10 +225,10 @@ async function newTab(win, electronApp, url) {
   return id;
 }
 
-async function approve(win, selector, shot) {
-  await win.waitForTimeout(600);
-  if (shot) await win.screenshot({ path: test.info().outputPath(shot) });
-  await win.locator(selector).click();
+// Approved in the window's approvals panel, once main's delay has passed.
+async function approve(electronApp, panel, shot, check = []) {
+  if (shot) await panel.screenshot({ path: test.info().outputPath(shot) });
+  await decideInPanel(electronApp, { check, panel });
 }
 
 test.afterEach(async ({ electronApp }) => {
@@ -250,21 +251,23 @@ test('publishing through main: main\'s prompt in the sidebar, the upload for the
   await watchOldPath(win);
 
   await start(win, DAPP, 'data', 'swarm_publishData', { data: 'hello swarm', contentType: 'text/plain', name: 'note.txt' });
-  const publishScreen = win.locator('#sidebar-swarm-publish-approve');
-  await expect(publishScreen).toBeVisible();
-  await expect(win.locator('#swarm-publish-site')).toHaveText(DAPP);
-  await expect(win.locator('#swarm-publish-type')).toHaveText('text/plain');
-  await expect(win.locator('#swarm-publish-name')).toHaveText('note.txt');
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Confirm Publish', { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(DAPP);
+  await expect(panel.locator('#body')).toContainText('Typetext/plain');
+  await expect(panel.locator('#body')).toContainText('Namenote.txt');
   const prompted = (await trace(electronApp)).filter((e) => e.kind === 'prompt-message' && e.channel === 'page:prompt');
   expect(prompted.map((e) => [e.payload.kind, e.payload.site, e.payload.view])).toEqual([
     ['swarm.publish', { key: DAPP, label: DAPP }, { method: 'swarm_publishData', kind: 'data', size: 11, contentType: 'text/plain', name: 'note.txt' }],
   ]);
   expect((await antState(electronApp)).received).toEqual([]);
-  await win.locator('#swarm-publish-auto-approve').check();
-  await approve(win, '#swarm-publish-confirm', 'page-swarm-publish-prompt.png');
+  await approve(electronApp, panel, 'page-swarm-publish-prompt.png', [
+    'Always allow this site to publish to Swarm without asking',
+  ]);
 
   await expect.poll(() => outcome(win, DAPP, 'data')).toMatchObject({ ok: { reference: expect.stringMatching(/^[0-9a-f]{64}$/) } });
-  await expect(publishScreen).toBeHidden();
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]?.shown ?? null).toBeNull();
   expect((await antState(electronApp)).received).toEqual([
     { query: '?name=note.txt', length: 11, type: 'text/plain', head: 'hello swarm' },
   ]);

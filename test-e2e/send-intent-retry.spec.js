@@ -7,8 +7,10 @@
 //
 // Driven through the real renderer screen and the real confirmation
 // handler; the send and resend handlers are replaced for this app instance.
+// Each confirmation is decided in the window's approvals panel (freedom-core
+// design 0011), which needs the Ledger account in main's own wallet list.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
 const LEDGER = {
   index: 1000000,
@@ -105,6 +107,8 @@ async function openSendOnLedger(window, recipient) {
   await expect(window.locator('#send-review-view')).toBeVisible();
 }
 
+test.use({ vaultWallets: { wallets: [LEDGER], activeWalletIndex: LEDGER.index } });
+
 test('a refused send is sent again as the same payment, with its own confirmation', async ({
   electronApp,
   window,
@@ -112,6 +116,10 @@ test('a refused send is sent again as the same payment, with its own confirmatio
   await stubMainIpc(electronApp, HELD);
   await openSendOnLedger(window, RECIPIENT);
   await window.click('#send-confirm-btn');
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Confirm Send');
+  await expect(panel.locator('#body')).toContainText(LEDGER.address);
+  await decideInPanel(electronApp, { panel });
 
   await expect(window.locator('#send-error-view')).toBeVisible();
   await expect(window.locator('#send-error-view .send-error-title')).toHaveText('Refused by the network');
@@ -122,6 +130,11 @@ test('a refused send is sent again as the same payment, with its own confirmatio
   await window.screenshot({ path: 'test-results/send-intent-refused.png' });
 
   await window.click('#send-retry-btn');
+  // The resend asks for the held payment itself, as main holds it.
+  await expect(panel.locator('#heading')).toHaveText('Send again');
+  await expect(panel.locator('#body')).toContainText(HELD.hash);
+  expect(await electronApp.evaluate(() => globalThis.__resends)).toEqual([]);
+  await decideInPanel(electronApp, { panel });
   await expect(window.locator('#send-success-view')).toBeVisible();
 
   const calls = await electronApp.evaluate(() => ({

@@ -20,6 +20,7 @@ const { createBridgeServer } = require(path.join(repoRoot, 'scripts', 'serve-bri
 const { startLocalMqttBroker } = require(path.join(repoRoot, 'test', 'helpers', 'local-mqtt-broker.js'));
 const { WEBRTC_LOCAL_SWITCH } = require('../test/helpers/webrtc');
 const { closeApp } = require('./close-app');
+const { chromeWindow } = require('./chrome-window');
 const { startRpcForwarder } = require('./rpc-forwarder');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-Phone-2026!';
@@ -216,7 +217,7 @@ const test = base.extend({
   },
 
   window: async ({ electronApp }, use) => {
-    const window = await electronApp.firstWindow();
+    const window = await chromeWindow(electronApp);
     await window.waitForLoadState('domcontentloaded');
     await use(window);
   },

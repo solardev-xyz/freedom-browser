@@ -588,51 +588,58 @@ for (const theme of ['dark', 'light']) {
       }
     );
 
-    test(
-      declare(`wallet and permission subscreens render legibly in ${theme}`),
-      async ({ electronApp, window }) => {
-        test.setTimeout(240_000);
-        const ctx = { app: electronApp, win: window };
-        const check = (label, opts) => assertSurface(window, { label, theme, ...opts });
+    // The chrome's own wallet and prompt screens, which with the approvals
+    // panel on (freedom-core design 0011) are the rollback's: checked with
+    // it off (FREEDOM_APPROVALS_DOCUMENT=0), where they still decide.
+    test.describe('the chrome\'s own prompt screens', () => {
+      test.use({ approvalsPanel: false });
 
-        const resolve = await recipes.stubWalletIpc(ctx);
-        await recipes.sendForm(ctx);
-        await check('send form', { minSamples: 2 });
+      test(
+        declare(`wallet and permission subscreens render legibly in ${theme}`),
+        async ({ electronApp, window }) => {
+          test.setTimeout(240_000);
+          const ctx = { app: electronApp, win: window };
+          const check = (label, opts) => assertSurface(window, { label, theme, ...opts });
 
-        await window.fill('#send-amount', '0.001');
-        await window.click('#send-continue-btn');
-        await window.waitForSelector('#send-review-view', { state: 'visible' });
-        await check('send review', { minSamples: 2 });
-        await window.click('#send-confirm-btn');
-        await window.waitForSelector('#send-pending-view', { state: 'visible' });
-        await resolve({ success: true, hash: '0xfeedface', recorded: true });
-        await window.waitForSelector('#send-success-view', { state: 'visible' });
-        await check('send success');
+          const resolve = await recipes.stubWalletIpc(ctx);
+          await recipes.sendForm(ctx);
+          await check('send form', { minSamples: 2 });
 
-        await recipes.dappTxApproval(ctx);
-        await check('dApp transaction approval', { minSamples: 2 });
-        await recipes.dappSign(ctx);
-        // The pointer is still where the send flow's Confirm click left it,
-        // which since #606 gave Sign Message's actions their top margin is
-        // over the Sign button: its `:hover` opacity would be measured
-        // instead of its resting colours.
-        await window.mouse.move(0, 0);
-        await check('dApp sign', { minSamples: 2 });
-        await recipes.dappConnect(ctx);
-        await check('dApp connect', { minSamples: 2 });
-        for (const kind of ['connect', 'publish', 'messaging', 'feed']) {
-          await recipes.swarmApproval(ctx, kind);
-          await check(`Swarm ${kind} approval`, { minSamples: 2 });
+          await window.fill('#send-amount', '0.001');
+          await window.click('#send-continue-btn');
+          await window.waitForSelector('#send-review-view', { state: 'visible' });
+          await check('send review', { minSamples: 2 });
+          await window.click('#send-confirm-btn');
+          await window.waitForSelector('#send-pending-view', { state: 'visible' });
+          await resolve({ success: true, hash: '0xfeedface', recorded: true });
+          await window.waitForSelector('#send-success-view', { state: 'visible' });
+          await check('send success');
+
+          await recipes.dappTxApproval(ctx);
+          await check('dApp transaction approval', { minSamples: 2 });
+          await recipes.dappSign(ctx);
+          // The pointer is still where the send flow's Confirm click left it,
+          // which since #606 gave Sign Message's actions their top margin is
+          // over the Sign button: its `:hover` opacity would be measured
+          // instead of its resting colours.
+          await window.mouse.move(0, 0);
+          await check('dApp sign', { minSamples: 2 });
+          await recipes.dappConnect(ctx);
+          await check('dApp connect', { minSamples: 2 });
+          for (const kind of ['connect', 'publish', 'messaging', 'feed']) {
+            await recipes.swarmApproval(ctx, kind);
+            await check(`Swarm ${kind} approval`, { minSamples: 2 });
+          }
+
+          // #249 itself: the manage-permissions screens, whose site origin used to
+          // render white on the light theme's white sidebar. This assertion fails
+          // at 1.0:1 the moment those rules go back to quoting a token the chrome
+          // palette does not define.
+          await recipes.dappPermissions(ctx);
+          await check('dApp manage permissions', { minSamples: 3 });
         }
-
-        // #249 itself: the manage-permissions screens, whose site origin used to
-        // render white on the light theme's white sidebar. This assertion fails
-        // at 1.0:1 the moment those rules go back to quoting a token the chrome
-        // palette does not define.
-        await recipes.dappPermissions(ctx);
-        await check('dApp manage permissions', { minSamples: 3 });
-      }
-    );
+      );
+    });
 
     test(declare(`internal pages render legibly in ${theme}`), async ({ electronApp, window }) => {
       test.setTimeout(240_000);

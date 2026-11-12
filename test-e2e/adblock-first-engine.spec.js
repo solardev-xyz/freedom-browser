@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 
 const LISTS_MANIFEST = path.join(__dirname, '..', 'assets', 'adblock', 'manifest.json');
 const PAGE_URL = 'https://first-engine.example/page';
@@ -63,7 +64,7 @@ async function launchWithEngineGate(relaunchApp) {
   process.env.FREEDOM_TEST_ADBLOCK_ENGINE_GATE = '1';
   try {
     const app = await relaunchApp();
-    const window = await app.firstWindow();
+    const window = await chromeWindow(app);
     await window.waitForSelector('[data-test="address-input"]', { state: 'visible' });
     return { app, window };
   } finally {
