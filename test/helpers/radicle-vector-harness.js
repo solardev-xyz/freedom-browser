@@ -34,7 +34,11 @@
  * or the reference's body for the other ops): `loadServiceReadsMain`, with
  * `runServiceNodeInfo` for `node_info`'s `connections` (B7), and
  * `runServiceRead` and `runServiceBlob` for the radapi handlers' answers
- * (B8).
+ * (B8); and `loadServiceNetworkMain`, a fake service node whose
+ * `rad.connect_seeds` and `rad.clone` answer what each `radicle-network.json`
+ * case scripts, the clone's progress as the texts of its `rad.progress`
+ * events (B9: `runServiceReport`, `runServiceProgress`, `runServiceQueue`
+ * and `runServiceResult`).
  *
  * Lives under `test/helpers/` (outside `src/**`) so electron-builder never
  * packages it.
@@ -585,6 +589,243 @@ function runConnections(main, c) {
   }));
 }
 
+// ---- radicle-network.json on the service path (the radicled plan's B9) ----
+
+/**
+ * How the service answers a clone it doesn't answer itself (the vectors'
+ * `nothing`): its deadline, or its stop, as freedom-radicled's pools word
+ * them.
+ */
+const SERVICE_ENDINGS = Object.freeze({
+  deadline: Object.freeze({ code: 'deadline', message: 'past its deadline' }),
+  stop: Object.freeze({ code: 'stopped', message: 'the Radicle service is stopping' }),
+});
+
+/** The service's code for libradicle's error `message` (0008, Errors):
+ * `not_found` when today's message test matches it, else `failed`. */
+const serviceErrorCode = (message) =>
+  /not found|does not exist|NotFound/i.test(message) ? 'not_found' : 'failed';
+
+/** A clone's answer for the add-on's result text: `{ result }`, or `{ error
+ * }` with the service's code. */
+function cloneAnswer(text) {
+  const value = JSON.parse(text);
+  if (typeof value?.error === 'string') {
+    return { error: { code: serviceErrorCode(value.error), message: value.error } };
+  }
+  return { result: value };
+}
+
+/**
+ * Main's manager and seed status on the service path, its node running: a
+ * fake service node whose `rad.connect_seeds` answers `world.seeds` (`{
+ * result }` or `{ error: { code, message, data } }`), each `rad.clone` the
+ * next of `world.clones` (`{ events, answer }`: its events' texts, handed to
+ * the clone's callback in order before its answer, as the service writes
+ * them), and `rad.read` the node info (`world.peers` connected, no
+ * repository) and `seeders` (`world.seeding`). The peer count after the
+ * seeds is the node's stats', `world.peers`. The log keeps info and warning
+ * lines. Call within FREEDOM_RADICLE_BACKEND=service.
+ */
+function loadServiceNetworkMain() {
+  const world = {
+    script: [],
+    calls: [],
+    warnings: [],
+    infos: [],
+    unscripted: [],
+    seeds: null,
+    clones: [],
+    peers: 2,
+    seeding: 2,
+  };
+  // An add-on that must never be called: any call is unscripted.
+  const addon = scriptedAddon(world);
+  const log = {
+    debug() {},
+    error() {},
+    log() {},
+    info: (...parts) => world.infos.push(join(parts)),
+    warn: (...parts) => world.warnings.push(join(parts)),
+  };
+  const embedded = loadEmbedded(log, addon);
+  const seedStatus = loadWithInternals('src/main/radicle/seed-status.js', [], { '../logger': log });
+  const { CoreError } = require(path.join(ROOT, 'src/main/core/service-client.js'));
+  const answer = (scripted) =>
+    scripted.error
+      ? Promise.reject(
+          new CoreError(scripted.error.code, scripted.error.message, scripted.error.data)
+        )
+      : Promise.resolve(scripted.result);
+  const node = {
+    generation: 1,
+    version: SERVICE_LIBRADICLE,
+    confinement: { mechanism: 'test' },
+    buildInfo: () => ({ service: { version: '0.1.0' } }),
+    streamStats: () => null,
+    connectedPeers: () => world.peers,
+    async read(op, args) {
+      world.calls.push({ op, args });
+      if (op === 'node_info') {
+        return readReply(
+          JSON.stringify({ connected_peers: world.peers, repos_total: 0, repos_error: null })
+        );
+      }
+      if (op === 'seeders') return readReply(JSON.stringify({ seeding: world.seeding }));
+      world.unscripted.push({ op, args });
+      throw new CoreError('failed', `unscripted ${op}`);
+    },
+    connectSeeds(timeoutMs) {
+      world.calls.push({ method: 'rad.connect_seeds', params: { timeout_ms: timeoutMs } });
+      if (!world.seeds) {
+        world.unscripted.push({ method: 'rad.connect_seeds' });
+        return Promise.reject(new CoreError('failed', 'unscripted rad.connect_seeds'));
+      }
+      return answer(world.seeds);
+    },
+    clone(rid, timeoutMs, { onProgress = null } = {}) {
+      world.calls.push({
+        method: 'rad.clone',
+        params: { rid, timeout_ms: timeoutMs, progress: typeof onProgress === 'function' },
+      });
+      const scripted = world.clones.shift();
+      if (!scripted) {
+        world.unscripted.push({ method: 'rad.clone', rid });
+        return Promise.reject(new CoreError('failed', 'unscripted rad.clone'));
+      }
+      for (const text of scripted.events ?? []) onProgress?.(text);
+      return answer(scripted.answer);
+    },
+  };
+  const manager = loadWithInternals(
+    'src/main/radicle-manager.js',
+    ['connectAndSeedDefault', 'serviceNetwork', 'seedRepository'],
+    managerStubs(log, embedded, seedStatus),
+    SET_SERVICE_NODE
+  );
+  manager.__setServiceNode(node);
+  return { world, manager: manager.__internals, seedStatus, node };
+}
+
+/** Runs `run` on the service path with `setup(world)` applied, `Date.now`
+ * counting as `runNetwork`'s does: what it returned with the calls and log
+ * lines, and what was unscripted or left unanswered. */
+async function runServiceNetwork(main, setup, run) {
+  const { world } = main;
+  main.seedStatus._reset();
+  resetWorld(world, []);
+  Object.assign(world, { seeds: null, clones: [], peers: 2, seeding: 2 });
+  setup(world);
+  const realNow = Date.now;
+  let now = 1700000000000;
+  Date.now = () => (now += 1);
+  try {
+    const result = await run();
+    await settle();
+    return {
+      main: asJson({ ...result, calls: world.calls, infos: world.infos, warnings: world.warnings }),
+      unscripted: world.unscripted,
+      // Scripted clones never asked for.
+      unanswered: world.clones.length,
+    };
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+/** A `radicle-network.json` report on the service path: the background
+ * network start over the service's answer (`expect`), the default
+ * repository's clone and the node's peer count (`status`, else 2). */
+function runServiceReport(main, c) {
+  return runServiceNetwork(
+    main,
+    (world) => {
+      world.seeds = c.expect.error
+        ? { error: c.expect.error }
+        : { result: JSON.parse(c.expect.result_text) };
+      if (c.status !== undefined) world.peers = c.status;
+      if (!c.expect.error) world.clones = [{ answer: { result: { ok: true } } }];
+    },
+    async () => {
+      await main.manager.connectAndSeedDefault(main.manager.serviceNetwork(main.node));
+      return {};
+    }
+  );
+}
+
+/** A clone through `seedRepository` on the service path: every status it
+ * published. */
+async function seedThrough(main) {
+  const statuses = [];
+  const started = await main.manager.seedRepository(RID, (status) =>
+    statuses.push(asJson(status))
+  );
+  if (started.success !== true) throw new Error('seedRepository refused');
+  await started.status.done;
+  return statuses;
+}
+
+/** A `radicle-network.json` clone's progress on the service path: its
+ * events' texts, then its result, and every status `seedRepository`
+ * published. */
+function runServiceProgress(main, c) {
+  return runServiceNetwork(
+    main,
+    (world) => {
+      world.clones = [
+        { events: c.events.map((event) => event.text), answer: cloneAnswer(c.result_text) },
+      ];
+    },
+    async () => ({ statuses: await seedThrough(main) })
+  );
+}
+
+/**
+ * A `radicle-network.json` `queue` case on the service path: the envelopes
+ * the service wrote (`written`), each a `rad.progress` event of one clone,
+ * handed to its callback in order; then the answer its terminal event
+ * implies (`done`: `{ ok: true }`, `cancelled`: `{ cancelled: true }`,
+ * `failed`: libradicle's error; none: `{ ok: true }`). Every status
+ * `seedRepository` published, and the events' texts.
+ */
+function runServiceQueue(main, c) {
+  const events = c.written.map((envelope) => JSON.parse(envelope).data.event);
+  const last = JSON.parse(events.at(-1));
+  let answerOf = { result: { ok: true } };
+  if (last.phase === 'cancelled') answerOf = { result: { cancelled: true } };
+  if (last.phase === 'failed') {
+    answerOf = { error: { code: serviceErrorCode(last.reason), message: last.reason } };
+  }
+  return runServiceNetwork(
+    main,
+    (world) => {
+      world.clones = [{ events, answer: answerOf }];
+    },
+    async () => ({ statuses: await seedThrough(main), events })
+  );
+}
+
+/**
+ * A `radicle-network.json` clone's end on the service path: the service's
+ * answer (`expect`: its result, its error, or for `nothing` the `ending`
+ * that answers instead, SERVICE_ENDINGS' `deadline` or `stop`), and the
+ * last status `seedRepository` published.
+ */
+function runServiceResult(main, c, ending = null) {
+  let answerOf;
+  if (c.expect.result) answerOf = { result: c.expect.result };
+  else if (c.expect.error) answerOf = { error: c.expect.error };
+  else answerOf = { error: SERVICE_ENDINGS[ending] };
+  return runServiceNetwork(
+    main,
+    (world) => {
+      world.seeding = 1;
+      world.clones = [{ answer: answerOf }];
+    },
+    async () => ({ final: (await seedThrough(main)).at(-1) })
+  );
+}
+
 // ---- radicle-import.json (radicle-import.js) ----
 
 /** Main's GitHub bridge over its own embedded module and a scripted add-on,
@@ -733,5 +974,11 @@ module.exports = {
   runProgress,
   runResult,
   runConnections,
+  loadServiceNetworkMain,
+  runServiceReport,
+  runServiceProgress,
+  runServiceQueue,
+  runServiceResult,
+  SERVICE_ENDINGS,
   runImport,
 };
