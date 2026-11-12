@@ -458,7 +458,6 @@ module.exports = {
 
   // Swarm Provider (main-process authority). Every window.swarm method goes
   // to main on page:request (freedom-core design 0011, PRQ-7d).
-  SWARM_PROVIDER_EVENT: 'swarm:provider-event',
   // main -> chrome: a page's Swarm write failed because publishing isn't set
   // up ({ origin, reason }); the chrome shows its setup screen (PRQ-7c).
   SWARM_PUBLISH_SETUP_NEEDED: 'swarm:publish-setup-needed',
