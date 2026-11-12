@@ -169,6 +169,10 @@ function timeoutError(message) {
  *
  * A redirect isn't followed (an explicit choice): the upload goes to the
  * node in the service registry and nowhere else, so a 3xx answer fails it.
+ * A success that comes before the whole body has gone fails it too (a
+ * protocol failure): it can't be the upload's answer. Whatever ends the
+ * upload, a still-open request is destroyed, so its writer wakes and lets
+ * the bytes go.
  * bee-js's fetch followed a 307 or 308 for a Buffer body (`publishData`),
  * could follow none for a stream (`publishFiles`), and turned a 301-303 into
  * a GET that uploaded nothing.
@@ -231,6 +235,12 @@ function post(apiUrl, path, { query = {}, headers = {}, length, pieces, signal =
           }
           if (status < 200 || status >= 300) {
             fail(responseError(status, response.statusMessage || '', errorText(text)));
+            return;
+          }
+          // A success before the node took the whole body can't be the
+          // upload's: a protocol failure, and the unfinished request goes.
+          if (!request.writableFinished) {
+            fail(new Error('The node answered before it had taken the whole upload'));
             return;
           }
           let body;

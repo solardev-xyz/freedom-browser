@@ -201,6 +201,53 @@ describe('page uploads to the node (0011 PRQ-7c)', () => {
     await expect(uploadData(mockAntUrl, BATCH, Buffer.alloc(8 * SLICE_BYTES))).rejects.toMatchObject({ status: 413 });
   });
 
+  // Codex round 2 on #1199: an answer before the whole body went, refusal or
+  // success, ends the upload with its request destroyed, and its writer
+  // waiting on nothing. A raw socket answers, since Node's own server reads
+  // and drops the rest of a body once it has answered.
+  test('an answer before the whole body went fails the upload, a success too, and leaves no writer waiting', async () => {
+    const net = require('net');
+    const sockets = [];
+    let reply = '';
+    const raw = net.createServer((socket) => {
+      sockets.push(socket);
+      socket.once('data', () => {
+        socket.pause();
+        socket.write(reply);
+      });
+    });
+    await new Promise((resolve) => raw.listen(0, '127.0.0.1', resolve));
+    const rawUrl = `http://127.0.0.1:${raw.address().port}`;
+    const response = (status, text, body, headers = '') =>
+      `HTTP/1.1 ${status} ${text}\r\ncontent-type: application/json\r\n${headers}content-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+    try {
+      for (const early of [
+        { reply: response(413, 'Payload Too Large', '"too large"'), error: { status: 413 } },
+        {
+          reply: response(201, 'Created', JSON.stringify({ reference: REFERENCE }), 'swarm-tag: 42\r\n'),
+          error: { message: 'The node answered before it had taken the whole upload' },
+        },
+      ]) {
+        reply = early.reply;
+        clientRequests.clear();
+        const err = await uploadData(rawUrl, BATCH, Buffer.alloc(32 * 1024 * 1024)).catch((e) => e);
+        expect({ reply: early.reply.slice(9, 12), err }).toEqual({ reply: early.reply.slice(9, 12), err: expect.objectContaining(early.error) });
+        const [request] = [...clientRequests];
+        await waitFor(() => request.listenerCount('drain') === 0, 2000).catch(() => {});
+        expect({ destroyed: request.destroyed, finished: request.writableFinished, drain: request.listenerCount('drain') }).toEqual({
+          destroyed: true,
+          finished: false,
+          drain: 0,
+        });
+        // Nothing of the upload's own waits on the request.
+        expect(request.listeners('close').some((listener) => listener.name === 'done')).toBe(false);
+      }
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => raw.close(resolve));
+    }
+  });
+
   // Codex round 1 on #1199: an upload ends, with its socket let go, however
   // the node behaves, and stops on the caller's signal.
   test('a node that stops taking the body is given up on after the stall bound, and the connection goes', async () => {
