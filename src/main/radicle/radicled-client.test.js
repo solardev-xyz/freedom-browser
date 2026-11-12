@@ -728,6 +728,78 @@ describe('hang watchdogs: the deadline + 15 s', () => {
   });
 });
 
+describe("rad.clone's cancel (0008, Methods: it replaces cancelClone(rid))", () => {
+  const params = { rid: RID, timeout_ms: 120_000, progress: true };
+
+  test('onSent names the request before anything about it is read', async () => {
+    const clones = [];
+    const gen = await ready({ clone: (m) => clones.push(m) });
+    const sent = [];
+    const answer = client.clone(gen, params, { onSent: (id, number) => sent.push([id, number]) });
+    await settle();
+    expect(sent).toEqual([[clones[0].id, gen.number]]);
+    expect(clones[0].params).toEqual(params);
+    child(0).result(clones[0].id, { ok: true });
+    await expect(answer).resolves.toEqual({ ok: true });
+  });
+
+  test('before the clone starts: the cancel goes at once, and the service answers it cancelled', async () => {
+    const clones = [];
+    const gen = await ready({ clone: (m) => clones.push(m) });
+    const controller = new AbortController();
+    const answer = client.clone(gen, params, { signal: controller.signal });
+    await settle();
+    controller.abort();
+    await expect(answer).rejects.toMatchObject({ code: 'cancelled' });
+    expect(child(0).cancels).toEqual([clones[0].id]);
+    expect(client.serves(gen)).toBe(true);
+  });
+
+  test("once it has started: the cancel goes at once, and the caller waits for the clone to stop, under the network watchdog", async () => {
+    const clones = [];
+    const gen = await ready({
+      clone: (m, c) => {
+        clones.push(m);
+        c.claim(m.id);
+      },
+    });
+    const controller = new AbortController();
+    let settled = false;
+    const answer = client.clone(gen, params, { signal: controller.signal });
+    answer.then(
+      () => (settled = true),
+      () => (settled = true)
+    );
+    await settle();
+    controller.abort();
+    await settle();
+    // The cancel reached the clone's token; nothing has answered it.
+    expect(child(0).cancels).toEqual([clones[0].id]);
+    expect(child(0).claimed.get(clones[0].id).cancelled).toBe(true);
+    expect(settled).toBe(false);
+    // Its watchdog still runs: timeout_ms + 45 s.
+    await clock.advance(120_000 + 45_000 - 1);
+    expect(child(0).killedWith).toBeUndefined();
+    expect(settled).toBe(false);
+    // The clone stops: its answer is the caller's.
+    child(0).result(clones[0].id, { cancelled: true });
+    await expect(answer).resolves.toEqual({ cancelled: true });
+    await clock.advance(1);
+    expect(child(0).killedWith).toBeUndefined();
+  });
+
+  test('a cancelled clone the service never answers: killed at its watchdog, as any hung call', async () => {
+    const gen = await ready({ clone: (m, c) => c.claim(m.id) });
+    const controller = new AbortController();
+    const answer = client.clone(gen, params, { signal: controller.signal }).catch((e) => e);
+    await settle();
+    controller.abort();
+    await clock.advance(120_000 + 45_000);
+    expect(child(0).killedWith).toBe('SIGKILL');
+    expect(await answer).toMatchObject({ code: 'radicle_unavailable' });
+  });
+});
+
 describe('exit codes and restarts', () => {
   test.each([
     [64, 'usage, the environment included'],
