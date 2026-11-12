@@ -116,6 +116,17 @@ profile had no vault at its start, is refused before its write prompt with
 identity. `radicle_getIdentity` then names the throwaway key's DID, which
 changes at each start.
 
+On the service, a COB write or `radicle_unseed` that the node took but
+didn't confirm, because it failed partway, or the node stopped or crashed
+with the write in flight, answers `-32603` with
+`The Radicle node stopped before confirming this write; it may have been recorded.`
+and `outcome_unknown`. The write may or may not have been made: Freedom
+never sends it again, and a page should read the repository before writing
+again. A COB write the node refused before starting it, so that nothing was
+written, answers `4900` with `busy`, `stopped`, `deadline` or `quarantined`
+(the repository couldn't be repaired, and takes no writes), or `-32602` with
+`invalid_params`.
+
 ## Permission tiers
 
 1. **Connection** — `radicle_requestAccess`, persisted per normalized
