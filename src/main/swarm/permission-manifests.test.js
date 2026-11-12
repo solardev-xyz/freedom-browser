@@ -37,7 +37,9 @@ jest.mock('./swarm-permissions', () => ({
   }),
   revokePermission: jest.fn((origin) => { delete mockPermissionState[origin]; }),
   getAutoApprove: jest.fn((origin, type) => mockPermissionState[origin]?.autoApprove?.[type] === true),
+  // As the store: no rule for a site that isn't connected.
   setAutoApprove: jest.fn((origin, type, enabled) => {
+    if (!mockPermissionState[origin]) return false;
     mockPermissionState[origin].autoApprove[type] = enabled;
     return true;
   }),
@@ -768,5 +770,101 @@ describe('permission manifests for a page through main', () => {
     expect(decided).toEqual({ allowed: true, mode: 'allow' });
     expect(order).toEqual(['recheck', 'holds']);
     expect(mockPermissionState['app.eth']).toMatchObject({ origin: 'app.eth', autoApprove: { publish: true } });
+  });
+});
+
+// Codex round 1 on #1194: the chrome's still-open manifest channels and
+// main's page consents (PRQ-7b) share no token, and the chrome's flow
+// writes none of what only main grants.
+describe('permission manifests: the chrome\'s flow and main\'s page consents kept apart', () => {
+  const check = (origin, eager = true) =>
+    ipcHandlers['swarm:manifest-check']({ sender: liveSender() }, { origin, committedUrl: `bzz://${origin}/`, eager });
+  const decide = (token, outcome) => ipcHandlers['swarm:manifest-decide']({}, { token, outcome });
+  const pageCheck = (origin) => checkPageManifest({ key: origin, url: `bzz://${origin}/`, guest: liveSender(), eager: true });
+  const pageDecide = (origin, token, outcome) =>
+    decidePageManifest(origin, token, outcome, { recheck: async () => true, holds: () => true });
+
+  beforeEach(() => {
+    registerPermissionManifestIpc();
+  });
+
+  test('the chrome can\'t obtain or decide a page\'s consent, and a page can\'t decide the chrome\'s', async () => {
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    const page = await pageCheck('app.eth');
+    const chrome = await check('app.eth');
+    expect(page.kind).toBe('consent');
+    expect(chrome.kind).toBe('consent');
+    // The same consent, and still two tokens: the chrome is never handed
+    // the page's, as it was handed a sibling tab's.
+    expect(chrome.token).not.toBe(page.token);
+    await expect(decide(page.token, 'allow')).rejects.toThrow('Manifest consent expired');
+    expect(mockPermissionState['app.eth']).toBeUndefined();
+    await expect(pageDecide('app.eth', chrome.token, 'allow')).rejects.toThrow('Manifest consent expired');
+    // Nor for another key.
+    await expect(pageDecide('other.eth', page.token, 'allow')).rejects.toThrow('Manifest consent expired');
+    expect(mockPermissionState['app.eth']).toBeUndefined();
+    expect(await pageDecide('app.eth', page.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    expect(mockPermissionState['app.eth']).toMatchObject({ autoApprove: { publish: true } });
+  });
+
+  test('the chrome\'s allow writes none of the connection, the messaging grant or its rule; main\'s check asks for messaging after', async () => {
+    mockHandleBzzRequest.mockImplementation(async () =>
+      responseFor(manifest({ publish: { why: 'Publish releases' }, messaging: { why: 'Chat' } }))
+    );
+    const chrome = await check('app.eth');
+    // The chrome's sheet doesn't ask for messaging.
+    expect(chrome.model.changed.map((row) => row.key)).toEqual(['publish']);
+    expect(await decide(chrome.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    expect(mockPermissionState['app.eth']).toBeUndefined();
+
+    // The chrome's 'individual' writes no connection either.
+    const individual = await check('solo.eth');
+    expect(await decide(individual.token, 'individual')).toEqual({ allowed: true, mode: 'individual' });
+    expect(mockPermissionState['solo.eth']).toBeUndefined();
+
+    // Connected by main.
+    mockPermissionState['app.eth'] = { origin: 'app.eth', autoApprove: {} };
+    expect(mockPermissionState['app.eth'].messaging).toBeUndefined();
+    const record = getRecord('app.eth');
+    expect(record.acknowledged.messaging).toBeUndefined();
+    for (const projection of ['connection', 'messagingGrant', 'autoApprove.messaging']) {
+      expect({ projection, managed: record.managed?.[projection] }).toEqual({ projection, managed: undefined });
+    }
+    // Main's own check asks for messaging, and its allow grants it.
+    const page = await pageCheck('app.eth');
+    expect(page.model.changed.map((row) => row.key)).toEqual(['messaging']);
+    expect(await pageDecide('app.eth', page.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    expect(mockPermissionState['app.eth']).toMatchObject({ messaging: true, autoApprove: { messaging: true } });
+  });
+
+  test('a messaging-only manifest asks the chrome nothing', async () => {
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ messaging: { why: 'Chat' } })));
+    expect(await check('chat.eth')).toEqual({ kind: 'ready' });
+    expect(mockPermissionState['chat.eth']).toBeUndefined();
+    expect((await pageCheck('chat.eth')).kind).toBe('consent');
+  });
+
+  test('two sheets for one consent, the chrome\'s and a page\'s or two pages\': the later answer fails as stale, never silently', async () => {
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    // A page's first, then the chrome's.
+    let page = await pageCheck('a.eth');
+    let chrome = await check('a.eth');
+    expect(await pageDecide('a.eth', page.token, 'individual')).toEqual({ allowed: true, mode: 'individual' });
+    await expect(decide(chrome.token, 'allow')).rejects.toThrow('Manifest consent is stale');
+    expect(mockPermissionState['a.eth']?.autoApprove?.publish).not.toBe(true);
+
+    // The chrome's first, then a page's.
+    page = await pageCheck('b.eth');
+    chrome = await check('b.eth');
+    expect(await decide(chrome.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    await expect(pageDecide('b.eth', page.token, 'individual')).rejects.toThrow('Manifest consent is stale');
+
+    // Two pages': two tokens, and the second answer isn't the first's replay.
+    const first = await pageCheck('c.eth');
+    const second = await pageCheck('c.eth');
+    expect(second.token).not.toBe(first.token);
+    expect(await pageDecide('c.eth', first.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    await expect(pageDecide('c.eth', second.token, 'deny')).rejects.toThrow('Manifest consent is stale');
+    await expect(pageDecide('c.eth', first.token, 'allow')).rejects.toThrow('Manifest consent expired');
   });
 });

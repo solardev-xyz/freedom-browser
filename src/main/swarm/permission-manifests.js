@@ -41,12 +41,28 @@ const PROJECTIONS = {
   signing: ['connection', 'identity', 'feedGrant', 'autoApprove.signing'],
   messaging: ['connection', 'messagingGrant', 'autoApprove.messaging'],
 };
+// What main alone writes, from a page's decision on its own prompt
+// (freedom-core design 0011, PRQ-7b): the connection, the messaging grant
+// and messaging's rule, whose chrome writes are refused. The chrome's
+// manifest flow neither writes nor claims them, and never asks for a
+// capability that is nothing else (messaging): main's own check does.
+const PAGE_ONLY_PROJECTIONS = new Set(['connection', 'messagingGrant', 'autoApprove.messaging']);
+const pageOnlyCapability = (capability) =>
+  PROJECTIONS[capability].every((projection) => PAGE_ONLY_PROJECTIONS.has(projection));
 
 let storeCache = null;
 let storeLoadedFromBackup = false;
 let faultInjector = null;
+// The chrome's consents (`swarm:manifest-check` / `swarm:manifest-decide`).
 const tokens = new Map();
 const completedTokens = new Map();
+// Main's own consents for a page's request (freedom-core design 0011,
+// PRQ-7b; `checkPageManifest` / `decidePageManifest`): a pool of their own,
+// which the chrome's channels never read, so the chrome is never handed a
+// page's token nor can decide one. Each is single-use: never shared between
+// two requests, and never replayed, so a second sheet the user answers
+// differently fails as stale instead of silently taking the first answer.
+const pageTokens = new Map();
 const unresolvedBackoff = new Map();
 
 function getStorePath() {
@@ -336,11 +352,12 @@ function removeOwners(record, capabilities) {
   return operations.sort((left, right) => Number(left.projection === 'connection') - Number(right.projection === 'connection'));
 }
 
-function addManagedCapability(origin, record, capability) {
+function addManagedCapability(origin, record, capability, { skip = null } = {}) {
   const operations = [];
   record.managed ||= {};
   for (const projection of PROJECTIONS[capability]) {
     if (record.detached?.[projection]) continue;
+    if (skip?.has(projection)) continue;
     const owners = record.managed[projection] || [];
     if (owners.length > 0) {
       if (!owners.includes(capability)) record.managed[projection] = [...owners, capability];
@@ -485,7 +502,15 @@ function buildConsentModel(origin, record, manifest, changed, removed) {
   };
 }
 
+/**
+ * `deps.owner` says whose consent this is: `page` (main's own, for a page's
+ * request: `checkPageManifest`), `chrome` (the chrome's channels, which
+ * never ask for or write what only main grants), or neither (in-process
+ * callers that decide themselves, tests).
+ */
 async function checkManifest({ origin, committedUrl, eager = false }, deps = {}) {
+  const forPage = deps.owner === 'page';
+  const restricted = deps.owner === 'chrome';
   recoverPending();
   const key = normalizeOrigin(origin);
   const state = loadStore();
@@ -540,7 +565,11 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
       decidedAt: Date.now(),
     };
   }
-  const changed = additions.filter((capability) => !satisfied.includes(capability));
+  // The chrome's sheet never asks for what only main grants (PRQ-7b): such
+  // a capability stays unacknowledged until main's own check asks for it.
+  const changed = additions.filter(
+    (capability) => !satisfied.includes(capability) && !(restricted && pageOnlyCapability(capability))
+  );
   record.revision = existing?.revision || 0;
   if (removalOperations.length > 0 || removed.length > 0 || satisfied.length > 0) {
     record.revision += 1;
@@ -570,7 +599,15 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
     firstContact,
     changed,
     expiresAt: Date.now() + TOKEN_TTL_MS,
+    restricted,
   };
+  if (forPage) {
+    // A page's consent is its request's own: never coalesced, never the
+    // chrome's.
+    const token = crypto.randomBytes(24).toString('base64url');
+    pageTokens.set(token, pending);
+    return { kind: 'consent', token, model: buildConsentModel(key, existing, manifest, changed, removed) };
+  }
   let token = outstandingToken(pending);
   if (!token) {
     token = crypto.randomBytes(24).toString('base64url');
@@ -584,22 +621,32 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
   return { kind: 'consent', token, model: buildConsentModel(key, existing, manifest, changed, removed) };
 }
 
-function decideManifest(token, outcome) {
+/**
+ * Decide a consent. By default from the shared pool, which replays a
+ * decided token's result; one the chrome's channels minted never writes or
+ * claims what only main grants (PAGE_ONLY_PROJECTIONS). A page's (`owner:
+ * 'page'`, from `decidePageManifest` only) comes from main's own pool,
+ * once.
+ */
+function decideManifest(token, outcome, { owner = 'chrome' } = {}) {
   recoverPending();
-  if (completedTokens.has(token)) return completedTokens.get(token);
-  const pending = tokens.get(token);
+  const forPage = owner === 'page';
+  const pool = forPage ? pageTokens : tokens;
+  if (!forPage && completedTokens.has(token)) return completedTokens.get(token);
+  const pending = pool.get(token);
   if (!pending || pending.expiresAt < Date.now()) throw new Error('Manifest consent expired');
   if (!['allow', 'individual', 'deny'].includes(outcome)) throw new Error('Invalid manifest decision');
 
   const state = loadStore();
   if (state.records[pending.origin]?.observed?.fingerprint !== pending.fingerprint) {
-    tokens.delete(token);
+    pool.delete(token);
     throw new Error('Manifest consent is stale');
   }
   if ((state.records[pending.origin]?.revision || 0) !== pending.baseRevision) {
-    tokens.delete(token);
+    pool.delete(token);
     throw new Error('Manifest consent is stale');
   }
+  const skip = pending.restricted ? PAGE_ONLY_PROJECTIONS : null;
   const record = structuredClone(state.records[pending.origin] || { managed: {}, acknowledged: {} });
   const operations = [];
   if (outcome !== 'deny') {
@@ -611,7 +658,7 @@ function decideManifest(token, outcome) {
       // ahead of `runTransaction`: a crash between the grant and the journal
       // would otherwise leave the origin connected with no record, receipt or
       // acknowledgement, and nothing for `recoverPending` to replay.
-      if (!permissions.getPermission(pending.origin)) {
+      if (!skip?.has('connection') && !permissions.getPermission(pending.origin)) {
         operations.push({ projection: 'connection', enabled: true });
       }
     }
@@ -632,7 +679,7 @@ function decideManifest(token, outcome) {
         whyShown: pending.manifest.capabilities[capability].why,
         decidedAt: Date.now(),
       };
-      if (outcome === 'allow') operations.push(...addManagedCapability(pending.origin, record, capability));
+      if (outcome === 'allow') operations.push(...addManagedCapability(pending.origin, record, capability, { skip }));
       else operations.push(...removeOwners(record, [capability]));
     }
     record.receipts ||= [];
@@ -656,9 +703,11 @@ function decideManifest(token, outcome) {
     runTransaction(pending.origin, null, []);
   }
   const result = { allowed: outcome !== 'deny', mode: outcome };
-  tokens.delete(token);
-  completedTokens.set(token, result);
-  if (completedTokens.size > 100) completedTokens.delete(completedTokens.keys().next().value);
+  pool.delete(token);
+  if (!forPage) {
+    completedTokens.set(token, result);
+    if (completedTokens.size > 100) completedTokens.delete(completedTokens.keys().next().value);
+  }
   return result;
 }
 
@@ -713,7 +762,7 @@ function checkPageManifest({ key, url, guest, eager = false }) {
   if (!fetchContext) return Promise.resolve({ kind: 'unresolved' });
   return withOriginLock(key, () => (
     stillAsking(guest, fetchContext)
-      ? checkManifest({ origin: key, committedUrl: url, eager }, { fetchContext })
+      ? checkManifest({ origin: key, committedUrl: url, eager }, { fetchContext, owner: 'page' })
       : { kind: 'unresolved' }
   ));
 }
@@ -727,9 +776,11 @@ function checkPageManifest({ key, url, guest, eager = false }) {
  */
 function decidePageManifest(key, token, outcome, { recheck, holds }) {
   return withOriginLock(key, async () => {
+    // Only a page consent main issued for this very key.
+    if (pageTokens.get(token)?.origin !== normalizeOrigin(key)) throw new Error('Manifest consent expired');
     if (!(await recheck())) return { refused: true };
     if (!holds()) return { refused: true };
-    return decideManifest(token, outcome);
+    return decideManifest(token, outcome, { owner: 'page' });
   });
 }
 
@@ -748,10 +799,12 @@ function registerPermissionManifestIpc() {
     if (!fetchContext) return { kind: 'unresolved' };
     return withOriginLock(request.origin, () => (
       stillAsking(sender, fetchContext)
-        ? checkManifest(request, { fetchContext })
+        ? checkManifest(request, { fetchContext, owner: 'chrome' })
         : { kind: 'unresolved' }
     ));
   });
+  // The chrome's own consents only: a page's (main's pool) is never found
+  // here, and what only main grants is never written from here (PRQ-7b).
   ipcMain.handle(IPC.SWARM_MANIFEST_DECIDE, (_event, { token, outcome }) => {
     const origin = tokens.get(token)?.origin || `consent-token:${token}`;
     return withOriginLock(origin, () => decideManifest(token, outcome));
@@ -773,6 +826,7 @@ function _resetForTests() {
   storeLoadedFromBackup = false;
   tokens.clear();
   completedTokens.clear();
+  pageTokens.clear();
   unresolvedBackoff.clear();
   faultInjector = null;
 }
