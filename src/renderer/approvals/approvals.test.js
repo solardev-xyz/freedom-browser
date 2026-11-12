@@ -10,9 +10,12 @@
 const fs = require('fs');
 const path = require('path');
 
-const doc = require('./approvals.js');
+const core = require('./approvals-core.js');
+const kinds = require('./approvals-kinds.js');
 
-const { checkMessage, conforms, visible, cut, createInputGate, SCHEMAS, INPUT_DELAY_MS, MAX_VIEW_BYTES, CUT_AT } = doc;
+const { conforms, visible, cut, createInputGate, INPUT_DELAY_MS, MAX_VIEW_BYTES, CUT_AT } = core;
+const { checkMessage } = kinds;
+const SCHEMAS = Object.fromEntries(Object.entries(kinds.KINDS).map(([kind, def]) => [kind, def.schema]));
 
 const HANDLE = 'f'.repeat(64);
 const SITE = { key: `bzz://${'a'.repeat(64)}`, label: `bzz://${'a'.repeat(64)}` };
@@ -83,9 +86,6 @@ describe('the closed schema', () => {
     expect(conforms([new Row()], SCHEMAS['test.prompt'].fields.rows)).toBe(false);
   });
 
-  test('APS-1 renders one kind, the harness\'s', () => {
-    expect(Object.keys(SCHEMAS)).toEqual(['test.prompt']);
-  });
 });
 
 describe('text, encoded for where it shows', () => {
@@ -297,11 +297,17 @@ describe('the input gate', () => {
 
 describe('the document\'s files', () => {
   const html = fs.readFileSync(path.join(__dirname, 'approvals.html'), 'utf8');
-  const script = fs.readFileSync(path.join(__dirname, 'approvals.js'), 'utf8');
+  const script = ['approvals-core.js', 'approvals-kinds.js', 'approvals.js']
+    .map((file) => fs.readFileSync(path.join(__dirname, file), 'utf8'))
+    .join('\n');
 
   test('no inline script, style or handler; only its own files', () => {
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
-    expect(scripts.map((m) => m[1].trim())).toEqual(['src="./approvals.js"']);
+    expect(scripts.map((m) => m[1].trim())).toEqual([
+      'src="./approvals-core.js"',
+      'src="./approvals-kinds.js"',
+      'src="./approvals.js"',
+    ]);
     expect(scripts.every((m) => m[2].trim() === '')).toBe(true);
     expect(html).not.toMatch(/<style\b/);
     expect(html).not.toMatch(/\sstyle=/);

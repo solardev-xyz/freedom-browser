@@ -70,6 +70,8 @@ const PARTITION = 'freedom-approvals';
 // the chrome's colour tokens, so the panel paints from the chrome's palette.
 const FILES = new Map([
   [APPROVALS_HTML, 'text/html; charset=utf-8'],
+  [path.join(APPROVALS_DIR, 'approvals-core.js'), 'text/javascript; charset=utf-8'],
+  [path.join(APPROVALS_DIR, 'approvals-kinds.js'), 'text/javascript; charset=utf-8'],
   [path.join(APPROVALS_DIR, 'approvals.js'), 'text/javascript; charset=utf-8'],
   [path.join(APPROVALS_DIR, 'approvals.css'), 'text/css; charset=utf-8'],
   [path.join(RENDERER_DIR, 'styles', 'variables.css'), 'text/css; charset=utf-8'],
@@ -290,9 +292,11 @@ function createApprovalsDocuments({
     if (preparedSessions.has(ses)) return ses;
     preparedSessions.add(ses);
     ses.protocol.handle('file', (request) => serve(request));
+    // Every request the partition sees is logged for the tests: a prompt's
+    // data must make none (design 0011, APS-2's hostile data).
     ses.webRequest.onBeforeRequest((details, callback) => {
       const cancel = ownFile(details?.url) === null;
-      if (cancel) trace({ kind: 'request-refused', url: String(details?.url || '').slice(0, 200) });
+      trace({ kind: cancel ? 'request-refused' : 'request', url: String(details?.url || '').slice(0, 200) });
       callback({ cancel });
     });
     ses.setPermissionRequestHandler?.((_contents, _permission, callback) => callback(false));
