@@ -297,6 +297,7 @@ describe('swarm-provider-ipc', () => {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,
           pageSignedSingleOwnerChunks: true,
+          actShares: true,
         },
         limits: {
           maxDataBytes: LIMITS.maxDataBytes,

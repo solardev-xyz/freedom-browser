@@ -18,6 +18,7 @@ jest.mock('./wallet-ui.js', () => ({
   showSwarmPublishApproval: jest.fn(),
   showSwarmFeedApproval: jest.fn(),
   showSwarmMessagingApproval: jest.fn(),
+  showSwarmActApproval: jest.fn(),
   showVaultUnlock: jest.fn(),
   showPermissionManifest: (...args) => mockShowPermissionManifest(...args),
   routeToPublishSetup: (...args) => mockRouteToPublishSetup(...args),
@@ -496,5 +497,96 @@ describe('feed writes with a locked vault', () => {
     expect(window.swarmProvider.execute).toHaveBeenCalledWith(
       'swarm_writeFeedEntry', { name: 'blog' }, 'app.eth', { webContentsId: 41, approval: 'auto' }
     );
+  });
+});
+
+describe('swarm_openAct (#648)', () => {
+  let setupSwarmProvider;
+  let showSwarmActApproval;
+  const PUBLISHER = `02${'ab'.repeat(32)}`;
+  const OTHER = `03${'cd'.repeat(32)}`;
+  const params = (publisher) => ({ reference: 'aa'.repeat(32), publisher, historyAddress: 'bb'.repeat(32) });
+  // What main answers for each publisher: a rule exists for PUBLISHER only.
+  const describePublisher = jest.fn(async (_origin, publisher) => {
+    const key = String(publisher).toLowerCase();
+    if (key === PUBLISHER) return { valid: true, publicKey: PUBLISHER, address: '0xA', granted: true };
+    if (key === OTHER) return { valid: true, publicKey: OTHER, address: '0xB', granted: false };
+    return { valid: false };
+  });
+
+  beforeAll(async () => {
+    ({ setupSwarmProvider } = require('./swarm-provider.js'));
+    ({ showSwarmActApproval } = require('./wallet-ui.js'));
+    await flush();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsTabAgentOwned.mockReset().mockReturnValue(false);
+    window.swarmManifest.check.mockResolvedValue({ kind: 'fresh' });
+    window.swarmPermissions.getPermission.mockResolvedValue({ origin: 'app.eth', autoApprove: {} });
+    window.swarmPermissions.describeActPublisher = describePublisher;
+    window.swarmProvider.execute.mockResolvedValue({ result: { data: '', encoding: 'base64' } });
+    showSwarmActApproval.mockImplementation((_key, _params, _publisher, resolve) => resolve());
+  });
+
+  const open = async (publisher, { agentOwned = false } = {}) => {
+    mockIsTabAgentOwned.mockImplementation((tabId) => agentOwned && tabId === 3);
+    const webview = setUp(setupSwarmProvider);
+    webview.dataset = { tabId: '3' };
+    sendRequest(webview, { id: 1, method: 'swarm_openAct', params: params(publisher) });
+    for (let i = 0; i < 4; i++) await flush();
+    return webview;
+  };
+
+  test("the publisher's rule answers without a prompt and main is told so", async () => {
+    await open(PUBLISHER.toUpperCase());
+    expect(describePublisher).toHaveBeenCalledWith('app.eth', PUBLISHER.toUpperCase());
+    expect(showSwarmActApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params(PUBLISHER.toUpperCase()), 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+  });
+
+  test('another publisher is asked about, naming main\'s normalised key', async () => {
+    await open(OTHER);
+    expect(showSwarmActApproval).toHaveBeenCalledWith(
+      'app.eth', params(OTHER), expect.objectContaining({ publicKey: OTHER, granted: false }),
+      expect.any(Function), expect.any(Function)
+    );
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params(OTHER), 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('an Agent-held tab is prompted despite the rule', async () => {
+    await open(PUBLISHER, { agentOwned: true });
+    expect(showSwarmActApproval).toHaveBeenCalledTimes(1);
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params(PUBLISHER), 'app.eth', { webContentsId: 41, approval: 'user' }
+    );
+  });
+
+  test('a rejected prompt is 4001 and nothing reaches main', async () => {
+    showSwarmActApproval.mockImplementation((_key, _params, _publisher, _resolve, reject) =>
+      reject({ code: 4001, message: 'User rejected the request' }));
+    const webview = await open(OTHER);
+    expect(window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({ id: 1, error: { code: 4001 } });
+  });
+
+  test('a malformed publisher is not prompted for; main refuses it', async () => {
+    await open('nope');
+    expect(showSwarmActApproval).not.toHaveBeenCalled();
+    expect(window.swarmProvider.execute).toHaveBeenCalledWith(
+      'swarm_openAct', params('nope'), 'app.eth', { webContentsId: 41, approval: 'auto' }
+    );
+  });
+
+  test('a site that is not connected gets 4100 and no prompt', async () => {
+    window.swarmPermissions.getPermission.mockResolvedValue(null);
+    const webview = await open(OTHER);
+    expect(showSwarmActApproval).not.toHaveBeenCalled();
+    expect(responsesSentTo(webview).at(-1)[1]).toMatchObject({ error: { code: 4100 } });
   });
 });

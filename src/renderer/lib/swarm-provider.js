@@ -13,7 +13,7 @@
 import { getPermissionKey } from './dapp-provider.js';
 import { getDisplayUrlForWebview, getNavigationKeyForWebview, isTabAgentOwned } from './tabs.js';
 import { trackGuestMainFrame, isFromGuestMainFrame } from './guest-main-frame.js';
-import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest, routeToPublishSetup } from './wallet-ui.js';
+import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showSwarmActApproval, showVaultUnlock, showPermissionManifest, routeToPublishSetup } from './wallet-ui.js';
 
 const ERRORS = {
   USER_REJECTED: { code: 4001, message: 'User rejected the request' },
@@ -192,6 +192,8 @@ async function handleSwarmRequest(webview, request) {
       method === 'swarm_sendGsoc'
     ) {
       result = await handleMessagingRequest(method, params, permissionKey, webview);
+    } else if (method === 'swarm_openAct') {
+      result = await handleActRequest(params, permissionKey, webview);
     } else {
       // All other methods: check permission, forward to main
       result = await executeWithPermission(method, params, permissionKey);
@@ -297,6 +299,32 @@ async function handleMessagingRequest(method, params, permissionKey, webview) {
   // which webview to deliver to, and only the renderer can map the
   // request to its webContents.
   return executeWithPermission(method, params, permissionKey, approvalMeta(webview, autoApproved));
+}
+
+/**
+ * swarm_openAct (#648): open content a publisher shared with the user's
+ * node through ACT. Consent is per (site, publisher): the prompt names the
+ * publisher, and its "always allow" covers that publisher only. The
+ * publisher shown, stored and sent is main's normalised key
+ * (describeActPublisher), never the page's own spelling. A malformed one
+ * goes straight to main, which refuses it with -32602 before any prompt.
+ */
+async function handleActRequest(params, permissionKey, webview) {
+  await requirePermission(permissionKey);
+
+  const publisher = await window.swarmPermissions.describeActPublisher(permissionKey, params?.publisher);
+  if (!publisher?.valid) {
+    return executeWithPermission('swarm_openAct', params, permissionKey, approvalMeta(webview, true));
+  }
+
+  const autoApproved = publisher.granted === true && !isAgentHeld(webview);
+  if (!autoApproved) {
+    await new Promise((resolve, reject) => {
+      showSwarmActApproval(permissionKey, params, publisher, resolve, reject);
+    });
+  }
+
+  return executeWithPermission('swarm_openAct', params, permissionKey, approvalMeta(webview, autoApproved));
 }
 
 async function handleFeedSigningRequest(method, params, permissionKey, autoApproveType, webview) {

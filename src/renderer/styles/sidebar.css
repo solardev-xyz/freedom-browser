@@ -3155,6 +3155,11 @@
   color: var(--muted);
 }
 
+/* An ACT publisher key (66 hex) has no break opportunity of its own. */
+.perms-tx-addr.perms-act-key {
+  word-break: break-all;
+}
+
 .perms-tx-remove {
   flex-shrink: 0;
   padding: 3px 8px;

@@ -33,7 +33,14 @@
 const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
-const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
+const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
+const { normalizeActPublisher } = require('./act-publisher');
+const { openActShare } = require('./act-service');
+// Required on first use: private-windows.js pulls in the app logger and
+// BrowserWindow, which most of this module's callers (and tests) never need.
+function isPrivateSender(event) {
+  return require('../private/private-sender').isPrivateSender(event);
+}
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
@@ -173,6 +180,7 @@ const KNOWN_METHODS = [
   'swarm_unsubscribe',
   'swarm_sendPss',
   'swarm_sendGsoc',
+  'swarm_openAct',
 ];
 
 // Tag ownership: tagUid → origin. Session-scoped, not persisted.
@@ -228,6 +236,9 @@ const AUTO_APPROVABLE_METHODS = new Set([
   'swarm_getSigningIdentity',
   'swarm_sendPss',
   'swarm_sendGsoc',
+  // Its "always allow" is per publisher (#648), but it is still a rule
+  // answering for the user, so an Agent-held tab is prompted instead.
+  'swarm_openAct',
 ]);
 
 function agentCustodyRefusal(sender, method, meta) {
@@ -409,9 +420,12 @@ function permissionFreeReadMeter(origin) {
  *   Freedom's own code). swarm_subscribe uses webContentsId to target
  *   message delivery at the webview; the IPC handler checks both fields
  *   against Agent custody first (agentCustodyRefusal).
+ * @param {{ sender?: Electron.WebContents }} [context] - main's own view of
+ *   the request: the IPC sender, for checks that must not rest on the
+ *   renderer's word (swarm_openAct refuses a private window's).
  * @returns {{ result?, error? }}
  */
-async function executeSwarmMethod(method, params, origin, meta) {
+async function executeSwarmMethod(method, params, origin, meta, context = {}) {
   try {
     if (!method || typeof method !== 'string') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Method is required' } };
@@ -550,6 +564,10 @@ async function executeSwarmMethod(method, params, origin, meta) {
       return handleUnsubscribe(params, normalizedOrigin);
     }
 
+    if (method === 'swarm_openAct') {
+      return handleOpenAct(params, normalizedOrigin, meta, context.sender);
+    }
+
     return { error: ERRORS.INTERNAL_ERROR };
   } catch (err) {
     log.error('[SwarmProvider] executeSwarmMethod failed:', err.message);
@@ -583,6 +601,8 @@ async function handleGetCapabilities(origin) {
         publisherSigning: true,
         // swarm_publishSingleOwnerChunk: a SOC the page signed (#647).
         pageSignedSingleOwnerChunks: true,
+        // swarm_openAct: content shared with this node through ACT (#648).
+        actShares: true,
       },
       limits: {
         maxDataBytes: LIMITS.maxDataBytes,
@@ -1243,6 +1263,141 @@ async function handlePublishSingleOwnerChunk(params, origin) {
     if (historyEntry) updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
     log.error(`[SwarmProvider] publishSingleOwnerChunk failed for ${origin}:`, err.message);
     return nodeWriteError(err);
+  }
+}
+
+// ACT history references and ACT references are Swarm addresses: 32 bytes,
+// or 64 for content uploaded encrypted. Paths are capped like a URL's.
+const ACT_MAX_PATH_BYTES = 1024;
+
+function validateActPath(path) {
+  if (path === undefined || path === null) return { ok: true, value: undefined };
+  if (typeof path !== 'string') return { ok: false, message: 'path must be a string' };
+  if (path === '') return { ok: true, value: '' };
+  if (Buffer.byteLength(path, 'utf-8') > ACT_MAX_PATH_BYTES) {
+    return { ok: false, message: `path exceeds ${ACT_MAX_PATH_BYTES} UTF-8 bytes` };
+  }
+  if (path.startsWith('/') || path.includes('\\')) {
+    return { ok: false, message: 'path must be relative and use / as its separator' };
+  }
+  for (let i = 0; i < path.length; i++) {
+    if (path.charCodeAt(i) < 32 || path.charCodeAt(i) === 127) {
+      return { ok: false, message: 'path must not contain control characters' };
+    }
+  }
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.' || segment === '..') {
+      return { ok: false, message: 'path must not contain empty, "." or ".." segments' };
+    }
+  }
+  return { ok: true, value: path };
+}
+
+/**
+ * Handle swarm_openAct (#648): open content shared with this node through
+ * ACT. The node decrypts with its own key; Freedom only passes it the share's
+ * coordinates, after checking the user's consent for this (origin,
+ * publisher) pair:
+ *
+ * - the renderer reports `meta.approval: 'user'` when the user approved this
+ *   call in the ACT prompt, which names the publisher;
+ * - anything else (an "always allow" rule answered, or no meta at all) needs
+ *   a stored grant for exactly this origin and publisher. A grant for one
+ *   publisher opens nothing from another: the node's key is one identity for
+ *   every site, so a per-site grant would expose everything ever shared with
+ *   the user.
+ *
+ * A private window's sender is refused outright (private windows get no
+ * provider and no lasting grant), as is one main cannot classify.
+ *
+ * The bytes are charged to the origin's read budget (connected origins only
+ * reach this method, so 5 MiB per 60 s window): a declared length is
+ * reserved before the body is read, an undeclared one as it streams.
+ */
+async function handleOpenAct(params, origin, meta, sender) {
+  if (isPrivateSender({ sender })) {
+    return {
+      error: {
+        ...ERRORS.UNAUTHORIZED,
+        message: 'ACT content cannot be opened from a private window',
+        data: { reason: 'private_window' },
+      },
+    };
+  }
+
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const reference = typeof params.reference === 'string' ? params.reference : '';
+  if (!/^(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{128})$/.test(reference)) {
+    return invalidParams('reference must be a 64- or 128-character hex string', 'invalid_reference');
+  }
+
+  const publisher = normalizeActPublisher(params.publisher);
+  if (!publisher) {
+    return invalidParams(
+      'publisher must be a secp256k1 public key: 66 hex characters starting 02 or 03, or 130 starting 04',
+      'invalid_publisher'
+    );
+  }
+
+  const historyError = validateHexString(params.historyAddress, 32, 'invalid_history_address', 'historyAddress');
+  if (historyError) return historyError;
+
+  const { timestamp } = params;
+  if (timestamp !== undefined && timestamp !== null &&
+      (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0)) {
+    return invalidParams('timestamp must be a non-negative integer (unix seconds)', 'invalid_timestamp');
+  }
+
+  const path = validateActPath(params.path);
+  if (!path.ok) return invalidParams(path.message, 'invalid_path');
+
+  if (meta?.approval !== 'user' && !hasActGrant(origin, publisher.publicKey)) {
+    return notAuthorized('act_not_granted');
+  }
+
+  const budgetError = consumePermissionFreeReadBudget(origin, { requests: 1 });
+  if (budgetError) return budgetError;
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  try {
+    const result = await openActShare(
+      {
+        reference: reference.toLowerCase(),
+        publisher: publisher.publicKey,
+        historyAddress: params.historyAddress.toLowerCase(),
+        timestamp: timestamp ?? undefined,
+        path: path.value,
+      },
+      permissionFreeReadMeter(origin)
+    );
+    return { result };
+  } catch (err) {
+    if (err.reason === 'refused') return err.refusal;
+    if (err.reason === 'data_too_large') {
+      return invalidParams(err.message, 'data_too_large', {
+        limit: err.limit,
+        ...(err.actual !== undefined && { actual: err.actual }),
+      });
+    }
+    if (err.reason === 'act_not_found' || err.reason === 'content_not_found') {
+      return invalidParams(err.message, err.reason);
+    }
+    if (err.reason === 'invalid_params') return invalidParams(err.message);
+    if (err.reason === 'node-stopped') {
+      return { error: { ...ERRORS.NODE_UNAVAILABLE, message: err.message, data: { reason: 'node-stopped' } } };
+    }
+    log.error(`[SwarmProvider] openAct failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
 }
 
@@ -2396,7 +2551,7 @@ function registerSwarmProviderIpc() {
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
     return agentCustodyRefusal(event?.sender, method, meta) ||
-      executeSwarmMethod(method, params, origin, meta);
+      executeSwarmMethod(method, params, origin, meta, { sender: event?.sender });
   });
 
   log.info('[SwarmProvider] IPC handler registered');

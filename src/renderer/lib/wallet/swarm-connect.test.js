@@ -88,6 +88,17 @@ const elementIds = [
   'swarm-messaging-auto-approve',
   'swarm-messaging-reject',
   'swarm-messaging-confirm',
+  'sidebar-swarm-act-approve',
+  'swarm-act-back',
+  'swarm-act-site',
+  'swarm-act-publisher',
+  'swarm-act-publisher-address',
+  'swarm-act-reference',
+  'swarm-act-path-row',
+  'swarm-act-path',
+  'swarm-act-auto-approve',
+  'swarm-act-reject',
+  'swarm-act-confirm',
   'sidebar-swarm-feed-approve',
   'swarm-feed-back',
   'swarm-feed-title',
@@ -142,6 +153,8 @@ async function loadSwarmConnect() {
       getPermission: jest.fn().mockResolvedValue(null),
       setAutoApprove: jest.fn().mockResolvedValue({ success: true }),
       grantPermission: jest.fn().mockResolvedValue({ success: true }),
+      grantAct: jest.fn().mockResolvedValue(true),
+      revokeAct: jest.fn().mockResolvedValue(true),
     },
     swarmProvider: {
       execute: jest.fn().mockResolvedValue({ result: {} }),
@@ -265,6 +278,8 @@ describe('swarm approval prompts queue concurrent requests', () => {
           })),
         trackedPrompt((resolve, reject) =>
           ctx.mod.showSwarmFeedApproval('https://a.example', {}, resolve, reject, { method: 'swarm_setFeed' })),
+        trackedPrompt((resolve, reject) =>
+          ctx.mod.showSwarmActApproval('https://a.example', {}, { publicKey: '02ab' }, resolve, reject)),
       ];
 
       for (const prompt of prompts) {
@@ -276,6 +291,7 @@ describe('swarm approval prompts queue concurrent requests', () => {
         'sidebar-swarm-publish-approve',
         'sidebar-swarm-messaging-approve',
         'sidebar-swarm-feed-approve',
+        'sidebar-swarm-act-approve',
       ]) {
         expect(ctx.elements[id].classList.contains('hidden')).toBe(true);
       }
@@ -698,5 +714,121 @@ describe('disconnectSwarmApp', () => {
       event: 'disconnect',
       data: { origin: 'bzz://visible' },
     });
+  });
+});
+
+describe('ACT prompt (#648)', () => {
+  const ORIGIN = 'https://inbox.example';
+  const KEY = `02${'ab'.repeat(32)}`;
+  const OTHER_KEY = `03${'cd'.repeat(32)}`;
+  const share = { reference: 'AA'.repeat(32), publisher: `0x${KEY.toUpperCase()}`, historyAddress: 'bb'.repeat(32) };
+  const publisher = (granted, publicKey = KEY) => ({ valid: true, publicKey, address: '0xAbC', granted });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const show = (ctx, params, described) =>
+    trackedPrompt((resolve, reject) => ctx.mod.showSwarmActApproval(ORIGIN, params, described, resolve, reject));
+
+  test("names the site, main's normalised publisher key and its address", async () => {
+    const ctx = await loadSwarmConnect();
+    show(ctx, share, publisher(false));
+    expect(ctx.elements['sidebar-swarm-act-approve'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-act-site'].textContent).toBe(ORIGIN);
+    expect(ctx.elements['swarm-act-publisher'].textContent).toBe(KEY);
+    expect(ctx.elements['swarm-act-publisher-address'].textContent).toBe('0xAbC');
+    expect(ctx.elements['swarm-act-reference'].textContent).toBe('aa'.repeat(32));
+    expect(ctx.elements['swarm-act-path-row'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['swarm-act-auto-approve'].checked).toBe(false);
+  });
+
+  test('Open with "always allow" stores a rule for this publisher only', async () => {
+    const ctx = await loadSwarmConnect();
+    const prompt = show(ctx, { ...share, path: '' }, publisher(false));
+    expect(ctx.elements['swarm-act-path-row'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-act-path'].textContent).toBe('/');
+    ctx.elements['swarm-act-auto-approve'].checked = true;
+    await armPrompt();
+    await ctx.elements['swarm-act-confirm'].fire('click');
+    await prompt.promise;
+    expect(prompt.resolved).toBe(true);
+    expect(window.swarmPermissions.grantAct).toHaveBeenCalledWith(ORIGIN, KEY);
+    expect(window.swarmPermissions.revokeAct).not.toHaveBeenCalled();
+  });
+
+  test('Open without it stores nothing', async () => {
+    const ctx = await loadSwarmConnect();
+    const prompt = show(ctx, share, publisher(false));
+    await armPrompt();
+    await ctx.elements['swarm-act-confirm'].fire('click');
+    await prompt.promise;
+    expect(window.swarmPermissions.grantAct).not.toHaveBeenCalled();
+  });
+
+  test('Reject never turns a rule on, whatever the checkbox says', async () => {
+    const ctx = await loadSwarmConnect();
+    for (const button of ['swarm-act-reject', 'swarm-act-back']) {
+      const prompt = show(ctx, share, publisher(false));
+      ctx.elements['swarm-act-auto-approve'].checked = true;
+      await armPrompt();
+      await ctx.elements[button].fire('click');
+      await expect(prompt.promise).rejects.toEqual({ code: 4001, message: 'User rejected the request' });
+    }
+    expect(window.swarmPermissions.grantAct).not.toHaveBeenCalled();
+  });
+
+  test('an existing rule (an Agent-held tab is still asked) shows ticked; unticking it removes it on any exit', async () => {
+    const ctx = await loadSwarmConnect();
+
+    // Reject with the box unticked: the rule goes, the page still gets 4001.
+    const rejected = show(ctx, share, publisher(true));
+    expect(ctx.elements['swarm-act-auto-approve'].checked).toBe(true);
+    ctx.elements['swarm-act-auto-approve'].checked = false;
+    await armPrompt();
+    await ctx.elements['swarm-act-reject'].fire('click');
+    await expect(rejected.promise).rejects.toMatchObject({ code: 4001 });
+    expect(window.swarmPermissions.revokeAct).toHaveBeenCalledWith(ORIGIN, KEY);
+
+    // Left ticked, Open keeps it as it is.
+    window.swarmPermissions.revokeAct.mockClear();
+    const kept = show(ctx, share, publisher(true));
+    await armPrompt();
+    await ctx.elements['swarm-act-confirm'].fire('click');
+    await kept.promise;
+    expect(window.swarmPermissions.grantAct).not.toHaveBeenCalled();
+    expect(window.swarmPermissions.revokeAct).not.toHaveBeenCalled();
+  });
+
+  test('a dismissed screen applies the on-screen checkbox, and only to the request it showed', async () => {
+    const ctx = await loadSwarmConnect();
+    const first = show(ctx, share, publisher(true));
+    const queued = show(ctx, { ...share, publisher: OTHER_KEY }, publisher(true, OTHER_KEY));
+    ctx.elements['swarm-act-auto-approve'].checked = false;
+
+    ctx.hideAllSubscreens();
+    await expect(first.promise).rejects.toEqual({ code: 4001, message: 'User dismissed prompt' });
+    await expect(queued.promise).rejects.toEqual({ code: 4001, message: 'User dismissed prompt' });
+    expect(window.swarmPermissions.revokeAct).toHaveBeenCalledTimes(1);
+    expect(window.swarmPermissions.revokeAct).toHaveBeenCalledWith(ORIGIN, KEY);
+  });
+
+  test('a rule that fails to save still answers the page', async () => {
+    const ctx = await loadSwarmConnect();
+    window.swarmPermissions.grantAct.mockRejectedValueOnce(new Error('disk full'));
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const prompt = show(ctx, share, publisher(false));
+    ctx.elements['swarm-act-auto-approve'].checked = true;
+    await armPrompt();
+    await ctx.elements['swarm-act-confirm'].fire('click');
+    await prompt.promise;
+    expect(prompt.resolved).toBe(true);
   });
 });
