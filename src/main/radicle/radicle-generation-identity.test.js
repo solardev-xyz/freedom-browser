@@ -33,7 +33,8 @@ const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 const ISSUE = { rid: RID, title: 'Bug', description: 'Steps' };
 const NEEDS_VAULT = {
   code: 4900,
-  message: "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.",
+  message:
+    "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.",
   data: { reason: 'needs_vault' },
 };
 const SEALED = Object.freeze({
@@ -195,7 +196,12 @@ function load(vaultState) {
   const { mod } = loadMainModule(require.resolve('../identity-manager'), {
     userDataDir: userData,
     extraMocks: {
-      [require.resolve('../logger')]: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
+      [require.resolve('../logger')]: () => ({
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
+      }),
       [require.resolve('../core/vault-backend')]: () => ({ vaultBackend: vault }),
       [require.resolve('../service-grant')]: () => ({ radicleGrantRefusal: () => null }),
       // The real node, spawning the fake service: its core is the fake
@@ -230,7 +236,9 @@ function load(vaultState) {
   permissions = require('./radicle-permissions');
   // The service's write is B11's: an admitted write reaches the backend's
   // call, which answers as the add-on did.
-  issueWrites = jest.spyOn(embedded, 'createIssue').mockImplementation(async () => ({ id: 'c'.repeat(40) }));
+  issueWrites = jest
+    .spyOn(embedded, 'createIssue')
+    .mockImplementation(async () => ({ id: 'c'.repeat(40) }));
   permissions.grantPermission(ORIGIN);
   permissions.grantSigning(ORIGIN);
 }
@@ -248,7 +256,11 @@ async function restartNode() {
 /** A COB write as main's page path runs it, after the user's approval. */
 async function write() {
   try {
-    return { result: await provider.executeRadicleMethod('radicle_createIssue', ISSUE, ORIGIN, { approval: 'user' }) };
+    return {
+      result: await provider.executeRadicleMethod('radicle_createIssue', ISSUE, ORIGIN, {
+        approval: 'user',
+      }),
+    };
   } catch (error) {
     return { error };
   }
@@ -363,15 +375,20 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
   });
 });
 
-describe('main no longer reads keys/ (0008, Main\'s side)', () => {
+describe("main no longer reads keys/ (0008, Main's side)", () => {
   /** Whether any of `spy`'s calls named a path under the home's keys/. */
   const touchedKeys = (spy) =>
-    spy.mock.calls.some(([file]) => typeof file === 'string' && file.startsWith(path.join(home, 'keys')));
+    spy.mock.calls.some(
+      ([file]) => typeof file === 'string' && file.startsWith(path.join(home, 'keys'))
+    );
 
   test("an old key file is never read: no node running shows no DID, locked or not, and the status isn't 'injected'", async () => {
     fs.mkdirSync(path.join(home, 'keys'), { recursive: true });
     fs.writeFileSync(path.join(home, 'keys', 'radicle'), 'not a key');
-    fs.writeFileSync(path.join(home, 'keys', 'radicle.pub'), `ssh-ed25519 ${'A'.repeat(68)} ${KEY_FILE_DID}`);
+    fs.writeFileSync(
+      path.join(home, 'keys', 'radicle.pub'),
+      `ssh-ed25519 ${'A'.repeat(68)} ${KEY_FILE_DID}`
+    );
     load({ exists: true, unlocked: false });
     const exists = jest.spyOn(fs, 'existsSync');
     const reads = jest.spyOn(fs, 'readFileSync');

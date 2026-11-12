@@ -958,7 +958,7 @@ async function getIdentityStatus() {
       userWallet: derived.user_wallets[0].address,
       beeWallet: derived.bee_wallet,
       ipfsPeerId: null,
-      radicleDid: radicle ? radicle.active?.did ?? null : derived.radicle.did,
+      radicleDid: radicle ? (radicle.active?.did ?? null) : derived.radicle.did,
     };
   } else if (hasVaultResult) {
     // Vault is locked - read from stored metadata and node config files
@@ -968,7 +968,7 @@ async function getIdentityStatus() {
       userWallet: meta?.addresses?.userWallet || null,
       beeWallet: meta?.addresses?.beeWallet || null,
       ipfsPeerId: readIpfsPeerId(),
-      radicleDid: radicle ? radicle.active?.did ?? null : await readRadicleDid(),
+      radicleDid: radicle ? (radicle.active?.did ?? null) : await readRadicleDid(),
     };
   }
 

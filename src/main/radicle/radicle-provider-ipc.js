@@ -534,7 +534,9 @@ async function executeRadicleMethod(
     // again just before the write.
     const writeRefusal = SIGNED_WRITE_METHODS.has(method) ? radicleWriteRefusal() : null;
     if (writeRefusal) {
-      throw providerError(ERRORS.UNAVAILABLE, writeRefusal.message, { reason: writeRefusal.reason });
+      throw providerError(ERRORS.UNAVAILABLE, writeRefusal.message, {
+        reason: writeRefusal.reason,
+      });
     }
     if (SIGNED_WRITE_METHODS.has(method) && approval !== 'user') {
       if (!permissions.getAutoApprove(origin, 'signing')) {

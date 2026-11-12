@@ -46,7 +46,7 @@ describe('describeRadicleIdentity', () => {
     });
   });
 
-  test('the service, a throwaway node after a vault was created: its own DID, marked, and the derived one only as the next start\'s', () => {
+  test("the service, a throwaway node after a vault was created: its own DID, marked, and the derived one only as the next start's", () => {
     const status = {
       addresses: { radicleDid: THROWAWAY },
       radicle: { active: { did: THROWAWAY, ephemeral: true }, nextDid: DERIVED },
@@ -67,18 +67,28 @@ describe('describeRadicleIdentity', () => {
       addresses: null,
       radicle: { active: { did: DERIVED, ephemeral: false }, nextDid: null },
     };
-    expect(mod.describeRadicleIdentity(status)).toMatchObject({ did: DERIVED, text: short(DERIVED), next: null });
+    expect(mod.describeRadicleIdentity(status)).toMatchObject({
+      did: DERIVED,
+      text: short(DERIVED),
+      next: null,
+    });
   });
 
-  test('the service, no node running: no DID, whatever addresses says; the next start\'s alone while unlocked', () => {
+  test("the service, no node running: no DID, whatever addresses says; the next start's alone while unlocked", () => {
     // Locked (deviation locked-did): no Radicle DID shows at all.
     expect(
-      mod.describeRadicleIdentity({ addresses: { radicleDid: null }, radicle: { active: null, nextDid: null } })
+      mod.describeRadicleIdentity({
+        addresses: { radicleDid: null },
+        radicle: { active: null, nextDid: null },
+      })
     ).toEqual({ did: null, text: '--', title: mod.RADICLE_NOT_RUNNING_TITLE, next: null });
     // A status from an older main, with a DID in addresses, still shows none
     // for the node: only the generation's counts on the service.
     expect(
-      mod.describeRadicleIdentity({ addresses: { radicleDid: KEY_FILE }, radicle: { active: null, nextDid: DERIVED } })
+      mod.describeRadicleIdentity({
+        addresses: { radicleDid: KEY_FILE },
+        radicle: { active: null, nextDid: DERIVED },
+      })
     ).toEqual({
       did: null,
       text: '--',
