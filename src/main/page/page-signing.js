@@ -227,12 +227,27 @@ function createSigningDispatchers(shared, deps = {}) {
     return signer.signTypedData(prepared.payload, { expectedHash });
   }
 
-  // A write under the key after the signature's wait (a Ledger, the phone
-  // bridge, the core): the name resolved again, then, in the same run as the
-  // write, the document holding its key and the grant exposing the account.
-  async function writableAfterEffect(context, ctx) {
+  /**
+   * After a signature's wait (a Ledger, the phone bridge, the core, a Safe's
+   * board): the name resolved again, whether or not anything is written.
+   * Resolves false when the name no longer answers the document's key: the
+   * request's keyless answer is registered (`nameHolds`), and the caller
+   * withholds the signature. Otherwise `write`, if given, runs here, in the
+   * same run as the checks it depends on (the document holding its key, the
+   * grant exposing the account), never after an await of the caller's.
+   */
+  async function recheckThen(context, ctx, write = null) {
     if (!(await context.nameHolds(ctx.keyless))) return false;
-    return context.holdsKey() && Boolean(grantExposes(context.requester.key, ctx.walletIndex));
+    // From here to the write, one run: no other check can end the binding.
+    if (!context.holdsKey()) return false;
+    if (write && grantExposes(context.requester.key, ctx.walletIndex)) {
+      try {
+        write();
+      } catch {
+        // The signature stands; the write didn't happen.
+      }
+    }
+    return true;
   }
 
   async function vaultUnlocked() {
@@ -315,21 +330,21 @@ function createSigningDispatchers(shared, deps = {}) {
     if (custody(requester.guest)) return error(AGENT_CUSTODY);
     if (!ruleCovers(requester.key, ctx.walletIndex, method, params, ctx.prepared)) return error(RULE_GONE);
     if (!context.holdsKey()) return error(NO_ADDRESS);
+    let out;
     if (ctx.safe) {
-      const out = await safeMessage(context, ctx);
-      if (!out.error && (await writableAfterEffect(context, ctx))) updateLastUsed(requester.key);
-      return out;
+      out = await safeMessage(context, ctx);
+    } else {
+      try {
+        out = { result: await signWith(ctx.walletIndex, method, ctx.prepared, ctx.prepared.typedData?.hash) };
+      } catch (err) {
+        return failure(err);
+      }
     }
-    let signature;
-    try {
-      signature = await signWith(ctx.walletIndex, method, ctx.prepared, ctx.prepared.typedData?.hash);
-    } catch (err) {
-      return failure(err);
-    }
-    // The site's last use, only while the name still answers: a name that
-    // moved meanwhile also gets no signature (`nameHolds`' keyless answer).
-    if (await writableAfterEffect(context, ctx)) updateLastUsed(requester.key);
-    return { result: signature };
+    if (out.error) return out;
+    // After the signature's wait: the name again, and the site's last use
+    // only while it still answers. A name that moved gets no signature.
+    if (!(await recheckThen(context, ctx, () => updateLastUsed(requester.key)))) return error(NO_ADDRESS);
+    return out;
   }
 
   // The user decides, on main's prompt, and main's issuer mints the token.
@@ -388,16 +403,13 @@ function createSigningDispatchers(shared, deps = {}) {
         return failure(err);
       }
     }
-    // "Always allow": the site's rule, for the requester's key, from the
-    // prompt the user just approved, once its signature is made, and only
-    // while the name still answers after the signature's wait.
-    if (!out.error && decision.choices?.alwaysAllow === true && (await writableAfterEffect(context, ctx))) {
-      try {
-        setSigningAutoApprove(requester.key, true);
-      } catch {
-        // The signature stands; the rule wasn't saved.
-      }
-    }
+    if (out.error) return out;
+    // After the signature's wait, always: the name again. A name that moved
+    // gets no signature, and no rule. "Always allow", the site's rule for the
+    // requester's key from the prompt the user just approved, is written only
+    // while it still answers.
+    const alwaysAllow = decision.choices?.alwaysAllow === true ? () => setSigningAutoApprove(requester.key, true) : null;
+    if (!(await recheckThen(context, ctx, alwaysAllow))) return error(NO_ADDRESS);
     return out;
   }
 

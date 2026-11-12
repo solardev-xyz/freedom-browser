@@ -208,12 +208,27 @@ function setup({ dispatchers: custom } = {}) {
   const guests = new Map();
   const names = new Map();
   const nameHolds = new Map(); // name -> deferred: the next resolution waits for it
+  // name -> queue of { promise, resolve, answer }: each next resolution waits
+  // for its own, and answers its own key.
+  const resolutionQueues = new Map();
+  const queueResolution = (name, answer) => {
+    const hold = { ...deferred(), answer, started: false };
+    if (!resolutionQueues.has(name)) resolutionQueues.set(name, []);
+    resolutionQueues.get(name).push(hold);
+    return hold;
+  };
   const documents = createPageDocuments({
     isPrivateWebContents: () => false,
     isChromeIndexUrl: (url) => url === CHROME_URL,
     isAgentPage: () => false,
     windowIdOf: (contents) => contents.window,
     resolveEnsContent: async (name) => {
+      const queued = resolutionQueues.get(name)?.shift();
+      if (queued) {
+        queued.started = true;
+        await queued.promise;
+        return { type: 'ok', protocol: 'ipns', decoded: queued.answer };
+      }
       const hold = nameHolds.get(name);
       if (hold) {
         nameHolds.delete(name);
@@ -294,6 +309,7 @@ function setup({ dispatchers: custom } = {}) {
     greet,
     names,
     nameHolds,
+    queueResolution,
     prompts,
     lastPrompt,
     decide,
@@ -986,6 +1002,90 @@ describe('a DNS name over IPNS that moves off its key', () => {
     expect(await ruled).toEqual({ result: '0xmsgsig' });
     expect(env.state.lastUsed).toEqual([[NAME]]);
   });
+
+  test('moved while an approved signature waits on its device, with no "always allow": no signature to the page', async () => {
+    const { env, page } = named();
+    const device = heldSignature(env);
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, { alwaysAllow: false });
+    await flush();
+    expect(env.signer.signMessage).toHaveBeenCalledTimes(1);
+    env.names.set(NAME, OTHER_IPNS_KEY);
+    device.resolve();
+    expect(await answer).toEqual(NO_ADDRESS);
+    expect(env.state.rules).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  // A losing name check of another request of the same document, queued so
+  // it resolves at every point around the post-signature check: whenever a
+  // grant write happens, the document still holds the name at that moment.
+  // The guard runs the write in the same run as its last check, so no check
+  // can end the binding between them.
+  const keyOf = (env, page) => env.documents.liveDocuments().find((doc) => doc.guest === page.guest.id)?.key ?? null;
+  const ticks = async (n) => {
+    for (let i = 0; i < n; i += 1) await Promise.resolve();
+  };
+
+  test.each([...Array(16).keys()])(
+    'a losing concurrent name check %i ticks after the post-signature check resolves never lands between the check and the rule write',
+    async (offset) => {
+      const { env, page } = named();
+      const writes = [];
+      env.deps.signing.setSigningAutoApprove.mockImplementation((key, enabled) => writes.push([key, enabled, keyOf(env, page)]));
+      const device = heldSignature(env);
+      const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+      await flush();
+      env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      await flush();
+      // The other request's check: it will find the name moved.
+      const loser = env.queueResolution(NAME, OTHER_IPNS_KEY);
+      const accounts = page.ask('eth_accounts');
+      await flush();
+      expect(loser.started).toBe(true);
+      // The signature's post-wait check: the name still answers when asked.
+      const guard = env.queueResolution(NAME, IPNS_KEY);
+      device.resolve();
+      await flush();
+      expect(guard.started).toBe(true);
+      guard.resolve();
+      await ticks(offset);
+      loser.resolve();
+      const answered = await answer;
+      await accounts;
+      for (const [, , key] of writes) expect(key).toBe(NAME);
+      // The signature, if the name still held when main answered (after the
+      // rule's write), or the keyless answer.
+      expect([{ result: '0xheldsig' }, NO_ADDRESS]).toContainEqual(answered);
+      if (answered.result) expect(writes).toHaveLength(1);
+    }
+  );
+
+  test.each([...Array(16).keys()])(
+    "a losing concurrent name check %i ticks after the rule path's post-signature check resolves never lands between the check and the last-use write",
+    async (offset) => {
+      const { env, page } = named({ rule: true });
+      const writes = [];
+      env.deps.updateLastUsed.mockImplementation((key) => writes.push([key, keyOf(env, page)]));
+      const device = heldSignature(env);
+      const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+      await flush();
+      const loser = env.queueResolution(NAME, OTHER_IPNS_KEY);
+      const accounts = page.ask('eth_accounts');
+      await flush();
+      const guard = env.queueResolution(NAME, IPNS_KEY);
+      device.resolve();
+      await flush();
+      expect(guard.started).toBe(true);
+      guard.resolve();
+      await ticks(offset);
+      loser.resolve();
+      await answer;
+      await accounts;
+      for (const [, key] of writes) expect(key).toBe(NAME);
+    }
+  );
 
   test("moved while the rule's unlock prompt is open: refused, nothing signed", async () => {
     const { env, page } = named({ rule: true });
