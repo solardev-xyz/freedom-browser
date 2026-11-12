@@ -1108,7 +1108,6 @@ function createPageRequests({
     onHandleClosed,
     decide,
     foreground,
-    liveDocuments: () => documents.liveDocuments(),
     promptState: () => prompts.state(),
     stats,
     register,
