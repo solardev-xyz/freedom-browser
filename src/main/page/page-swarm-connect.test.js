@@ -176,6 +176,9 @@ function setup() {
     manifest: async () => ({ kind: 'legacy' }),
     checks: [],
     decisions: [],
+    // Main's page consents waiting on a decision, as a test mints them.
+    pool: new Set(),
+    releases: [],
     decide: (key, token, outcome) => ({ allowed: outcome !== 'deny', mode: outcome }),
   };
   const sent = [];
@@ -194,12 +197,20 @@ function setup() {
         return state.manifest(request);
       },
       // Main's real lock and guard order: the name checked again, then the
-      // document's key and the decision in one run.
+      // document's key and the decision in one run. A decision, refused or
+      // not, spends the consent, as main's pool does.
       decideManifest: async (key, token, outcome, guard) => {
-        if (!(await guard.recheck())) return { refused: true };
-        if (!guard.holds()) return { refused: true };
+        if (!(await guard.recheck()) || !guard.holds()) {
+          state.pool.delete(token);
+          return { refused: true };
+        }
+        state.pool.delete(token);
         state.decisions.push({ key, token, outcome });
         return state.decide(key, token, outcome);
+      },
+      releaseManifest: (token) => {
+        state.releases.push(token);
+        state.pool.delete(token);
       },
     }),
     hooks,
@@ -250,6 +261,13 @@ function setup() {
     return page;
   }
 
+  // Main's deadline for every request whose timer is `ms` and still running.
+  const fire = (ms) => {
+    for (const timer of timers.filter((t) => t.ms === ms && !t.cleared)) {
+      timer.cleared = true;
+      timer.fn();
+    }
+  };
   const prompts = (windowId = 1) => sent.filter(([w, c]) => w === windowId && c === 'page:prompt').map(([, , p]) => p);
   const decide = (handle, approve, choices, windowId = 1) =>
     requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
@@ -261,7 +279,7 @@ function setup() {
     return prompt;
   }
 
-  return { requests, documents, state, sent, trace, tab, greet, named, names, resolutions, gate, prompts, decide, shown, guests, hooks, stopEvents };
+  return { requests, documents, state, sent, trace, tab, greet, named, names, resolutions, gate, prompts, decide, shown, guests, hooks, stopEvents, fire };
 }
 
 const connect = (key) => permissions.grantPermission(key);
@@ -413,6 +431,57 @@ describe('the permission manifest, checked by main (0011 PRQ-7b)', () => {
     // Unsubscribe never checks it, as the chrome never did.
     await page.ask('swarm_unsubscribe', { subscriptionId: 'none' });
     expect(env.state.checks).toHaveLength(2);
+  });
+
+  // Codex round 2 on #1194: a page's consent goes when its request is done
+  // with it, however that ends.
+  test('a consent is released however its request ends: decided, refused, navigated away, at its deadline', async () => {
+    const env = setup();
+    let minted = 0;
+    env.state.manifest = async () => {
+      const token = `tok-${++minted}`;
+      env.state.pool.add(token);
+      return { ...CONSENT, token };
+    };
+    // Repeated request-and-navigate cycles leave nothing waiting.
+    const page = env.tab(`${KEY_A}/app`);
+    let doc = page;
+    for (let i = 0; i < 5; i += 1) {
+      const answer = doc.ask('swarm_requestAccess');
+      await env.shown('swarm.manifest');
+      expect(env.state.pool.size).toBe(1);
+      page.guest.commit(`${KEY_A}/app?cycle=${i}`);
+      doc = env.greet(page.guest);
+      env.requests.foreground({ sender: { id: 501 } }, { guest: page.guest.id });
+      expect(await answer).toEqual({ gone: true });
+      await flush();
+      expect({ cycle: i, waiting: env.state.pool.size }).toEqual({ cycle: i, waiting: 0 });
+    }
+    // A background tab's consent never shown, at its deadline.
+    const background = env.tab(`${KEY_B}/`, { front: false });
+    const late = background.ask('swarm_requestAccess');
+    await flush();
+    expect(env.state.pool.size).toBe(1);
+    env.fire(60_000);
+    expect(await late).toEqual({ error: { code: -32603, message: 'Request timed out' } });
+    await flush();
+    expect(env.state.pool.size).toBe(0);
+    // Decided, and refused because the name moved.
+    const answer = doc.ask('swarm_requestAccess');
+    const prompt = await env.shown('swarm.manifest');
+    await env.decide(prompt.handle, false);
+    await answer;
+    expect(env.state.pool.size).toBe(0);
+    const named = await env.named();
+    const refused = named.ask('swarm_requestAccess');
+    const consent = await env.shown('swarm.manifest');
+    env.names.set(NAME, OTHER_IPNS_KEY);
+    await env.decide(consent.handle, true, { outcome: 'allow' });
+    expect(await refused).toEqual(NO_ADDRESS);
+    expect(env.state.pool.size).toBe(0);
+    // Every consent minted was released (once its request was done; the
+    // release is idempotent, and may come from both its end and its abort).
+    expect(new Set(env.state.releases).size).toBe(minted);
   });
 
   test('a name that moves while its consent is open: nothing decided, nothing written', async () => {

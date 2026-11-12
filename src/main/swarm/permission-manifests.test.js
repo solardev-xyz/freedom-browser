@@ -85,6 +85,9 @@ const {
   registerPermissionManifestIpc,
   checkPageManifest,
   decidePageManifest,
+  releasePageManifest,
+  MAX_PAGE_TOKENS,
+  _pageTokenCountForTests,
   _resetForTests,
 } = require('./permission-manifests');
 const { handleBzzRequest: mockHandleBzzRequest } = require('./bzz-protocol');
@@ -744,19 +747,24 @@ describe('permission manifests for a page through main', () => {
     expect(mockHandleBzzRequest).toHaveBeenCalledTimes(1);
   });
 
-  test('decides only once the guard passes: a recheck or a key that fails writes nothing, and the token stays to decide', async () => {
-    mockHandleBzzRequest.mockResolvedValue(responseFor(manifest({ publish: { why: 'Publish releases' } })));
-    const { token } = await checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/', guest: liveSender(), eager: true });
+  test('decides only once the guard passes: a recheck or a key that fails writes nothing, and spends the consent', async () => {
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    const consent = () => checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/', guest: liveSender(), eager: true });
     const order = [];
+    let { token } = await consent();
     expect(await decidePageManifest('app.eth', token, 'allow', {
       recheck: async () => false,
       holds: () => true,
     })).toEqual({ refused: true });
+    await expect(decidePageManifest('app.eth', token, 'allow', { recheck: async () => true, holds: () => true }))
+      .rejects.toThrow('Manifest consent expired');
+    ({ token } = await consent());
     expect(await decidePageManifest('app.eth', token, 'allow', {
       recheck: async () => true,
       holds: () => false,
     })).toEqual({ refused: true });
     expect(mockPermissionState['app.eth']).toBeUndefined();
+    ({ token } = await consent());
     const decided = await decidePageManifest('app.eth', token, 'allow', {
       recheck: async () => {
         order.push('recheck');
@@ -866,5 +874,58 @@ describe('permission manifests: the chrome\'s flow and main\'s page consents kep
     expect(await pageDecide('c.eth', first.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
     await expect(pageDecide('c.eth', second.token, 'deny')).rejects.toThrow('Manifest consent is stale');
     await expect(pageDecide('c.eth', first.token, 'allow')).rejects.toThrow('Manifest consent expired');
+  });
+});
+
+// Codex round 2 on #1194: main's page consents don't outlive their use.
+describe('permission manifests: main\'s page consents are swept, released and bounded', () => {
+  const pageCheck = (origin) => checkPageManifest({ key: origin, url: `bzz://${origin}/`, guest: liveSender(), eager: true });
+  const guard = (passes) => ({ recheck: async () => passes, holds: () => true });
+
+  beforeEach(() => {
+    mockHandleBzzRequest.mockImplementation(async () => responseFor(manifest({ publish: { why: 'Publish releases' } })));
+  });
+
+  test('an abandoned consent is released by its request; a refused one is spent', async () => {
+    const abandoned = await pageCheck('app.eth');
+    expect(_pageTokenCountForTests()).toBe(1);
+    releasePageManifest(abandoned.token);
+    releasePageManifest(abandoned.token);
+    expect(_pageTokenCountForTests()).toBe(0);
+    await expect(decidePageManifest('app.eth', abandoned.token, 'allow', guard(true))).rejects.toThrow('Manifest consent expired');
+
+    const refused = await pageCheck('app.eth');
+    expect(await decidePageManifest('app.eth', refused.token, 'allow', guard(false))).toEqual({ refused: true });
+    expect(_pageTokenCountForTests()).toBe(0);
+    expect(mockPermissionState['app.eth']).toBeUndefined();
+  });
+
+  test('an expired consent is swept by the next page check, and one decided late is deleted', async () => {
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      // Swept by the next page check.
+      await pageCheck('a.eth');
+      await pageCheck('b.eth');
+      expect(_pageTokenCountForTests()).toBe(2);
+      now += 6 * 60 * 1000;
+      await pageCheck('c.eth');
+      expect(_pageTokenCountForTests()).toBe(1);
+      // Decided late: refused, and gone.
+      const late = await pageCheck('d.eth');
+      now += 6 * 60 * 1000;
+      await expect(decidePageManifest('d.eth', late.token, 'allow', guard(true))).rejects.toThrow('Manifest consent expired');
+      expect(_pageTokenCountForTests()).toBe(0);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  test('the pool is bounded: past it the oldest consent goes, and deciding it fails as expired', async () => {
+    const first = await pageCheck('site0.eth');
+    for (let i = 1; i <= MAX_PAGE_TOKENS + 4; i += 1) await pageCheck(`site${i}.eth`);
+    expect(_pageTokenCountForTests()).toBe(MAX_PAGE_TOKENS);
+    await expect(decidePageManifest('site0.eth', first.token, 'allow', guard(true))).rejects.toThrow('Manifest consent expired');
   });
 });

@@ -26,6 +26,9 @@ const MAX_BYTES = 8 * 1024;
 // stalled one is aborted and classified transient, like any dropped socket.
 const BODY_IDLE_TIMEOUT_MS = 15_000;
 const TOKEN_TTL_MS = 5 * 60 * 1000;
+// Main's page consents waiting on a decision, at most (PRQ-7b): past it the
+// oldest goes, and its decision fails as expired.
+const MAX_PAGE_TOKENS = 64;
 const MAX_RECEIPTS = 20;
 const UNRESOLVED_BACKOFF_MS = [2_000, 10_000, 30_000, 60_000];
 const CAPABILITY_KEYS = ['publish', 'feeds', 'signing', 'messaging'];
@@ -63,6 +66,22 @@ const completedTokens = new Map();
 // two requests, and never replayed, so a second sheet the user answers
 // differently fails as stale instead of silently taking the first answer.
 const pageTokens = new Map();
+
+// Drop the page consents past their time: on every page check and decision.
+function sweepPageTokens(now = Date.now()) {
+  for (const [token, pending] of pageTokens) {
+    if (pending.expiresAt < now) pageTokens.delete(token);
+  }
+}
+
+/**
+ * A page's request is done with its consent (decided, refused, or closed
+ * some other way: its document gone, its deadline, its window): the token
+ * goes. Idempotent.
+ */
+function releasePageManifest(token) {
+  pageTokens.delete(token);
+}
 const unresolvedBackoff = new Map();
 
 function getStorePath() {
@@ -603,7 +622,10 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
   };
   if (forPage) {
     // A page's consent is its request's own: never coalesced, never the
-    // chrome's.
+    // chrome's. The pool is swept and bounded first: the oldest waiting
+    // consent goes past the bound.
+    sweepPageTokens();
+    while (pageTokens.size >= MAX_PAGE_TOKENS) pageTokens.delete(pageTokens.keys().next().value);
     const token = crypto.randomBytes(24).toString('base64url');
     pageTokens.set(token, pending);
     return { kind: 'consent', token, model: buildConsentModel(key, existing, manifest, changed, removed) };
@@ -632,9 +654,13 @@ function decideManifest(token, outcome, { owner = 'chrome' } = {}) {
   recoverPending();
   const forPage = owner === 'page';
   const pool = forPage ? pageTokens : tokens;
+  if (forPage) sweepPageTokens();
   if (!forPage && completedTokens.has(token)) return completedTokens.get(token);
   const pending = pool.get(token);
-  if (!pending || pending.expiresAt < Date.now()) throw new Error('Manifest consent expired');
+  if (!pending || pending.expiresAt < Date.now()) {
+    pool.delete(token);
+    throw new Error('Manifest consent expired');
+  }
   if (!['allow', 'individual', 'deny'].includes(outcome)) throw new Error('Invalid manifest decision');
 
   const state = loadStore();
@@ -776,10 +802,15 @@ function checkPageManifest({ key, url, guest, eager = false }) {
  */
 function decidePageManifest(key, token, outcome, { recheck, holds }) {
   return withOriginLock(key, async () => {
+    sweepPageTokens();
     // Only a page consent main issued for this very key.
     if (pageTokens.get(token)?.origin !== normalizeOrigin(key)) throw new Error('Manifest consent expired');
-    if (!(await recheck())) return { refused: true };
-    if (!holds()) return { refused: true };
+    // A refused decision spends the consent too: its request answers
+    // keyless, and nothing decides it after.
+    if (!(await recheck()) || !holds()) {
+      pageTokens.delete(token);
+      return { refused: true };
+    }
     return decideManifest(token, outcome, { owner: 'page' });
   });
 }
@@ -843,6 +874,9 @@ module.exports = {
   decideManifest,
   checkPageManifest,
   decidePageManifest,
+  releasePageManifest,
+  MAX_PAGE_TOKENS,
+  _pageTokenCountForTests: () => pageTokens.size,
   detachManaged,
   disconnect,
   getRecord,

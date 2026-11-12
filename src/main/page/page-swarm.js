@@ -192,6 +192,7 @@ function defaultDependencies() {
     lockOrigin: (key, task) => require('../swarm/origin-mutation-lock').withOriginLock(key, task),
     checkManifest: (request) => manifests().checkPageManifest(request),
     decideManifest: (key, token, outcome, guard) => manifests().decidePageManifest(key, token, outcome, guard),
+    releaseManifest: (token) => manifests().releasePageManifest(token),
     guestContents: (id) => require('electron').webContents.fromId(id),
     inCustody: (guest) => require('./page-signing').guestInCustody(guest),
     endDocumentSubscriptions: (document) => provider().endDocumentSubscriptions(document),
@@ -218,6 +219,7 @@ function createSwarmDispatchers(deps = {}) {
     lockOrigin,
     checkManifest,
     decideManifest,
+    releaseManifest,
     guestContents,
     inCustody,
     endDocumentSubscriptions,
@@ -281,6 +283,29 @@ function createSwarmDispatchers(deps = {}) {
     }
     if (result?.kind === 'unresolved') return { error: { ...MANIFEST_UNRESOLVED } };
     if (result?.kind !== 'consent') return { ok: true };
+    // The consent is this request's: it goes when the request is done with
+    // it, however that ends (a decision, a refusal, its prompt closed by a
+    // navigation, its deadline or its window), and if main answers the
+    // request first.
+    const release = () => {
+      try {
+        releaseManifest(result.token);
+      } catch {
+        // Gone already.
+      }
+    };
+    const signal = context.signal;
+    signal?.addEventListener?.('abort', release, { once: true });
+    try {
+      return await decideConsent(context, keyless, result);
+    } finally {
+      signal?.removeEventListener?.('abort', release);
+      release();
+    }
+  }
+
+  async function decideConsent(context, keyless, result) {
+    const { requester } = context;
     if (!(await context.nameHolds(keyless))) return { error: error(NO_ADDRESS).error };
     const decision = await context.prompt({
       kind: 'swarm.manifest',
