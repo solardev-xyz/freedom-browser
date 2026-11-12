@@ -403,6 +403,7 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
   describe('a tab the agent holds, inside the request\'s life', () => {
     function withAgent(env, { pageUrl = null, withdrawOnAbort = false } = {}) {
       const approvals = [];
+      env.state.walletIndexUpdates = [];
       const controller = new AgentWalletController({
         identityManager: {
           getDerivedWallets: async () => env.state.wallets,
@@ -411,7 +412,11 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
         getPermission: (key) => env.state.permissions.get(key) || null,
         grantPermission: env.deps.grantPermission,
         updateLastUsed: env.deps.updateLastUsed,
-        updateWalletIndex: jest.fn(),
+        updateWalletIndex: jest.fn((key, walletIndex) => {
+          env.state.walletIndexUpdates.push([key, walletIndex]);
+          const permission = env.state.permissions.get(key);
+          if (permission) permission.walletIndex = walletIndex;
+        }),
         getChain: (chainId) => ({ chainId, name: 'Gnosis Chain', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
       });
       env.state.agent = (guestId, request, options) =>
@@ -491,7 +496,22 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       expect(approvals).toHaveLength(2);
     });
 
-    test('a connected site\'s agent approval after the deadline doesn\'t touch its grant either', async () => {
+    test('a connected site: the agent\'s approval updates its grant (account, chain, last used)', async () => {
+      const env = setup();
+      env.state.permissions.set(KEY_A, { origin: KEY_A, walletIndex: 0, chainId: 1 });
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+      expect(await answer).toEqual({ result: [SECOND] });
+      expect(env.state.walletIndexUpdates).toEqual([[KEY_A, 1]]);
+      expect(env.state.lastUsed).toEqual([[KEY_A, 100]]);
+      expect(env.state.permissions.get(KEY_A)).toMatchObject({ walletIndex: 1, chainId: 100 });
+      expect(env.state.grants).toEqual([]);
+    });
+
+    test('a connected site\'s agent approval after the deadline leaves its grant unchanged', async () => {
       const env = setup();
       env.state.permissions.set(KEY_A, { origin: KEY_A, walletIndex: 0, chainId: 1 });
       const approvals = withAgent(env);
@@ -499,10 +519,12 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       const answer = page.ask('eth_requestAccounts');
       await flush();
       env.expire();
-      await answer;
+      expect(await answer).toEqual({ error: { message: 'Request timed out' } });
       approvals[0].resolve({ status: 'approved', walletIndex: 1 });
       await flush();
+      expect(env.state.walletIndexUpdates).toEqual([]);
       expect(env.state.lastUsed).toEqual([]);
+      expect(env.state.grants).toEqual([]);
       expect(env.state.permissions.get(KEY_A)).toMatchObject({ walletIndex: 0, chainId: 1 });
     });
 
@@ -548,6 +570,31 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
         approvals[0].resolve({ status: 'approved', walletIndex: 0 });
         expect(await answer).toEqual(NO_ADDRESS);
         expect(env.state.grants).toEqual([]);
+      });
+
+      test('a connected name: the agent\'s approval updates its grant after the name is checked again', async () => {
+        const { env, page, approvals } = named();
+        env.state.permissions.set(NAME, { origin: NAME, walletIndex: 0, chainId: 1 });
+        const answer = page.ask('eth_requestAccounts');
+        await flush();
+        env.resolutions.length = 0;
+        approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+        expect(await answer).toEqual({ result: [SECOND] });
+        expect(env.resolutions).toEqual([NAME]);
+        expect(env.state.permissions.get(NAME)).toMatchObject({ walletIndex: 1, chainId: 100 });
+      });
+
+      test('a connected name that moves while the agent\'s approval is open keeps its grant unchanged', async () => {
+        const { env, page, approvals } = named();
+        env.state.permissions.set(NAME, { origin: NAME, walletIndex: 0, chainId: 1 });
+        const answer = page.ask('eth_requestAccounts');
+        await flush();
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+        expect(await answer).toEqual(NO_ADDRESS);
+        expect(env.state.walletIndexUpdates).toEqual([]);
+        expect(env.state.lastUsed).toEqual([]);
+        expect(env.state.permissions.get(NAME)).toMatchObject({ walletIndex: 0, chainId: 1 });
       });
 
       test('a name that has moved before it asks never reaches the agent', async () => {
