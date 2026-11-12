@@ -540,6 +540,31 @@ jobs:
         env:
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
 
+      # The node on the service takes its key from the identity core (design
+      # 0008, "The sealed release"), so its real-binary test needs both.
+      - name: Download freedom-cored binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os != 'Windows' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # The node's life on the service against both binaries (design 0008,
+      # "Keys", "The switch" and "When the node can start"): a home the
+      # add-on used, with a stale control socket and the core's key file,
+      # switched once and run as the vault's identity; the key's bytes on
+      # neither pipe nor in main's log; no spawn while the vault is locked;
+      # a throwaway key without a vault. Under a SOCKS policy at a closed
+      # port, with no peer configured: nothing leaves the machine. Its stale
+      # socket is a Unix socket, so Windows skips it.
+      - name: freedom-radicled node (real binaries)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os != 'Windows' }}
+        run: npx jest src/main/radicle/radicled-node.integration.test.js
+        env:
+          FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
+          FREEDOM_CORED_PATH: ${{ github.workspace }}/freedom-cored-bin/${{ matrix.target }}/freedom-cored
+
       # No hosted arm64 Windows runner exists, so the asset is at least proven
       # to be published and to match the pinned SHA256SUMS.
       - name: Verify the win-arm64 release asset

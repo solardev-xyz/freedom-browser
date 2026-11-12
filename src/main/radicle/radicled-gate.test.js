@@ -31,6 +31,7 @@ const {
   takeRadicleGate,
   withRadicleGate,
   switchedHomeRefusal,
+  removeStaleControlSocket,
   SWITCHED_HOME_MESSAGE,
   LOCK_TIMEOUT_MS,
   RELEASE_KILL_MS,
@@ -475,5 +476,137 @@ describe('switchedHomeRefusal', () => {
   test('a node path that is a file is no record of the service', () => {
     fs.writeFileSync(path.join(home, 'node'), '');
     expect(switchedHomeRefusal(home)).toBeNull();
+  });
+});
+
+// Plan B6 (from B5, #1183): heartwood in the add-on binds
+// <home>/node/control.sock and leaves it when it is killed; the service binds
+// none, and main's grant check refuses a home holding a special file. Before
+// the service's first spawn, that socket is removed under the gate, and
+// nothing else, and nothing without the gate.
+const posixDescribe = process.platform === 'win32' ? describe.skip : describe;
+
+posixDescribe('removeStaleControlSocket', () => {
+  const os = require('os');
+  const fs = require('fs');
+  const { spawnSync } = require('child_process');
+  let root;
+  let home;
+  let quiet;
+
+  beforeEach(() => {
+    // Short: a socket's path has a length bound (macOS's is 104 bytes).
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'rsock-'));
+    home = path.join(root, 'h');
+    fs.mkdirSync(path.join(home, 'node'), { recursive: true });
+    quiet = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** A socket left at `target` as a killed process leaves one: bound, and
+   * never unbound. */
+  function strandSocket(target) {
+    const script =
+      "require('net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))";
+    spawnSync(process.execPath, ['-e', script, target], { stdio: 'ignore' });
+    expect(fs.lstatSync(target).isSocket()).toBe(true);
+  }
+
+  /** A gate runner: held, as `withRadicleGate` gives it, unless told. */
+  function gate({ gated = true, held = true, refuse = null } = {}) {
+    return jest.fn(async (_home, fn) => {
+      if (refuse) throw new RadicleGateError(refuse);
+      return fn({ gated, held: () => held });
+    });
+  }
+
+  const socket = () => path.join(home, 'node', 'control.sock');
+  const there = (target) => {
+    try {
+      fs.lstatSync(target);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  test("the add-on's socket, under the gate: removed", async () => {
+    strandSocket(socket());
+    const withGate = gate();
+    await expect(removeStaleControlSocket(home, { withGate, log: quiet })).resolves.toBe(true);
+    expect(withGate).toHaveBeenCalledWith(home, expect.any(Function), expect.any(Object));
+    expect(there(socket())).toBe(false);
+    // The rest of the home stays.
+    expect(fs.lstatSync(path.join(home, 'node')).isDirectory()).toBe(true);
+  });
+
+  test('no socket there: the gate is never taken', async () => {
+    const withGate = gate();
+    await expect(removeStaleControlSocket(home, { withGate, log: quiet })).resolves.toBe(false);
+    expect(withGate).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['a regular file', (target) => fs.writeFileSync(target, 'x')],
+    ['a directory', (target) => fs.mkdirSync(target)],
+    [
+      'a link to a socket',
+      (target) => {
+        const elsewhere = path.join(root, 's');
+        strandSocket(elsewhere);
+        fs.symlinkSync(elsewhere, target);
+      },
+    ],
+  ])('%s at the path is no socket: left', async (_what, make) => {
+    make(socket());
+    const withGate = gate();
+    await expect(removeStaleControlSocket(home, { withGate, log: quiet })).resolves.toBe(false);
+    expect(withGate).not.toHaveBeenCalled();
+    expect(there(socket())).toBe(true);
+  });
+
+  test('a socket anywhere else in the home: left', async () => {
+    const others = [path.join(home, 'control.sock'), path.join(home, 'node', 'other.sock')];
+    for (const other of others) strandSocket(other);
+    await expect(removeStaleControlSocket(home, { withGate: gate(), log: quiet })).resolves.toBe(
+      false
+    );
+    for (const other of others) expect(there(other)).toBe(true);
+  });
+
+  test('a home whose node/ is a link: the socket it leads to is left', async () => {
+    const elsewhere = path.join(root, 'n');
+    fs.mkdirSync(elsewhere);
+    strandSocket(path.join(elsewhere, 'control.sock'));
+    fs.rmSync(path.join(home, 'node'), { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(home, 'node'));
+    const withGate = gate();
+    await expect(removeStaleControlSocket(home, { withGate, log: quiet })).resolves.toBe(false);
+    expect(withGate).not.toHaveBeenCalled();
+    expect(there(path.join(elsewhere, 'control.sock'))).toBe(true);
+  });
+
+  test.each([
+    ['ungated (a development build without the binary)', { gated: false }],
+    ['the gate lost before the removal', { held: false }],
+    ['another writer holds the gate', { refuse: 'lock_held' }],
+    ['the wait for the gate given up', { refuse: 'cancelled' }],
+  ])('%s: nothing removed, and the start goes on', async (_what, options) => {
+    strandSocket(socket());
+    await expect(
+      removeStaleControlSocket(home, { withGate: gate(options), log: quiet })
+    ).resolves.toBe(false);
+    expect(there(socket())).toBe(true);
+  });
+
+  test("the stop's signal reaches the gate's wait", async () => {
+    strandSocket(socket());
+    const controller = new AbortController();
+    const withGate = gate();
+    await removeStaleControlSocket(home, { signal: controller.signal, withGate, log: quiet });
+    expect(withGate.mock.calls[0][2]).toMatchObject({ signal: controller.signal });
   });
 });
