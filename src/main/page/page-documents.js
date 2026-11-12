@@ -29,9 +29,8 @@
  * Nothing here reads the record's `agent`: custody is read live, where a
  * standing rule would answer (design 0011, "Agent custody").
  *
- * Not yet used: no IPC channel calls this module. PRQ-2 wires `track` to the
- * tab guests and `hello`/`attest` to `page:hello`, `page:reserve` and
- * `page:request`.
+ * `page-requests.js` (PRQ-2) wires `track` to the tab guests and
+ * `hello`/`attest` to `page:hello` and `page:request`.
  */
 
 const { getPermissionKey, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
@@ -185,6 +184,10 @@ function createPageDocuments(deps = {}) {
 
   // guest id -> { current, endedNonces, pendingBind, binding, nameRunning, nameWaiting }
   const guests = new Map();
+  // Called with { guest, navigation, nonce, reason } when a document ends:
+  // `navigated` for a new commit or an error page, `closed` when its guest
+  // is destroyed (its tab or its window closed).
+  const endedListeners = new Set();
 
   // A document's name check is over: requests waiting on it go on, and are
   // checked again.
@@ -195,7 +198,7 @@ function createPageDocuments(deps = {}) {
     naming.finish();
   }
 
-  function endCurrent(state) {
+  function endCurrent(state, reason) {
     const doc = state.current;
     if (!doc) return;
     doc.ended = true;
@@ -206,6 +209,19 @@ function createPageDocuments(deps = {}) {
     if (state.nameWaiting === doc) state.nameWaiting = null;
     settleNaming(doc);
     state.current = null;
+    const ended = Object.freeze({
+      guest: doc.guest,
+      navigation: doc.navigation,
+      nonce: doc.nonce,
+      reason,
+    });
+    for (const listener of endedListeners) {
+      try {
+        listener(ended);
+      } catch {
+        // One listener's failure must not keep the others from hearing it.
+      }
+    }
   }
 
   // Name checks run one at a time per guest. A document committed while one
@@ -250,7 +266,7 @@ function createPageDocuments(deps = {}) {
   }
 
   function commit(contents, state, url) {
-    endCurrent(state);
+    endCurrent(state, 'navigated');
     const transportKey = transportKeyOf(url);
     // A held binding applies to the next commit only; an active one lasts
     // while the guest's commits stay on its IPNS key.
@@ -307,7 +323,7 @@ function createPageDocuments(deps = {}) {
       (_event, code, _description, url, isMainFrame, processId, routingId) => {
         if (isMainFrame !== true || guests.get(contents.id) !== state) return;
         if (!replacedByErrorPage(contents, code, url, processId, routingId)) return;
-        endCurrent(state);
+        endCurrent(state, 'navigated');
         // An error page is a commit, and not one on any IPNS key, whatever
         // URL failed: it takes a held binding and ends the active one. The
         // chrome binds again on its next navigation to the name.
@@ -316,7 +332,7 @@ function createPageDocuments(deps = {}) {
       }
     );
     contents.once('destroyed', () => {
-      endCurrent(state);
+      endCurrent(state, 'closed');
       if (guests.get(contents.id) === state) guests.delete(contents.id);
     });
   }
@@ -445,6 +461,32 @@ function createPageDocuments(deps = {}) {
     return { ok: true, requester: snapshot(result.doc) };
   }
 
+  /**
+   * Steps 1 to 6 now, with no wait: the record as it stands, and whether
+   * its name check is still pending (`naming`), in which case its `key` is
+   * not settled yet and `attest` must still be awaited before the record
+   * acts under any key. For a caller that must charge a request to its
+   * document before it waits for anything (design 0011, "Bounds").
+   *
+   * @returns {{ok: true, requester: object, naming: boolean} | {ok: false, reason: string}}
+   */
+  function attestNow(event, nonce) {
+    const result = check(event, nonce);
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      requester: snapshot(result.doc),
+      naming: Boolean(result.doc.naming?.pending),
+    };
+  }
+
+  /** Hear of every document that ends. Returns a function that stops it. */
+  function onEnded(listener) {
+    if (typeof listener !== 'function') return () => {};
+    endedListeners.add(listener);
+    return () => endedListeners.delete(listener);
+  }
+
   /** True while `requester`'s document is still its guest's current one. */
   function isCurrent(requester) {
     const doc = guests.get(requester?.guest)?.current;
@@ -452,7 +494,7 @@ function createPageDocuments(deps = {}) {
       doc.nonce === requester.nonce;
   }
 
-  return { track, bindName, hello, attest, isCurrent };
+  return { track, bindName, hello, attest, attestNow, isCurrent, onEnded };
 }
 
 module.exports = {

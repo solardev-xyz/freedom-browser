@@ -1712,6 +1712,82 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 });
 
 // ============================================
+// Page requests: the way into main (freedom-core design 0011)
+// ============================================
+//
+// A page's provider requests move, method by method, off `sendToHost` and
+// the chrome onto channels to main, which decides who asked from the sending
+// frame itself (src/main/page/page-requests.js). This document's nonce, 16
+// random bytes, lives here in the isolated world, where page scripts can't
+// read it. It goes to main with `page:hello` before any provider is
+// injected, so before any page script runs. Every `page:request` carries
+// it, and main serves only the current document's. Every `page:event` from
+// main carries it too, and one that isn't this document's is dropped before
+// the page sees anything: main sends to a frame, and the frame can commit a
+// new document between main's check and the delivery.
+//
+// No method takes the new path yet (PAGE_ROUTES is empty): each later step
+// of the design moves its own. For a test, the E2E harness can route some
+// through main (`testPageRoutes`, which main puts on the boot switch only in
+// test mode).
+const PAGE_REQUESTS_ENABLED = PROVIDERS_ENABLED && !isInternalPage();
+const PAGE_NONCE = PAGE_REQUESTS_ENABLED
+  ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (b) =>
+    b.toString(16).padStart(2, '0')
+  ).join('')
+  : null;
+if (PAGE_REQUESTS_ENABLED) {
+  ipcRenderer.send('page:hello', { nonce: PAGE_NONCE });
+}
+
+const PAGE_ROUTES = new Set([]);
+const TEST_PAGE_ROUTES = new Set(
+  Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
+    ? WEBVIEW_BOOT.testPageRoutes.filter((route) => typeof route === 'string')
+    : []
+);
+const PAGE_MESSAGE_TYPES = new Map([
+  ['ethereum', { response: 'FREEDOM_ETHEREUM_RESPONSE', event: 'FREEDOM_ETHEREUM_EVENT' }],
+  ['swarm', { response: 'FREEDOM_SWARM_RESPONSE', event: 'FREEDOM_SWARM_EVENT' }],
+  ['radicle', { response: 'FREEDOM_RADICLE_RESPONSE', event: 'FREEDOM_RADICLE_EVENT' }],
+]);
+
+/** Whether this provider method goes to main on `page:request`. */
+function routedToMain(provider, method) {
+  if (!PAGE_REQUESTS_ENABLED || typeof method !== 'string') return false;
+  const route = `${provider}:${method}`;
+  return PAGE_ROUTES.has(route) || TEST_PAGE_ROUTES.has(route);
+}
+
+const postToPage = (fields) => window.postMessage(fields, window.location.origin);
+
+// Send one request to main, and post main's answer to the page under the
+// page's own request id. An answer for a document that has gone never comes
+// back here (its invoke went with it); one marked `gone` is dropped anyway.
+function sendPageRequest(provider, id, method, params) {
+  const types = PAGE_MESSAGE_TYPES.get(provider);
+  const request = { nonce: PAGE_NONCE, provider, method, params };
+  ipcRenderer.invoke('page:request', request).then(
+    (answer) => {
+      if (!answer || typeof answer !== 'object' || answer.gone === true) return;
+      postToPage({ type: types.response, id, result: answer.result, error: answer.error });
+    },
+    () => {
+      postToPage({ type: types.response, id, error: { code: -32603, message: 'Internal error' } });
+    }
+  );
+}
+
+if (PAGE_REQUESTS_ENABLED) {
+  ipcRenderer.on('page:event', (_event, message) => {
+    if (!message || typeof message !== 'object' || message.nonce !== PAGE_NONCE) return;
+    const types = PAGE_MESSAGE_TYPES.get(message.provider);
+    if (!types) return;
+    postToPage({ type: types.event, event: message.event, data: message.data });
+  });
+}
+
+// ============================================
 // Page-world providers: early injection
 // ============================================
 
@@ -1773,6 +1849,10 @@ if (PROVIDERS_ENABLED) {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_ETHEREUM_REQUEST') {
       const { id, method, params } = event.data;
+      if (routedToMain('ethereum', method)) {
+        sendPageRequest('ethereum', id, method, params);
+        return;
+      }
       const origin = window.location.origin;
 
       ipcRenderer.sendToHost('dapp:provider-request', {
@@ -1934,6 +2014,10 @@ if (PROVIDERS_ENABLED) {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
       const { id, method, params } = event.data;
+      if (routedToMain('swarm', method)) {
+        sendPageRequest('swarm', id, method, params);
+        return;
+      }
       ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
     }
   });
@@ -2085,6 +2169,10 @@ if (PROVIDERS_ENABLED) {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_RADICLE_REQUEST') {
       const { id, method, params } = event.data;
+      if (routedToMain('radicle', method)) {
+        sendPageRequest('radicle', id, method, params);
+        return;
+      }
       ipcRenderer.sendToHost('radicle:provider-request', { id, method, params });
     }
   });
