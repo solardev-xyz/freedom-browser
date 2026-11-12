@@ -20,14 +20,27 @@ const SCHEMAS = Object.fromEntries(Object.entries(kinds.KINDS).map(([kind, def])
 const HANDLE = 'f'.repeat(64);
 const SITE = { key: `bzz://${'a'.repeat(64)}`, label: `bzz://${'a'.repeat(64)}` };
 const VIEW = { title: 'Title', message: 'Message', rows: [{ label: 'Row', value: 'Value' }] };
-const message = (fields = {}) => ({ handle: HANDLE, guest: 3, kind: 'test.prompt', site: SITE, view: VIEW, ...fields });
+const message = (fields = {}) => ({ handle: HANDLE, revision: 3, guest: 3, kind: 'test.prompt', site: SITE, view: VIEW, ...fields });
 const cp = (code) => String.fromCodePoint(code);
 const BACKSLASH = String.fromCharCode(92);
 const escaped = (hex) => `${BACKSLASH}u{${hex}}`;
 
 describe('the closed schema', () => {
   test('a prompt that fits its kind\'s schema shows', () => {
-    expect(checkMessage(message())).toEqual({ handle: HANDLE, kind: 'test.prompt', site: SITE, view: VIEW, valid: true });
+    expect(checkMessage(message())).toEqual({ handle: HANDLE, revision: 3, kind: 'test.prompt', site: SITE, view: VIEW, valid: true });
+  });
+
+  // Codex, #1216 round 2: every message names main's revision, the one its
+  // report and its parts are for, whether its view came whole or in parts.
+  test('a message without a revision main could have sent: the error, reject only, and no revision to report', () => {
+    for (const revision of [undefined, null, 0, -1, 1.5, '3', Number.MAX_SAFE_INTEGER + 1]) {
+      expect(checkMessage(message({ revision }))).toEqual({ handle: HANDLE, revision: null, kind: null, site: null, view: null, valid: false });
+    }
+    const { revision: _omitted, ...bare } = message();
+    expect(checkMessage(bare)).toEqual({ handle: HANDLE, revision: null, kind: null, site: null, view: null, valid: false });
+    // An invalid view keeps its message's revision: its fixed error is
+    // reported for that delivery.
+    expect(checkMessage(message({ view: null }))).toEqual({ handle: HANDLE, revision: 3, kind: null, site: null, view: null, valid: false });
   });
 
   test('no handle, or a malformed one: nothing to answer, nothing shown', () => {
@@ -57,7 +70,7 @@ describe('the closed schema', () => {
       { ...message(), extra: true },
     ];
     for (const item of invalid) {
-      expect(checkMessage(item)).toEqual({ handle: HANDLE, kind: null, site: null, view: null, valid: false });
+      expect(checkMessage(item)).toEqual({ handle: HANDLE, revision: 3, kind: null, site: null, view: null, valid: false });
     }
   });
 
@@ -149,6 +162,89 @@ describe('text, encoded for where it shows', () => {
     // Counted in characters, never splitting one.
     const emoji = cp(0x1f642).repeat(CUT_AT + 1);
     expect(cut(emoji).short.startsWith(cp(0x1f642).repeat(CUT_AT))).toBe(true);
+    expect(cut(emoji)).toEqual({ short: `${cp(0x1f642).repeat(CUT_AT)} … (1 more characters below)`, cut: true });
+    // Longer in code units than the cut, but not in characters: not cut.
+    expect(cut(cp(0x1f642).repeat(CUT_AT))).toEqual({ short: cp(0x1f642).repeat(CUT_AT), cut: false });
+  });
+
+  test('a value megabytes long is cut and counted in place (APS-4)', () => {
+    const hex = `0x${'ab'.repeat(1024 * 1024)}`;
+    const started = Date.now();
+    const { short, cut: isCut } = cut(hex);
+    expect(isCut).toBe(true);
+    expect(short).toBe(`${hex.slice(0, CUT_AT)} … (${hex.length - CUT_AT} more characters below)`);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('a view in parts (APS-4)', () => {
+  const { checkJoined } = kinds;
+  const { MAX_PARTED_VIEW_BYTES } = core;
+  const parted = (fields = {}) => ({ ...message({ view: null }), parts: { count: 2, length: 300000 }, ...fields });
+  const send = (data) => ({
+    account: { index: 0, name: 'Main', address: `0x${'1'.repeat(40)}`, type: 'mnemonic' },
+    chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
+    tx: { to: `0x${'2'.repeat(40)}`, value: '0', data },
+    fee: { gasLimit: '21000', gasPrice: '1', estimate: '21000' },
+    feeCheck: null,
+    feeAskAgain: false,
+    alwaysAllow: false,
+  });
+  const bigData = `0x${'cd'.repeat(300 * 1024)}`;
+
+  test('a message whose view comes in parts: its other fields checked, its parts named, nothing valid yet', () => {
+    expect(MAX_PARTED_VIEW_BYTES).toBe(4 * 1024 * 1024);
+    expect(checkMessage(parted())).toEqual({
+      handle: HANDLE,
+      revision: 3,
+      kind: 'test.prompt',
+      site: SITE,
+      view: null,
+      valid: false,
+      parts: { count: 2, length: 300000 },
+    });
+    const invalid = { handle: HANDLE, revision: 3, kind: null, site: null, view: null, valid: false };
+    // Every part is asked for by the revision main sent (Codex, #1216).
+    for (const revision of [undefined, 0, 1.5, '3']) {
+      expect(checkMessage(parted({ revision }))).toEqual({ ...invalid, revision: null });
+    }
+    for (const item of [
+      parted({ view: VIEW }),
+      parted({ parts: { count: 0, length: 1 } }),
+      parted({ parts: { count: 257, length: 300000 } }),
+      parted({ parts: { count: 2, length: MAX_PARTED_VIEW_BYTES + 1 } }),
+      parted({ parts: { count: 2, length: 300000, extra: 1 } }),
+      // The revision is the message's own, not the parts' (Codex, #1216 r2).
+      parted({ parts: { count: 2, length: 300000, revision: 3 } }),
+      parted({ parts: null }),
+      parted({ kind: 'nope' }),
+      parted({ guest: null }),
+      { ...parted(), extra: 1 },
+    ]) {
+      expect(checkMessage(item)).toEqual(invalid);
+    }
+  });
+
+  test('the joined view is checked as any view, within 4 MiB rather than 256 KiB', () => {
+    const view = send(bigData);
+    const json = JSON.stringify(view);
+    expect(json.length).toBeGreaterThan(MAX_VIEW_BYTES);
+    const msg = { handle: HANDLE, revision: 1, guest: 3, kind: 'eth.send', site: SITE, view: null, parts: { count: 10, length: json.length } };
+    // Within one message's bound it would be refused; joined, it fits.
+    expect(checkMessage({ ...msg, parts: undefined, view }).valid).toBe(false);
+    const joined = checkJoined(msg, json);
+    expect(joined.valid).toBe(true);
+    expect(joined.view.tx.data).toBe(bigData);
+    expect(joined).not.toHaveProperty('parts');
+    expect(joined.revision).toBe(1);
+    // Still its kind's schema: a field off it, JSON that doesn't parse, or a
+    // view over 4 MiB; each keeps the message's revision.
+    const invalid = { handle: HANDLE, revision: 1, kind: null, site: null, view: null, valid: false };
+    expect(checkJoined(msg, JSON.stringify({ ...view, extra: '<b>' }))).toEqual(invalid);
+    expect(checkJoined(msg, json.slice(0, -1))).toEqual(invalid);
+    expect(checkJoined(msg, JSON.stringify(send(`0x${'ab'.repeat(2 * 1024 * 1024)}`)))).toEqual(invalid);
+    // A "__proto__" key in the JSON is an own, unknown field: refused.
+    expect(checkJoined(msg, '{"__proto__":{"x":1},' + json.slice(1))).toEqual(invalid);
   });
 });
 

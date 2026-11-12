@@ -241,6 +241,22 @@ describe('page requests: the way in (freedom-core design 0011, PRQ-2)', () => {
     expect(recorded(app.trace)).toEqual([]);
   });
 
+  test("a dispatcher runs for its tab's window, so a phone account's job goes there (APS-4)", async () => {
+    const { requestWindowId } = require('../windows/request-window');
+    const dispatch = jest.fn(async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return { result: requestWindowId() };
+    });
+    const { tab } = setup({ dispatch });
+    const first = tab({ window: 3 });
+    const second = tab({ window: 5 });
+    await expect(Promise.all([first.ask('swarm_readChunk'), second.ask('swarm_readChunk')])).resolves.toEqual([
+      { result: 3 },
+      { result: 5 },
+    ]);
+    expect(requestWindowId()).toBeNull();
+  });
+
   test('a production dispatcher serves only its own method', async () => {
     const readChunk = jest.fn(async () => ({ result: 'chunk' }));
     const { tab } = setup({ dispatchers: { 'swarm:swarm_readChunk': readChunk } });

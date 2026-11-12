@@ -9,7 +9,10 @@
  *
  *   - a closed, bounded schema per kind: an unknown kind or field, a wrong
  *     type, a value over its bound, or a view over 256 KiB shows a fixed
- *     error, and the prompt can then only be rejected;
+ *     error, and the prompt can then only be rejected; a view main sends in
+ *     parts (APS-4) is asked for part by part, joined, and checked whole,
+ *     within 4 MiB, before anything of it shows or the prompt is reported
+ *     shown;
  *   - text only: every value goes in with `textContent`, from fixed
  *     templates; nothing from a page is ever markup, a style, a URL or an
  *     attribute (and the CSP's Trusted Types make every markup sink throw);
@@ -48,7 +51,9 @@
 
   const ui = createBuilders(doc);
   const gate = createInputGate({ now: () => root.performance.now() });
-  let current = null; // the checked prompt shown, or null
+  // The checked prompt shown, or null; with the revision of the message it
+  // came in, which every report names (APS-4).
+  let current = null;
   let form = null; // what its template reads the user's choices from
   let deciding = false;
   // An approval for an account that signs on a device: `{ handle, closed }`
@@ -56,6 +61,11 @@
   let waiting = null;
   let armTimer = null;
   let armFrame = null;
+  // Each prompt message's turn: a view's parts still arriving for an older
+  // message are dropped (APS-4). Main checks the same with the revision
+  // every message names: it gives a part, and counts a report, only for the
+  // revision it shows.
+  let turn = 0;
 
   function setButtons() {
     el.approve.hidden = !current || !current.valid;
@@ -70,19 +80,23 @@
     armTimer = null;
   }
 
-  // Restart the delay once the prompt is on screen, and tell main.
+  // Restart the delay once the prompt is on screen, and tell main. A view
+  // still loading its parts is not on screen: nothing arms, and nothing is
+  // reported, until it renders in full (APS-4).
   function rearm() {
     gate.disarm();
     stopArming();
-    if (!current) return;
+    if (!current || current.loading) return;
     el.panel.classList.add('arming');
-    const handle = current.handle;
+    const { handle, revision } = current;
     armFrame = root.requestAnimationFrame(() => {
       armFrame = root.requestAnimationFrame(() => {
         armFrame = null;
-        if (current?.handle !== handle) return;
+        if (current?.handle !== handle || current.revision !== revision) return;
         gate.arm();
-        bridge.shown(handle);
+        // Reported for the revision it rendered: main counts it for that
+        // delivery alone (APS-4).
+        bridge.shown(handle, revision);
         armTimer = root.setTimeout(() => {
           armTimer = null;
           el.panel.classList.remove('arming');
@@ -140,6 +154,62 @@
     // Focus starts on Reject.
     el.reject.focus();
     rearm();
+  }
+
+  /**
+   * A prompt whose view comes in parts (APS-4): the panel shows it is
+   * loading, with nothing to approve and the input gate closed, while the
+   * page asks main for each part of that revision in turn. The joined view
+   * is checked whole and then shown as any prompt is; a part refused, a
+   * length that doesn't match, or a view off its schema shows the fixed
+   * error. A revision main has replaced since (`stale`) is dropped, not
+   * joined and not shown: the panel stays loading, with nothing to approve,
+   * and reads the newer prompt main has already sent it.
+   */
+  async function load(message, prompt) {
+    const mine = turn;
+    const { revision } = prompt;
+    stopWaiting();
+    stopArming();
+    gate.disarm();
+    current = { handle: prompt.handle, revision, kind: null, site: null, view: null, valid: false, loading: true };
+    form = null;
+    deciding = false;
+    el.body.replaceChildren(ui.note('Loading the request…'));
+    el.site.textContent = visible(prompt.site.label);
+    el.error.hidden = true;
+    el.heading.textContent = 'Request';
+    el.approve.textContent = 'Approve';
+    el.reject.textContent = 'Reject';
+    el.panel.hidden = false;
+    el.panel.classList.add('arming');
+    setButtons();
+    el.reject.focus();
+    const parts = [];
+    let length = 0;
+    for (let index = 0; index < prompt.parts.count && length <= prompt.parts.length; index += 1) {
+      let answer;
+      try {
+        answer = await bridge.viewPart(prompt.handle, revision, index);
+      } catch {
+        answer = null;
+      }
+      if (mine !== turn || current?.handle !== prompt.handle || current.revision !== revision) return;
+      // Replaced under the same handle, whole or in parts: dropped, not
+      // shown as the fixed error; the newer message is on its way.
+      if (answer?.ok !== true && answer?.reason === 'stale') return;
+      if (answer?.ok !== true || typeof answer.part !== 'string' || answer.part.length === 0) break;
+      parts.push(answer.part);
+      length += answer.part.length;
+    }
+    const whole =
+      parts.length === prompt.parts.count && length === prompt.parts.length
+        ? kinds.checkJoined(message, parts.join(''))
+        : null;
+    render({
+      ...(whole?.valid ? whole : { handle: prompt.handle, kind: null, site: null, view: null, valid: false }),
+      revision,
+    });
   }
 
   function clear(handle) {
@@ -231,7 +301,10 @@
 
   bridge.onPrompt((message) => {
     const prompt = kinds.checkMessage(message);
-    if (prompt) render(prompt);
+    if (!prompt) return;
+    turn += 1;
+    if (prompt.parts) load(message, prompt);
+    else render(prompt);
   });
   bridge.onHidden((message) => clear(message?.handle));
   bridge.onClosed((message) => clear(message?.handle));

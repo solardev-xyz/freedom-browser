@@ -23,6 +23,7 @@ const { intentFailure } = require('./intent-ipc');
 const { getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
 const { redactedHandler } = require('./rpc-errors');
+const { forSenderWindow } = require('../windows/request-window');
 const { getSigner } = require('./signers');
 const { isVaultLockedError } = require('./vault-errors');
 const {
@@ -250,7 +251,9 @@ async function handleSendTransaction(walletIndex, params, context = {}, authoriz
  * throw none (rpc-errors.js); this is the second line, for every handler.
  */
 function handle(channel, listener) {
-  ipcMain.handle(channel, redactedHandler(listener));
+  // Run for the window of the chrome that called: a phone account's job
+  // shows its QR in that window's sidebar (APS-4, `request-window.js`).
+  ipcMain.handle(channel, redactedHandler(forSenderWindow(listener)));
 }
 
 /**

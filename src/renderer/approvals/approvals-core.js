@@ -4,7 +4,8 @@
  *
  *   - a closed, bounded schema language: a view is exactly what its kind's
  *     schema allows (no unknown or missing field, no wrong type, nothing
- *     over its bound), and at most 256 KiB in all;
+ *     over its bound), and at most 256 KiB in all, or 4 MiB for a view
+ *     main sends in parts (APS-4);
  *   - text encoded for where it shows: control, invisible and
  *     direction-changing characters as visible escapes, a long value cut
  *     with a visible mark;
@@ -27,6 +28,9 @@
 
   const INPUT_DELAY_MS = 500;
   const MAX_VIEW_BYTES = 256 * 1024;
+  // A view main sends in parts, each within 256 KiB (APS-4;
+  // approvals-document.js MAX_PARTED_VIEW_BYTES).
+  const MAX_PARTED_VIEW_BYTES = 4 * 1024 * 1024;
   const MAX_DEPTH = 8;
   // Characters of a value shown before it is cut.
   const CUT_AT = 160;
@@ -129,11 +133,23 @@
     return String(value).replace(INVISIBLE, (char) => (multiline && char === '\n' ? char : escapeOf(char)));
   }
 
-  /** A shown value cut at `CUT_AT` characters, with a visible mark. */
+  /**
+   * A shown value cut at `CUT_AT` characters (code points), with a visible
+   * mark. Counted in place: a value can be megabytes long (APS-4).
+   */
   function cut(value) {
-    const chars = Array.from(value);
-    if (chars.length <= CUT_AT) return { short: value, cut: false };
-    return { short: `${chars.slice(0, CUT_AT).join('')} … (${chars.length - CUT_AT} more characters below)`, cut: true };
+    if (value.length <= CUT_AT) return { short: value, cut: false };
+    const isPair = (i) => {
+      const high = value.charCodeAt(i);
+      const low = value.charCodeAt(i + 1);
+      return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+    };
+    let end = 0;
+    for (let n = 0; n < CUT_AT && end < value.length; n += 1) end += isPair(end) ? 2 : 1;
+    let chars = 0;
+    for (let i = 0; i < value.length; i += isPair(i) ? 2 : 1) chars += 1;
+    if (chars <= CUT_AT) return { short: value, cut: false };
+    return { short: `${value.slice(0, end)} … (${chars - CUT_AT} more characters below)`, cut: true };
   }
 
   // --- Input: the delay, and what counts as an activation -------------------
@@ -337,6 +353,7 @@
   return Object.freeze({
     INPUT_DELAY_MS,
     MAX_VIEW_BYTES,
+    MAX_PARTED_VIEW_BYTES,
     CUT_AT,
     INPUT_EVENTS,
     schema: Object.freeze({ text, integer, boolean, oneOf, list, record, nullable, anyOf, json }),

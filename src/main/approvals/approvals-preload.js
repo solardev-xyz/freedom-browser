@@ -18,7 +18,9 @@ contextBridge.exposeInMainWorld(
     onMoved: listen('approvals:moved'),
     onTheme: listen('approvals:theme'),
     ready: () => ipcRenderer.send('approvals:ready'),
-    shown: (handle) => ipcRenderer.send('approvals:shown', { handle }),
+    shown: (handle, revision) => ipcRenderer.send('approvals:shown', { handle, revision }),
     decide: (handle, approve, choices) => ipcRenderer.invoke('approvals:decide', { handle, approve, choices }),
+    // A part of a view over 256 KiB (APS-4), for the prompt main shows.
+    viewPart: (handle, revision, index) => ipcRenderer.invoke('approvals:view-part', { handle, revision, index }),
   })
 );

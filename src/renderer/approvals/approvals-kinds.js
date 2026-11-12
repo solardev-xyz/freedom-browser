@@ -32,10 +32,10 @@
   'use strict';
 
   const { text, integer, boolean, oneOf, list, record, nullable, anyOf, json } = core.schema;
-  const { isPlainObject, conforms, viewBytes, MAX_VIEW_BYTES } = core;
+  const { isPlainObject, conforms, viewBytes, MAX_VIEW_BYTES, MAX_PARTED_VIEW_BYTES } = core;
 
   const HANDLE = /^[0-9a-f]{64}$/;
-  const MESSAGE_KEYS = ['handle', 'guest', 'kind', 'site', 'view'];
+  const MESSAGE_KEYS = ['handle', 'revision', 'guest', 'kind', 'site', 'view'];
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
   // --- Shapes several kinds share -------------------------------------------
@@ -45,8 +45,21 @@
   const HASH = /^0x[0-9a-fA-F]{64}$/;
   const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
   const RATIO = /^[0-9]+(?:\.[0-9]+)?$/;
-  // Every byte a page may send, as hex, within the view's 256 KiB.
-  const MAX_HEX = 2 * MAX_VIEW_BYTES + 2;
+  // Every byte a page may send, as hex: a field's bound is the whole view's.
+  // A view within one message stays within 256 KiB however long a field's
+  // bound; one main sends in parts, within 4 MiB (APS-4).
+  const MAX_HEX = MAX_PARTED_VIEW_BYTES;
+  // A view in parts (APS-4): how many, and its JSON's length in UTF-16 code
+  // units, which is never more than its bytes.
+  const PARTS = record({
+    count: integer({ min: 1, max: 256 }),
+    length: integer({ min: 1, max: MAX_PARTED_VIEW_BYTES }),
+  });
+  // Every message's revision, main's own and never used again (APS-4): the
+  // page names it when it reports the prompt shown and when it asks for a
+  // part, so nothing it does for an earlier delivery under the same handle
+  // counts for this one.
+  const REVISION = integer({ min: 1 });
 
   const SITE = record({ key: text(2048), label: text(2048) });
   const ACCOUNT = record({
@@ -891,11 +904,20 @@
   });
 
   const HASH_TEXT = text(66, { pattern: HASH });
+  // `replaced`, main's own: the transaction a resend of this payment was
+  // approved for moments ago, before the payment was replaced (APS-4).
   const walletIntentResend = Object.freeze({
-    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, nonce: NONCE, hash: HASH_TEXT }),
+    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, nonce: NONCE, hash: HASH_TEXT, replaced: nullable(HASH_TEXT) }),
     heading: () => 'Send again',
     approve: () => 'Send again',
     render(view, ui, body) {
+      if (view.replaced) {
+        body.append(
+          ui.warning(
+            'This payment was replaced with a higher fee after you approved sending it again, so that approval no longer applies. Approve again to send its latest transaction, below.'
+          )
+        );
+      }
       body.append(
         ui.note('The same signed payment, sent to the network again'),
         ui.own('From', walletAccountText(view.account)),
@@ -903,6 +925,7 @@
         ui.own('Nonce', String(view.nonce)),
         ui.own('Transaction', view.hash)
       );
+      if (view.replaced) body.append(ui.own('Approved before', view.replaced));
       return { choices: noChoices };
     },
   });
@@ -1177,28 +1200,62 @@
 
   /**
    * A `page:prompt` message, checked. Null when it names no handle (there
-   * is nothing to answer); otherwise the handle, and its site and view only
-   * when the whole message fits its kind's schema (`valid`). An invalid one
-   * shows the fixed error and can only be rejected.
+   * is nothing to answer); otherwise the handle, the delivery's revision
+   * (null if main named none, and then no report counts), and its site and
+   * view only when the whole message fits its kind's schema (`valid`). An
+   * invalid one shows the fixed error and can only be rejected.
+   *
+   * A view over 256 KiB comes in parts (APS-4): the message then has
+   * `view: null` and `parts: { count, length }`, and, its other fields
+   * checked, comes back with those `parts` and no view, not yet valid. The
+   * page asks main for the parts and checks the joined view (`checkJoined`).
    */
-  function checkMessage(message) {
+  function checkMessage(message, { joined = false } = {}) {
     if (!isPlainObject(message)) return null;
     const { handle } = message;
     if (typeof handle !== 'string' || !HANDLE.test(handle)) return null;
+    const revision = conforms(message.revision, REVISION) ? message.revision : null;
+    const invalid = { handle, revision, kind: null, site: null, view: null, valid: false };
     const keys = Object.keys(message);
     const kind = typeof message.kind === 'string' && hasOwn(KINDS, message.kind) ? message.kind : null;
-    const valid =
+    const parted = !joined && hasOwn(message, 'parts');
+    const expected = parted ? [...MESSAGE_KEYS, 'parts'] : MESSAGE_KEYS;
+    const framed =
+      revision !== null &&
       kind !== null &&
-      keys.length === MESSAGE_KEYS.length &&
-      keys.every((key) => MESSAGE_KEYS.includes(key)) &&
+      keys.length === expected.length &&
+      keys.every((key) => expected.includes(key)) &&
       // A page's prompt names its tab's guest; the wallet's own, none.
       (kind.startsWith('wallet.') ? message.guest === null : Number.isInteger(message.guest)) &&
-      conforms(message.site, SITE) &&
-      viewBytes(message.view) <= MAX_VIEW_BYTES &&
+      conforms(message.site, SITE);
+    if (!framed) return invalid;
+    if (parted) {
+      return message.view === null && conforms(message.parts, PARTS)
+        ? { handle, revision, kind, site: message.site, view: null, valid: false, parts: { ...message.parts } }
+        : invalid;
+    }
+    const valid =
+      viewBytes(message.view) <= (joined ? MAX_PARTED_VIEW_BYTES : MAX_VIEW_BYTES) &&
       conforms(message.view, KINDS[kind].schema);
-    return valid
-      ? { handle, kind, site: message.site, view: message.view, valid: true }
-      : { handle, kind: null, site: null, view: null, valid: false };
+    return valid ? { handle, revision, kind, site: message.site, view: message.view, valid: true } : invalid;
+  }
+
+  /**
+   * A view main sent in parts (APS-4), joined: the message's view is the
+   * JSON the parts make, checked as any view is, within 4 MiB. Invalid when
+   * it doesn't parse.
+   */
+  function checkJoined(message, json) {
+    if (!isPlainObject(message) || typeof json !== 'string') return null;
+    let view;
+    try {
+      view = JSON.parse(json);
+    } catch {
+      return checkMessage({ handle: message.handle, revision: message.revision });
+    }
+    const framed = {};
+    for (const key of MESSAGE_KEYS) framed[key] = key === 'view' ? view : message[key];
+    return checkMessage(framed, { joined: true });
   }
 
   const BOARDS = new Set(['eth.safe_message', 'eth.safe_send', 'wallet.safe_board']);
@@ -1224,5 +1281,5 @@
     return type === 'ledger' || type === 'remote' ? type : null;
   }
 
-  return Object.freeze({ KINDS, SITE, checkMessage, deviceOf, typedDataText, units });
+  return Object.freeze({ KINDS, SITE, checkMessage, checkJoined, deviceOf, typedDataText, units });
 });

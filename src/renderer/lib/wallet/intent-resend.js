@@ -12,6 +12,9 @@
 
 import { confirmSigning } from './signing-confirmation.js';
 
+// The approvals panel decides each confirmation (design 0011, APS-4).
+const panelDecides = () => globalThis.window?.pagePrompts?.approvalsDocument === true;
+
 /** What an `intent-resend` confirmation binds, from a held summary. */
 export function resendBinding(intent) {
   return {
@@ -29,6 +32,12 @@ export function resendBinding(intent) {
  * lapsed or no longer matches its record (a replacement changed the
  * payment's latest transaction), the payment is confirmed again as main
  * reports it, once.
+ *
+ * With the approvals panel on (freedom-core design 0011, APS-4), each
+ * confirmation is the user's decision in the panel, so it is asked again
+ * only when the payment was replaced: main's prompt then says so, and
+ * names the transaction approved before. A lapse with nothing changed asks
+ * nothing more: the reply goes back, and the payment is offered again.
  *
  * Throws only when no reply came (the confirmation couldn't be minted, or
  * the IPC failed): the caller keeps offering `intent`.
@@ -51,7 +60,12 @@ export async function resendHeldPayment(intent) {
     if (result?.code === 'INTENT_UNKNOWN' || (reported && reported.state !== 'held')) {
       return { result, intent: null, closed: true };
     }
-    if (result?.code === 'SIGNING_NOT_CONFIRMED' && reported && attempt === 0) {
+    if (
+      result?.code === 'SIGNING_NOT_CONFIRMED' &&
+      reported &&
+      attempt === 0 &&
+      (!panelDecides() || String(reported.hash).toLowerCase() !== String(current.hash).toLowerCase())
+    ) {
       current = reported;
       continue;
     }
