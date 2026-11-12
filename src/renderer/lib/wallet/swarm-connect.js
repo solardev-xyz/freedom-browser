@@ -817,8 +817,9 @@ function setupSwarmActScreen() {
 
 /**
  * Ask the user whether `permissionKey` may open content `publisher` shared
- * with this node through ACT (swarm_openAct). `publisher` is main's
- * description (swarm-permissions.js describeActPublisher): the normalised key
+ * with this node through ACT (swarm_openAct). `params` is main's canonical
+ * form of the request and `publisher` its description
+ * (swarm-permissions.js describeActRequest): the normalised key
  * the grant and the node request use, its address, and whether a rule for it
  * already exists (only an Agent-held tab is prompted despite one). Resolves on
  * Open, rejects (4001) otherwise.

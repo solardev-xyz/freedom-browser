@@ -29,6 +29,7 @@ const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { withOriginLock } = require('./origin-mutation-lock');
 const { normalizeActPublisher } = require('./act-publisher');
+const { validateActRequest } = require('./act-request');
 // Required on first use: private-windows.js pulls in the app logger and
 // BrowserWindow, which most of this module's callers (and tests) never need.
 function isPrivateSender(event) {
@@ -359,14 +360,33 @@ function getActGrants(origin) {
 }
 
 /**
- * What the ACT prompt shows for a publisher, from main's own normaliser, so
- * the prompt names exactly the key the grant and the node request use.
- * @returns {{ valid: false } | { valid: true, publicKey: string, address: string, granted: boolean }}
+ * What the ACT prompt shows for a swarm_openAct request: main's own
+ * validation of the whole request (act-request.js, the same check
+ * swarm-provider-ipc.js runs before executing), its canonical values, and
+ * whether a rule for this publisher already exists. The prompt shows only
+ * these, never the page's text, and is not shown at all for a request main
+ * would refuse.
+ * @returns {{ valid: false, reason: string, message: string }
+ *   | { valid: true, request: Object, publicKey: string, address: string, granted: boolean }}
  */
-function describeActPublisher(origin, publisher) {
-  const normalized = normalizeActPublisher(publisher);
-  if (!normalized) return { valid: false };
-  return { valid: true, ...normalized, granted: hasActGrant(origin, normalized.publicKey) };
+function describeActRequest(origin, params) {
+  const checked = validateActRequest(params);
+  if (!checked.ok) {
+    return {
+      valid: false,
+      reason: checked.reason,
+      message: checked.message,
+      ...(checked.option && { option: checked.option }),
+    };
+  }
+  const request = checked.value;
+  return {
+    valid: true,
+    request,
+    publicKey: request.publisher,
+    address: request.address,
+    granted: hasActGrant(origin, request.publisher),
+  };
 }
 
 /**
@@ -429,8 +449,8 @@ function registerSwarmPermissionsIpc() {
     return getActGrants(origin);
   });
 
-  ipcMain.handle(IPC.SWARM_DESCRIBE_ACT_PUBLISHER, (_event, origin, publisher) => {
-    return describeActPublisher(origin, publisher);
+  ipcMain.handle(IPC.SWARM_DESCRIBE_ACT_REQUEST, (_event, origin, params) => {
+    return describeActRequest(origin, params);
   });
 
   console.log('[SwarmPermissions] IPC handlers registered');
@@ -456,7 +476,7 @@ module.exports = {
   revokeActPublisher,
   hasActGrant,
   getActGrants,
-  describeActPublisher,
+  describeActRequest,
   onRevoke,
   onManifestMutation,
   registerSwarmPermissionsIpc,

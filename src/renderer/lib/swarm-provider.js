@@ -301,27 +301,56 @@ async function handleMessagingRequest(method, params, permissionKey, webview) {
   return executeWithPermission(method, params, permissionKey, approvalMeta(webview, autoApproved));
 }
 
+// Per-site queue for the consent half of swarm_openAct: a page that opens
+// several shares at once has them asked about one after another, so the
+// "always allow" ticked on the first answers the rest from the same
+// publisher instead of leaving their prompts queued behind it.
+const actConsentTails = new Map();
+
 /**
  * swarm_openAct (#648): open content a publisher shared with the user's
  * node through ACT. Consent is per (site, publisher): the prompt names the
- * publisher, and its "always allow" covers that publisher only. The
- * publisher shown, stored and sent is main's normalised key
- * (describeActPublisher), never the page's own spelling. A malformed one
- * goes straight to main, which refuses it with -32602 before any prompt.
+ * publisher, and its "always allow" covers that publisher only. What the
+ * prompt shows is main's own validation of the request
+ * (describeActRequest): a request main would refuse gets main's -32602 and
+ * no prompt, and a valid one is shown in main's canonical form, never the
+ * page's text.
  */
 async function handleActRequest(params, permissionKey, webview) {
   await requirePermission(permissionKey);
 
-  const publisher = await window.swarmPermissions.describeActPublisher(permissionKey, params?.publisher);
-  if (!publisher?.valid) {
-    return executeWithPermission('swarm_openAct', params, permissionKey, approvalMeta(webview, true));
-  }
+  const previous = actConsentTails.get(permissionKey) || Promise.resolve();
+  let release;
+  const tail = new Promise((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.then(() => tail);
+  actConsentTails.set(permissionKey, chained);
 
-  const autoApproved = publisher.granted === true && !isAgentHeld(webview);
-  if (!autoApproved) {
-    await new Promise((resolve, reject) => {
-      showSwarmActApproval(permissionKey, params, publisher, resolve, reject);
-    });
+  let autoApproved;
+  try {
+    await previous;
+    const described = await window.swarmPermissions.describeActRequest(permissionKey, params);
+    if (!described?.valid) {
+      throw {
+        code: -32602,
+        message: described?.message || 'Invalid parameters',
+        data: {
+          reason: described?.reason || 'invalid_params',
+          ...(described?.option && { option: described.option }),
+        },
+      };
+    }
+
+    autoApproved = described.granted === true && !isAgentHeld(webview);
+    if (!autoApproved) {
+      await new Promise((resolve, reject) => {
+        showSwarmActApproval(permissionKey, described.request, described, resolve, reject);
+      });
+    }
+  } finally {
+    release();
+    if (actConsentTails.get(permissionKey) === chained) actConsentTails.delete(permissionKey);
   }
 
   return executeWithPermission('swarm_openAct', params, permissionKey, approvalMeta(webview, autoApproved));

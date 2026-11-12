@@ -1051,8 +1051,8 @@ contextBridge.exposeInMainWorld('swarmPermissions', {
   grantAct: (origin, publisher) => ipcRenderer.invoke('swarm:grant-act', origin, publisher),
   revokeAct: (origin, publisher) => ipcRenderer.invoke('swarm:revoke-act', origin, publisher),
   getActGrants: (origin) => ipcRenderer.invoke('swarm:get-act-grants', origin),
-  describeActPublisher: (origin, publisher) =>
-    ipcRenderer.invoke('swarm:describe-act-publisher', origin, publisher),
+  describeActRequest: (origin, params) =>
+    ipcRenderer.invoke('swarm:describe-act-request', origin, params),
 });
 
 contextBridge.exposeInMainWorld('swarmManifest', {

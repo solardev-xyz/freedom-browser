@@ -399,11 +399,24 @@ describe('ACT grant IPC', () => {
         address: new PrivateKey('11'.repeat(32)).publicKey().address().toChecksum(),
       }),
     ]);
-    expect(await invoke('swarm:describe-act-publisher', CHROME, ORIGIN, PUBLISHER.toUpperCase()))
-      .toMatchObject({ valid: true, publicKey: PUBLISHER, granted: true });
-    expect(await invoke('swarm:describe-act-publisher', CHROME, ORIGIN, OTHER_PUBLISHER))
+    const described = await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({
+      reference: REFERENCE.toUpperCase(),
+      publisher: `0x${PUBLISHER.toUpperCase()}`,
+      path: 'a/b.txt',
+    }));
+    expect(described).toMatchObject({
+      valid: true,
+      publicKey: PUBLISHER,
+      granted: true,
+      request: { reference: REFERENCE, publisher: PUBLISHER, historyAddress: HISTORY, path: 'a/b.txt' },
+    });
+    expect(await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({ publisher: OTHER_PUBLISHER })))
       .toMatchObject({ valid: true, publicKey: OTHER_PUBLISHER, granted: false });
-    expect(await invoke('swarm:describe-act-publisher', CHROME, ORIGIN, '02')).toEqual({ valid: false });
+    // What main would refuse is refused here too, with the same reason.
+    expect(await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({ publisher: '02' })))
+      .toMatchObject({ valid: false, reason: 'invalid_publisher' });
+    expect(await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({ path: `${'x'.repeat(1025)}` })))
+      .toMatchObject({ valid: false, reason: 'invalid_path' });
 
     expect(await invoke('swarm:revoke-act', CHROME, ORIGIN, PUBLISHER)).toBe(true);
     expect(await invoke('swarm:get-act-grants', CHROME, ORIGIN)).toEqual([]);

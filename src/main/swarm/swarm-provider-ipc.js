@@ -34,7 +34,7 @@ const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, hasActGrant, onRevoke } = require('./swarm-permissions');
-const { normalizeActPublisher } = require('./act-publisher');
+const { validateActRequest } = require('./act-request');
 const { openActShare } = require('./act-service');
 // Required on first use: private-windows.js pulls in the app logger and
 // BrowserWindow, which most of this module's callers (and tests) never need.
@@ -1266,33 +1266,6 @@ async function handlePublishSingleOwnerChunk(params, origin) {
   }
 }
 
-// ACT history references and ACT references are Swarm addresses: 32 bytes,
-// or 64 for content uploaded encrypted. Paths are capped like a URL's.
-const ACT_MAX_PATH_BYTES = 1024;
-
-function validateActPath(path) {
-  if (path === undefined || path === null) return { ok: true, value: undefined };
-  if (typeof path !== 'string') return { ok: false, message: 'path must be a string' };
-  if (path === '') return { ok: true, value: '' };
-  if (Buffer.byteLength(path, 'utf-8') > ACT_MAX_PATH_BYTES) {
-    return { ok: false, message: `path exceeds ${ACT_MAX_PATH_BYTES} UTF-8 bytes` };
-  }
-  if (path.startsWith('/') || path.includes('\\')) {
-    return { ok: false, message: 'path must be relative and use / as its separator' };
-  }
-  for (let i = 0; i < path.length; i++) {
-    if (path.charCodeAt(i) < 32 || path.charCodeAt(i) === 127) {
-      return { ok: false, message: 'path must not contain control characters' };
-    }
-  }
-  for (const segment of path.split('/')) {
-    if (segment === '' || segment === '.' || segment === '..') {
-      return { ok: false, message: 'path must not contain empty, "." or ".." segments' };
-    }
-  }
-  return { ok: true, value: path };
-}
-
 /**
  * Handle swarm_openAct (#648): open content shared with this node through
  * ACT. The node decrypts with its own key; Freedom only passes it the share's
@@ -1325,39 +1298,15 @@ async function handleOpenAct(params, origin, meta, sender) {
     };
   }
 
-  if (!params || typeof params !== 'object') {
-    return invalidParams('params is required');
+  // The same check, and the same canonical values, as the consent prompt
+  // was given (swarm-permissions.js describeActRequest).
+  const request = validateActRequest(params);
+  if (!request.ok) {
+    return invalidParams(request.message, request.reason, request.option ? { option: request.option } : {});
   }
+  const share = request.value;
 
-  const optionsError = validateEmptyOptions(params.options);
-  if (optionsError) return optionsError;
-
-  const reference = typeof params.reference === 'string' ? params.reference : '';
-  if (!/^(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{128})$/.test(reference)) {
-    return invalidParams('reference must be a 64- or 128-character hex string', 'invalid_reference');
-  }
-
-  const publisher = normalizeActPublisher(params.publisher);
-  if (!publisher) {
-    return invalidParams(
-      'publisher must be a secp256k1 public key: 66 hex characters starting 02 or 03, or 130 starting 04',
-      'invalid_publisher'
-    );
-  }
-
-  const historyError = validateHexString(params.historyAddress, 32, 'invalid_history_address', 'historyAddress');
-  if (historyError) return historyError;
-
-  const { timestamp } = params;
-  if (timestamp !== undefined && timestamp !== null &&
-      (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0)) {
-    return invalidParams('timestamp must be a non-negative integer (unix seconds)', 'invalid_timestamp');
-  }
-
-  const path = validateActPath(params.path);
-  if (!path.ok) return invalidParams(path.message, 'invalid_path');
-
-  if (meta?.approval !== 'user' && !hasActGrant(origin, publisher.publicKey)) {
+  if (meta?.approval !== 'user' && !hasActGrant(origin, share.publisher)) {
     return notAuthorized('act_not_granted');
   }
 
@@ -1372,11 +1321,11 @@ async function handleOpenAct(params, origin, meta, sender) {
   try {
     const result = await openActShare(
       {
-        reference: reference.toLowerCase(),
-        publisher: publisher.publicKey,
-        historyAddress: params.historyAddress.toLowerCase(),
-        timestamp: timestamp ?? undefined,
-        path: path.value,
+        reference: share.reference,
+        publisher: share.publisher,
+        historyAddress: share.historyAddress,
+        timestamp: share.timestamp,
+        path: share.path,
       },
       permissionFreeReadMeter(origin)
     );

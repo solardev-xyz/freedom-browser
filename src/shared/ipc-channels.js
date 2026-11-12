@@ -454,7 +454,7 @@ module.exports = {
   SWARM_GRANT_ACT: 'swarm:grant-act',
   SWARM_REVOKE_ACT: 'swarm:revoke-act',
   SWARM_GET_ACT_GRANTS: 'swarm:get-act-grants',
-  SWARM_DESCRIBE_ACT_PUBLISHER: 'swarm:describe-act-publisher',
+  SWARM_DESCRIBE_ACT_REQUEST: 'swarm:describe-act-request',
 
   // Swarm permission manifests
   SWARM_MANIFEST_CHECK: 'swarm:manifest-check',
