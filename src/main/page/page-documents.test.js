@@ -983,6 +983,24 @@ describe('recheckName: the name checked again at every use (PRQ-3)', () => {
     return { ...ctx, guest, nonce: n, answer };
   }
 
+  test('holdsKey: synchronously, while the document is current and still under the requester\'s key', async () => {
+    const { documents, guest, nonce: n, answer } = named();
+    const { requester } = await documents.attest(eventFrom(guest), n);
+    expect(documents.holdsKey(requester)).toBe(true);
+    answer.decoded = OTHER_IPNS_KEY;
+    await documents.recheckName(requester);
+    expect(documents.holdsKey(requester)).toBe(false);
+    // Keyless now: not even its own null key counts as holding one.
+    expect(documents.holdsKey((await documents.attest(eventFrom(guest), n)).requester)).toBe(false);
+
+    const plain = setup();
+    const opened = open(plain.documents);
+    const unbound = (await plain.documents.attest(eventFrom(opened.guest), opened.nonce)).requester;
+    expect(plain.documents.holdsKey(unbound)).toBe(true);
+    opened.guest.commit(`${DAPP}next`);
+    expect(plain.documents.holdsKey(unbound)).toBe(false);
+  });
+
   test('a document with no name binding resolves nothing', async () => {
     const { documents, resolveEnsContent } = setup();
     const { guest, nonce: n } = open(documents);

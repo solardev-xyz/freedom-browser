@@ -105,8 +105,10 @@ function createEthereumDispatchers(deps = {}) {
   async function accounts(context) {
     const { requester } = context;
     if (!requester.key) return [];
-    // Name-revalidated: before the grant is read, and after the last wait.
-    if (!(await context.nameHolds())) return [];
+    // Name-revalidated: before the grant is read, and after the last wait;
+    // and the account goes out only while the document holds the name.
+    const keyless = { keyless: { result: [] } };
+    if (!(await context.nameHolds(keyless))) return [];
     const permission = getPermission(requester.key);
     if (!permission) return [];
     let wallets;
@@ -118,7 +120,7 @@ function createEthereumDispatchers(deps = {}) {
     }
     const wallet = wallets.find((candidate) => candidate?.index === permission.walletIndex);
     if (!wallet) return [];
-    if (!(await context.nameHolds())) return [];
+    if (!(await context.nameHolds(keyless))) return [];
     return [wallet.address];
   }
 

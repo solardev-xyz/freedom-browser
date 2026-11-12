@@ -242,6 +242,9 @@ function createPageRequests({
       released: false,
       resolve: null,
       reply: null,
+      // The answer if the document no longer holds its key when main
+      // answers (`nameHolds`).
+      keyless: undefined,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -288,6 +291,13 @@ function createPageRequests({
     record.answered = true;
     stopDeadline(record);
     const current = documents.isCurrent(record.requester);
+    // A request that read under a name answers as a keyless document's
+    // would once the name no longer holds, checked in the same run as the
+    // reply (`nameHolds`).
+    if (current && record.keyless !== undefined && value && !value.error && !documents.holdsKey(record.requester)) {
+      trace({ kind: 'name-lost', id: record.id });
+      value = { ...record.keyless };
+    }
     record.resolve(current ? value : GONE);
     trace({ kind: current ? 'answered' : 'gone', id: record.id, value: current ? value : undefined });
     release(record);
@@ -366,7 +376,7 @@ function createPageRequests({
       class: record.row.class,
       params,
       isCurrent: () => documents.isCurrent(record.requester),
-      nameHolds: () => nameHolds(record),
+      nameHolds: (options) => nameHolds(record, options),
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       copied: (label) => copied(record, label),
@@ -377,11 +387,22 @@ function createPageRequests({
   // (design 0011, "Which methods check the name"): the document current,
   // with a key, and for a DNS name over IPNS the name resolved again to the
   // document's IPNS key, after which, since the resolution was awaited, the
-  // document is checked again and its frame must still be on its transport
-  // key. A document with no name binding resolves nothing.
-  async function nameHolds(record) {
+  // document is checked again, its frame must still be on its transport
+  // key, and the document must still hold the key: another request's check
+  // of the same name may have ended the binding while this one's answer
+  // waited to run. A document with no name binding resolves nothing.
+  //
+  // `keyless` is what the request answers if, when main answers it, its
+  // document no longer holds the key (`answer`): a dispatcher whose answer
+  // reveals what the key holds (eth_accounts' account) passes it, so no
+  // check that ran before the binding ended can let that answer out after.
+  async function nameHolds(record, { keyless } = {}) {
+    if (keyless !== undefined && record.keyless === undefined) record.keyless = keyless;
     const checked = await documents.recheckName(record.requester);
-    const holds = checked.ok && (!checked.resolved || documentHolds(record.requester));
+    const holds =
+      checked.ok &&
+      documents.holdsKey(record.requester) &&
+      (!checked.resolved || documentHolds(record.requester));
     if (checked.resolved) trace({ kind: 'name-checked', id: record.id, holds });
     return holds;
   }

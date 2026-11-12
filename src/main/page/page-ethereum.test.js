@@ -462,6 +462,66 @@ describe('Ethereum reads through main (freedom-core design 0011, PRQ-3)', () => 
       expect(await answer).toEqual({ result: [] });
     });
 
+    describe('concurrent checks of one name', () => {
+      // Every resolution waits until the test answers it, in order.
+      function held() {
+        const pending = [];
+        const env = setup({
+          resolveEnsContent: (name) =>
+            new Promise((resolve) => {
+              pending.push({ name, answer: (decoded) => resolve({ type: 'ok', protocol: 'ipns', decoded }) });
+            }),
+        });
+        env.state.permissions.set(NAME, { origin: NAME, walletIndex: 0, chainId: 100 });
+        const page = env.tab(`ipns://${IPNS_KEY}/docs`, { bind: NAME });
+        return { env, page, pending };
+      }
+
+      // Two eth_accounts, each at its last check, after the commit's and
+      // each one's first have answered the bound key.
+      async function atFinalChecks() {
+        const { env, page, pending } = held();
+        pending.shift().answer(IPNS_KEY);
+        await flush();
+        const a = page.ask('eth_accounts');
+        const b = page.ask('eth_accounts');
+        await flush();
+        expect(pending).toHaveLength(2);
+        for (const first of pending.splice(0)) first.answer(IPNS_KEY);
+        await flush();
+        expect(pending).toHaveLength(2);
+        return { env, page, pending, a, b };
+      }
+
+      test('the first answering the bound key and the second elsewhere, in the same turn: both answer []', async () => {
+        const { pending, a, b } = await atFinalChecks();
+        const [first, second] = pending.splice(0);
+        first.answer(IPNS_KEY);
+        second.answer(OTHER_IPNS_KEY);
+        expect({ a: await a, b: await b }).toEqual({ a: { result: [] }, b: { result: [] } });
+      });
+
+      test('the other order, in the same turn: both answer []', async () => {
+        const { pending, a, b } = await atFinalChecks();
+        const [first, second] = pending.splice(0);
+        second.answer(OTHER_IPNS_KEY);
+        first.answer(IPNS_KEY);
+        expect({ a: await a, b: await b }).toEqual({ a: { result: [] }, b: { result: [] } });
+      });
+
+      test('a request answered before the name is found moved keeps its answer; the later one gets []', async () => {
+        const { page, pending, a, b } = await atFinalChecks();
+        const [first, second] = pending.splice(0);
+        first.answer(IPNS_KEY);
+        expect(await a).toEqual({ result: [ACCOUNT] });
+        second.answer(OTHER_IPNS_KEY);
+        expect(await b).toEqual({ result: [] });
+        // The binding has ended: the next request resolves nothing.
+        expect(await page.ask('eth_accounts')).toEqual({ result: [] });
+        expect(pending).toEqual([]);
+      });
+    });
+
     test('the chrome may bind a name only for a guest it hosts', () => {
       const env = setup();
       const guest = new Guest({ window: 1 });

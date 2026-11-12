@@ -536,6 +536,19 @@ function createPageDocuments(deps = {}) {
     return { ok: true, resolved: true };
   }
 
+  /**
+   * True, synchronously, while `requester`'s document is current and still
+   * acts under the requester's key. A recheck's success is an answer about
+   * an earlier moment: another check of the same name may have ended the
+   * binding since, so whoever acts on it checks this at the moment it acts.
+   * A document's key never comes back once its binding has ended (a new
+   * binding takes a new commit, so a new document), so the key alone tells.
+   */
+  function holdsKey(requester) {
+    const doc = currentDocOf(requester);
+    return Boolean(doc?.key) && doc.key === requester.key;
+  }
+
   /** Hear of every document that ends. Returns a function that stops it. */
   function onEnded(listener) {
     if (typeof listener !== 'function') return () => {};
@@ -548,7 +561,7 @@ function createPageDocuments(deps = {}) {
     return currentDocOf(requester) !== null;
   }
 
-  return { track, bindName, hello, attest, attestNow, isCurrent, recheckName, onEnded };
+  return { track, bindName, hello, attest, attestNow, isCurrent, recheckName, holdsKey, onEnded };
 }
 
 module.exports = {
