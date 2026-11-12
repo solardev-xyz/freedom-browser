@@ -697,6 +697,42 @@ function getRecord(origin) {
   return loadStore().records[normalizeOrigin(origin)] || null;
 }
 
+/**
+ * The manifest check for a page's request through main (freedom-core design
+ * 0011, PRQ-7b): for the requester's attested key and its own committed URL,
+ * fetched on the guest's own session, under the key's lock. Nothing here is
+ * the chrome's: main names the site and the URL. A consent answer's token
+ * stays in main, which shows the sheet as its own prompt
+ * (`swarm.manifest`) and decides it (`decidePageManifest`).
+ *
+ * @param {{ key: string, url: string, guest: object, eager?: boolean }} request
+ * @returns {Promise<{ kind: string, token?: string, model?: object }>}
+ */
+function checkPageManifest({ key, url, guest, eager = false }) {
+  const fetchContext = manifestFetchContext(guest);
+  if (!fetchContext) return Promise.resolve({ kind: 'unresolved' });
+  return withOriginLock(key, () => (
+    stillAsking(guest, fetchContext)
+      ? checkManifest({ origin: key, committedUrl: url, eager }, { fetchContext })
+      : { kind: 'unresolved' }
+  ));
+}
+
+/**
+ * Decide a consent main showed for a page (PRQ-7b), under the key's lock:
+ * inside it, `recheck()` checks the name again, and `holds()`, the document
+ * still holding its key, runs in the same run as the decision's grant
+ * writes. Resolves `{ refused: true }` with nothing written, or the
+ * decision.
+ */
+function decidePageManifest(key, token, outcome, { recheck, holds }) {
+  return withOriginLock(key, async () => {
+    if (!(await recheck())) return { refused: true };
+    if (!holds()) return { refused: true };
+    return decideManifest(token, outcome);
+  });
+}
+
 function registerPermissionManifestIpc() {
   recoverPending();
   // Both stores that hold manifest-projected state report user mutations, so
@@ -751,6 +787,8 @@ module.exports = {
   discover,
   checkManifest,
   decideManifest,
+  checkPageManifest,
+  decidePageManifest,
   detachManaged,
   disconnect,
   getRecord,

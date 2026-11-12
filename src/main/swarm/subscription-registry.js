@@ -26,7 +26,12 @@ const crypto = require('crypto');
 // is still connecting, the page may already be gone).
 const DEFAULT_ESTABLISH_TIMEOUT_MS = 30_000;
 
-// id → { id, origin, webContentsId, kind, key, socketKey, pending }
+// id → { id, origin, webContentsId, document, deliverTo, kind, key, socketKey, pending }
+//
+// A page's subscription through main (freedom-core design 0011, PRQ-7b) is
+// bound to its document instead of a webContents: `document` names it
+// (`${guest}:${navigation}`), `deliverTo(data)` sends it a message, and it
+// ends with the document (`cancelByDocument`).
 const subscriptions = new Map();
 // socketKey (`${kind}:${key}`) → { handle, established, subIds: Set }
 const sockets = new Map();
@@ -124,7 +129,7 @@ function withEstablishTimeout(established) {
  * @throws {Error} reason 'too_many_subscriptions' | 'node_subscription_limit'
  *   | 'establish_timeout' | 'subscription_cancelled' | socket errors
  */
-async function subscribe({ origin, webContentsId, kind, key }) {
+async function subscribe({ origin, webContentsId, document, deliverTo, kind, key }) {
   if (countByOrigin(origin) >= maxSubscriptionsPerOrigin) {
     throw semanticError(
       'too_many_subscriptions',
@@ -145,6 +150,8 @@ async function subscribe({ origin, webContentsId, kind, key }) {
     id: subscriptionId,
     origin,
     webContentsId,
+    document: typeof document === 'string' ? document : undefined,
+    deliverTo: typeof deliverTo === 'function' ? deliverTo : undefined,
     kind,
     key,
     socketKey,
@@ -194,6 +201,25 @@ function unsubscribe(origin, subscriptionId) {
   removeSubscription(subscription);
 }
 
+/**
+ * Close one of a document's own subscriptions (a page's, through main):
+ * only that document's, whatever its key now.
+ * @throws {Error} reason 'subscription_not_found'
+ */
+function unsubscribeDocument(document, subscriptionId) {
+  const subscription = subscriptions.get(subscriptionId);
+  if (!subscription || subscription.document === undefined || subscription.document !== document) {
+    throw semanticError('subscription_not_found', `No active subscription: ${subscriptionId}`);
+  }
+  removeSubscription(subscription);
+}
+
+/** Close a subscription by its id, if it is still open. */
+function cancelById(subscriptionId) {
+  const subscription = subscriptions.get(subscriptionId);
+  if (subscription) removeSubscription(subscription);
+}
+
 function cancelWhere(predicate) {
   for (const subscription of [...subscriptions.values()]) {
     if (predicate(subscription)) removeSubscription(subscription);
@@ -219,6 +245,11 @@ function cancelByOrigin(origin) {
   cancelWhere((sub) => sub.origin === origin);
 }
 
+/** A page's document ended: its subscriptions end with it. */
+function cancelByDocument(document) {
+  cancelWhere((sub) => sub.document !== undefined && sub.document === document);
+}
+
 // Exported for testing
 function _reset() {
   for (const socket of sockets.values()) {
@@ -239,6 +270,9 @@ module.exports = {
   cancelByWebContents,
   cancelStaleByWebContents,
   cancelByOrigin,
+  cancelByDocument,
+  cancelById,
+  unsubscribeDocument,
   countByOrigin,
   _reset,
 };
