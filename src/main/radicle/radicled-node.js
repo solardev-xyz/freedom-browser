@@ -387,6 +387,12 @@ class RadicledNode {
     );
   }
 
+  /** The number of the process whose `rad.start` succeeded, while it
+   * serves, or null: each crash's restart is a new one. */
+  get generation() {
+    return this.liveActive()?.gen.number ?? null;
+  }
+
   /** The running generation's identity, `{ did, nid, alias, ephemeral }`,
    * or null. */
   activeIdentity() {

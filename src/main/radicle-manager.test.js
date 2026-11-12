@@ -1194,12 +1194,27 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     for (const ctx of ctxs.splice(0)) fs.rmSync(ctx.dataDir, { recursive: true, force: true });
   });
 
-  /** radicled-node.js, faked: each node's start and stop are the test's. */
+  /** A promise and its resolve, for a wait the test settles. */
+  function deferred() {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  /** radicled-node.js, faked: each node's start and stop are the test's.
+   * `module.created` resolves once a node is made, and each node's
+   * `stopAsked` once its stop is first asked for. */
   function fakeNodeModule() {
     const module = { nodes: [], available: true, DEFAULT_ALIAS: 'FreedomBrowser' };
+    module.created = deferred();
     class FakeRadicledNode {
       constructor(options) {
         this.options = options;
+        // The process whose rad.start succeeded: a crash's restart is another.
+        this.generation = 1;
+        this.stopAsked = deferred();
         this.failureReason = null;
         this.stopping = null;
         this.version = '0.8.0';
@@ -1223,6 +1238,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         }));
         this.cloneRepo = jest.fn(async () => ({ ok: true }));
         module.nodes.push(this);
+        module.created.resolve(this);
       }
       static isAvailable() {
         return module.available;
@@ -1233,6 +1249,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       }
       stop() {
         this.stopCalls += 1;
+        this.stopAsked.resolve();
         if (!this.stopping) {
           this.resolveStart(false);
           this.stopping = this.autoStop ? Promise.resolve() : this.stopped;
@@ -1380,10 +1397,189 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     const node = ctx.node();
     const stopped = ctx.mod.stopRadicle();
     // At once, not behind the start in the lifecycle queue.
-    expect(node.stopCalls).toBe(1);
+    expect(node.stopCalls).toBeGreaterThan(0);
     await expect(started).resolves.toEqual({ status: 'starting', error: null });
     await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
     expect(broadcastStatuses(ctx)).not.toContain('error');
+  });
+
+  // Review round 1: a stop takes a start over at once in every window, so
+  // it never queues behind one (which could wait for a locked vault). None
+  // of these lets the start run on before the stop.
+  describe("a stop takes the start over at once, in each of the start's waits", () => {
+    test('asked for in the same turn as the start: no node is made, and it stops', async () => {
+      const ctx = load();
+      const started = ctx.mod.startRadicle();
+      const stopped = ctx.mod.stopRadicle();
+      await expect(started).resolves.toEqual({ status: 'stopped', error: null });
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(0);
+      expect(broadcastStatuses(ctx)).not.toContain('error');
+    });
+
+    test('a start queued behind another op, stopped before it runs: it never makes a node', async () => {
+      const ctx = load();
+      const work = deferred();
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(() => work.promise);
+      const started = ctx.mod.startRadicle();
+      const stopped = ctx.mod.stopRadicle();
+      work.resolve('done');
+      await expect(rekey).resolves.toBe('done');
+      await expect(started).resolves.toEqual({ status: 'stopped', error: null });
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(0);
+    });
+
+    test("while the last node's process ends: the start gives up; the stop waits for that end", async () => {
+      const ctx = load();
+      const first = ctx.mod.startRadicle();
+      const failed = await ctx.radicledNode.created.promise;
+      failed.failureReason = 'freedom-radicled exited';
+      failed.autoStop = false;
+      failed.resolveStart(false);
+      await expect(first).resolves.toMatchObject({ status: 'error' });
+
+      const started = ctx.mod.startRadicle();
+      await failed.stopAsked.promise;
+      let stoppedYet = false;
+      const stopped = ctx.mod.stopRadicle().then((status) => {
+        stoppedYet = true;
+        return status;
+      });
+      await expect(started).resolves.toEqual({ status: 'starting', error: null });
+      await flush();
+      // The stop's proof is that process's end, which hasn't come.
+      expect(stoppedYet).toBe(false);
+      failed.resolveStop();
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+    });
+
+    test('while the home is prepared: the start gives up, and the stop needs no preparation', async () => {
+      const asked = deferred();
+      const preparing = deferred();
+      const ctx = load({
+        prepare: async () => {
+          asked.resolve();
+          await preparing.promise;
+        },
+      });
+      const started = ctx.mod.startRadicle();
+      await asked.promise;
+      const stopped = ctx.mod.stopRadicle();
+      await expect(started).resolves.toEqual({ status: 'starting', error: null });
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      preparing.resolve();
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(0);
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'stopped', error: null });
+    });
+
+    test('as the node is made, while it waits for the vault: the node stops in the same turn', async () => {
+      const ctx = load();
+      const started = ctx.mod.startRadicle();
+      const node = await ctx.radicledNode.created.promise;
+      const stopped = ctx.mod.stopRadicle();
+      expect(node.stopCalls).toBeGreaterThan(0);
+      await expect(started).resolves.toEqual({ status: 'starting', error: null });
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+    });
+
+    test('a re-key while a start prepares the home: the start gives up, the work runs, then a node starts', async () => {
+      const asked = deferred();
+      const preparing = deferred();
+      let prepares = 0;
+      const ctx = load({
+        prepare: async () => {
+          prepares += 1;
+          if (prepares === 1) {
+            asked.resolve();
+            await preparing.promise;
+          }
+        },
+      });
+      const started = ctx.mod.startRadicle();
+      await asked.promise;
+      const work = jest.fn(async () => 'written');
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+      await expect(started).resolves.toEqual({ status: 'starting', error: null });
+      const node = await ctx.radicledNode.created.promise;
+      // The work ran first, with no node; the restart made the only one.
+      expect(work).toHaveBeenCalledTimes(1);
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+      node.resolveStart(true);
+      await expect(rekey).resolves.toBe('written');
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'running', error: null });
+      preparing.resolve();
+      await ctx.mod.stopRadicle();
+    });
+
+    test("a re-key while the node waits for the vault: it stops at once, and the work doesn't wait", async () => {
+      const ctx = load();
+      const started = ctx.mod.startRadicle();
+      const waiting = await ctx.radicledNode.created.promise;
+      const work = jest.fn(async () => 'written');
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+      expect(waiting.stopCalls).toBeGreaterThan(0);
+      await expect(started).resolves.toEqual({ status: 'starting', error: null });
+      await flush();
+      expect(work).toHaveBeenCalledTimes(1);
+      expect(ctx.radicledNode.nodes).toHaveLength(2);
+      ctx.node().resolveStart(true);
+      await expect(rekey).resolves.toBe('written');
+      await ctx.mod.stopRadicle();
+    });
+
+    test("a stop during a re-key's restart gives the restart up", async () => {
+      const ctx = load();
+      const work = jest.fn(async () => 'written');
+      const first = ctx.mod.startRadicle();
+      (await ctx.radicledNode.created.promise).resolveStart(true);
+      await first;
+      ctx.radicledNode.created = deferred();
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+      const restarting = await ctx.radicledNode.created.promise;
+      const stopped = ctx.mod.stopRadicle();
+      expect(restarting.stopCalls).toBeGreaterThan(0);
+      await expect(rekey).resolves.toBe('written');
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      expect(ctx.radicledNode.nodes).toHaveLength(2);
+    });
+  });
+
+  // Review round 1: each process that comes up gets today's background
+  // network start, a crash's restart included, once.
+  test("the seeds and the default repository's clone run once for each process that comes up", async () => {
+    const ctx = load();
+    const started = ctx.mod.startRadicle();
+    const node = await ctx.radicledNode.created.promise;
+    node.resolveStart(true);
+    await started;
+    await flush();
+    expect(node.connectSeeds).toHaveBeenCalledTimes(1);
+    expect(node.cloneRepo).toHaveBeenCalledTimes(1);
+
+    // Down by its stats and up again, the same process: nothing more.
+    node.options.onChange('restarting', node);
+    node.options.onChange('running', node);
+    await flush();
+    expect(node.connectSeeds).toHaveBeenCalledTimes(1);
+
+    // A crash's restart: a new process, which seeds again.
+    node.options.onChange('restarting', node);
+    node.generation = 2;
+    node.options.onChange('running', node);
+    await flush();
+    expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'running', error: null });
+    expect(node.connectSeeds).toHaveBeenCalledTimes(2);
+    expect(node.connectSeeds).toHaveBeenLastCalledWith(15000);
+    expect(node.cloneRepo).toHaveBeenCalledTimes(2);
+    expect(node.cloneRepo).toHaveBeenLastCalledWith(FREEDOM_BROWSER_RID, 120000);
+    await ctx.mod.stopRadicle();
   });
 
   test('a start while the node restarts, or waits for the unlock, makes no second node', async () => {
@@ -1574,7 +1770,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         return status;
       });
       // rad.shutdown goes at once.
-      expect(node.stopCalls).toBe(1);
+      expect(node.stopCalls).toBeGreaterThan(0);
       expect(clock.set.map((t) => t.ms)).toEqual([11_000]);
       await flush();
       expect(done).toBe(false);
