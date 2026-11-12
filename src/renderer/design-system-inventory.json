@@ -1,0 +1,897 @@
+{
+  "issue": "https://github.com/solardev-xyz/freedom-browser/issues/1198",
+  "totals": {
+    "legacyClasses": 186,
+    "oldTokens": 235,
+    "literalSizes": 237,
+    "bareOutlines": 16
+  },
+  "legacyClasses": {
+    "index.html": [
+      "input.node-info-value.mono[style]"
+    ],
+    "pages/downloads.html": [
+      "action-btn",
+      "btn",
+      "private-badge",
+      "remove-btn",
+      "search-input"
+    ],
+    "pages/error.html": [
+      "error-details"
+    ],
+    "pages/history.html": [
+      "btn",
+      "delete-btn",
+      "protocol-badge",
+      "search-input",
+      "sort-select"
+    ],
+    "pages/home.html": [
+      "setup-banner",
+      "setup-banner-action",
+      "setup-banner-dismiss",
+      "setup-banner-tag"
+    ],
+    "pages/links.html": [
+      "badge",
+      "button"
+    ],
+    "pages/payments.html": [
+      "badge",
+      "btn",
+      "chain-badge",
+      "filter-select",
+      "search-input",
+      "status-pill"
+    ],
+    "pages/private.html": [
+      "badge",
+      "card"
+    ],
+    "pages/profiles.html": [
+      "avatar-badge",
+      "btn",
+      "icon-btn",
+      "link-btn",
+      "primary-btn",
+      "profile-card",
+      "profile-card-avatar",
+      "profile-card-foot",
+      "secondary-btn"
+    ],
+    "pages/settings.html": [
+      "btn",
+      "card",
+      "input",
+      "resolver-badge",
+      "rpc-input",
+      "select"
+    ],
+    "pages/styles/interstitial.css": [
+      "button",
+      "button-link",
+      "button-primary",
+      "details"
+    ],
+    "pages/styles/publish.css": [
+      "publish-action-card",
+      "publish-another-btn",
+      "publish-banner",
+      "publish-cancel-btn",
+      "publish-copy-btn",
+      "publish-open-btn",
+      "publish-submit-btn",
+      "publish-textarea"
+    ],
+    "pages/styles/rad-browser.css": [
+      "metadata-notice",
+      "seed-btn"
+    ],
+    "styles/autocomplete.css": [
+      "autocomplete-protocol-badge",
+      "tab-badge"
+    ],
+    "styles/bookmarks.css": [
+      "bookmarks-overflow-btn"
+    ],
+    "styles/downloads-shelf.css": [
+      "download-card",
+      "download-card-btn",
+      "download-card-close",
+      "download-card-progress",
+      "download-card-progress-fill"
+    ],
+    "styles/find-bar.css": [
+      "find-bar-btn",
+      "find-bar-input"
+    ],
+    "styles/gateway-offer.css": [
+      "gateway-offer-pill"
+    ],
+    "styles/github-bridge.css": [
+      "ghb-copy-btn",
+      "ghb-import-btn",
+      "github-bridge-panel"
+    ],
+    "styles/menus.css": [
+      "fullscreen-btn",
+      "menu-button",
+      "menu-button-badge",
+      "zoom-btn"
+    ],
+    "styles/modal.css": [
+      "form-input",
+      "primary-btn",
+      "secondary-btn"
+    ],
+    "styles/onboarding.css": [
+      "form-input",
+      "identity-wallet-card",
+      "input",
+      "input[type=\"checkbox\"]",
+      "mnemonic-action-btn",
+      "onboarding-btn",
+      "onboarding-panel",
+      "warning-banner"
+    ],
+    "styles/permissions.css": [
+      "permission-btn"
+    ],
+    "styles/services.css": [
+      "node-copy-btn-inline"
+    ],
+    "styles/sidebar.css": [
+      "auto-approve-badge",
+      "badge-app-scoped",
+      "badge-bee-wallet",
+      "badge-ethereum-wallet",
+      "button",
+      "chain-switcher-btn",
+      "connect-ledger-scheme-select",
+      "copy-mnemonic-btn",
+      "create-wallet-done-btn",
+      "create-wallet-input",
+      "create-wallet-submit-btn",
+      "dapp-connect-approve-btn",
+      "dapp-connect-reject-btn",
+      "dapp-connect-selector-btn",
+      "dapp-connection-banner",
+      "dapp-sign-approve-btn",
+      "dapp-sign-reject-btn",
+      "dapp-sign-touchid-btn",
+      "dapp-tx-approve-btn",
+      "dapp-tx-details",
+      "dapp-tx-reject-btn",
+      "dapp-tx-touchid-btn",
+      "export-pk-copy-btn",
+      "export-pk-touchid-btn",
+      "input",
+      "input[type=\"number\"]",
+      "node-card",
+      "node-card-chevron",
+      "node-card-content",
+      "node-card-header",
+      "node-card-mode",
+      "node-card-status",
+      "node-copy-btn",
+      "node-copy-btn-inline",
+      "node-upgrade-btn",
+      "password-input",
+      "password-submit-btn",
+      "perms-disconnect-btn",
+      "publish-link-btn",
+      "publisher-identity-action-btn",
+      "publisher-identity-badge",
+      "publisher-identity-manage-btn",
+      "publisher-identity-use-btn",
+      "radicle-connection-banner",
+      "receive-address-box",
+      "receive-copy-btn",
+      "rpc-provider-btn",
+      "safe-pending-badge",
+      "safe-signing-banner",
+      "safe-status-btn",
+      "safe-status-card",
+      "send-confirm-btn",
+      "send-continue-btn",
+      "send-done-btn",
+      "send-edit-btn",
+      "send-input",
+      "send-max-btn",
+      "send-retry-btn",
+      "send-selector-btn",
+      "send-touchid-btn",
+      "setup-cta-btn",
+      "sidebar-link-btn",
+      "sidebar-nav-btn",
+      "sidebar-private-notice",
+      "sidebar-refresh-btn",
+      "stamp-batch-action-btn",
+      "stamp-batch-card",
+      "stamp-buy-another-btn",
+      "stamp-extend-cancel-btn",
+      "stamp-extend-preset-btn",
+      "stamp-preset-btn",
+      "stamp-purchase-btn",
+      "stamp-retry-btn",
+      "subscreen-back-btn",
+      "swarm-connect-approve-btn",
+      "swarm-connect-reject-btn",
+      "swarm-connection-banner",
+      "swarm-publish-details",
+      "unlock-touchid-btn",
+      "wallet-action-btn",
+      "wallet-address-card",
+      "wallet-selector-btn",
+      "wallet-selector-item-badge",
+      "wallet-selector-item-btn",
+      "wallet-settings-delete-btn",
+      "wallet-settings-export-btn",
+      "wallet-toggle-btn",
+      "x402-connection-banner",
+      "x402-grant-select",
+      "x402-perm-chain-badge",
+      "x402-perm-input",
+      "x402-perm-select"
+    ],
+    "styles/tabs.css": [
+      "new-tab-btn",
+      "tab-agent-badge"
+    ],
+    "styles/toggle-switch.css": [
+      "input"
+    ],
+    "styles/toolbar.css": [
+      "address-input",
+      "icon-btn",
+      "input-action-btn"
+    ],
+    "styles/update-toast.css": [
+      "update-toast-btn"
+    ],
+    "styles/window-controls.css": [
+      "window-control-btn"
+    ]
+  },
+  "oldTokens": {
+    "pages/downloads.html": [
+      "--bg-card",
+      "--bg-card-hover",
+      "--bg-raised",
+      "--danger-bg",
+      "--page-gradient",
+      "--surface-translucent",
+      "--text-meta",
+      "--text-subtle"
+    ],
+    "pages/error.html": [
+      "--shell-border-soft",
+      "--shell-danger",
+      "--shell-surface"
+    ],
+    "pages/history.html": [
+      "--bg",
+      "--bg-card",
+      "--bg-card-hover",
+      "--bg-raised",
+      "--danger-bg",
+      "--page-gradient",
+      "--select-chevron",
+      "--surface-translucent",
+      "--text-meta",
+      "--text-subtle"
+    ],
+    "pages/home.html": [
+      "--bg",
+      "--bg-elev",
+      "--dark-only-display",
+      "--home-card-shadow",
+      "--home-control-hover",
+      "--light-only-display",
+      "--shell-bg",
+      "--shell-code",
+      "--shell-link-home",
+      "--shell-link-home-bg-hover",
+      "--shell-link-home-hover",
+      "--shell-subtle",
+      "--shell-text"
+    ],
+    "pages/links.html": [
+      "--badge-info-bg",
+      "--badge-info-border",
+      "--badge-warn-bg",
+      "--bg-card",
+      "--bg-raised",
+      "--code-accent",
+      "--info-bg",
+      "--page-gradient",
+      "--panel-translucent",
+      "--warn-accent"
+    ],
+    "pages/payments.html": [
+      "--bg-card",
+      "--bg-elev",
+      "--bg-raised",
+      "--danger-bg",
+      "--page-gradient",
+      "--pay-cell-border",
+      "--pay-chip-bg",
+      "--pay-dapp-bg",
+      "--pay-dapp-fg",
+      "--pay-muted",
+      "--pay-placeholder",
+      "--pay-row-hover",
+      "--pay-safe-bg",
+      "--pay-safe-fg",
+      "--pay-status-failed",
+      "--pay-status-none",
+      "--pay-status-ok",
+      "--pay-status-pending",
+      "--pay-text",
+      "--pay-thead-bg",
+      "--pay-wallet-bg",
+      "--pay-wallet-fg",
+      "--pay-x402-bg",
+      "--pay-x402-fg",
+      "--select-chevron"
+    ],
+    "pages/profiles.html": [
+      "--accent-muted",
+      "--bg",
+      "--bg-card",
+      "--bg-elev",
+      "--m-accent",
+      "--m-bg",
+      "--m-border",
+      "--m-danger",
+      "--m-muted",
+      "--m-text",
+      "--page-gradient-profiles"
+    ],
+    "pages/protocol-test.html": [
+      "--shell-bg-deep",
+      "--shell-border-muted",
+      "--shell-chip-surface",
+      "--shell-dim",
+      "--shell-heading-ink",
+      "--shell-link-chip",
+      "--shell-muted",
+      "--shell-surface"
+    ],
+    "pages/settings.html": [
+      "--accent-muted",
+      "--bg",
+      "--bg-card",
+      "--bg-elev",
+      "--page-gradient",
+      "--row-sub-bg",
+      "--rpc-block-bg",
+      "--sidebar-translucent",
+      "--text-subtle",
+      "--toggle-knob-on",
+      "--warn"
+    ],
+    "pages/styles/interstitial.css": [
+      "--shell-body",
+      "--shell-body-ink",
+      "--shell-border",
+      "--shell-border-soft",
+      "--shell-button",
+      "--shell-button-hover",
+      "--shell-danger",
+      "--shell-gradient",
+      "--shell-heading-ink",
+      "--shell-link",
+      "--shell-muted",
+      "--shell-name-border",
+      "--shell-on-button",
+      "--shell-on-primary",
+      "--shell-primary",
+      "--shell-primary-hover",
+      "--shell-surface",
+      "--shell-warn"
+    ],
+    "pages/styles/publish.css": [
+      "--pub-accent",
+      "--pub-bg",
+      "--pub-border",
+      "--pub-card-hover",
+      "--pub-danger",
+      "--pub-muted",
+      "--pub-success",
+      "--pub-surface",
+      "--pub-text",
+      "--pub-warn"
+    ],
+    "pages/styles/rad-browser.css": [
+      "--shell-bg",
+      "--shell-body",
+      "--shell-body-ink",
+      "--shell-border",
+      "--shell-border-chip",
+      "--shell-border-frame",
+      "--shell-border-muted",
+      "--shell-border-rule",
+      "--shell-border-strong",
+      "--shell-button",
+      "--shell-button-hover",
+      "--shell-chip",
+      "--shell-code",
+      "--shell-code-alt",
+      "--shell-danger",
+      "--shell-danger-bg",
+      "--shell-danger-bg-strong",
+      "--shell-danger-border",
+      "--shell-danger-border-strong",
+      "--shell-dim",
+      "--shell-disabled",
+      "--shell-faint",
+      "--shell-faint-alt",
+      "--shell-faint-ink",
+      "--shell-folder",
+      "--shell-heading",
+      "--shell-heading-md",
+      "--shell-info-bg",
+      "--shell-info-border",
+      "--shell-inset",
+      "--shell-inset-chip",
+      "--shell-link-alt",
+      "--shell-muted",
+      "--shell-muted-alt",
+      "--shell-neutral-bg",
+      "--shell-neutral-border",
+      "--shell-on-button",
+      "--shell-panel",
+      "--shell-panel-alt",
+      "--shell-spinner-track",
+      "--shell-strong",
+      "--shell-success",
+      "--shell-success-bg",
+      "--shell-success-border",
+      "--shell-surface",
+      "--shell-surface-plain",
+      "--shell-text",
+      "--shell-text-ink",
+      "--shell-value"
+    ],
+    "styles/autocomplete.css": [
+      "--bg",
+      "--menu-bg",
+      "--muted",
+      "--secure-fg"
+    ],
+    "styles/base.css": [
+      "--bg"
+    ],
+    "styles/bookmarks.css": [
+      "--menu-bg",
+      "--toolbar"
+    ],
+    "styles/downloads-shelf.css": [
+      "--menu-bg",
+      "--muted",
+      "--toolbar"
+    ],
+    "styles/find-bar.css": [
+      "--bg",
+      "--menu-bg",
+      "--muted"
+    ],
+    "styles/fullscreen.css": [
+      "--menu-bg"
+    ],
+    "styles/gateway-offer.css": [
+      "--muted"
+    ],
+    "styles/github-bridge.css": [
+      "--menu-bg",
+      "--muted"
+    ],
+    "styles/link-status.css": [
+      "--bg",
+      "--muted",
+      "--toolbar"
+    ],
+    "styles/menus.css": [
+      "--menu-bg",
+      "--muted",
+      "--toolbar"
+    ],
+    "styles/modal.css": [
+      "--modal-bg",
+      "--muted"
+    ],
+    "styles/onboarding.css": [
+      "--bg",
+      "--modal-bg",
+      "--muted"
+    ],
+    "styles/permissions.css": [
+      "--bg",
+      "--menu-bg",
+      "--muted",
+      "--warning-fg"
+    ],
+    "styles/popovers.css": [
+      "--muted"
+    ],
+    "styles/services.css": [
+      "--muted",
+      "--warning-fg"
+    ],
+    "styles/sidebar.css": [
+      "--background",
+      "--bg",
+      "--border-hover",
+      "--foreground",
+      "--foreground-muted",
+      "--hover",
+      "--muted",
+      "--secure-fg",
+      "--text-inverse",
+      "--toolbar",
+      "--toolbar-hover",
+      "--warning-fg"
+    ],
+    "styles/tabs.css": [
+      "--bg",
+      "--muted",
+      "--toolbar"
+    ],
+    "styles/toolbar.css": [
+      "--bg",
+      "--menu-bg",
+      "--muted",
+      "--secure-fg",
+      "--toolbar",
+      "--warning-fg"
+    ],
+    "styles/update-toast.css": [
+      "--menu-bg",
+      "--muted"
+    ],
+    "styles/window-controls.css": [
+      "--muted"
+    ]
+  },
+  "literalSizes": {
+    "index.html": [
+      "border-radius: 4px"
+    ],
+    "pages/downloads.html": [
+      "border-radius: 2px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "border-radius: 999px",
+      "font-size: 10px",
+      "font-size: 12px",
+      "font-size: 14px",
+      "font-size: 28px"
+    ],
+    "pages/error.html": [
+      "border-radius: 8px",
+      "font-size: 14px"
+    ],
+    "pages/history.html": [
+      "border-radius: 3px",
+      "border-radius: 4px",
+      "border-radius: 8px",
+      "font-size: 10px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 28px",
+      "font-size: 8px"
+    ],
+    "pages/home.html": [
+      "border-radius: 10px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "border-radius: 999px",
+      "font-size: 11px",
+      "font-size: 12.5px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 18px",
+      "font-size: 32px"
+    ],
+    "pages/links.html": [
+      "border-radius: 12px",
+      "border-radius: 2px",
+      "border-radius: 4px",
+      "border-radius: 8px",
+      "font-size: 10px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 16px",
+      "font-size: 28px"
+    ],
+    "pages/payments.html": [
+      "border-radius: 10px",
+      "border-radius: 12px",
+      "border-radius: 8px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 28px"
+    ],
+    "pages/private.html": [
+      "border-radius: 10px",
+      "border-radius: 999px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 15px",
+      "font-size: 28px"
+    ],
+    "pages/profiles.html": [
+      "border-radius: 12px",
+      "border-radius: 3px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "border-radius: 999px",
+      "font-size: 10px",
+      "font-size: 11px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 18px",
+      "font-size: 28px"
+    ],
+    "pages/protocol-test.html": [
+      "border-radius: 4px",
+      "border-radius: 8px",
+      "font-size: 13px",
+      "font-size: 18px",
+      "font-size: 32px"
+    ],
+    "pages/settings.html": [
+      "border-radius: 10px",
+      "border-radius: 22px",
+      "border-radius: 2px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "border-radius: 999px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 15px",
+      "font-size: 17px",
+      "font-size: 18px",
+      "font-size: 20px"
+    ],
+    "pages/styles/interstitial.css": [
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 16px",
+      "font-size: 24px"
+    ],
+    "pages/styles/publish.css": [
+      "border-radius: 12px",
+      "border-radius: 2px",
+      "border-radius: 3px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 16px",
+      "font-size: 24px"
+    ],
+    "pages/styles/rad-browser.css": [
+      "border-radius: 0 0 8px 8px",
+      "border-radius: 10px",
+      "border-radius: 12px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "border-radius: 8px 8px 0 0",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 15px",
+      "font-size: 16px",
+      "font-size: 20px",
+      "font-size: 22px",
+      "font-size: 24px"
+    ],
+    "styles/autocomplete.css": [
+      "border-radius: 10px",
+      "border-radius: 2px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "font-size: 10px",
+      "font-size: 11px",
+      "font-size: 13px",
+      "font-size: 7px"
+    ],
+    "styles/bookmarks.css": [
+      "border-radius: 14px",
+      "border-radius: 1px",
+      "border-radius: 2px",
+      "border-radius: 4px",
+      "border-radius: 8px",
+      "font-size: 12px",
+      "font-size: 13px"
+    ],
+    "styles/downloads-shelf.css": [
+      "border-radius: 10px",
+      "border-radius: 2px",
+      "border-radius: 6px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 16px"
+    ],
+    "styles/find-bar.css": [
+      "border-radius: 6px",
+      "font-size: 12px",
+      "font-size: 13px"
+    ],
+    "styles/fullscreen.css": [
+      "border-radius: 10px",
+      "font-size: 13px"
+    ],
+    "styles/gateway-offer.css": [
+      "border-radius: 12px",
+      "font-size: 12px"
+    ],
+    "styles/github-bridge.css": [
+      "border-radius: 10px",
+      "border-radius: 6px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px"
+    ],
+    "styles/link-status.css": [
+      "font-size: 12px"
+    ],
+    "styles/menus.css": [
+      "border-radius: 0 4px 4px 0",
+      "border-radius: 1px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 16px",
+      "font-size: 20px"
+    ],
+    "styles/modal.css": [
+      "border-radius: 6px",
+      "border-radius: 7px",
+      "border-radius: 8px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 18px"
+    ],
+    "styles/onboarding.css": [
+      "border-radius: 12px",
+      "border-radius: 16px",
+      "border-radius: 2px",
+      "border-radius: 4px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "font-size: 10px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 24px"
+    ],
+    "styles/permissions.css": [
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px"
+    ],
+    "styles/popovers.css": [
+      "border-radius: 4px"
+    ],
+    "styles/services.css": [
+      "border-radius: 6px",
+      "border-radius: 9px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 14px"
+    ],
+    "styles/sidebar.css": [
+      "border-radius: 10px",
+      "border-radius: 12px",
+      "border-radius: 16px",
+      "border-radius: 3px",
+      "border-radius: 4px",
+      "border-radius: 5px",
+      "border-radius: 6px",
+      "border-radius: 8px",
+      "border-radius: 9px",
+      "font-size: 10px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 15px",
+      "font-size: 16px",
+      "font-size: 18px",
+      "font-size: 9px"
+    ],
+    "styles/tabs.css": [
+      "border-radius: 10px 10px 0 0",
+      "border-radius: 1px",
+      "border-radius: 3px",
+      "border-radius: 8px",
+      "border-radius: 999px",
+      "font-size: 12px",
+      "font-size: 18px",
+      "font-size: 9px"
+    ],
+    "styles/toggle-switch.css": [
+      "border-radius: 11px"
+    ],
+    "styles/toolbar.css": [
+      "border-radius: 18px",
+      "border-radius: 3px",
+      "border-radius: 8px",
+      "font-size: 11px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 14px",
+      "font-size: 18px"
+    ],
+    "styles/update-toast.css": [
+      "border-radius: 10px",
+      "border-radius: 6px",
+      "font-size: 12px",
+      "font-size: 13px",
+      "font-size: 18px"
+    ]
+  },
+  "bareOutlines": {
+    "pages/downloads.html": [
+      ".search-input"
+    ],
+    "pages/history.html": [
+      ".search-input",
+      ".sort-select"
+    ],
+    "pages/home.html": [
+      ".setup-banner-title:focus"
+    ],
+    "pages/payments.html": [
+      ".filter-select",
+      ".search-input"
+    ],
+    "pages/settings.html": [
+      ".layout:focus",
+      ".rpc-input",
+      "select"
+    ],
+    "pages/styles/publish.css": [
+      ".publish-textarea:focus"
+    ],
+    "styles/menus.css": [
+      ".context-menu:focus"
+    ],
+    "styles/sidebar.css": [
+      ".connect-ledger-scheme-select",
+      ".create-wallet-input",
+      ".password-input",
+      ".send-input",
+      ".send-password-row .password-input"
+    ]
+  }
+}

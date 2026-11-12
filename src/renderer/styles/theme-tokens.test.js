@@ -30,19 +30,71 @@ const path = require('path');
 const STYLES_DIR = __dirname;
 const RENDERER_DIR = path.join(STYLES_DIR, '..');
 
-const sheets = fs
-  .readdirSync(STYLES_DIR)
-  .filter((name) => name.endsWith('.css'))
-  .sort();
+/**
+ * The chrome bundle: every sheet in `styles/`, plus what `styles.css` imports
+ * from elsewhere (the design system's tokens.css and ui.css, #1198), keyed
+ * by their path under `src/renderer/`.
+ */
+const sheets = [
+  ...new Set([
+    ...fs
+      .readdirSync(STYLES_DIR)
+      .filter((name) => name.endsWith('.css'))
+      .map((name) => `styles/${name}`),
+    ...[
+      ...fs
+        .readFileSync(path.join(RENDERER_DIR, 'styles.css'), 'utf8')
+        .matchAll(/@import\s+'\.\/([^']+)'/g),
+    ].map(([, rel]) => rel),
+  ]),
+].sort();
 
-/** Every `--token:` declaration anywhere in the chrome bundle. */
+const readSheet = (rel) => fs.readFileSync(path.join(RENDERER_DIR, rel), 'utf8');
+
+/**
+ * Every token the chrome defines: a `--token:` declaration in the bundle or
+ * in the markup, or one a renderer module sets with `style.setProperty`.
+ */
 function definedTokens() {
   const defined = new Set();
-  for (const name of sheets) {
-    const css = fs.readFileSync(path.join(STYLES_DIR, name), 'utf8');
+  const sources = [
+    ...sheets.map(readSheet),
+    fs.readFileSync(path.join(RENDERER_DIR, 'index.html'), 'utf8'),
+  ];
+  for (const css of sources) {
     for (const [, token] of css.matchAll(/(--[\w-]+)\s*:/g)) defined.add(token);
   }
+  for (const file of rendererModules()) {
+    const source = fs.readFileSync(file, 'utf8');
+    for (const [, token] of source.matchAll(/setProperty\(\s*['"`](--[\w-]+)/g)) defined.add(token);
+  }
   return defined;
+}
+
+function rendererModules() {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) files.push(full);
+    }
+  };
+  walk(path.join(RENDERER_DIR, 'lib'));
+  return files;
+}
+
+/**
+ * Every `var(--token)` in `source` that has no fallback. Defined nowhere,
+ * such a reference makes its whole declaration invalid at computed time, so
+ * the property silently falls back to inherit-or-initial: no hover, no
+ * colour, nothing anyone notices in review. `sidebar.css` carried 68 of them,
+ * across seven names nothing had ever defined, until #1198.
+ */
+function bareReferences(source) {
+  return [...source.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/var\(\s*(--[\w-]+)\s*\)/g)].map(
+    ([, token]) => token
+  );
 }
 
 /**
@@ -81,16 +133,9 @@ function varReferences(source) {
 
 /** Files outside `styles/` that carry chrome CSS inline. */
 function inlineStyleSources() {
-  const files = [path.join(RENDERER_DIR, 'index.html')];
-  const walk = (dir) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) files.push(full);
-    }
-  };
-  walk(path.join(RENDERER_DIR, 'lib'));
-  return files.filter((file) => fs.readFileSync(file, 'utf8').includes('var(--'));
+  return [path.join(RENDERER_DIR, 'index.html'), ...rendererModules()].filter((file) =>
+    fs.readFileSync(file, 'utf8').includes('var(--')
+  );
 }
 
 function offenders(source, label, defined) {
@@ -105,7 +150,7 @@ describe('chrome palette tokens', () => {
   test('the palette defines the tokens the chrome actually themes with', () => {
     // variables.css is the palette; a token defined in a component sheet is a
     // component-local constant, which is fine, but these have to be there.
-    const palette = fs.readFileSync(path.join(STYLES_DIR, 'variables.css'), 'utf8');
+    const palette = readSheet('styles/variables.css');
     for (const token of ['--bg', '--toolbar', '--border', '--text', '--muted', '--accent']) {
       expect(palette).toContain(`${token}:`);
       // …and re-declared for the light theme, or overridden nowhere else.
@@ -115,8 +160,33 @@ describe('chrome palette tokens', () => {
 
   test('no stylesheet falls back on a hard-coded colour for an undefined token', () => {
     const found = [];
+    for (const name of sheets) found.push(...offenders(readSheet(name), name, defined));
+    expect(found).toEqual([]);
+  });
+
+  test('no stylesheet paints from a token that is defined nowhere (#1198)', () => {
+    // The bundle includes the design system's sheets, which is where the
+    // names sidebar.css used without a definition are now defined.
+    expect(sheets).toEqual(
+      expect.arrayContaining(['pages/styles/tokens.css', 'pages/styles/ui.css'])
+    );
+    const found = [];
     for (const name of sheets) {
-      found.push(...offenders(fs.readFileSync(path.join(STYLES_DIR, name), 'utf8'), name, defined));
+      for (const token of bareReferences(readSheet(name))) {
+        if (!defined.has(token)) found.push(`${name}: var(${token})`);
+      }
+    }
+    expect(found).toEqual([]);
+  });
+
+  test('no inline style in the markup or the renderer modules paints from an undefined token', () => {
+    const sources = inlineStyleSources();
+    expect(sources.some((file) => file.endsWith('index.html'))).toBe(true);
+    const found = [];
+    for (const file of sources) {
+      for (const token of bareReferences(fs.readFileSync(file, 'utf8'))) {
+        if (!defined.has(token)) found.push(`${path.relative(RENDERER_DIR, file)}: var(${token})`);
+      }
     }
     expect(found).toEqual([]);
   });
@@ -165,6 +235,14 @@ describe('chrome palette tokens', () => {
       []
     );
     expect(offenders('.a { color: var(--nope) }', 'probe', palette)).toEqual([]);
+  });
+
+  test('the bare-reference sweep reads only references without a fallback', () => {
+    expect(
+      bareReferences(
+        '/* var(--in-a-comment) */ .a { color: var(--foreground); border-color: var( --border-hover ); background: var(--x, #fff) }'
+      )
+    ).toEqual(['--foreground', '--border-hover']);
   });
 
   test('a fallback containing parens or a nested var() is read whole', () => {
