@@ -907,7 +907,8 @@ describe('the chrome\'s grant writes (0011 PRQ-7b, "Grants")', () => {
     permissions.setAutoApprove(KEY_A, 'messaging', true);
     expect(await invoke('swarm:set-auto-approve', KEY_A, 'messaging', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'messaging')).toBe(false);
-    // Publishing's prompt is still the chrome's until PRQ-7c.
-    expect(await invoke('swarm:set-auto-approve', KEY_A, 'publish', true)).toBe(true);
+    // The feed prompt is still the chrome's until PRQ-7d; publishing's is
+    // main's from PRQ-7c (page-swarm-publish.test.js).
+    expect(await invoke('swarm:set-auto-approve', KEY_A, 'feeds', true)).toBe(true);
   });
 });

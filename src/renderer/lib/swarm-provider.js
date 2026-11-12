@@ -78,8 +78,10 @@ const SETUP_REASONS = new Set([
 // now go from the page's preload straight to main, which serves them under
 // the page's attested key (freedom-core design 0011, PRQ-7a and, for
 // swarm_unsubscribe, 7b; src/main/page/page-swarm.js), as do
-// swarm_requestAccess and the other messaging methods (PRQ-7b), whose
-// prompts and manifest check main shows itself. Main refuses all of them on
+// swarm_requestAccess and the other messaging methods (PRQ-7b), and
+// publishing and swarm_getUploadStatus (PRQ-7c), whose prompts and manifest
+// check main shows itself, and whose setup routing main asks for
+// (`swarm:publish-setup-needed`). Main refuses all of them on
 // swarm:provider-execute, and the chrome's grant writes they made. Their
 // branches below stay for rollback until PRQ-9 removes this path.
 const PUBLIC_METHODS = new Set([

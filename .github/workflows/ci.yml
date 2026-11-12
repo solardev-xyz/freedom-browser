@@ -1616,10 +1616,13 @@ jobs:
       # switcher's and a revocation's Ethereum events, which main sends to
       # the right documents only (`page-events`, PRQ-6), window.swarm's
       # reads, which main serves under the page's attested key and the
-      # chrome's route refuses (`page-swarm`, PRQ-7a), and its connecting
-      # and messaging, whose prompts and grants are main's and whose
-      # subscriptions end with their document (`page-swarm-connect`, PRQ-7b).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect E2E
+      # chrome's route refuses (`page-swarm`, PRQ-7a), its connecting and
+      # messaging, whose prompts and grants are main's and whose
+      # subscriptions end with their document (`page-swarm-connect`, PRQ-7b),
+      # and its publishing, whose prompt and rule are main's and whose
+      # uploads take turns on their tickets within their measured charges
+      # (`page-swarm-publish`, PRQ-7c).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1642,7 +1645,8 @@ jobs:
             test-e2e/page-sends.spec.js \
             test-e2e/page-events.spec.js \
             test-e2e/page-swarm.spec.js \
-            test-e2e/page-swarm-connect.spec.js
+            test-e2e/page-swarm-connect.spec.js \
+            test-e2e/page-swarm-publish.spec.js
 
       - name: Upload software rendering profile
         if: always()

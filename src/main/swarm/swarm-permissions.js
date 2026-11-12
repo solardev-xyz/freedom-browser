@@ -30,6 +30,15 @@ const PERMISSIONS_FILE = 'swarm-permissions.json';
 const GRANT_REFUSED = 'A Swarm connection is granted only from its own prompt';
 const MESSAGING_GRANT_REFUSED = 'Swarm messaging is granted only from its own prompt';
 const MESSAGING_RULE_REFUSED = 'Messaging auto-approve is turned on only from a messaging prompt';
+const PUBLISH_RULE_REFUSED = 'Publish auto-approve is turned on only from a publish prompt';
+// The rules main alone turns on, from the user's "always allow" on the
+// prompt it showed (freedom-core design 0011, "Grants"): messaging from
+// PRQ-7b, publishing from PRQ-7c. The feed and signing rules follow with
+// their prompt (PRQ-7d).
+const RULES_ONLY_FROM_MAIN = Object.freeze({
+  messaging: MESSAGING_RULE_REFUSED,
+  publish: PUBLISH_RULE_REFUSED,
+});
 
 let permissionsCache = null;
 
@@ -315,14 +324,16 @@ function registerSwarmPermissionsIpc() {
     return getAutoApprove(origin, type);
   });
 
-  // Messaging's rule only from main (PRQ-7b): main sets it, for the
-  // requester's key, from the user's "always allow" on a messaging prompt
-  // it showed. The chrome named the site here, so turning it on is refused;
-  // turning it off only narrows, and stays open. The publish, feed and
-  // signing rules are still set from the chrome's own prompts until their
-  // step (PRQ-7c).
+  // Messaging's rule (PRQ-7b) and publishing's (PRQ-7c) only from main:
+  // main sets each, for the requester's key, from the user's "always allow"
+  // on the prompt it showed. The chrome named the site here, so turning one
+  // on is refused; turning it off only narrows, and stays open. The feed and
+  // signing rules are still set from the chrome's own feed prompt until
+  // their step (PRQ-7d).
   ipcMain.handle(IPC.SWARM_SET_AUTO_APPROVE, (_event, origin, type, enabled) => {
-    if (type === 'messaging' && enabled !== false) throw new Error(MESSAGING_RULE_REFUSED);
+    if (Object.prototype.hasOwnProperty.call(RULES_ONLY_FROM_MAIN, type) && enabled !== false) {
+      throw new Error(RULES_ONLY_FROM_MAIN[type]);
+    }
     return withOriginLock(origin, () => setAutoApprove(origin, type, enabled));
   });
 

@@ -728,6 +728,14 @@ describe('preload', () => {
       [exposures.publishSetup, 'onState', IPC.SWARM_SETUP_STATE, [{ readiness: { ok: true } }], [{ readiness: { ok: true } }]],
       // The settings and publish-page deep links say which screen to open.
       [exposures.electronAPI, 'onOpenPublishSetup', IPC.SIDEBAR_OPEN_PUBLISH_SETUP, ['storage'], ['storage']],
+      // A page's Swarm write main answered needs publishing set up (PRQ-7c).
+      [
+        exposures.electronAPI,
+        'onPublishSetupNeeded',
+        IPC.SWARM_PUBLISH_SETUP_NEEDED,
+        [{ origin: 'app.eth', reason: 'no-usable-stamps' }],
+        [{ origin: 'app.eth', reason: 'no-usable-stamps' }],
+      ],
       [exposures.radicleProvider, 'onEvent', IPC.RADICLE_PROVIDER_EVENT, [{ event: 'seedStatus', origin: 'rad://repo', data: { state: 'fetching' } }], [{ event: 'seedStatus', origin: 'rad://repo', data: { state: 'fetching' } }]],
     ];
 

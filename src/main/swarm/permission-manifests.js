@@ -45,11 +45,12 @@ const PROJECTIONS = {
   messaging: ['connection', 'messagingGrant', 'autoApprove.messaging'],
 };
 // What main alone writes, from a page's decision on its own prompt
-// (freedom-core design 0011, PRQ-7b): the connection, the messaging grant
-// and messaging's rule, whose chrome writes are refused. The chrome's
-// manifest flow neither writes nor claims them, and never asks for a
-// capability that is nothing else (messaging): main's own check does.
-const PAGE_ONLY_PROJECTIONS = new Set(['connection', 'messagingGrant', 'autoApprove.messaging']);
+// (freedom-core design 0011): the connection, the messaging grant and
+// messaging's rule (PRQ-7b), and publishing's rule (PRQ-7c), whose chrome
+// writes are refused. The chrome's manifest flow neither writes nor claims
+// them, and never asks for a capability that is nothing else (messaging,
+// publish): main's own check does.
+const PAGE_ONLY_PROJECTIONS = new Set(['connection', 'messagingGrant', 'autoApprove.messaging', 'autoApprove.publish']);
 const pageOnlyCapability = (capability) =>
   PROJECTIONS[capability].every((projection) => PAGE_ONLY_PROJECTIONS.has(projection));
 

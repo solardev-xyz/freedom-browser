@@ -473,6 +473,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('sidebar:open-publish-setup', handler);
     return () => ipcRenderer.removeListener('sidebar:open-publish-setup', handler);
   },
+  // A page's Swarm write, through main, failed because publishing isn't set
+  // up: { origin, reason } (freedom-core design 0011, PRQ-7c).
+  onPublishSetupNeeded: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('swarm:publish-setup-needed', handler);
+    return () => ipcRenderer.removeListener('swarm:publish-setup-needed', handler);
+  },
   onNavigateToUrl: (callback) => {
     const handler = (_event, url, guestId) => callback(url, guestId);
     ipcRenderer.on('navigate-to-url', handler);

@@ -40,7 +40,7 @@ const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
-const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
+const { publishPageData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
 const {
@@ -162,11 +162,64 @@ async function guardedEffect(meta, run) {
 // What a page's messaging effect runs instead when the grant went during
 // the method's waits: nothing.
 const MESSAGING_GONE = Symbol('messaging-grant-gone');
+// What a page's upload runs instead when the connection went during the
+// method's waits: nothing.
+const CONNECTION_GONE = Symbol('connection-gone');
 
 // A page's messaging effect, through main: the grant read again in the same
 // run as the effect, after every wait.
 function whileMessagingGranted(meta, origin, run) {
   return () => (!meta?.page || hasMessagingGrant(origin) ? run() : MESSAGING_GONE);
+}
+
+// A page's upload, through main (PRQ-7c): the connection read again in the
+// same run as the upload, after every wait.
+function whileConnected(meta, origin, run) {
+  return () => (!meta?.page || getPermission(origin) ? run() : CONNECTION_GONE);
+}
+
+/**
+ * An upload's write to the node, for a page through main (PRQ-7c): `send`
+ * runs under the page's guard (meta.page.effect), with the connection read
+ * again in the same run, just before the bytes go. On the chrome's path it
+ * runs at once. Resolves what `send` resolves, or null with `refuse` told
+ * the page's answer and nothing sent. The services call it after their own
+ * waits (the batch), so it is the last point main controls.
+ */
+async function guardUpload(meta, origin, send, refuse) {
+  const out = await guardedEffect(meta, whileConnected(meta, origin, send));
+  if (out.refused) {
+    refuse({ error: out.refused });
+    return null;
+  }
+  if (out.value === CONNECTION_GONE) {
+    refuse(notConnected());
+    return null;
+  }
+  return out.value;
+}
+
+// What an upload leaves held under the key (its tag's owner): at once on the
+// chrome's path, and for a page only while its name still answers
+// (meta.page.afterEffect).
+async function afterEffect(meta, write) {
+  if (typeof meta?.page?.afterEffect !== 'function') {
+    write();
+    return true;
+  }
+  return meta.page.afterEffect(write);
+}
+
+// A copy main makes, or causes, of a page request's bytes (design 0011,
+// "Measured, not assumed"): reported against the request's charge, which
+// must already be in place (meta.page.copied, page-requests' copied).
+function reportCopy(meta, label) {
+  if (typeof meta?.page?.copied !== 'function') return;
+  try {
+    meta.page.copied(label);
+  } catch {
+    // A report never changes what the method does.
+  }
 }
 
 const KNOWN_METHODS = [
@@ -441,10 +494,14 @@ function permissionFreeReadMeter(origin) {
  *   `document` names the requesting document, which a subscription is bound
  *   to and an unsubscribe is scoped to; `deliverTo(data)` sends a
  *   subscription's message to it and resolves `{ ok }`; and `effect(run)`
- *   guards the effect (a send, a subscription opened): after the method's
- *   last wait it checks the name, custody and the document again, and runs
- *   `run` in the same run as those checks, resolving `{ value }`, or
- *   `{ refused }` with nothing done.
+ *   guards the effect (a send, a subscription opened, an upload): after the
+ *   method's last wait it checks the name, custody and the document again,
+ *   and runs `run` in the same run as those checks, resolving `{ value }`,
+ *   or `{ refused }` with nothing done. For an upload (PRQ-7c),
+ *   `afterEffect(write)` runs what the upload leaves held under the key (its
+ *   tag's owner) only while the name still answers, `copied(label)` hears
+ *   each copy main makes of the request's bytes, and `signal`, aborted when
+ *   main answers the request or its document goes, stops the upload.
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -513,19 +570,19 @@ async function executeSwarmMethod(method, params, origin, meta) {
     }
 
     if (method === 'swarm_publishData') {
-      const result = await handlePublishData(params, normalizedOrigin);
+      const result = await handlePublishData(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
 
     if (method === 'swarm_publishFiles') {
-      const result = await handlePublishFiles(params, normalizedOrigin);
+      const result = await handlePublishFiles(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
 
     if (method === 'swarm_publishChunk') {
-      const result = await handlePublishChunk(params, normalizedOrigin);
+      const result = await handlePublishChunk(params, normalizedOrigin, meta);
       if (result.result) resetVaultAutoLockTimer();
       return result;
     }
@@ -634,8 +691,10 @@ async function handleGetCapabilities(origin) {
 
 /**
  * Handle swarm_publishData: validate, enforce limits, publish via publish-service.
+ * For a page through main (meta.page, PRQ-7c) the upload is its effect,
+ * guarded after the pre-flight, and each copy of the bytes is reported.
  */
-async function handlePublishData(params, origin) {
+async function handlePublishData(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return { error: { ...ERRORS.INVALID_PARAMS, message: 'params is required', data: { reason: 'invalid_params' } } };
   }
@@ -658,6 +717,7 @@ async function handlePublishData(params, origin) {
     if (!payload) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
     }
+    reportCopy(meta, 'normalizeBytes');
   }
 
   // Enforce size limit on decoded content
@@ -688,11 +748,20 @@ async function handlePublishData(params, origin) {
     bytesSize: size,
   });
 
+  let refused = null;
   try {
-    const result = await publishData(payload, {
+    const result = await publishPageData(payload, {
       contentType,
       name: name || undefined,
+      // The body as it goes to the node: a string's UTF-8, or the bytes.
+      onSend: () => reportCopy(meta, 'upload'),
+      guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      signal: meta?.page?.signal,
     });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
 
     updateEntry(historyEntry.id, { status: 'completed', ...result });
     log.info(`[SwarmProvider] publishData succeeded for ${origin}: ${result.bzzUrl}`);
@@ -770,10 +839,17 @@ function validateVirtualPath(p) {
  * Normalize bytes from IPC — handles Buffer, Uint8Array, ArrayBuffer,
  * and the JSON-serialized { type: 'Buffer', data: [...] } form.
  * Returns Buffer or null if invalid.
+ *
+ * A Uint8Array or an ArrayBuffer becomes a Buffer over the same memory, with
+ * no copy: what arrives over IPC is main's own, made for this request, and
+ * nothing else holds it. A page request's charge still counts a copy here
+ * (freedom-core design 0011, "The size and the charge"): no bound depends
+ * on this path holding fewer.
  */
 function normalizeBytes(bytes) {
-  if (Buffer.isBuffer(bytes) || bytes instanceof Uint8Array) {
-    return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (Buffer.isBuffer(bytes)) return bytes;
+  if (bytes instanceof Uint8Array) {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   }
   if (bytes instanceof ArrayBuffer) {
     return Buffer.from(bytes);
@@ -787,8 +863,11 @@ function normalizeBytes(bytes) {
 
 /**
  * Handle swarm_publishFiles: validate, enforce limits, publish the files as a collection.
+ * For a page through main (meta.page, PRQ-7c) the upload is its effect,
+ * guarded after the pre-flight, the tag's owner is recorded only while the
+ * page's name still answers, and each copy of the bytes is reported.
  */
-async function handlePublishFiles(params, origin) {
+async function handlePublishFiles(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return { error: { ...ERRORS.INVALID_PARAMS, message: 'params is required', data: { reason: 'invalid_params' } } };
   }
@@ -827,6 +906,7 @@ async function handlePublishFiles(params, origin) {
     if (!bytes) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: `files[${i}].bytes must be a Buffer, Uint8Array, or ArrayBuffer`, data: { reason: 'invalid_params' } } };
     }
+    reportCopy(meta, 'normalizeBytes');
 
     totalSize += bytes.length;
     normalizedFiles.push({
@@ -865,11 +945,21 @@ async function handlePublishFiles(params, origin) {
     bytesSize: totalSize,
   });
 
+  let refused = null;
   try {
-    const result = await publishFilesFromContent(normalizedFiles, { indexDocument });
+    const result = await publishFilesFromContent(normalizedFiles, {
+      indexDocument,
+      onSend: () => reportCopy(meta, 'upload'),
+      guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+      signal: meta?.page?.signal,
+    });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
 
     if (result.tagUid) {
-      tagOwnership.set(result.tagUid, origin);
+      await afterEffect(meta, () => tagOwnership.set(result.tagUid, origin));
     }
 
     updateEntry(historyEntry.id, { status: 'completed', ...result });
@@ -926,8 +1016,10 @@ function mapChunkReadError(err) {
 
 /**
  * Handle swarm_publishChunk: validate one CAC payload and publish it.
+ * For a page through main (meta.page, PRQ-7c) the upload is its effect,
+ * guarded after the pre-flight.
  */
-async function handlePublishChunk(params, origin) {
+async function handlePublishChunk(params, origin, meta) {
   if (!params || typeof params !== 'object') {
     return invalidParams('params is required');
   }
@@ -956,8 +1048,16 @@ async function handlePublishChunk(params, origin) {
     bytesSize: payload.length,
   });
 
+  let refused = null;
   try {
-    const result = await publishChunk(payload, { span: span.value });
+    const result = await publishChunk(payload, {
+      span: span.value,
+      guard: (send) => guardUpload(meta, origin, send, (answer) => { refused = answer; }),
+    });
+    if (refused) {
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: refused.error.message });
+      return refused;
+    }
     updateEntry(historyEntry.id, {
       status: 'completed',
       reference: result.reference,

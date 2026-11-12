@@ -36,7 +36,11 @@ const BUDGETS = Object.freeze({
 
 // Every form of a request's bytes main can hold at the same time, the IPC
 // value included. `swarm_publishFiles`: the IPC value and normalizeBytes'
-// copy. `swarm_publishData`: those and fetch's copy of the body. Every
+// copy. `swarm_publishData`: those and a copy of the body as it is sent
+// (a string's UTF-8). Since PRQ-7c both send through
+// `swarm/page-upload.js`, which copies no body (fetch held more than one
+// copy, past these charges), and normalizeBytes makes a view: their measured
+// peaks stay well within, and no bound depends on the copies they skip. Every
 // other method: the IPC value (two bytes a character), its JSON for the
 // core or a node and that JSON's bytes. V8 holds the JSON of a string with
 // any character past U+00FF at two bytes a character, so a control

@@ -2985,7 +2985,7 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_publishData', params: {} });
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 2, method: 'swarm_createFeed', params: {} });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
     expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual([
@@ -3000,6 +3000,11 @@ describe('page requests', () => {
       [24, 'swarm_readSingleOwnerChunk'],
       [25, 'swarm_readFeedEntry'],
       [26, 'swarm_listFeeds'],
+      // And publishing (PRQ-7c).
+      [27, 'swarm_publishData'],
+      [28, 'swarm_publishFiles'],
+      [29, 'swarm_publishChunk'],
+      [30, 'swarm_getUploadStatus'],
     ]) {
       fromPage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: {} });
     }
@@ -3012,6 +3017,10 @@ describe('page requests', () => {
       ['swarm', 'swarm_readSingleOwnerChunk'],
       ['swarm', 'swarm_readFeedEntry'],
       ['swarm', 'swarm_listFeeds'],
+      ['swarm', 'swarm_publishData'],
+      ['swarm', 'swarm_publishFiles'],
+      ['swarm', 'swarm_publishChunk'],
+      ['swarm', 'swarm_getUploadStatus'],
     ]);
     ipcRenderer.invoke.mockClear();
     // The Ethereum reads (0011 PRQ-3), connecting (PRQ-4), signing messages
@@ -3076,12 +3085,17 @@ describe('page requests', () => {
       'swarm_unsubscribe',
       'swarm_sendPss',
       'swarm_sendGsoc',
+      // Publishing (PRQ-7c).
+      'swarm_publishData',
+      'swarm_publishFiles',
+      'swarm_publishChunk',
+      'swarm_getUploadStatus',
     ]);
     const routed = swarmMainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_publishData', 'ethereum:eth_sign'] }))] })
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_createFeed', 'ethereum:eth_sign'] }))] })
         .contextBridge
     );
-    expect(routed).toEqual([...moved, 'swarm_publishData']);
+    expect(routed).toEqual([...moved, 'swarm_createFeed']);
   });
 
   test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
@@ -3128,7 +3142,7 @@ describe('page requests', () => {
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 12, method: 'swarm_readChunk', params: { reference: 'ab' } });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 13, method: 'radicle_getCapabilities', params: {} });
     // An unrouted method keeps today's path.
-    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 14, method: 'swarm_publishData', params: {} });
+    fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 14, method: 'swarm_createFeed', params: {} });
     await flushMicrotasks();
 
     expect(ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request')).toEqual([
@@ -3137,7 +3151,7 @@ describe('page requests', () => {
       ['page:request', { nonce, provider: 'radicle', method: 'radicle_getCapabilities', params: {} }],
     ]);
     expect(ipcRenderer.sendToHost.mock.calls).toEqual([
-      ['swarm:provider-request', { id: 14, method: 'swarm_publishData', params: {} }],
+      ['swarm:provider-request', { id: 14, method: 'swarm_createFeed', params: {} }],
     ]);
     expect(posted()).toEqual([
       { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 11, result: '0x10', error: undefined },

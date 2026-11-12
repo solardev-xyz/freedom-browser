@@ -1,0 +1,4 @@
+- A site in a background tab that asks to publish to Swarm now waits for you to switch to it, with a dot on its tab and a count on the wallet button, instead of opening the sidebar over the tab you're on ([#1199](https://github.com/solardev-xyz/freedom-browser/pull/1199))
+  - A publish request you haven't seen within five minutes is closed and the page is told it timed out; one you're looking at waits for your answer
+  - Swarm publishing can no longer be set to "always allow" from a site's permission screen, only turned off; choose "Always allow" on the site's next publish request instead
+  - A site's large uploads (over 1 MiB) take turns: two run at a time across all sites, and each site's one at a time
