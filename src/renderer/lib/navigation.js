@@ -100,6 +100,7 @@ import { TOOLTIP_HOVER_DELAY_MS } from './hover-tooltip.js';
 import { boundPopoverToViewport } from './popover-bounds.js';
 import { matchesShortcut } from './shortcuts.js';
 import { noteUserNavigation } from './gateway-offer-ui.js';
+import { bindPageNameForLoad } from './page-name-binding.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
 const getNavState = () => getActiveTabState() || {};
@@ -2199,6 +2200,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       hashKeys: [cidMatch?.[1], ipnsMatch?.[1]],
     });
     pushDebug(`[AddressBar] Loading IPFS target, set to: ${ipfsDisplayValue}`);
+    // A DNS name over IPNS: main keys the page on the name too, once it has
+    // checked it (freedom-core design 0011, "Names over IPNS").
+    bindPageNameForLoad(webview, ipfsLoadUrl);
     webview.loadURL(ipfsLoadUrl);
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsLoadUrl}`);
     syncTargetBzzBase(null);

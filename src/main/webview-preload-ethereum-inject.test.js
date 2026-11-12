@@ -21,7 +21,7 @@ const DEFAULT_PROVIDER_CONFIG = Object.freeze({
  * Evaluate it against a stub window so we can assert on side effects
  * (window.ethereum shape, postMessage payloads, dispatched events).
  */
-function createInstance({ providerConfig = DEFAULT_PROVIDER_CONFIG } = {}) {
+function createInstance({ providerConfig = DEFAULT_PROVIDER_CONFIG, mainAnswered } = {}) {
   const listeners = new Map();
   const postedMessages = [];
   const dispatchedEvents = [];
@@ -48,6 +48,7 @@ function createInstance({ providerConfig = DEFAULT_PROVIDER_CONFIG } = {}) {
     },
     __FREEDOM_PROVIDER_CONFIG__: providerConfig,
   };
+  if (mainAnswered !== undefined) fakeWindow.__FREEDOM_MAIN_ANSWERED__ = mainAnswered;
 
   installProvider(fakeWindow);
 
@@ -233,6 +234,48 @@ describe('webview-preload-ethereum-inject', () => {
 
       jest.advanceTimersByTime(240000);
       await expect(pending).rejects.toThrow('Request timed out');
+    });
+
+    // freedom-core design 0011, "One deadline, main's" (PRQ-3).
+    test('arms no timer for a method main answers, and keeps today\'s for the rest', async () => {
+      const { window, postedMessages, deliverMessage } = createInstance({
+        mainAnswered: ['eth_chainId', 'eth_call', 42],
+      });
+      expect('__FREEDOM_MAIN_ANSWERED__' in window).toBe(false);
+      const chain = window.ethereum.request({ method: 'eth_chainId' });
+      const call = window.ethereum.request({ method: 'eth_call', params: [{}] });
+      const connect = window.ethereum.request({ method: 'eth_requestAccounts' });
+      const settled = { chain: jest.fn(), call: jest.fn() };
+      chain.then(settled.chain, settled.chain);
+      call.then(settled.call, settled.call);
+      const connected = expect(connect).rejects.toThrow('Request timed out');
+
+      // Long past any page-world limit: only the unmoved method timed out.
+      jest.advanceTimersByTime(3_600_000);
+      await connected;
+      await flushMicrotasks();
+      expect(settled.chain).not.toHaveBeenCalled();
+      expect(settled.call).not.toHaveBeenCalled();
+
+      // Main's answer, its deadline's included, still reaches the page.
+      deliverMessage({ type: 'FREEDOM_ETHEREUM_RESPONSE', id: postedMessages[0].data.id, result: '0x64' });
+      deliverMessage({
+        type: 'FREEDOM_ETHEREUM_RESPONSE',
+        id: postedMessages[1].data.id,
+        error: { message: 'Request timed out' },
+      });
+      await expect(chain).resolves.toBe('0x64');
+      await expect(call).rejects.toMatchObject({ message: 'Request timed out', code: undefined });
+    });
+
+    test('a malformed list of the methods main answers moves nothing', async () => {
+      for (const mainAnswered of [null, 'eth_chainId', { eth_chainId: true }]) {
+        const { window } = createInstance({ mainAnswered });
+        expect('__FREEDOM_MAIN_ANSWERED__' in window).toBe(false);
+        const pending = window.ethereum.request({ method: 'eth_chainId' });
+        jest.advanceTimersByTime(60000);
+        await expect(pending).rejects.toThrow('Request timed out');
+      }
     });
   });
 

@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('nodeConfig', {
 contextBridge.exposeInMainWorld('internalPages', internalPages);
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Hold a DNS name for a tab's next commit on `ipns://<key>`, which main
+  // checks against its own resolution (freedom-core design 0011, "Names
+  // over IPNS"). A send, so it reaches main before the load that follows it.
+  bindPageName: (guest, name, key) => ipcRenderer.send('page:bind-name', { guest, name, key }),
   setBzzBase: (webContentsId, baseUrl) =>
     ipcRenderer.invoke('bzz:set-base', { webContentsId, baseUrl }),
   clearBzzBase: (webContentsId) => ipcRenderer.invoke('bzz:clear-base', { webContentsId }),
@@ -782,6 +786,11 @@ contextBridge.exposeInMainWorld('wallet', {
   // Chain info
   getChain: (chainId) => ipcRenderer.invoke('wallet:get-chain', chainId),
   getChains: () => ipcRenderer.invoke('wallet:get-chains'),
+  // The chain switcher's selection (a chain id, or null for "All Chains"),
+  // which main answers pages' Ethereum reads with (freedom-core design
+  // 0011). A send, so it reaches main before anything the chrome sends a
+  // page after it.
+  selectChain: (chainId) => ipcRenderer.send('wallet:select-chain', chainId),
   testProvider: (chainId) => ipcRenderer.invoke('wallet:test-provider', chainId),
 
   // Multi-wallet operations

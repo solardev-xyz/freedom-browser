@@ -35,6 +35,7 @@ import {
   setLinkStatusSide,
 } from './link-status.js';
 import { formatOnchainAppDisplayUrl } from './url-utils.js';
+import { bindPageNameForLoad } from './page-name-binding.js';
 
 const electronAPI = window.electronAPI;
 
@@ -713,6 +714,9 @@ const createWebview = (tabId, initialUrl) => {
         tab.navigationState.requestedNavigationSequence += 1;
       }
       notifyFindBarNavigationStarted(webview);
+      // A DNS-named ENS site reached without `loadTarget` (back, forward, a
+      // link from another site) keeps its name in main as it does here.
+      bindPageNameForLoad(webview, event.url);
     },
     'did-start-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
