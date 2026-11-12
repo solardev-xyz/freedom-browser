@@ -212,17 +212,17 @@ function attached(env, id = 1) {
 }
 
 describe('the flag', () => {
-  test('on by default since APS-2; FREEDOM_APPROVALS_DOCUMENT=0 alone turns it off', () => {
-    expect(isApprovalsDocumentEnabled({})).toBe(true);
-    for (const value of [undefined, '', '1', 'true', 'off', ' 0']) {
-      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value })).toBe(true);
+  test('FREEDOM_APPROVALS_DOCUMENT=1 turns it on; anything else leaves it off', () => {
+    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '1' })).toBe(true);
+    for (const value of [undefined, '', '0', 'true', 'yes', ' 1']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value })).toBe(false);
     }
-    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '0' })).toBe(false);
+    expect(isApprovalsDocumentEnabled({})).toBe(false);
   });
 
-  test('turned off: no document for a window, no handlers', () => {
+  test('off by default: no document for a window, no handlers', () => {
     const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
-    process.env.FREEDOM_APPROVALS_DOCUMENT = '0';
+    delete process.env.FREEDOM_APPROVALS_DOCUMENT;
     try {
       expect(attachApprovalsDocument(new FakeWindow(9))).toBeNull();
       const ipc = { on: jest.fn(), handle: jest.fn() };
@@ -230,8 +230,7 @@ describe('the flag', () => {
       expect(ipc.on).not.toHaveBeenCalled();
       expect(ipc.handle).not.toHaveBeenCalled();
     } finally {
-      if (saved === undefined) delete process.env.FREEDOM_APPROVALS_DOCUMENT;
-      else process.env.FREEDOM_APPROVALS_DOCUMENT = saved;
+      if (saved !== undefined) process.env.FREEDOM_APPROVALS_DOCUMENT = saved;
     }
   });
 });

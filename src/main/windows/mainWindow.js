@@ -142,7 +142,7 @@ function createMainWindow(initialUrl = null, options = {}) {
     window.loadFile(indexPath);
   }
 
-  // Unless FREEDOM_APPROVALS_DOCUMENT=0: the window's approvals document, a
+  // With FREEDOM_APPROVALS_DOCUMENT=1: the window's approvals document, a
   // view above the chrome's, hidden until main has a prompt to show in it
   // (freedom-core design 0011, APS-1).
   attachApprovalsDocument(window);

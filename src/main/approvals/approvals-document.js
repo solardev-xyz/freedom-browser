@@ -48,10 +48,9 @@
  * minimum) is closed as rejected rather than left pending, since the
  * chrome's decision is refused.
  *
- * The flag: on by default since APS-2, which moved the dApp prompts here
- * (design 0011, "Migration": the flag goes on by default with APS-2).
- * `FREEDOM_APPROVALS_DOCUMENT=0` turns it off, back to the chrome's own
- * prompt screens, as the rollback until PRQ-9's cleanup removes them.
+ * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
+ * narrows what the chrome can do, so packaged builds honour it too. The
+ * flag goes on by default with APS-2.
  */
 
 const fs = require('fs');
@@ -172,7 +171,7 @@ const WEB_PREFERENCES = Object.freeze({
 });
 
 function isApprovalsDocumentEnabled(env = process.env) {
-  return env?.[FLAG] !== '0';
+  return env?.[FLAG] === '1';
 }
 
 function isPlainObject(value) {
