@@ -15,6 +15,24 @@
  * and throws on `{error}` payloads so callers deal in plain objects. The
  * `*Raw` reads are the exception: they hand back the addon's JSON text
  * unparsed, for responses the main process only forwards (see `callRaw`).
+ *
+ * **Under the freedom-radicled service** (`FREEDOM_RADICLE_BACKEND=service`,
+ * development builds only; freedom-core design 0008, "Main's side"), the
+ * exports keep their shapes, and the reads go to the service node
+ * radicle-manager.js runs, through radicle/radicle-service-backend.js:
+ * - **`callStream`, `callScoped`**, `collectionBudget` and `streamStats`
+ *   are the service's own routes: a head and a body stream for the
+ *   handlers' reads, and a parsed value inside a scope for the closed list
+ *   of collected results, whose callers use the value there;
+ * - **`identity` and `status`** are collected and handed out, as 0008 lets
+ *   a value under 4 KiB outlive its scope (a larger one is `too_large`);
+ * - **every other export** answers "Not available on the Radicle service
+ *   yet" (`RADICLE_SERVICE_UNSUPPORTED`) until its own step moves it: the
+ *   other collected results as values (`repoInfo`, `seeders`,
+ *   `listSeededRepos`, `listRepos`), whose callers move into scopes; the
+ *   handlers' parsed and `*Raw` reads (they move to `callStream`); the
+ *   network operations, the writes and the import. `isStarted` says whether
+ *   the service node runs.
  */
 
 const { AsyncLocalStorage } = require('node:async_hooks');
@@ -26,6 +44,7 @@ const {
   RADICLE_ADDON_VERSION,
   RADICLE_ADDON_REQUIRED_EXPORTS,
 } = require('../shared/radicle-addon-version');
+const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
 
 let addon = null;
 let addonPath = null;
@@ -114,6 +133,99 @@ function getAddonPath() {
 
 function getVersion() {
   return RADICLE_ADDON_VERSION;
+}
+
+// ---- the freedom-radicled service (freedom-core design 0008) ----
+
+/** What an export answers on the service until its own step moves it. */
+const NOT_ON_SERVICE = 'Not available on the Radicle service yet';
+
+class RadicleServiceUnsupported extends Error {
+  constructor(name) {
+    super(NOT_ON_SERVICE);
+    this.name = 'RadicleServiceUnsupported';
+    this.code = 'RADICLE_SERVICE_UNSUPPORTED';
+    this.export = name;
+  }
+}
+
+const onService = () => radicleBackendKind() === 'service';
+
+// The service node radicle-manager.js runs (setServiceNodeSource), and the
+// reads' backend on it, made at its first use.
+let serviceNodeSource = () => null;
+let serviceBackend = null;
+
+/** radicle-manager.js names its service node: `source()` is the node
+ * (radicle/radicled-node.js) while it starts, runs or restarts, or null. */
+function setServiceNodeSource(source) {
+  serviceNodeSource = typeof source === 'function' ? source : () => null;
+}
+
+function service() {
+  if (!serviceBackend) {
+    const { RadicleServiceBackend } = require('./radicle/radicle-service-backend');
+    serviceBackend = new RadicleServiceBackend({ node: () => serviceNodeSource() });
+  }
+  return serviceBackend;
+}
+
+/** `name` on the add-on, or, on the service, `route` if it has one there,
+ * else RADICLE_SERVICE_UNSUPPORTED. */
+function routed(name, addonRoute, serviceRoute = null) {
+  return (...args) => {
+    if (!onService()) return addonRoute(...args);
+    if (serviceRoute) return serviceRoute(...args);
+    return Promise.reject(new RadicleServiceUnsupported(name));
+  };
+}
+
+/** A collected `identity` or `status` on the service, under 4 KiB, handed
+ * out of its scope. */
+const kept = (op) => service().keep(op, {});
+
+function serviceOnly(name) {
+  if (!onService()) throw new Error(`${name} is the Radicle service's: the add-on has no streams`);
+  return service();
+}
+
+/**
+ * A read passed through on the service (0008, "JSON results"): `{ head:
+ * { content_type, bytes }, body }`, `body` a byte stream of the JSON. For
+ * the handlers' reads. `signal`, or the body's `cancel()`, cancels it.
+ */
+function callStream(op, args = {}, { signal = null } = {}) {
+  try {
+    return serviceOnly('callStream').callStream(op, args, { signal });
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+/**
+ * A collected result on the service, parsed in a scope: resolves to what
+ * `scope(value, { signal, bytes })` resolves to, once the value is parsed;
+ * main's collection budget holds it until the scope settles. The value
+ * itself can't be what the scope resolves to: it is used there. Only the
+ * closed list of small results (radicle/radicle-service-backend.js's
+ * COLLECTED_CAPS).
+ */
+function callScoped(op, args, scope, { signal = null } = {}) {
+  try {
+    return serviceOnly('callScoped').callScoped(op, args, scope, { signal });
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+/** Main's collection budget on the service: `{ held, limit }`, in bytes. */
+function collectionBudget() {
+  return serviceOnly('collectionBudget').collectionBudget();
+}
+
+/** What main holds for the service's streams: `{ streams, buffered }`. */
+function streamStats() {
+  return serviceOnly('streamStats').streamStats();
 }
 
 // A read's bounds (R-3): `rad:` reads run under withReadBounds, so every
@@ -371,53 +483,74 @@ async function readmeAtRaw(rid, revision) {
   return `${raw.slice(0, end)},"path":${JSON.stringify(candidate)}${raw.slice(end)}`;
 }
 
+/** Whether the service node runs: a generation whose `rad.start` succeeded
+ * serves. */
+function serviceStarted() {
+  const generation = serviceNodeSource()?.generation;
+  return generation !== null && generation !== undefined;
+}
+
 module.exports = {
   withReadBounds,
   ReadEnded,
   ReplyTooLarge,
+  RadicleServiceUnsupported,
+  NOT_ON_SERVICE,
   candidatePaths,
   REQUIRED_EXPORTS,
   isAvailable,
   getAddonPath,
   getVersion,
-  start,
-  shutdown,
-  isStarted,
-  connectSeeds,
-  cloneRepo,
-  cloneRepoWithProgress,
-  cancelClone,
-  unseedRepo,
-  listRepos,
-  listSeededRepos,
-  issues,
-  issue,
-  patches,
-  patch,
-  identity,
-  createIssue,
-  commentIssue,
-  editIssueState,
-  commentPatch,
-  importRepo,
-  repoInfo,
-  commits,
-  commit,
-  tree,
-  treeAt,
-  blob,
-  blobAt,
-  commitsRaw,
-  commitRaw,
-  treeAtRaw,
-  blobRaw,
-  blobAtRaw,
-  remotes,
-  repoStats,
-  status,
-  seeders,
-  buildRepoMeta,
-  readme,
-  readmeAt,
-  readmeAtRaw,
+  // The service's routes, and the node they read from.
+  setServiceNodeSource,
+  callStream,
+  callScoped,
+  collectionBudget,
+  streamStats,
+  // The node's life is radicle-manager.js's on the service.
+  start: routed('start', start),
+  shutdown: routed('shutdown', shutdown),
+  isStarted: () => (onService() ? serviceStarted() : isStarted()),
+  // Network operations, writes and the import: their own steps.
+  connectSeeds: routed('connectSeeds', connectSeeds),
+  cloneRepo: routed('cloneRepo', cloneRepo),
+  cloneRepoWithProgress: routed('cloneRepoWithProgress', cloneRepoWithProgress),
+  cancelClone: routed('cancelClone', cancelClone),
+  unseedRepo: routed('unseedRepo', unseedRepo),
+  createIssue: routed('createIssue', createIssue),
+  commentIssue: routed('commentIssue', commentIssue),
+  editIssueState: routed('editIssueState', editIssueState),
+  commentPatch: routed('commentPatch', commentPatch),
+  importRepo: routed('importRepo', importRepo),
+  // The collected results that may outlive their scope (0008, "JSON
+  // results"); the others are read in callScoped, where their callers use
+  // them.
+  identity: routed('identity', identity, () => kept('identity')),
+  status: routed('status', status, () => kept('status')),
+  listRepos: routed('listRepos', listRepos),
+  listSeededRepos: routed('listSeededRepos', listSeededRepos),
+  repoInfo: routed('repoInfo', repoInfo),
+  seeders: routed('seeders', seeders),
+  // The handlers' reads: callStream on the service.
+  issues: routed('issues', issues),
+  issue: routed('issue', issue),
+  patches: routed('patches', patches),
+  patch: routed('patch', patch),
+  commits: routed('commits', commits),
+  commit: routed('commit', commit),
+  tree: routed('tree', tree),
+  treeAt: routed('treeAt', treeAt),
+  blob: routed('blob', blob),
+  blobAt: routed('blobAt', blobAt),
+  commitsRaw: routed('commitsRaw', commitsRaw),
+  commitRaw: routed('commitRaw', commitRaw),
+  treeAtRaw: routed('treeAtRaw', treeAtRaw),
+  blobRaw: routed('blobRaw', blobRaw),
+  blobAtRaw: routed('blobAtRaw', blobAtRaw),
+  remotes: routed('remotes', remotes),
+  repoStats: routed('repoStats', repoStats),
+  buildRepoMeta: routed('buildRepoMeta', buildRepoMeta),
+  readme: routed('readme', readme),
+  readmeAt: routed('readmeAt', readmeAt),
+  readmeAtRaw: routed('readmeAtRaw', readmeAtRaw),
 };

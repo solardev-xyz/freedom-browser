@@ -17,7 +17,11 @@
  * - anything else: `unknown_method`.
  *
  * A handler answers through the child, as fake-ipfsd.js's do: `result`,
- * `error`, `head` and `body`, `event`, `exit`, or nothing, to hang.
+ * `error`, `head` and `body`, `event`, `exit`, or nothing, to hang. A
+ * `rad.read` is answered as the service answers one (`readReply`): its head,
+ * `{ content_type: "application/json", bytes }`, which doesn't say `body:
+ * true`, opening the stream all the same, then the JSON as the window
+ * allows (`readHead` and `body` for the two apart).
  *
  * As the real service does:
  * - **it checks its environment first** (0008, "Spawn and lock"): with any
@@ -163,6 +167,22 @@ class FakeRadicledChild extends FakeIpfsdChild {
       default:
         this.error(message.id, 'unknown_method', 'unknown method');
     }
+  }
+
+  /** `rad.read`'s head for a body of `bytes` bytes: the stream opens, though
+   * the head doesn't say so (as freedom-radicled's sender writes it). */
+  readHead(id, bytes) {
+    const result = { content_type: 'application/json', bytes };
+    this.sender.head(id, Buffer.from(JSON.stringify({ type: 'response', id, result })), true);
+    this.pump();
+  }
+
+  /** `rad.read`'s whole reply: the head, then `text` (a string or bytes) as
+   * the window allows, then its end. */
+  readReply(id, text) {
+    const bytes = Buffer.isBuffer(text) ? text : Buffer.from(text);
+    this.readHead(id, bytes.length);
+    this.body(id, bytes);
   }
 
   /** An error reply; after a start step's, the process ends (exit 0). */

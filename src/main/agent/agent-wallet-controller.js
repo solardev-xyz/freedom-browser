@@ -473,13 +473,26 @@ class AgentWalletController {
       // the page still under its key in the same run as the write.
       await this.#underMain(context, () => {
         const current = context.attested ? this.getPermission(permissionKey) : permission;
+        let grant;
         if (current) {
-          if (current.walletIndex !== selected.index) {
+          grant = current.walletIndex !== selected.index ? 'updated' : 'unchanged';
+          if (grant === 'updated') {
             this.updateWalletIndex(permissionKey, selected.index);
           }
           this.updateLastUsed(permissionKey, chainId);
         } else {
+          grant = 'created';
           this.grantPermission(permissionKey, selected.index, chainId);
+        }
+        // What this write did, decided here, told to main in the same run
+        // (freedom-core design 0011, PRQ-6): main queues a created grant's
+        // events at this write, in the key's order.
+        if (context.attested && typeof context.grantWritten === 'function') {
+          try {
+            context.grantWritten({ grant, walletIndex: selected.index, account: selected.address, chainId });
+          } catch {
+            // Main's events never undo the write.
+          }
         }
       });
       return {

@@ -9,9 +9,11 @@
  * - **readiness** (0008, Main's side): the node is up, and running, exactly
  *   when the reply says `node_alive`; before the first count, with its
  *   thread ended, down and stopped, it isn't;
- * - **the count main shows**: for each `connections` case, the node's peer
- *   count is the one main showed over the add-on's `status` (its recorded
- *   `main`), which the manager's `getConnections` gives on the service.
+ * - **the peer count**: for each `connections` case, the node's peer count
+ *   is the one main showed over the add-on's `status` (its recorded `main`).
+ *   The background network start reads it on the service; the manager's
+ *   `getConnections` reads the composed `node_info` (radicle-vectors.test.js
+ *   replays `radicle-reads.json`'s through it).
  *
  * The vectors are read as radicle-vectors.test.js reads them:
  * FREEDOM_CORE_RADICLE_VECTORS (CI names it, and then the file must be
@@ -124,8 +126,8 @@ async function settle(turns = 30) {
     async (_id, text, count) => {
       await nodeAnswering(JSON.parse(text));
       expect(node.isUp()).toBe(true);
-      // radicle-manager.js's getConnections on the service: the count, or
-      // 0 before the first.
+      // As the background network start reads it: the count, or 0 before
+      // the first.
       expect(node.connectedPeers() ?? 0).toBe(count);
     }
   );

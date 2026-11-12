@@ -571,15 +571,16 @@ describe('dapp-provider onchain application binding', () => {
     });
   });
 
-  test('does not forward global wallet chain changes into a pinned app', async () => {
-    const { mod, webview } = await loadProvider({ webviewUrl: APP_URL });
+  // The chain switcher's chainChanged is main's (freedom-core design 0011,
+  // PRQ-6), which never sends it to an onchain app
+  // (src/main/page/page-events.test.js): the chrome has no way left to send
+  // a page an Ethereum event of its own.
+  test('the chrome has no Ethereum event emitter left, so a pinned app hears no chain change from it', async () => {
+    const { mod } = await loadProvider({ webviewUrl: APP_URL });
 
-    mod.emitChainChanged(webview, '0x64');
-
-    expect(webview.send).not.toHaveBeenCalledWith('dapp:provider-event', {
-      event: 'chainChanged',
-      data: '0x64',
-    });
+    for (const name of ['emitChainChanged', 'emitAccountsChanged', 'emitConnect', 'emitDisconnect', 'broadcastProviderEvent']) {
+      expect(mod[name]).toBeUndefined();
+    }
   });
 });
 
