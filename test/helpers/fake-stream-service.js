@@ -13,8 +13,8 @@
  *   that many bytes are queued;
  * - `fake.no_body`: a head with `body: false`;
  * - `fake.unsaid { length }`: a head that doesn't say `body: true`
- *   (`{ content_type, bytes }`, as freedom-radicled's `rad.read` writes it)
- *   but opens its stream all the same, then the body as `fake.body`'s;
+ *   (`{ content_type, bytes }`, as freedom-radicled 0.1.0's `rad.read` wrote
+ *   it) but opens its stream all the same, then the body as `fake.body`'s;
  * - `fake.error`: the error reply `busy`;
  * - `fake.hang`: no answer, until main's cancel;
  * - `fake.stats`: what the service holds: its live requests, held bytes,
