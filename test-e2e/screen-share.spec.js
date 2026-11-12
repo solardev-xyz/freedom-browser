@@ -7,6 +7,8 @@
 // between the click and the stream is the real path: the session's
 // `display-capture` permission request, src/main/permissions/screen-share.js,
 // the chrome's picker and Electron's display-media handler.
+const fs = require('fs');
+const path = require('path');
 const { test, expect } = require('./fixtures');
 const { evalInWebview } = require('./permission-fixtures');
 
@@ -94,6 +96,9 @@ async function realClick(window, electronApp, id) {
         .getAllWebContents()
         .find((wc) => wc.getType() === 'webview' && wc.getURL() === url);
       if (!guest) throw new Error('meeting tab not found');
+      // A real click focuses the tab first; after the picker closes the
+      // chrome holds the focus.
+      guest.focus();
       guest.sendInputEvent({ type: 'mouseMove', x, y });
       guest.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
       guest.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
@@ -103,6 +108,33 @@ async function realClick(window, electronApp, id) {
 }
 
 const picker = (window) => window.locator('[data-test="screen-share-picker"]');
+
+// What main logged about screen sharing, for a failure message.
+const screenShareLog = (userDataDir) => {
+  try {
+    return fs
+      .readFileSync(path.join(userDataDir, 'logs', 'main.log'), 'utf8')
+      .split('\n')
+      .filter((line) => line.includes('[screen-share]'))
+      .slice(-10)
+      .join('\n');
+  } catch {
+    return '(no main.log)';
+  }
+};
+
+// Click Present and wait for the picker, saying why when it does not open.
+async function openPicker(window, electronApp, userDataDir) {
+  await evalInWebview(window, "document.getElementById('out').textContent = 'ready'; true");
+  await realClick(window, electronApp, 'share');
+  await expect(picker(window))
+    .toBeVisible()
+    .catch(async (err) => {
+      err.message += `\npage says: ${await readOut(window)}\nmain said:\n${screenShareLog(userDataDir)}`;
+      throw err;
+    });
+}
+
 const options = (window) => picker(window).locator('[role="option"]');
 
 test('a click opens the picker; sharing another tab shows it and streams it', async ({
@@ -135,17 +167,16 @@ test('a click opens the picker; sharing another tab shows it and streams it', as
   expect(sharedClasses).toContain('is-screen-shared');
 });
 
-test('Cancel and Escape refuse the request', async ({ window, electronApp }) => {
+test('Cancel and Escape refuse the request', async ({ window, electronApp, userDataDir }) => {
   await openMeeting(window, electronApp);
 
-  await realClick(window, electronApp, 'share');
-  await expect(picker(window)).toBeVisible();
+  await openPicker(window, electronApp, userDataDir);
   await window.locator('[data-test="screen-share-cancel"]').click();
   await expect(picker(window)).toBeHidden();
   await expect.poll(() => readOut(window)).toBe('NotAllowedError');
 
-  await realClick(window, electronApp, 'share');
-  await expect(picker(window)).toBeVisible();
+  // Asking again after a cancel opens a new picker.
+  await openPicker(window, electronApp, userDataDir);
   await window.keyboard.press('Escape');
   await expect(picker(window)).toBeHidden();
   await expect.poll(() => readOut(window)).toBe('NotAllowedError');
@@ -202,6 +233,17 @@ test("a page that asks through getUserMedia's chromeMediaSource is stopped", asy
   }, MEET_URL);
   await evalInWebview(window, `window.__sourceId = ${JSON.stringify(sourceId)}; true`);
 
+  // The renderer is killed: Electron reports it gone.
+  await electronApp.evaluate(({ webContents }, url) => {
+    const guest = webContents
+      .getAllWebContents()
+      .find((wc) => wc.getType() === 'webview' && wc.getURL() === url);
+    globalThis.__screenShareRendererGone = null;
+    guest.once('render-process-gone', (_event, details) => {
+      globalThis.__screenShareRendererGone = details.reason;
+    });
+  }, MEET_URL);
+
   await realClick(window, electronApp, 'legacy');
   await expect(picker(window)).toBeVisible();
   await options(window).filter({ hasText: 'Team meeting' }).click();
@@ -210,11 +252,12 @@ test("a page that asks through getUserMedia's chromeMediaSource is stopped", asy
   await expect(window.locator('[data-test="permission-prompt"]')).toContainText(
     'tried to share your screen without Freedom’s picker'
   );
-  const crashed = await electronApp.evaluate(({ webContents }, url) => {
-    const guest = webContents
-      .getAllWebContents()
-      .find((wc) => wc.getType() === 'webview' && wc.getURL() === url);
-    return guest?.isCrashed() ?? null;
-  }, MEET_URL);
-  expect(crashed).toBe(true);
+  await expect
+    .poll(() => electronApp.evaluate(() => globalThis.__screenShareRendererGone), {
+      message: 'Waiting for the page renderer to be gone',
+      timeout: 10_000,
+    })
+    .not.toBeNull();
+  // The page never got the stream it asked for.
+  expect((await readOut(window)) || '').not.toContain('legacy stream');
 });

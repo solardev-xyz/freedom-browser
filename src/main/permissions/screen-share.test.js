@@ -12,6 +12,7 @@ function makeHost() {
   const host = new EventEmitter();
   host.id = nextId++;
   host.send = jest.fn();
+  host.getOSProcessId = () => 4000;
   host.destroyed = false;
   host.isDestroyed = () => host.destroyed;
   host.destroy = () => {
@@ -25,15 +26,23 @@ function makeHost() {
 // webFrameMain.fromFrameToken answers.
 const liveFrames = new Map();
 
-function makeFrame(url, owner) {
-  const frame = { url, owner, processId: 7, frameToken: `token-${nextId++}`, framesInSubtree: [] };
+function makeFrame(url, owner, osProcessId = 4100) {
+  const frame = {
+    url,
+    owner,
+    processId: 7,
+    osProcessId,
+    frameToken: `token-${nextId++}`,
+    framesInSubtree: [],
+  };
   liveFrames.set(`${frame.processId}:${frame.frameToken}`, frame);
   return frame;
 }
 
-// An iframe in `tab`; `.remove()` takes its document away.
-function addSubframe(tab, url) {
-  const frame = makeFrame(url, tab);
+// An iframe in `tab`, in a renderer process of its own; `.remove()` takes its
+// document away.
+function addSubframe(tab, url, osProcessId = 4200) {
+  const frame = makeFrame(url, tab, osProcessId);
   tab.mainFrame.framesInSubtree.push(frame);
   frame.remove = () => {
     liveFrames.delete(`${frame.processId}:${frame.frameToken}`);
@@ -119,7 +128,16 @@ describe('screen sharing (#951)', () => {
     mod.registerScreenShareIpc();
   };
 
-  afterEach(() => setPlatform(realPlatform));
+  // The older-route guard kills renderer processes; never for real here.
+  let kill;
+  beforeEach(() => {
+    kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+  });
+  afterEach(() => {
+    kill.mockRestore();
+    setPlatform(realPlatform);
+  });
+  const killed = () => kill.mock.calls.map(([pid, signal]) => `${pid}:${signal}`).sort();
 
   const click = (tab) => tab.emit('input-event', {}, { type: 'mouseDown' });
 
@@ -605,6 +623,8 @@ describe('screen sharing (#951)', () => {
       const callback = jest.fn();
       await pickAndShare(host, tab, { sourceId: `tab:${tab.id}`, callback });
       expect(callback).toHaveBeenCalledWith(true);
+      // Killed at once, then the fallback.
+      expect(killed()).toEqual(['4100:SIGKILL']);
       expect(tab.forcefullyCrashRenderer).toHaveBeenCalledTimes(1);
       expect(host.send).toHaveBeenCalledWith(IPC.SCREEN_SHARE_BLOCKED, {
         origin: 'https://meet.example.com',
@@ -636,6 +656,7 @@ describe('screen sharing (#951)', () => {
       const iframe = addSubframe(tab, 'https://call.test/embed');
       await askFromIframe(host, tab, 'https://call.test/embed', () => iframe.remove());
       expect(tab.forcefullyCrashRenderer).not.toHaveBeenCalled();
+      expect(kill).not.toHaveBeenCalled();
     });
 
     test('an iframe that changed its URL in place is still stopped', async () => {
@@ -647,6 +668,8 @@ describe('screen sharing (#951)', () => {
       await askFromIframe(host, tab, 'https://call.test/embed', () => {
         iframe.url = 'https://call.test/elsewhere';
       });
+      // The iframe's own process, not only the tab's main renderer.
+      expect(killed()).toEqual(['4100:SIGKILL', '4200:SIGKILL']);
       expect(tab.forcefullyCrashRenderer).toHaveBeenCalledTimes(1);
     });
 
@@ -654,7 +677,21 @@ describe('screen sharing (#951)', () => {
       load();
       const host = makeHost();
       const tab = tabFor(host);
+      addSubframe(tab, 'https://call.test/embed', 4300);
       await askFromIframe(host, tab, 'https://call.test/not-a-frame');
+      // Every frame of the tab, as any of them may have asked.
+      expect(killed()).toEqual(['4100:SIGKILL', '4300:SIGKILL']);
+      expect(tab.forcefullyCrashRenderer).toHaveBeenCalledTimes(1);
+    });
+
+    test("the guard never signals Freedom's own processes", async () => {
+      load();
+      const host = makeHost();
+      const tab = tabFor(host);
+      tab.mainFrame.osProcessId = process.pid;
+      addSubframe(tab, 'https://call.test/embed', 4000);
+      await askFromIframe(host, tab, 'https://call.test/not-a-frame');
+      expect(kill).not.toHaveBeenCalled();
       expect(tab.forcefullyCrashRenderer).toHaveBeenCalledTimes(1);
     });
 
