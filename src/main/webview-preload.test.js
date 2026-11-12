@@ -3042,3 +3042,148 @@ describe('page requests', () => {
     ]);
   });
 });
+
+// PRQ-2b: the preload measures each request as main will, refuses what main
+// would refuse without sending it, and takes a ticket for a large one.
+describe('page request sizes and tickets', () => {
+  let consoleLogSpy;
+  let consoleErrorSpy;
+  beforeEach(() => {
+    consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.MutationObserver = originalMutationObserver;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+  });
+
+  const { measurePageRequest, pageRequestMaxBytes } = require('../shared/page-request-bounds');
+  const MiB = 1024 * 1024;
+  const DAPP = { href: 'https://dapp.example/', protocol: 'https:', pathname: '/' };
+  const bootArg = (boot) =>
+    '--freedom-webview-boot=' + Buffer.from(JSON.stringify(boot), 'utf-8').toString('base64');
+  const BOOT = {
+    isPrivate: false,
+    internalPages,
+    ethereum: { info: { name: 'Freedom', icon: '', rdns: 'baby.freedom.browser' }, source: '/* eth */' },
+    testPageRoutes: ['swarm:swarm_readChunk', 'swarm:swarm_publishData', 'swarm:swarm_publishFiles'],
+  };
+
+  function load(answer) {
+    const loaded = loadWebviewPreloadModule({ location: DAPP, argv: ['electron', bootArg(BOOT)] });
+    global.window.postMessage = jest.fn();
+    loaded.ipcRenderer.invoke.mockImplementation(answer);
+    loaded.nonce = loaded.ipcRenderer.send.mock.calls.find(([channel]) => channel === 'page:hello')[1].nonce;
+    return loaded;
+  }
+  const fromPage = (data) => {
+    for (const [event, handler] of global.window.addEventListener.mock.calls) {
+      if (event === 'message') handler({ source: global.window, data });
+    }
+  };
+  const ask = (id, method, params) => fromPage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params });
+  const posted = () => global.window.postMessage.mock.calls.map(([message]) => message);
+  const sent = (ipcRenderer) => ipcRenderer.invoke.mock.calls.filter(([channel]) => channel.startsWith('page:'));
+  const settle = async () => {
+    for (let i = 0; i < 6; i += 1) await flushMicrotasks();
+  };
+  /** `{ data }` whose request measures exactly `size`. */
+  const sized = (nonce, method, size, make = (n) => 'x'.repeat(n)) => {
+    const base = measurePageRequest({ nonce, provider: 'swarm', method, params: { data: '' } }, Infinity).size;
+    return { data: make(size - base) };
+  };
+
+  test('a request of exactly its size is sent; one byte more is answered here, and never sent', async () => {
+    const { ipcRenderer, nonce } = load(async () => ({ result: 'ok' }));
+    const exact = sized(nonce, 'swarm_readChunk', MiB);
+    ask(1, 'swarm_readChunk', exact);
+    ask(2, 'swarm_readChunk', sized(nonce, 'swarm_readChunk', MiB + 1));
+    ask(3, 'swarm_publishData', sized(nonce, 'swarm_publishData', 10 * MiB + 64 * 1024 + 1));
+    await settle();
+    expect(sent(ipcRenderer)).toEqual([
+      ['page:request', { nonce, provider: 'swarm', method: 'swarm_readChunk', params: exact }],
+    ]);
+    expect(posted()).toEqual([
+      { type: 'FREEDOM_SWARM_RESPONSE', id: 2, error: { code: -32005, message: 'Limit exceeded' } },
+      {
+        type: 'FREEDOM_SWARM_RESPONSE',
+        id: 3,
+        error: {
+          code: -32602,
+          message: 'Payload exceeds maximum size of 10485760 bytes',
+          data: { reason: 'payload_too_large', limit: 10 * MiB, actual: 10 * MiB + 64 * 1024 + 1 },
+        },
+      },
+      { type: 'FREEDOM_SWARM_RESPONSE', id: 1, result: 'ok', error: undefined },
+    ]);
+  });
+
+  test('a value main doesn\'t take is answered here, and never sent', async () => {
+    const { ipcRenderer } = load(async () => ({ result: 'ok' }));
+    ask(1, 'swarm_readChunk', { value: new Map() });
+    ask(2, 'swarm_readChunk', { value: 1n << 256n });
+    ask(3, 'swarm_readChunk', { value: new Array(10_000).fill(0) });
+    await settle();
+    expect(sent(ipcRenderer)).toEqual([]);
+    expect(posted().map((m) => [m.id, m.error.code])).toEqual([[1, -32602], [2, -32602], [3, -32005]]);
+  });
+
+  test('a view that doesn\'t span its buffer is sent as a copy of its own bytes', async () => {
+    const { ipcRenderer } = load(async () => ({ result: 'ok' }));
+    const view = new Uint8Array(new ArrayBuffer(4096), 100, 16).fill(7);
+    ask(1, 'swarm_readChunk', { data: view });
+    await settle();
+    const [[, request]] = sent(ipcRenderer);
+    expect(request.params.data).not.toBe(view);
+    expect(request.params.data.buffer.byteLength).toBe(16);
+    expect([...request.params.data]).toEqual(new Array(16).fill(7));
+  });
+
+  test('a large request reserves its turn first, and a document\'s large requests go one at a time', async () => {
+    const answers = [];
+    const { ipcRenderer, nonce } = load(
+      (channel, payload) =>
+        new Promise((resolve) => {
+          answers.push({ channel, payload, resolve });
+        })
+    );
+    const first = sized(nonce, 'swarm_publishData', 3 * MiB);
+    const second = sized(nonce, 'swarm_publishFiles', 2 * MiB);
+    ask(1, 'swarm_publishData', first);
+    ask(2, 'swarm_publishFiles', second);
+    await settle();
+    expect(sent(ipcRenderer)).toEqual([['page:reserve', { nonce, method: 'swarm_publishData', bytes: 3 * MiB }]]);
+    const ticket = 'a'.repeat(64);
+    answers[0].resolve({ ticket });
+    await settle();
+    expect(sent(ipcRenderer)[1]).toEqual([
+      'page:request',
+      { nonce, provider: 'swarm', method: 'swarm_publishData', params: first, ticket },
+    ]);
+    // Main measures it without its ticket, at what was reserved.
+    expect(measurePageRequest(sent(ipcRenderer)[1][1], pageRequestMaxBytes('swarm', 'swarm_publishData'), { skipKey: 'ticket' }).size).toBe(3 * MiB);
+    // The second waits for the first's answer.
+    expect(sent(ipcRenderer)).toHaveLength(2);
+    answers[1].resolve({ result: 'ref-1' });
+    await settle();
+    expect(sent(ipcRenderer)[2]).toEqual(['page:reserve', { nonce, method: 'swarm_publishFiles', bytes: 2 * MiB }]);
+    // A refused reservation is the page's answer; one for a document that
+    // has gone is dropped.
+    answers[2].resolve({ error: { code: -32005, message: 'Limit exceeded' } });
+    await settle();
+    ask(3, 'swarm_publishData', first);
+    await settle();
+    answers[3].resolve({ gone: true });
+    await settle();
+    expect(posted()).toEqual([
+      { type: 'FREEDOM_SWARM_RESPONSE', id: 1, result: 'ref-1', error: undefined },
+      { type: 'FREEDOM_SWARM_RESPONSE', id: 2, result: undefined, error: { code: -32005, message: 'Limit exceeded' } },
+    ]);
+    expect(sent(ipcRenderer)).toHaveLength(4);
+  });
+});

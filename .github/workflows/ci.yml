@@ -1602,9 +1602,10 @@ jobs:
       # History menu, which reads private-window state (`history-menu`, #584),
       # main's page documents, which number a tab's documents and bind each
       # one's hello after its commit (`page-documents`, freedom-core 0011 PRQ-1),
-      # and the page request channels, which answer only the document that
-      # asked and refuse sub-frames and private windows (`page-requests`, PRQ-2).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests E2E
+      # the page request channels, which answer only the document that asked
+      # and refuse sub-frames and private windows (`page-requests`, PRQ-2),
+      # and their sizes, tickets and measured charges (`page-budgets`, PRQ-2).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1619,7 +1620,8 @@ jobs:
             test-e2e/agent-review-layout.spec.js \
             test-e2e/history-menu.spec.js \
             test-e2e/page-documents.spec.js \
-            test-e2e/page-requests.spec.js
+            test-e2e/page-requests.spec.js \
+            test-e2e/page-budgets.spec.js
 
       - name: Upload software rendering profile
         if: always()
