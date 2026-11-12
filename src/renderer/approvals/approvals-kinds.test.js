@@ -71,6 +71,7 @@ const ACCOUNT = { index: 0, name: 'Main Wallet', address: ADDRESS, type: 'mnemon
 const CHAIN = { id: 100, name: 'Gnosis Chain' };
 const message = (kind, view) => ({
   handle: 'a'.repeat(64),
+  revision: 1,
   guest: kind.startsWith('wallet.') ? null : 4,
   kind,
   site: { key: 'bzz://x', label: 'bzz://x' },
@@ -335,7 +336,7 @@ describe('a view off its schema shows the error, and can only be rejected', () =
     'radicle.sign': { ...VIEWS['radicle.sign:write'], method: 'radicle_deleteRepo' },
   };
   test.each(Object.keys(off))('%s', (kind) => {
-    expect(checkMessage(message(kind, off[kind]))).toEqual({ handle: 'a'.repeat(64), kind: null, site: null, view: null, valid: false });
+    expect(checkMessage(message(kind, off[kind]))).toEqual({ handle: 'a'.repeat(64), revision: 1, kind: null, site: null, view: null, valid: false });
   });
 });
 

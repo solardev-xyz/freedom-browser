@@ -249,9 +249,12 @@ test('the approvals document: its surface, sender checks, rendering and input ru
     reason: 'approvals-document',
   });
 
-  // The forged page's decision for the shown handle: refused.
+  // The forged page's decision for the shown handle, with the revision main
+  // sent the document: refused.
   await electronApp.evaluate(({ webContents }, args) => {
-    webContents.fromId(args.id).mainFrame.send('approvals-test:forge', { handle: args.handle });
+    const panels = Object.values(globalThis.__FREEDOM_TEST_APPROVALS__.state());
+    const revision = panels.find((panel) => panel.shown === args.handle)?.revision;
+    webContents.fromId(args.id).mainFrame.send('approvals-test:forge', { handle: args.handle, revision });
   }, { id: firstGuest, handle: one });
   await expect.poll(() => electronApp.evaluate(() => globalThis.__forged.length)).toBe(1);
   const [forged] = await electronApp.evaluate(() => globalThis.__forged);
