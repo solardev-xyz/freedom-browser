@@ -16,15 +16,15 @@ import { truncateAddress, timeAgo } from './wallet/wallet-utils.js';
 import { initBalanceDisplay, loadChainRegistry, refreshBalances, renderAssetList, loadCachedBalances, startBalanceRefresh } from './wallet/balance-display.js';
 import { initNodeStatus } from './wallet/node-status.js';
 import { initRpcSettings } from './wallet/rpc-settings.js';
-import { initDappConnect, showDappConnect, updateConnectionBanner } from './wallet/dapp-connect.js';
-import { initDappTx, showDappTxApproval } from './wallet/dapp-tx.js';
-import { initDappSign, showDappSignApproval } from './wallet/dapp-sign.js';
+import { initDappConnect, updateConnectionBanner } from './wallet/dapp-connect.js';
+import { initDappTx } from './wallet/dapp-tx.js';
+import { initDappSign } from './wallet/dapp-sign.js';
 import { initDappX402, updateX402ConnectionBanner } from './wallet/dapp-x402.js';
 import { initRecentPayments, refreshRecentPayments } from './wallet/recent-payments.js';
 import { initSend, openSend, closeSend } from './wallet/send.js';
 import { initExportMnemonic, closeExportMnemonic } from './wallet/export-mnemonic.js';
 import { initWalletSelector, loadDerivedWallets } from './wallet/wallet-selector.js';
-import { initChainSwitcher, updateChainSwitcherDisplay, getSelectedChainId, setSelectedChainId } from './wallet/chain-switcher.js';
+import { initChainSwitcher, updateChainSwitcherDisplay } from './wallet/chain-switcher.js';
 import { initReceive, closeReceive } from './wallet/receive.js';
 import { initWalletSettings, closeWalletSettings } from './wallet/wallet-settings.js';
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
@@ -39,20 +39,17 @@ import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, openStampManager, closeStampManager } from './wallet/stamp-manager.js';
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
-import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval } from './wallet/swarm-connect.js';
-import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
+import { initSwarmConnect, updateSwarmConnectionBanner } from './wallet/swarm-connect.js';
+import { initVaultUnlock } from './wallet/vault-unlock.js';
 import { initPermissionManage, showDappPermissions, showSwarmPermissions, showX402Permissions, closeDappPerms, closeSwarmPerms, closeX402Perms } from './wallet/permission-manage.js';
 import { initPublisherIdentities, closePublisherIdentities } from './wallet/publisher-identities.js';
 import { initPublisherIdentityCreate, closePublisherIdentityCreate } from './wallet/publisher-identity-create.js';
-import { initPermissionManifest, showPermissionManifest } from './wallet/permission-manifest.js';
+import { initPermissionManifest } from './wallet/permission-manifest.js';
 
-// Re-export public API consumed by dapp-provider.js, swarm-provider.js, and index.js
-export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSignApproval };
-export { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock };
-export { showPermissionManifest };
-export { updateX402ConnectionBanner };
+// Re-export public API: the connection banners, repainted by dapp-provider.js
+// at each tab switch, and the permission screens.
+export { updateConnectionBanner, updateSwarmConnectionBanner, updateX402ConnectionBanner };
 export { showDappPermissions, showSwarmPermissions, showX402Permissions };
-export { getSelectedChainId, setSelectedChainId };
 
 // DOM references owned by the coordinator
 let setupCta;

@@ -147,12 +147,11 @@ describe('Tab Navigation State Isolation', () => {
   });
 
   describe('getDisplayUrlForWebview', () => {
-    // Provider permission checks (swarm-provider.js etc.) call this helper
-    // to derive the page origin for keying prompts and storing decisions.
-    // It must return the *committed* display identity, never the user's
-    // unsubmitted address-bar draft — otherwise a Swarm site could fire a
-    // request while the user is mid-typing and have its permission prompt
-    // keyed on the typed-but-not-loaded URL instead of the actual page.
+    // The connection banners and the site-permissions popover call this
+    // helper to name the tab's site. It must return the *committed* display
+    // identity, never the user's unsubmitted address-bar draft — otherwise
+    // a banner would describe the typed-but-not-loaded URL instead of the
+    // actual page.
     test('returns committedDisplayUrl, ignoring an unsubmitted draft in addressBarSnapshot', async () => {
       const { createTab, getDisplayUrlForWebview } = await import('./tabs.js');
 

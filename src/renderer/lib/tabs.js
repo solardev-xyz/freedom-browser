@@ -14,9 +14,7 @@ import {
   isNewTabPageUrl,
 } from './page-urls.js';
 import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
-import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
-import { setupSwarmProvider } from './swarm-provider.js';
-import { setupRadicleProvider } from './radicle-provider.js';
+import { setActiveWebview } from './dapp-provider.js';
 import {
   notifyFindBarNavigated,
   notifyFindBarNavigationStarted,
@@ -445,10 +443,10 @@ export const isActiveTab = (tabId) =>
  * `tab-switched`, so it can carry unsubmitted typed-but-not-yet-loaded
  * values).
  *
- * This is critical for provider permission checks — if a page fires a
- * request while the user is typing in the address bar (or has switched
- * away from a tab whose snapshot now carries a draft), we must derive
- * the origin from the committed navigation identity, not partial input.
+ * The connection banners and the site-permissions popover describe a tab
+ * by it: while the user is typing in the address bar (or has switched away
+ * from a tab whose snapshot now carries a draft), the site is the committed
+ * navigation identity, not partial input.
  *
  * Returns the empty string for tabs that haven't yet committed a
  * navigation. New tabs initialize `committedDisplayUrl: ''` and the
@@ -461,12 +459,6 @@ export const getDisplayUrlForWebview = (webview) => {
   const tab = tabState.tabs.find((t) => t.webview === webview);
   if (!tab) return '';
   return tab.navigationState?.committedDisplayUrl || '';
-};
-
-export const getNavigationKeyForWebview = (webview) => {
-  const tab = tabState.tabs.find((candidate) => candidate.webview === webview);
-  if (!tab) return '';
-  return `${tab.id}:${tab.navigationState?.committedNavigationSequence || 0}`;
 };
 
 // Create default navigation state for a tab
@@ -1254,11 +1246,6 @@ const createWebview = (tabId, initialUrl) => {
 
   // Set up context menu listener
   setupWebviewContextMenu(webview);
-
-  // Set up providers (window.ethereum + window.swarm)
-  setupWebviewProvider(webview);
-  setupSwarmProvider(webview);
-  setupRadicleProvider(webview);
 
   for (const listener of webviewCreatedListeners) {
     try {
