@@ -44,7 +44,7 @@
  *
  * The app serves Ethereum's methods here (PRQ-3 to PRQ-5, `page-ethereum.js`),
  * all of Swarm's (PRQ-7a to 7d, `page-swarm.js`), and Radicle's reads,
- * connecting and disconnecting (PRQ-8a, `page-radicle.js`): the preload sends
+ * connecting and disconnecting (PRQ-8a) and seeding (PRQ-8b, `page-radicle.js`): the preload sends
  * those on `page:request`, and every other method still takes today's path
  * through the chrome. The E2E harness can route and serve any method through
  * a test hook (`enablePageRequestTestHooks`). The rest of PRQ-8 moves the
