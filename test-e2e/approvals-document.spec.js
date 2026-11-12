@@ -20,7 +20,6 @@ const {
   expect,
   repoRoot,
   APPROVALS_URL,
-  DELAY_MS,
   PAST_DELAY_MS,
   sleep,
   activeGuestId,
@@ -31,8 +30,8 @@ const {
   openTab,
   reportCount,
   nextReport,
-  since,
   clickTooSoon,
+  decideTooSoon,
 } = require('./approvals-fixtures');
 
 const A = `bzz://${'d'.repeat(64)}`;
@@ -364,12 +363,7 @@ test('the approvals document: its surface, sender checks, rendering and input ru
   // than 500 ms after its report is refused; after it, it counts.
   after = await reportCount(electronApp, windowId);
   await ask(electronApp, guest, 'six', view('six'));
-  const sixReport = await nextReport(electronApp, windowId, after);
-  expect(await docPage.evaluate((h) => window.approvals.decide(h, true, undefined), sixReport.handle)).toEqual({
-    ok: false,
-    reason: 'too-soon',
-  });
-  expect(await since(electronApp, sixReport.at)).toBeLessThan(DELAY_MS);
+  const sixReport = await decideTooSoon(electronApp, docPage, windowId, after);
   await sleep(PAST_DELAY_MS);
   expect(await docPage.evaluate((h) => window.approvals.decide(h, true, undefined), sixReport.handle)).toEqual({ ok: true });
   await expect.poll(() => outcome(electronApp, guest, 'six')).toEqual({ ok: 'approved:six' });

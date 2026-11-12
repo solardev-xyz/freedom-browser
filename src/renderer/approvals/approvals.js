@@ -41,6 +41,7 @@
     site: doc.getElementById('site'),
     body: doc.getElementById('body'),
     error: doc.getElementById('error'),
+    waiting: doc.getElementById('waiting'),
     reject: doc.getElementById('reject'),
     approve: doc.getElementById('approve'),
   };
@@ -50,6 +51,9 @@
   let current = null; // the checked prompt shown, or null
   let form = null; // what its template reads the user's choices from
   let deciding = false;
+  // An approval for an account that signs on a device: `{ handle, closed }`
+  // while the panel says where to confirm, until main answers it.
+  let waiting = null;
   let armTimer = null;
   let armFrame = null;
 
@@ -87,7 +91,25 @@
     });
   }
 
+  const WAITING_COPY = Object.freeze({
+    ledger: 'Confirm on your Ledger…',
+    remote: 'Confirm on your phone: its code is in the sidebar…',
+  });
+  // A page's prompt only: the wallet's own is answered once its token is
+  // minted, and the chrome's screen says where to confirm after that.
+  const deviceOf = (prompt) => {
+    const device = kinds.deviceOf(prompt);
+    return device !== null && Object.prototype.hasOwnProperty.call(WAITING_COPY, device) ? device : null;
+  };
+
+  function stopWaiting() {
+    waiting = null;
+    el.waiting.hidden = true;
+    el.waiting.textContent = '';
+  }
+
   function render(prompt) {
+    stopWaiting();
     current = prompt;
     form = null;
     deciding = false;
@@ -112,6 +134,11 @@
 
   function clear(handle) {
     if (!current || current.handle !== handle) return;
+    // Still signing on its device: the panel stays until main answers.
+    if (waiting && waiting.handle === handle) {
+      waiting.closed = true;
+      return;
+    }
     current = null;
     form = null;
     deciding = false;
@@ -135,11 +162,25 @@
     const handle = current.handle;
     deciding = true;
     setButtons();
+    const device = approve ? deviceOf(current) : null;
+    if (device) {
+      waiting = { handle, closed: false };
+      el.waiting.textContent = WAITING_COPY[device];
+      el.waiting.hidden = false;
+    }
     let answer;
     try {
       answer = await bridge.decide(handle, approve, choices);
     } catch {
       answer = null;
+    }
+    if (waiting && waiting.handle === handle) {
+      const closed = waiting.closed;
+      stopWaiting();
+      if (closed) {
+        clear(handle);
+        return;
+      }
     }
     // Refused (too soon for main, say): the user can try again.
     if (current?.handle === handle && answer?.ok !== true) {

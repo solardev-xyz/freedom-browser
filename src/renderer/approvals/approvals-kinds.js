@@ -408,8 +408,8 @@
 
   const vaultUnlock = Object.freeze({
     schema: record(
-      { account: ACCOUNT, reason: oneOf('sign', 'send', 'feeds', 'signing'), failed: boolean() },
-      { optional: ['account', 'failed'] }
+      { account: ACCOUNT, reason: oneOf('sign', 'send', 'feeds', 'signing'), failed: boolean(), touchId: boolean() },
+      { optional: ['account', 'failed', 'touchId'] }
     ),
     heading: () => 'Unlock Vault',
     approve: () => 'Unlock',
@@ -422,13 +422,17 @@
       };
       body.append(ui.note('needs your vault unlocked to continue'), ui.own('Why', REASONS[view.reason]));
       if (view.account) body.append(ui.own('Account', accountText(view.account)));
-      if (view.failed === true) body.append(ui.warning('Incorrect password'));
+      if (view.failed === true) body.append(ui.warning(view.touchId ? "Couldn't unlock: try again" : 'Incorrect password'));
       const field = ui.password('Enter password');
       body.append(field.element);
+      // Touch ID, where main offers it (macOS, quick unlock set up): main
+      // asks the system for it, and the password never leaves main.
+      if (view.touchId === true) body.append(ui.note('Leave the password empty to unlock with Touch ID.'));
       return {
         choices() {
           const password = field.value();
-          return password.length > 0 ? { password } : null;
+          if (password.length > 0) return { password };
+          return view.touchId === true ? { touchId: true } : null;
         },
       };
     },
@@ -775,6 +779,199 @@
     },
   });
 
+  // --- The wallet's own (APS-3): main's view of the request a token binds ---
+
+  const WALLET_ACCOUNT = record({
+    index: nullable(integer({ min: 0 })),
+    name: text(256),
+    address: nullable(text(42, { pattern: ADDRESS })),
+    type: text(32, { pattern: /^[a-z][a-z0-9-]*$/ }),
+  });
+  const SEND_CHAIN = record({ id: integer({ min: 1 }), name: nullable(text(128)), symbol: text(32) });
+  const TX = record({ to: text(42, { pattern: ADDRESS }), value: decimal(), data: text(MAX_HEX, { pattern: HEX }) });
+  const TRANSFER = nullable(record({ token: text(42, { pattern: ADDRESS }), recipient: text(42, { pattern: ADDRESS }), amount: decimal() }));
+  const WALLET_FEE = nullable(
+    anyOf(
+      record({ gasLimit: decimal(), maxFeePerGas: decimal(), maxPriorityFeePerGas: decimal() }),
+      record({ gasLimit: decimal(), gasPrice: decimal() })
+    )
+  );
+  const NONCE = integer({ min: 0 });
+
+  const walletAccountText = (account) => {
+    if (account.index === null) return account.address ? `An account not in this wallet  ${account.address}` : 'An account not in this wallet';
+    return accountText(account);
+  };
+
+  /** The fee: the most it can cost, and how it compares, as main judged it. */
+  function feeLines(ui, body, view) {
+    const symbol = view.chain.symbol;
+    const verdict = view.feeCheck;
+    const perGas = view.fee ? view.fee.maxFeePerGas || view.fee.gasPrice : null;
+    const most = verdict?.maxCost || (view.fee ? (BigInt(view.fee.gasLimit) * BigInt(perGas)).toString() : null);
+    body.append(most ? ui.own('Network fee', `Up to ${upTo(most)} ${symbol}`) : ui.own('Network fee', 'Your phone picks it'));
+    if (!verdict) return;
+    if (!verdict.comparable) body.append(ui.note("Couldn't compare this fee with today's network fee"));
+    else if (!verdict.above) {
+      body.append(
+        ui.note(
+          verdict.oneEndpoint
+            ? `About ${verdict.ratio}× today's network fee, as one network source reports it`
+            : `About ${verdict.ratio}× today's network fee`
+        )
+      );
+    } else {
+      body.append(
+        ui.warning(
+          view.feeAskAgain
+            ? `This network fee is ${verdict.ratio}× today's network fee. Check the fee, then press Send anyway to pay it.`
+            : `This network fee is ${verdict.ratio}× today's network fee.`
+        )
+      );
+    }
+  }
+
+  /** What a transaction sends: its recipient, value and data, and a token transfer read from the data. */
+  function txLines(ui, body, view) {
+    const symbol = view.chain.symbol;
+    if (view.transfer) {
+      body.append(
+        ui.own('Token transfer', 'An ERC-20 transfer, read from the data below'),
+        ui.page('Token contract', view.transfer.token, { mono: true }),
+        ui.page('To', view.transfer.recipient, { mono: true }),
+        ui.page('Amount, in the token\'s smallest units', view.transfer.amount)
+      );
+    } else {
+      body.append(ui.page('To', view.tx.to, { mono: true }));
+    }
+    body.append(ui.page('Value', `${units(view.tx.value)} ${symbol}`));
+    body.append(view.tx.data === '0x' ? ui.own('Data', 'No data') : ui.page('Data', view.tx.data, { mono: true }));
+    body.append(ui.own('Network', chainText(view.chain)));
+  }
+
+  const noChoices = () => ({});
+  const sendAgainLabel = (label) => (view) => (view.feeAskAgain ? 'Send anyway' : label);
+
+  const walletSend = Object.freeze({
+    schema: record({
+      account: WALLET_ACCOUNT,
+      chain: SEND_CHAIN,
+      tx: TX,
+      transfer: TRANSFER,
+      fee: WALLET_FEE,
+      feeCheck: nullable(FEE_CHECK),
+      feeAskAgain: boolean(),
+    }),
+    heading: () => 'Confirm Send',
+    approve: sendAgainLabel('Send'),
+    render(view, ui, body) {
+      body.append(ui.note('You are sending from your wallet'), ui.own('From', walletAccountText(view.account)));
+      txLines(ui, body, view);
+      feeLines(ui, body, view);
+      if (DEVICE_NOTES[view.account.type]) body.append(ui.note(DEVICE_NOTES[view.account.type]));
+      return { choices: noChoices };
+    },
+  });
+
+  const walletSafeSend = Object.freeze({
+    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, tx: TX, transfer: TRANSFER }),
+    heading: () => 'Confirm Transaction',
+    approve: () => 'Confirm',
+    render(view, ui, body) {
+      body.append(ui.note('Your multi-owner account starts a transaction'), ui.own('From', walletAccountText(view.account)));
+      txLines(ui, body, view);
+      body.append(
+        ui.own('Network fee', 'Paid by an owner account when it executes'),
+        ui.note('Its owners then sign it. It executes once enough of them have.')
+      );
+      return { choices: noChoices };
+    },
+  });
+
+  const HASH_TEXT = text(66, { pattern: HASH });
+  const walletIntentResend = Object.freeze({
+    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, nonce: NONCE, hash: HASH_TEXT }),
+    heading: () => 'Send again',
+    approve: () => 'Send again',
+    render(view, ui, body) {
+      body.append(
+        ui.note('The same signed payment, sent to the network again'),
+        ui.own('From', walletAccountText(view.account)),
+        ui.own('Network', chainText(view.chain)),
+        ui.own('Nonce', String(view.nonce)),
+        ui.own('Transaction', view.hash)
+      );
+      return { choices: noChoices };
+    },
+  });
+
+  const walletIntentReplace = Object.freeze({
+    schema: record({
+      account: WALLET_ACCOUNT,
+      chain: SEND_CHAIN,
+      nonce: NONCE,
+      tx: TX,
+      transfer: TRANSFER,
+      fee: WALLET_FEE,
+      feeCheck: nullable(FEE_CHECK),
+      feeAskAgain: boolean(),
+    }),
+    heading: () => 'Replace with a higher fee',
+    approve: sendAgainLabel('Replace'),
+    render(view, ui, body) {
+      body.append(
+        ui.note('The same payment, signed again with a higher fee. Only one of the two can go through.'),
+        ui.own('From', walletAccountText(view.account)),
+        ui.own('Nonce', String(view.nonce))
+      );
+      txLines(ui, body, view);
+      feeLines(ui, body, view);
+      if (DEVICE_NOTES[view.account.type]) body.append(ui.note(DEVICE_NOTES[view.account.type]));
+      return { choices: noChoices };
+    },
+  });
+
+  const walletIntentClose = Object.freeze({
+    schema: record({ account: WALLET_ACCOUNT, chain: SEND_CHAIN, nonce: NONCE, hashes: list(64, HASH_TEXT) }),
+    heading: () => 'Close payment',
+    approve: () => 'Close payment',
+    render(view, ui, body) {
+      body.append(
+        ui.note(
+          "We couldn't confirm whether this payment went through. Once closed, it can no longer be sent. Check the explorer for its transactions below."
+        ),
+        ui.own('From', walletAccountText(view.account)),
+        ui.own('Network', chainText(view.chain)),
+        ui.own('Nonce', String(view.nonce))
+      );
+      for (const hash of view.hashes) body.append(ui.own('Transaction', hash));
+      return { choices: noChoices };
+    },
+  });
+
+  const walletExecutorSend = Object.freeze({
+    schema: record({
+      account: WALLET_ACCOUNT,
+      chain: SEND_CHAIN,
+      tx: TX,
+      fee: WALLET_FEE,
+      feeCheck: nullable(FEE_CHECK),
+      feeAskAgain: boolean(),
+    }),
+    heading: () => 'Confirm the network fee',
+    approve: sendAgainLabel('Confirm fee and execute'),
+    render(view, ui, body) {
+      body.append(
+        ui.note('An owner account pays the network fee to execute a multi-owner transaction'),
+        ui.own('Paid by', walletAccountText(view.account)),
+        ui.own('Multi-owner account', view.tx.to),
+        ui.own('Network', chainText(view.chain))
+      );
+      feeLines(ui, body, view);
+      return { choices: noChoices };
+    },
+  });
+
   const KINDS = Object.freeze({
     'eth.connect': ethConnect,
     'eth.sign': ethSign,
@@ -788,6 +985,12 @@
     'radicle.connect': radicleConnect,
     'radicle.node': radicleNode,
     'radicle.sign': radicleSign,
+    'wallet.send': walletSend,
+    'wallet.safe_send': walletSafeSend,
+    'wallet.intent_resend': walletIntentResend,
+    'wallet.intent_replace': walletIntentReplace,
+    'wallet.intent_close': walletIntentClose,
+    'wallet.executor_send': walletExecutorSend,
     // The harness's prompt (APS-1): every field is the test's choice, and is
     // treated as a page's. Main issues it only under the E2E harness.
     'test.prompt': Object.freeze({
@@ -822,7 +1025,8 @@
       kind !== null &&
       keys.length === MESSAGE_KEYS.length &&
       keys.every((key) => MESSAGE_KEYS.includes(key)) &&
-      Number.isInteger(message.guest) &&
+      // A page's prompt names its tab's guest; the wallet's own, none.
+      (kind.startsWith('wallet.') ? message.guest === null : Number.isInteger(message.guest)) &&
       conforms(message.site, SITE) &&
       viewBytes(message.view) <= MAX_VIEW_BYTES &&
       conforms(message.view, KINDS[kind].schema);
@@ -831,5 +1035,18 @@
       : { handle, kind: null, site: null, view: null, valid: false };
   }
 
-  return Object.freeze({ KINDS, SITE, checkMessage, typedDataText, units });
+  /**
+   * The device an approval of this checked prompt waits on while main signs
+   * (`ledger`, `remote`), or null. A page's prompt only: the wallet's own
+   * (`wallet.*`) is answered once its token is minted, and the device step
+   * comes after, on the chrome's screen (design 0011: "Device steps keep
+   * today's paths after the decision").
+   */
+  function deviceOf(prompt) {
+    if (!prompt?.valid || typeof prompt.kind !== 'string' || prompt.kind.startsWith('wallet.')) return null;
+    const type = prompt.view?.account?.type;
+    return type === 'ledger' || type === 'remote' ? type : null;
+  }
+
+  return Object.freeze({ KINDS, SITE, checkMessage, deviceOf, typedDataText, units });
 });

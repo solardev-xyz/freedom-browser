@@ -248,3 +248,15 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* An approval signing on its device: where to confirm, until main answers. */
+.panel-waiting {
+  margin: 12px 16px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+
+.panel-waiting[hidden] {
+  display: none;
+}

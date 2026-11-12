@@ -44,6 +44,13 @@ jest.mock('./fee-check', () => {
     checkAtApproval: jest.fn(async () => passing),
   };
 });
+// The approvals document (freedom-core design 0011, APS-3): off, unless a
+// test turns it on with its own panel.
+let mockWalletApprovals = null;
+jest.mock('../approvals/wallet-approvals', () => {
+  const actual = jest.requireActual('../approvals/wallet-approvals');
+  return { ...actual, getWalletApprovals: () => mockWalletApprovals };
+});
 // The identity core's typed_data.hash (freedom-core design 0002, #88),
 // simulated with ethers: the digest and the view, with its reports.
 const mockCoreViews = [];
@@ -487,6 +494,60 @@ describe('signing handlers require a main-side confirmation', () => {
 
   // freedom-core #88: typed data is signed only as the core's view showed
   // it, bound to its hash, and a warned request always needs its prompt.
+  // freedom-core design 0011, APS-3: with the approvals document on, the
+  // wallet's own kinds are minted only on the user's approval in the
+  // window's panel, of main's view of exactly the request bound.
+  describe('the wallet\'s own kinds, with the approvals document on', () => {
+    afterEach(() => {
+      mockWalletApprovals = null;
+    });
+
+    test('a token only once the panel approves; none when it doesn\'t; a bad request asks nothing', async () => {
+      const feeCheck = require('./fee-check');
+      feeCheck.checkAtApproval.mockClear();
+      const asked = [];
+      let answer = { approved: true };
+      let mintedBeforeAnswer = null;
+      mockWalletApprovals = {
+        // As wallet-approvals.js: the token is minted on the approval,
+        // before the panel's decision is answered.
+        confirm: jest.fn(async (request, onApproved) => {
+          asked.push(request);
+          if (!answer.approved) return answer;
+          const before = confirmations._outstandingCount();
+          const minted = await onApproved();
+          mintedBeforeAnswer = confirmations._outstandingCount() === before + 1;
+          return { ...minted, approved: true };
+        }),
+      };
+      const chromeEvent = { sender: { id: 501 } };
+      const outstanding = confirmations._outstandingCount();
+      const approved = await handlers['wallet:confirm-signing'](chromeEvent, 'wallet-send', null, TX, { feeAcknowledged: true });
+      expect(approved).toMatchObject({ success: true, token: expect.any(String), expiresAt: expect.any(Number) });
+      expect(mintedBeforeAnswer).toBe(true);
+      expect(asked).toEqual([{ sender: chromeEvent.sender, kind: 'wallet-send', index: 0, payload: TX, feeChecked: true }]);
+      // The fee is asked in the panel: the chrome's acknowledgement isn't read.
+      expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();
+      expect(confirmations._outstandingCount()).toBe(outstanding + 1);
+
+      answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
+      expect(await handlers['wallet:confirm-signing'](chromeEvent, 'intent-close', null, { intentId: 'intent-123', chainId: 100, sender: TX.to, nonce: 1, hashes: [`0x${'ab'.repeat(32)}`] })).toEqual({
+        success: false,
+        error: 'User rejected the request',
+        code: 'USER_REJECTED',
+      });
+      expect(confirmations._outstandingCount()).toBe(outstanding + 1);
+
+      // A request the token couldn't bind is refused before anyone is asked.
+      const before = asked.length;
+      expect(await handlers['wallet:confirm-signing'](chromeEvent, 'intent-resend', null, { intentId: 'x', chainId: 100 })).toMatchObject({ success: false });
+      expect(asked).toHaveLength(before);
+      // The page kinds stay refused, unasked.
+      expect(await handlers['wallet:confirm-signing'](chromeEvent, 'dapp-send', 0, TX)).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(asked).toHaveLength(before);
+    });
+  });
+
   describe('typed data and its view', () => {
     const withData = (changes) => ({ ...TYPED, ...changes });
 

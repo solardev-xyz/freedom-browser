@@ -50,9 +50,9 @@
  *
  * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
  * narrows what the chrome can do, so packaged builds honour it too. It
- * stays off by default until the panel's gaps close (Touch ID, a device's
- * feedback after the press, views over 256 KiB) and the page specs drive
- * it; the default flips in its own pull request.
+ * stays off by default until the panel's gaps close (the Safe signing
+ * boards, still in the chrome; views over 256 KiB) and the page and wallet
+ * specs drive it; the default flips in its own pull request.
  */
 
 const fs = require('fs');
@@ -236,6 +236,21 @@ function panelBounds({ width, height }, top) {
   const y = Math.max(0, Math.min(clampTop(top), h - MIN_PANEL_HEIGHT));
   return { x: w - panelWidth, y, width: panelWidth, height: h - y };
 }
+
+// An approved page prompt for an account that signs on a device: the panel
+// stays up, saying where to confirm, until the decision's request is
+// answered, which main signs in (APS-3; the chrome's screens held their
+// device label the same way). The wallet's own prompts (`wallet.*`) don't:
+// their decision is answered once the token is minted, and the device step
+// comes after, with that token, on the chrome's screen, which says where to
+// confirm (design 0011: "Device steps keep today's paths after the
+// decision").
+const DEVICES = new Set(['ledger', 'remote']);
+const deviceOf = (prompt) => {
+  if (typeof prompt?.kind !== 'string' || prompt.kind.startsWith('wallet.')) return null;
+  const type = prompt?.view?.account?.type;
+  return typeof type === 'string' && DEVICES.has(type) ? type : null;
+};
 
 /** Whether bounds leave the panel room for a whole, actionable prompt. */
 const panelFits = (bounds) =>
@@ -448,6 +463,8 @@ function createApprovalsDocuments({
       visible: false,
       shown: null,
       report: null,
+      // `{ handle, device }` while an approval for a device's account signs.
+      waiting: null,
       armedAt: -Infinity,
       top: DEFAULT_TOP,
       bounds: null,
@@ -506,6 +523,7 @@ function createApprovalsDocuments({
       const message = outgoingPrompt(payload);
       record.shown = message;
       record.report = null;
+      record.waiting = null;
       show(record);
       trace({ kind: 'prompt', window: windowId, handle });
       deliver(record, CHANNELS.PROMPT, message);
@@ -520,7 +538,8 @@ function createApprovalsDocuments({
       if (record.shown?.handle === handle) {
         record.shown = null;
         record.report = null;
-        hide(record);
+        // Approved for a device: the panel stays up while it signs.
+        if (record.waiting?.handle !== handle) hide(record);
       }
       trace({ kind: 'closed', window: windowId, handle });
       deliver(record, CHANNELS.CLOSED, { handle, reason: payload?.reason });
@@ -613,11 +632,19 @@ function createApprovalsDocuments({
         return out({ ok: false, reason: 'too-soon' });
       }
     }
+    // Approved for an account that signs on a device: the panel keeps
+    // saying where to confirm until the request is answered.
+    const device = payload.approve ? deviceOf(record.shown) : null;
+    if (device) record.waiting = { handle: payload.handle, device };
     let result;
     try {
       result = await decide(record.windowId, payload);
     } catch {
       result = { ok: false, reason: 'failed' };
+    }
+    if (device && record.waiting?.handle === payload.handle) {
+      record.waiting = null;
+      if (!record.shown) hide(record);
     }
     return out(isPlainObject(result) ? result : { ok: false, reason: 'failed' });
   }
@@ -652,6 +679,21 @@ function createApprovalsDocuments({
     });
   }
 
+  /**
+   * For the E2E's early-input probe: the prompt the window shows, sent to
+   * its document again as `ready` sends it, so the document renders it
+   * afresh and reports it again; main's delay starts again too.
+   */
+  function reshow(windowId) {
+    const record = byWindow.get(windowId);
+    if (!record?.ready || !record.shown) return false;
+    record.report = null;
+    arm(record);
+    trace({ kind: 'reshow', window: windowId, handle: record.shown.handle });
+    deliver(record, CHANNELS.PROMPT, record.shown);
+    return true;
+  }
+
   /** For tests and diagnostics: each window's panel. */
   function state() {
     const out = {};
@@ -664,12 +706,13 @@ function createApprovalsDocuments({
         top: record.top,
         shown: record.shown ? record.shown.handle : null,
         reported: record.report ? record.report.handle : null,
+        waiting: record.waiting ? record.waiting.device : null,
       };
     }
     return out;
   }
 
-  return { attach, send, ready, shown, decide: decideFrom, anchor, register, state, serve };
+  return { attach, send, ready, shown, decide: decideFrom, anchor, register, reshow, state, serve };
 }
 
 // The app's one instance, and its test hooks: inert until the E2E harness
@@ -681,7 +724,13 @@ function getApprovalsDocuments() {
   if (!shared) {
     const settings = require('../settings-store');
     shared = createApprovalsDocuments({
-      decide: (windowId, payload) => require('../page/page-requests').getPageRequests().decideInWindow(windowId, payload),
+      // Held only by the E2E's early-input probe (`holdDecisions`), after
+      // main's own checks: a click its host's latency made late is refused,
+      // and probed again, rather than deciding the prompt.
+      decide: (windowId, payload) =>
+        sharedHooks.holdDecisions === true
+          ? Promise.resolve({ ok: false, reason: 'held' })
+          : require('../page/page-requests').getPageRequests().decideInWindow(windowId, payload),
       themeSetting: () => settings.loadSettings().theme,
       onThemeChange: (listener) =>
         settings.onSettingsChanged((merged, previous) => {
@@ -716,6 +765,11 @@ function enableApprovalsTestHooks() {
   };
   return {
     trace,
+    // Refuse every decision that passes main's checks, while on.
+    holdDecisions: (on) => {
+      sharedHooks.holdDecisions = on === true;
+    },
+    reshow: (windowId) => getApprovalsDocuments().reshow(windowId),
     enabled: () => isApprovalsDocumentEnabled(),
     state: () => getApprovalsDocuments().state(),
     partition: PARTITION,
