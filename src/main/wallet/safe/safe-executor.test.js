@@ -586,6 +586,7 @@ describe('execTransaction', () => {
     expect(options).toEqual({
       intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}`,
       onCommitted: null,
+      guardCommit: null,
     });
   });
 
@@ -625,8 +626,34 @@ describe('execTransaction', () => {
       executorIndex: 0,
     });
     const [, , options] = mockSignAndSendTransaction.mock.calls[0];
-    expect(options).toEqual({ intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}` });
+    expect(options).toEqual({ intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}`, guardCommit: null });
     expect(mockHeldIntentFor).toHaveBeenCalledWith(options.intentKey);
+  });
+
+  // freedom-core design 0011, PRQ-5b: a site's SafeTx's request guards its
+  // execution's last step (Codex round 2 on #1191).
+  test("a site's guard goes with the execution to its commit, or to a held execution's handoff", async () => {
+    const { built, signatures } = await buildSignedTx();
+    const guardCommit = jest.fn();
+    await execTransaction({
+      chainId: 100,
+      safeAddress: built.safeAddress,
+      safeTxData: built.safeTxData,
+      signatures,
+      executorIndex: 0,
+      record: { kind: 'safe-send', fromAddress: built.safeAddress, origin: 'https://app.example' },
+      guardCommit,
+    });
+    expect(mockSignAndRecord.mock.calls.at(-1)[3]).toMatchObject({ guardCommit });
+    await execTransaction({
+      chainId: 100,
+      safeAddress: built.safeAddress,
+      safeTxData: built.safeTxData,
+      signatures,
+      executorIndex: 0,
+      guardCommit,
+    });
+    expect(mockSignAndSendTransaction.mock.calls.at(-1)[2]).toMatchObject({ guardCommit });
   });
 
   test('"Try again" on a held execution sends it again without a new quote', async () => {
@@ -684,7 +711,7 @@ describe('deploySafe', () => {
     expect(params.to).toBe(factory);
     expect(params.value).toBe('0');
     await expect(signer.getAddress()).resolves.toBe(OWNERS[0]);
-    expect(options).toEqual({ intentKey: `safe-deploy:100:${predicted.toLowerCase()}` });
+    expect(options).toEqual({ intentKey: `safe-deploy:100:${predicted.toLowerCase()}`, guardCommit: null });
   });
 });
 

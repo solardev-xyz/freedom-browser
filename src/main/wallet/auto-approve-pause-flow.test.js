@@ -1,8 +1,9 @@
-// D12 through main's real handlers: the renderer's question
-// (`dapp:is-tx-auto-approved`, which picks the prompt or the silent send) and
-// an auto-approved send (`wallet:dapp-send-transaction`), with the real
-// permissions store, intent store, payment history and transaction service.
-// Chain data and signers are mocked.
+// D12 through main's real paths: main's own reading of a site's contract rule
+// (the same reading `dapp:is-tx-auto-approved` answers the chrome), a page's
+// send as main makes it (page/page-sends.js: the silent send a rule answers,
+// and one the user confirmed), and main's dispatcher with its prompt, with
+// the real permissions store, intent store, payment history and transaction
+// service. Chain data and signers are mocked.
 
 const fs = require('fs');
 const os = require('os');
@@ -20,35 +21,8 @@ const mockFeeReference = jest.fn();
 jest.mock('electron', () => ({
   app: { getPath: () => mockUserData },
   ipcMain: { handle: jest.fn(), removeHandler: jest.fn() },
-  webContents: {
-    getAllWebContents: () => [],
-    // Each site's tab (#764: an auto-approve is checked against the
-    // requesting guest's own page), a guest of the chrome window (id 1).
-    fromId: (id) => {
-      const url = mockGuestUrls[id];
-      return url
-        ? { id, hostWebContents: { id: 1 }, getURL: () => url, isDestroyed: () => false }
-        : null;
-    },
-  },
+  webContents: { getAllWebContents: () => [], fromId: () => null },
 }));
-const mockGuestUrls = {
-  21: 'https://swap.example/app',
-  22: 'https://other.example/app',
-  23: 'https://plain.example/app',
-};
-// The chrome window's IPC event, and each site's guest.
-const CHROME_EVENT = { sender: { id: 1 } };
-const GUEST_OF = {
-  'https://swap.example': 21,
-  'https://other.example': 22,
-  'https://plain.example': 23,
-};
-// An auto-approve as the renderer sends it: the site, and its tab.
-const fromTab = (authorization) =>
-  authorization?.autoApprove !== undefined
-    ? { ...authorization, webContentsId: GUEST_OF[authorization.autoApprove] }
-    : authorization;
 jest.mock('qrcode', () => ({}));
 jest.mock('./balance-service', () => ({}));
 jest.mock('./rpc-manager', () => ({ getEffectiveRpcUrls: () => [] }));
@@ -86,6 +60,10 @@ const CONTRACT = '0x' + '66'.repeat(20);
 const SELECTOR = '0xabcdef12';
 const CHAIN = 1;
 
+// The transaction a page asks for: no gas or fees of its own.
+const PAGE_TX = { to: CONTRACT, data: SELECTOR };
+const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
+
 const signerFor = (wallet) => ({
   getAddress: jest.fn(async () => wallet.address),
   signTransaction: jest.fn((tx) => wallet.signTransaction(tx)),
@@ -114,6 +92,8 @@ beforeEach(() => {
       };
     }
     if (method === 'eth_getTransactionCount') return { result: '0x7', source: 'direct' };
+    // The quote a page's send gets on main's prompt: 50,000 gas.
+    if (method === 'eth_estimateGas') return { result: '0xc350', source: 'direct' };
     throw new Error(`unexpected read ${method}`);
   });
   mockFeeQuote.mockReset().mockResolvedValue({ type: 'legacy', gasPrice: '1000000000' });
@@ -137,6 +117,16 @@ afterEach(() => {
   fs.rmSync(mockUserData, { recursive: true, force: true });
 });
 
+// What a send answers, as the chrome's handler answered it: the payment, or
+// why not (the intent it got as far as, if any).
+async function asHandler(sending) {
+  try {
+    return { success: true, ...(await sending) };
+  } catch (err) {
+    return { success: false, error: err.message, ...require('./intent-ipc').intentFailure(err) };
+  }
+}
+
 function start() {
   jest.resetModules();
   const { ipcMain } = require('electron');
@@ -145,6 +135,8 @@ function start() {
   permissions.registerDappPermissionsIpc();
   require('./wallet-ipc').registerWalletIpc();
   const handlers = Object.fromEntries(ipcMain.handle.mock.calls);
+  const { sendDappPayment, createSendDispatchers } = require('../page/page-sends');
+  const confirmations = require('./signing-confirmation');
 
   permissions.grantPermission(SWAP, 0, CHAIN);
   permissions.addTransactionAutoApprove(SWAP, CONTRACT, SELECTOR, CHAIN);
@@ -161,44 +153,69 @@ function start() {
     gasPrice: '1000000000',
   };
   const index = { [SWAP]: 0, [OTHER]: 1, [PLAIN]: 0 };
+  const wallets = [
+    { index: 0, name: 'Alice', address: ALICE.address, type: 'mnemonic' },
+    { index: 1, name: 'Bob', address: BOB.address, type: 'mnemonic' },
+  ];
+
+  // Main's dispatcher, with a request record of its own: the site's key, a
+  // name that holds, a document that holds its key, main's issuer for the
+  // approval, and the prompt's decision the test gives.
+  const dispatch = createSendDispatchers(
+    {
+      getPermission: permissions.getPermission,
+      updateLastUsed: permissions.updateLastUsed,
+      walletList: async () => wallets,
+      chainIdOf: () => CHAIN,
+      chainName: () => 'Ethereum',
+      networks: () => ({ [CHAIN]: { name: 'Ethereum', nativeSymbol: 'ETH' } }),
+      agentAnswer: async () => null,
+    },
+    { inCustody: () => false, isVaultUnlocked: async () => true }
+  )['ethereum:eth_sendTransaction'];
+  const prompts = [];
+  function pageAsks(site, txParams, decision = { approve: true, choices: {} }) {
+    let approved = null;
+    const handle = (n) => n.toString(16).padStart(64, '0');
+    const context = {
+      requester: { key: site, guest: 1, window: 1, navigation: 1, chain: null },
+      method: 'eth_sendTransaction',
+      params: [txParams],
+      nameHolds: async () => true,
+      holdsKey: () => true,
+      prompt: async (spec) => {
+        prompts.push({ site, ...spec });
+        approved = decision.approve ? handle(prompts.length) : null;
+        return decision;
+      },
+      confirm: (kind, accountIndex, payload) =>
+        confirmations.issuePageConfirmation(kind, accountIndex, payload, { handle: approved, key: site }).token,
+      spend: (token, kind, accountIndex, payload) =>
+        confirmations.consumePageConfirmation(token, kind, accountIndex, payload, { handle: approved, key: site }),
+      signal: new AbortController().signal,
+      leaveWalletSlot: () => {},
+    };
+    return dispatch(context);
+  }
+
   return {
     tx,
     permissions,
     handlers,
+    prompts,
+    pageAsks,
     store: require('./intent-store').getIntentStore(),
-    // The renderer's question: true sends silently, false shows the prompt.
+    // Main's own reading of the site's rule: true sends silently, false
+    // shows the prompt.
     autoApproves: (site) =>
       handlers['dapp:is-tx-auto-approved']({}, site, CONTRACT, SELECTOR, CHAIN),
-    // A send the renderer made as auto-approved.
+    // A send the site's rule answered, as main makes it.
     autoSend: (site) =>
-      handlers['wallet:dapp-send-transaction'](
-        CHROME_EVENT,
-        tx,
-        index[site],
-        { origin: site },
-        fromTab({ autoApprove: site })
-      ),
-    // A send the user confirmed on the prompt.
-    // A send the user confirmed on the prompt (by default on the site's
+      asHandler(sendDappPayment({ walletIndex: index[site], tx, site, silent: true })),
+    // A send the user confirmed on main's prompt (by default on the site's
     // account and chain).
-    confirmedSend: async (site, { account = index[site], chainId = CHAIN } = {}) => {
-      const payment = { ...tx, chainId };
-      const { token } = await handlers['wallet:confirm-signing']({}, 'dapp-send', account, {
-        ...payment,
-        maxFeePerGas: undefined,
-        maxPriorityFeePerGas: undefined,
-        origin: site,
-      });
-      return handlers['wallet:dapp-send-transaction'](
-        CHROME_EVENT,
-        payment,
-        account,
-        { origin: site },
-        {
-          confirmation: token,
-        }
-      );
-    },
+    confirmedSend: (site, { account = index[site], chainId = CHAIN } = {}) =>
+      asHandler(sendDappPayment({ walletIndex: account, tx: { ...tx, chainId }, site, silent: false })),
   };
 }
 
@@ -234,10 +251,15 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     expect(refused).toMatchObject({ success: false, outcome: 'rejected' });
     expect(running.store.get(refused.intentId).state).toBe('held');
 
-    // The site asks again: the renderer is told to show the prompt…
+    // The site asks again: main reads its rule as paused, and shows its
+    // prompt instead…
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
-    // …and a send claiming auto-approve anyway is refused, with nothing signed.
     const before = signed();
+    await expect(running.pageAsks(SWAP, PAGE_TX, { approve: false })).resolves.toEqual(REJECTED);
+    expect(running.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
+    expect(signed()).toBe(before);
+    // …and a silent send that read the rule before the pause is refused in
+    // its turn, with nothing signed.
     await expect(running.autoSend(SWAP)).resolves.toMatchObject({
       success: false,
       code: 'SIGNING_NOT_CONFIRMED',
@@ -259,7 +281,9 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
       block: 100,
     });
     await expect(running.autoApproves(SWAP)).resolves.toBe(true);
-    await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: true });
+    // Main's dispatcher sends under it again, with no prompt.
+    await expect(running.pageAsks(SWAP, PAGE_TX)).resolves.toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
+    expect(running.prompts).toHaveLength(1);
   });
 
   test('a payment sent and not yet mined waits too; once mined, the rule applies again', async () => {
@@ -292,11 +316,9 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   test('a site without "Always allow" is unchanged: the prompt, waiting or not', async () => {
     const running = start();
     await expect(running.autoApproves(PLAIN)).resolves.toBe(false);
-    await expect(running.autoSend(PLAIN)).resolves.toMatchObject({
-      success: false,
-      code: 'SIGNING_NOT_CONFIRMED',
-      error: expect.stringContaining("not covered by the site's auto-approve rules"),
-    });
+    await expect(running.pageAsks(PLAIN, PAGE_TX, { approve: false })).resolves.toEqual(REJECTED);
+    expect(running.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
+    expect(signed()).toBe(0);
 
     refusedOnce();
     const refused = await running.confirmedSend(PLAIN);
@@ -307,9 +329,15 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
 
   // Review of #788, finding 1: the pause can't be passed twice at once.
   // Review of #788, round 2, finding 2: a dApp payment always has a site.
+  // From freedom-core design 0011 PRQ-5b, main's own issuer mints it, for
+  // the requester's key; the chrome gets none at all.
   test('codex r2: a dapp confirmation without a site is refused', async () => {
     const running = start();
+    const confirmations = require('./signing-confirmation');
     for (const origin of [undefined, null, '']) {
+      expect(() =>
+        confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin }, { handle: 'c'.repeat(64), key: SWAP })
+      ).toThrow('A dApp payment needs the site it is for');
       const minted = await running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, {
         ...running.tx,
         origin,
@@ -486,54 +514,34 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   // Review of #788, finding 2: the pause reads the site a payment is
-  // recorded under, so that is the site that authorized it.
+  // recorded under, so that is the site that authorized it: from freedom-core
+  // design 0011 PRQ-5b, the requester's attested key, which main sends for.
   test('codex: main binds a payment to the site that authorized it', async () => {
     const running = start();
-    const send = (context, authorization, index = 0) =>
-      running.handlers['wallet:dapp-send-transaction'](
-        CHROME_EVENT,
-        running.tx,
-        index,
-        context,
-        fromTab(authorization)
-      );
-
-    // Signed under swap's rule, recorded as another site's: refused.
-    await expect(send({ origin: OTHER }, { autoApprove: SWAP })).resolves.toMatchObject({
-      success: false,
-      code: 'SIGNING_NOT_CONFIRMED',
-      error: expect.stringContaining("the request's site is not the one its auto-approve names"),
-    });
-    expect(signed()).toBe(0);
-
-    // Swap's refused payment is swap's, and pauses swap.
+    // Swap's refused payment, sent under swap's rule, is swap's, and pauses
+    // swap alone.
     refusedOnce();
-    const refused = await send({ origin: SWAP }, { autoApprove: SWAP });
+    const refused = await running.autoSend(SWAP);
     expect(running.store.get(refused.intentId)).toMatchObject({
       state: 'held',
       context: { origin: SWAP },
     });
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
-    await expect(send({ origin: SWAP }, { autoApprove: SWAP })).resolves.toMatchObject({
-      success: false,
-      code: 'SIGNING_NOT_CONFIRMED',
-    });
-
-    // A confirmation is for one site: confirmed for another, it can't record
-    // the payment under swap's name, nor swap's under another's.
-    const mint = async (origin, index = 0) =>
-      (
-        await running.handlers['wallet:confirm-signing']({}, 'dapp-send', index, {
-          ...running.tx,
-          origin,
-        })
-      ).token;
+    await expect(running.autoApproves(OTHER)).resolves.toBe(true);
+    // The chrome can neither claim swap's rule nor confirm a send for it.
     await expect(
-      send({ origin: OTHER }, { confirmation: await mint(SWAP) })
+      running.handlers['wallet:dapp-send-transaction']({}, running.tx, 0, { origin: SWAP }, { autoApprove: SWAP })
     ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
     await expect(
-      send({ origin: SWAP }, { confirmation: await mint(PLAIN) })
-    ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, { ...running.tx, origin: SWAP })
+    ).resolves.toMatchObject({ success: false });
+    // A page token is for one site: minted for swap, it can't send for plain.
+    const confirmations = require('./signing-confirmation');
+    const page = { handle: 'd'.repeat(64), key: SWAP };
+    const { token } = confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin: SWAP }, page);
+    expect(() =>
+      confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...running.tx, origin: PLAIN }, { ...page, key: PLAIN })
+    ).toThrow('Signing was not confirmed');
     expect(signed()).toBe(1);
   });
 
@@ -550,77 +558,52 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 });
 
-// "Always allow" for a transaction, through main's real handlers: the rule
-// is recorded for the site the confirmation was for, and covers its call
-// with no more value than the confirmed send's.
+// "Always allow" for a transaction, through main's dispatcher
+// (page/page-sends.js): the rule is recorded for the requester's key, from
+// the send the user confirmed on main's prompt, and covers its call with no
+// more value than that send's.
 describe('"Always allow" binds the confirmed send\'s value and site', () => {
   const PAYABLE = '0x' + '77'.repeat(20);
   const CENT = '0x2386f26fc10000'; // 0.01 ETH
   const TWO_CENTS = '0x470de4df820000';
-
-  async function confirmWithAlwaysAllow(running, site, payment, rememberAutoApprove = site) {
-    const { token } = await running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, {
-      ...payment,
-      origin: site,
-    });
-    return running.handlers['wallet:dapp-send-transaction'](
-      CHROME_EVENT,
-      payment,
-      0,
-      { origin: site },
-      { confirmation: token, rememberAutoApprove }
-    );
-  }
+  const ALWAYS = { approve: true, choices: { alwaysAllow: true, feeAcknowledged: false } };
 
   test('a rule from a send of 0.01 ETH signs that call for 0.01 ETH, and asks for more', async () => {
     const running = start();
-    const payment = { ...running.tx, to: PAYABLE, value: CENT };
-    const confirmed = await confirmWithAlwaysAllow(running, SWAP, payment);
-    expect(confirmed).toMatchObject({ success: true, autoApproveAdded: true });
-    await mine(confirmed.hash);
+    const payment = { to: PAYABLE, value: CENT, data: SELECTOR };
+    // PLAIN has no rule: main prompts, and "always allow" records one.
+    const confirmed = await running.pageAsks(PLAIN, payment, ALWAYS);
+    expect(confirmed).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
+    expect(running.prompts).toHaveLength(1);
+    await mine(confirmed.result);
 
     const ask = (value) =>
-      running.handlers['dapp:is-tx-auto-approved']({}, SWAP, PAYABLE, SELECTOR, CHAIN, value);
+      running.handlers['dapp:is-tx-auto-approved']({}, PLAIN, PAYABLE, SELECTOR, CHAIN, value);
     await expect(ask(CENT)).resolves.toBe(true);
     await expect(ask(TWO_CENTS)).resolves.toBe(false);
 
-    const silent = (value) =>
-      running.handlers['wallet:dapp-send-transaction'](
-        CHROME_EVENT,
-        { ...payment, value },
-        0,
-        { origin: SWAP },
-        fromTab({ autoApprove: SWAP })
-      );
-    const same = await silent(CENT);
-    expect(same).toMatchObject({ success: true });
-    await mine(same.hash);
-    await expect(silent(TWO_CENTS)).resolves.toMatchObject({
-      success: false,
-      code: 'SIGNING_NOT_CONFIRMED',
-      error: expect.stringContaining("not covered by the site's auto-approve rules"),
-    });
+    // The same call for 0.01 ETH: sent under the rule, with no prompt.
+    const same = await running.pageAsks(PLAIN, payment);
+    expect(same).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
+    expect(running.prompts).toHaveLength(1);
+    await mine(same.result);
+    // For more: main's prompt again.
+    await expect(running.pageAsks(PLAIN, { ...payment, value: TWO_CENTS }, { approve: false })).resolves.toEqual(REJECTED);
+    expect(running.prompts).toHaveLength(2);
     expect(signed()).toBe(2);
   });
 
-  test("a confirmed send for one site records no rule for another site it names", async () => {
+  test("a confirmed send for one site records no rule for another site", async () => {
     const running = start();
-    jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const payment = { ...running.tx, to: PAYABLE };
-    // PLAIN is connected on the same account, with no "Always allow".
-    const confirmed = await confirmWithAlwaysAllow(running, SWAP, payment, PLAIN);
-    expect(confirmed).toMatchObject({ success: true, autoApproveAdded: false });
-    expect(running.permissions.isTransactionAutoApproved(PLAIN, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
+    const payment = { to: PAYABLE, data: SELECTOR };
+    await expect(running.pageAsks(PLAIN, payment, ALWAYS)).resolves.toEqual({ result: expect.any(String) });
+    // The rule is the requester's: PLAIN's, never SWAP's, on the same account.
+    expect(running.permissions.isTransactionAutoApproved(PLAIN, PAYABLE, SELECTOR, CHAIN, '0')).toBe(true);
     expect(running.permissions.isTransactionAutoApproved(SWAP, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
-    await expect(
-      running.handlers['wallet:dapp-send-transaction'](
-        CHROME_EVENT,
-        payment,
-        0,
-        { origin: PLAIN },
-        fromTab({ autoApprove: PLAIN })
-      )
-    ).resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-    jest.restoreAllMocks();
+    // Without "always allow", none.
+    await expect(running.pageAsks(SWAP, payment, { approve: true, choices: { alwaysAllow: false } })).resolves.toEqual({
+      result: expect.any(String),
+    });
+    expect(running.permissions.isTransactionAutoApproved(SWAP, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
   });
 });

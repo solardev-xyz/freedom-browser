@@ -2,6 +2,20 @@
  * dApp Transaction Approval Module
  *
  * Transaction approval screen for dApp-initiated transactions.
+ *
+ * From freedom-core design 0011 PRQ-5b a page's send is main's: main shows
+ * its prompt (`eth.send`, through page-prompts.js) and this screen renders
+ * main's view: the site main attested, the account, the chain, the
+ * transaction in main's form, the fee main quoted and the fee check's
+ * verdict. It answers the handle (`page:decide`) with the choices it offers,
+ * "always allow" and the fee confirmed again above the threshold. Main mints
+ * the approval's token and sends. An approved send keeps the screen, its
+ * Confirm button showing the device step, until main has answered the page,
+ * or until main asks again (the fee newly above the threshold at the press,
+ * or quoted again), whose prompt the screen shows in place. A Safe's
+ * approval takes the screen down at once, for its signing board. The old
+ * path (`showDappTxApproval`) stays for rollback until PRQ-9; main refuses
+ * its token.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -39,6 +53,7 @@ import {
   isDappPromptShowing,
   requestPendingError,
 } from './dapp-prompt-guard.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 
 // DOM references
 let dappTxScreen;
@@ -77,6 +92,8 @@ let dappTxPending = null;
 // dApp transaction with fees the user didn't see (waitsForFee).
 let dappTxFeeCheck = null;
 const DAPP_TX_CONFIRM_LABEL = 'Confirm';
+// While the screen paints a page prompt, the hider it runs is its own.
+let presentingPagePrompt = false;
 
 const ERC20_TRANSFER_SELECTOR = '0xa9059cbb';
 
@@ -126,8 +143,23 @@ export function initDappTx() {
     warningTextEl: document.getElementById('dapp-tx-fee-warning-text'),
   });
 
-  // Register screen hider
-  registerScreenHider(() => dappTxScreen?.classList.add('hidden'));
+  // Register screen hider. A page prompt another screen hides stays main's
+  // shown prompt: it is told, so it can show again once that screen is done.
+  registerScreenHider(() => {
+    dappTxScreen?.classList.add('hidden');
+    const request = dappTxPending;
+    if (!presentingPagePrompt && request?.handle && !request.deciding) {
+      dappTxPending = null;
+      walletState.identityView?.classList.remove('hidden');
+      pagePromptDisplaced(request.handle);
+    }
+  });
+  registerPagePromptRenderer('eth.send', {
+    show: showPageSend,
+    close: closePageSend,
+    isShowing: shownPageSend,
+    takesOver: pageSendTakesOver,
+  });
   // Showing an undecided transaction: newcomers wait (dapp-prompt-guard.js).
   registerDappPrompt(
     () => dappTxPending !== null && Boolean(dappTxScreen) && !dappTxScreen.classList.contains('hidden')
@@ -137,21 +169,17 @@ export function initDappTx() {
 }
 
 function setupDappTxScreen() {
-  if (dappTxBackBtn) {
-    dappTxBackBtn.addEventListener('click', () => {
-      if (dappTxPending?.signing) return;
-      rejectDappTx();
-      closeDappTx();
-    });
-  }
-
-  if (dappTxRejectBtn) {
-    dappTxRejectBtn.addEventListener('click', () => {
-      if (dappTxPending?.signing) return;
-      rejectDappTx();
-      closeDappTx();
-    });
-  }
+  const reject = () => {
+    if (dappTxPending?.signing || dappTxPending?.deciding) return;
+    if (dappTxPending?.handle) {
+      decidePageSend(dappTxPending, false);
+      return;
+    }
+    rejectDappTx();
+    closeDappTx();
+  };
+  dappTxBackBtn?.addEventListener('click', reject);
+  dappTxRejectBtn?.addEventListener('click', reject);
 
   if (dappTxApproveBtn) {
     dappTxApproveBtn.addEventListener('click', approveDappTx);
@@ -411,6 +439,12 @@ async function estimateDappTxFee(request) {
 function retryDappTxFee() {
   const request = dappTxPending;
   if (!request || request.signing || !request.feeFailed) return;
+  // Main quotes a page's send: an approval of its prompt with no fee asks
+  // main for the quote again, on a new prompt.
+  if (request.handle) {
+    if (!request.deciding) decidePageSend(request, true, {}, { retry: true });
+    return;
+  }
   hideDappTxError();
   estimateDappTxFee(request);
 }
@@ -436,6 +470,8 @@ function namesFees({ maxFeePerGas, maxPriorityFeePerGas, gasPrice }) {
  */
 function waitsForFee(request) {
   if (!request || request.failedIntent) return false;
+  // A page's send: main quoted it, or Confirm waits for its quote again.
+  if (request.handle) return !request.safe && !request.feeKnown;
   if (isSafeAccount(request.walletIndex) || accountType(request.walletIndex) === 'remote') {
     return false;
   }
@@ -448,6 +484,8 @@ function waitsForFee(request) {
  */
 function waitsForVerdict(request) {
   if (!request || request.failedIntent) return false;
+  // A page's send comes with main's verdict.
+  if (request.handle) return false;
   if (isSafeAccount(request.walletIndex) || accountType(request.walletIndex) === 'remote') {
     return false;
   }
@@ -580,6 +618,10 @@ async function handleDappTxPasswordUnlock() {
 
 async function approveDappTx() {
   if (!dappTxPending || dappTxPending.signing) return;
+  if (dappTxPending.handle) {
+    approvePageSend(dappTxPending);
+    return;
+  }
   // Its payment is settled, voided or unknown to main: nothing to confirm.
   if (dappTxPending.paymentClosed) return;
   // Its fee, or the fee check's verdict, isn't shown: nothing to confirm yet.
@@ -762,6 +804,202 @@ async function approveDappTx() {
 }
 
 /**
+ * Render main's send prompt (`page:prompt`, kind `eth.send`): the site main
+ * attested, the account and chain, the transaction in main's form, the fee
+ * main quoted and the fee check's verdict. The page's own text and images
+ * aren't shown. The caller shows it only while nothing else holds the
+ * sidebar (`page-prompts.js`), or in place of this request's decided prompt
+ * (`pageSendTakesOver`).
+ */
+export function showPageSend(prompt) {
+  const view = prompt?.view || {};
+  const account = view.account || {};
+  const tx = view.tx || {};
+  const chain = view.chain || {};
+  const symbol = typeof chain.symbol === 'string' && chain.symbol ? chain.symbol : 'ETH';
+  const previous = dappTxPending;
+  const safe = account.type === 'safe';
+  const request = {
+    handle: prompt.handle,
+    guest: prompt.guest,
+    walletIndex: account.index,
+    safe,
+    phone: account.type === 'remote',
+    feeKnown: Boolean(view.fee) && !safe,
+    feeFailed: !safe && !view.fee,
+    alwaysAllowOffered: view.alwaysAllow === true,
+    chain: { nativeSymbol: symbol },
+    deciding: false,
+    signing: false,
+  };
+  // This request's decided prompt, which main asked again: its lock goes
+  // with it, and its screen shows the new prompt.
+  if (previous?.handle && previous.deciding) endSignatureFlight(previous);
+  dappTxPending = request;
+  // An old-path request still being prepared gives way, as before.
+  if (previous && !previous.handle && !previous.signing) {
+    previous.reject({ code: 4001, message: 'Replaced by a newer request' });
+  }
+  try {
+    renderPageSend(request, prompt, view, tx, chain, symbol);
+  } catch (err) {
+    // What can't be shown is never sent.
+    console.error('[WalletUI] A send prompt main sent can’t be shown:', err);
+    dappTxPending = null;
+    decideHandle(request.handle, false);
+    return;
+  }
+  // Confirm waits for the unlock check (a vault account needs the vault open).
+  request.locked = true;
+  syncDappTxConfirm();
+  checkDappTxUnlockStatus(request);
+
+  presentingPagePrompt = true;
+  try {
+    hideAllSubscreens();
+  } finally {
+    presentingPagePrompt = false;
+  }
+  walletState.identityView?.classList.add('hidden');
+  dappTxScreen?.classList.remove('hidden');
+  openSidebarPanel();
+}
+
+function renderPageSend(request, prompt, view, tx, chain, symbol) {
+  if (dappTxSite) dappTxSite.textContent = prompt?.site?.label || prompt?.site?.key || 'Unknown';
+  if (dappTxAutoApproveCheckbox) dappTxAutoApproveCheckbox.checked = false;
+  dappTxAutoApproveRow?.classList.toggle('hidden', !request.alwaysAllowOffered);
+  setDappTxCancelEnabled(true);
+  hideDappTxError();
+  if (dappTxTo) {
+    const to = typeof tx.to === 'string' ? tx.to : '';
+    dappTxTo.textContent = to ? `${to.slice(0, 10)}…${to.slice(-8)}` : 'Contract Creation';
+    dappTxTo.title = to;
+  }
+  if (dappTxValue) {
+    const value = BigInt(typeof tx.value === 'string' && tx.value ? tx.value : '0');
+    dappTxValue.textContent = `${(Number(value) / 1e18).toFixed(6)} ${symbol}`;
+  }
+  if (dappTxData) {
+    const data = typeof tx.data === 'string' ? tx.data : '';
+    const call = Boolean(data) && data !== '0x';
+    dappTxData.textContent = call ? `${data.slice(0, 20)}…` : 'No data';
+    dappTxData.title = call ? data : '';
+    dappTxDataRow?.classList.remove('hidden');
+    dappTxWarning?.classList.toggle('hidden', !call);
+  }
+  if (dappTxNetwork) dappTxNetwork.textContent = chain.name || `Chain ${chain.id}`;
+  dappTxFeeCheck?.reset(symbol);
+  if (request.safe) {
+    // The executor pays the execution fee, checked as it executes.
+    if (dappTxFee) renderSafeFeePayer(dappTxFee, request.walletIndex);
+  } else if (view.fee) {
+    const estimate = BigInt(typeof view.fee.estimate === 'string' ? view.fee.estimate : '0');
+    if (dappTxFee) dappTxFee.textContent = `~${(Number(estimate) / 1e18).toFixed(6)} ${symbol}`;
+    // The fee check's verdict, and the most the send can cost, as main
+    // judged them; asked again when main found the fee newly above.
+    dappTxFeeCheck?.show(view.feeCheck || null, symbol, { askAgain: view.feeAskAgain === true });
+  } else if (dappTxFee) {
+    dappTxFee.textContent = 'Unable to estimate';
+  }
+  if (dappTxApproveBtn) dappTxApproveBtn.textContent = DAPP_TX_CONFIRM_LABEL;
+  renderDappTxConfirmLabel();
+}
+
+/**
+ * Take down main's prompt `handle` (hidden, closed, or refused). A decided
+ * send keeps the screen until main answers it, or asks again.
+ */
+export function closePageSend(handle) {
+  const request = dappTxPending;
+  if (!request?.handle || request.handle !== handle) return false;
+  if (request.deciding) return true;
+  closeDappTx();
+  return true;
+}
+
+/** The page prompt the screen shows, or null. */
+export function shownPageSend() {
+  return dappTxPending?.handle && dappTxScreen && !dappTxScreen.classList.contains('hidden')
+    ? dappTxPending.handle
+    : null;
+}
+
+/**
+ * Whether the screen takes `prompt` in place of the prompt it shows: this
+ * request's prompt, which the user decided and main is still working on,
+ * asked again. A document has one wallet request waiting at a time, so a
+ * send prompt of the same tab while one is decided is the same request's.
+ */
+export function pageSendTakesOver(prompt) {
+  const request = dappTxPending;
+  return Boolean(
+    request?.handle &&
+      request.deciding &&
+      prompt?.kind === 'eth.send' &&
+      prompt.handle !== request.handle &&
+      prompt.guest === request.guest
+  );
+}
+
+async function decideHandle(handle, approve, choices = {}) {
+  try {
+    return await window.pagePrompts?.decide?.(handle, approve, choices);
+  } catch (err) {
+    console.error('[WalletUI] The decision did not reach main:', err);
+    return null;
+  }
+}
+
+// The user pressed Confirm on main's prompt. A fee above the threshold is
+// confirmed twice (design 0005, A): the first press asks again.
+function approvePageSend(request) {
+  if (request.deciding || request.locked || waitsForFee(request)) return;
+  const checked = !request.safe && !request.phone;
+  if (checked && dappTxFeeCheck && !dappTxFeeCheck.proceed()) {
+    renderDappTxConfirmLabel();
+    return;
+  }
+  const choices = {};
+  if (request.alwaysAllowOffered) choices.alwaysAllow = Boolean(dappTxAutoApproveCheckbox?.checked);
+  if (checked && dappTxFeeCheck?.options()?.feeAcknowledged) choices.feeAcknowledged = true;
+  decidePageSend(request, true, choices);
+}
+
+// Answer main's prompt: the decision counts only for the handle main shows
+// at this moment. Main sends, and answers once the page has its answer, or
+// shows this request's next prompt, which the screen takes in place. A
+// Safe's approval goes on to its signing board, which main shows next.
+async function decidePageSend(request, approve, choices = {}, { retry = false } = {}) {
+  if (request.deciding) return;
+  request.deciding = true;
+  if (approve && retry) {
+    if (dappTxFee) dappTxFee.textContent = 'Estimating…';
+    dappTxFeeRetryRow?.classList.add('hidden');
+  } else if (approve && !request.safe) {
+    // The signature may be a device's: nothing may paint over it.
+    request.signing = true;
+    beginSignatureFlight(request);
+    if (dappTxApproveBtn) {
+      dappTxApproveBtn.disabled = true;
+      dappTxApproveBtn.textContent = signingButtonLabel(request.walletIndex);
+    }
+    setDappTxCancelEnabled(false);
+  }
+  if (!approve || request.safe) {
+    if (dappTxPending === request) closeDappTx();
+  }
+  try {
+    await decideHandle(request.handle, approve, approve ? choices : {});
+  } finally {
+    request.signing = false;
+    request.deciding = false;
+    endSignatureFlight(request);
+    if (dappTxPending === request) closeDappTx();
+  }
+}
+
+/**
  * Confirm again after a send that left a held payment: send its signed
  * bytes again, at its one nonce. Nothing is signed. The user's press on the
  * approval that still shows this transaction is the confirmation, bound to
@@ -888,7 +1126,7 @@ function buildSafeDappDisplay(txParams, value, site) {
  * had happened (D13).
  */
 function rejectDappTx() {
-  if (dappTxPending?.reject) {
+  if (dappTxPending && !dappTxPending.handle && dappTxPending.reject) {
     dappTxPending.reject(
       dappTxPending.outcomeUnknown
         ? siteOutcomeUnknownError()

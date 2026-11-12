@@ -12,10 +12,10 @@
  * applies again.
  *
  * Transactions only: message signing pays nothing, and its auto-approve is
- * unchanged. Both of main's readings of a transaction rule consult this:
- * the renderer's question (`dapp:is-tx-auto-approved`, which decides
- * between the prompt and the silent send) and main's own check of an
- * auto-approved send (wallet-ipc.js), so neither can skip the pause.
+ * unchanged. Every reading of a transaction rule consults this: main's own,
+ * for a page's send (page/page-sends.js: the rule's choice, and the silent
+ * send in its turn), and the chrome's question (`dapp:is-tx-auto-approved`),
+ * so none can skip the pause.
  *
  * Every dApp send of a site takes the site's turn, one at a time, from
  * before the pause is read until its payment is committed to the records

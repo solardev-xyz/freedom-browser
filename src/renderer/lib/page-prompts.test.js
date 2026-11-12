@@ -338,4 +338,36 @@ describe('page prompts in the chrome (0011 PRQ-4)', () => {
     expect(screen.close).toHaveBeenCalledWith('h1');
     expect(current).toBeNull();
   });
+
+  // PRQ-5b: a send's fee asked again at the press is the same request's next
+  // prompt, which the screen holding its decided prompt (and the device
+  // lock) takes in place; any other prompt still waits for the sidebar.
+  test("a screen takes its request's next prompt in place, past its own lock; nothing else does", async () => {
+    jest.useFakeTimers();
+    const env = await load();
+    const registry = await import('./page-prompt-renderers.js');
+    let current = null;
+    let deciding = null;
+    const screen = {
+      show: jest.fn((p) => (current = p.handle)),
+      close: jest.fn(() => true),
+      isShowing: () => current,
+      takesOver: jest.fn((p) => deciding !== null && p.guest === deciding),
+    };
+    registry.registerPagePromptRenderer('eth.send', screen);
+    env.listeners.prompt({ ...prompt('h1'), kind: 'eth.send' });
+    expect(screen.show).toHaveBeenCalledTimes(1);
+    // Decided: the screen holds the device lock while main works on it.
+    deciding = 3;
+    env.setInFlight(true);
+    env.listeners.closed({ handle: 'h1', reason: 'decided' });
+    env.listeners.prompt({ ...prompt('h2'), kind: 'eth.send' });
+    expect(screen.show).toHaveBeenCalledTimes(2);
+    expect(current).toBe('h2');
+    // Another tab's prompt waits for the sidebar.
+    env.listeners.prompt({ ...prompt('h3', 4), kind: 'eth.send' });
+    jest.advanceTimersByTime(1000);
+    expect(screen.show).toHaveBeenCalledTimes(2);
+    env.setInFlight(false);
+  });
 });

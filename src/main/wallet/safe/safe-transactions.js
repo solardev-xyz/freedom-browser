@@ -22,7 +22,12 @@
  */
 
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
-const { buildSafeTransaction, execTransaction, pickDefaultExecutor } = require('./safe-executor');
+const {
+  buildSafeTransaction,
+  execTransaction,
+  pickDefaultExecutor,
+  withdrawExecutionSite,
+} = require('./safe-executor');
 const {
   getSafeRecord,
   resolveOwnerAddresses,
@@ -31,7 +36,14 @@ const {
   DEPLOY_CHAIN_ID,
 } = require('./safe-service');
 const { getPending, setPending, clearPending, listPendingIndexes } = require('./pending-store');
-const { codedError, SAFE_BUSY, SAFE_PENDING_EXISTS, SAFE_NEEDS_FUNDS } = require('./errors');
+const {
+  codedError,
+  SAFE_BUSY,
+  SAFE_PENDING_EXISTS,
+  SAFE_NEEDS_FUNDS,
+  SAFE_SITE_WITHDRAWN,
+  SAFE_SITE_WITHDRAWING,
+} = require('./errors');
 const {
   acquire,
   release,
@@ -44,6 +56,90 @@ const {
 // The signature-collection store over the persisted pending-SafeTx
 // entries; the SafeTx hash is the entry's identity.
 const store = { get: getPending, set: setPending, idOf: (entry) => entry.safeTxHash };
+
+// Who hears a pending SafeTx's outcome (onSafeSendSettled).
+const settledListeners = new Set();
+
+/**
+ * Hear each pending SafeTx's outcome as main records it: `{ safeIndex,
+ * safeTxHash, outcome: 'executed', hash }` once its execution lands, or
+ * `{ safeIndex, safeTxHash, outcome: 'discarded' }` once it is discarded.
+ * A page's Safe send waits on this for its answer (page/page-sends.js),
+ * whichever screen executed or discarded it. Returns the way to stop.
+ *
+ * @param {(event: object) => void} listener
+ * @returns {() => void}
+ */
+function onSafeSendSettled(listener) {
+  if (typeof listener !== 'function') return () => {};
+  settledListeners.add(listener);
+  return () => settledListeners.delete(listener);
+}
+
+// A site's SafeTx: the guard of the page request that started it, by SafeTx
+// hash (guardSiteSafeSend).
+const siteGuards = new Map();
+
+/**
+ * A page's request guards the site's SafeTx it started (freedom-core design
+ * 0011, PRQ-5b, "After a waiting signature or send"). Before each execution
+ * of it, `guard(execute)` checks the site's name and key, and that the
+ * requesting document is live, and runs `execute` itself in the same run as
+ * its last check, or throws SAFE_SITE_WITHDRAWN. The execution waits on the
+ * executor's quote, the site's turn and its signer, so the same guard runs
+ * again at its last step: after the executor's signature and before the
+ * first commit, or before a held execution's bytes go out again
+ * (`execTransaction`'s `guardCommit`). Returns the way to stop.
+ *
+ * A site's SafeTx with no guard (its request has ended, its page gone, or
+ * main restarted since) is never executed for the site either. Whenever the
+ * check fails, the SafeTx isn't executed: it stays pending as the wallet's
+ * own, with no site, for the user to execute or discard: the site is taken
+ * from an execution already held for it (a first attempt committed, then not
+ * sent), durably, and only then from the pending SafeTx, with its signatures
+ * and signed bytes kept. If the held execution's records can't be rewritten,
+ * nothing changes and nothing is sent (SAFE_SITE_WITHDRAWING): the next
+ * attempt, with no guard, tries again. A crash between the two leaves a held
+ * execution with no site under a pending SafeTx that still names it, which
+ * the next attempt finishes.
+ *
+ * @param {string} safeTxHash
+ * @param {(execute: () => Promise<object>) => Promise<object>} guard
+ * @returns {() => void}
+ */
+function guardSiteSafeSend(safeTxHash, guard) {
+  if (typeof safeTxHash !== 'string' || typeof guard !== 'function') return () => {};
+  siteGuards.set(safeTxHash, guard);
+  return () => {
+    if (siteGuards.get(safeTxHash) === guard) siteGuards.delete(safeTxHash);
+  };
+}
+
+function siteWithdrawing() {
+  return codedError(
+    "The site that asked for this transaction no longer holds it, so it wasn't sent. " +
+      "The wallet couldn't record it as your own yet: try again.",
+    SAFE_SITE_WITHDRAWING
+  );
+}
+
+function siteWithdrawn() {
+  return codedError(
+    "The site that asked for this transaction no longer holds it, so it wasn't sent for the site. " +
+      "It is now your wallet's own: execute it again, or discard it.",
+    SAFE_SITE_WITHDRAWN
+  );
+}
+
+function settled(event) {
+  for (const listener of [...settledListeners]) {
+    try {
+      listener(Object.freeze({ ...event }));
+    } catch {
+      // One listener's failure never changes the outcome, or what the others hear.
+    }
+  }
+}
 
 /** Safe.nonce() — raw uncached read. */
 async function chainSafeNonce(safeAddress) {
@@ -240,9 +336,9 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
       );
     }
 
-    let result;
-    try {
-      result = await execTransaction({
+    const guard = pending.display?.site ? siteGuards.get(pending.safeTxHash) : null;
+    const execute = () =>
+      execTransaction({
         chainId: pending.chainId,
         safeAddress: pending.safeAddress,
         safeTxData: pending.safeTxData,
@@ -259,8 +355,35 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
           ...(pending.display?.site ? { origin: pending.display.site } : {}),
           metadata: { safeAddress: pending.safeAddress, safeTxHash: pending.safeTxHash },
         },
+        // And again at its last step, after the executor's signature.
+        guardCommit: guard,
       });
+    let result;
+    try {
+      if (pending.display?.site) {
+        // A site's SafeTx executes for the site only past its request's
+        // check, just before the execution (guardSiteSafeSend).
+        if (!guard) throw siteWithdrawn();
+        result = await guard(execute);
+      } else {
+        result = await execute();
+      }
     } catch (err) {
+      if (err?.code === SAFE_SITE_WITHDRAWN) {
+        // Not executed: kept, as the wallet's own, with no site, in every
+        // record that has one. The held execution's intent first, durably
+        // (a no-op when it has none, or none with a site); only then the
+        // pending SafeTx. If the intent can't be rewritten, neither changes.
+        try {
+          await withdrawExecutionSite(pending.chainId, pending.safeTxHash);
+        } catch (withdrawError) {
+          console.warn('[SafeTransactions] A held execution kept its site for now:', withdrawError?.message);
+          throw siteWithdrawing();
+        }
+        const { site: _site, ...display } = pending.display || {};
+        setPending(safeIndex, { ...pending, display });
+        throw siteWithdrawn();
+      }
       if (/insufficient funds/i.test(err.message)) {
         err.code = SAFE_NEEDS_FUNDS;
       }
@@ -269,6 +392,7 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
 
     const state = getSafeSendState(safeIndex);
     clearPending(safeIndex);
+    settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'executed', hash: result.hash });
     return { ...state, status: 'executed', executed: { hash: result.hash, explorerUrl: result.explorerUrl } };
   } finally {
     release(safeIndex);
@@ -295,7 +419,9 @@ function cancelSafeSend(safeIndex) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
+  const pending = getPending(safeIndex);
   clearPending(safeIndex);
+  if (pending) settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'discarded' });
 }
 
 module.exports = {
@@ -305,4 +431,6 @@ module.exports = {
   getSafeSendState,
   getAllSafeSendStates,
   cancelSafeSend,
+  onSafeSendSettled,
+  guardSiteSafeSend,
 };

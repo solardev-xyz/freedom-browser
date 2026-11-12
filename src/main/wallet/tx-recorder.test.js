@@ -46,6 +46,22 @@ describe('tx-recorder', () => {
 
   const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+  test("passes main's own options through: the turn's release and a page send's guard (0011 PRQ-5b)", async () => {
+    const onCommitted = jest.fn();
+    const guardCommit = jest.fn();
+    await signAndRecord({ to: '0xto', value: '0', chainId: 1 }, fakeSigner, { kind: 'dapp-send', origin: 'https://app.example' }, {
+      walletIndex: 3,
+      onCommitted,
+      guardCommit,
+    });
+    expect(mockSignAndSendTransaction).toHaveBeenCalledWith(expect.anything(), fakeSigner, {
+      intentKey: null,
+      context: { kind: 'dapp-send', origin: 'https://app.example', walletIndex: 3 },
+      onCommitted,
+      guardCommit,
+    });
+  });
+
   test('records the signing account and nonce so a dropped row can resolve', async () => {
     mockSignAndSendTransaction.mockResolvedValue({ hash: '0xtx', from: '0xsigner', nonce: 7 });
 

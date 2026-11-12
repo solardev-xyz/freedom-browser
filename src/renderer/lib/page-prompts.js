@@ -17,14 +17,15 @@
  * The tab in front is reported to main by tabs.js (`page:foreground`).
  *
  * The sidebar is shared with the prompts that still take the chrome's own
- * path until their step moves them (sends, Swarm, Radicle). A prompt main
+ * path until their step moves them (Swarm, Radicle). A prompt main
  * shows waits while one of those holds the sidebar or a device signature is
  * in flight, and shows once the sidebar is back on the wallet's own view.
  *
- * The screens by kind: the Connect screen (`eth.connect`, PRQ-4), and from
+ * The screens by kind: the Connect screen (`eth.connect`, PRQ-4), from
  * PRQ-5a the Sign screen (`eth.sign`), the vault unlock (`vault.unlock`)
- * and a Safe's signing board (`eth.safe_message`), which register
- * themselves (`page-prompt-renderers.js`).
+ * and a Safe's signing board (`eth.safe_message`), and from PRQ-5b the
+ * transaction screen (`eth.send`) and a Safe send's signing board
+ * (`eth.safe_send`), which register themselves (`page-prompt-renderers.js`).
  */
 
 import { isDappPromptShowing } from './wallet/dapp-prompt-guard.js';
@@ -96,7 +97,11 @@ function render({ waited = false } = {}) {
     stopRetry();
     return;
   }
-  if (!sidebarFree({ waited })) {
+  // The screen holding a decided prompt of this request, while main still
+  // works on it, takes the request's next prompt in its place (a send's fee
+  // asked again at the press): its own lock isn't another prompt's.
+  const inPlace = renderer.takesOver?.(prompt) === true;
+  if (!inPlace && !sidebarFree({ waited })) {
     if (retryTimer === null) retryTimer = setInterval(() => render({ waited: true }), RETRY_MS);
     return;
   }

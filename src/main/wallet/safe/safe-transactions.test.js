@@ -87,12 +87,25 @@ const mockExecTransaction = jest.fn(async () => ({
   explorerUrl: `https://gnosisscan.io/tx/${TX_HASH}`,
   recorded: true,
 }));
+const mockWithdrawExecutionSite = jest.fn(async () => true);
 jest.mock('./safe-executor', () => ({
   buildSafeTransaction: (...args) => mockBuildSafeTransaction(...args),
   collectOwnerSignature: (...args) => mockCollectOwnerSignature(...args),
   execTransaction: (...args) => mockExecTransaction(...args),
+  withdrawExecutionSite: (...args) => mockWithdrawExecutionSite(...args),
   pickDefaultExecutor: jest.requireActual('./safe-executor').pickDefaultExecutor,
 }));
+
+const flushMicrotasks = async () => {
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
 
 // Chain reads (the Safe nonce guard).
 const mockRpcRequest = jest.fn(async () => '0x3'); // == pending nonce → executable
@@ -107,6 +120,8 @@ const {
   getSafeSendState,
   getAllSafeSendStates,
   cancelSafeSend,
+  onSafeSendSettled,
+  guardSiteSafeSend,
 } = require('./safe-transactions');
 const { getPending, setPending, clearPending } = require('./pending-store');
 
@@ -332,6 +347,8 @@ describe('executeSafePending', () => {
         amount: '1000',
         metadata: { safeAddress: SAFE_ADDRESS, safeTxHash: SAFE_TX_HASH },
       },
+      // The wallet's own SafeTx: no site, so no request's guard.
+      guardCommit: null,
     });
     expect(state.status).toBe('executed');
     expect(state.executed).toEqual({ hash: TX_HASH, explorerUrl: `https://gnosisscan.io/tx/${TX_HASH}` });
@@ -389,6 +406,254 @@ describe('getSafeSendState / cancelSafeSend', () => {
     expect(getSafeSendState(5)).not.toBeNull();
     cancelSafeSend(5);
     expect(getSafeSendState(5)).toBeNull();
+  });
+});
+
+// freedom-core design 0011, PRQ-5b: a page's Safe send waits on main's own
+// record of its SafeTx's outcome, whichever screen executed or discarded it.
+describe('onSafeSendSettled', () => {
+  test('hears an execution with its hash, and a discard; not a failure, a supersession or a stopped listener', async () => {
+    const heard = [];
+    const stop = onSafeSendSettled((event) => heard.push(event));
+    // A listener that throws changes nothing for the others.
+    const stopThrowing = onSafeSendSettled(() => {
+      throw new Error('listener failed');
+    });
+    await start();
+    await signSafePending(5, 2);
+    mockExecTransaction.mockRejectedValueOnce(new Error('RPC down'));
+    await expect(executeSafePending(5)).rejects.toThrow('RPC down');
+    expect(heard).toEqual([]);
+    await executeSafePending(5);
+    expect(heard).toEqual([{ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: TX_HASH }]);
+
+    await start();
+    await signSafePending(5, 2);
+    mockRpcRequest.mockResolvedValue('0x4');
+    await executeSafePending(5);
+    expect(heard).toHaveLength(1);
+    cancelSafeSend(5);
+    expect(heard.at(-1)).toEqual({ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+    // Nothing pending: nothing to hear.
+    cancelSafeSend(5);
+    expect(heard).toHaveLength(2);
+
+    stop();
+    stopThrowing();
+    await start();
+    cancelSafeSend(5);
+    expect(heard).toHaveLength(2);
+  });
+});
+
+// freedom-core design 0011, PRQ-5b, "After a waiting signature or send": a
+// site's SafeTx is checked again before each step that can execute it, a
+// parked one included. Whenever its site no longer holds it, it isn't
+// executed for the site, and stays pending as the wallet's own.
+describe("a site's SafeTx at its execution", () => {
+  const SITE = 'https://app.example';
+  const startForSite = () =>
+    startSafeSend({ safeIndex: 5, tx: TX, display: { ...DISPLAY, site: SITE }, chainId: 100 });
+
+  test("past its request's guard it executes for the site, the guard running the execution itself", async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    const guard = jest.fn(async (execute) => execute());
+    const stop = guardSiteSafeSend(SAFE_TX_HASH, guard);
+    try {
+      const state = await executeSafePending(5);
+      expect(state.status).toBe('executed');
+      expect(guard).toHaveBeenCalledTimes(1);
+      expect(mockExecTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ record: expect.objectContaining({ origin: SITE }) })
+      );
+    } finally {
+      stop();
+    }
+  });
+
+  test.each([
+    ['its request refuses it (its name moved, or its page is gone)', true],
+    ['its request has ended, or main restarted: no guard', false],
+  ])("when %s: not executed, and kept as the wallet's own, with no site", async (_name, guarded) => {
+    await startForSite();
+    await signSafePending(5, 2);
+    const refusing = jest.fn(async () => {
+      throw Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' });
+    });
+    const stop = guarded ? guardSiteSafeSend(SAFE_TX_HASH, refusing) : () => {};
+    const heard = [];
+    const stopHearing = onSafeSendSettled((event) => heard.push(event));
+    try {
+      await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+      expect(mockExecTransaction).not.toHaveBeenCalled();
+      expect(heard).toEqual([]);
+      // Still pending, its signatures kept, its site gone.
+      const pending = getPending(5);
+      expect(pending.signatures).toHaveLength(2);
+      expect(pending.display).toEqual(DISPLAY);
+      expect(getSafeSendState(5).display.site).toBeUndefined();
+      // The user executes it as the wallet's: no guard, no site recorded.
+      const state = await executeSafePending(5);
+      expect(state.status).toBe('executed');
+      expect(refusing).toHaveBeenCalledTimes(guarded ? 1 : 0);
+      expect(mockExecTransaction.mock.calls[0][0].record.origin).toBeUndefined();
+    } finally {
+      stop();
+      stopHearing();
+    }
+  });
+
+  test("the wallet's own SafeTx needs no guard", async () => {
+    await start();
+    await signSafePending(5, 2);
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction.mock.calls[0][0].guardCommit).toBeNull();
+  });
+
+  // Codex round 2 on #1191: the execution waits on the executor's quote, the
+  // site's turn and its signer, so the guard runs again at its last step.
+  // The executor here runs as safe-executor does: a held quote, a held
+  // signature, then the guard it was given, which commits.
+  function pipelinedExecutor() {
+    const quote = deferred();
+    const signature = deferred();
+    const committed = [];
+    mockExecTransaction.mockImplementationOnce(async ({ guardCommit }) => {
+      await quote.promise;
+      await signature.promise;
+      const commit = async () => committed.push('commit');
+      await (guardCommit ? guardCommit(commit) : commit());
+      return { hash: TX_HASH, explorerUrl: `https://gnosisscan.io/tx/${TX_HASH}` };
+    });
+    return { quote, signature, committed };
+  }
+
+  test('a site that stops holding its SafeTx during the quote and the signature: nothing committed, kept as the wallet\'s', async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    let holds = true;
+    const guard = jest.fn(async (effect) => {
+      if (!holds) throw Object.assign(new Error('withdrawn'), { code: 'SAFE_SITE_WITHDRAWN' });
+      return effect();
+    });
+    const stop = guardSiteSafeSend(SAFE_TX_HASH, guard);
+    const executor = pipelinedExecutor();
+    try {
+      const executing = executeSafePending(5);
+      await flushMicrotasks();
+      // Past the guard before the execution; now at the executor's quote.
+      expect(guard).toHaveBeenCalledTimes(1);
+      executor.quote.resolve();
+      await flushMicrotasks();
+      holds = false; // the name moves while the executor signs
+      executor.signature.resolve();
+      await expect(executing).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+      expect(guard).toHaveBeenCalledTimes(2);
+      expect(executor.committed).toEqual([]);
+      expect(getPending(5).display).toEqual(DISPLAY);
+      expect(getPending(5).signatures).toHaveLength(2);
+      expect(mockWithdrawExecutionSite).toHaveBeenCalledWith(100, SAFE_TX_HASH);
+    } finally {
+      stop();
+    }
+  });
+
+  test('a site that holds throughout: the guard commits after the signature, and it executes for the site', async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    const guard = jest.fn(async (effect) => effect());
+    const stop = guardSiteSafeSend(SAFE_TX_HASH, guard);
+    const executor = pipelinedExecutor();
+    try {
+      const executing = executeSafePending(5);
+      executor.quote.resolve();
+      executor.signature.resolve();
+      await expect(executing).resolves.toMatchObject({ status: 'executed' });
+      expect(guard).toHaveBeenCalledTimes(2);
+      expect(executor.committed).toEqual(['commit']);
+    } finally {
+      stop();
+    }
+  });
+
+  // Codex round 3 on #1191: the held execution's intent loses its site first,
+  // durably, and only then the pending SafeTx; a failed rewrite changes
+  // neither, and a crash between the two is finished by the next attempt.
+  test("the held execution's site goes first: the pending SafeTx still names it while the records are rewritten", async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    let siteDuringRewrite;
+    mockWithdrawExecutionSite.mockImplementationOnce(async () => {
+      siteDuringRewrite = getPending(5).display.site;
+      return true;
+    });
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(mockWithdrawExecutionSite).toHaveBeenCalledTimes(1);
+    expect(siteDuringRewrite).toBe(SITE);
+    expect(getPending(5).display).toEqual(DISPLAY);
+  });
+
+  test("a rewrite that fails changes neither record, says it isn't the wallet's yet, and the next attempt finishes", async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    mockWithdrawExecutionSite.mockRejectedValueOnce(new Error('disk full'));
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const failed = await executeSafePending(5).catch((err) => err);
+    expect(failed).toMatchObject({ code: 'SAFE_SITE_WITHDRAWING' });
+    expect(failed.message).not.toMatch(/your wallet's own/);
+    expect(getPending(5).display.site).toBe(SITE);
+    expect(getPending(5).signatures).toHaveLength(2);
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    // The next attempt, with no guard: the withdrawal again, then the site.
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(mockWithdrawExecutionSite).toHaveBeenCalledTimes(2);
+    expect(getPending(5).display).toEqual(DISPLAY);
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+    console.warn.mockRestore();
+  });
+
+  test('a crash after the held execution lost its site: the next attempt repeats the no-op withdrawal, then takes the site', async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    // As main finds it after the crash: the pending SafeTx still names the
+    // site, and its held execution has none any more.
+    mockWithdrawExecutionSite.mockResolvedValueOnce(false);
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(mockWithdrawExecutionSite).toHaveBeenCalledWith(100, SAFE_TX_HASH);
+    expect(getPending(5).display).toEqual(DISPLAY);
+    // Now the wallet's: it executes, with no site recorded.
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(mockExecTransaction.mock.calls[0][0].record.origin).toBeUndefined();
+  });
+
+  test('a crash before either record changed: the next attempt withdraws both', async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    // Nothing changed: no guard after the restart, and both still name the site.
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(mockWithdrawExecutionSite).toHaveBeenCalledTimes(1);
+    expect(getPending(5).display).toEqual(DISPLAY);
+  });
+
+  test('not sent after its commit, then withdrawn: the held execution loses its site too, its signatures kept', async () => {
+    await startForSite();
+    await signSafePending(5, 2);
+    const stop = guardSiteSafeSend(SAFE_TX_HASH, async (effect) => effect());
+    // The first attempt commits its execution, under the site, and is not sent.
+    mockExecTransaction.mockImplementationOnce(async ({ guardCommit }) => {
+      await guardCommit(async () => {});
+      throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
+    });
+    await expect(executeSafePending(5)).rejects.toThrow('Myotis is not ready');
+    expect(getPending(5).display.site).toBe(SITE);
+    expect(mockWithdrawExecutionSite).not.toHaveBeenCalled();
+    // The page goes: no guard is left, and the retry is the wallet's.
+    stop();
+    await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_SITE_WITHDRAWN' });
+    expect(mockWithdrawExecutionSite).toHaveBeenCalledWith(100, SAFE_TX_HASH);
+    expect(getPending(5).display).toEqual(DISPLAY);
+    expect(getPending(5).signatures).toHaveLength(2);
   });
 });
 

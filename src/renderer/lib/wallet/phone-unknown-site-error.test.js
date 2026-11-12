@@ -4,16 +4,16 @@
 // "rejected" (EIP-1193 4001) may send the request again, and the phone could
 // pay twice, so the site must hear that the outcome is unknown.
 //
-// Real on both sides of IPC: main's `wallet:confirm-signing` and
-// `wallet:dapp-send-transaction` handlers, transaction service, phone signer
-// and bridge; the renderer's session broker (over a scripted openlv session)
-// and dApp approval. Mocked: chain data, permissions, and the phone itself.
+// Real on both sides of IPC: main's send dispatcher for a page's request
+// (freedom-core design 0011, PRQ-5b: page/page-sends.js, with the user's
+// approval of its prompt and main's own issuer), transaction service, phone
+// signer and bridge; the renderer's session broker (over a scripted openlv
+// session). Mocked: chain data, the quote, permissions, and the phone itself.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Wallet } = require('ethers');
-const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');
 
 // Main's IPC registry, a fresh one per test (startPhone).
 const mockMain = { handle: new Map(), on: new Map() };
@@ -96,30 +96,6 @@ const SITE_UNKNOWN = {
   data: { outcome: 'unknown' },
 };
 
-const DAPP_TX_ELEMENT_IDS = [
-  'sidebar-dapp-tx',
-  'dapp-tx-back',
-  'dapp-tx-site',
-  'dapp-tx-to',
-  'dapp-tx-value',
-  'dapp-tx-data',
-  'dapp-tx-data-row',
-  'dapp-tx-network',
-  'dapp-tx-fee',
-  'dapp-tx-warning',
-  'dapp-tx-unlock',
-  'dapp-tx-touchid-btn',
-  'dapp-tx-password-link',
-  'dapp-tx-password-section',
-  'dapp-tx-password-input',
-  'dapp-tx-password-submit',
-  'dapp-tx-error',
-  'dapp-tx-reject',
-  'dapp-tx-approve',
-  'dapp-tx-auto-approve-row',
-  'dapp-tx-auto-approve',
-];
-
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const settle = async (rounds = 20) => {
   for (let i = 0; i < rounds; i += 1) await flush();
@@ -134,8 +110,6 @@ const until = async (condition, what) => {
   }
   throw new Error(`timed out waiting for ${what}`);
 };
-const shown = (ctx) =>
-  until(() => ctx.elements['dapp-tx-error'].textContent !== '', 'the approval to show the outcome');
 
 // The phone's side of openlv: links at once, answers the network switch,
 // and answers the payment only as `answer` says (by default, never).
@@ -255,91 +229,63 @@ async function startPhone({ answer, holdRequestSent = null, holdAbort = false } 
   };
 }
 
-const rendererWindow = (phone) => ({
-  electronAPI: { getSettings: async () => ({ enableIdentityWallet: true }) },
-  addEventListener: () => {},
-  identity: { getStatus: async () => ({ isUnlocked: true }) },
-  dappPermissions: {
-    getPermission: async () => ({ walletIndex: PHONE_INDEX, chainId: 100 }),
-    isTransactionAutoApproved: async () => mockAutoApprove,
-    updateLastUsed: async () => {},
-  },
-  networks: { getChains: async () => ({ success: true, chains: { 100: { name: 'Gnosis' } } }) },
-  wallet: {
-    getDerivedWallets: async () => ({
-      success: true,
-      wallets: [{ index: PHONE_INDEX, address: PHONE.address, type: 'remote' }],
-    }),
-    estimateGas: async () => ({ success: true, gasLimit: '21000' }),
-    getGasPrice: async () => ({
-      success: true,
-      type: 'legacy',
-      gasPrice: '1000000000',
-      effectiveGasPrice: '1000000000',
-    }),
-    confirmSigning: (...args) => phone.invoke('wallet:confirm-signing', ...args),
-    dappSendTransaction: (...args) => phone.invoke('wallet:dapp-send-transaction', ...args),
-  },
-});
-
-function mockRendererModules() {
-  jest.doMock('./wallet-utils.js', () => ({
-    // A phone account skips the vault's unlock, as in the app.
-    bypassUnlockGateForDevice: (_index, _unlock, confirm) => {
-      if (confirm) confirm.disabled = false;
-      return true;
-    },
-    bypassUnlockGateForSafe: () => false,
-    isSafeAccount: () => false,
-    // A phone picks and pays its own fee: the fee check has none to judge.
-    accountType: () => 'remote',
-    renderSafeFeePayer: () => {},
-    truncateAddress: (address) => address,
-    signingButtonLabel: () => 'Confirm on your phone…',
-    GNOSIS_CHAIN_ID: 100,
-  }));
-  jest.doMock('./safe-signing.js', () => ({
-    openSafeSigningBoard: () => {},
-    isSafeSigningBoardOpen: () => false,
-    openSafeMessageBoard: () => {},
-    abandonSafeMessageBoard: () => {},
-  }));
-  jest.doMock('./wallet-state.js', () => ({
-    walletState: { identityView: createElement('div'), selectedChainId: 100 },
-    registerScreenHider: () => {},
-    hideAllSubscreens: () => {},
-  }));
-  jest.doMock('../sidebar.js', () => ({ open: () => {} }));
-}
-
 /**
- * The site asks for a payment on the dApp approval, over main's real
- * handlers, and the user confirms it.
+ * The site asks for a payment, and main's dispatcher serves it: the user
+ * approves main's prompt (or, with `ruled`, the site's rule answers it), and
+ * main's issuer mints and spends the token before the phone is asked.
+ * `answer` is the page's answer, once main has one.
  */
 async function start(options = {}) {
   const phone = await startPhone(options);
-  const elements = Object.fromEntries(
-    DAPP_TX_ELEMENT_IDS.map((id) => [id, createElement('button')])
-  );
-  elements['dapp-tx-auto-approve'].checked = false;
-  // Hidden until shown, as in index.html: main's prompt guard
-  // (dapp-prompt-guard.js) reads a visible screen as a prompt showing.
-  elements['sidebar-dapp-tx'].classList.add('hidden');
-  global.document = createDocument({ elementsById: elements });
-  global.window = rendererWindow(phone);
-  mockRendererModules();
-  const dappTx = await import('./dapp-tx.js');
-  dappTx.initDappTx();
-
+  const confirmations = require('../../../main/wallet/signing-confirmation');
+  const { createSendDispatchers } = require('../../../main/page/page-sends');
+  const permissions = require('../../../main/wallet/dapp-permissions');
+  const dispatch = createSendDispatchers(
+    {
+      getPermission: permissions.getPermission,
+      updateLastUsed: jest.fn(),
+      walletList: async () => [{ index: PHONE_INDEX, name: 'Phone', address: PHONE.address, type: 'remote' }],
+      chainIdOf: () => 100,
+      chainName: () => 'Gnosis',
+      networks: () => ({ 100: { name: 'Gnosis', nativeSymbol: 'xDAI' } }),
+      agentAnswer: async () => null,
+    },
+    {
+      inCustody: () => false,
+      isVaultUnlocked: async () => true,
+      ruleMatches: () => mockAutoApprove,
+      rulePaused: async () => false,
+      estimateGas: async () => ({ gasLimit: '21000' }),
+      getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' }),
+    }
+  )['ethereum:eth_sendTransaction'];
+  const prompts = [];
+  let approved = null;
+  const page = { key: SITE };
+  const context = {
+    requester: { key: SITE, guest: 31, window: 7, navigation: 1, chain: null },
+    method: 'eth_sendTransaction',
+    params: [
+      mockAutoApprove
+        ? { to: '0x' + '22'.repeat(20), data: '0x095ea7b3' + '00'.repeat(64) }
+        : { to: '0x' + '22'.repeat(20), value: '0x1' },
+    ],
+    nameHolds: async () => true,
+    holdsKey: () => true,
+    prompt: async (spec) => {
+      prompts.push(spec);
+      approved = 'a'.repeat(64);
+      return { approve: true, choices: { alwaysAllow: false, feeAcknowledged: false } };
+    },
+    confirm: (kind, index, payload) =>
+      confirmations.issuePageConfirmation(kind, index, payload, { ...page, handle: approved }).token,
+    spend: (token, kind, index, payload) =>
+      confirmations.consumePageConfirmation(token, kind, index, payload, { ...page, handle: approved }),
+    signal: new AbortController().signal,
+    leaveWalletSlot: () => {},
+  };
   const site = { state: 'pending' };
-  const answered = dappTx
-    .showDappTxApproval({}, SITE, { to: '0x' + '22'.repeat(20), value: '0x1' }, 100)
-    .then(
-      (value) => Object.assign(site, { state: 'resolved', value }),
-      (value) => Object.assign(site, { state: 'rejected', value })
-    );
-  await settle();
-  elements['dapp-tx-approve'].dispatch('click');
+  const answer = dispatch(context).then((value) => Object.assign(site, { state: 'answered', value }));
   if (options.holdRequestSent) {
     await until(() => phone.phoneGot().length === 1, 'the network switch');
     await settle();
@@ -348,63 +294,7 @@ async function start(options = {}) {
     await until(() => phone.phoneGot().length === 2, 'the payment request on the phone');
     expect(phone.phoneGot()).toEqual(['wallet_switchEthereumChain', 'eth_sendTransaction']);
   }
-  return { ...phone, elements, site, answered };
-}
-
-/**
- * The site's auto-approved payment, through the real dApp provider, over
- * main's real handlers: what the page receives.
- */
-async function startAutoApproved(options = {}) {
-  mockAutoApprove = true;
-  const phone = await startPhone(options);
-  const address = createElement('input');
-  address.value = SITE;
-  global.document = createDocument({ elementsById: { 'address-input': address } });
-  global.window = rendererWindow(phone);
-  mockRendererModules();
-  // The requesting tab's committed address (#764), not the address bar's.
-  jest.doMock('../tabs.js', () => ({ getDisplayUrlForWebview: () => SITE }));
-  jest.doMock('../wallet-ui.js', () => ({
-    showDappConnect: jest.fn(),
-    getSelectedChainId: () => 100,
-    setSelectedChainId: jest.fn(),
-    updateConnectionBanner: jest.fn(),
-    showDappTxApproval: jest.fn(),
-    showDappSignApproval: jest.fn(),
-    showVaultUnlock: jest.fn(),
-    updateSwarmConnectionBanner: jest.fn(),
-    updateX402ConnectionBanner: jest.fn(),
-  }));
-  const provider = await import('../dapp-provider.js');
-  await settle();
-  const webview = createElement('webview');
-  webview.send = jest.fn();
-  webview.getURL = () => SITE;
-  webview.getWebContentsId = () => 31;
-  provider.setupWebviewProvider(webview);
-  webview.dispatch('did-frame-navigate', {
-    isMainFrame: true,
-    frameProcessId: 7,
-    frameRoutingId: 4,
-  });
-  webview.dispatch('ipc-message', {
-    channel: 'dapp:provider-request',
-    frameId: [7, 4],
-    args: [
-      {
-        id: 31,
-        method: 'eth_sendTransaction',
-        params: [{ to: '0x' + '22'.repeat(20), data: '0x095ea7b3' + '00'.repeat(64) }],
-      },
-    ],
-  });
-  const pageGot = () =>
-    webview.send.mock.calls
-      .filter(([channel]) => channel === 'dapp:provider-response')
-      .map(([, response]) => response);
-  await until(() => pageGot().length > 0, "the page's answer");
-  return { ...phone, pageGot };
+  return { ...phone, prompts, site, answer };
 }
 
 beforeEach(() => {
@@ -422,47 +312,35 @@ afterEach(() => {
   fs.rmSync(mockUserData, { recursive: true, force: true });
 });
 
+// From PRQ-5b main answers the page itself once the phone has answered, or
+// hasn't: the outcome reaches the site as main reads it, with no screen left
+// for the user to dismiss first. A payment that may have been sent is in the
+// wallet's records.
+const REJECTED = { code: 4001, message: 'User rejected the request' };
+const answeredWith = async (ctx) => {
+  await ctx.answer;
+  return ctx.site.value;
+};
+
 describe("a site's answer when its phone payment's outcome is unknown (D13)", () => {
-  test('the user stops waiting: Reject tells the site the outcome is unknown, never 4001', async () => {
-    const { elements, broker, jobs, site, answered } = await start();
-    broker.cancelJob(jobs.find((event) => event.phase === 'qr').jobId);
-    await shown({ elements });
-
-    expect(elements['dapp-tx-error'].textContent).toMatch(/unknown whether this payment was sent/);
-    expect(elements['dapp-tx-approve'].disabled).toBe(true);
-    expect(site.state).toBe('pending');
-
-    elements['dapp-tx-reject'].dispatch('click');
-    await answered;
-    expect(site).toEqual({ state: 'rejected', value: SITE_UNKNOWN });
+  test('the user stops waiting: the site hears the outcome is unknown, never 4001', async () => {
+    const ctx = await start();
+    // Main's prompt was approved, and the phone asked only then.
+    expect(ctx.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
+    ctx.broker.cancelJob(ctx.jobs.find((event) => event.phase === 'qr').jobId);
+    expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
   });
 
-  test("main's own timeout: Back tells the site the same", async () => {
+  test("main's own timeout: the site hears the same", async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
-    const { elements, site, answered } = await start();
+    const ctx = await start();
     jest.advanceTimersByTime(5 * 60 * 1000 + 1);
-    await shown({ elements });
-
-    expect(elements['dapp-tx-approve'].disabled).toBe(true);
-    elements['dapp-tx-back'].dispatch('click');
-    await answered;
-    expect(site).toEqual({ state: 'rejected', value: SITE_UNKNOWN });
+    expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
   });
 
   test("the phone's own refusal is an answer: nothing was sent, so 4001 stands", async () => {
-    const { elements, site, answered } = await start({
-      answer: async () => ({ error: { code: 4001, message: 'User denied.' } }),
-    });
-    await shown({ elements });
-
-    expect(elements['dapp-tx-error'].textContent).toBe('Request rejected on your phone.');
-    expect(elements['dapp-tx-approve'].disabled).toBe(false);
-    elements['dapp-tx-reject'].dispatch('click');
-    await answered;
-    expect(site).toEqual({
-      state: 'rejected',
-      value: { code: 4001, message: 'User rejected the request' },
-    });
+    const ctx = await start({ answer: async () => ({ error: { code: 4001, message: 'User denied.' } }) });
+    expect(await answeredWith(ctx)).toEqual({ error: REJECTED });
   });
 });
 
@@ -479,29 +357,21 @@ describe("the request goes only with main's leave (787-M1)", () => {
     jest.advanceTimersByTime(FIVE_MINUTES);
     await settle();
     ctx.deliver.requestSent();
-    await shown(ctx);
-
-    // Main had given up, so it refused: the payment never reached the phone.
+    // Main had given up, so it refused: the payment never reached the phone,
+    // and the site hears that it failed, not that its outcome is unknown.
+    expect(await answeredWith(ctx)).toEqual({
+      error: { code: -32603, message: 'Your phone did not respond in time. Try again with a new QR code.' },
+    });
     expect(ctx.phoneGot()).toEqual(['wallet_switchEthereumChain']);
-    expect(ctx.elements['dapp-tx-error'].textContent).toMatch(/did not respond in time/);
-    expect(ctx.elements['dapp-tx-approve'].disabled).toBe(false);
-    ctx.elements['dapp-tx-reject'].dispatch('click');
-    await ctx.answered;
-    expect(ctx.site.value).toEqual({ code: 4001, message: 'User rejected the request' });
   });
 
   test('main allowed it, and its abort is late: the payment went, so the outcome is unknown', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
     const ctx = await start({ holdAbort: true });
     jest.advanceTimersByTime(FIVE_MINUTES);
-    await shown(ctx);
-
-    expect(ctx.elements['dapp-tx-approve'].disabled).toBe(true);
+    expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
     ctx.deliver.abort();
     await settle();
-    ctx.elements['dapp-tx-back'].dispatch('click');
-    await ctx.answered;
-    expect(ctx.site.value).toEqual(SITE_UNKNOWN);
   });
 
   test('main allowed it, then timed out before it went: nothing goes, and the outcome stays unknown', async () => {
@@ -515,10 +385,7 @@ describe("the request goes only with main's leave (787-M1)", () => {
     await settle();
 
     expect(ctx.phoneGot()).toEqual(['wallet_switchEthereumChain']);
-    expect(ctx.elements['dapp-tx-approve'].disabled).toBe(true);
-    ctx.elements['dapp-tx-reject'].dispatch('click');
-    await ctx.answered;
-    expect(ctx.site.value).toEqual(SITE_UNKNOWN);
+    expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
   });
 });
 
@@ -541,18 +408,9 @@ describe("the phone's error answers to a payment on it (787-M2)", () => {
           return reply;
         },
       });
-      await shown(ctx);
-      expect(ctx.elements['dapp-tx-error'].textContent).toMatch(
-        /unknown whether this payment was sent/
-      );
-      expect(ctx.elements['dapp-tx-approve'].disabled).toBe(true);
-      ctx.elements['dapp-tx-approve'].dispatch('click');
+      expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
       await settle();
       expect(requests).toBe(1);
-
-      ctx.elements['dapp-tx-reject'].dispatch('click');
-      await ctx.answered;
-      expect(ctx.site.value).toEqual(SITE_UNKNOWN);
     }
   );
 
@@ -560,31 +418,22 @@ describe("the phone's error answers to a payment on it (787-M2)", () => {
     'the explicit refusal %s is an answer: nothing was sent',
     async (code) => {
       const ctx = await start({ answer: async () => ({ error: { code, message: 'refused' } }) });
-      await shown(ctx);
-      expect(ctx.elements['dapp-tx-error'].textContent).toBe('refused');
-      expect(ctx.elements['dapp-tx-approve'].disabled).toBe(false);
-      ctx.elements['dapp-tx-reject'].dispatch('click');
-      await ctx.answered;
-      expect(ctx.site.value).toEqual({ code: 4001, message: 'User rejected the request' });
+      expect(await answeredWith(ctx)).toEqual({ error: { code: -32603, message: 'refused' } });
     }
   );
 
-  test('an auto-approved payment: the page hears unknown from an internal error', async () => {
-    const ctx = await startAutoApproved({ answer: async () => INTERNAL });
+  test('a payment the rule answered: the page hears unknown from an internal error', async () => {
+    mockAutoApprove = true;
+    const ctx = await start({ answer: async () => INTERNAL });
+    expect(ctx.prompts).toEqual([]);
     expect(ctx.phoneGot()).toEqual(['wallet_switchEthereumChain', 'eth_sendTransaction']);
-    expect(ctx.pageGot()).toEqual([{ id: 31, result: null, error: SITE_UNKNOWN }]);
+    expect(await answeredWith(ctx)).toEqual({ error: SITE_UNKNOWN });
   });
 
-  test("an auto-approved payment: the phone's own rejection reaches the page as before", async () => {
-    const ctx = await startAutoApproved({
-      answer: async () => ({ error: { code: 4001, message: 'User denied.' } }),
-    });
-    expect(ctx.pageGot()).toEqual([
-      {
-        id: 31,
-        result: null,
-        error: { code: -32603, message: 'Request rejected on your phone.', data: undefined },
-      },
-    ]);
+  test("a payment the rule answered: the phone's own rejection is the user's", async () => {
+    mockAutoApprove = true;
+    const ctx = await start({ answer: async () => ({ error: { code: 4001, message: 'User denied.' } }) });
+    expect(ctx.prompts).toEqual([]);
+    expect(await answeredWith(ctx)).toEqual({ error: REJECTED });
   });
 });

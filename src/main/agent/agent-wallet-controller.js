@@ -31,9 +31,14 @@ const PRIVILEGED_METHODS = new Set([
 ]);
 
 // The methods main serves for a page and hands to the agent attested
-// (freedom-core design 0011): connecting (PRQ-4), and messages and typed
-// data (PRQ-5a). A send still comes through the chrome until its step.
-const ATTESTED_METHODS = new Set(['eth_requestAccounts', 'personal_sign', 'eth_signTypedData_v4']);
+// (freedom-core design 0011): connecting (PRQ-4), messages and typed data
+// (PRQ-5a), and sends (PRQ-5b).
+const ATTESTED_METHODS = new Set([
+  'eth_requestAccounts',
+  'personal_sign',
+  'eth_signTypedData_v4',
+  'eth_sendTransaction',
+]);
 
 function providerError(code, message) {
   return { code, message };
@@ -580,11 +585,36 @@ class AgentWalletController {
         requiresUnlock: wallet.type === 'mnemonic',
       },
     });
-    const result = await this.signAndRecord(tx, this.getSigner(wallet.index), {
-      kind: KINDS.DAPP_SEND,
-      origin: permissionKey,
+    // A request main attested sends only while main still holds it: not
+    // answered (its deadline, its page gone), the name checked again, the
+    // page still under its key and its grant still exposing this account, in
+    // the same run as the send. A signer can take long (a Ledger, the core),
+    // so the same gates run again after the signature and before the signed
+    // bytes are recorded or sent (the transaction service's `guardCommit`),
+    // and the guard commits them itself. A phone signs and broadcasts in one
+    // step: its send is gated before the phone is asked.
+    const grantStillExposes = () => {
+      if (this.getPermission(permissionKey)?.walletIndex !== wallet.index) {
+        throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The site is no longer connected with this account');
+      }
+    };
+    const record = { kind: KINDS.DAPP_SEND, origin: permissionKey };
+    const result = await this.#underMain(context, () => {
+      if (!context.attested) return this.signAndRecord(tx, this.getSigner(wallet.index), record);
+      grantStillExposes();
+      return this.signAndRecord(tx, this.getSigner(wallet.index), record, {
+        guardCommit: (commit) =>
+          this.#underMain(context, () => {
+            grantStillExposes();
+            return commit();
+          }),
+      });
     });
-    this.updateLastUsed(permissionKey, chainId);
+    // A grant held under the attested key is touched only while main still
+    // holds the request after the send's wait, checked the same way. The
+    // hash itself reaches the page only while its name holds, which main
+    // checks when it answers.
+    await this.#underMain(context, () => this.updateLastUsed(permissionKey, chainId), { required: false });
     return {
       providerResult: result.hash,
       receipt: {
