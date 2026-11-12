@@ -1037,8 +1037,7 @@
     render(view, ui, body) {
       const { payment, token } = view;
       body.append(
-        ui.own('Site', view.site),
-        ui.note('requests an on-chain payment'),
+        ui.own('Requested by', view.site),
         ui.own('From', walletAccountText(view.account)),
         ui.page('Amount', assetAmount(payment.amount, token)),
         ui.page('To', payment.payTo, { mono: true })
@@ -1086,7 +1085,7 @@
       const { current, change, token } = view;
       body.append(
         ui.note('Auto-pay pays this site without asking, up to its spend cap, until its time is up.'),
-        ui.own('Site', view.site),
+        ui.own('Auto-pay for', view.site),
         ui.own('Network', chainText(view.chain)),
         token ? ui.own('Asset', token.symbol) : ui.page('Asset', view.asset, { mono: true }),
         ui.own('Spent so far', assetAmount(current.spentAmount, token))
