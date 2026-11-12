@@ -64,12 +64,13 @@
  * prompt carries main's `site`, the request's attested key, and whatever the
  * user decides, the dispatcher acts on its own record.
  *
- * With the approvals document's flag on (APS-1, `FREEDOM_APPROVALS_DOCUMENT`,
+ * With the approvals document's flag on (APS-1, APS-2, `FREEDOM_APPROVALS_DOCUMENT=1`,
  * `approvals/approvals-document.js`), `page:prompt`, `page:prompt-hidden`
  * and `page:prompt-closed` go to the window's approvals document instead,
  * the chrome keeps `page:prompt-pending` and `page:prompt-closed` for its
  * badges and count, and the chrome's `page:decide` is refused: a decision
  * counts only from the window's own approvals document (`decideInWindow`).
+ * The Safe signing boards stay in the chrome (`CHROME_KINDS`).
  *
  * A record prompts one prompt at a time, and may prompt again once its
  * prompt is decided (PRQ-5: a vault unlock and then the signature, a Safe's
