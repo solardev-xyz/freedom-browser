@@ -585,3 +585,153 @@ describe('dapp-sign: the typed-data view', () => {
     expect(elements['dapp-sign-typed-ignored'].classList.contains('hidden')).toBe(true);
   });
 });
+
+// freedom-core design 0011, PRQ-5a: main's signing prompt (`eth.sign`)
+// renders here. The screen shows main's view and answers the handle; main
+// mints the token and signs, and the chrome sets no rule.
+describe('dapp-sign: main\'s prompt (0011 PRQ-5a)', () => {
+  const SITE = { key: 'https://app.example', label: 'https://app.example' };
+  const ACCOUNT = { index: LEDGER_INDEX, name: 'Ledger', address: '0xledger', type: 'ledger' };
+
+  async function loadPage(options) {
+    const env = await loadDappSign(options);
+    const decisions = [];
+    let answer = deferred();
+    global.window.pagePrompts = {
+      decide: jest.fn((handle, approve, choices) => {
+        decisions.push({ handle, approve, choices });
+        return answer.promise;
+      }),
+    };
+    const renderer = require('../page-prompt-renderers.js').pagePromptRenderer('eth.sign');
+    const show = (view, handle = 'h1') =>
+      renderer.show({ handle, guest: 3, kind: 'eth.sign', site: SITE, view: { account: ACCOUNT, chain: { id: 100, name: 'Gnosis Chain' }, ...view } });
+    const showing = () => !env.elements['sidebar-dapp-sign'].classList.contains('hidden');
+    return { ...env, decisions, renderer, show, showing, answer: () => answer, nextAnswer: () => (answer = deferred()) };
+  }
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  test("it renders main's site and what main says the message signs", async () => {
+    const env = await loadPage();
+    env.show({ method: 'personal_sign', ...messagePrepared('hello') });
+    await flush();
+    expect(env.showing()).toBe(true);
+    expect(env.renderer.isShowing()).toBe('h1');
+    expect(env.elements['dapp-sign-site'].textContent).toBe(SITE.label);
+    expect(env.elements['dapp-sign-message'].textContent).toBe('hello');
+    expect(env.elements['dapp-sign-approve'].disabled).toBe(false);
+  });
+
+  test('Sign answers the handle; a device signature keeps the screen until main answers', async () => {
+    const env = await loadPage();
+    env.show({ method: 'personal_sign', ...messagePrepared('0xdeadbeef') });
+    await flush();
+    env.elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(env.decisions).toEqual([{ handle: 'h1', approve: true, choices: { alwaysAllow: false } }]);
+    expect(env.executeSign).not.toHaveBeenCalled();
+    // Main closes the handle as decided while the device signs: still up.
+    env.renderer.close('h1');
+    expect(env.showing()).toBe(true);
+    expect(env.elements['dapp-sign-approve'].textContent).toBe('Confirm on your Ledger…');
+    expect(env.elements['dapp-sign-reject'].disabled).toBe(true);
+    const flight = require('./signature-flight.js');
+    expect(flight.isSignatureInFlight()).toBe(true);
+    env.answer().resolve({ ok: true });
+    await flush();
+    expect(env.showing()).toBe(false);
+    expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  test('"always allow" goes to main as the choice; the chrome writes no rule', async () => {
+    const env = await loadPage();
+    env.show({ method: 'personal_sign', ...messagePrepared('0xdeadbeef') });
+    await flush();
+    env.elements['dapp-sign-auto-approve'].checked = true;
+    env.elements['dapp-sign-approve'].dispatch('click');
+    env.answer().resolve({ ok: true });
+    await flush();
+    expect(env.decisions).toEqual([{ handle: 'h1', approve: true, choices: { alwaysAllow: true } }]);
+    expect(env.setSigningAutoApprove).not.toHaveBeenCalled();
+  });
+
+  test.each(['dapp-sign-reject', 'dapp-sign-back'])('%s answers the handle with a rejection and takes the screen down', async (id) => {
+    const env = await loadPage();
+    env.show({ method: 'personal_sign', ...messagePrepared('0xdeadbeef') });
+    await flush();
+    env.elements[id].dispatch('click');
+    await flush();
+    expect(env.decisions).toEqual([{ handle: 'h1', approve: false, choices: {} }]);
+    expect(env.showing()).toBe(false);
+  });
+
+  test('a Safe: its approval takes the screen down at once, for the board main shows next', async () => {
+    const env = await loadPage({ safe: true });
+    env.show({ method: 'personal_sign', account: { ...ACCOUNT, type: 'safe' }, ...messagePrepared('0xdeadbeef') });
+    await flush();
+    env.elements['dapp-sign-approve'].dispatch('click');
+    await flush();
+    expect(env.decisions).toHaveLength(1);
+    expect(env.showing()).toBe(false);
+    expect(require('./signature-flight.js').isSignatureInFlight()).toBe(false);
+  });
+
+  test('main hiding it takes it down with no decision; showing it again restores it', async () => {
+    const env = await loadPage();
+    env.show({ method: 'eth_signTypedData_v4', ...typedPrepared({ ...TYPED_FOR_PAGE }, 100) });
+    await flush();
+    expect(env.renderer.close('h1')).toBe(true);
+    expect(env.showing()).toBe(false);
+    expect(env.decisions).toEqual([]);
+    env.show({ method: 'eth_signTypedData_v4', ...typedPrepared({ ...TYPED_FOR_PAGE }, 100) });
+    await flush();
+    expect(env.showing()).toBe(true);
+    expect(env.elements['dapp-sign-typed-data'].textContent).toContain('amount');
+  });
+
+  test("typed data shows the core's view and its warnings, from main's view", async () => {
+    const env = await loadPage();
+    const prepared = typedPrepared({ ...TYPED_FOR_PAGE, domain: { chainId: 1 } }, 100, {
+      1: { name: 'Ethereum' },
+      100: { name: 'Gnosis Chain' },
+    });
+    env.show({ method: 'eth_signTypedData_v4', typedData: prepared.typedData, chains: prepared.chains });
+    await flush();
+    expect(env.elements['dapp-sign-typed-warning'].classList.contains('hidden')).toBe(false);
+    expect(env.elements['dapp-sign-typed-warning-text'].textContent).toBe(
+      'This data is for Ethereum (chain 1), but the site is on Gnosis Chain (chain 100).'
+    );
+  });
+
+  test("a view the screen can't show is rejected, never signed", async () => {
+    const env = await loadPage();
+    env.show({ method: 'personal_sign', message: { hex: 'not hex', rawHash: false } });
+    await flush();
+    expect(env.decisions).toEqual([{ handle: 'h1', approve: false, choices: {} }]);
+    expect(env.showing()).toBe(false);
+  });
+
+  test('another screen hiding it reports it displaced, undecided', async () => {
+    const env = await loadPage();
+    const displaced = [];
+    require('../page-prompt-renderers.js').onPagePromptDisplaced((handle) => displaced.push(handle));
+    env.show({ method: 'personal_sign', ...messagePrepared('0xdeadbeef') });
+    await flush();
+    env.hideForOtherScreen();
+    expect(displaced).toEqual(['h1']);
+    expect(env.renderer.isShowing()).toBeNull();
+    expect(env.decisions).toEqual([]);
+  });
+});
+
+const TYPED_FOR_PAGE = {
+  types: { EIP712Domain: [{ name: 'chainId', type: 'uint256' }], Order: [{ name: 'amount', type: 'uint256' }] },
+  domain: { chainId: 100 },
+  primaryType: 'Order',
+  message: { amount: '1' },
+};

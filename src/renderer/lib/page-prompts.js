@@ -17,9 +17,14 @@
  * The tab in front is reported to main by tabs.js (`page:foreground`).
  *
  * The sidebar is shared with the prompts that still take the chrome's own
- * path until their step moves them (signing, Swarm, Radicle). A prompt main
+ * path until their step moves them (sends, Swarm, Radicle). A prompt main
  * shows waits while one of those holds the sidebar or a device signature is
  * in flight, and shows once the sidebar is back on the wallet's own view.
+ *
+ * The screens by kind: the Connect screen (`eth.connect`, PRQ-4), and from
+ * PRQ-5a the Sign screen (`eth.sign`), the vault unlock (`vault.unlock`)
+ * and a Safe's signing board (`eth.safe_message`), which register
+ * themselves (`page-prompt-renderers.js`).
  */
 
 import { isDappPromptShowing } from './wallet/dapp-prompt-guard.js';
@@ -32,6 +37,7 @@ import {
   onPageConnectDisplaced,
 } from './wallet/dapp-connect.js';
 import { setWalletPromptCounts } from './tabs.js';
+import { pagePromptRenderer, onPagePromptDisplaced } from './page-prompt-renderers.js';
 
 // How often a prompt that couldn't show yet looks again.
 const RETRY_MS = 250;
@@ -43,10 +49,10 @@ let shown = null;
 let retryTimer = null;
 let countEl = null;
 
-// The renderers, by kind. Only connecting has moved to main (PRQ-4).
-const RENDERERS = {
-  'eth.connect': { show: showPageConnect, close: closePageConnect, isShowing: shownPageConnect },
-};
+// The renderers, by kind: connecting here, and the screens that register
+// themselves.
+const CONNECT = { show: showPageConnect, close: closePageConnect, isShowing: shownPageConnect };
+const rendererFor = (kind) => (kind === 'eth.connect' ? CONNECT : pagePromptRenderer(kind));
 
 function countsByGuest() {
   const counts = new Map();
@@ -85,7 +91,7 @@ function render({ waited = false } = {}) {
     stopRetry();
     return;
   }
-  const renderer = RENDERERS[prompt.kind];
+  const renderer = rendererFor(prompt.kind);
   if (!renderer || renderer.isShowing() === prompt.handle) {
     stopRetry();
     return;
@@ -104,7 +110,7 @@ function render({ waited = false } = {}) {
 
 function takeDown(handle) {
   if (shown?.handle !== handle) return;
-  const renderer = RENDERERS[shown.kind];
+  const renderer = rendererFor(shown.kind);
   shown = null;
   stopRetry();
   renderer?.close(handle);
@@ -129,17 +135,19 @@ export function initPagePrompts() {
     if (typeof message?.handle === 'string') takeDown(message.handle);
   });
   api.onPrompt?.((message) => {
-    if (typeof message?.handle !== 'string' || !RENDERERS[message.kind]) return;
+    if (typeof message?.handle !== 'string' || !rendererFor(message.kind)) return;
     if (shown && shown.handle !== message.handle) takeDown(shown.handle);
     shown = message;
     render();
   });
   // Another screen took the sidebar from a prompt main still shows: it
   // shows again once the sidebar is free.
-  onPageConnectDisplaced((handle) => {
+  const displaced = (handle) => {
     if (shown?.handle !== handle) return;
     if (retryTimer === null) retryTimer = setInterval(() => render({ waited: true }), RETRY_MS);
-  });
+  };
+  onPageConnectDisplaced(displaced);
+  onPagePromptDisplaced(displaced);
 }
 
 /** For tests: forget everything. */
