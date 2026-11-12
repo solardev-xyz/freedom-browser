@@ -1965,7 +1965,9 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
   expect(result.capturedTransaction).toEqual({
     transaction: {
       to: '0x3333333333333333333333333333333333333333',
-      value: '0xde0b6b3a7640000',
+      // The page's 0xde0b6b3a7640000 (1 xDAI), in main's checked form: main
+      // checks a page's send before it offers it to the agent (0011 PRQ-5b).
+      value: '1000000000000000000',
       data: '0xabcdef12',
       gasLimit: '21000',
       chainId: 100,

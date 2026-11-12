@@ -496,11 +496,27 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
       [[{ to: CONTRACT, value: 1.5 }], 'Invalid transaction value'],
       [[{ to: CONTRACT, value: { hex: '0x1' } }], 'Invalid transaction value'],
       [[{ to: CONTRACT, data: 'deadbeef' }], 'Invalid transaction data'],
+      // Bytes: an odd number of hex digits is no byte string.
+      [[{ to: CONTRACT, data: '0x1' }], 'Invalid transaction data'],
+      [[{ to: CONTRACT, data: '0xabc' }], 'Invalid transaction data'],
     ]) {
       expect(await page.ask('eth_sendTransaction', params)).toEqual({ error: { code: -32602, message } });
     }
     expect(env.prompts()).toEqual([]);
     expect(env.deps.sends.estimateGas).not.toHaveBeenCalled();
+  });
+
+  test("the page's from and chainId are ignored, outside custody too", async () => {
+    const env = setup();
+    env.connect();
+    const page = env.tab();
+    const answer = page.send({ ...CALL, from: LEDGER, chainId: '0x1' });
+    await flush();
+    expect(env.lastPrompt().view).toMatchObject({ account: { index: 0 }, chain: { id: 100 } });
+    await env.decide(env.lastPrompt().handle, true, {});
+    expect(await answer).toEqual({ result: HASH });
+    expect(env.state.records[0].tx).toMatchObject({ chainId: 100 });
+    expect(env.state.records[0].tx.from).toBeUndefined();
   });
 
   test('the shape checks: a quantity as hex, decimal or a number; data as hex', () => {
@@ -1278,6 +1294,21 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
     expect(env.state.safe.guards.size).toBe(0);
   });
 
+  test('parked, and its grant revoked before it executes: not executed for the site, and the keyless answer', async () => {
+    const env = setup();
+    env.connect(KEY_A, SAFE_INDEX);
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    env.decide(env.lastPrompt().handle, false);
+    await flush();
+    env.state.permissions.delete(KEY_A);
+    expect(await env.executeSafe()).toEqual({ executed: false, refused: 'SAFE_SITE_WITHDRAWN' });
+    expect(await answer).toEqual(NO_ADDRESS);
+  });
+
   test('an honest name, parked and executed later: checked again, executed, and the hash goes back', async () => {
     const env = setup();
     env.names.set(NAME, IPNS_KEY);
@@ -1337,6 +1368,7 @@ describe('a tab the agent holds: its send inside the request', () => {
       return page;
     };
     const agentSends = [];
+    const agentCommitted = [];
     const controller = new AgentWalletController({
       identityManager: { getDerivedWallets: async () => env.state.wallets, getActiveWalletIndex: () => 0 },
       getPermission: (key) => env.state.permissions.get(key) || null,
@@ -1347,8 +1379,17 @@ describe('a tab the agent holds: its send inside the request', () => {
       getSigner: () => env.signer,
       estimateGas: async () => ({ gasLimit: '21000' }),
       getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
-      signAndRecord: async (tx, _signer, context) => {
+      // As the transaction service runs it: the signer's wait, then the
+      // caller's guard, which commits the signed bytes itself or withdraws
+      // them, then the broadcast.
+      signAndRecord: async (tx, _signer, context, options) => {
         agentSends.push({ tx, context });
+        if (env.state.agentSignerHold) await env.state.agentSignerHold.promise;
+        const commit = async () => {
+          agentCommitted.push(tx);
+          return {};
+        };
+        await (options?.guardCommit ? options.guardCommit(commit) : commit());
         env.state.afterAgentSend?.();
         return { hash: HASH, paymentId: 'payment_1' };
       },
@@ -1370,7 +1411,7 @@ describe('a tab the agent holds: its send inside the request', () => {
         },
         request
       );
-    return { approvals, agentSends };
+    return { approvals, agentSends, agentCommitted };
   }
 
   test("it sends under the attested key once approved, holding the document's slot", async () => {
@@ -1436,6 +1477,70 @@ describe('a tab the agent holds: its send inside the request', () => {
     expect(await answer).toEqual({ result: HASH });
     expect(agentSends).toHaveLength(1);
     expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test.each([
+    [
+      'its name moves',
+      (env) => env.names.set(NAME, OTHER_IPNS_KEY),
+      NO_ADDRESS,
+    ],
+    ['its document navigates', (env, page) => page.guest.commit(`ipns://${IPNS_KEY}/next`), GONE],
+    [
+      'its grant is revoked',
+      (env) => env.state.permissions.delete(NAME),
+      { error: { code: -32603, message: expect.stringContaining('no longer connected with this account') } },
+    ],
+    [
+      'its grant moves to another account',
+      (env) => env.state.permissions.set(NAME, { origin: NAME, walletIndex: LEDGER_INDEX, chainId: 100 }),
+      { error: { code: -32603, message: expect.stringContaining('no longer connected with this account') } },
+    ],
+  ])("when %s during the agent's signer wait: nothing is committed or broadcast", async (_label, change, expected) => {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME);
+    const { approvals, agentSends, agentCommitted } = withAgent(env);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    env.state.agentSignerHold = deferred();
+    const answer = page.send(TRANSFER);
+    await flush();
+    approvals[0].resolve('approved');
+    await flush();
+    // At the signer: past main's gate before the signature.
+    expect(agentSends).toHaveLength(1);
+    change(env, page);
+    env.state.agentSignerHold.resolve();
+    expect(await answer).toEqual(expected);
+    expect(agentCommitted).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test('malformed: refused at once (-32602), the agent never asked; the page\'s from and chainId ignored, as on main\'s path', async () => {
+    const env = setup();
+    env.connect();
+    const { approvals, agentSends } = withAgent(env);
+    const page = env.tab();
+    for (const [tx, message] of [
+      [{ to: 'not-an-address', value: '0x1' }, 'The transaction needs a recipient address (to)'],
+      [{ to: CONTRACT, value: '-1' }, 'Invalid transaction value'],
+      [{ to: CONTRACT, data: '0xabc' }, 'Invalid transaction data'],
+    ]) {
+      expect(await page.send(tx)).toEqual({ error: { code: -32602, message } });
+    }
+    expect(approvals).toEqual([]);
+    expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+    // A from and chainId the page names are ignored: the agent gets main's form.
+    const answer = page.send({ ...TRANSFER, from: LEDGER, chainId: '0x1' });
+    await flush();
+    expect(env.deps.agentWalletRequest).toHaveBeenCalledWith(
+      page.guest.id,
+      { method: 'eth_sendTransaction', params: [{ to: TRANSFER.to, value: '10000000000000000', data: '0x' }], chainId: 100 },
+      expect.anything()
+    );
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ result: HASH });
+    expect(agentSends[0].tx).toMatchObject({ to: TRANSFER.to, value: '10000000000000000', chainId: 100 });
   });
 
   test('the name is checked again just before the send: one that moved gets none', async () => {

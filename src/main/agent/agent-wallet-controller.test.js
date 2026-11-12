@@ -517,6 +517,56 @@ describe('AgentWalletController', () => {
         expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100);
       });
 
+      // Codex on #1191: a signer can outlast a name move, the page's going or
+      // its grant's change, so main's gates run again after the signature and
+      // before the signed bytes are recorded or sent, and commit them.
+      test('after the signature, before the commit: main\'s gates and the grant again, and the guard commits', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const committed = [];
+        let between = () => {};
+        harness.dependencies.signAndRecord.mockImplementation(async (tx, _signer, _context, options) => {
+          between();
+          await options.guardCommit(async () => committed.push(tx));
+          return { hash: '0xhash' };
+        });
+        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true) };
+        await expect(harness.controller.handleRequest(attestedContext(gate), send)).resolves.toMatchObject({
+          handled: true,
+          result: '0xhash',
+        });
+        expect(committed).toHaveLength(1);
+        // Before the send, after its signature, and before the last use.
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(3);
+        expect(gate.effectAllowed).toHaveBeenCalledTimes(3);
+        for (const [label, change] of [
+          ['main answered, or the name moved', () => gate.beforeEffect.mockResolvedValueOnce(false)],
+          ['the page left its key', () => gate.effectAllowed.mockReturnValueOnce(false)],
+          ['the grant moved to another account', () => harness.dependencies.getPermission.mockReturnValue({ walletIndex: 7 })],
+        ]) {
+          committed.length = 0;
+          harness.dependencies.getPermission.mockReturnValue({ walletIndex: 0, chainId: 100 });
+          between = change;
+          const provider = await harness.controller.handleRequest(attestedContext(gate), send);
+          expect({ label, provider }).toMatchObject({ label, provider: { handled: true, error: { code: -32603 } } });
+          expect({ label, committed }).toEqual({ label, committed: [] });
+        }
+      });
+
+      test('an attested send is refused before the signer when the grant no longer exposes the account', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        // The grant goes while main's gate resolves the name.
+        const gate = {
+          beforeEffect: jest.fn(async () => {
+            harness.dependencies.getPermission.mockReturnValue(null);
+            return true;
+          }),
+          effectAllowed: jest.fn(() => true),
+        };
+        const provider = await harness.controller.handleRequest(attestedContext(gate), send);
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+      });
+
       test("the name moving during the send: sent, but the grant's last use untouched", async () => {
         const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
         const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);

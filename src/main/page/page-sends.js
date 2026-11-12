@@ -154,7 +154,8 @@ function selectorOf(data) {
 }
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const HEX_DATA = /^0x[0-9a-fA-F]*$/;
+// Bytes: pairs of hex digits.
+const HEX_DATA = /^0x(?:[0-9a-fA-F]{2})*$/;
 
 /** A quantity as a decimal string, or null when absent. Throws on any other value. */
 function quantityOf(value, field) {
@@ -192,6 +193,11 @@ function txOf(params) {
     data,
     gas: quantityOf(raw.gas, 'gas'),
   };
+}
+
+/** Main's form of a checked transaction, as the agent service gets it. */
+function agentTxOf(tx) {
+  return { to: tx.to, value: tx.value, data: tx.data, ...(tx.gas ? { gas: tx.gas } : {}) };
 }
 
 /** `to` in checksummed form, as main shows an address. */
@@ -683,7 +689,7 @@ function createSendDispatchers(shared, deps = {}) {
     const safeTxHash = started?.safeTxHash;
     const settled = settledOutcome(context, ctx.walletIndex, safeTxHash);
     // Before each step that can execute the SafeTx, now or after it was
-    // parked: the name, the key and the requesting document, checked again
+    // parked: the name, the key, the grant and the requesting document, checked again
     // in the same run as the execution, which the guard runs itself. A
     // SafeTx whose site no longer holds isn't executed for the site: it stays
     // the wallet's, with no site (`safe-transactions.js`), and the page gets
@@ -695,7 +701,13 @@ function createSendDispatchers(shared, deps = {}) {
     });
     const stopGuard = d.guardSiteSafeSend(safeTxHash, async (execute) => {
       const live = () => !context.signal.aborted;
-      if (!live() || !(await context.nameHolds()) || !live() || !context.holdsKey()) {
+      if (
+        !live() ||
+        !(await context.nameHolds()) ||
+        !live() ||
+        !context.holdsKey() ||
+        !grantExposes(requester.key, ctx.walletIndex)
+      ) {
         withdraw();
         throw d.siteWithdrawn();
       }
@@ -779,25 +791,29 @@ function createSendDispatchers(shared, deps = {}) {
   async function send(context) {
     const { requester, params } = context;
     if (!requester.key) return error(NO_ADDRESS);
-    // No keyless answer is set on the record (`nameHolds`' option): every
-    // refusal before the send answers NO_ADDRESS itself, and after a send
-    // that passed main's gate the hash is the document's (see the header).
-    if (!(await context.nameHolds())) return error(NO_ADDRESS);
-    // A tab the agent holds: the agent service answers, within the request,
-    // and sends only past main's gate just before its send. Only a tab in
-    // custody is offered to it.
-    const agent = custody(requester.guest) ? await agentAnswer(context, {}) : null;
-    // Refused because the name moved: the keyless answer. Sent: the hash.
-    if (agent) return agent.error && !context.holdsKey() ? error(NO_ADDRESS) : agent;
-    if (!(await context.nameHolds())) return error(NO_ADDRESS);
-    const permission = getPermission(requester.key);
-    if (!permission) return error(NOT_CONNECTED);
+    // The transaction's form, checked before anything else, in custody or
+    // not: a malformed one is refused at once (-32602), and the agent gets
+    // only main's form of a well-formed one (the page's `from` and `chainId`
+    // ignored, as on main's own path).
     let tx;
     try {
       tx = txOf(params);
     } catch (err) {
       return invalid(err.message);
     }
+    // No keyless answer is set on the record (`nameHolds`' option): every
+    // refusal before the send answers NO_ADDRESS itself, and after a send
+    // that passed main's gate the hash is the document's (see the header).
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
+    // A tab the agent holds: the agent service answers, within the request,
+    // and sends only past main's gate just before its send and after its
+    // signature. Only a tab in custody is offered to it.
+    const agent = custody(requester.guest) ? await agentAnswer(context, {}, [agentTxOf(tx)]) : null;
+    // Refused because the name moved: the keyless answer. Sent: the hash.
+    if (agent) return agent.error && !context.holdsKey() ? error(NO_ADDRESS) : agent;
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
+    const permission = getPermission(requester.key);
+    if (!permission) return error(NOT_CONNECTED);
     const walletIndex = permission.walletIndex;
     // The chain this page reads (an onchain app's own), never the grant's.
     const chainId = chainIdOf(requester);

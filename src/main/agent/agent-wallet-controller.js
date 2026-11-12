@@ -586,14 +586,30 @@ class AgentWalletController {
       },
     });
     // A request main attested sends only while main still holds it: not
-    // answered (its deadline, its page gone), the name checked again, and
-    // the page still under its key in the same run as the send.
-    const result = await this.#underMain(context, () =>
-      this.signAndRecord(tx, this.getSigner(wallet.index), {
-        kind: KINDS.DAPP_SEND,
-        origin: permissionKey,
-      })
-    );
+    // answered (its deadline, its page gone), the name checked again, the
+    // page still under its key and its grant still exposing this account, in
+    // the same run as the send. A signer can take long (a Ledger, the core),
+    // so the same gates run again after the signature and before the signed
+    // bytes are recorded or sent (the transaction service's `guardCommit`),
+    // and the guard commits them itself. A phone signs and broadcasts in one
+    // step: its send is gated before the phone is asked.
+    const grantStillExposes = () => {
+      if (this.getPermission(permissionKey)?.walletIndex !== wallet.index) {
+        throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The site is no longer connected with this account');
+      }
+    };
+    const record = { kind: KINDS.DAPP_SEND, origin: permissionKey };
+    const result = await this.#underMain(context, () => {
+      if (!context.attested) return this.signAndRecord(tx, this.getSigner(wallet.index), record);
+      grantStillExposes();
+      return this.signAndRecord(tx, this.getSigner(wallet.index), record, {
+        guardCommit: (commit) =>
+          this.#underMain(context, () => {
+            grantStillExposes();
+            return commit();
+          }),
+      });
+    });
     // A grant held under the attested key is touched only while main still
     // holds the request after the send's wait, checked the same way. The
     // hash itself reaches the page only while its name holds, which main
