@@ -6,6 +6,17 @@
  * Mirrors swarm-provider.js.
  *
  * webview (window.radicle) → renderer (this) → main (the authority)
+ *
+ * Freedom-core design 0011 moves window.radicle to main, method by method
+ * (PRQ-8): the preload sends a moved method to main on `page:request`, main
+ * shows its prompt (rendered by radicle-consent.js) and writes its grant,
+ * and main sends its events. From PRQ-8a the reads, connecting and
+ * disconnecting are main's (`radicle_getCapabilities`,
+ * `radicle_getNodeStatus`, `radicle_listSeededRepos`,
+ * `radicle_requestAccess`, `radicle_disconnect`): their branches below
+ * receive nothing, the chrome's route refuses them, and `connect` and
+ * `disconnect` come from main. The branches stay for rollback until PRQ-9
+ * removes the chrome's request code.
  */
 
 import { getPermissionKey } from './dapp-provider.js';

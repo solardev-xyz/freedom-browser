@@ -11,6 +11,14 @@
  * a unified consent UX, but stays functionally independent of the
  * identity-wallet feature: it opens the panel via sidebar.openForConsent()
  * (which honors the Radicle flag) and never touches vault or wallet state.
+ *
+ * Main's own prompts for a page's request (freedom-core design 0011, "The
+ * prompt protocol"; PRQ-8a: `radicle.connect`) show in the same screen,
+ * from what main sends: its site and its view. The screen answers them by
+ * handle (`page:decide`) once its input protection has passed, writes no
+ * grant, and takes itself down when main hides or closes the prompt. The
+ * prompts that still take the chrome's own path (seeding, signing) keep
+ * the promise-based flow below until their parts move them.
  */
 
 import { registerScreenHider, hideAllSubscreens, walletState } from './wallet/wallet-state.js';
@@ -19,6 +27,8 @@ import {
   close as closeSidebar,
   isVisible as isSidebarVisible,
 } from './sidebar.js';
+import { PROMPT_ARM_DELAY_MS, setButtonsDisabled } from './wallet/prompt-queue.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from './page-prompt-renderers.js';
 
 // DOM references
 let screen;
@@ -40,6 +50,13 @@ let backBtn;
 // document navigates away or its tab closes.
 let pending = null;
 
+// Main's prompt on screen: { handle, sidebarWasOpen, armed, deciding }.
+let pagePending = null;
+// True while this screen shows main's prompt: its own hideAllSubscreens()
+// is the transition, not a dismissal.
+let presentingPagePrompt = false;
+let armTimer = null;
+
 export function initRadicleConsent() {
   screen = document.getElementById('sidebar-radicle-consent');
   titleEl = document.getElementById('radicle-consent-title');
@@ -59,15 +76,32 @@ export function initRadicleConsent() {
     return;
   }
 
-  approveBtn?.addEventListener('click', () => finish(true));
-  rejectBtn?.addEventListener('click', () => finish(false));
-  backBtn?.addEventListener('click', () => finish(false));
+  approveBtn?.addEventListener('click', () => (pagePending ? decidePage(true) : finish(true)));
+  rejectBtn?.addEventListener('click', () => (pagePending ? decidePage(false) : finish(false)));
+  backBtn?.addEventListener('click', () => (pagePending ? decidePage(false) : finish(false)));
   // Closing the panel (X button, toggle, Cmd+Shift+W) rejects the request.
   document.addEventListener('sidebar-closed', () => {
-    if (pending) finish(false, { keepSidebar: true });
+    if (pagePending) decidePage(false, { keepSidebar: true, armedOrNot: true });
+    else if (pending) finish(false, { keepSidebar: true });
   });
 
-  registerScreenHider(() => screen.classList.add('hidden'));
+  registerScreenHider(() => {
+    if (presentingPagePrompt) return;
+    screen.classList.add('hidden');
+    // Main's prompt another screen hides stays main's shown prompt: it is
+    // told, so it shows again once that screen is done.
+    if (pagePending && !pagePending.deciding) {
+      const { handle } = pagePending;
+      clearPagePending();
+      pagePromptDisplaced(handle);
+    }
+  });
+
+  registerPagePromptRenderer('radicle.connect', {
+    show: showPagePrompt,
+    close: closePagePrompt,
+    isShowing: shownPagePrompt,
+  });
 
   console.log('[RadicleConsent] Initialized');
 }
@@ -87,6 +121,105 @@ function finish(approved, { keepSidebar = false } = {}) {
 
   if (approved) resolve(offersAlways ? { alwaysAllow } : undefined);
   else reject({ code: 4001, message: 'User rejected the request' });
+}
+
+function render({ title, origin, wants, allows, warning, approveLabel }) {
+  titleEl.textContent = title;
+  siteEl.textContent = origin;
+  wantsEl.textContent = wants;
+  allowsEl.replaceChildren(
+    ...allows.map((text) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      return li;
+    })
+  );
+  warningEl.textContent = warning;
+  approveBtn.textContent = approveLabel;
+}
+
+// What each of main's prompts says, from its view (design 0011, "What a
+// prompt shows"): connecting has nothing of the page's.
+const PAGE_COPY = Object.freeze({
+  'radicle.connect': () => CONNECT_COPY,
+});
+
+function clearPagePending() {
+  pagePending = null;
+  if (armTimer) clearTimeout(armTimer);
+  armTimer = null;
+  setButtonsDisabled([approveBtn, rejectBtn], false);
+}
+
+/**
+ * Show main's prompt `{ handle, kind, site, view }`. While a prompt of the
+ * chrome's own path holds the screen, main's waits: it is reported
+ * displaced, and shows once the sidebar is free again.
+ */
+function showPagePrompt(prompt) {
+  if (!screen || pagePending?.handle === prompt?.handle) return;
+  const copy = PAGE_COPY[prompt?.kind]?.(prompt.view || {});
+  if (!copy) return;
+  if (pending) {
+    pagePromptDisplaced(prompt.handle);
+    return;
+  }
+  const sidebarWasOpen = pagePending ? pagePending.sidebarWasOpen : isSidebarVisible();
+  clearPagePending();
+  render({ ...copy, origin: prompt.site?.label || prompt.site?.key || 'Unknown' });
+  alwaysRow?.classList.add('hidden');
+  pagePending = { handle: prompt.handle, sidebarWasOpen, armed: false, deciding: false };
+  presentingPagePrompt = true;
+  try {
+    hideAllSubscreens();
+  } finally {
+    presentingPagePrompt = false;
+  }
+  walletState.identityView?.classList.add('hidden');
+  screen.classList.remove('hidden');
+  openSidebarForConsent();
+  // Input protection: a click that lands before the user could read the
+  // prompt does nothing.
+  setButtonsDisabled([approveBtn, rejectBtn], true);
+  const shown = pagePending;
+  armTimer = setTimeout(() => {
+    armTimer = null;
+    if (pagePending !== shown) return;
+    shown.armed = true;
+    setButtonsDisabled([approveBtn, rejectBtn], false);
+  }, PROMPT_ARM_DELAY_MS);
+}
+
+function takeDownPage() {
+  screen?.classList.add('hidden');
+  walletState.identityView?.classList.remove('hidden');
+}
+
+/** Main hid or closed its prompt `handle`: take it down. */
+function closePagePrompt(handle) {
+  if (!pagePending || pagePending.handle !== handle) return;
+  clearPagePending();
+  takeDownPage();
+}
+
+/** The handle of main's prompt on screen now, or null. */
+function shownPagePrompt() {
+  return pagePending && screen && !screen.classList.contains('hidden') ? pagePending.handle : null;
+}
+
+async function decidePage(approve, { keepSidebar = false, armedOrNot = false } = {}) {
+  const current = pagePending;
+  if (!current || current.deciding || (!current.armed && !armedOrNot)) return;
+  current.deciding = true;
+  const { handle, sidebarWasOpen } = current;
+  clearPagePending();
+  takeDownPage();
+  if (!keepSidebar && !sidebarWasOpen) closeSidebar();
+  try {
+    await window.pagePrompts?.decide?.(handle, approve, {});
+  } catch (err) {
+    console.error('[RadicleConsent] The decision did not reach main:', err);
+  }
 }
 
 /**
@@ -109,18 +242,7 @@ function prompt({ title, origin, wants, allows, warning, approveLabel, owner, al
       return;
     }
 
-    titleEl.textContent = title;
-    siteEl.textContent = origin;
-    wantsEl.textContent = wants;
-    allowsEl.replaceChildren(
-      ...allows.map((text) => {
-        const li = document.createElement('li');
-        li.textContent = text;
-        return li;
-      })
-    );
-    warningEl.textContent = warning;
-    approveBtn.textContent = approveLabel;
+    render({ title, origin, wants, allows, warning, approveLabel });
     const offersAlways = Boolean(always && alwaysRow && alwaysInput);
     if (offersAlways) {
       if (alwaysLabel) alwaysLabel.textContent = always.label;
@@ -149,20 +271,20 @@ export function dismissRadicleConsent(owner) {
   if (pending && pending.owner === owner) finish(false);
 }
 
+const CONNECT_COPY = Object.freeze({
+  title: 'Connect Radicle node?',
+  wants: 'wants to interact with your Radicle node',
+  allows: Object.freeze([
+    'See node status and your seeded repositories',
+    'Ask to seed or sync repositories (with approval)',
+  ]),
+  warning:
+    'This site cannot write anything as you without a separate approval for your Radicle identity.',
+  approveLabel: 'Connect',
+});
+
 export function showRadicleConnect(permissionKey, owner) {
-  return prompt({
-    owner,
-    title: 'Connect Radicle node?',
-    origin: permissionKey,
-    wants: 'wants to interact with your Radicle node',
-    allows: [
-      'See node status and your seeded repositories',
-      'Ask to seed or sync repositories (with approval)',
-    ],
-    warning:
-      'This site cannot write anything as you without a separate approval for your Radicle identity.',
-    approveLabel: 'Connect',
-  });
+  return prompt({ owner, origin: permissionKey, ...CONNECT_COPY });
 }
 
 export function showRadicleSeedApproval(permissionKey, rid, owner) {

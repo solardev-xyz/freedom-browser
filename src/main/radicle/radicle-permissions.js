@@ -95,10 +95,40 @@ function revokePermission(origin) {
     permissionsCache = permissions;
     savePermissions();
     console.log('[RadiclePermissions] Revoked permission for:', key);
+    notifyRevokeListeners(key);
     return true;
   }
 
   return false;
+}
+
+// Revocation hook: this module is a pure permission store. Main's page
+// requests register here to tell a revoked site's pages (`disconnect`,
+// src/main/page/page-radicle.js), whichever path revoked it.
+const revokeListeners = new Set();
+
+/**
+ * Hear every revoked connection, with its normalized key. `null` forgets
+ * every listener (tests). Returns a function that stops it.
+ */
+function onRevoke(listener) {
+  if (listener === null) {
+    revokeListeners.clear();
+    return () => {};
+  }
+  if (typeof listener !== 'function') return () => {};
+  revokeListeners.add(listener);
+  return () => revokeListeners.delete(listener);
+}
+
+function notifyRevokeListeners(key) {
+  for (const listener of revokeListeners) {
+    try {
+      listener(key);
+    } catch (err) {
+      console.error('[RadiclePermissions] Revoke listener failed:', err);
+    }
+  }
 }
 
 /** @returns {Object[]} All permissions, sorted by lastUsed desc */
@@ -170,16 +200,24 @@ function setAutoApprove(origin, type, enabled) {
   return true;
 }
 
+// The chrome's grant writes main refuses (freedom-core design 0011,
+// "Grants"; PRQ-8a): a connection is written by main itself, for the key it
+// attested, from the user's decision on the prompt it issued.
+const GRANT_REFUSED = 'A Radicle connection is granted only from its own prompt';
+
 function registerRadiclePermissionsIpc() {
   // PRIVATE MODE GUARD (R-9): the provider's consent flow grants from the
   // chrome renderer, which in a private window would record the private
   // session's sites on disk. Grants and use records from a private (or
-  // unclassifiable) sender are refused: null for a grant, false for the
-  // rest. Revoking stays open, since it removes a record.
+  // unclassifiable) sender are refused: false for the rest. Revoking stays
+  // open, since it removes a record.
   ipcMain.handle(IPC.RADICLE_GET_PERMISSION, (_event, origin) => getPermission(origin));
-  ipcMain.handle(IPC.RADICLE_GRANT_PERMISSION, (event, origin) =>
-    isPrivateSender(event) ? null : grantPermission(origin)
-  );
+  // Refused for every site and every sender (design 0011, "Grants";
+  // PRQ-8a): the chrome named the site here, so a compromised chrome could
+  // connect any site. Revoking stays open: it only narrows.
+  ipcMain.handle(IPC.RADICLE_GRANT_PERMISSION, () => {
+    throw new Error(GRANT_REFUSED);
+  });
   ipcMain.handle(IPC.RADICLE_REVOKE_PERMISSION, (_event, origin) => revokePermission(origin));
   ipcMain.handle(IPC.RADICLE_GET_ALL_PERMISSIONS, () => getAllPermissions());
   ipcMain.handle(IPC.RADICLE_UPDATE_LAST_USED, (event, origin) =>
@@ -214,6 +252,8 @@ module.exports = {
   grantSigning,
   getAutoApprove,
   setAutoApprove,
+  onRevoke,
   registerRadiclePermissionsIpc,
+  GRANT_REFUSED,
   _resetCache,
 };

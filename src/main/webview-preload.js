@@ -1729,7 +1729,8 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // The Ethereum reads (PRQ-3), connecting (PRQ-4), signing messages and
 // typed data (PRQ-5a) and sends (PRQ-5b), and Swarm's reads (PRQ-7a),
 // connecting and messaging (PRQ-7b), publishing (PRQ-7c) and feeds and
-// signing (PRQ-7d), all of window.swarm, take the new path (PAGE_ROUTES),
+// signing (PRQ-7d), all of window.swarm, and Radicle's reads, connecting and
+// disconnecting (PRQ-8a), take the new path (PAGE_ROUTES),
 // and main answers them: their page-world
 // provider arms no timer of its own, and main's deadline answers one that
 // runs too long. Each later step of the design moves its own methods. For a test, the E2E harness can route more
@@ -1754,7 +1755,9 @@ if (PAGE_REQUESTS_ENABLED) {
 // need no prompt (PRQ-7a), connecting and messaging (PRQ-7b), publishing
 // (PRQ-7c), and feeds and signing (PRQ-7d), which page-swarm.test.js keeps
 // the list main's Swarm dispatcher serves (src/main/page/page-swarm.js). A publish over 1 MiB
-// reserves its turn first (`page:reserve`, below).
+// reserves its turn first (`page:reserve`, below). And window.radicle's reads,
+// connecting and disconnecting (PRQ-8a), which page-radicle.test.js keeps the
+// list main's Radicle dispatcher serves (src/main/page/page-radicle.js).
 const PAGE_ROUTES = new Set([
   'ethereum:eth_requestAccounts',
   'ethereum:wallet_switchEthereumChain',
@@ -1808,6 +1811,11 @@ const PAGE_ROUTES = new Set([
   'swarm:swarm_writeFeedEntry',
   'swarm:swarm_writeSingleOwnerChunk',
   'swarm:swarm_getSigningIdentity',
+  'radicle:radicle_getCapabilities',
+  'radicle:radicle_getNodeStatus',
+  'radicle:radicle_listSeededRepos',
+  'radicle:radicle_requestAccess',
+  'radicle:radicle_disconnect',
 ]);
 const TEST_PAGE_ROUTES = new Set(
   Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
@@ -1839,10 +1847,12 @@ const postToPage = (fields) => window.postMessage(fields, pageTargetOrigin());
 // The methods main answers, for a provider's page-world source, which arms
 // its own timer only for the others (design 0011, "One deadline, main's").
 // It reads and deletes the global before any page script runs: Ethereum's
-// `__FREEDOM_MAIN_ANSWERED__`, Swarm's `__FREEDOM_SWARM_MAIN_ANSWERED__`.
+// `__FREEDOM_MAIN_ANSWERED__`, Swarm's `__FREEDOM_SWARM_MAIN_ANSWERED__`,
+// Radicle's `__FREEDOM_RADICLE_MAIN_ANSWERED__`.
 const MAIN_ANSWERED_GLOBALS = new Map([
   ['ethereum', '__FREEDOM_MAIN_ANSWERED__'],
   ['swarm', '__FREEDOM_SWARM_MAIN_ANSWERED__'],
+  ['radicle', '__FREEDOM_RADICLE_MAIN_ANSWERED__'],
 ]);
 function withMainAnsweredMethods(source, provider = 'ethereum') {
   const prefix = `${provider}:`;
@@ -2323,6 +2333,14 @@ if (PAGE_REQUESTS_ENABLED) {
 // Main-world source, run by injectPageProvider (see SWARM_INJECT_SOURCE).
 const RADICLE_INJECT_SOURCE = `
   (function() {
+    // The methods main answers (freedom-core design 0011, "One deadline,
+    // main's"): main's deadline answers one that runs too long, so the page
+    // arms no timer of its own for them.
+    const preamble = window.__FREEDOM_RADICLE_MAIN_ANSWERED__;
+    delete window.__FREEDOM_RADICLE_MAIN_ANSWERED__;
+    const mainAnswered = new Set(
+      Array.isArray(preamble) ? preamble.filter((m) => typeof m === 'string') : []
+    );
     const pendingRequests = new Map();
     let requestId = 0;
     const eventListeners = { connect: [], disconnect: [], seedStatus: [] };
@@ -2342,6 +2360,7 @@ const RADICLE_INJECT_SOURCE = `
         return new Promise((resolve, reject) => {
           pendingRequests.set(id, { resolve, reject });
           window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
+          if (mainAnswered.has(method)) return;
           // Execution itself is prompt — seed/sync hand the network fetch
           // to a background tracker (seedStatus events report progress;
           // radicle_getSeedStatus restores a snapshot after reload). But the
@@ -2426,7 +2445,7 @@ const RADICLE_INJECT_SOURCE = `
 // private windows — same policy as window.ethereum / window.swarm above.
 // Skipped on internal pages for the same reason as window.swarm (#432).
 if (PROVIDERS_ENABLED && !isInternalPage()) {
-  injectPageProvider('radicle', RADICLE_INJECT_SOURCE);
+  injectPageProvider('radicle', withMainAnsweredMethods(RADICLE_INJECT_SOURCE, 'radicle'));
 }
 
 if (PROVIDERS_ENABLED) {
