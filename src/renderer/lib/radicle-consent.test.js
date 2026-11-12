@@ -44,9 +44,10 @@ const loadConsent = async () => {
   jest.doMock('./sidebar.js', () => sidebarMocks);
 
   const mod = await import('./radicle-consent.js');
+  const renderers = await import('./page-prompt-renderers.js');
   mod.initRadicleConsent();
 
-  return { mod, elementsById, sidebarMocks };
+  return { mod, elementsById, sidebarMocks, walletStateMocks, renderers };
 };
 
 describe('radicle-consent owner binding', () => {
@@ -255,5 +256,114 @@ describe('radicle-consent owner binding', () => {
     const unknown = await show('radicle_somethingNew', { rid: 'rad:zExample', x: 1 });
     expect(unknown.title).toBe('Sign this as you?');
     expect(unknown.allows).toEqual(['Parameters: {"rid":"rad:zExample","x":1}']);
+  });
+});
+
+// freedom-core design 0011, PRQ-8a: main's own prompt for a page's request
+// (`radicle.connect`) shows in this screen, from main's site and view, and
+// is answered by handle once its input protection has passed. The screen
+// writes no grant.
+describe('radicle-consent renders main\'s radicle.connect prompt', () => {
+  const PROMPT = {
+    handle: 'h'.repeat(64),
+    guest: 7,
+    kind: 'radicle.connect',
+    site: { key: 'name.eth', label: 'name.eth' },
+    view: {},
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    global.window = { pagePrompts: { decide: jest.fn(async () => ({ ok: true })) }, radiclePermissions: {} };
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    delete global.window;
+    global.document = originalDocument;
+  });
+
+  test('it shows main\'s site, arms after the input-protection window, and answers the handle alone', async () => {
+    const { elementsById, sidebarMocks, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.connect');
+    expect(renderer).toBeDefined();
+    renderer.show(PROMPT);
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(false);
+    expect(elementsById['radicle-consent-site'].textContent).toBe('name.eth');
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Connect Radicle node?');
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+    expect(sidebarMocks.openForConsent).toHaveBeenCalled();
+    expect(renderer.isShowing()).toBe(PROMPT.handle);
+    // A click inside the input-protection window does nothing.
+    expect(elementsById['radicle-consent-approve'].disabled).toBe(true);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(500);
+    expect(elementsById['radicle-consent-approve'].disabled).toBe(false);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenCalledWith(PROMPT.handle, true, {});
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(true);
+    expect(renderer.isShowing()).toBeNull();
+    // A second click decides nothing more.
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenCalledTimes(1);
+  });
+
+  test('a rejection, the back button and a closed panel each answer false', async () => {
+    for (const how of ['radicle-consent-reject', 'radicle-consent-back', 'sidebar-closed']) {
+      const { elementsById, renderers } = await loadConsent();
+      const renderer = renderers.pagePromptRenderer('radicle.connect');
+      renderer.show(PROMPT);
+      jest.advanceTimersByTime(500);
+      if (how === 'sidebar-closed') document.handlers['sidebar-closed']();
+      else elementsById[how].dispatch('click');
+      expect({ how, calls: window.pagePrompts.decide.mock.calls }).toEqual({ how, calls: [[PROMPT.handle, false, {}]] });
+      window.pagePrompts.decide.mockClear();
+    }
+  });
+
+  test('main hiding or closing its prompt takes it down, deciding nothing', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.connect');
+    renderer.show(PROMPT);
+    renderer.close('another handle');
+    expect(renderer.isShowing()).toBe(PROMPT.handle);
+    renderer.close(PROMPT.handle);
+    expect(renderer.isShowing()).toBeNull();
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(true);
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).not.toHaveBeenCalled();
+  });
+
+  test('another screen taking the sidebar reports main\'s prompt displaced, and an old-path prompt on screen makes it wait', async () => {
+    const { mod, walletStateMocks, renderers } = await loadConsent();
+    const displaced = [];
+    renderers.onPagePromptDisplaced((handle) => displaced.push(handle));
+    const renderer = renderers.pagePromptRenderer('radicle.connect');
+    renderer.show(PROMPT);
+    // Its own transition is no dismissal.
+    expect(displaced).toEqual([]);
+    const hider = walletStateMocks.registerScreenHider.mock.calls[0][0];
+    hider();
+    expect(displaced).toEqual([PROMPT.handle]);
+    expect(renderer.isShowing()).toBeNull();
+    expect(window.pagePrompts.decide).not.toHaveBeenCalled();
+
+    // A prompt of the chrome's own path on screen: main's waits.
+    const owner = {};
+    const old = mod.showRadicleSigningApproval('https://app.example', owner);
+    renderer.show({ ...PROMPT, handle: 'k'.repeat(64) });
+    expect(displaced).toEqual([PROMPT.handle, 'k'.repeat(64)]);
+    expect(renderer.isShowing()).toBeNull();
+    mod.dismissRadicleConsent(owner);
+    await expect(old).rejects.toEqual({ code: 4001, message: 'User rejected the request' });
+  });
+
+  test('a kind it doesn\'t render shows nothing', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    expect(renderers.pagePromptRenderer('radicle.node')).toBeUndefined();
+    renderers.pagePromptRenderer('radicle.connect').show({ ...PROMPT, kind: 'radicle.node' });
+    expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(true);
   });
 });

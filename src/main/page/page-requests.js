@@ -42,12 +42,13 @@
  * `WebFrameMain.send` targets a frame, and the frame can commit a new
  * document between the check and the delivery.
  *
- * The app serves Ethereum's methods here (PRQ-3 to PRQ-5, `page-ethereum.js`)
- * and Swarm's reads, connecting, messaging and publishing (PRQ-7a to 7c,
- * `page-swarm.js`): the preload sends those on `page:request`, and every
- * other method still takes today's path through the chrome. The E2E harness can route and serve any method through a
- * test hook (`enablePageRequestTestHooks`). Later steps (the rest of PRQ-7,
- * and PRQ-8) move the rest.
+ * The app serves Ethereum's methods here (PRQ-3 to PRQ-5, `page-ethereum.js`),
+ * all of Swarm's (PRQ-7a to 7d, `page-swarm.js`), and Radicle's reads,
+ * connecting and disconnecting (PRQ-8a, `page-radicle.js`): the preload sends
+ * those on `page:request`, and every other method still takes today's path
+ * through the chrome. The E2E harness can route and serve any method through
+ * a test hook (`enablePageRequestTestHooks`). The rest of PRQ-8 moves the
+ * rest.
  *
  * `page:bind-name { guest, name, key }` (the design's "Names over IPNS")
  * comes from the chrome, before it loads `ipns://<key>` for a DNS name: it
@@ -1132,12 +1133,14 @@ function getPageRequests() {
   if (!shared) {
     const { createEthereumDispatchers } = require('./page-ethereum');
     const { createSwarmDispatchers, registerSwarmPageEvents } = require('./page-swarm');
+    const { createRadicleDispatchers, registerRadiclePageEvents } = require('./page-radicle');
     shared = createPageRequests({
       documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
-      dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers() },
+      dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers(), ...createRadicleDispatchers() },
       hooks: sharedHooks,
     });
     registerSwarmPageEvents(shared);
+    registerRadiclePageEvents(shared);
   }
   return shared;
 }

@@ -99,6 +99,7 @@ jest.mock('./radicle-permissions', () => ({
 
 const {
   executeRadicleMethod,
+  executeRadicleForPage,
   registerRadicleProviderIpc,
   _resetAutoWriteLimiter,
 } = require('./radicle-provider-ipc');
@@ -143,11 +144,9 @@ test('provider IPC broadcasts pushed seed progress with origin routing metadata'
     data: mockSeedFetchStatus,
   });
 
-  await executeHandler({}, {
-    method: 'radicle_disconnect',
-    params: {},
-    origin: ORIGIN,
-  });
+  // The site's own disconnect, a page's request through main (PRQ-8a),
+  // removes the origin's broadcaster.
+  await executeRadicleForPage('radicle_disconnect', {}, ORIGIN);
   expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
 });
 
@@ -633,6 +632,72 @@ describe('signed write approval (R-6)', () => {
   test('identity disclosure is not a write and needs no approval', async () => {
     await expect(executeRadicleMethod('radicle_getIdentity', {}, ORIGIN)).resolves.toMatchObject({
       did: 'did:key:z6MkTest',
+    });
+  });
+});
+
+// freedom-core design 0011, PRQ-8a: a forged chrome origin refused. The
+// chrome's route refuses every method main's page dispatcher serves, for any
+// site it names, before anything runs: no grant read, no use recorded, no
+// node call, no revocation.
+describe('the chrome route and the methods main serves (0011 PRQ-8a)', () => {
+  const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
+
+  test('the chrome route refuses each of main\'s methods for any site, with nothing run', async () => {
+    registerRadicleProviderIpc();
+    const executeHandler = mockIpcHandle.mock.calls.find(([channel]) => channel === 'radicle:provider-execute')[1];
+    expect([...RADICLE_PAGE_METHODS].sort()).toEqual([
+      'radicle_disconnect',
+      'radicle_getCapabilities',
+      'radicle_getNodeStatus',
+      'radicle_listSeededRepos',
+      'radicle_requestAccess',
+    ]);
+    for (const origin of [ORIGIN, 'name.eth', 'https://other.example']) {
+      for (const method of RADICLE_PAGE_METHODS) {
+        const answer = await executeHandler(
+          { sender: { id: 1 } },
+          { method, params: {}, origin, meta: { approval: 'user', webContentsId: 9 } }
+        );
+        expect({ origin, method, answer }).toEqual({
+          origin,
+          method,
+          answer: {
+            error: {
+              code: 4100,
+              message: 'The origin is not authorized for this operation',
+              data: { reason: 'page_request_only' },
+            },
+          },
+        });
+      }
+    }
+    expect(permissions.getPermission).not.toHaveBeenCalled();
+    expect(permissions.updateLastUsed).not.toHaveBeenCalled();
+    expect(permissions.revokePermission).not.toHaveBeenCalled();
+    expect(manager.getConnections).not.toHaveBeenCalled();
+    expect(cob.getIdentity).not.toHaveBeenCalled();
+    expect(require('../radicle-embedded').listSeededRepos).not.toHaveBeenCalled();
+    // The methods still on its route still run there.
+    const seeded = await executeHandler(
+      { sender: { id: 1 } },
+      { method: 'radicle_getSeedStatus', params: { rid: RID }, origin: ORIGIN }
+    );
+    expect(seeded).toEqual({ result: mockSeedFetchStatus });
+  });
+
+  test('main\'s page path answers { result } or { error }, an add-on failure with its fixed text only', async () => {
+    expect(await executeRadicleForPage('radicle_getCapabilities', {}, ORIGIN)).toEqual({
+      result: expect.objectContaining({ canUseNode: true, reason: null }),
+    });
+    permissions.getPermission.mockReturnValue(null);
+    expect(await executeRadicleForPage('radicle_listSeededRepos', {}, ORIGIN)).toEqual({
+      error: { code: 4100, message: 'Origin not connected', data: { reason: 'not_connected' } },
+    });
+    permissions.getPermission.mockReturnValue({ origin: ORIGIN, signing: false });
+    manager.getConnections.mockRejectedValueOnce(new Error("failed to open '/home/alice/.radicle/storage': denied"));
+    expect(await executeRadicleForPage('radicle_getNodeStatus', {}, ORIGIN)).toEqual({
+      error: { code: -32603, message: 'Internal error' },
     });
   });
 });

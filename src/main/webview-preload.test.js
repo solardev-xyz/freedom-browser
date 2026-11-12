@@ -1717,6 +1717,31 @@ describe('injected provider request timeouts', () => {
     // Only the two main doesn't answer arm one.
     expect(armed).toEqual([300000, 300000]);
   });
+
+  // PRQ-8a: window.radicle, behind its own list.
+  test('window.radicle arms no timer for a method main answers, and reads and deletes its list first', () => {
+    const armed = [];
+    const posted = [];
+    const sandboxWindow = {
+      __FREEDOM_RADICLE_MAIN_ANSWERED__: ['radicle_requestAccess', 'radicle_getNodeStatus', 42],
+      postMessage: (message) => posted.push(message.method),
+      addEventListener: () => {},
+      location: { origin: 'https://dapp.example' },
+    };
+    new Function('window', 'setTimeout', 'Map', 'Set', extractScript('RADICLE_INJECT_SOURCE'))(
+      sandboxWindow,
+      (_fn, ms) => armed.push(ms),
+      Map,
+      Set
+    );
+    expect('__FREEDOM_RADICLE_MAIN_ANSWERED__' in sandboxWindow).toBe(false);
+    for (const method of ['radicle_requestAccess', 'radicle_getNodeStatus', 'radicle_seed', 'radicle_sync']) {
+      sandboxWindow.radicle.request({ method }).catch(() => {});
+    }
+    expect(posted).toEqual(['radicle_requestAccess', 'radicle_getNodeStatus', 'radicle_seed', 'radicle_sync']);
+    // Only the two main doesn't answer arm one.
+    expect(armed).toEqual([300000, 60000]);
+  });
 });
 
 // PRIVATE MODE GUARD coverage (providers): in private windows none of
@@ -2990,9 +3015,31 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_getCapabilities', params: {} });
+    // Radicle's seeding and signing still take the chrome's path; its reads,
+    // connecting and disconnecting (0011 PRQ-8a) go to main.
+    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_seed', params: { rid: 'rad:z1' } });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
     expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
+    for (const [id, method] of [
+      [11, 'radicle_getCapabilities'],
+      [12, 'radicle_getNodeStatus'],
+      [13, 'radicle_listSeededRepos'],
+      [14, 'radicle_requestAccess'],
+      [15, 'radicle_disconnect'],
+    ]) {
+      fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: {} });
+    }
+    expect(
+      ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request').map(([, r]) => [r.provider, r.method])
+    ).toEqual([
+      ['radicle', 'radicle_getCapabilities'],
+      ['radicle', 'radicle_getNodeStatus'],
+      ['radicle', 'radicle_listSeededRepos'],
+      ['radicle', 'radicle_requestAccess'],
+      ['radicle', 'radicle_disconnect'],
+    ]);
+    expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
+    ipcRenderer.invoke.mockClear();
     // Swarm's reads (0011 PRQ-7a) go to main, and never to the chrome.
     for (const [id, method] of [
       [21, 'swarm_getCapabilities'],
@@ -3117,6 +3164,30 @@ describe('page requests', () => {
         .contextBridge
     );
     expect(routed).toEqual([...moved, 'swarm_noSuchMethod']);
+  });
+
+  // window.radicle's source, behind its own list (PRQ-8a).
+  const radicleMainAnswered = (contextBridge) => {
+    const source = contextBridge.executeInMainWorld.mock.calls[2][0].func.toString();
+    expect(source).toContain('FREEDOM_RADICLE_REQUEST');
+    return JSON.parse(/window\.__FREEDOM_RADICLE_MAIN_ANSWERED__ = (\[[^\n]*\]);\n/.exec(source)[1]);
+  };
+
+  test('window.radicle is told which of its methods main answers: the moved ones, and the harness\'s routes', () => {
+    const moved = radicleMainAnswered(load({ argv: ['electron', bootArg(boot())] }).contextBridge);
+    expect(moved).toEqual([
+      // Reads, connecting and disconnecting (PRQ-8a).
+      'radicle_getCapabilities',
+      'radicle_getNodeStatus',
+      'radicle_listSeededRepos',
+      'radicle_requestAccess',
+      'radicle_disconnect',
+    ]);
+    const routed = radicleMainAnswered(
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['radicle:radicle_seed', 'swarm:swarm_noSuchMethod'] }))] })
+        .contextBridge
+    );
+    expect(routed).toEqual([...moved, 'radicle_seed']);
   });
 
   test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {

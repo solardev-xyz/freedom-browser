@@ -98,7 +98,7 @@ const permissions = require('./radicle-permissions');
 const cob = require('./cob-service');
 const privateWindows = require('../private/private-windows');
 const { runWithPrivateLogContext } = require('../private/private-log-context');
-const { registerRadicleProviderIpc } = require('./radicle-provider-ipc');
+const { registerRadicleProviderIpc, executeRadicleForPage } = require('./radicle-provider-ipc');
 
 registerRadicleProviderIpc();
 
@@ -116,6 +116,20 @@ const execute = (sender, method, params = {}) =>
     origin: ORIGIN,
     meta: META,
   });
+
+// A node-status read is main's from PRQ-8a (freedom-core design 0011,
+// src/main/page/page-radicle.js): a page's request runs on main's page path,
+// under the attested key. A private window never reaches it (main's
+// attestation refuses one), and the chrome's route refuses the method
+// before anything, so a private window reaches none of these lines now.
+const pageExecute = (method, params = {}) => executeRadicleForPage(method, params, ORIGIN);
+const PAGE_REQUEST_ONLY = {
+  error: {
+    code: 4100,
+    message: 'The origin is not authorized for this operation',
+    data: { reason: 'page_request_only' },
+  },
+};
 
 // Absolute paths of each kind, as #1050's tests find them.
 const UNIX_PATH = /(?:^|[\s'"(=:,])\/(?!\/)[^\s'"/]/;
@@ -389,10 +403,21 @@ describe('the manager and tracker lines, through window.radicle (#1073)', () => 
   );
 
   test.each(REACHED)(
-    '$label, under $home: a private window logs <private>, a normal one the detail',
+    '$label, under $home: the chrome route refuses a private window before it; main\'s page path logs the detail, and <private> in a private log context',
     async (entry) => {
+      jest.clearAllMocks();
+      const refused = await execute(privateChrome, entry.method, entry.params);
+      await settle();
+      expect(refused).toEqual(PAGE_REQUEST_ONLY);
+      expect(embedded.listRepos).not.toHaveBeenCalled();
+      expect(loggedLines()).toEqual([]);
+
+      jest.clearAllMocks();
+      mockSend.mockReset();
+      seedStatus._reset();
+      cob.clearIdentityCache();
       const privateReply = await run(entry, () =>
-        execute(privateChrome, entry.method, entry.params)
+        runWithPrivateLogContext(true, () => pageExecute(entry.method, entry.params))
       );
       expect(loggedLines()).toContainEqual(entry.line('<private>', '<private>'));
       expectNothingPrivateLogged(entry.path);
@@ -401,9 +426,7 @@ describe('the manager and tracker lines, through window.radicle (#1073)', () => 
       mockSend.mockReset();
       seedStatus._reset();
       cob.clearIdentityCache();
-      const publicReply = await run(entry, () =>
-        execute(publicChrome, entry.method, entry.params)
-      );
+      const publicReply = await run(entry, () => pageExecute(entry.method, entry.params));
       expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
       // The reply is the same either way.
       expect(privateReply).toEqual(publicReply);
@@ -413,24 +436,22 @@ describe('the manager and tracker lines, through window.radicle (#1073)', () => 
   test('a node-status read answers with success after its repository count failed', async () => {
     const text = storageError(HOMES[0][1], '/');
     embedded.listRepos.mockRejectedValueOnce(new Error(text));
-    await expect(execute(privateChrome, 'radicle_getNodeStatus')).resolves.toEqual({
+    await expect(pageExecute('radicle_getNodeStatus')).resolves.toEqual({
       result: { running: true, status: 'running', peers: 3, alias: 'me', nid: 'z6MkTest' },
     });
-    expect(loggedLines()).toEqual([
-      ['[Radicle] Could not read seeded repository count:', '<private>'],
-    ]);
+    expect(loggedLines()).toEqual([['[Radicle] Could not read seeded repository count:', text]]);
   });
 
-  // A sender main can't place in a known public window counts as private.
+  // A sender main can't place in a known public window counts as private:
+  // the chrome's route refuses the read before anything, as for any sender.
   test.each([
     ['no sender', undefined],
     ['a sender with no window', { id: 77, isDestroyed: () => false }],
     ['a destroyed sender', { isDestroyed: () => true }],
-  ])('a node-status read from %s logs <private>', async (_label, sender) => {
-    embedded.listRepos.mockRejectedValueOnce(new Error(storageError(HOMES[0][1], '/')));
-    await execute(sender, 'radicle_getNodeStatus');
-    expect(loggedLines()).toEqual([
-      ['[Radicle] Could not read seeded repository count:', '<private>'],
-    ]);
+    ['a public sender', publicChrome],
+  ])('a node-status read from %s on the chrome route is refused, with nothing logged', async (_label, sender) => {
+    await expect(execute(sender, 'radicle_getNodeStatus')).resolves.toEqual(PAGE_REQUEST_ONLY);
+    expect(embedded.listRepos).not.toHaveBeenCalled();
+    expect(loggedLines()).toEqual([]);
   });
 });

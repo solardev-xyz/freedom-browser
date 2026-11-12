@@ -1,5 +1,6 @@
 const { configureOllamaAgent } = require('./agent-provider-fixture');
 const http = require('http');
+const path = require('path');
 const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures');
 
 const MODEL_ID = 'freedom-evaluation-fixture';
@@ -1877,15 +1878,20 @@ test('Pi opens a dweb-link popup into Agent custody', async ({ window, harness }
 // the user to approve its content, so an agent cannot publish as the user's
 // node identity off a grant given for the user's own browsing.
 test('Pi cannot sign a Radicle write on the site grant without the user', async ({
+  electronApp,
   window,
   harness,
 }) => {
   requestCount = 0;
   operations.length = 0;
-  await window.evaluate(async (origin) => {
-    await window.radiclePermissions.grantPermission(origin);
-    await window.radiclePermissions.grantSigning(origin);
-  }, RADICLE_WRITE_ORIGIN);
+  // The site's standing grants, written in main: the chrome's connection
+  // grant is refused (freedom-core design 0011, PRQ-8a), since main writes
+  // a connection from its own prompt.
+  await electronApp.evaluate((_electron, args) => {
+    const permissions = process.mainModule.require(`${args.root}/src/main/radicle/radicle-permissions`);
+    permissions.grantPermission(args.origin);
+    permissions.grantSigning(args.origin);
+  }, { root: path.resolve(__dirname, '..'), origin: RADICLE_WRITE_ORIGIN });
   await prepareAgentFixture(
     window,
     harness,

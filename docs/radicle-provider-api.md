@@ -60,6 +60,19 @@ window.radicle.removeListener(event, handler);
 
 `connect` fires on access grant, `disconnect` on revocation, and `seedStatus`
 streams replication transitions for seed/sync actions started by this origin.
+Freedom sends `connect` and `disconnect` to every open page of the site,
+whichever page or screen granted or revoked the access. A page whose address
+is a DNS name served over IPNS hears them only while the name still serves
+that IPNS key.
+
+The page's requests go straight to Freedom's main process, which decides who
+asked from the page itself, never from the browser UI, and shows the
+connection prompt (freedom-core design 0011). A request from a tab in the
+background waits until you switch to that tab, with a dot on the tab and a
+count on the wallet button. One whose prompt hasn't shown within its time
+limit is closed with `-32603` "Request timed out"; a prompt on screen waits
+for your answer. A page with no address of its own (a `data:` or `about:`
+page) can't connect, and its requests are refused with `4100`.
 
 ### Errors
 
@@ -129,14 +142,15 @@ ends when the site disconnects.
 ### `radicle_requestAccess` → `{ connected, origin, capabilities }`
 
 Prompt (once) for connection. Repeat calls return existing state. Emits
-`connect`.
+`connect`, to every open page of the site. No prompt while Radicle is
+disabled for the profile (`4900`, reason `profile-disabled`).
 
 ### `radicle_disconnect` → `{ connected: false }` (connection tier)
 
 The inverse of `requestAccess`: the origin relinquishes its own grant
 (connection AND signing, plus auto-approvals). No consent prompt — an
 origin may always drop its own access. Works while the node is stopped.
-Emits the `disconnect` provider event.
+Emits the `disconnect` provider event, to every open page of the site.
 
 ### `radicle_getCapabilities` → capability object (no permission)
 

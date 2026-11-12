@@ -17,7 +17,7 @@
  * The tab in front is reported to main by tabs.js (`page:foreground`).
  *
  * The sidebar is shared with the prompts that still take the chrome's own
- * path until their step moves them (Swarm's feeds, Radicle). A prompt main
+ * path until their step moves them (Radicle's seeding and signing). A prompt main
  * shows waits while one of those holds the sidebar or a device signature is
  * in flight, and shows once the sidebar is back on the wallet's own view.
  *
@@ -27,8 +27,10 @@
  * transaction screen (`eth.send`) and a Safe send's signing board
  * (`eth.safe_send`), from PRQ-7b Swarm's connect, messaging and
  * permission-manifest screens (`swarm.connect`, `swarm.messaging`,
- * `swarm.manifest`), and from PRQ-7c its publish screen (`swarm.publish`),
- * which register themselves (`page-prompt-renderers.js`).
+ * `swarm.manifest`), from PRQ-7c its publish screen (`swarm.publish`), from
+ * PRQ-7d its feed screen (`swarm.feed`), and from PRQ-8a Radicle's consent
+ * screen (`radicle.connect`), which register themselves
+ * (`page-prompt-renderers.js`).
  */
 
 import { isDappPromptShowing } from './wallet/dapp-prompt-guard.js';
