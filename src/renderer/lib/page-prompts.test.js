@@ -96,10 +96,7 @@ async function load() {
   const sidebar = { open: jest.fn(), isVisible: jest.fn(() => true) };
   jest.doMock('./sidebar.js', () => sidebar);
   jest.doMock('./dapp-provider.js', () => ({
-    getActiveWebview: () => null,
     getActiveDisplayUrl: () => '',
-    getPermissionKey: (url) => url || null,
-    getNavigationGeneration: () => 0,
   }));
   jest.doMock('./wallet/permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
   jest.doMock('./url-utils.js', () => ({ parseOnchainAppUrl: () => null }));
