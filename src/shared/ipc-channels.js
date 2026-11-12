@@ -451,6 +451,10 @@ module.exports = {
   SWARM_GRANT_MESSAGING: 'swarm:grant-messaging',
   SWARM_REVOKE_MESSAGING: 'swarm:revoke-messaging',
   SWARM_HAS_MESSAGING_GRANT: 'swarm:has-messaging-grant',
+  SWARM_GRANT_ACT: 'swarm:grant-act',
+  SWARM_REVOKE_ACT: 'swarm:revoke-act',
+  SWARM_GET_ACT_GRANTS: 'swarm:get-act-grants',
+  SWARM_DESCRIBE_ACT_REQUEST: 'swarm:describe-act-request',
 
   // Swarm permission manifests
   SWARM_MANIFEST_CHECK: 'swarm:manifest-check',

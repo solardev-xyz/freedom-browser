@@ -3,8 +3,9 @@
 **Spec version:** `1.0` (the `specVersion` returned by `swarm_getCapabilities`)
 
 `window.swarm` lets a web page publish to Swarm, read and write chunks and
-feeds, sign with a publisher identity, and send and receive PSS/GSOC
-messages, all through the user's own Swarm node, with per-origin consent.
+feeds, sign with a publisher identity, send and receive PSS/GSOC messages,
+and open content shared with the user's node through ACT, all through the
+user's own Swarm node, with per-origin consent.
 
 It is the only way a page reaches the node. Requests from web content to the
 node's local HTTP API (`localhost:1633` and the port Freedom actually runs it
@@ -77,9 +78,10 @@ The shim rejects a request that has had no answer with
 
 - **300 s** for `swarm_publish*`, `swarm_send*`, `swarm_createFeed`,
   `swarm_updateFeed`, `swarm_writeFeedEntry`, `swarm_writeSingleOwnerChunk`,
-  `swarm_getSigningIdentity`, `swarm_getMessagingIdentity` and
-  `swarm_subscribe` (these may wait on a consent prompt or a node write),
-  and `swarm_readData` (a blob of several MiB fetched from the network);
+  `swarm_getSigningIdentity`, `swarm_getMessagingIdentity`,
+  `swarm_subscribe` and `swarm_openAct` (these may wait on a consent prompt
+  or a node write), and `swarm_readData` (a blob of several MiB fetched from
+  the network);
 - **60 s** for everything else, including `swarm_requestAccess` and any
   other call that has to wait on a consent prompt: the connect prompt, or
   the [permission manifest](#permission-manifests) sheet, which any
@@ -133,6 +135,8 @@ validation and node failures, `data`:
 | `tag_ownership_mismatch` | `swarm_getUploadStatus` for a tag this origin did not create, or one already reported `done` |
 | `shared_identity`        | `swarm_writeSingleOwnerChunk` while the origin's active identity is shared with other sites  |
 | `freedom_identity`       | `swarm_publishSingleOwnerChunk` with an `owner` that is the Ant wallet or a wallet account   |
+| `act_not_granted`        | `swarm_openAct` answered by no prompt and no "always allow" rule for this publisher          |
+| `private_window`         | `swarm_openAct` from a private window (which has no `window.swarm` anyway)                   |
 
 A `4100` raised by the chrome before the request reaches the main process
 carries the message `Origin not authorized. Call swarm_requestAccess first.`
@@ -174,6 +178,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | `subscription_not_found`                                                                                        | `swarm_unsubscribe`                                                                                                      |
 | `too_many_subscriptions` (+ `limit`)                                                                            | `swarm_subscribe`                                                                                                        |
 | `rate_limited`                                                                                                  | Permission-free reads (+ `windowMs`, `maxRequests`, `maxBytes`), new GSOC topics (+ `limit`, `windowMs`, `retryAfterMs`) |
+| `invalid_publisher`, `invalid_history_address`, `invalid_timestamp`, `act_not_found`, `content_not_found`       | `swarm_openAct` (also `invalid_reference`, `invalid_path`, `data_too_large`, `rate_limited`)                             |
 
 **`-32603`** carries a `data.reason` only for `gsoc_mining_timeout` and
 `gsoc_mining_failed` (deriving a GSOC topic's signer failed or ran past 15 s),
@@ -216,6 +221,7 @@ an ENS name.
 | **Signing**    | `swarm_getSigningIdentity`, `swarm_writeSingleOwnerChunk`                                                                            | connection + feed grant      | as Feeds, with `autoApprove.signing`                                                                                               |
 | **Messaging**  | `swarm_getMessagingIdentity`, `swarm_subscribe`, `swarm_sendPss`, `swarm_sendGsoc`                                                   | connection + messaging grant | the first call grants the tier; sends prompt every time unless `autoApprove.messaging`; identity and subscribe do not prompt again |
 |                | `swarm_unsubscribe`                                                                                                                  | connection                   | never                                                                                                                              |
+| **ACT**        | `swarm_openAct`                                                                                                                      | connection                   | every call, unless "always allow" for **this publisher** (stored per site and publisher)                                           |
 
 Notes:
 
@@ -228,9 +234,15 @@ Notes:
   approves.
 - The main process re-checks every grant; the chrome's prompts are UX, not the
   security boundary.
+- ACT consent is per **(site, publisher)** pair, never per site: the node's
+  ACT key is one identity for every site, so one "always allow" for a whole
+  site would open everything ever shared with the user. Each allowed
+  publisher is listed, with its own Remove, on the site's Swarm permissions
+  screen (the connection banner's manage link). A private window stores no
+  ACT rule.
 - The user can revoke everything for an origin from the connection banner or
   Settings. **Disconnecting revokes the connection, the feed grant, the
-  messaging grant and all auto-approvals**, closes the origin's live
+  messaging grant, all auto-approvals and every ACT publisher rule**, closes the origin's live
   subscriptions and emits `disconnect`. It keeps the origin's publisher
   identities and feed records (see [Identity model](#identity-model)), so a
   reconnected origin signs with the same key and sees its old feeds.
@@ -391,7 +403,8 @@ Not reported there:
 - **Permission-free read budget**, per origin over a fixed 60 s window that
   starts at the first read and resets 60 s later (not a rolling window),
   shared by `swarm_readChunk`, `swarm_readData`, `swarm_readSingleOwnerChunk`,
-  `swarm_readFeedEntry` and `swarm_listFeeds`: 600 requests / 5 MiB when the
+  `swarm_readFeedEntry`, `swarm_listFeeds` and `swarm_openAct` (which needs
+  the connection, so it always has the larger budget): 600 requests / 5 MiB when the
   origin is connected, 120 requests / 512 KiB when it is not. Exceeding it is
   `-32602 rate_limited`; a read that crosses the byte budget is refused after
   the fact, so its data is not returned. `swarm_readData` is one request
@@ -461,7 +474,7 @@ it serves a [permission manifest](#permission-manifests):
   publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
   features: ['messaging'],
   extensions: { ethereumWalletPublisherIdentity: true, publisherSigning: true,
-                pageSignedSingleOwnerChunks: true },
+                pageSignedSingleOwnerChunks: true, actShares: true },
   limits: { maxDataBytes, maxFilesBytes, maxFileCount, maxPathBytes,
             maxChunkPayloadBytes, maxMessageBytes, maxTargetDepth,
             maxSubscriptions }
@@ -665,6 +678,67 @@ The address (`owner`, checksummed with `0x`) that `swarm_writeSingleOwnerChunk`
 and newly created feeds will be signed with, and its kind. Does not need the
 node to be running. This is the way to obtain the signing grant before the
 first write.
+
+### Access control (ACT)
+
+Content can be shared with a Swarm node through ACT, Swarm's access control:
+the publisher uploads it with an encrypted reference and adds the node's
+public key to the share's grantee list (bee-js `actPublisher`,
+`actHistoryAddress`, `actTimestamp`). Only the node can open it, with its own
+key. Freedom never forwards `Swarm-Act-*` headers from `bzz://` pages (see
+[#429](https://github.com/solardev-xyz/freedom-browser/issues/429)), so this
+method is the only way a page can open such a share.
+
+#### `swarm_openAct { reference, publisher, historyAddress, timestamp?, path?, options? }` → `{ data, encoding: 'base64', contentType }` (ACT tier)
+
+The node finds its grantee entry under `publisher` in the history, unwraps
+the access key with its own key, decrypts `reference` and returns the content
+it points at. The node's key never leaves the node.
+
+- `reference`: the ACT reference the publisher handed out, 64 hex (or 128
+  for content uploaded encrypted), no `0x`.
+- `publisher`: the publisher's secp256k1 public key, compressed (66 hex,
+  `02`/`03`) or uncompressed (130 hex, `04`), optional `0x`, any case.
+  Freedom normalises it to the compressed form, which the prompt shows and
+  the "always allow" rule stores, so every spelling of one key is one
+  publisher.
+- `historyAddress`: the ACT history reference, 64 hex, no `0x`.
+- `timestamp`: unix seconds; which version of the grantee list to use. The
+  node uses "now" when it is absent.
+- `path`: absent for a blob uploaded as data (bee-js `downloadData`, the
+  node's `/bytes`). A string for a file in an uploaded manifest (bee-js
+  `downloadFile`, the node's `/bzz`): `''` for the manifest's index, or a
+  relative path such as `docs/a.pdf` (no leading `/`, no `\`, no empty, `.`
+  or `..` segments, no lone UTF-16 surrogates, at most 1024 UTF-8 bytes).
+- `contentType` is the node's `Content-Type` for the content, or `null`.
+
+Each call asks the user, in a prompt that names the site and the publisher
+(key and address), unless the user ticked "Always allow this site to open
+what this publisher shares with you" before. That rule covers this publisher
+only; a share from any other publisher asks again. Rejecting is `4001`. An
+origin without a connection grant gets `4100` `not_connected` first. A tab
+the Agent is driving is always asked.
+
+The bytes are charged to the origin's read budget ([Limits](#limits), 5 MiB
+per 60 s for a connected origin): the length the node declares is reserved
+before the body is read (a body without one is held to the budget as it
+streams), and content larger than 5 MiB is `data_too_large`. For a bigger
+file, share a manifest and open it one path at a time.
+
+Errors: `invalid_reference`, `invalid_publisher`, `invalid_history_address`,
+`invalid_timestamp`, `invalid_path`, `unsupported_option`, `act_not_found`
+(the node holds no grantee entry under that publisher, or no history entry
+at that time: the share is not for this node), `content_not_found`,
+`data_too_large`, `rate_limited`, `4100` `act_not_granted` and
+`private_window`, and `4900` `node-stopped`. The node's other failures are
+`-32603` with its message.
+
+Feature-detect it with `extensions.actShares` from `swarm_getCapabilities`.
+
+To share with a Freedom user, a publisher needs the user's node public key.
+On Freedom's bundled node (Ant) that is the same key as the `pssPublicKey`
+`swarm_getMessagingIdentity` returns (as of Ant v0.5.78, whose `/addresses`
+reports one key for both). An external Bee node keeps a separate PSS key.
 
 ### Messaging
 

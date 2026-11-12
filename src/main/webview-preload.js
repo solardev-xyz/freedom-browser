@@ -1847,7 +1847,9 @@ const SWARM_INJECT_SOURCE = `
             method === 'swarm_getMessagingIdentity' ||
             method === 'swarm_subscribe' ||
             // A blob of up to 5 MiB joined from the network can outlast 60s.
-            method === 'swarm_readData';
+            method === 'swarm_readData' ||
+            // Waits on the ACT prompt, then on the node's ACT lookup.
+            method === 'swarm_openAct';
           const timeout = longRunning ? 300000 : 60000;
           setTimeout(() => {
             if (pendingRequests.has(id)) {
@@ -1882,6 +1884,7 @@ const SWARM_INJECT_SOURCE = `
       unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
       sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
       sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
+      openAct(params) { return this.request({ method: 'swarm_openAct', params: params }); },
 
       on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
       removeListener(event, handler) {

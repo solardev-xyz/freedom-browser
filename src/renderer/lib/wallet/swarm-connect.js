@@ -65,6 +65,19 @@ let swarmMessagingAutoApproveCheckbox;
 let swarmMessagingRejectBtn;
 let swarmMessagingConfirmBtn;
 
+// DOM references — ACT approval screen (#648)
+let swarmActScreen;
+let swarmActBackBtn;
+let swarmActSite;
+let swarmActPublisher;
+let swarmActPublisherAddress;
+let swarmActReference;
+let swarmActPathRow;
+let swarmActPath;
+let swarmActAutoApproveCheckbox;
+let swarmActRejectBtn;
+let swarmActConfirmBtn;
+
 // DOM references — feed approval screen
 let swarmFeedScreen;
 let swarmFeedBackBtn;
@@ -100,6 +113,9 @@ const swarmPublishQueue = createPromptQueue(presentSwarmPublishApproval, (armed)
 });
 const swarmMessagingQueue = createPromptQueue(presentSwarmMessagingApproval, (armed) => {
   setButtonsDisabled([swarmMessagingConfirmBtn, swarmMessagingRejectBtn], !armed);
+});
+const swarmActQueue = createPromptQueue(presentSwarmActApproval, (armed) => {
+  setButtonsDisabled([swarmActConfirmBtn, swarmActRejectBtn], !armed);
 });
 const swarmFeedQueue = createPromptQueue(presentSwarmFeedApproval, (armed) => {
   setButtonsDisabled([swarmFeedRejectBtn], !armed);
@@ -224,6 +240,31 @@ export function initSwarmConnect() {
     if (wasVisible) rejectDismissed(swarmMessagingQueue);
   });
 
+  swarmActScreen = document.getElementById('sidebar-swarm-act-approve');
+  swarmActBackBtn = document.getElementById('swarm-act-back');
+  swarmActSite = document.getElementById('swarm-act-site');
+  swarmActPublisher = document.getElementById('swarm-act-publisher');
+  swarmActPublisherAddress = document.getElementById('swarm-act-publisher-address');
+  swarmActReference = document.getElementById('swarm-act-reference');
+  swarmActPathRow = document.getElementById('swarm-act-path-row');
+  swarmActPath = document.getElementById('swarm-act-path');
+  swarmActAutoApproveCheckbox = document.getElementById('swarm-act-auto-approve');
+  swarmActRejectBtn = document.getElementById('swarm-act-reject');
+  swarmActConfirmBtn = document.getElementById('swarm-act-confirm');
+
+  registerScreenHider(() => {
+    if (swarmActQueue.presenting) return;
+    const wasVisible = swarmActScreen && !swarmActScreen.classList.contains('hidden');
+    swarmActScreen?.classList.add('hidden');
+    if (!wasVisible) return;
+    // The rule checkbox counts on every exit, a dismissal included.
+    const onScreen = swarmActQueue.current;
+    const keepRule = !!swarmActAutoApproveCheckbox?.checked;
+    for (const pending of swarmActQueue.drain()) {
+      rejectSwarmAct(pending, pending === onScreen ? keepRule : true, 'User dismissed prompt');
+    }
+  });
+
   swarmFeedScreen = document.getElementById('sidebar-swarm-feed-approve');
   swarmFeedBackBtn = document.getElementById('swarm-feed-back');
   swarmFeedTitle = document.getElementById('swarm-feed-title');
@@ -257,6 +298,7 @@ export function initSwarmConnect() {
   setupSwarmConnectScreen();
   setupSwarmPublishScreen();
   setupSwarmMessagingScreen();
+  setupSwarmActScreen();
   setupSwarmFeedScreen();
 }
 
@@ -409,7 +451,8 @@ export async function updateSwarmConnectionBanner(permissionKey = null) {
       if (swarmConnectionSite) {
         swarmConnectionSite.textContent = permissionKey;
       }
-      const hasAutoApprove = permission.autoApprove?.publish || permission.autoApprove?.feeds || permission.autoApprove?.signing;
+      const hasAutoApprove = permission.autoApprove?.publish || permission.autoApprove?.feeds || permission.autoApprove?.signing ||
+        Object.keys(permission.act || {}).length > 0;
       swarmAutoApproveBadge?.classList.toggle('hidden', !hasAutoApprove);
 
       currentBannerPermissionKey = permissionKey;
@@ -751,6 +794,103 @@ function rejectSwarmMessaging(pending) {
   const { reject } = pending;
   reject({ code: 4001, message: 'User rejected the request' });
   console.log('[SwarmConnect] Messaging rejected');
+}
+
+// ============================================
+// ACT approval prompt (#648)
+// ============================================
+
+function setupSwarmActScreen() {
+  const settleWith = (approve) => () => {
+    const pending = swarmActQueue.claim();
+    if (!pending) return;
+    // Read the shared checkbox before the first await (see approveSwarmPublish).
+    const keepRule = !!swarmActAutoApproveCheckbox?.checked;
+    if (approve) approveSwarmAct(pending, keepRule);
+    else rejectSwarmAct(pending, keepRule);
+    closeSwarmActApproval();
+  };
+  swarmActBackBtn?.addEventListener('click', settleWith(false));
+  swarmActRejectBtn?.addEventListener('click', settleWith(false));
+  swarmActConfirmBtn?.addEventListener('click', settleWith(true));
+}
+
+/**
+ * Ask the user whether `permissionKey` may open content `publisher` shared
+ * with this node through ACT (swarm_openAct). `params` is main's canonical
+ * form of the request and `publisher` its description
+ * (swarm-permissions.js describeActRequest): the normalised key
+ * the grant and the node request use, its address, and whether a rule for it
+ * already exists (only an Agent-held tab is prompted despite one). Resolves on
+ * Open, rejects (4001) otherwise.
+ */
+export function showSwarmActApproval(permissionKey, params, publisher, resolve, reject) {
+  // A live device confirmation owns the sidebar (see signature-flight.js).
+  if (isSignatureInFlight()) {
+    reject(signatureInFlightError());
+    return;
+  }
+
+  swarmActQueue.show({ permissionKey, params, publisher, resolve, reject });
+}
+
+function presentSwarmActApproval({ permissionKey, params, publisher }) {
+  if (swarmActSite) swarmActSite.textContent = permissionKey || 'Unknown';
+  if (swarmActPublisher) swarmActPublisher.textContent = publisher?.publicKey || '';
+  if (swarmActPublisherAddress) swarmActPublisherAddress.textContent = publisher?.address || '';
+  if (swarmActReference) {
+    swarmActReference.textContent = typeof params?.reference === 'string' ? params.reference.toLowerCase() : '';
+  }
+  const hasPath = typeof params?.path === 'string';
+  swarmActPathRow?.classList.toggle('hidden', !hasPath);
+  if (swarmActPath) swarmActPath.textContent = hasPath ? (params.path || '/') : '';
+  // Shows the rule as it stands, so unticking it here removes it.
+  if (swarmActAutoApproveCheckbox) swarmActAutoApproveCheckbox.checked = publisher?.granted === true;
+
+  hideAllSubscreens();
+  walletState.identityView?.classList.add('hidden');
+  swarmActScreen?.classList.remove('hidden');
+
+  openSidebarPanel();
+}
+
+function closeSwarmActApproval() {
+  swarmActScreen?.classList.add('hidden');
+  walletState.identityView?.classList.remove('hidden');
+  swarmActQueue.settle();
+}
+
+/**
+ * Store or remove the "always allow" rule for this publisher as the checkbox
+ * left it. A failure to save is logged; the page still gets the user's answer.
+ */
+async function applyActRule(pending, keepRule, { mayGrant }) {
+  const { permissionKey, publisher } = pending;
+  if (!permissionKey || !publisher?.publicKey) return;
+  const had = publisher.granted === true;
+  try {
+    if (keepRule && !had && mayGrant) {
+      await window.swarmPermissions.grantAct(permissionKey, publisher.publicKey);
+    } else if (!keepRule && had) {
+      await window.swarmPermissions.revokeAct(permissionKey, publisher.publicKey);
+    } else {
+      return;
+    }
+    updateSwarmConnectionBanner(permissionKey);
+  } catch (err) {
+    console.error('[SwarmConnect] Could not save the ACT rule:', err);
+  }
+}
+
+async function approveSwarmAct(pending, keepRule) {
+  await applyActRule(pending, keepRule, { mayGrant: true });
+  pending.resolve();
+}
+
+async function rejectSwarmAct(pending, keepRule, message = 'User rejected the request') {
+  // A rejection never turns a rule on, but unticking it still removes one.
+  await applyActRule(pending, keepRule, { mayGrant: false });
+  pending.reject({ code: 4001, message });
 }
 
 // ============================================

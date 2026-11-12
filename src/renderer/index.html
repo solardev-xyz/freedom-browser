@@ -4902,6 +4902,67 @@
               </div>
             </div>
 
+            <!-- Swarm ACT Approval sub-screen (#648): open content shared with this node -->
+            <div id="sidebar-swarm-act-approve" class="sidebar-subscreen sidebar-modal hidden">
+              <div
+                class="subscreen-header"
+                data-back="swarm-act-back"
+                data-title="Open Shared Content"
+              ></div>
+
+              <div class="subscreen-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="swarm-act-site">site.eth</div>
+                  <div class="swarm-connect-wants">
+                    wants to open content this publisher shared with you
+                  </div>
+                </div>
+
+                <div class="swarm-publish-details">
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Publisher</span>
+                    <span class="swarm-publish-value" id="swarm-act-publisher"></span>
+                  </div>
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Publisher address</span>
+                    <span class="swarm-publish-value" id="swarm-act-publisher-address"></span>
+                  </div>
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Reference</span>
+                    <span class="swarm-publish-value" id="swarm-act-reference"></span>
+                  </div>
+                  <div class="swarm-publish-row hidden" id="swarm-act-path-row">
+                    <span class="swarm-publish-label">Path</span>
+                    <span class="swarm-publish-value" id="swarm-act-path"></span>
+                  </div>
+                </div>
+
+                <div class="swarm-connect-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                  <span
+                    >Your Swarm node decrypts this with its own key and gives the content to this
+                    site. Only content this publisher shared with you can be opened.</span
+                  >
+                </div>
+
+                <label class="auto-approve-checkbox">
+                  <input type="checkbox" id="swarm-act-auto-approve" />
+                  <span>Always allow this site to open what this publisher shares with you</span>
+                </label>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-act-reject">Reject</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-act-confirm">Open</button>
+                </div>
+              </div>
+            </div>
+
             <!-- Swarm Feed Approval sub-screen -->
             <div id="sidebar-swarm-feed-approve" class="sidebar-subscreen sidebar-modal hidden">
               <div
@@ -5221,6 +5282,10 @@
                       <span class="toggle-slider"></span>
                     </label>
                   </div>
+                </div>
+                <div class="perms-section" id="swarm-perms-act-section">
+                  <div class="perms-section-header">Shared content you allowed</div>
+                  <div id="swarm-perms-act-list"></div>
                 </div>
                 <div class="perms-section hidden" id="swarm-perms-manifest-section">
                   <div class="perms-section-header">Declared by app</div>

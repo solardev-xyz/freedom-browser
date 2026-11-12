@@ -365,7 +365,7 @@ async function dappPermissions({ win }, origin = 'https://swap.example') {
   await win.waitForTimeout(400);
 }
 
-// Swarm approval screens: 'connect' | 'publish' | 'messaging' | 'feed'
+// Swarm approval screens: 'connect' | 'publish' | 'messaging' | 'feed' | 'act'
 async function swarmApproval({ win }, kind = 'connect') {
   await win.evaluate(async (k) => {
     const sc = await import('./lib/wallet/swarm-connect.js');
@@ -403,6 +403,20 @@ async function swarmApproval({ win }, kind = 'connect') {
           method: 'swarm_createFeed',
           autoApproveType: 'feeds',
         }),
+      // ACT open (#648): the publisher is main's description of the key.
+      act: (res, rej) =>
+        sc.showSwarmActApproval(
+          origin,
+          { reference: 'a3'.repeat(32), historyAddress: 'b4'.repeat(32), path: 'letters/2026-11.txt' },
+          {
+            valid: true,
+            publicKey: '034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa',
+            address: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',
+            granted: false,
+          },
+          res,
+          rej
+        ),
     }[k];
     new Promise(show);
   }, kind);
