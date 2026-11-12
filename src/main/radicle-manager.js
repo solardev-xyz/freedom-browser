@@ -725,8 +725,13 @@ async function isSeeded(fullRid) {
  * grant commit the user to replicating an arbitrary repo — exactly what
  * seeding gates behind a per-repo consent prompt. Unknown repos are
  * rejected, and a policy lookup that fails counts as "not seeded".
+ *
+ * `guard(start)`, a page's (freedom-core design 0011, PRQ-8b): run after
+ * the policy's read, the last wait before the fetch, it checks the page
+ * again and starts the fetch in the same run, or resolves null to start
+ * nothing.
  */
-async function refetchRepository(rid, onStatus) {
+async function refetchRepository(rid, onStatus, { guard } = {}) {
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
@@ -736,7 +741,9 @@ async function refetchRepository(rid, onStatus) {
       rid: fullRid,
     });
   }
-  return startTrackedFetch(fullRid, onStatus);
+  if (typeof guard !== 'function') return startTrackedFetch(fullRid, onStatus);
+  const started = await guard(() => startTrackedFetch(fullRid, onStatus));
+  return started ?? failure('REFUSED', 'The fetch was not started', { rid: fullRid });
 }
 
 async function getSeedFetchStatus(rid, onStatus) {

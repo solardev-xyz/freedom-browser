@@ -32,7 +32,9 @@
  *
  * Seeding is honest about replication: radicle_seed writes the policy and
  * kicks off a background fetch, returning immediately with an initial
- * status. Progress is pushed through the provider's `seedStatus` event;
+ * status. Progress is pushed through the provider's `seedStatus` event,
+ * which main's page requests send to every live document of the site's key
+ * (setSeedStatusSink, PRQ-8b);
  * radicle_getSeedStatus remains the snapshot/reload path, and radicle_sync
  * restarts the fetch (the retry path) for repos that are already seeded —
  * it can never start seeding a new one. See seed-status.js.
@@ -43,7 +45,7 @@
  * add-on's text goes to the log only, through redactForLog (#1073).
  */
 
-const { ipcMain, BrowserWindow } = require('electron');
+const { ipcMain } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const embedded = require('../radicle-embedded');
@@ -165,9 +167,10 @@ function publicSeedStatus(status) {
 }
 
 // method -> required grant this process checks. The node-tier per-repo
-// consent prompt for `radicle_seed`/`radicle_unseed` is the renderer's
-// (radicle-provider.js NODE_METHODS): both are recorded here as needing
-// the connection grant, and neither reaches main without its prompt.
+// consent prompt for `radicle_seed`/`radicle_unseed` is main's page
+// dispatcher's (`radicle.node`, src/main/page/page-radicle.js, PRQ-8b):
+// both are recorded here as needing the connection grant, and each runs
+// under the dispatcher's guard after its prompt or the site's node rule.
 const METHOD_TIERS = {
   radicle_requestAccess: 'connection',
   radicle_getCapabilities: 'none',
@@ -200,6 +203,8 @@ const SIGNED_WRITE_METHODS = new Set([
 ]);
 const autoWriteLimiter = createAutoWriteLimiter();
 const PUSH_METHODS = new Set(['radicle_seed', 'radicle_sync', 'radicle_getSeedStatus']);
+// The node actions a page's request runs under main's guard (PRQ-8b).
+const NODE_ACTIONS = new Set(['radicle_seed', 'radicle_unseed', 'radicle_sync']);
 const seedStatusBroadcasters = new Map();
 
 // Methods that report or change grant/node state rather than requiring a
@@ -215,19 +220,23 @@ function nodeRunning() {
   return getCurrentStatus().status === STATUS.RUNNING;
 }
 
+// Where a site's seed statuses go (freedom-core design 0011, "Events";
+// PRQ-8b): main's page requests (src/main/page/page-radicle.js), which send
+// each to every live document of the site's key. Before, they went to every
+// chrome window, which relayed them to the key's webviews.
+let seedStatusSink = null;
+
+/** Main's page requests take the sites' seed statuses (`(origin, status)`). */
+function setSeedStatusSink(sink) {
+  seedStatusSink = typeof sink === 'function' ? sink : null;
+}
+
 function getSeedStatusBroadcaster(origin) {
   let broadcast = seedStatusBroadcasters.get(origin);
   if (broadcast) return broadcast;
+  // A sink that throws is logged by the tracker, as a window's send was.
   broadcast = (data) => {
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.webContents.isDestroyed()) {
-        win.webContents.send(IPC.RADICLE_PROVIDER_EVENT, {
-          event: 'seedStatus',
-          origin,
-          data: publicSeedStatus(data),
-        });
-      }
-    }
+    seedStatusSink?.(origin, publicSeedStatus(data));
   };
   seedStatusBroadcasters.set(origin, broadcast);
   return broadcast;
@@ -312,11 +321,23 @@ function requireRidParam(params) {
   return fullRid;
 }
 
-async function handleSeed(origin, params, onSeedStatus) {
+/**
+ * A page's node action runs under main's guard (`page.effect`, from
+ * src/main/page/page-radicle.js): the guard's checks and the action in one
+ * run, or a refusal (thrown) with nothing done. Any other caller runs it.
+ */
+async function guarded(effect, run) {
+  if (typeof effect !== 'function') return run();
+  const outcome = await effect(run);
+  if (outcome?.refused) throw outcome.refused;
+  return outcome?.value;
+}
+
+async function handleSeed(origin, params, onSeedStatus, effect) {
   const rid = requireRidParam(params);
-  const result = onSeedStatus
-    ? await seedRepository(rid, onSeedStatus)
-    : await seedRepository(rid);
+  const result = await guarded(effect, () =>
+    onSeedStatus ? seedRepository(rid, onSeedStatus) : seedRepository(rid)
+  );
   if (!result.success) {
     throw managerFailure(
       'radicle_seed',
@@ -328,9 +349,9 @@ async function handleSeed(origin, params, onSeedStatus) {
   return { rid, seeded: true, status: publicSeedStatus(result.status) };
 }
 
-async function handleUnseed(origin, params) {
+async function handleUnseed(origin, params, effect) {
   const rid = requireRidParam(params);
-  const result = await unseedRepository(rid);
+  const result = await guarded(effect, () => unseedRepository(rid));
   if (!result.success) {
     throw managerFailure(
       'radicle_unseed',
@@ -342,13 +363,26 @@ async function handleUnseed(origin, params) {
   return { rid, seeded: false };
 }
 
-async function handleSync(origin, params, onSeedStatus) {
+async function handleSync(origin, params, onSeedStatus, effect) {
   const rid = requireRidParam(params);
   // Non-blocking: (re)start the background fetch and report where it
-  // stands. Subsequent transitions are emitted as `seedStatus` events.
-  const result = onSeedStatus
-    ? await refetchRepository(rid, onSeedStatus)
-    : await refetchRepository(rid);
+  // stands. Subsequent transitions are emitted as `seedStatus` events. A
+  // page's fetch starts under main's guard, after the manager's own wait
+  // (the seeding policy's read): the guard owns the node action.
+  let refusal = null;
+  const guard = async (start) => {
+    const outcome = await effect(start);
+    if (outcome?.refused) {
+      refusal = outcome.refused;
+      return null;
+    }
+    return outcome?.value;
+  };
+  let result;
+  if (typeof effect === 'function') result = await refetchRepository(rid, onSeedStatus, { guard });
+  else if (onSeedStatus) result = await refetchRepository(rid, onSeedStatus);
+  else result = await refetchRepository(rid);
+  if (refusal) throw refusal;
   if (!result.success) {
     // sync is the retry path for a repo the user already seeded; it must
     // not become a second, promptless way to start seeding one (the
@@ -430,8 +464,12 @@ async function executeRadicleMethod(
   method,
   params = {},
   origin,
-  { onSeedStatus, approval, privateSender = false } = {}
+  { onSeedStatus, approval, privateSender = false, page = null } = {}
 ) {
+  // A page's node action (main's dispatcher, PRQ-8b): its guard checks the
+  // page again just before the action, records the site's use in that run,
+  // and runs the action.
+  const effect = NODE_ACTIONS.has(method) && typeof page?.effect === 'function' ? page.effect : null;
   if (!KNOWN_METHODS.has(method)) {
     throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
   }
@@ -479,8 +517,9 @@ async function executeRadicleMethod(
         );
       }
     }
-    // A private window's use is not recorded (R-9).
-    if (!privateSender) permissions.updateLastUsed(origin);
+    // A private window's use is not recorded (R-9). A page's node action
+    // records it in its guard's run.
+    if (!privateSender && !effect) permissions.updateLastUsed(origin);
   }
 
   switch (method) {
@@ -499,11 +538,11 @@ async function executeRadicleMethod(
     case 'radicle_listSeededRepos':
       return handleListSeededRepos();
     case 'radicle_seed':
-      return handleSeed(origin, params, onSeedStatus);
+      return handleSeed(origin, params, onSeedStatus, effect);
     case 'radicle_unseed':
-      return handleUnseed(origin, params);
+      return handleUnseed(origin, params, effect);
     case 'radicle_sync':
-      return handleSync(origin, params, onSeedStatus);
+      return handleSync(origin, params, onSeedStatus, effect);
     case 'radicle_getSeedStatus':
       return handleGetSeedStatus(origin, params, onSeedStatus);
     case 'radicle_disconnect':
@@ -529,8 +568,9 @@ async function executeRadicleMethod(
   }
 }
 
-// Seed/unseed run without a prompt only when the site's node auto-approve
-// rule answers. The renderer reports the path it took in `meta.approval`
+// The chrome's route (PRQ-8b refuses seed and unseed on it, as main's): a
+// seed/unseed ran without a prompt only when the site's node auto-approve
+// rule answered. The renderer reported the path it took in `meta.approval`
 // ('user' after the prompt, 'auto' when the rule answered) and names the
 // requesting guest in `meta.webContentsId`. A guest in Agent custody, or an
 // automatic request main cannot attribute to a guest of the sending window,
@@ -620,9 +660,13 @@ function answerError(method, err) {
  * attestation refuses one), so its use is recorded.
  */
 async function executeRadicleForPage(method, params, key, options = {}) {
+  // A site's seed statuses go to main's page requests (setSeedStatusSink).
+  const hadBroadcaster = seedStatusBroadcasters.has(key);
+  const onSeedStatus = PUSH_METHODS.has(method) && typeof key === 'string' && key ? getSeedStatusBroadcaster(key) : undefined;
   try {
-    return { result: await executeRadicleMethod(method, params, key, options) };
+    return { result: await executeRadicleMethod(method, params, key, { ...options, onSeedStatus }) };
   } catch (err) {
+    if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(key);
     return { error: answerError(method, err) };
   }
 }
@@ -680,6 +724,7 @@ function registerRadicleProviderIpc() {
 module.exports = {
   executeRadicleMethod,
   executeRadicleForPage,
+  setSeedStatusSink,
   registerRadicleProviderIpc,
   _resetAutoWriteLimiter: () => autoWriteLimiter.reset(),
 };

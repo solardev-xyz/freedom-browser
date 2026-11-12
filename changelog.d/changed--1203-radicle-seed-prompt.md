@@ -1,0 +1,4 @@
+- A site in a background tab that asks your Radicle node to seed or stop seeding a repository now waits for you to switch to it, with a dot on its tab and a count on the wallet button ([#1203](https://github.com/solardev-xyz/freedom-browser/pull/1203))
+  - A request you haven't seen within its time limit is closed and the page is told it timed out; one you're looking at waits for your answer
+  - A seed or unseed request with a repository ID Radicle doesn't accept is refused without asking you
+  - Seeding progress reaches every open page of the site

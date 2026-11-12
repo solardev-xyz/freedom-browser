@@ -13,11 +13,12 @@
  * (which honors the Radicle flag) and never touches vault or wallet state.
  *
  * Main's own prompts for a page's request (freedom-core design 0011, "The
- * prompt protocol"; PRQ-8a: `radicle.connect`) show in the same screen,
+ * prompt protocol"; PRQ-8a: `radicle.connect`; PRQ-8b: `radicle.node`)
+ * show in the same screen,
  * from what main sends: its site and its view. The screen answers them by
  * handle (`page:decide`) once its input protection has passed, writes no
  * grant, and takes itself down when main hides or closes the prompt. The
- * prompts that still take the chrome's own path (seeding, signing) keep
+ * prompts that still take the chrome's own path (signing) keep
  * the promise-based flow below until their parts move them.
  */
 
@@ -97,11 +98,13 @@ export function initRadicleConsent() {
     }
   });
 
-  registerPagePromptRenderer('radicle.connect', {
-    show: showPagePrompt,
-    close: closePagePrompt,
-    isShowing: shownPagePrompt,
-  });
+  for (const kind of Object.keys(PAGE_COPY)) {
+    registerPagePromptRenderer(kind, {
+      show: showPagePrompt,
+      close: closePagePrompt,
+      isShowing: shownPagePrompt,
+    });
+  }
 
   console.log('[RadicleConsent] Initialized');
 }
@@ -139,9 +142,17 @@ function render({ title, origin, wants, allows, warning, approveLabel }) {
 }
 
 // What each of main's prompts says, from its view (design 0011, "What a
-// prompt shows"): connecting has nothing of the page's.
+// prompt shows"): connecting has nothing of the page's; a seed or an unseed
+// names its repository, as main checked it. A view off its form shows
+// nothing.
 const PAGE_COPY = Object.freeze({
   'radicle.connect': () => CONNECT_COPY,
+  'radicle.node': (view) => {
+    if (typeof view.rid !== 'string' || !view.rid) return null;
+    if (view.method === 'radicle_seed') return seedCopy(view.rid);
+    if (view.method === 'radicle_unseed') return unseedCopy(view.rid);
+    return null;
+  },
 });
 
 function clearPagePending() {
@@ -287,11 +298,9 @@ export function showRadicleConnect(permissionKey, owner) {
   return prompt({ owner, origin: permissionKey, ...CONNECT_COPY });
 }
 
-export function showRadicleSeedApproval(permissionKey, rid, owner) {
-  return prompt({
-    owner,
+function seedCopy(rid) {
+  return {
     title: 'Seed this repository?',
-    origin: permissionKey,
     wants: `asks your node to seed ${rid}`,
     allows: [
       'Download the repository to your node',
@@ -299,14 +308,12 @@ export function showRadicleSeedApproval(permissionKey, rid, owner) {
     ],
     warning: 'Seeding uses disk space and bandwidth until you unseed the repository.',
     approveLabel: 'Seed repository',
-  });
+  };
 }
 
-export function showRadicleUnseedApproval(permissionKey, rid, owner) {
-  return prompt({
-    owner,
+function unseedCopy(rid) {
+  return {
     title: 'Stop seeding this repository?',
-    origin: permissionKey,
     wants: `asks your node to stop seeding ${rid}`,
     allows: [
       'Remove the seeding policy for this repository',
@@ -315,7 +322,15 @@ export function showRadicleUnseedApproval(permissionKey, rid, owner) {
     warning:
       'Your node stops sharing this repository with the Radicle network until you seed it again.',
     approveLabel: 'Stop seeding',
-  });
+  };
+}
+
+export function showRadicleSeedApproval(permissionKey, rid, owner) {
+  return prompt({ owner, origin: permissionKey, ...seedCopy(rid) });
+}
+
+export function showRadicleUnseedApproval(permissionKey, rid, owner) {
+  return prompt({ owner, origin: permissionKey, ...unseedCopy(rid) });
 }
 
 export function showRadicleSigningApproval(permissionKey, owner) {

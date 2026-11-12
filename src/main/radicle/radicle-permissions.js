@@ -204,6 +204,9 @@ function setAutoApprove(origin, type, enabled) {
 // "Grants"; PRQ-8a): a connection is written by main itself, for the key it
 // attested, from the user's decision on the prompt it issued.
 const GRANT_REFUSED = 'A Radicle connection is granted only from its own prompt';
+// PRQ-8b: the node rule is read by main, which never turns it on: no prompt
+// offers it, as none did before. The chrome may only turn it off.
+const NODE_RULE_REFUSED = 'Radicle node auto-approve can only be turned off here';
 
 function registerRadiclePermissionsIpc() {
   // PRIVATE MODE GUARD (R-9): the provider's consent flow grants from the
@@ -230,9 +233,13 @@ function registerRadiclePermissionsIpc() {
   ipcMain.handle(IPC.RADICLE_GET_AUTO_APPROVE, (_event, origin, type) =>
     getAutoApprove(origin, type)
   );
-  ipcMain.handle(IPC.RADICLE_SET_AUTO_APPROVE, (event, origin, type, enabled) =>
-    isPrivateSender(event) ? false : setAutoApprove(origin, type, enabled)
-  );
+  // The node rule only off, for every sender (design 0011, "Grants";
+  // PRQ-8b): any value but `false` is refused, so a truthy non-boolean
+  // can't turn it on.
+  ipcMain.handle(IPC.RADICLE_SET_AUTO_APPROVE, (event, origin, type, enabled) => {
+    if (type === 'node' && enabled !== false) throw new Error(NODE_RULE_REFUSED);
+    return isPrivateSender(event) ? false : setAutoApprove(origin, type, enabled);
+  });
 
   console.log('[RadiclePermissions] IPC handlers registered');
 }
@@ -255,5 +262,6 @@ module.exports = {
   onRevoke,
   registerRadiclePermissionsIpc,
   GRANT_REFUSED,
+  NODE_RULE_REFUSED,
   _resetCache,
 };
