@@ -127,11 +127,12 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     }
   };
 
-  // The window's oldest open prompt of the guest in front, or null.
+  // The window's oldest open prompt of the guest in front, or of the
+  // window itself (the wallet's own, APS-3, which no tab asked for), or null.
   function oldestInFront(windowId, front) {
-    if (front === null) return null;
     for (const entry of open.values()) {
-      if (entry.window === windowId && entry.guest === front) return entry;
+      if (entry.window !== windowId) continue;
+      if (entry.guest === null || (front !== null && entry.guest === front)) return entry;
     }
     return null;
   }
@@ -159,6 +160,11 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     });
   }
 
+  /** The open prompt's kind, or null. */
+  function kindOf(handle) {
+    return open.get(handle)?.kind ?? null;
+  }
+
   /** Whether the document already has an open wallet prompt. */
   function walletPromptOpen(documentKey) {
     for (const entry of open.values()) {
@@ -170,8 +176,11 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
   /**
    * Hold a new prompt. `decision` settles with `{ approve, choices }` when
    * the user decides it, or `{ closed: reason }` when it closes otherwise.
+   * `released`, when given, settles once what the decision started is done
+   * (a vault unlock's attempt), and the decision's invocation is answered
+   * then rather than when its whole request is (`page-requests.js`).
    */
-  function add({ handle, record, window: windowId, guest, document, kind, site, view, choices }) {
+  function add({ handle, record, window: windowId, guest, document, kind, site, view, choices, released }) {
     let settle;
     const decision = new Promise((resolve) => {
       settle = resolve;
@@ -189,6 +198,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
       order: ++lastOrder,
       shownOnce: false,
       decided: null,
+      released: released instanceof Promise ? released : null,
       settle,
       decision,
     };
@@ -248,9 +258,12 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
    * `page:decide` from window `windowId`'s chrome. It counts only for the
    * handle that window shows at this moment.
    *
+   * `from` names the surface the decision came from (`chrome` or
+   * `approvals`), which main's issuer reads (`page-requests.js` `confirm`).
+   *
    * @returns {{ok: true, entry: object} | {ok: false, reason: string}}
    */
-  function decide(windowId, payload) {
+  function decide(windowId, payload, from = 'chrome') {
     if (!isPlainObject(payload) || !hasOnlyKeys(payload, DECIDE_KEYS)) return { ok: false, reason: 'invalid' };
     const { handle, approve } = payload;
     if (typeof handle !== 'string' || typeof approve !== 'boolean') return { ok: false, reason: 'invalid' };
@@ -271,14 +284,17 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
       if (!checked) return { ok: false, reason: 'invalid' };
       choices = checked;
     }
-    entry.decided = Object.freeze({ approve, choices });
+    entry.decided = Object.freeze({ approve, choices, from });
     trace({ kind: 'decided', handle, approve });
     decided(entry);
     return { ok: true, entry };
   }
 
-  /** Forget a closed window. */
+  /** Forget a closed window. Its own prompts (the wallet's) close with it. */
   function forgetWindow(windowId) {
+    for (const entry of [...open.values()]) {
+      if (entry.window === windowId && entry.guest === null) closed(entry.handle, 'closed');
+    }
     windows.delete(windowId);
   }
 
@@ -295,7 +311,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     return out;
   }
 
-  return { add, update, closed, foreground, decide, walletPromptOpen, forgetWindow, state };
+  return { add, update, closed, foreground, decide, kindOf, walletPromptOpen, forgetWindow, state };
 }
 
 module.exports = {

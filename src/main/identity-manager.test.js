@@ -2091,7 +2091,7 @@ describe('Radicle identity changes on the service (0008, Identity changes)', () 
     const { mgr, backend, steps } = await load([pending, pending, pending, pending, pending]);
 
     await expect(mgr.injectRadicleIdentity('Alias')).rejects.toThrow(
-      'The Radicle identity write did not finish (pending_recovery)'
+      'The Radicle identity write did not finish (pending_recovery); restart Freedom to complete it, or try the change again'
     );
     expect(writes(backend)).toHaveLength(5);
     expect(steps.at(-1)).toEqual({

@@ -16,6 +16,7 @@ const { isPrivateSender } = require('./private/private-sender');
 // name its storage path, and a RID names the repository, so each goes
 // through redactForLog. The context alone redacts nothing.
 const { redactForLog } = require('./private/private-log-context');
+const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle/radicle-service-backend');
 const seedStatus = require('./radicle/seed-status');
 // What runs the node (plan B6): the add-on, or the freedom-radicled service.
 const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
@@ -822,24 +823,39 @@ async function cancelCloneWithRetry(rid) {
   return false;
 }
 
+/** Whether `err` is a write's `outcome_unknown` on the service: an unseed
+ * it took and didn't confirm (0008, Writes), which may have been made. */
+const outcomeUnknown = (err) => err?.code === 'outcome_unknown';
+
+/**
+ * Stop seeding `rid`. Under the service it is `rad.unseed` (0008, Writes),
+ * on the generation running when it is asked: a write, so one whose outcome
+ * main can't know answers OUTCOME_UNKNOWN and is never sent again, not even
+ * as the re-apply after a fetch in flight.
+ */
 async function unseedRepository(rid) {
-  // Under the service, `rad.unseed` is a write (0008, Writes): its own step.
-  // The fetch's cancel below is `cancelClone`, already the service's.
-  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   const fetchDone = seedStatus.cancelFetch(fullRid);
   const cancellation = fetchDone ? cancelCloneWithRetry(fullRid) : Promise.resolve(false);
+  const unseeded = embedded.unseedRepo(fullRid);
   // Heartwood's pack transfer is a blocking operation, so native
   // cancellation can only be observed when that call returns. Re-apply
   // the policy afterward to prevent a late clone from leaving the repo
   // seeded after the user explicitly unseeded it, even if the immediate
-  // unseed attempt fails.
+  // unseed attempt fails. On the service, not after an unseed whose outcome
+  // is unknown: that would send it again.
   if (fetchDone) {
-    void Promise.all([fetchDone, cancellation])
-      .then(() => embedded.unseedRepo(fullRid))
+    const again = onService()
+      ? unseeded.then(
+          () => true,
+          (err) => !outcomeUnknown(err)
+        )
+      : true;
+    void Promise.all([fetchDone, cancellation, again])
+      .then(([, , reapply]) => (reapply ? embedded.unseedRepo(fullRid) : undefined))
       .catch((err) =>
         log.warn(
           `[Radicle] Final unseed failed for ${redactForLog(fullRid)}:`,
@@ -848,10 +864,13 @@ async function unseedRepository(rid) {
       );
   }
   try {
-    await embedded.unseedRepo(fullRid);
+    await unseeded;
     await pushInfoUpdate();
     return success();
   } catch (err) {
+    if (outcomeUnknown(err)) {
+      return failure('OUTCOME_UNKNOWN', OUTCOME_UNKNOWN_MESSAGE, { rid: fullRid });
+    }
     return failure('UNSEED_FAILED', err.message, { rid: fullRid });
   }
 }

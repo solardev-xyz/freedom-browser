@@ -64,12 +64,13 @@
  * prompt carries main's `site`, the request's attested key, and whatever the
  * user decides, the dispatcher acts on its own record.
  *
- * With the approvals document's flag on (APS-1, `FREEDOM_APPROVALS_DOCUMENT`,
+ * With the approvals document's flag on (APS-1, APS-2, `FREEDOM_APPROVALS_DOCUMENT=1`,
  * `approvals/approvals-document.js`), `page:prompt`, `page:prompt-hidden`
  * and `page:prompt-closed` go to the window's approvals document instead,
  * the chrome keeps `page:prompt-pending` and `page:prompt-closed` for its
  * badges and count, and the chrome's `page:decide` is refused: a decision
  * counts only from the window's own approvals document (`decideInWindow`).
+ * The Safe signing boards stay in the chrome (`CHROME_KINDS`).
  *
  * A record prompts one prompt at a time, and may prompt again once its
  * prompt is decided (PRQ-5: a vault unlock and then the signature, a Safe's
@@ -127,6 +128,29 @@ const CHANNELS = Object.freeze({
 const REQUEST_KEYS = new Set(['nonce', 'provider', 'method', 'params', 'ticket']);
 const RESERVE_KEYS = new Set(['nonce', 'method', 'bytes']);
 const FOREGROUND_KEYS = new Set(['guest']);
+const PASSWORD_KEYS = new Set(['password']);
+// The Safe signing boards stay in the chrome with the approvals document on
+// (APS-2). They collect the owners' signatures through device steps only
+// the chrome runs (a Ledger, a phone's QR, the board's execution), after
+// the user approved the Safe's request in the document (`eth.sign`,
+// `eth.send`), whose approval minted its one token. A board's decision
+// mints nothing: a message's completes only once its owners have signed,
+// and a send's only says the board was left. The wallet's own Safe flow
+// moves in APS-3.
+const CHROME_KINDS = new Set(['eth.safe_message', 'eth.safe_send']);
+// The wallet's own prompts (APS-3): the window's, not a page's.
+const WALLET_PROMPT_KINDS = new Set([
+  'wallet.send',
+  'wallet.safe_send',
+  'wallet.intent_resend',
+  'wallet.intent_replace',
+  'wallet.intent_close',
+  'wallet.executor_send',
+]);
+// What a wallet prompt shows where a page's shows its site.
+const WALLET_SITE = Object.freeze({ key: 'freedom:wallet', label: 'Your wallet' });
+// The longest vault password a decision may carry.
+const MAX_PASSWORD_LENGTH = 1024;
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
@@ -231,9 +255,13 @@ function defaultSendToWindow(windowId, channel, payload) {
   win.webContents.send(channel, payload);
 }
 
+// Whether the window is open: only then is its close watched.
 function defaultWatchWindow(windowId, onClosed) {
   const { BrowserWindow } = require('electron');
-  BrowserWindow.fromId(windowId)?.once('closed', onClosed);
+  const win = BrowserWindow.fromId(windowId);
+  if (!win || win.isDestroyed()) return false;
+  win.once('closed', onClosed);
+  return true;
 }
 
 /**
@@ -257,6 +285,13 @@ function defaultWatchWindow(windowId, onClosed) {
  *   the approvals documents (APS-1), when their flag is on: they get the
  *   prompts the chrome otherwise renders, and the chrome's decisions are
  *   refused.
+ * @param {(password: string) => Promise<void>} [options.unlockVault] main's
+ *   own unlock, for a `vault.unlock` decided in the approvals document
+ *   (APS-2), which carries the password; throws when it is wrong.
+ * @param {() => Promise<boolean>} [options.touchIdAvailable] whether main
+ *   can unlock with Touch ID here (APS-3: macOS, quick unlock set up).
+ * @param {() => Promise<{success: boolean}>} [options.unlockWithTouchId]
+ *   main's own Touch ID unlock, whose password never leaves main.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -272,6 +307,11 @@ function createPageRequests({
   sendToWindow = defaultSendToWindow,
   watchWindow = defaultWatchWindow,
   approvals = null,
+  unlockVault = async () => {
+    throw new Error('no vault');
+  },
+  touchIdAvailable = async () => false,
+  unlockWithTouchId = async () => ({ success: false }),
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -307,14 +347,21 @@ function createPageRequests({
   function sendPromptMessage(windowId, channel, payload) {
     if (!approvals) return toChrome(windowId, channel, payload);
     if (channel === PROMPT_CHANNELS.PENDING) return toChrome(windowId, channel, payload);
-    if (channel === PROMPT_CHANNELS.CLOSED) toChrome(windowId, channel, payload);
+    if (channel === PROMPT_CHANNELS.CLOSED) {
+      toChrome(windowId, channel, payload);
+      return toApprovals(windowId, channel, payload);
+    }
+    // A Safe board: the chrome renders it (`CHROME_KINDS`).
+    const kind = channel === PROMPT_CHANNELS.PROMPT ? payload?.kind : prompts.kindOf(payload?.handle);
+    if (CHROME_KINDS.has(kind)) return toChrome(windowId, channel, payload);
     toApprovals(windowId, channel, payload);
   }
 
   const prompts = createPagePrompts({
     send: sendPromptMessage,
-    markShown: (entry) => markShown(entry.record),
-    decided: (entry) => decidedEntry(entry),
+    // A window's own prompt (the wallet's, `walletPrompt`) has no record.
+    markShown: (entry) => (entry.record ? markShown(entry.record) : true),
+    decided: (entry) => (entry.record ? decidedEntry(entry) : prompts.closed(entry.handle, CLOSED.DECIDED)),
     trace,
   });
   const watchedWindows = new Set();
@@ -382,6 +429,9 @@ function createPageRequests({
       // The handle of the prompt the user last approved, until main's issuer
       // mints its one token (`confirm`), and the handle that token is for.
       approved: null,
+      // Where that approval came from: the chrome, or the window's approvals
+      // document (APS-2).
+      approvedFrom: null,
       tokenHandle: null,
     };
     record.reply = new Promise((resolve) => {
@@ -499,6 +549,7 @@ function createPageRequests({
     const { record } = entry;
     if (entry.decided?.approve === true && !record.answered) {
       record.approved = entry.handle;
+      record.approvedFrom = entry.decided.from;
       if (WALLET_KINDS.has(entry.kind) && !walletOperations.has(record.key)) walletOperations.set(record.key, record);
     }
     closeHandle(record, CLOSED.DECIDED);
@@ -585,6 +636,10 @@ function createPageRequests({
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       prompt: (spec) => prompt(record, spec),
+      // Whether the window's approvals document decides (APS-2): a vault
+      // account's prompt then asks for the vault unlocked first, which the
+      // chrome's own screens did in place.
+      approvalsDocument: Boolean(approvals),
       // The open prompt's content changed: it shows again with this view.
       updatePrompt: (view) =>
         Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
@@ -661,7 +716,89 @@ function createPageRequests({
    * `{ error }`, `-32002`, while the document has another wallet prompt
    * open.
    */
-  async function prompt(record, { kind, view = {}, choices } = {}) {
+  async function prompt(record, spec = {}) {
+    if (spec?.kind === 'vault.unlock' && approvals) return unlockPrompt(record, spec);
+    return promptOnce(record, spec);
+  }
+
+  // A decision's password for the vault, or null.
+  const passwordChoices = (raw) =>
+    isPlainObject(raw) &&
+    hasOnlyKeys(raw, PASSWORD_KEYS) &&
+    typeof raw.password === 'string' &&
+    raw.password.length > 0 &&
+    raw.password.length <= MAX_PASSWORD_LENGTH
+      ? { password: raw.password }
+      : null;
+  // A decision for Touch ID instead (APS-3), where main offers it.
+  const touchIdChoice = (raw) =>
+    isPlainObject(raw) && Object.keys(raw).length === 1 && raw.touchId === true ? { touchId: true } : null;
+
+  /**
+   * With the approvals document on (APS-2), a vault unlock takes the
+   * password in the document, and main unlocks with it: the dispatcher
+   * hears an approval only once the vault is open, with no choices, as the
+   * chrome's unlock gave it. A wrong password shows the prompt again,
+   * saying so (`failed`). The password goes nowhere else.
+   */
+  async function unlockPrompt(record, { view = {} } = {}) {
+    let touchId = false;
+    try {
+      touchId = (await touchIdAvailable()) === true;
+    } catch {
+      touchId = false;
+    }
+    const offered = touchId ? { ...view, touchId: true } : view;
+    let shown = offered;
+    for (;;) {
+      // The password goes from the decision's check straight to this
+      // attempt: the decision main keeps carries no choices, and the
+      // decision's invocation is answered once the attempt is done, so
+      // nothing holds a password past its own attempt (Codex, #1208).
+      let password = null;
+      let viaTouchId = false;
+      let attemptDone;
+      const released = new Promise((resolve) => {
+        attemptDone = resolve;
+      });
+      const choices = (raw) => {
+        if (touchId && touchIdChoice(raw)) {
+          viaTouchId = true;
+          return {};
+        }
+        const checked = passwordChoices(raw);
+        if (!checked) return null;
+        password = checked.password;
+        return {};
+      };
+      let decision;
+      try {
+        decision = await promptOnce(record, { kind: 'vault.unlock', view: shown, choices, released });
+        if (decision.error || decision.closed || decision.approve !== true) return decision;
+        const attempt = password;
+        password = null;
+        try {
+          if (viaTouchId) {
+            const result = await unlockWithTouchId();
+            if (result?.success !== true) throw new Error(result?.error || 'Touch ID failed');
+          } else {
+            await unlockVault(attempt);
+          }
+        } catch {
+          trace({ kind: 'unlock-failed', id: record.id });
+          if (record.answered) return { closed: CLOSED.CANCELLED };
+          shown = { ...offered, failed: true };
+          continue;
+        }
+      } finally {
+        attemptDone();
+      }
+      trace({ kind: 'unlocked', id: record.id });
+      return Object.freeze({ approve: true, choices: Object.freeze({}), from: decision.from });
+    }
+  }
+
+  async function promptOnce(record, { kind, view = {}, choices, released } = {}) {
     const testKind = kind === TEST_KIND && hooks.testPrompts === true;
     if (!KIND_SET.has(kind) && !testKind) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
@@ -685,6 +822,41 @@ function createPageRequests({
       site: { key: requester.key, label: requester.key },
       view,
       choices,
+      released,
+    });
+    return entry.decision;
+  }
+
+  /**
+   * The wallet's own prompt (design 0011, APS-3): a prompt of the window
+   * itself, which no page asked for, shown in its approvals document when
+   * nothing older is, whichever tab is in front. Settles with the decision,
+   * `{ approve, choices }`, or `{ closed: reason }`. Only with the
+   * approvals document on; it then decides alone.
+   *
+   * It has no request to answer, so `released` says when what its decision
+   * started is done (`wallet-approvals.js`: the token minted, or refused, or
+   * the prompt shown again), and the decision's invocation is answered then.
+   * A window closed meanwhile (during the caller's fee check, say) gets no
+   * prompt: it closes at once.
+   */
+  function walletPrompt(windowId, { kind, view = {}, choices, released } = {}) {
+    if (!approvals) return Promise.resolve({ closed: CLOSED.CANCELLED });
+    if (!WALLET_PROMPT_KINDS.has(kind)) throw new Error(`page-requests: no wallet prompt of kind ${kind}`);
+    if (!Number.isInteger(windowId) || !watch(windowId)) return Promise.resolve({ closed: CLOSED.CLOSED });
+    const handle = randomHex(HANDLE_BYTES);
+    trace({ kind: 'wallet-prompt', window: windowId, prompt: kind });
+    const entry = prompts.add({
+      handle,
+      record: null,
+      window: windowId,
+      guest: null,
+      document: null,
+      kind,
+      site: WALLET_SITE,
+      view,
+      choices,
+      released: released instanceof Promise ? released : Promise.resolve(),
     });
     return entry.decision;
   }
@@ -702,6 +874,10 @@ function createPageRequests({
     if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
       throw notConfirmed('no live request approved by the user');
     }
+    // With the approvals document on, a page token only on its decision.
+    if (approvals && record.approvedFrom !== 'approvals') {
+      throw notConfirmed('not approved in the approvals document');
+    }
     const { token } = signingConfirmation.issuePageConfirmation(
       kind,
       accountIndex,
@@ -710,6 +886,7 @@ function createPageRequests({
       bound
     );
     record.approved = null;
+    record.approvedFrom = null;
     record.tokenHandle = handle;
     trace({ kind: 'token-minted', id: record.id, token: kind });
     return token;
@@ -844,19 +1021,24 @@ function createPageRequests({
       windowId = null;
     }
     if (!Number.isInteger(windowId)) return { ok: false, reason: 'not-a-window' };
-    // With the approvals document's flag on, only it decides (APS-1).
-    if (approvals) {
+    // With the approvals document's flag on, only it decides (APS-1), but
+    // for the Safe boards the chrome still renders (`CHROME_KINDS`).
+    if (approvals && !CHROME_KINDS.has(prompts.kindOf(isPlainObject(payload) ? payload.handle : undefined))) {
       trace({ kind: 'decide', window: windowId, ok: false, reason: 'approvals-document' });
       return { ok: false, reason: 'approvals-document' };
     }
     return decideIn(windowId, payload, 'chrome');
   }
 
+  // A decision is answered once the request it decided has been, or, for a
+  // vault unlock, once its attempt is: its invocation, and the password its
+  // payload carried, go no further than that.
   async function decideIn(windowId, payload, from) {
-    const outcome = prompts.decide(windowId, payload);
+    const outcome = prompts.decide(windowId, payload, from);
     trace({ kind: 'decide', window: windowId, from, ok: outcome.ok, reason: outcome.reason });
     if (!outcome.ok) return outcome;
-    await outcome.entry.record.reply;
+    // A window's own prompt always has `released`; a page's has its record.
+    await (outcome.entry.released || outcome.entry.record?.reply);
     return { ok: true };
   }
 
@@ -898,19 +1080,27 @@ function createPageRequests({
         return false;
       }
     }
-    if (!watchedWindows.has(windowId)) {
-      watchedWindows.add(windowId);
-      try {
+    watch(windowId);
+    prompts.foreground(windowId, guest);
+    return true;
+  }
+
+  // Forget a window's prompts when it closes: its own close with it.
+  // Whether the window is open and watched; one closed already is not.
+  function watch(windowId) {
+    if (watchedWindows.has(windowId)) return true;
+    let open;
+    try {
+      open =
         watchWindow(windowId, () => {
           watchedWindows.delete(windowId);
           prompts.forgetWindow(windowId);
-        });
-      } catch {
-        // Forgotten with the process, then.
-      }
+        }) !== false;
+    } catch {
+      open = false;
     }
-    prompts.foreground(windowId, guest);
-    return true;
+    if (open) watchedWindows.add(windowId);
+    return open;
   }
 
   async function run(record, dispatch, event, nonce, naming, params) {
@@ -1175,6 +1365,7 @@ function createPageRequests({
     onHandleClosed,
     decide,
     decideInWindow,
+    walletPrompt,
     foreground,
     promptState: () => prompts.state(),
     stats,
@@ -1207,6 +1398,12 @@ function getPageRequests() {
       dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers(), ...createRadicleDispatchers() },
       hooks: sharedHooks,
       approvals: isApprovalsDocumentEnabled() ? getApprovalsDocuments() : null,
+      unlockVault: (password) => require('../identity-manager').unlockVault(password),
+      touchIdAvailable: async () => {
+        const quickUnlock = require('../quick-unlock');
+        return (await quickUnlock.canUseTouchId()) === true && (await quickUnlock.isQuickUnlockEnabled()) === true;
+      },
+      unlockWithTouchId: () => require('../quick-unlock').unlockWithTouchId(),
     });
     registerSwarmPageEvents(shared);
     registerRadiclePageEvents(shared);

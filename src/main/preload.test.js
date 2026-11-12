@@ -995,6 +995,29 @@ describe('preload', () => {
     cleanup();
   });
 
+  // freedom-core design 0011, APS-2: the chrome makes room for the
+  // approvals panel only when main put the document's switch on its
+  // command line.
+  describe('the approvals document\'s switch', () => {
+    const { APPROVALS_RENDERER_ARG } = require('./approvals/approvals-document');
+    const originalArgv = process.argv;
+    afterEach(() => {
+      process.argv = originalArgv;
+    });
+
+    test('keys on the same renderer argument approvals-document.js names', () => {
+      const source = fs.readFileSync(path.join(__dirname, 'preload.js'), 'utf8');
+      expect(source).toContain(`process.argv.includes('${APPROVALS_RENDERER_ARG}')`);
+    });
+
+    test('on with the argument, off without it', () => {
+      process.argv = [...originalArgv, APPROVALS_RENDERER_ARG];
+      expect(loadPreloadModule().exposures.pagePrompts.approvalsDocument).toBe(true);
+      process.argv = originalArgv.filter((arg) => arg !== APPROVALS_RENDERER_ARG);
+      expect(loadPreloadModule().exposures.pagePrompts.approvalsDocument).toBe(false);
+    });
+  });
+
   describe('E2E harness bridge (freedomTest)', () => {
     const { TEST_HARNESS_RENDERER_ARG } = require('./test-mode');
     const originalArgv = process.argv;

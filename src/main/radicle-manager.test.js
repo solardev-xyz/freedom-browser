@@ -1922,8 +1922,6 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         message: 'Not available on the Radicle service yet',
       },
     };
-    // The unseed is a write on the service (rad.unseed): its own step.
-    await expect(ctx.mod.unseedRepository(FREEDOM_BROWSER_RID)).resolves.toEqual(expected);
     await expect(ctx.mod.setNodeAlias('renamed')).resolves.toEqual(expected);
     expect(ctx.embedded.cancelClone).not.toHaveBeenCalled();
     expect(ctx.embedded.unseedRepo).not.toHaveBeenCalled();
@@ -2038,6 +2036,86 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         error: { code: 'RADICLE_NOT_RUNNING' },
       });
       expect(ctx.embedded.cloneRepoWithProgress).not.toHaveBeenCalled();
+    });
+
+    describe("the unseed: radicle-embedded's unseedRepo, the service's rad.unseed (plan B11)", () => {
+      const UNSEED_READS = {
+        seeders: { seeding: 0 },
+        node_info: { connected_peers: 1, repos_total: 0, repos_error: null },
+      };
+      /** A fetch in flight for RID, held until `finish`, and cancelled at
+       * once on the service (`cancelClone` answers `{ cancelled: true }`). */
+      async function fetching(ctx) {
+        let finish;
+        ctx.embedded.cloneRepoWithProgress.mockImplementation(
+          (_rid, _timeout, onProgress) =>
+            new Promise((resolve) => {
+              onProgress({ phase: 'fetching', nid: 'z6MkSeed', index: 1, total: 1 });
+              finish = resolve;
+            })
+        );
+        ctx.embedded.cancelClone.mockResolvedValue({ cancelled: true });
+        await ctx.mod.seedRepository(RID);
+        return () => finish({ cancelled: true });
+      }
+
+      test('unseeded on the service, with no "not available" answer', async () => {
+        const ctx = await runningService({
+          embedded: { callScoped: scoped(UNSEED_READS) },
+        });
+        await expect(ctx.mod.unseedRepository(RID)).resolves.toMatchObject({ success: true });
+        expect(ctx.embedded.unseedRepo).toHaveBeenCalledWith(RID);
+        await ctx.mod.stopRadicle();
+      });
+
+      test('an unseed whose outcome is unknown answers OUTCOME_UNKNOWN, and is never sent again, not even after the fetch', async () => {
+        const ctx = await runningService({
+          embedded: {
+            callScoped: scoped(UNSEED_READS),
+          },
+        });
+        const finish = await fetching(ctx);
+        ctx.embedded.unseedRepo.mockRejectedValueOnce(
+          Object.assign(new Error('The Radicle node stopped before confirming this write'), {
+            code: 'outcome_unknown',
+          })
+        );
+        await expect(ctx.mod.unseedRepository(RID)).resolves.toEqual({
+          success: false,
+          error: {
+            code: 'OUTCOME_UNKNOWN',
+            message:
+              'The Radicle node stopped before confirming this write; it may have been recorded.',
+            details: { rid: RID },
+          },
+        });
+        finish();
+        await flush();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(ctx.embedded.unseedRepo).toHaveBeenCalledTimes(1);
+        await ctx.mod.stopRadicle();
+      });
+
+      test('an unseed the service refused (nothing changed) is re-applied after the fetch, as today', async () => {
+        const ctx = await runningService({
+          embedded: {
+            callScoped: scoped(UNSEED_READS),
+          },
+        });
+        const finish = await fetching(ctx);
+        ctx.embedded.unseedRepo.mockRejectedValueOnce(
+          Object.assign(new Error('the write queue is full'), { code: 'busy' })
+        );
+        await expect(ctx.mod.unseedRepository(RID)).resolves.toMatchObject({
+          success: false,
+          error: { code: 'UNSEED_FAILED' },
+        });
+        finish();
+        await flush();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(ctx.embedded.unseedRepo).toHaveBeenCalledTimes(2);
+        await ctx.mod.stopRadicle();
+      });
     });
 
     test('private windows stay refused before anything is sent (R-9, #953)', async () => {

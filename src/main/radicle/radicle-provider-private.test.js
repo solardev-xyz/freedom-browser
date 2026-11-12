@@ -64,6 +64,9 @@ jest.mock('./cob-service', () => ({
   clearIdentityCache: jest.fn(),
   CobValidationError: class CobValidationError extends Error {},
   CobAdmissionError: class CobAdmissionError extends Error {},
+  CobOutcomeUnknownError: class CobOutcomeUnknownError extends Error {},
+  OUTCOME_UNKNOWN_MESSAGE:
+    'The Radicle node stopped before confirming this write; it may have been recorded.',
 }));
 
 const ORIGIN = 'https://forge.example';

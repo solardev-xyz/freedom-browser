@@ -956,7 +956,13 @@ async function changeRadicleIdentityOnService(home, alias) {
         injectedNodes.radicle = true;
         return written;
       }
-      const unfinishedWrite = new Error(`The Radicle identity write did not finish (${status})`);
+      // pending_recovery: the core finishes it at the next start, so the
+      // message onboarding shows says so.
+      const unfinishedWrite = new Error(
+        status === 'pending_recovery'
+          ? 'The Radicle identity write did not finish (pending_recovery); restart Freedom to complete it, or try the change again'
+          : `The Radicle identity write did not finish (${status})`
+      );
       if (status !== 'pending_recovery') {
         // corrupt: only a fresh write while unlocked repairs it.
         blockNode('radicle', status);

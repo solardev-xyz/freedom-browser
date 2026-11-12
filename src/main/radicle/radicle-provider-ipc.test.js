@@ -88,6 +88,13 @@ jest.mock('./cob-service', () => {
       this.reason = reason;
     }
   }
+  // A write the service took and didn't confirm (plan B11, `outcome_unknown`).
+  class CobOutcomeUnknownError extends Error {
+    constructor() {
+      super('The Radicle node stopped before confirming this write; it may have been recorded.');
+      this.reason = 'outcome_unknown';
+    }
+  }
   return {
     createIssue: jest.fn(async () => ({ id: 'a'.repeat(40) })),
     commentIssue: jest.fn(async () => ({ id: 'b'.repeat(40) })),
@@ -96,6 +103,9 @@ jest.mock('./cob-service', () => {
     getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
     CobValidationError,
     CobAdmissionError,
+    CobOutcomeUnknownError,
+    OUTCOME_UNKNOWN_MESSAGE:
+      'The Radicle node stopped before confirming this write; it may have been recorded.',
     LIMITS: { maxTitleBytes: 200, maxBodyBytes: 65536 },
   };
 });
@@ -565,6 +575,33 @@ describe('signed write approval (R-6)', () => {
     cob.commentIssue.mockRejectedValueOnce(new cob.CobAdmissionError('needs_vault', 'throwaway key'));
     const err = await expectProviderError(write('user'), 4900, 'needs_vault');
     expect(err.message).toBe('throwaway key');
+  });
+
+  // A write the service took and didn't confirm (plan B11; freedom-core
+  // design 0008, Writes): -32603 with the design's text, called once.
+  test("cob-service's outcome-unknown error is -32603 with the design's text, the write made once", async () => {
+    cob.commentIssue.mockRejectedValueOnce(new cob.CobOutcomeUnknownError());
+    const err = await expectProviderError(write('user'), -32603, 'outcome_unknown');
+    expect(err.message).toBe(
+      'The Radicle node stopped before confirming this write; it may have been recorded.'
+    );
+    expect(cob.commentIssue).toHaveBeenCalledTimes(1);
+  });
+
+  test("the manager's unseed with its outcome unknown is the same answer", async () => {
+    manager.unseedRepository.mockResolvedValueOnce({
+      success: false,
+      error: { code: 'OUTCOME_UNKNOWN', message: 'unused', details: { rid: RID } },
+    });
+    const err = await expectProviderError(
+      executeRadicleMethod('radicle_unseed', { rid: RID }, ORIGIN),
+      -32603,
+      'outcome_unknown'
+    );
+    expect(err.message).toBe(
+      'The Radicle node stopped before confirming this write; it may have been recorded.'
+    );
+    expect(manager.unseedRepository).toHaveBeenCalledTimes(1);
   });
 });
 
