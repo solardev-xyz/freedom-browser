@@ -297,6 +297,31 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
         expect(deviation.differs(record, expected) || record).toBe(true);
       });
     }
+
+    pendingTest(
+      'call-stream',
+      "the handlers let go of what they hold: a HEAD's body and a cancelled body are cancelled, and no slot or stream is left",
+      async () => {
+        const base = `rad://${fx.rid.slice('rad:'.length)}`;
+        const head = await backend.rad.handleRadRequest(
+          new Request(`${base}/tree/${fx.commits.second}`, { method: 'HEAD' })
+        );
+        expect(head.status).toBe(200);
+        expect(head.body).toBeNull();
+        const res = await backend.rad.handleRadRequest(
+          new Request(`${base}/commits/${fx.commits.first}`)
+        );
+        expect(res.status).toBe(200);
+        await res.body.cancel();
+        await waitUntil(() => backend.admission.dwebFetchStats().active === 0);
+        expect(backend.admission.dwebFetchStats()).toEqual({ active: 0, waiting: 0 });
+        expect(backend.embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
+        // The node reads on.
+        expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
+          VECTORS.reads.repo_info.body
+        );
+      }
+    );
   });
 
   // radicle-embedded.js's exports keep their shapes, whatever serves them.

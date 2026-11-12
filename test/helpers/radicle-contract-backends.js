@@ -29,8 +29,10 @@
  * Each backend serves one Radicle home (`home`), restored from the
  * fixture's snapshot, and returns:
  *
- * - `manager`, `embedded`, `api` (`radicle-api-protocol.js`) and `rad`
- *   (`radicle/rad-protocol.js`), loaded together in one module registry;
+ * - `manager`, `embedded`, `api` (`radicle-api-protocol.js`), `rad`
+ *   (`radicle/rad-protocol.js`) and `admission` (main's dweb admission,
+ *   `dweb/fetch-admission.js`, which the handlers take on the service),
+ *   loaded together in one module registry;
  * - `readText(op, args)`: a `rad.read` op's JSON text, exactly as the
  *   backend produces it, or a rejection with its error's message. This is
  *   the contract boundary: the suite compares the text byte for byte. For
@@ -228,6 +230,7 @@ async function loadAddonBackend({ home }) {
   };
   const api = require(path.join(SRC, 'radicle-api-protocol.js'));
   const rad = require(path.join(SRC, 'radicle', 'rad-protocol.js'));
+  const admission = require(path.join(SRC, 'dweb', 'fetch-admission.js'));
   const addon = require(embedded.getAddonPath());
 
   // A handler answer's body, or a rejection with its error's message.
@@ -268,6 +271,7 @@ async function loadAddonBackend({ home }) {
     embedded,
     api,
     rad,
+    admission,
     log,
     async start() {
       const status = await manager.startRadicle();
@@ -464,6 +468,7 @@ async function loadRadicledBackend({ home }) {
   const embedded = require(path.join(SRC, 'radicle-embedded.js'));
   const api = require(path.join(SRC, 'radicle-api-protocol.js'));
   const rad = require(path.join(SRC, 'radicle', 'rad-protocol.js'));
+  const admission = require(path.join(SRC, 'dweb', 'fetch-admission.js'));
   const current = () => {
     const node = nodes.at(-1);
     const gen = node?.liveActive()?.gen;
@@ -479,6 +484,7 @@ async function loadRadicledBackend({ home }) {
     embedded,
     api,
     rad,
+    admission,
     log,
     async start() {
       const status = await manager.startRadicle();
