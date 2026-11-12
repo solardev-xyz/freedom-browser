@@ -24,10 +24,49 @@ function between(source, start, end) {
   return source.slice(from + start.length, to);
 }
 
-// Today's lists, read from the code that serves them.
-const dappProvider = read('renderer/lib/dapp-provider.js');
-const READ_ONLY_METHODS = literals(between(dappProvider, 'const READ_ONLY_METHODS = [', '];'));
-const DISPATCHER_METHODS = [...new Set([...dappProvider.matchAll(/method === '([A-Za-z0-9_]+)'/g)].map((m) => m[1]))];
+// The lists the method table was built from. window.ethereum's are the
+// chrome's handler's (`READ_ONLY_METHODS` and its dispatcher's own in
+// dapp-provider.js), pinned here as they stood when PRQ-9 removed that
+// handler: the table is now the only list. Swarm's and Radicle's are read
+// from the code that serves them.
+const READ_ONLY_METHODS = [
+  'eth_chainId',
+  'net_version',
+  'eth_blockNumber',
+  'eth_getBalance',
+  'eth_getCode',
+  'eth_getStorageAt',
+  'eth_getTransactionCount',
+  'eth_getBlockByNumber',
+  'eth_getBlockByHash',
+  'eth_getTransactionByHash',
+  'eth_getTransactionReceipt',
+  'eth_call',
+  'eth_estimateGas',
+  'eth_gasPrice',
+  'eth_feeHistory',
+  'eth_maxPriorityFeePerGas',
+  'eth_getLogs',
+  'eth_getFilterChanges',
+  'eth_getFilterLogs',
+  'eth_newFilter',
+  'eth_newBlockFilter',
+  'eth_newPendingTransactionFilter',
+  'eth_uninstallFilter',
+  'web3_clientVersion',
+  'web3_sha3',
+];
+const DISPATCHER_METHODS = [
+  'eth_chainId',
+  'net_version',
+  'eth_accounts',
+  'eth_requestAccounts',
+  'wallet_switchEthereumChain',
+  'eth_sendTransaction',
+  'personal_sign',
+  'eth_signTypedData_v4',
+  'eth_sign',
+];
 const SWARM_KNOWN_METHODS = literals(between(read('main/swarm/swarm-provider-ipc.js'), 'const KNOWN_METHODS = [', '];'));
 const RADICLE_METHOD_TIERS = [
   ...between(read('main/radicle/radicle-provider-ipc.js'), 'const METHOD_TIERS = {', '};').matchAll(
@@ -159,32 +198,48 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
     expect(namesOf('radicle', CLASS.PERMISSION_FREE)).toEqual([]);
   });
 
-  test('each row\'s deadline is today\'s page-world timer for its method', () => {
-    // Run each provider's page-world source against a stub window and note
-    // the timer it arms for a request.
-    function armedTimeout(source, global, method) {
-      let armed = null;
-      const win = { postMessage: () => {}, addEventListener: () => {}, dispatchEvent: () => {}, location: {} };
-      const recordTimer = (_fn, ms) => {
-        armed = ms;
-      };
-      class CustomEvent {}
-      class Event {}
-      new Function('window', 'setTimeout', 'CustomEvent', 'Event', 'console', source)(
-        win,
-        recordTimer,
-        CustomEvent,
-        Event,
-        { log() {}, error() {} }
-      );
-      win[global].request({ method }).catch(() => {});
-      return armed;
-    }
-    const sources = { ethereum: ethereumInject, swarm: SWARM_SOURCE, radicle: RADICLE_SOURCE };
+  test('each row\'s deadline is the page-world timer its method had', () => {
+    // The timers the page-world providers armed until main's deadline
+    // replaced them ("One deadline, main's"; PRQ-9 removed the last), pinned
+    // here: 300 s for a method that can wait on a prompt or a long transfer,
+    // 60 s for the rest.
+    const SWARM_LONG = new Set([
+      'swarm_publishData',
+      'swarm_publishFiles',
+      'swarm_publishChunk',
+      'swarm_sendPss',
+      'swarm_sendGsoc',
+      'swarm_createFeed',
+      'swarm_updateFeed',
+      'swarm_writeFeedEntry',
+      'swarm_writeSingleOwnerChunk',
+      'swarm_getSigningIdentity',
+      'swarm_getMessagingIdentity',
+      'swarm_subscribe',
+      'swarm_readData',
+    ]);
+    const RADICLE_LONG = new Set([
+      'radicle_requestAccess',
+      'radicle_seed',
+      'radicle_getIdentity',
+      'radicle_createIssue',
+      'radicle_commentIssue',
+      'radicle_editIssueState',
+      'radicle_commentPatch',
+    ]);
+    const formerTimer = (provider, method) => {
+      if (provider === 'ethereum') return method === 'eth_sendTransaction' ? 300_000 : 60_000;
+      if (provider === 'swarm') return SWARM_LONG.has(method) ? 300_000 : 60_000;
+      return RADICLE_LONG.has(method) ? 300_000 : 60_000;
+    };
     for (const row of METHODS.values()) {
-      const armed = armedTimeout(sources[row.provider], row.provider, row.method);
-      expect({ method: row.method, timeoutMs: row.timeoutMs }).toEqual({ method: row.method, timeoutMs: armed });
+      expect({ method: row.method, timeoutMs: row.timeoutMs }).toEqual({
+        method: row.method,
+        timeoutMs: formerTimer(row.provider, row.method),
+      });
     }
+    // The page-world providers arm none of their own now.
+    for (const source of [ethereumInject, SWARM_SOURCE, RADICLE_SOURCE]) expect(source).not.toMatch(/setTimeout/);
     expect(methodRow('ethereum', 'eth_sendTransaction').timeoutMs).toBe(300_000);
     expect(methodRow('ethereum', 'personal_sign').timeoutMs).toBe(60_000);
     expect(methodRow('swarm', 'swarm_readData').timeoutMs).toBe(300_000);
@@ -208,18 +263,15 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
   });
 
   test('every event sent to a page today has a row, and every row is one the page listens for', () => {
-    // What the chrome and main send today.
+    // What main sends today: the chrome sends pages none (PRQ-9).
     const sent = new Set();
     const add = (provider, text, pattern) => {
       for (const match of text.matchAll(pattern)) sent.add(`${provider}:${match[1]}`);
     };
-    add('ethereum', dappProvider, /sendProviderEvent\(webview, '([A-Za-z]+)'/g);
-    add('ethereum', read('renderer/lib/wallet/dapp-connect.js'), /event: '([A-Za-z]+)'/g);
     // Main's own Ethereum events: a moved method's (PRQ-4), and the chain
     // switcher's and a grant's changes (PRQ-6).
     add('ethereum', read('main/page/page-ethereum.js'), /context\.sendEvent\([A-Za-z]+, '([A-Za-z]+)'/g);
     add('ethereum', read('main/page/page-events.js'), /sendAll\(targets, '([A-Za-z]+)'/g);
-    add('swarm', read('renderer/lib/wallet/swarm-connect.js'), /event: '([A-Za-z]+)'/g);
     add('swarm', read('main/swarm/swarm-provider-ipc.js'), /event: '([A-Za-z]+)'/g);
     // Main's own Swarm events, for a page's requests through main (PRQ-7b).
     add(
@@ -227,7 +279,6 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
       read('main/page/page-swarm.js'),
       /(?:announce\(context, |sendEvent\((?:requester|doc), (?:'swarm', )?)'([A-Za-z]+)'/g
     );
-    add('radicle', read('renderer/lib/radicle-provider.js'), /sendRadicleEvent\(webview, '([A-Za-z]+)'/g);
     // Main's own Radicle events, for a page's requests through main: a
     // connect's new grant and any revocation (PRQ-8a), and each site's seed
     // statuses (PRQ-8b), which no longer go through the chrome.
