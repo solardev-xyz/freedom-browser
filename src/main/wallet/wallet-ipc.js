@@ -752,6 +752,25 @@ function registerWalletIpc() {
     })
   );
 
+  // The wallet's own Safe board in the window's approvals document (design
+  // 0011, APS-3b): main runs it, for the Safe's pending SafeTx, and answers
+  // with how it ended (executed, parked, discarded…), for the chrome's
+  // summary. Only with the document on; the chrome's own board otherwise.
+  handle('wallet:safe-board', async (event, safeIndex) => {
+    try {
+      const boards = require('../approvals/safe-boards').getSafeBoards();
+      if (!boards) return { success: false, error: 'The approvals document is off' };
+      const { BrowserWindow } = require('electron');
+      const win = BrowserWindow.fromWebContents(event?.sender);
+      const windowId = win && !win.isDestroyed() && win.webContents === event?.sender ? win.id : null;
+      const outcome = await boards.openWalletBoard(windowId, safeIndex);
+      if (outcome?.error) return { success: false, error: outcome.error.message || 'The board could not open' };
+      return { success: true, outcome };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   handle('wallet:safe-pending-list', async () => {
     try {
       const { getAllSafeSendStates } = require('./safe/safe-transactions');

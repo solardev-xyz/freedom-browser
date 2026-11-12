@@ -13,10 +13,12 @@
  * what the page reads the user's choices from: `choices()`, the decision's
  * `choices`, or null while there is nothing to approve yet.
  *
- * The copy is the chrome's screens' own, which these replace. The Safe
- * signing boards (`eth.safe_message`, `eth.safe_send`) stay in the chrome
- * until APS-3: they collect the owners' signatures through device steps
- * only the chrome runs, after the Safe's request was approved here.
+ * The copy is the chrome's screens' own, which these replace. From APS-3b
+ * the Safe signing boards (`eth.safe_message`, `eth.safe_send`,
+ * `wallet.safe_board`) show here too, as main runs them
+ * (`main/approvals/safe-boards.js`): a template may also name its Reject
+ * label (`reject`), and return `watch(listener)`, which hears the Approve
+ * label for the choice the user picks.
  *
  * A classic script, loaded after approvals-core.js.
  */
@@ -972,6 +974,164 @@
     },
   });
 
+
+  // --- The Safe signing boards (APS-3b): main's view of a board -------------
+
+  const BOARD_ACCOUNT = record({ index: integer({ min: 0 }), name: text(256), address: nullable(text(42, { pattern: ADDRESS })) });
+  const BOARD_OWNER = record({
+    index: integer({ min: 0 }),
+    name: text(256),
+    address: nullable(text(42, { pattern: ADDRESS })),
+    type: text(32, { pattern: /^[a-z][a-z0-9-]*$/ }),
+    signed: boolean(),
+  });
+  const BOARD_FIELDS = Object.freeze({
+    safe: BOARD_ACCOUNT,
+    threshold: integer({ min: 1, max: 256 }),
+    collected: integer({ min: 0, max: 256 }),
+    owners: list(64, BOARD_OWNER),
+    notes: list(64, record({ owner: integer({ min: 0 }), note: oneOf('declined', 'failed', 'locked'), message: nullable(text(300)) })),
+    step: oneOf('collect', 'retry', 'superseded', 'discard'),
+    error: nullable(record({ code: oneOf('needs-funds', 'fee', 'locked', 'failed'), message: nullable(text(300)) })),
+  });
+  const OWNER_TYPES = Object.freeze({ ledger: 'Ledger', remote: 'Phone', mnemonic: 'This browser' });
+  const NOTE_COPY = Object.freeze({
+    declined: 'Declined on the device',
+    failed: 'Signing failed: try again',
+    locked: 'Unlock your wallet to sign',
+  });
+  const ERROR_COPY = Object.freeze({
+    'needs-funds': 'The owner account that pays the network fee needs funds. Add xDAI to it, then try again: the signatures are kept.',
+    fee: "The network fee wasn't confirmed. The signatures are kept: you can try again.",
+    locked: 'Your wallet is locked: unlock it to execute the transaction.',
+    failed: "The transaction didn't execute. The signatures are kept: you can try again.",
+  });
+  const BOARD_HEADINGS = Object.freeze({
+    collect: 'Collect signatures',
+    retry: 'Collect signatures',
+    superseded: 'Transaction outdated',
+    discard: 'Discard transaction?',
+  });
+
+  const ownerName = (owner) => owner.name || `Account ${owner.index}`;
+  const retryLabel = (view) => (view.error?.code === 'needs-funds' ? "I've added funds: try again" : 'Try again');
+
+  /** A radio's value, as the decision's choices. */
+  function boardChoice(value) {
+    if (value === 'discard') return { action: 'discard' };
+    if (value === 'retry') return { action: 'retry' };
+    const owner = typeof value === 'string' ? /^owner:([0-9]{1,9})$/.exec(value) : null;
+    return owner ? { action: 'sign', owner: Number(owner[1]) } : null;
+  }
+
+  /** The signatures: how many, and each owner's, with main's note for it. */
+  function boardRows(view, ui, body) {
+    const total = view.owners.length;
+    const met = view.collected >= view.threshold;
+    body.append(
+      ui.own('Signatures', `${view.collected} of ${view.threshold}`),
+      ui.note(total > view.threshold ? `Any ${view.threshold} of the ${total} owners can sign.` : `All ${view.threshold} owners must sign.`)
+    );
+    const notes = new Map(view.notes.map((note) => [note.owner, note]));
+    for (const owner of view.owners) {
+      const status = owner.signed ? 'Signed' : met ? 'Not needed' : 'Not signed yet';
+      const note = notes.get(owner.index);
+      const noted = note ? `${status}. ${note.note === 'failed' && note.message ? note.message : NOTE_COPY[note.note]}` : status;
+      // The name is a value, shown with its escapes; the label is fixed copy.
+      const named = `${ownerName(owner)}: ${noted}`;
+      body.append(ui.own(`Owner (${OWNER_TYPES[owner.type] || owner.type})`, owner.address ? `${named}  ${owner.address}` : named));
+    }
+  }
+
+  /** What the user can do next, and the reader of their choice. */
+  function boardForm(view, ui, body, { send }) {
+    if (view.step === 'discard') {
+      body.append(ui.warning('The collected signatures will be deleted: devices that already signed would need to sign again.'));
+      return { choices: () => ({ action: 'discard' }) };
+    }
+    if (view.step === 'superseded') {
+      body.append(
+        ui.warning(
+          'This transaction can no longer be executed: the account has processed another transaction since it was created (possibly this one, from an earlier attempt).'
+        ),
+        ui.note("Check your payment history; if the send isn't there, discard this and start again.")
+      );
+      return { choices: () => ({ action: 'discard' }) };
+    }
+    const options = [];
+    if (view.step === 'retry') {
+      body.append(ui.warning(ERROR_COPY[view.error?.code] || ERROR_COPY.failed));
+      if (view.error?.message) body.append(ui.own('Reason', view.error.message));
+      options.push({ value: 'retry', label: retryLabel(view) });
+    } else {
+      for (const owner of view.owners) {
+        if (!owner.signed) {
+          options.push({ value: `owner:${owner.index}`, label: `Sign with ${ownerName(owner)}`, detail: OWNER_TYPES[owner.type] || owner.type });
+        }
+      }
+    }
+    if (send) options.push({ value: 'discard', label: 'Discard this transaction', detail: 'You are asked again first' });
+    if (options.length === 0) return { choices: () => null };
+    const picker = ui.radios('board', options, options[0].value);
+    body.append(picker.element);
+    const labelOf = (value) => {
+      const choice = boardChoice(value);
+      if (choice?.action === 'discard') return 'Discard';
+      if (choice?.action === 'retry') return retryLabel(view);
+      return 'Sign';
+    };
+    return {
+      choices: () => boardChoice(picker.value()),
+      watch: (listener) => picker.onChange((value) => listener(labelOf(value))),
+    };
+  }
+
+  function boardApprove(view) {
+    if (view.step === 'discard') return 'Discard';
+    if (view.step === 'superseded') return 'Discard transaction';
+    if (view.step === 'retry') return retryLabel(view);
+    return view.owners.some((owner) => !owner.signed) ? 'Sign' : 'Discard';
+  }
+
+  const ethSafeMessage = Object.freeze({
+    schema: record({ ...BOARD_FIELDS, method: oneOf('personal_sign', 'eth_signTypedData_v4') }),
+    heading: (view) => BOARD_HEADINGS[view.step],
+    approve: boardApprove,
+    reject: () => 'Cancel request',
+    render(view, ui, body) {
+      body.append(
+        ui.note('requests a signature from your multi-owner account'),
+        ui.own('Account', accountText(view.safe)),
+        ui.own('Signing', view.method === 'personal_sign' ? 'A message' : 'Structured data (EIP-712)')
+      );
+      boardRows(view, ui, body);
+      body.append(ui.note('No transaction is sent: once enough owners have signed, the combined signature goes back to the site.'));
+      return boardForm(view, ui, body, { send: false });
+    },
+  });
+
+  // A send's board: the SafeTx main holds, as it executes it.
+  const SAFE_SEND_BOARD = record({ ...BOARD_FIELDS, chain: SEND_CHAIN, tx: TX, transfer: TRANSFER, executor: nullable(BOARD_ACCOUNT) });
+
+  function safeSendBoard(lead) {
+    return Object.freeze({
+      schema: SAFE_SEND_BOARD,
+      heading: (view) => BOARD_HEADINGS[view.step],
+      approve: boardApprove,
+      reject: (view) => (view.step === 'discard' ? 'Keep' : 'Leave'),
+      render(view, ui, body) {
+        body.append(ui.note(lead), ui.own('From', accountText(view.safe)));
+        txLines(ui, body, view);
+        boardRows(view, ui, body);
+        body.append(
+          ui.own('Network fee', view.executor ? `Paid by ${accountText(view.executor)} when it executes` : 'Paid by an owner account when it executes'),
+          ui.note('It executes once enough owners have signed. You can leave: the transaction waits, and you can continue it from the wallet.')
+        );
+        return boardForm(view, ui, body, { send: true });
+      },
+    });
+  }
+
   const KINDS = Object.freeze({
     'eth.connect': ethConnect,
     'eth.sign': ethSign,
@@ -991,6 +1151,12 @@
     'wallet.intent_replace': walletIntentReplace,
     'wallet.intent_close': walletIntentClose,
     'wallet.executor_send': walletExecutorSend,
+    // The Safe signing boards (APS-3b), and the vault unlock a wallet board's
+    // step asks for.
+    'eth.safe_message': ethSafeMessage,
+    'eth.safe_send': safeSendBoard('requests a transaction from your multi-owner account'),
+    'wallet.safe_board': safeSendBoard("Your multi-owner account's transaction"),
+    'wallet.vault_unlock': vaultUnlock,
     // The harness's prompt (APS-1): every field is the test's choice, and is
     // treated as a page's. Main issues it only under the E2E harness.
     'test.prompt': Object.freeze({
@@ -1035,16 +1201,26 @@
       : { handle, kind: null, site: null, view: null, valid: false };
   }
 
+  const BOARDS = new Set(['eth.safe_message', 'eth.safe_send', 'wallet.safe_board']);
+
   /**
-   * The device an approval of this checked prompt waits on while main signs
-   * (`ledger`, `remote`), or null. A page's prompt only: the wallet's own
-   * (`wallet.*`) is answered once its token is minted, and the device step
-   * comes after, on the chrome's screen (design 0011: "Device steps keep
-   * today's paths after the decision").
+   * The device an approval of this checked prompt, with these choices, waits
+   * on while main signs (`ledger`, `remote`), or null. A page's prompt, by
+   * its account; a Safe board, by the owner chosen to sign (APS-3b). Not the
+   * wallet's other prompts (`wallet.*`): each is answered once its token is
+   * minted, and the device step comes after, on the chrome's screen (design
+   * 0011: "Device steps keep today's paths after the decision").
    */
-  function deviceOf(prompt) {
-    if (!prompt?.valid || typeof prompt.kind !== 'string' || prompt.kind.startsWith('wallet.')) return null;
-    const type = prompt.view?.account?.type;
+  function deviceOf(prompt, choices) {
+    if (!prompt?.valid || typeof prompt.kind !== 'string') return null;
+    let type;
+    if (BOARDS.has(prompt.kind)) {
+      if (!isPlainObject(choices) || choices.action !== 'sign') return null;
+      type = prompt.view.owners.find((owner) => owner.index === choices.owner && !owner.signed)?.type;
+    } else {
+      if (prompt.kind.startsWith('wallet.')) return null;
+      type = prompt.view?.account?.type;
+    }
     return type === 'ledger' || type === 'remote' ? type : null;
   }
 

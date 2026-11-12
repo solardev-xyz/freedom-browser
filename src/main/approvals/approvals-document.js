@@ -50,9 +50,9 @@
  *
  * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
  * narrows what the chrome can do, so packaged builds honour it too. It
- * stays off by default until the panel's gaps close (the Safe signing
- * boards, still in the chrome; views over 256 KiB) and the page and wallet
- * specs drive it; the default flips in its own pull request.
+ * stays off by default until the panel's gaps close (views over 256 KiB)
+ * and the page and wallet specs drive it; the default flips in its own pull
+ * request. The Safe signing boards show here from APS-3b.
  */
 
 const fs = require('fs');
@@ -240,15 +240,24 @@ function panelBounds({ width, height }, top) {
 // An approved page prompt for an account that signs on a device: the panel
 // stays up, saying where to confirm, until the decision's request is
 // answered, which main signs in (APS-3; the chrome's screens held their
-// device label the same way). The wallet's own prompts (`wallet.*`) don't:
-// their decision is answered once the token is minted, and the device step
-// comes after, with that token, on the chrome's screen, which says where to
-// confirm (design 0011: "Device steps keep today's paths after the
-// decision").
+// device label the same way). A Safe board's approval to sign with a device
+// owner too, until main has that signature (APS-3b). The wallet's other
+// prompts (`wallet.*`) don't: their decision is answered once the token is
+// minted, and the device step comes after, with that token, on the chrome's
+// screen, which says where to confirm (design 0011: "Device steps keep
+// today's paths after the decision").
 const DEVICES = new Set(['ledger', 'remote']);
-const deviceOf = (prompt) => {
-  if (typeof prompt?.kind !== 'string' || prompt.kind.startsWith('wallet.')) return null;
-  const type = prompt?.view?.account?.type;
+const BOARDS = new Set(['eth.safe_message', 'eth.safe_send', 'wallet.safe_board']);
+const deviceOf = (prompt, choices) => {
+  if (typeof prompt?.kind !== 'string') return null;
+  let type;
+  if (BOARDS.has(prompt.kind)) {
+    if (!isPlainObject(choices) || choices.action !== 'sign' || !Array.isArray(prompt?.view?.owners)) return null;
+    type = prompt.view.owners.find((owner) => owner?.index === choices.owner && owner?.signed !== true)?.type;
+  } else {
+    if (prompt.kind.startsWith('wallet.')) return null;
+    type = prompt?.view?.account?.type;
+  }
   return typeof type === 'string' && DEVICES.has(type) ? type : null;
 };
 
@@ -634,7 +643,7 @@ function createApprovalsDocuments({
     }
     // Approved for an account that signs on a device: the panel keeps
     // saying where to confirm until the request is answered.
-    const device = payload.approve ? deviceOf(record.shown) : null;
+    const device = payload.approve ? deviceOf(record.shown, payload.choices) : null;
     if (device) record.waiting = { handle: payload.handle, device };
     let result;
     try {

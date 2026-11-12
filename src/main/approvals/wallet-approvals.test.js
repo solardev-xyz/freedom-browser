@@ -221,3 +221,28 @@ describe('main\'s views', () => {
     expect(transferOf({ to: TO, data: '0xa9059cbb' })).toBeNull();
   });
 });
+
+describe('a step main runs in a window: a Safe board\'s executor fee (APS-3b)', () => {
+  test('asked in the window named, with no sender; above the threshold, asked again there; minted on the second press', async () => {
+    const env = setup({ verdict: ABOVE });
+    const [index, payload] = PAYLOADS['executor-send'];
+    const minted = jest.fn(() => ({ token: 'executor-token' }));
+    expect(await env.approvals.confirm({ windowId: 4, kind: 'executor-send', index, payload, feeChecked: true }, minted)).toEqual({
+      approved: true,
+      token: 'executor-token',
+    });
+    expect(env.prompts.map((prompt) => [prompt.windowId, prompt.kind, prompt.view.feeAskAgain])).toEqual([
+      [4, 'wallet.executor_send', false],
+      [4, 'wallet.executor_send', true],
+    ]);
+    expect(minted).toHaveBeenCalledTimes(1);
+  });
+
+  test('a window id wins over a sender; neither is no window', async () => {
+    const env = setup();
+    const [index, payload] = PAYLOADS['executor-send'];
+    await env.approvals.confirm({ windowId: 4, sender: chrome, kind: 'executor-send', index, payload, feeChecked: true });
+    expect(env.prompts.map((prompt) => prompt.windowId)).toEqual([4]);
+    expect((await env.approvals.confirm({ kind: 'executor-send', index, payload, feeChecked: true })).code).toBe('NO_WINDOW');
+  });
+});

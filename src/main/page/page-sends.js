@@ -70,6 +70,8 @@
  * of the SafeTx's outcome (`onSafeSendSettled`): the execution's hash, or a
  * rejection when it is discarded. Leaving the board parks the SafeTx, and
  * the page waits for its outcome without holding the document's wallet slot.
+ * With the approvals document on (APS-3b), main runs that board in the panel
+ * itself (`approvals/safe-boards.js`), from the SafeTx it holds.
  * Each execution of it, at once or after it was parked, runs only past the
  * request's guard (`guardSiteSafeSend`): the name, the key and the
  * requesting document checked again. A SafeTx whose site no longer holds is
@@ -342,6 +344,8 @@ function defaultSendDependencies() {
       const { codedError, SAFE_SITE_WITHDRAWN } = require('../wallet/safe/errors');
       return codedError('The site no longer holds this transaction', SAFE_SITE_WITHDRAWN);
     },
+    // The boards main runs in the approvals document (APS-3b).
+    safeBoards: () => require('../approvals/safe-boards').getSafeBoards(),
   };
 }
 
@@ -715,17 +719,20 @@ function createSendDispatchers(shared, deps = {}) {
     });
     // The board: it signs and executes as today. Leaving it parks the
     // SafeTx, and the page waits for its outcome, without the document's
-    // wallet slot.
-    const board = context
-      .prompt({
-        kind: 'eth.safe_send',
-        view: { safeIndex: ctx.walletIndex, state: started },
-        choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
-      })
-      .then((decision) => {
-        context.leaveWalletSlot();
-        return { board: decision };
-      });
+    // wallet slot. With the approvals document on (APS-3b), main runs it in
+    // the panel, and its execution reaches `settled` as the chrome's did.
+    const boards = context.approvalsDocument ? d.safeBoards() : null;
+    const shown = boards
+      ? boards.runSendBoard(context, { safeIndex: ctx.walletIndex }).catch(() => ({ outcome: 'failed' }))
+      : context.prompt({
+          kind: 'eth.safe_send',
+          view: { safeIndex: ctx.walletIndex, state: started },
+          choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+        });
+    const board = shown.then((decision) => {
+      context.leaveWalletSlot();
+      return { board: decision };
+    });
     let outcome;
     try {
       const first = await Promise.race([settled, withdrawn, board]);
