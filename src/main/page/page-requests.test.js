@@ -1,6 +1,8 @@
 const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
-const { createPageRequests, BOUNDS, CHANNELS, CLOSED, GONE } = require('./page-requests');
+const { createPageRequests, CHANNELS, CLOSED, GONE } = require('./page-requests');
+const { BUDGETS, chargeOf, largestChargeOf } = require('./page-budgets');
+const { measurePageRequest, pageRequestMaxBytes } = require('../../shared/page-request-bounds');
 const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
@@ -101,7 +103,7 @@ function manualTimers() {
   };
 }
 
-function setup({ dispatch, dispatchers, bounds, resolveEnsContent } = {}) {
+function setup({ dispatch, dispatchers, budgets, tickets, resolveEnsContent } = {}) {
   const guests = new Map();
   const privateContents = new Set();
   const documents = createPageDocuments({
@@ -112,7 +114,8 @@ function setup({ dispatch, dispatchers, bounds, resolveEnsContent } = {}) {
     resolveEnsContent: resolveEnsContent || (async () => ({ type: 'not_found' })),
   });
   const trace = [];
-  const hooks = { onTrace: (entry) => trace.push(entry) };
+  const copies = [];
+  const hooks = { onTrace: (entry) => trace.push(entry), onCopy: (entry) => copies.push(entry) };
   if (dispatch) hooks.dispatch = dispatch;
   const timers = manualTimers();
   const requests = createPageRequests({
@@ -120,7 +123,8 @@ function setup({ dispatch, dispatchers, bounds, resolveEnsContent } = {}) {
     webContentsFromId: (id) => guests.get(id),
     dispatchers,
     hooks,
-    bounds,
+    budgets,
+    tickets,
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
   });
@@ -141,11 +145,15 @@ function setup({ dispatch, dispatchers, bounds, resolveEnsContent } = {}) {
       nonce: n,
       ask: (method, params = {}, provider = providerOf(method), frame = guest.mainFrame) =>
         requests.request(eventFrom(guest, frame), { nonce: n, provider, method, params }),
+      // A request as a renderer may send it, past the preload.
+      send: (fields, frame = guest.mainFrame) => requests.request(eventFrom(guest, frame), { nonce: n, ...fields }),
+      reserve: (method, bytes, fields = {}, frame = guest.mainFrame) =>
+        requests.reserve(eventFrom(guest, frame), { nonce: n, method, bytes, ...fields }),
     };
     return page;
   }
 
-  return { documents, requests, hooks, trace, timers, tab, greet, guests, privateContents };
+  return { documents, requests, hooks, trace, copies, timers, tab, greet, guests, privateContents };
 }
 
 const providerOf = (method) => (method.startsWith('swarm_') ? 'swarm' : method.startsWith('radicle_') ? 'radicle' : 'ethereum');
@@ -174,7 +182,16 @@ describe('page requests: the way in (freedom-core design 0011, PRQ-2)', () => {
     expect(context.provider).toBe('swarm');
     expect(context.class).toBe('permission-free');
     expect(context.isCurrent()).toBe(true);
-    expect(requests.stats()).toEqual({ browser: 0, windows: {}, documents: {}, handles: 0 });
+    expect(requests.stats()).toEqual({
+      browser: { requests: 0, bytes: 0 },
+      windows: {},
+      documents: {},
+      turns: 0,
+      waiting: 0,
+      tickets: 0,
+      records: 0,
+      handles: 0,
+    });
   });
 
   test('a method with no row, a refused one, or one no dispatcher serves never runs and is never recorded', async () => {
@@ -305,7 +322,7 @@ describe('page requests in flight across a navigation', () => {
     });
     await flush();
     expect(held.calls).toHaveLength(1);
-    expect(requests.stats().browser).toBe(1);
+    expect(requests.stats().records).toBe(1);
 
     page.guest.commit(`${DAPP}next`, { newFrame });
     await flush();
@@ -314,12 +331,12 @@ describe('page requests in flight across a navigation', () => {
     expect(settled).toBe(GONE);
     expect(held.calls[0].context.isCurrent()).toBe(false);
     // The work started still holds its place until it ends.
-    expect(requests.stats().browser).toBe(1);
+    expect(requests.stats().records).toBe(1);
 
     held.calls[0].resolve({ result: 'published' });
     await flush();
     expect(trace.map((entry) => entry.kind)).toEqual(['hello', 'recorded', 'gone', 'dropped', 'released']);
-    expect(requests.stats().browser).toBe(0);
+    expect(requests.stats().records).toBe(0);
 
     // The new document asks for itself as usual.
     const next = greet(page.guest);
@@ -375,11 +392,11 @@ describe('one deadline, main\'s', () => {
     expect(answers.radicle_seed).toEqual({ error: { code: -32603, message: 'Request timed out' } });
 
     // A late result is dropped; the work's place is let go once it ends.
-    expect(requests.stats().browser).toBe(4);
+    expect(requests.stats().records).toBe(4);
     for (const call of held.calls) call.resolve({ result: 'late' });
     await flush();
     expect(trace.filter((entry) => entry.kind === 'dropped')).toHaveLength(4);
-    expect(requests.stats().browser).toBe(0);
+    expect(requests.stats().records).toBe(0);
   });
 
   test('a prompt that never showed closes as expired; a shown one has no deadline', async () => {
@@ -481,7 +498,9 @@ describe('the count bounds', () => {
   const LIMIT = { error: { code: -32005, message: 'Limit exceeded' } };
 
   test('the numbers are the design\'s', () => {
-    expect(BOUNDS).toEqual({ document: 64, window: 256, browser: 1024 });
+    expect(BUDGETS.document.requests).toBe(64);
+    expect(BUDGETS.window.requests).toBe(256);
+    expect(BUDGETS.browser.requests).toBe(1024);
   });
 
   test('a document holds 64 requests in flight; the next is refused and runs nothing, until one ends', async () => {
@@ -506,7 +525,7 @@ describe('the count bounds', () => {
     page.ask('swarm_readChunk');
     await flush();
     expect(held.calls).toHaveLength(66);
-    expect(requests.stats().documents[`${page.guest.id}:${held.calls[0].context.requester.navigation}`]).toBe(64);
+    expect(requests.stats().documents[`${page.guest.id}:${held.calls[0].context.requester.navigation}`].requests).toBe(64);
   });
 
   test('documents in two windows fill the window\'s and then the browser\'s bound; admission resumes as they finish', async () => {
@@ -519,7 +538,7 @@ describe('the count bounds', () => {
     const first = [tab({ window: 1 }), tab({ window: 1 }), tab({ window: 1 }), tab({ window: 1 })];
     for (const page of first) fill(page, 64);
     await flush();
-    expect(requests.stats().windows[1]).toBe(256);
+    expect(requests.stats().windows[1].requests).toBe(256);
     const fifth = tab({ window: 1 });
     expect(await fifth.ask('swarm_readChunk')).toEqual(LIMIT);
 
@@ -528,7 +547,7 @@ describe('the count bounds', () => {
       for (let i = 0; i < 4; i += 1) fill(tab({ window }), 64);
     }
     await flush();
-    expect(requests.stats().browser).toBe(1024);
+    expect(requests.stats().records).toBe(1024);
     expect(held.calls).toHaveLength(1024);
     const late = tab({ window: 5 });
     expect(await late.ask('swarm_readChunk')).toEqual(LIMIT);
@@ -537,7 +556,7 @@ describe('the count bounds', () => {
     // One ends: one more fits, in any window but the full one.
     held.calls[300].resolve({ result: 'done' });
     await flush();
-    expect(requests.stats().browser).toBe(1023);
+    expect(requests.stats().records).toBe(1023);
     late.ask('swarm_readChunk');
     await flush();
     expect(held.calls).toHaveLength(1025);
@@ -554,10 +573,10 @@ describe('the count bounds', () => {
     const next = greet(page.guest);
     next.ask('swarm_readChunk');
     await flush();
-    expect(requests.stats().windows[1]).toBe(11);
+    expect(requests.stats().windows[1].requests).toBe(11);
     for (const call of held.calls.slice(0, 10)) call.resolve({ result: 'ok' });
     await flush();
-    expect(requests.stats().windows[1]).toBe(1);
+    expect(requests.stats().windows[1].requests).toBe(1);
   });
 });
 
@@ -586,7 +605,7 @@ describe('a name-keyed document', () => {
     );
     page.ask('eth_accounts', []);
     await flush();
-    expect(requests.stats().browser).toBe(1);
+    expect(requests.stats().records).toBe(1);
     expect(held.calls).toHaveLength(0);
     answerName();
     await flush();
@@ -611,7 +630,7 @@ describe('a name-keyed document', () => {
     expect(await answer).toBe(GONE);
     await flush();
     expect(held.calls).toHaveLength(0);
-    expect(requests.stats().browser).toBe(0);
+    expect(requests.stats().records).toBe(0);
   });
 });
 
@@ -741,7 +760,7 @@ describe('register', () => {
     const handle = new Map();
     requests.register({ on: (channel, fn) => on.set(channel, fn), handle: (channel, fn) => handle.set(channel, fn) });
     expect([...on.keys()]).toEqual(['page:hello']);
-    expect([...handle.keys()]).toEqual(['page:request']);
+    expect([...handle.keys()]).toEqual(['page:reserve', 'page:request']);
 
     const guest = new Guest();
     guests.set(guest.id, guest);
@@ -752,5 +771,482 @@ describe('register', () => {
     expect(await handle.get('page:request')(eventFrom(guest), { nonce: n, provider: 'radicle', method: 'radicle_getCapabilities' })).toEqual({
       result: DAPP_KEY,
     });
+  });
+});
+
+// PRQ-2b: the size walk, the charge, the byte budgets, and tickets.
+const MiB = 1024 * 1024;
+const LIMIT = { error: { code: -32005, message: 'Limit exceeded' } };
+
+/** The request `page` sends for `method` with `params`, measured as main measures it. */
+const measure = (page, provider, method, params) =>
+  measurePageRequest({ nonce: page.nonce, provider, method, params }, pageRequestMaxBytes(provider, method));
+
+/** A params object `{ data }` whose request measures exactly `size` bytes. */
+function paramsOfSize(page, provider, method, size, make = (n) => 'x'.repeat(n)) {
+  const base = measure(page, provider, method, { data: '' }).size;
+  const params = { data: make(size - base) };
+  expect(measure(page, provider, method, params).size).toBe(size);
+  return params;
+}
+
+describe('the size per request', () => {
+  test('a request of exactly its method\'s size passes; one byte more is refused before main records it', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ok' }));
+    const { tab, trace } = setup({ dispatch });
+    const page = tab();
+    for (const make of [(n) => 'x'.repeat(n), (n) => new Uint8Array(n), (n) => '\u0001'.repeat(n)]) {
+      const exact = paramsOfSize(page, 'swarm', 'swarm_readChunk', MiB, make);
+      expect(await page.ask('swarm_readChunk', exact)).toEqual({ result: 'ok' });
+      const over = paramsOfSize(page, 'swarm', 'swarm_readChunk', MiB + 1, make);
+      expect(await page.ask('swarm_readChunk', over)).toEqual(LIMIT);
+    }
+    // An Ethereum request, whose params are an array.
+    const base = measure(page, 'ethereum', 'eth_call', ['']).size;
+    expect(await page.ask('eth_call', ['x'.repeat(MiB - base)])).toEqual({ result: 'ok' });
+    expect(await page.ask('eth_call', ['x'.repeat(MiB - base + 1)])).toEqual(LIMIT);
+    // The uploads' own error past their size, as today.
+    const data = await page.ask('swarm_publishData', paramsOfSize(page, 'swarm', 'swarm_publishData', 10 * MiB + 64 * 1024 + 1));
+    expect(data.error).toEqual({
+      code: -32602,
+      message: 'Payload exceeds maximum size of 10485760 bytes',
+      data: { reason: 'payload_too_large', limit: 10 * MiB, actual: 10 * MiB + 64 * 1024 + 1 },
+    });
+    expect(dispatch).toHaveBeenCalledTimes(4);
+    expect(recorded(trace)).toHaveLength(4);
+  });
+
+  test('a request the walk refuses, sent past the preload, is refused before main records it', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ran' }));
+    const { tab, trace } = setup({ dispatch });
+    const page = tab();
+    let deep = 0;
+    for (let i = 0; i < 40; i += 1) deep = [deep];
+    const cases = [
+      [{ value: 1n << 256n }, { code: -32602, message: 'Invalid parameters' }],
+      [{ value: -(1n << 4_000_000n) }, { code: -32602, message: 'Invalid parameters' }],
+      [{ value: new Map() }, { code: -32602, message: 'Invalid parameters' }],
+      [{ value: new Date() }, { code: -32602, message: 'Invalid parameters' }],
+      [{ value: new Int8Array(4) }, { code: -32602, message: 'Invalid parameters' }],
+      [{ value: new Array(10_000).fill(0) }, { code: -32005, message: 'Limit exceeded' }],
+      [{ value: new Array(1e9) }, { code: -32005, message: 'Limit exceeded' }],
+      [{ value: deep }, { code: -32005, message: 'Limit exceeded' }],
+    ];
+    for (const [params, error] of cases) expect(await page.ask('swarm_readChunk', params)).toEqual({ error });
+    // A BigInt of 256 bits passes, as 32 bytes.
+    expect(await page.ask('swarm_readChunk', { value: (1n << 256n) - 1n })).toEqual({ result: 'ran' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(recorded(trace)).toHaveLength(1);
+    expect(trace.filter((e) => e.kind === 'refused').map((e) => e.reason)).toEqual([
+      'bigint', 'bigint', 'type', 'type', 'type', 'values', 'values', 'depth',
+    ]);
+  });
+
+  test('a key a request doesn\'t have, a request over 1 MiB with no ticket, or a ticket main doesn\'t hold: refused', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ran' }));
+    const { tab, trace } = setup({ dispatch });
+    const page = tab();
+    expect(await page.send({ provider: 'swarm', method: 'swarm_readChunk', params: {}, extra: 'x'.repeat(10) })).toEqual({
+      error: { code: -32602, message: 'Invalid parameters' },
+    });
+    const big = paramsOfSize(page, 'swarm', 'swarm_publishData', 2 * MiB);
+    expect(await page.ask('swarm_publishData', big)).toEqual(LIMIT);
+    for (const ticket of ['f'.repeat(64), 7, null, { ticket: 'x' }]) {
+      expect(await page.send({ provider: 'swarm', method: 'swarm_readChunk', params: {}, ticket })).toEqual(LIMIT);
+    }
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(recorded(trace)).toEqual([]);
+  });
+});
+
+describe('the charge', () => {
+  test('in place before the dispatcher runs, at every copy it reports, and gone once the request is', async () => {
+    const held = heldDispatcher();
+    const { tab, requests, copies } = setup({ dispatch: held.dispatch });
+    const page = tab();
+    const params = { data: String.fromCharCode(0x100) + String.fromCharCode(1).repeat(1000) };
+    const answer = page.ask('swarm_sendPss', params);
+    await flush();
+    const expected = chargeOf('swarm', 'swarm_sendPss', measure(page, 'swarm', 'swarm_sendPss', params));
+    const key = `${page.guest.id}:${held.calls[0].context.requester.navigation}`;
+    expect(requests.stats().documents[key]).toEqual({ requests: 1, bytes: expected });
+    expect(requests.stats().windows[1]).toEqual({ requests: 1, bytes: expected });
+    expect(requests.stats().browser).toEqual({ requests: 1, bytes: expected });
+    const { context } = held.calls[0];
+    expect(context.copied('json')).toBe(true);
+    expect(context.copied('body')).toBe(true);
+    held.calls[0].resolve({ result: 'sent' });
+    expect(await answer).toEqual({ result: 'sent' });
+    expect(context.copied('late')).toBe(false);
+    expect(copies).toEqual([
+      { id: context.id, label: 'json', charged: expected, charge: expected, inPlace: true },
+      { id: context.id, label: 'body', charged: expected, charge: expected, inPlace: true },
+      { id: context.id, label: 'late', charged: 0, charge: expected, inPlace: false },
+    ]);
+    expect(requests.stats().browser).toEqual({ requests: 0, bytes: 0 });
+  });
+
+  test('documents in two windows fill the window\'s and then the browser\'s budget; admission resumes as they finish', async () => {
+    const held = heldDispatcher();
+    const { tab, requests } = setup({ dispatch: held.dispatch });
+    const docs = [tab({ window: 1 }), tab({ window: 1 }), tab({ window: 1 }), tab({ window: 2 }), tab({ window: 2 })];
+    const params = paramsOfSize(docs[0], 'swarm', 'swarm_sendPss', MiB);
+    const charge = chargeOf('swarm', 'swarm_sendPss', measure(docs[0], 'swarm', 'swarm_sendPss', params));
+    const perDocument = Math.floor(BUDGETS.document.bytes / charge);
+    const perWindow = Math.floor(BUDGETS.window.bytes / charge);
+    const perBrowser = Math.floor(BUDGETS.browser.bytes / charge);
+    expect([perDocument, perWindow, perBrowser]).toEqual([5, 10, 15]);
+    const fill = async (page) => {
+      const outcomes = [];
+      for (let i = 0; i < 8; i += 1) {
+        outcomes.push(Promise.race([page.ask('swarm_sendPss', params), flush().then(() => 'running')]));
+      }
+      return (await Promise.all(outcomes)).filter((o) => o === 'running').length;
+    };
+    // Each document within its own bound; the window's fills at two of them.
+    expect(await fill(docs[0])).toBe(perDocument);
+    expect(await fill(docs[1])).toBe(perDocument);
+    expect(await fill(docs[2])).toBe(0);
+    expect(requests.stats().windows[1].bytes).toBe(perWindow * charge);
+    // The other window fills the browser's.
+    expect(await fill(docs[3])).toBe(perDocument);
+    expect(await fill(docs[4])).toBe(0);
+    expect(requests.stats().browser).toEqual({ requests: perBrowser, bytes: perBrowser * charge });
+    expect(held.calls).toHaveLength(perBrowser);
+    // One finishes in window 2: room for one there, and none in window 1.
+    held.calls[2 * perDocument].resolve({ result: 'done' });
+    await flush();
+    expect(await fill(docs[2])).toBe(0);
+    expect(await fill(docs[4])).toBe(1);
+    expect(held.calls).toHaveLength(perBrowser + 1);
+  });
+
+  test('1,024 requests of 10,000 near-empty values each, across documents and windows: admitted only while they fit', async () => {
+    const held = heldDispatcher();
+    const { tab, requests } = setup({ dispatch: held.dispatch });
+    const pages = [];
+    for (let window = 1; window <= 4; window += 1) {
+      for (let i = 0; i < 4; i += 1) pages.push(tab({ window }));
+    }
+    // The request object, its nonce, provider and method, its params object,
+    // and 9,995 near-empty values with a name each: 10,000 values.
+    const params = {};
+    for (let i = 0; i < 9995; i += 1) params[`k${i}`] = '';
+    const measured = measure(pages[0], 'swarm', 'swarm_readChunk', params);
+    expect(measured.values).toBe(10000);
+    const charge = chargeOf('swarm', 'swarm_readChunk', measured);
+    expect(charge).toBeGreaterThan(2.4 * MiB);
+
+    let admitted = 0;
+    for (let n = 0; n < 1024; n += 1) {
+      const page = pages[n % pages.length];
+      const before = requests.stats();
+      const doc = Object.entries(before.documents).find(([k]) => k.startsWith(`${page.guest.id}:`))?.[1] || { requests: 0, bytes: 0 };
+      const win = before.windows[page.guest.window] || { requests: 0, bytes: 0 };
+      const fits =
+        doc.requests < 64 && doc.bytes + charge <= BUDGETS.document.bytes &&
+        win.requests < 256 && win.bytes + charge <= BUDGETS.window.bytes &&
+        before.browser.requests < 1024 && before.browser.bytes + charge <= BUDGETS.browser.bytes;
+      const outcome = await Promise.race([page.ask('swarm_readChunk', params), flush().then(() => 'running')]);
+      expect({ n, admitted: outcome === 'running' }).toEqual({ n, admitted: fits });
+      if (outcome === 'running') admitted += 1;
+      else expect(outcome).toEqual(LIMIT);
+    }
+    expect(admitted).toBe(Math.floor(BUDGETS.browser.bytes / charge));
+    expect(held.calls).toHaveLength(admitted);
+    expect(requests.stats().browser.bytes).toBeLessThanOrEqual(BUDGETS.browser.bytes);
+  });
+});
+
+describe('reservations and tickets', () => {
+  const TICKET = /^[0-9a-f]{64}$/;
+
+  /** A tab with a large request ready: its params and its exact size. */
+  function large(env, { window = 1, method = 'swarm_publishData', size = 2 * MiB } = {}) {
+    const page = env.tab({ window });
+    const params = paramsOfSize(page, 'swarm', method, size);
+    return { ...page, params, size, method, upload: (ticket, extra = {}) => page.send({ provider: 'swarm', method, params, ticket, ...extra }) };
+  }
+
+  test('a reservation is refused as a request is, and for a method or size that needs none', async () => {
+    const env = setup({ dispatch: jest.fn(async () => ({ result: 'ok' })) });
+    const { tab, requests, privateContents, guests } = env;
+    const refused = (reason) => ({ error: { code: 4100, message: 'Unauthorized', data: { reason } } });
+    const page = tab();
+    const reserve = (event, fields) => requests.reserve(event, { method: 'swarm_publishData', bytes: 2 * MiB, ...fields });
+    expect(await reserve(eventFrom(page.guest), { nonce: nonce() })).toEqual(refused('wrong-nonce'));
+    expect(await reserve(eventFrom(page.guest, null), { nonce: page.nonce })).toEqual(refused('detached'));
+    expect(await reserve(eventFrom(page.guest, { ...page.guest.mainFrame, detached: true }), { nonce: page.nonce })).toEqual(refused('detached'));
+    expect(await reserve(eventFrom(page.guest, { url: DAPP, frameTreeNodeId: 3, detached: false }), { nonce: page.nonce })).toEqual(refused('sub-frame'));
+    const quiet = new Guest();
+    guests.set(quiet.id, quiet);
+    requests.track(quiet);
+    quiet.commit(DAPP);
+    expect(await reserve(eventFrom(quiet), { nonce: nonce() })).toEqual(refused('no-hello'));
+    const secret = tab();
+    privateContents.add(secret.guest);
+    expect(await secret.reserve('swarm_publishData', 2 * MiB)).toEqual(refused('private'));
+    const preview = new Guest();
+    guests.set(preview.id, preview);
+    requests.track(preview);
+    preview.commit(`freedom-preview://${'c'.repeat(40)}/`);
+    expect(await reserve(eventFrom(preview), { nonce: nonce() })).toEqual(refused('preview'));
+    // The frame's URL off the document's transport key.
+    const moved = tab();
+    moved.guest.mainFrame.url = `bzz://${'e'.repeat(64)}/`;
+    expect(await moved.reserve('swarm_publishData', 2 * MiB)).toEqual(refused('off-key'));
+
+    const INVALID = { error: { code: -32602, message: 'Invalid parameters' } };
+    for (const [method, bytes] of [
+      ['swarm_readChunk', 2 * MiB],
+      ['eth_call', 2 * MiB],
+      ['__proto__', 2 * MiB],
+      ['swarm_publishData', MiB],
+      ['swarm_publishData', 10 * MiB + 64 * 1024 + 1],
+      ['swarm_publishFiles', 50 * MiB + 64 * 1024 + 1],
+      ['swarm_publishData', 2.5 * MiB + 0.5],
+      ['swarm_publishData', '3000000'],
+    ]) {
+      expect(await page.reserve(method, bytes)).toEqual(INVALID);
+    }
+    expect(await page.reserve('swarm_publishData', 2 * MiB, { extra: 1 })).toEqual(INVALID);
+    expect(await requests.reserve(eventFrom(page.guest), null)).toEqual(INVALID);
+    expect(requests.stats()).toEqual(expect.objectContaining({ turns: 0, waiting: 0, tickets: 0, browser: { requests: 0, bytes: 0 } }));
+  });
+
+  test('two turns at a time; one reservation per document; sixteen waiting in the browser', async () => {
+    const env = setup({ dispatch: jest.fn(async () => ({ result: 'ok' })) });
+    const a = large(env);
+    const b = large(env);
+    expect((await a.reserve(a.method, a.size)).ticket).toMatch(TICKET);
+    const second = await b.reserve(b.method, b.size);
+    expect(second.ticket).toMatch(TICKET);
+    // A document's second reservation, while it holds a ticket.
+    expect(await a.reserve(a.method, a.size)).toEqual(LIMIT);
+    const waiting = [];
+    for (let i = 0; i < 16; i += 1) {
+      const page = large(env);
+      waiting.push({ page, answer: page.reserve(page.method, page.size) });
+    }
+    await flush();
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 2, waiting: 16, tickets: 2 }));
+    // A document's second reservation while it waits, and a seventeenth.
+    expect(await waiting[0].page.reserve(a.method, a.size)).toEqual(LIMIT);
+    const late = large(env);
+    expect(await late.reserve(late.method, late.size)).toEqual(LIMIT);
+    // While they wait, each counts as one of its document's requests.
+    expect(env.requests.stats().browser.requests).toBe(18);
+  });
+
+  test('a ticket presented is spent: the request takes its charge and turn, and the next waits for the turn', async () => {
+    const held = heldDispatcher();
+    const env = setup({ dispatch: held.dispatch });
+    const a = large(env);
+    const b = large(env);
+    const c = large(env);
+    const { ticket } = await a.reserve(a.method, a.size);
+    await b.reserve(b.method, b.size);
+    let cTicket = null;
+    c.reserve(c.method, c.size).then((answer) => {
+      cTicket = answer.ticket;
+    });
+    const largest = largestChargeOf('swarm', a.method, a.size);
+    const key = (page) => Object.keys(env.requests.stats().documents).find((k) => k.startsWith(`${page.guest.id}:`));
+    expect(env.requests.stats().documents[key(a)]).toEqual({ requests: 1, bytes: largest });
+    const answer = a.upload(ticket);
+    await flush();
+    expect(held.calls).toHaveLength(1);
+    // The ticket's charge moved to the request, with no gap; the turn stays.
+    expect(env.requests.stats().documents[key(a)]).toEqual({ requests: 1, bytes: largest });
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 2, waiting: 1, tickets: 1 }));
+    expect(cTicket).toBeNull();
+    held.calls[0].resolve({ result: 'ref' });
+    expect(await answer).toEqual({ result: 'ref' });
+    await flush();
+    expect(cTicket).toMatch(TICKET);
+    expect(env.requests.stats().documents[key(a)]).toBeUndefined();
+    // Presented again: it is gone.
+    expect(await a.upload(ticket)).toEqual(LIMIT);
+    expect(held.calls).toHaveLength(1);
+  });
+
+  test('a ticket presented by another guest, for another method, or with more bytes: refused, burnt, its charge and turn freed', async () => {
+    const held = heldDispatcher();
+    const env = setup({ dispatch: held.dispatch });
+    const owner = large(env, { size: 3 * MiB });
+    const other = large(env, { size: 3 * MiB });
+    const files = large(env, { method: 'swarm_publishFiles', size: 3 * MiB });
+    const tickets = [];
+    for (let i = 0; i < 3; i += 1) {
+      // Each case's ticket, granted fresh.
+      const { ticket } = await owner.reserve(owner.method, 3 * MiB - 10);
+      tickets.push(ticket);
+      const misuse = [
+        () => other.upload(ticket),
+        () => owner.send({ provider: 'swarm', method: 'swarm_publishFiles', params: files.params, ticket }),
+        () => owner.upload(ticket),
+      ][i];
+      expect(await misuse()).toEqual(LIMIT);
+      expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 0, tickets: 0, browser: { requests: 0, bytes: 0 } }));
+      // Burnt: not even its owner can use it now.
+      expect(await owner.send({ provider: 'swarm', method: 'swarm_readChunk', params: {}, ticket })).toEqual(LIMIT);
+    }
+    expect(new Set(tickets).size).toBe(3);
+    expect(held.calls).toHaveLength(0);
+  });
+
+  test('a waiting reservation goes with its document, and its turn to the next', async () => {
+    const env = setup({ dispatch: jest.fn(async () => ({ result: 'ok' })) });
+    const { timers } = env;
+    const a = large(env);
+    const b = large(env);
+    await a.reserve(a.method, a.size);
+    await b.reserve(b.method, b.size);
+    const pending = [];
+    const waiters = [large(env), large(env), large(env, { window: 2 }), large(env)];
+    for (const page of waiters) {
+      const entry = { page, answer: null };
+      page.reserve(page.method, page.size).then((answer) => {
+        entry.answer = answer;
+      });
+      pending.push(entry);
+    }
+    await flush();
+    // Navigated, destroyed, and its window closed (which destroys its guests).
+    waiters[0].guest.commit(`${DAPP}elsewhere`);
+    waiters[1].guest.destroy();
+    waiters[2].guest.destroy();
+    await flush();
+    expect(pending.slice(0, 3).map((entry) => entry.answer)).toEqual([GONE, GONE, GONE]);
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ waiting: 1, turns: 2 }));
+    // A's and B's tickets go unused for 30 s: a turn goes to the one still
+    // waiting.
+    timers.fire(30_000);
+    await flush();
+    expect(pending[3].answer.ticket).toMatch(TICKET);
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ waiting: 0, turns: 1, tickets: 1 }));
+  });
+
+  test('a granted ticket is released when its document navigates, its guest goes, or it lies unused for 30 s', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ok' }));
+    for (const end of ['navigate', 'destroy', 'unused']) {
+      const env = setup({ dispatch });
+      const a = large(env);
+      const b = large(env);
+      const c = large(env);
+      const { ticket } = await a.reserve(a.method, a.size);
+      await b.reserve(b.method, b.size);
+      let next = null;
+      c.reserve(c.method, c.size).then((answer) => {
+        next = answer;
+      });
+      if (end === 'navigate') a.guest.commit(`${DAPP}next`, { newFrame: false });
+      if (end === 'destroy') a.guest.destroy();
+      if (end === 'unused') {
+        env.timers.fire(30_000 - 1);
+        await flush();
+        expect(next).toBeNull();
+        env.timers.fire(30_000);
+      }
+      await flush();
+      expect(next.ticket).toMatch(TICKET);
+      if (end !== 'destroy') {
+        // The document that held it, or the one that replaced it, can't use it.
+        const page = end === 'navigate' ? env.greet(a.guest) : a;
+        expect(await page.send({ provider: 'swarm', method: a.method, params: a.params, ticket })).toEqual(LIMIT);
+      }
+      expect(dispatch).not.toHaveBeenCalled();
+    }
+  });
+
+  test('a ticket presented twice: the second is refused, after a first that was served and after one that was refused', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ok' }));
+    const env = setup({ dispatch });
+    const page = large(env);
+    const served = (await page.reserve(page.method, page.size)).ticket;
+    expect(await page.upload(served)).toEqual({ result: 'ok' });
+    expect(await page.upload(served)).toEqual(LIMIT);
+    const refusedFirst = (await page.reserve(page.method, page.size - 1)).ticket;
+    expect(await page.upload(refusedFirst)).toEqual(LIMIT);
+    expect(await page.upload(refusedFirst)).toEqual(LIMIT);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  test('a ticket on a malformed container is burnt too: refused, its charge and turn freed, never presented again', async () => {
+    const dispatch = jest.fn(async () => ({ result: 'ok' }));
+    const env = setup({ dispatch });
+    const page = large(env);
+    const event = eventFrom(page.guest);
+    const containers = [
+      // An array keeps an own `ticket` through Electron's IPC serialization.
+      (ticket) => Object.assign([{ nonce: page.nonce, provider: 'swarm', method: page.method, params: page.params }], { ticket }),
+      (ticket) => Object.assign(new Map(), { ticket }),
+      (ticket) => Object.assign(Object.create({ inherited: true }), { nonce: page.nonce, provider: 'swarm', method: page.method, params: page.params, ticket }),
+      (ticket) => Object.assign(new Date(), { ticket }),
+      (ticket) => Object.assign(new Uint8Array(4), { ticket }),
+    ];
+    for (const make of containers) {
+      const { ticket } = await page.reserve(page.method, page.size);
+      expect(ticket).toMatch(TICKET);
+      expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 1, tickets: 1 }));
+      expect(await env.requests.request(event, make(ticket))).toEqual({ error: { code: -32602, message: 'Invalid parameters' } });
+      expect(env.requests.stats()).toEqual(
+        expect.objectContaining({ turns: 0, tickets: 0, browser: { requests: 0, bytes: 0 } })
+      );
+      // Presented again, in a request that is otherwise sound: it is gone.
+      expect(await page.upload(ticket)).toEqual(LIMIT);
+    }
+    // An inherited `ticket` is not one presented.
+    const { ticket } = await page.reserve(page.method, page.size);
+    expect(await env.requests.request(event, Object.create({ ticket }))).toEqual({ error: { code: -32602, message: 'Invalid parameters' } });
+    expect(env.requests.stats()).toEqual(expect.objectContaining({ turns: 1, tickets: 1 }));
+    expect(await page.upload(ticket)).toEqual({ result: 'ok' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  test('an entry that doesn\'t fit keeps its place while a later one that fits is granted', async () => {
+    const held = heldDispatcher();
+    const env = setup({ dispatch: held.dispatch });
+    const crowded = large(env, { method: 'swarm_publishFiles', size: 40 * MiB });
+    // Five requests of 1 MiB fill most of the document's 128 MiB.
+    const params = paramsOfSize(crowded, 'swarm', 'swarm_sendPss', MiB);
+    for (let i = 0; i < 5; i += 1) crowded.ask('swarm_sendPss', params);
+    await flush();
+    expect(held.calls).toHaveLength(5);
+    let crowdedTicket = null;
+    crowded.reserve(crowded.method, crowded.size).then((answer) => {
+      crowdedTicket = answer.ticket;
+    });
+    const later = large(env);
+    expect((await later.reserve(later.method, later.size)).ticket).toMatch(TICKET);
+    await flush();
+    expect(crowdedTicket).toBeNull();
+    for (const call of held.calls) call.resolve({ result: 'sent' });
+    await flush();
+    expect(crowdedTicket).toMatch(TICKET);
+  });
+
+  test('a waiting entry whose document no longer holds when its turn comes is dropped as navigated', async () => {
+    const env = setup({ dispatch: jest.fn(async () => ({ result: 'ok' })) });
+    const a = large(env);
+    const b = large(env);
+    const c = large(env);
+    const d = large(env);
+    const first = (await a.reserve(a.method, a.size)).ticket;
+    await b.reserve(b.method, b.size);
+    const answers = {};
+    c.reserve(c.method, c.size).then((answer) => {
+      answers.c = answer;
+    });
+    d.reserve(d.method, d.size).then((answer) => {
+      answers.d = answer;
+    });
+    await flush();
+    // C's frame shows another key (no commit main saw).
+    c.guest.mainFrame.url = `bzz://${'e'.repeat(64)}/`;
+    expect(await a.upload(first)).toEqual({ result: 'ok' });
+    await flush();
+    expect(answers.c).toEqual({ error: { code: 4100, message: 'Unauthorized', data: { reason: 'navigated' } } });
+    expect(answers.d.ticket).toMatch(TICKET);
   });
 });
