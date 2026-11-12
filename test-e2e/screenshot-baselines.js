@@ -107,6 +107,9 @@ const SURFACES = {
   'private window': ['60-private-window', '61-private-sidebar'],
   'internal page: home': ['49-page-home'],
   'AI entry points': ['54-settings-ai-off', '55-settings-ai-on', '56-home-ai-invitation'],
+  // The shared blocks (#1198), as the catalog page shows them: one column per
+  // theme, so a change to a block shows here before any screen using it.
+  'ui catalog': ['70-ui-catalog'],
 };
 
 const BASELINES = Object.values(SURFACES).flat();

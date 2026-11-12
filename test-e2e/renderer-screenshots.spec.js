@@ -99,6 +99,8 @@ const { pageFor, closeMenus, closeSidebar, dismissOnboarding, go } = require(
 const { screenshotGate } = require('./screenshot-gate');
 const { THEMES, baselineFiles, groupFiles } = require('./screenshot-baselines');
 
+const UI_CATALOG = path.join(__dirname, '..', 'src', 'renderer', 'pages', 'ui-catalog.html');
+
 // Linux, and LCD text off. See `screenshot-gate.js` for both conditions and
 // why a run that meets neither has nothing to say.
 const { enabled: ENABLED, reason: SKIP_REASON } = screenshotGate();
@@ -675,6 +677,33 @@ test.describe('renderer screenshots', () => {
           clip: { x: 0, y: 0, width: 640, height: 260 },
         });
         surfaces.tookEverySurface();
+      });
+
+      // The catalog paints the same blocks in a dark and a light column; each
+      // theme's run keeps its own column. It is not an app surface, so it opens
+      // the way `npm run ui:catalog` does: a plain window on the file.
+      test(`ui catalog (${theme})`, async ({ electronApp }) => {
+        test.setTimeout(60_000);
+        const surfaces = surfaceGroup(theme, 'ui catalog');
+        const opened = electronApp.waitForEvent('window');
+        await electronApp.evaluate(({ BrowserWindow }, file) => {
+          const catalog = new BrowserWindow({
+            width: 1200,
+            height: 900,
+            show: false,
+            webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+          });
+          void catalog.loadFile(file);
+        }, UI_CATALOG);
+        const page = await opened;
+        await page.waitForLoadState('load');
+        const column = page.locator(`[data-catalog-column][data-theme="${theme}"]`);
+        await expect(column.locator('.ui-button').first()).toBeVisible();
+        await expect
+          .soft(column)
+          .toHaveScreenshot(surfaces.declared(`${theme}-70-ui-catalog`), COMPARE);
+        surfaces.tookEverySurface();
+        await page.close();
       });
     });
   }
