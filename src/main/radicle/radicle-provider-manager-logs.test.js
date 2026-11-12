@@ -5,10 +5,11 @@
  * radicle-manager, the seed-status tracker and the add-on wrapper. Most log
  * a failure and swallow it, so the provider's own redacted catch never runs:
  * `radicle_getNodeStatus` answers with success after its repository count
- * failed. On this branch R-9 refuses a private window's seed, sync and unseed
- * before the manager, and subscribes no listener for its getSeedStatus, so
- * the repository count is the one line a private window reaches; each line
- * still redacts in any private log context.
+ * failed. Every method that reaches these lines is main's now (freedom-core
+ * design 0011, PRQ-8a and 8b): the chrome's route refuses it for any sender
+ * before the manager, and a private window never reaches main's page path,
+ * so a private window reaches none of them; each line still redacts in any
+ * private log context.
  *
  * Runs the real IPC handler, radicle-manager, seed-status tracker,
  * cob-service, private-window registry (only the window lookup is faked),
@@ -98,9 +99,16 @@ const permissions = require('./radicle-permissions');
 const cob = require('./cob-service');
 const privateWindows = require('../private/private-windows');
 const { runWithPrivateLogContext } = require('../private/private-log-context');
-const { registerRadicleProviderIpc, executeRadicleForPage } = require('./radicle-provider-ipc');
+const {
+  registerRadicleProviderIpc,
+  executeRadicleForPage,
+  setSeedStatusSink,
+} = require('./radicle-provider-ipc');
 
 registerRadicleProviderIpc();
+// A site's seed statuses go to main's page requests (PRQ-8b): here a sink
+// that fails whenever a window send would, as the chrome's relay did.
+setSeedStatusSink((_origin, status) => mockSend('status', status));
 
 const ORIGIN = 'https://forge.example';
 const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
@@ -352,8 +360,6 @@ describe('the manager and tracker lines, in any private log context (#1073)', ()
   });
 });
 
-// R-9 refuses these for a private window before the manager.
-const PRIVATE_REFUSED = new Set(['radicle_seed', 'radicle_sync', 'radicle_unseed']);
 const REACHED = CASES.filter((entry) => entry.method === 'radicle_getNodeStatus');
 const NOT_REACHED = CASES.filter((entry) => entry.method !== 'radicle_getNodeStatus');
 // The add-on calls a seed, sync or unseed makes.
@@ -366,8 +372,11 @@ const SEED_CALLS = [
 ];
 
 describe('the manager and tracker lines, through window.radicle (#1073)', () => {
+  // Every method that reaches these lines is main's (PRQ-8a, 8b): the
+  // chrome's route refuses it for any sender before the manager, and a
+  // private window never reaches main's page path.
   test.each(NOT_REACHED)(
-    '$label, under $home: a private window never reaches it, a normal one logs the detail',
+    '$label, under $home: the chrome route refuses a private window before it; main\'s page path logs the detail',
     async (entry) => {
       // Every window send fails, so a listener the request subscribed would
       // log. The add-on's failure is not set up: nothing reaches the add-on.
@@ -380,24 +389,14 @@ describe('the manager and tracker lines, through window.radicle (#1073)', () => 
       mockSend.mockReset();
       // The fetch started before the request finishes in its own context.
       if (entry.after) await entry.after();
-      if (PRIVATE_REFUSED.has(entry.method)) {
-        expect(privateReply).toEqual({
-          error: {
-            code: 4100,
-            message: 'Not available in private windows',
-            data: { reason: 'private_window' },
-          },
-        });
-      } else {
-        expect(privateReply).toEqual({ result: expect.objectContaining({ rid: RID }) });
-      }
+      expect(privateReply).toEqual(PAGE_REQUEST_ONLY);
       expect(loggedLines()).not.toContainEqual(entry.line('<private>', '<private>'));
       for (const args of loggedLines()) expect(JSON.stringify(args)).not.toContain(RID_Z);
 
       jest.clearAllMocks();
       mockSend.mockReset();
       seedStatus._reset();
-      await run(entry, () => execute(publicChrome, entry.method, entry.params));
+      await run(entry, () => pageExecute(entry.method, entry.params));
       expect(loggedLines()).toContainEqual(entry.line(RID, entry.text));
     }
   );

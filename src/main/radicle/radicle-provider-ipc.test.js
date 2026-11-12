@@ -100,6 +100,7 @@ jest.mock('./radicle-permissions', () => ({
 const {
   executeRadicleMethod,
   executeRadicleForPage,
+  setSeedStatusSink,
   registerRadicleProviderIpc,
   _resetAutoWriteLimiter,
 } = require('./radicle-provider-ipc');
@@ -122,35 +123,33 @@ beforeEach(() => {
   _resetAutoWriteLimiter();
 });
 
-test('provider IPC broadcasts pushed seed progress with origin routing metadata', async () => {
-  registerRadicleProviderIpc();
-  const executeHandler = mockIpcHandle.mock.calls.find(
-    ([channel]) => channel === 'radicle:provider-execute'
-  )[1];
-  manager.seedRepository.mockImplementationOnce(async (_rid, onStatus) => {
-    onStatus(mockSeedFetchStatus);
-    return { success: true, status: mockSeedFetchStatus };
-  });
-
-  await executeHandler({ sender: { id: 1 } }, {
-    method: 'radicle_seed',
-    params: { rid: RID },
-    origin: ORIGIN,
-  });
-
-  expect(mockProviderSend).toHaveBeenCalledWith('radicle:providerEvent', {
-    event: 'seedStatus',
-    origin: ORIGIN,
-    data: mockSeedFetchStatus,
-  });
-
-  // The site's own disconnect, a page's request through main (PRQ-8a),
-  // removes the origin's broadcaster.
-  await executeRadicleForPage('radicle_disconnect', {}, ORIGIN);
-  expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
+// PRQ-8b: a site's seed statuses go to main's page requests, which send
+// them to the site's pages; no chrome window hears them.
+test('a site\'s pushed seed progress goes to main\'s sink, never to the chrome windows', async () => {
+  const sink = jest.fn();
+  setSeedStatusSink(sink);
+  try {
+    manager.seedRepository.mockImplementationOnce(async (_rid, onStatus) => {
+      onStatus(mockSeedFetchStatus);
+      return { success: true, status: mockSeedFetchStatus };
+    });
+    expect(await executeRadicleForPage('radicle_seed', { rid: RID }, ORIGIN)).toEqual({
+      result: { rid: RID, seeded: true, status: mockSeedFetchStatus },
+    });
+    expect(sink).toHaveBeenCalledWith(ORIGIN, mockSeedFetchStatus);
+    expect(mockProviderSend).not.toHaveBeenCalled();
+    // The site's own disconnect removes the origin's broadcaster.
+    await executeRadicleForPage('radicle_disconnect', {}, ORIGIN);
+    expect(manager.unsubscribeSeedStatus).toHaveBeenCalledWith(expect.any(Function));
+  } finally {
+    setSeedStatusSink(null);
+  }
 });
 
-test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent custody', async () => {
+// PRQ-8b: seeding is main's. Its custody check is the page dispatcher's
+// (page-radicle-seed.test.js); the chrome's route refuses seed and unseed
+// whatever path it reports, before custody or anything else.
+test('the chrome route refuses a seed or an unseed whatever path it reports, with nothing run', async () => {
   const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
   registerRadicleProviderIpc();
   const executeHandler = mockIpcHandle.mock.calls.find(
@@ -159,37 +158,18 @@ test('provider IPC refuses an auto-approved seed or unseed from a tab in Agent c
   const chrome = { id: 1 };
   const guest = { isDestroyed: () => false, hostWebContents: chrome };
   mockWebContentsFromId.mockImplementation((id) => (id === 9 ? guest : undefined));
-  const call = (method, meta, sender = chrome) =>
-    executeHandler({ sender }, { method, params: { rid: RID }, origin: ORIGIN, meta });
-
-  setAgentPageCustody(guest, true);
-  try {
+  for (const custody of [true, false]) {
+    setAgentPageCustody(guest, custody);
     for (const method of ['radicle_seed', 'radicle_unseed']) {
-      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9 }]) {
-        const refused = await call(method, meta);
-        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
+      for (const meta of [{ webContentsId: 9, approval: 'auto' }, { webContentsId: 9, approval: 'user' }, {}]) {
+        const refused = await executeHandler({ sender: chrome }, { method, params: { rid: RID }, origin: ORIGIN, meta });
+        expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'page_request_only' } });
       }
     }
-    expect(manager.seedRepository).not.toHaveBeenCalled();
-    expect(manager.unseedRepository).not.toHaveBeenCalled();
-    // The per-repo prompt was answered by the user: it runs.
-    expect((await call('radicle_seed', { webContentsId: 9, approval: 'user' })).result).toBeDefined();
-  } finally {
-    setAgentPageCustody(guest, false);
   }
-
-  expect((await call('radicle_unseed', { webContentsId: 9, approval: 'auto' })).result).toBeDefined();
-  // An automatic request main cannot tie to a guest of the sending window.
-  for (const [meta, sender] of [
-    [{ approval: 'auto' }, chrome],
-    [{ webContentsId: 10, approval: 'auto' }, chrome],
-    [{ webContentsId: 9, approval: 'auto' }, { id: 2 }],
-  ]) {
-    const refused = await call('radicle_seed', meta, sender);
-    expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
-  }
-  expect(manager.seedRepository).toHaveBeenCalledTimes(1);
-  expect(manager.unseedRepository).toHaveBeenCalledTimes(1);
+  setAgentPageCustody(guest, false);
+  expect(manager.seedRepository).not.toHaveBeenCalled();
+  expect(manager.unseedRepository).not.toHaveBeenCalled();
 });
 
 test('provider IPC holds signed writes from a tab in Agent custody to a per-write prompt', async () => {
@@ -640,7 +620,7 @@ describe('signed write approval (R-6)', () => {
 // chrome's route refuses every method main's page dispatcher serves, for any
 // site it names, before anything runs: no grant read, no use recorded, no
 // node call, no revocation.
-describe('the chrome route and the methods main serves (0011 PRQ-8a)', () => {
+describe('the chrome route and the methods main serves (0011 PRQ-8a, 8b)', () => {
   const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
 
   test('the chrome route refuses each of main\'s methods for any site, with nothing run', async () => {
@@ -650,8 +630,12 @@ describe('the chrome route and the methods main serves (0011 PRQ-8a)', () => {
       'radicle_disconnect',
       'radicle_getCapabilities',
       'radicle_getNodeStatus',
+      'radicle_getSeedStatus',
       'radicle_listSeededRepos',
       'radicle_requestAccess',
+      'radicle_seed',
+      'radicle_sync',
+      'radicle_unseed',
     ]);
     for (const origin of [ORIGIN, 'name.eth', 'https://other.example']) {
       for (const method of RADICLE_PAGE_METHODS) {
@@ -678,12 +662,16 @@ describe('the chrome route and the methods main serves (0011 PRQ-8a)', () => {
     expect(manager.getConnections).not.toHaveBeenCalled();
     expect(cob.getIdentity).not.toHaveBeenCalled();
     expect(require('../radicle-embedded').listSeededRepos).not.toHaveBeenCalled();
+    for (const fn of ['seedRepository', 'unseedRepository', 'refetchRepository', 'getSeedFetchStatus']) {
+      expect(manager[fn]).not.toHaveBeenCalled();
+    }
     // The methods still on its route still run there.
-    const seeded = await executeHandler(
+    permissions.hasSigningGrant.mockReturnValue(true);
+    const identity = await executeHandler(
       { sender: { id: 1 } },
-      { method: 'radicle_getSeedStatus', params: { rid: RID }, origin: ORIGIN }
+      { method: 'radicle_getIdentity', params: {}, origin: ORIGIN }
     );
-    expect(seeded).toEqual({ result: mockSeedFetchStatus });
+    expect(identity).toEqual({ result: { did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' } });
   });
 
   test('main\'s page path answers { result } or { error }, an add-on failure with its fixed text only', async () => {

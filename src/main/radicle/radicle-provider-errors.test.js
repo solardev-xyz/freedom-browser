@@ -73,7 +73,11 @@ const manager = require('../radicle-manager');
 const permissions = require('./radicle-permissions');
 const cob = require('./cob-service');
 const privateWindows = require('../private/private-windows');
-const { registerRadicleProviderIpc, executeRadicleForPage } = require('./radicle-provider-ipc');
+const {
+  registerRadicleProviderIpc,
+  executeRadicleForPage,
+  setSeedStatusSink,
+} = require('./radicle-provider-ipc');
 const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
 
 registerRadicleProviderIpc();
@@ -385,14 +389,16 @@ describe('add-on error texts (#1073)', () => {
         onStatus(failedStatus(text));
         return { success: true, status: failedStatus(text) };
       });
+      // A site's seed statuses go to main's page requests (PRQ-8b), which
+      // send them to the site's pages.
+      const sink = jest.fn();
+      setSeedStatusSink(sink);
       await execute(publicChrome, 'radicle_seed', { rid: RID });
-      expect(mockSend).toHaveBeenCalledWith(IPC.RADICLE_PROVIDER_EVENT, {
-        event: 'seedStatus',
-        origin: ORIGIN,
-        data: publicStatus(text),
-      });
-      for (const [, payload] of mockSend.mock.calls) expectNoPath(payload, home);
+      expect(sink).toHaveBeenCalledWith(ORIGIN, publicStatus(text));
+      for (const [, payload] of sink.mock.calls) expectNoPath(payload, home);
+      expect(mockSend).not.toHaveBeenCalledWith(IPC.RADICLE_PROVIDER_EVENT, expect.anything());
       await execute(publicChrome, 'radicle_disconnect');
+      setSeedStatusSink(null);
     }
   );
 

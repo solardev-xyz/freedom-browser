@@ -3015,9 +3015,9 @@ describe('page requests', () => {
 
   test('without the harness\'s routes, only the moved methods go to main', () => {
     const { ipcRenderer } = load({ argv: ['electron', bootArg(boot())] });
-    // Radicle's seeding and signing still take the chrome's path; its reads,
-    // connecting and disconnecting (0011 PRQ-8a) go to main.
-    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_seed', params: { rid: 'rad:z1' } });
+    // Radicle's signing still takes the chrome's path; its reads, connecting
+    // and disconnecting (0011 PRQ-8a) and seeding (PRQ-8b) go to main.
+    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 3, method: 'radicle_createIssue', params: { rid: 'rad:z1' } });
     expect(ipcRenderer.invoke.mock.calls.map(([channel]) => channel)).not.toContain('page:request');
     expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
     for (const [id, method] of [
@@ -3026,6 +3026,10 @@ describe('page requests', () => {
       [13, 'radicle_listSeededRepos'],
       [14, 'radicle_requestAccess'],
       [15, 'radicle_disconnect'],
+      [16, 'radicle_seed'],
+      [17, 'radicle_unseed'],
+      [18, 'radicle_sync'],
+      [19, 'radicle_getSeedStatus'],
     ]) {
       fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: {} });
     }
@@ -3037,6 +3041,10 @@ describe('page requests', () => {
       ['radicle', 'radicle_listSeededRepos'],
       ['radicle', 'radicle_requestAccess'],
       ['radicle', 'radicle_disconnect'],
+      ['radicle', 'radicle_seed'],
+      ['radicle', 'radicle_unseed'],
+      ['radicle', 'radicle_sync'],
+      ['radicle', 'radicle_getSeedStatus'],
     ]);
     expect(ipcRenderer.sendToHost.mock.calls.map(([channel]) => channel)).toEqual(['radicle:provider-request']);
     ipcRenderer.invoke.mockClear();
@@ -3182,12 +3190,17 @@ describe('page requests', () => {
       'radicle_listSeededRepos',
       'radicle_requestAccess',
       'radicle_disconnect',
+      // Seeding (PRQ-8b).
+      'radicle_seed',
+      'radicle_unseed',
+      'radicle_sync',
+      'radicle_getSeedStatus',
     ]);
     const routed = radicleMainAnswered(
-      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['radicle:radicle_seed', 'swarm:swarm_noSuchMethod'] }))] })
+      load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['radicle:radicle_createIssue', 'swarm:swarm_noSuchMethod'] }))] })
         .contextBridge
     );
-    expect(routed).toEqual([...moved, 'radicle_seed']);
+    expect(routed).toEqual([...moved, 'radicle_createIssue']);
   });
 
   test('the page-world provider is told which methods main answers: the moved reads, and the harness\'s routes', () => {
@@ -3234,7 +3247,7 @@ describe('page requests', () => {
     fromPage({ type: 'FREEDOM_SWARM_REQUEST', id: 12, method: 'swarm_readChunk', params: { reference: 'ab' } });
     fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 13, method: 'radicle_getCapabilities', params: {} });
     // An unrouted method keeps today's path.
-    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 14, method: 'radicle_seed', params: {} });
+    fromPage({ type: 'FREEDOM_RADICLE_REQUEST', id: 14, method: 'radicle_createIssue', params: {} });
     await flushMicrotasks();
 
     expect(ipcRenderer.invoke.mock.calls.filter(([channel]) => channel === 'page:request')).toEqual([
@@ -3243,7 +3256,7 @@ describe('page requests', () => {
       ['page:request', { nonce, provider: 'radicle', method: 'radicle_getCapabilities', params: {} }],
     ]);
     expect(ipcRenderer.sendToHost.mock.calls).toEqual([
-      ['radicle:provider-request', { id: 14, method: 'radicle_seed', params: {} }],
+      ['radicle:provider-request', { id: 14, method: 'radicle_createIssue', params: {} }],
     ]);
     expect(posted()).toEqual([
       { type: 'FREEDOM_ETHEREUM_RESPONSE', id: 11, result: '0x10', error: undefined },
