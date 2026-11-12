@@ -28,6 +28,12 @@
  *       fail *closed* for it (messaging blocked, not leaked) — update them here
  *       rather than assuming this comment still holds.
  *   The renderer is the only process that can map webview → tab → display URL.
+ *
+ * Page requests (freedom-core design 0011, PRQ-7): main's own dispatcher
+ * (`page/page-swarm.js`) serves the methods it has moved straight from the
+ * page's preload, and calls executeSwarmMethod with the requester's attested
+ * key in place of the chrome's origin. swarm:provider-execute refuses those
+ * methods; the trust model above holds only for the ones still on it.
  */
 
 const { ipcMain, webContents } = require('electron');
@@ -234,6 +240,16 @@ function agentCustodyRefusal(sender, method, meta) {
 
 function notConnected() {
   return notAuthorized('not_connected');
+}
+
+// The methods main serves to pages itself, from the attested requester
+// (freedom-core design 0011, PRQ-7; `page/page-swarm.js`). The preload no
+// longer sends them through the chrome, so a chrome that asks for one here
+// names a site only a page may speak for, and is refused before anything
+// runs.
+function chromeRouteRefusal(method) {
+  const { SWARM_PAGE_METHODS } = require('../page/page-swarm');
+  return SWARM_PAGE_METHODS.includes(method) ? notAuthorized('page_request_only') : null;
 }
 
 function feedNotGranted() {
@@ -2248,7 +2264,8 @@ function registerSwarmProviderIpc() {
 
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (event, args) => {
     const { method, params, origin, meta } = args || {};
-    return agentCustodyRefusal(event?.sender, method, meta) ||
+    return chromeRouteRefusal(method) ||
+      agentCustodyRefusal(event?.sender, method, meta) ||
       executeSwarmMethod(method, params, origin, meta);
   });
 

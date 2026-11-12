@@ -74,6 +74,12 @@ const SETUP_REASONS = new Set([
   'no-usable-stamps',
 ]);
 
+// The methods this module ran with no prompt and no manifest check. All but
+// swarm_unsubscribe now go from the page's preload straight to main, which
+// serves them under the page's attested key (freedom-core design 0011,
+// PRQ-7a, src/main/page/page-swarm.js); main refuses them on
+// swarm:provider-execute. Their branches below stay for rollback until
+// PRQ-9 removes this path.
 const PUBLIC_METHODS = new Set([
   'swarm_getCapabilities',
   'swarm_readFeedEntry',
