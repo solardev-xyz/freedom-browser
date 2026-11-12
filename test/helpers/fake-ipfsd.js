@@ -19,6 +19,8 @@
  * - `child.event(name, data)`, `child.exit(code)`.
  *
  * Each child records `requests` (in order), `cancels` and the credit it got.
+ * Its frames, streams and exits are `FakeIpfsdChild`'s, which
+ * `fake-radicled.js` extends with freedom-radicled's answers (`answer`).
  *
  * An `ipfs.start` the real service refuses is refused here too, before any
  * script sees it: `startRefusal` holds the rules it applies, under the
@@ -171,6 +173,12 @@ class FakeIpfsdChild extends EventEmitter {
     }
     this.requests.push(message);
     this.sender.request(message.id);
+    this.answer(message);
+  }
+
+  /** Answers one request: the script's handler for its method, or the
+   * default. (fake-radicled.js answers freedom-radicled's.) */
+  answer(message) {
     const method = message.method.replace(/^ipfs\./, '');
     const refusal =
       method === 'start' ? startRefusal(message.params, this.network ?? undefined) : null;
@@ -315,6 +323,7 @@ function fakeIpfsd(script = {}) {
 
 module.exports = {
   fakeIpfsd,
+  FakeIpfsdChild,
   statsResult,
   startRefusal,
   helloFor,
