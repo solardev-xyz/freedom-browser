@@ -744,6 +744,122 @@ describe('the network calls the manager runs once the node is up', () => {
   });
 });
 
+describe("a clone's progress (0008, Methods and Progress)", () => {
+  const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+  const text = (event) => JSON.stringify(event);
+
+  test("rad.progress events reach the clone's own callback, as their text, in order, until its answer", async () => {
+    const clones = [];
+    const node = await running({ clone: (m) => clones.push(m) });
+    const first = [];
+    const second = [];
+    const a = node.clone(RID, 120000, { onProgress: (event) => first.push(event) });
+    const b = node.clone('rad:z3QXuMvMmSeEX3ZgoUidZC1v5MkKE', 5000, {
+      onProgress: (event) => second.push(event),
+    });
+    await settle();
+    expect(clones.map((m) => m.params)).toEqual([
+      { rid: RID, timeout_ms: 120000, progress: true },
+      { rid: 'rad:z3QXuMvMmSeEX3ZgoUidZC1v5MkKE', timeout_ms: 5000, progress: true },
+    ]);
+    const [ida, idb] = clones.map((m) => m.id);
+    child(0).event('rad.progress', { id: ida, event: text({ candidates: 2, phase: 'resolving' }) });
+    child(0).event('rad.progress', { id: idb, event: text({ phase: 'done' }) });
+    child(0).event('rad.progress', { id: ida, event: text({ phase: 'cancelled' }) });
+    // Not a clone's, not a progress event, or not one at all: dropped.
+    child(0).event('rad.progress', { id: 999, event: text({ phase: 'done' }) });
+    child(0).event('rad.other', { id: ida, event: text({ phase: 'done' }) });
+    child(0).event('rad.progress', { id: ida, event: { phase: 'done' } });
+    child(0).result(idb, { ok: true });
+    child(0).result(ida, { cancelled: true });
+    await expect(a).resolves.toEqual({ cancelled: true });
+    await expect(b).resolves.toEqual({ ok: true });
+    expect(first).toEqual([
+      text({ candidates: 2, phase: 'resolving' }),
+      text({ phase: 'cancelled' }),
+    ]);
+    expect(second).toEqual([text({ phase: 'done' })]);
+    expect(node.progress.size).toBe(0);
+  });
+
+  test('progress stops at the answer: an event after it, in the same read, is dropped', async () => {
+    const clones = [];
+    const node = await running({ clone: (m) => clones.push(m) });
+    const events = [];
+    const answer = node.clone(RID, 120000, { onProgress: (event) => events.push(event) });
+    await settle();
+    const { id } = clones[0];
+    child(0).event('rad.progress', { id, event: text({ phase: 'done' }) });
+    child(0).result(id, { ok: true });
+    child(0).event('rad.progress', { id, event: text({ phase: 'resolving', candidates: 1 }) });
+    await expect(answer).resolves.toEqual({ ok: true });
+    await settle();
+    expect(events).toEqual([text({ phase: 'done' })]);
+  });
+
+  test('a clone without a callback asks for no progress, and its events reach nothing', async () => {
+    const clones = [];
+    const node = await running({ clone: (m) => clones.push(m) });
+    const answer = node.clone(RID, 120000);
+    await settle();
+    expect(clones[0].params.progress).toBe(false);
+    child(0).event('rad.progress', { id: clones[0].id, event: text({ phase: 'done' }) });
+    child(0).result(clones[0].id, { ok: true });
+    await expect(answer).resolves.toEqual({ ok: true });
+    expect(node.progress.size).toBe(0);
+  });
+
+  test("a callback that throws is logged by its code, and the clone's next events still come", async () => {
+    const clones = [];
+    const node = await running({ clone: (m) => clones.push(m) });
+    const events = [];
+    const answer = node.clone(RID, 120000, {
+      onProgress: (event) => {
+        events.push(event);
+        if (events.length === 1) throw Object.assign(new Error('a path /home/x'), { code: 'boom' });
+      },
+    });
+    await settle();
+    const { id } = clones[0];
+    child(0).event('rad.progress', { id, event: text({ phase: 'resolving', candidates: 1 }) });
+    child(0).event('rad.progress', { id, event: text({ phase: 'done' }) });
+    child(0).result(id, { ok: true });
+    await answer;
+    expect(events).toHaveLength(2);
+    expect(log.warn).toHaveBeenCalledWith('[Radicle] A clone progress callback failed', {
+      code: 'boom',
+    });
+  });
+
+  test("a crash's restart: the clone fails, its callback goes, and the next process's IDs reach nothing of it", async () => {
+    const clones = [];
+    const node = await running({ clone: (m) => clones.push(m) });
+    const events = [];
+    const answer = node.clone(RID, 120000, { onProgress: (event) => events.push(event) });
+    await settle();
+    child(0).exit(70);
+    await expect(answer).rejects.toMatchObject({ code: 'radicle_unavailable' });
+    expect(node.progress.size).toBe(0);
+    await clock.advance(500);
+    await settle();
+    expect(node.generation).not.toBeNull();
+    // The same ID on the new process: no callback of the old clone's.
+    child(1).event('rad.progress', { id: clones[0].id, event: text({ phase: 'done' }) });
+    await settle();
+    expect(events).toEqual([]);
+  });
+
+  test('with no generation running, connectSeeds and clone are stopped, and nothing is sent', async () => {
+    const node = newNode();
+    await expect(node.connectSeeds(15000)).rejects.toMatchObject({ code: 'stopped' });
+    await expect(node.clone(RID, 120000, { onProgress: () => {} })).rejects.toMatchObject({
+      code: 'stopped',
+    });
+    await expect(node.cloneRepo(RID, 120000)).rejects.toThrow('The Radicle node is not running');
+    expect(service.children).toHaveLength(0);
+  });
+});
+
 describe('what main holds of the key', () => {
   test("main's log never holds the recipient, enc or the ciphertext; the pipe carries only the seal's reply", async () => {
     let switched = false;

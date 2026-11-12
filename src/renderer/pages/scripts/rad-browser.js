@@ -1029,6 +1029,11 @@ function seedProgressText(status) {
     case 'fetching':
       return `Fetching repository (${progress.index}/${progress.total})…`;
     case 'peer-failed':
+      // The Radicle service may fold peer failures into one summary, with a
+      // count and no position.
+      if (Number.isInteger(progress.count)) {
+        return `${progress.count} seed${progress.count === 1 ? '' : 's'} failed; trying another…`;
+      }
       return `Trying another seed (${progress.index}/${progress.total})…`;
     default:
       return status.seedersKnown != null
