@@ -741,7 +741,24 @@ function createSendDispatchers(shared, deps = {}) {
   }
 
   // The user decides, on main's prompt, and main's issuer mints the token.
+  // With the approvals document on, a vault account's prompt asks for the
+  // vault unlocked first (APS-2): the document has no unlock of its own in
+  // the signing screen, as the chrome's had. Devices and Safes need none.
+  async function unlockFirst(context, ctx, reason) {
+    if (!context.approvalsDocument || ctx.account?.type !== 'mnemonic' || ctx.safe || ctx.phone || (await vaultUnlocked())) return null;
+    const unlock = await context.prompt({
+      kind: 'vault.unlock',
+      view: { account: ctx.account, reason },
+      choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+    });
+    if (unlock.error) return { error: unlock.error };
+    if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
+    return null;
+  }
+
   async function promptedSend(context, ctx) {
+    const locked = await unlockFirst(context, ctx, 'send');
+    if (locked) return locked;
     let quoted = ctx.quoted;
     let verdict = ctx.verdict ?? null;
     let askAgain = false;

@@ -115,6 +115,14 @@ function showPanel(event) {
   // instead of the pixels; a human can copy it via devtools too).
   if (panel) panel.dataset.bridgeUrl = event.bridgeUrl;
   panel?.classList.remove('hidden');
+  // The phone's code must be seen: a dApp's approval may have been given in
+  // the approvals panel (freedom-core design 0011, APS-2), with the sidebar
+  // shut.
+  import('../sidebar.js')
+    .then((sidebar) => {
+      if (!sidebar.isVisible()) sidebar.open();
+    })
+    .catch(() => {});
 }
 
 function hidePanel() {

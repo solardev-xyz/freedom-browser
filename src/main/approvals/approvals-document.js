@@ -49,8 +49,10 @@
  * chrome's decision is refused.
  *
  * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
- * narrows what the chrome can do, so packaged builds honour it too. The
- * flag goes on by default with APS-2.
+ * narrows what the chrome can do, so packaged builds honour it too. It
+ * stays off by default until the panel's gaps close (Touch ID, a device's
+ * feedback after the press, views over 256 KiB) and the page specs drive
+ * it; the default flips in its own pull request.
  */
 
 const fs = require('fs');
@@ -59,6 +61,9 @@ const { performance } = require('perf_hooks');
 const { pathToFileURL, fileURLToPath } = require('url');
 
 const FLAG = 'FREEDOM_APPROVALS_DOCUMENT';
+// On the chrome's command line while the flag is on, so it makes room for
+// the panel beside the content (preload.js; keep the two in sync).
+const APPROVALS_RENDERER_ARG = '--freedom-approvals-document';
 
 const RENDERER_DIR = path.resolve(__dirname, '..', '..', 'renderer');
 const APPROVALS_DIR = path.join(RENDERER_DIR, 'approvals');
@@ -73,6 +78,8 @@ const PARTITION = 'freedom-approvals';
 // the chrome's colour tokens, so the panel paints from the chrome's palette.
 const FILES = new Map([
   [APPROVALS_HTML, 'text/html; charset=utf-8'],
+  [path.join(APPROVALS_DIR, 'approvals-core.js'), 'text/javascript; charset=utf-8'],
+  [path.join(APPROVALS_DIR, 'approvals-kinds.js'), 'text/javascript; charset=utf-8'],
   [path.join(APPROVALS_DIR, 'approvals.js'), 'text/javascript; charset=utf-8'],
   [path.join(APPROVALS_DIR, 'approvals.css'), 'text/css; charset=utf-8'],
   [path.join(RENDERER_DIR, 'styles', 'variables.css'), 'text/css; charset=utf-8'],
@@ -312,9 +319,11 @@ function createApprovalsDocuments({
     if (preparedSessions.has(ses)) return ses;
     preparedSessions.add(ses);
     ses.protocol.handle('file', (request) => serve(request));
+    // Every request the partition sees is logged for the tests: a prompt's
+    // data must make none (design 0011, APS-2's hostile data).
     ses.webRequest.onBeforeRequest((details, callback) => {
       const cancel = ownFile(details?.url) === null;
-      if (cancel) trace({ kind: 'request-refused', url: String(details?.url || '').slice(0, 200) });
+      trace({ kind: cancel ? 'request-refused' : 'request', url: String(details?.url || '').slice(0, 200) });
       callback({ cancel });
     });
     ses.setPermissionRequestHandler?.((_contents, _permission, callback) => callback(false));
@@ -717,6 +726,7 @@ function enableApprovalsTestHooks() {
 
 module.exports = {
   FLAG,
+  APPROVALS_RENDERER_ARG,
   CHANNELS,
   DOCUMENT_CHANNELS,
   CSP,

@@ -740,7 +740,7 @@ class Guest extends EventEmitter {
   }
 }
 
-function withPageRequests({ flag = true, testPrompts = true } = {}) {
+function withPageRequests({ flag = true, testPrompts = true, dispatch = null } = {}) {
   const env = setup();
   const guests = new Map();
   const toChrome = [];
@@ -759,6 +759,7 @@ function withPageRequests({ flag = true, testPrompts = true } = {}) {
       testPrompts,
       dispatch: async (context) => {
         contexts.push(context);
+        if (dispatch) return dispatch(context);
         const decision = await context.prompt({ kind: 'test.prompt', view: context.params.view });
         return decision.approve === true ? { result: 'approved' } : { error: { code: 4001, message: 'User rejected the request' } };
       },
@@ -889,5 +890,68 @@ describe('no room for the panel, with page-requests', () => {
     expect(await answer).toEqual({ error: { code: 4001, message: 'User rejected the request' } });
     expect(view.visible).toBe(false);
     expect(env.docs.state()[1].shown).toBeNull();
+  });
+});
+
+describe('APS-2: the Safe boards stay in the chrome, and page tokens come only from the document', () => {
+  const signingConfirmation = require('../wallet/signing-confirmation');
+
+  test('a Safe board goes to the chrome, which may decide it alone; the dispatcher knows the document is on', async () => {
+    const seen = [];
+    const env = withPageRequests({
+      dispatch: async (context) => {
+        seen.push(context.approvalsDocument);
+        const decision = await context.prompt({ kind: 'eth.safe_message', view: { safeIndex: 1000, state: {} } });
+        return decision.approve === true ? { result: 'completed' } : { error: { code: 4001, message: 'User rejected the request' } };
+      },
+    });
+    const { contents } = attached(env);
+    const answer = env.tab().ask(VIEW);
+    await flush();
+    expect(seen).toEqual([true]);
+    expect(env.chromeChannels()).toEqual(['page:prompt-pending', 'page:prompt']);
+    expect(contents.sent).toEqual([]);
+    expect(env.docs.state()[1].shown).toBeNull();
+    const handle = env.toChrome[1][2].handle;
+    // The document can't decide it: it isn't shown there.
+    expect(await env.docs.decide(eventFrom(contents), { handle, approve: true })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(await env.requests.decide({ sender: { id: 501 } }, { handle, approve: true })).toEqual({ ok: true });
+    expect(await answer).toEqual({ result: 'completed' });
+  });
+
+  test('a board\'s approval mints no page token: only the document\'s approval does', async () => {
+    const minted = [];
+    const env = withPageRequests({
+      dispatch: async (context) => {
+        const board = await context.prompt({ kind: 'eth.safe_send', view: {} });
+        try {
+          minted.push(['board', board.approve, context.confirm('sign-message', 0, { method: 'personal_sign', params: ['0x00'] })]);
+        } catch (err) {
+          minted.push(['board', board.approve, err.code]);
+        }
+        const sign = await context.prompt({ kind: 'test.prompt', view: VIEW });
+        try {
+          minted.push(['document', sign.approve, typeof context.confirm('sign-message', 0, { method: 'personal_sign', params: ['0x00'] })]);
+        } catch (err) {
+          minted.push(['document', sign.approve, err.code]);
+        }
+        return { result: 'done' };
+      },
+    });
+    const { contents } = attached(env);
+    const answer = env.tab().ask(VIEW);
+    await flush();
+    const board = env.toChrome.find(([, channel]) => channel === 'page:prompt')[2].handle;
+    env.requests.decide({ sender: { id: 501 } }, { handle: board, approve: true });
+    await flush();
+    const shown = contents.sent.find(([channel]) => channel === CHANNELS.PROMPT)[1].handle;
+    env.docs.shown(eventFrom(contents), { handle: shown });
+    env.advance(INPUT_DELAY_MS);
+    env.docs.decide(eventFrom(contents), { handle: shown, approve: true });
+    expect(await answer).toEqual({ result: 'done' });
+    expect(minted).toEqual([
+      ['board', true, signingConfirmation.NOT_CONFIRMED],
+      ['document', true, 'string'],
+    ]);
   });
 });

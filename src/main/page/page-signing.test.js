@@ -204,7 +204,7 @@ function backends() {
   return { state, deps, signer };
 }
 
-function setup({ dispatchers: custom } = {}) {
+function setup({ dispatchers: custom, approvalsDocument = false } = {}) {
   const guests = new Map();
   const names = new Map();
   const nameHolds = new Map(); // name -> deferred: the next resolution waits for it
@@ -258,7 +258,16 @@ function setup({ dispatchers: custom } = {}) {
     chromeWindowOf: (contents) => (contents?.id >= 500 ? contents.id - 500 : null),
     sendToWindow: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
     watchWindow: () => {},
+    // With the approvals document on (APS-2): its prompts land in `sent`
+    // too, and main unlocks with the password its decision carries.
+    approvals: approvalsDocument ? { send: (windowId, channel, payload) => sent.push([windowId, channel, payload]) } : null,
+    unlockVault: async (password) => {
+      unlockAttempts.push(password);
+      if (password !== 'right password') throw new Error('Incorrect password');
+      state.unlocked = true;
+    },
   });
+  const unlockAttempts = [];
 
   function greet(guest) {
     const n = nonce();
@@ -287,7 +296,9 @@ function setup({ dispatchers: custom } = {}) {
   const prompts = (windowId = 1) => sent.filter(([w, c]) => w === windowId && c === 'page:prompt').map(([, , p]) => p);
   const lastPrompt = (windowId = 1) => prompts(windowId).at(-1);
   const decide = (handle, approve, choices, windowId = 1) =>
-    requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
+    approvalsDocument
+      ? requests.decideInWindow(windowId, { handle, approve, choices })
+      : requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
   const connect = (key = KEY_A, walletIndex = 0, extra = {}) =>
     state.permissions.set(key, { origin: key, walletIndex, chainId: 100, ...extra });
   const expire = () => {
@@ -318,6 +329,7 @@ function setup({ dispatchers: custom } = {}) {
     expire,
     traced,
     minted,
+    unlockAttempts,
   };
 }
 
@@ -1455,5 +1467,135 @@ describe('what the rule never answers: a warned view, and a 32-byte message', ()
     const page = env.tab();
     expect(await page.ask('personal_sign', [message, ACCOUNT])).toEqual({ result: '0xmsgsig' });
     expect(env.prompts()).toEqual([]);
+  });
+});
+
+// With the approvals document on (freedom-core design 0011, APS-2), the
+// document has no unlock of its own in the signing screen: a vault
+// account's prompt asks for the vault unlocked first, on main's own
+// prompt, and main unlocks with the password its decision carries.
+describe('with the approvals document on (0011 APS-2)', () => {
+  test('a locked vault: the unlock first, a wrong password asked again, then the signature\'s prompt', async () => {
+    const env = setup({ approvalsDocument: true });
+    env.connect();
+    env.state.unlocked = false;
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({
+      kind: 'vault.unlock',
+      view: { account: { index: 0, address: ACCOUNT, type: 'mnemonic' }, reason: 'sign' },
+    });
+    // No password, or another key: refused, the prompt stays.
+    expect(await env.decide(env.lastPrompt().handle, true, {})).toEqual({ ok: false, reason: 'invalid' });
+    expect(await env.decide(env.lastPrompt().handle, true, { password: 'x', site: 'y' })).toEqual({ ok: false, reason: 'invalid' });
+    const first = env.lastPrompt().handle;
+    env.decide(first, true, { password: 'wrong' });
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'vault.unlock', view: { reason: 'sign', failed: true } });
+    expect(env.lastPrompt().handle).not.toBe(first);
+    env.decide(env.lastPrompt().handle, true, { password: 'right password' });
+    await flush();
+    expect(env.unlockAttempts).toEqual(['wrong', 'right password']);
+    expect(env.lastPrompt()).toMatchObject({ kind: 'eth.sign', view: { method: 'personal_sign' } });
+    expect(env.minted()).toEqual([]);
+    await env.decide(env.lastPrompt().handle, true, {});
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+    expect(env.minted()).toEqual([expect.objectContaining({ token: 'sign-message' })]);
+  });
+
+  test('a rejected unlock signs nothing; an unlocked vault, or a Ledger account, asks for none', async () => {
+    const env = setup({ approvalsDocument: true });
+    env.connect();
+    env.state.unlocked = false;
+    const page = env.tab();
+    const rejected = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    await env.decide(env.lastPrompt().handle, false, {});
+    expect(await rejected).toEqual({ error: { code: 4001, message: 'User cancelled unlock' } });
+    expect(env.state.signed).toEqual([]);
+
+    const ledger = setup({ approvalsDocument: true });
+    ledger.connect(KEY_A, 1);
+    ledger.state.unlocked = false;
+    ledger.tab().ask('personal_sign', [MESSAGE, LEDGER]);
+    await flush();
+    expect(ledger.prompts().map((p) => p.kind)).toEqual(['eth.sign']);
+
+    const open = setup({ approvalsDocument: true });
+    open.connect();
+    open.tab().ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(open.prompts().map((p) => p.kind)).toEqual(['eth.sign']);
+  });
+
+  // Codex on #1208: a password lives no longer than its own attempt. The
+  // decision's invocation is answered once the attempt is done, not when
+  // the request is, and nothing main keeps (the prompt's decision, the
+  // record, the trace, a pending invocation) holds the decision's payload.
+  test('a password is held only for its own attempt: wrong ones don\'t pile up, and none outlives the unlock', async () => {
+    const v8 = require('v8');
+    const vm = require('vm');
+    v8.setFlagsFromString('--expose-gc');
+    const gc = vm.runInNewContext('gc');
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    const collected = async (refs) => {
+      for (let i = 0; i < 5; i += 1) {
+        await tick();
+        gc();
+      }
+      return refs.map((ref) => ref.deref() === undefined);
+    };
+
+    const env = setup({ approvalsDocument: true });
+    env.connect();
+    env.state.unlocked = false;
+    const page = env.tab();
+    let settled = false;
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]).then((value) => {
+      settled = true;
+      return value;
+    });
+    await flush();
+    // Each attempt's payload is made here and only weakly kept by the test.
+    const attempt = (password) => {
+      const payload = { handle: env.lastPrompt().handle, approve: true, choices: { password } };
+      return { refs: [new WeakRef(payload), new WeakRef(payload.choices)], answered: env.requests.decideInWindow(1, payload) };
+    };
+    const wrong = [];
+    for (const password of ['wrong one', 'wrong two', 'wrong three']) {
+      const { refs, answered } = attempt(password);
+      // Answered once the attempt is done, with the request still open.
+      expect(await answered).toEqual({ ok: true });
+      expect(settled).toBe(false);
+      await flush();
+      expect(env.lastPrompt()).toMatchObject({ kind: 'vault.unlock', view: { failed: true } });
+      wrong.push(...refs);
+    }
+    expect(await collected(wrong)).toEqual(wrong.map(() => true));
+
+    const right = attempt('right password');
+    expect(await right.answered).toEqual({ ok: true });
+    await flush();
+    // The signature's prompt waits, the request still open; the unlock's
+    // payload is gone all the same.
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    expect(settled).toBe(false);
+    expect(await collected(right.refs)).toEqual([true, true]);
+    const kept = JSON.stringify([env.traced, env.requests.promptState(), env.sent]);
+    for (const password of ['wrong one', 'wrong two', 'wrong three', 'right password']) expect(kept).not.toContain(password);
+    expect(env.unlockAttempts).toEqual(['wrong one', 'wrong two', 'wrong three', 'right password']);
+
+    await env.decide(env.lastPrompt().handle, true, {});
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+  });
+
+  test('the document off: no unlock first, as the chrome\'s screen unlocks in place', async () => {
+    const env = setup();
+    env.connect();
+    env.state.unlocked = false;
+    env.tab().ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.prompts().map((p) => p.kind)).toEqual(['eth.sign']);
   });
 });
