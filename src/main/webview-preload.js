@@ -2006,6 +2006,7 @@ const RADICLE_INJECT_SOURCE = `
           // sibling's 300s budget for anything that can prompt.
           const canPrompt = method === 'radicle_requestAccess' ||
             method === 'radicle_seed' ||
+            method === 'radicle_unseed' ||
             method === 'radicle_getIdentity' ||
             method === 'radicle_createIssue' ||
             method === 'radicle_commentIssue' ||
