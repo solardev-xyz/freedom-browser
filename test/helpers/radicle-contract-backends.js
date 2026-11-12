@@ -14,8 +14,17 @@
  *   binary's `hold-lock` on its home (design 0008, Rollback), as a
  *   development build does, its gate in a lock directory of the run's own;
  *   without it, ungated, with the warning such a build logs.
- * - `radicled` (design 0008 step 7): the freedom-radicled service. Not
- *   written yet; it gets an entry here, and the suite stays as it is.
+ * - `radicled` (design 0008 step 7): the freedom-radicled service (`npm run
+ *   radicled:download`, or `FREEDOM_RADICLED_PATH`), driven through the
+ *   production `radicle-manager.js` and `radicle-embedded.js` under
+ *   `FREEDOM_RADICLE_BACKEND=service`: the real node on the real binary,
+ *   its reads through `callStream` and `callScoped`. Its key is the
+ *   fixture's, sealed to the process as the core's `nodes.seal_radicle_key`
+ *   would seal it (`radicle-seal.js`), so the home holds no key file (the
+ *   service refuses one: 0008, "The switch"). It runs under a SOCKS policy
+ *   at a closed loopback port, and the manager's background seeds and
+ *   clone answer without dialling. Main's code for what it doesn't serve
+ *   yet stays on the add-on (`lacks`).
  *
  * Each backend serves one Radicle home (`home`), restored from the
  * fixture's snapshot, and returns:
@@ -32,16 +41,27 @@
  *   with its message, as `radicle-embedded.js` does;
  * - `failNext(name, message)`: makes the next `embedded[name]()` call reject
  *   with `message`, for the contracts that hold when a read fails; it
- *   returns the function that undoes it;
+ *   returns the function that undoes it. On the service, which composes
+ *   `node_info` itself, the next `node_info` answers as the service does
+ *   when that part fails: `listRepos` gives `repos_total: null` with the
+ *   message as `repos_error`, and `status` fails the read;
+ * - `getConnections()`: the manager's answer, as the vectors record it (on
+ *   the service, without its diagnostics, `confinement` and `service`);
  * - `stop()` and `close()`.
  *
  * Network operations are not part of the suite: `connectSeeds` and the
  * clones answer without dialling, and the home names no peer
  * (`radicle-fixture.js`). Nothing leaves the machine.
  *
- * `BACKENDS` lists, beside each loader, the design's features beyond
- * today's contract that the backend honours; the suite's tests for the
- * others are pending. Those tests use what only the service has:
+ * `BACKENDS` lists, beside each loader:
+ * - `honours`: the design's features beyond today's contract that the
+ *   backend honours; the suite's tests for the others are pending;
+ * - `lacks`: the parts of today's contract it doesn't serve (`PARTS`), not
+ *   yet or not by design; their tests are skipped for it, named as such;
+ * - `hooks`: the test hooks it has. A pending test that needs one it
+ *   lacks is skipped too.
+ *
+ * The pending tests use what only the service has:
  * - `call(method, params)` for its methods;
  * - in `embedded`: `callStream(op, args)`, `callScoped(op, args, callback,
  *   { signal })`, `collectionBudget()` (`{ held, limit }`, in bytes) and
@@ -58,9 +78,12 @@
  */
 
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { loadMainModule } = require('./main-process-test-utils');
+const { fixtureSeed } = require('./radicle-fixture');
+const { sealRadicleKey } = require('./radicle-seal');
 
 const SRC = path.join(__dirname, '..', '..', 'src', 'main');
 
@@ -103,6 +126,24 @@ const FEATURES = [
   'size-caps',
   'malformed-utf8',
 ];
+
+/**
+ * The parts of today's contract, each a group of the suite's tests, that a
+ * backend may not serve:
+ * - `handlers`: the `rad:` and `radapi:` handlers' answers;
+ * - `parsed-reads`: the handlers' reads as parsed values or as text
+ *   (`tree`, `treeAt`, `blob`, `blobAt`, `commits`, `commit`, `issues`,
+ *   `issue`, `patches`, `patch`, `remotes`, `repoStats`, the `*Raw`
+ *   exports, `readme` and `readmeAt`). The service streams them
+ *   (`callStream`) and parses only the collected results;
+ * - `network`: seeds, clones and their cancel;
+ * - `writes`: the COB writes and unseeding;
+ * - `import`: `importRepo`.
+ */
+const PARTS = ['handlers', 'parsed-reads', 'network', 'writes', 'import'];
+
+/** The test hooks a pending test may need (see the module's doc). */
+const HOOKS = ['holdRepair', 'inflate', 'scriptedClone'];
 
 /** The ops whose text is main's `JSON.stringify` of the parsed result. */
 const SERIALIZED = new Set(['issue', 'patch', 'remotes', 'repo_stats']);
@@ -232,6 +273,7 @@ async function loadAddonBackend({ home }) {
       if (isErrorPayload(value)) throw new Error(value.error);
       return SERIALIZED.has(op) ? JSON.stringify(value) : text;
     },
+    getConnections: () => manager.getConnections(),
     failNext(name, message) {
       const original = embedded[name];
       embedded[name] = async () => {
@@ -252,12 +294,235 @@ async function loadAddonBackend({ home }) {
   };
 }
 
+/** A loopback port nothing listens on: bound, then closed. */
+async function closedPort() {
+  const server = net.createServer();
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+/** The freedom-radicled binary a run uses: FREEDOM_RADICLED_PATH, or the
+ * downloaded one for this platform. */
+function radicledBinary() {
+  if (process.env.FREEDOM_RADICLED_PATH) return process.env.FREEDOM_RADICLED_PATH;
+  const os_ = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform] || process.platform;
+  const name = process.platform === 'win32' ? 'freedom-radicled.exe' : 'freedom-radicled';
+  return path.join(SRC, '..', '..', 'freedom-radicled-bin', `${os_}-${process.arch}`, name);
+}
+
+/** The arguments `rad.read` takes for a contract case's: the COB reads name
+ * their ID by its kind. */
+function serviceArgs(op, args) {
+  if (op === 'issue') return { rid: args.rid, issue_id: args.id };
+  if (op === 'patch') return { rid: args.rid, patch_id: args.id };
+  return args;
+}
+
+/** A read's body as text. */
+async function bodyText(body) {
+  return Buffer.from(await new Response(body).arrayBuffer()).toString('utf8');
+}
+
+/** A `rad.read` reply of `text`, as the client hands one over. */
+function readReply(text) {
+  const bytes = Buffer.from(text);
+  return {
+    result: { content_type: 'application/json', bytes: bytes.length, body: true },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+  };
+}
+
+async function loadRadicledBackend({ home }) {
+  const binary = radicledBinary();
+  if (!fs.existsSync(binary)) {
+    throw new Error(
+      'FREEDOM_RADICLE_CONTRACT_BACKEND=radicled needs freedom-radicled: run npm run ' +
+        'radicled:download, or set FREEDOM_RADICLED_PATH'
+    );
+  }
+  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  // The service refuses a home with a key file: the key reaches the node
+  // sealed instead, as from the core, and the home is as a switched one.
+  fs.rmSync(path.join(home, 'keys'), { recursive: true, force: true });
+  // The profile's directory, outside the home: the service's own HOME and
+  // the run's lock directory. Removed by close().
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicled-contract-'));
+  const ownHome = path.join(userData, 'radicled-home');
+  const lockDir = path.join(userData, 'locks');
+  fs.mkdirSync(lockDir);
+  const network = { mode: 'socks5', ip: '127.0.0.1', port: await closedPort() };
+  const seed = fixtureSeed();
+  const env = {
+    FREEDOM_RADICLE_BACKEND: process.env.FREEDOM_RADICLE_BACKEND,
+    FREEDOM_RADICLED_PATH: process.env.FREEDOM_RADICLED_PATH,
+  };
+  process.env.FREEDOM_RADICLE_BACKEND = 'service';
+  process.env.FREEDOM_RADICLED_PATH = binary;
+  // The nodes the manager made, the last one current; and what the next
+  // node_info answers instead, if anything (failNext).
+  const nodes = [];
+  let nodeInfoFailure = null;
+
+  const { mod: manager } = loadMainModule(path.join(SRC, 'radicle-manager.js'), {
+    userDataDir: userData,
+    extraMocks: {
+      [path.join(SRC, 'logger.js')]: () => log,
+      [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
+      [path.join(SRC, 'profile-paths.js')]: () => ({
+        getRadicleDataDir: () => home,
+        getRadicledHomeDir: () => ownHome,
+        prepareRadicleDataDir: async () => home,
+      }),
+      [path.join(SRC, 'profile-resolver.js')]: () => ({ getActiveProfile: () => null }),
+      [path.join(SRC, 'core', 'node-identity-guard.js')]: () => ({ nodeBlockReason: () => null }),
+      [path.join(SRC, 'service-registry.js')]: () => ({
+        MODE: { EMBEDDED: 'embedded', DISABLED: 'disabled', NONE: 'none' },
+        updateService: jest.fn(),
+        setStatusMessage: jest.fn(),
+        clearService: jest.fn(),
+      }),
+      [path.join(SRC, 'radicle', 'radicled-node.js')]: () => {
+        const actual = jest.requireActual(path.join(SRC, 'radicle', 'radicled-node.js'));
+        class ContractNode extends actual.RadicledNode {
+          constructor(options) {
+            super({
+              ...options,
+              network,
+              // The fixture's key, sealed to this process's recipient.
+              keys: {
+                status: async () => ({ exists: true, unlocked: true }),
+                seal: async (recipient) => sealRadicleKey(recipient, seed),
+                switchHome: async () => {
+                  throw new Error('the contract home holds no key file to switch');
+                },
+                onVaultEvent: () => () => {},
+              },
+              guard: { blockReason: () => null, block() {}, unblock() {} },
+            });
+            nodes.push(this);
+          }
+
+          // Not dialled: the suite runs no network operation.
+          async connectSeeds() {
+            return { connected: 0, attempted: 0, targetReached: false };
+          }
+
+          async cloneRepo() {
+            throw notDialled();
+          }
+
+          async read(op, args, options) {
+            const failure = op === 'node_info' ? nodeInfoFailure : null;
+            if (!failure) return super.read(op, args, options);
+            nodeInfoFailure = null;
+            if (failure.name === 'status') {
+              const { CoreError } = jest.requireActual(
+                path.join(SRC, 'core', 'service-client.js')
+              );
+              throw new CoreError('failed', failure.message);
+            }
+            const { body } = await super.read(op, args, options);
+            const info = JSON.parse(await bodyText(body));
+            return readReply(
+              JSON.stringify({ ...info, repos_total: null, repos_error: failure.message })
+            );
+          }
+        }
+        return { ...actual, RadicledNode: ContractNode };
+      },
+    },
+  });
+  const embedded = require(path.join(SRC, 'radicle-embedded.js'));
+  const api = require(path.join(SRC, 'radicle-api-protocol.js'));
+  const rad = require(path.join(SRC, 'radicle', 'rad-protocol.js'));
+  const current = () => {
+    const node = nodes.at(-1);
+    const gen = node?.liveActive()?.gen;
+    if (!gen) throw new Error('the Radicle node is not running');
+    return { node, gen };
+  };
+
+  return {
+    name: 'radicled',
+    home,
+    lockDir,
+    manager,
+    embedded,
+    api,
+    rad,
+    log,
+    async start() {
+      const status = await manager.startRadicle();
+      if (status.status !== 'running') {
+        throw new Error(`the Radicle node did not start: ${status.error}`);
+      }
+    },
+    async readText(op, args = {}) {
+      const { body } = await embedded.callStream(op, serviceArgs(op, args));
+      return bodyText(body);
+    },
+    /** One of the service's methods on the running node, as main sends it. */
+    call(method, params = {}) {
+      const { node, gen } = current();
+      return node.client.requestTo(gen, method, params, { caller: 'shell' }, { watchdogMs: 75_000 });
+    },
+    failNext(name, message) {
+      if (name !== 'listRepos' && name !== 'status') {
+        throw new Error(`failNext(${name}): the service composes node_info alone`);
+      }
+      nodeInfoFailure = { name, message };
+      return () => {
+        nodeInfoFailure = null;
+      };
+    },
+    async getConnections() {
+      const answer = await manager.getConnections();
+      // The service's diagnostics, beside what the add-on answered.
+      const { confinement, service, ...rest } = answer;
+      if (answer.success) {
+        if (!confinement || typeof service !== 'string') {
+          throw new Error('getConnections on the service carries no diagnostics');
+        }
+      }
+      return rest;
+    },
+    async stop() {
+      await manager.stopRadicle();
+    },
+    async close() {
+      try {
+        await manager.stopRadicle();
+      } finally {
+        for (const [name, value] of Object.entries(env)) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+        fs.rmSync(userData, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      }
+    },
+  };
+}
+
 /**
  * The backends, each with the features it honours. A feature's pending
  * tests run against a backend that lists it here.
  */
 const BACKENDS = {
-  addon: { load: loadAddonBackend, honours: [] },
+  addon: { load: loadAddonBackend, honours: [], lacks: [], hooks: [] },
+  // The release binary: no test hooks (they are a debug build's).
+  radicled: {
+    load: loadRadicledBackend,
+    honours: ['call-stream', 'call-scoped', 'node-info', 'dirty-marker', 'quarantine'],
+    lacks: ['handlers', 'parsed-reads', 'network', 'writes', 'import'],
+    hooks: [],
+  },
 };
 
 /** The backend named by FREEDOM_RADICLE_CONTRACT_BACKEND, or null when unset. */
@@ -292,6 +557,8 @@ function forcedFeatures() {
 module.exports = {
   BACKENDS,
   FEATURES,
+  PARTS,
+  HOOKS,
   contractBackendName,
   forcedFeatures,
 };

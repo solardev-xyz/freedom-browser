@@ -20,7 +20,14 @@
  *   parsed results and their writes, on the restored home.
  * - **Pending:** what only the service does is written too. A test named
  *   `[pending: <feature>]` runs against a backend that honours the feature,
- *   or when FREEDOM_RADICLE_CONTRACT_PENDING names it (or is `all`).
+ *   or when FREEDOM_RADICLE_CONTRACT_PENDING names it (or is `all`), and
+ *   has the test hooks it needs.
+ * - **What a backend doesn't serve** (its `lacks`): the tests of that part
+ *   of today's contract are skipped for it. The service streams the
+ *   handlers' reads and parses only the collected results, so the parsed
+ *   exports of the rest aren't its (`parsed-reads`); the handlers, the
+ *   network operations, the writes and the import move onto it in steps of
+ *   their own.
  *
  * `FREEDOM_RADICLE_CONTRACT_RECORD=1` (with the `addon` backend) remakes the
  * fixture through the add-on and records the vectors again.
@@ -33,6 +40,8 @@ const crypto = require('crypto');
 const {
   BACKENDS,
   FEATURES,
+  PARTS,
+  HOOKS,
   contractBackendName,
   forcedFeatures,
 } = require('../../test/helpers/radicle-contract-backends');
@@ -67,13 +76,40 @@ const VECTORS = fs.existsSync(VECTORS_PATH)
   : null;
 
 /** A test for a feature the design adds: pending until the backend honours
- * it, or the run forces it. */
-function pendingTest(feature, name, fn, timeout) {
+ * it, or the run forces it; and skipped for a backend without the test hooks
+ * it needs, unless the run forces it. */
+function pendingTest(feature, name, fn, timeout, { hooks = [] } = {}) {
   if (!FEATURES.includes(feature)) throw new Error(`unknown contract feature: ${feature}`);
+  for (const hook of hooks) {
+    if (!HOOKS.includes(hook)) throw new Error(`unknown contract hook: ${hook}`);
+  }
+  const backend = BACKEND !== null ? BACKENDS[BACKEND] : null;
+  const forced = FORCED.has(feature);
   const run =
-    BACKEND !== null && (BACKENDS[BACKEND].honours.includes(feature) || FORCED.has(feature));
+    backend !== null &&
+    (backend.honours.includes(feature) || forced) &&
+    (forced || hooks.every((hook) => backend.hooks.includes(hook)));
   (run ? test : test.skip)(`[pending: ${feature}] ${name}`, fn, timeout);
 }
+
+/** A test of today's contract, in `part` (or none): skipped for a backend
+ * that doesn't serve that part. */
+function partTest(part, name, fn, timeout) {
+  if (part !== null && !PARTS.includes(part)) throw new Error(`unknown contract part: ${part}`);
+  const lacking = part !== null && BACKEND !== null && BACKENDS[BACKEND].lacks.includes(part);
+  (lacking ? test.skip : test)(name, fn, timeout);
+}
+
+/** The collected results: read parsed on every backend (0008, "JSON
+ * results"). */
+const COLLECTED = new Set([
+  'repo_info',
+  'seeders',
+  'identity',
+  'status',
+  'list_seeded_repos',
+  'list_repos',
+]);
 
 const tempDir = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const removeDir = (dir) =>
@@ -227,7 +263,9 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
 
   describe('handlers, byte for byte', () => {
     for (const [name, expected] of Object.entries(VECTORS?.handlers || {})) {
-      test(name, async () => {
+      // The manager's answers are its own; the rest are the handlers'.
+      const part = name.startsWith('manager ') ? null : 'handlers';
+      partTest(part, name, async () => {
         expect(await cases.get(name).run(backend)).toEqual(expected);
       });
     }
@@ -246,7 +284,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       ([, vector]) => vector.class !== 'composed'
     );
     for (const [name, vector] of readVectors) {
-      test(`${name}: parsed as the vector, or rejected with its error`, async () => {
+      const part = COLLECTED.has(vector.op) ? null : 'parsed-reads';
+      partTest(part, `${name}: parsed as the vector, or rejected with its error`, async () => {
         const call = EMBEDDED_READS[vector.op](backend.embedded, vector.args);
         if ('error' in vector) {
           await expect(call).rejects.toThrow(vector.error);
@@ -258,7 +297,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
 
     const rawVectors = readVectors.filter(([, vector]) => EMBEDDED_RAW[vector.op]);
     for (const [name, vector] of rawVectors) {
-      test(`${name}: the raw export is the vector's text`, async () => {
+      partTest('parsed-reads', `${name}: the raw export is the vector's text`, async () => {
         const call = EMBEDDED_RAW[vector.op](backend.embedded, vector.args);
         if ('error' in vector) {
           await expect(call).rejects.toThrow(vector.error);
@@ -268,13 +307,13 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       });
     }
 
-    test('readme and readmeAt parse to the composed text, with the path', async () => {
+    partTest('parsed-reads', 'readme and readmeAt parse to the composed text, with the path', async () => {
       const composed = JSON.parse(VECTORS.reads['readme_at second'].body);
       expect(await backend.embedded.readmeAt(fx.rid, fx.commits.second)).toEqual(composed);
       expect(await backend.embedded.readme(fx.rid)).toEqual(composed);
     });
 
-    test('cancelClone with no clone in flight answers, and changes nothing', async () => {
+    partTest('network', 'cancelClone with no clone in flight answers, and changes nothing', async () => {
       await expect(backend.embedded.cancelClone(fx.rid)).resolves.toBeDefined();
       expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
         VECTORS.reads.repo_info.body
@@ -332,7 +371,9 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           await release();
         }
         expect(await issues.run(backend)).toEqual(VECTORS.handlers['rad GET /issues']);
-      }
+      },
+      undefined,
+      { hooks: ['holdRepair'] }
     );
 
     pendingTest(
@@ -388,7 +429,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           restore();
         }
       },
-      60_000
+      60_000,
+      { hooks: ['inflate'] }
     );
 
     pendingTest(
@@ -420,7 +462,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
         }
         expect(backend.embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
       },
-      60_000
+      60_000,
+      { hooks: ['inflate'] }
     );
 
     pendingTest(
@@ -473,7 +516,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
         }
         expect(backend.embedded.collectionBudget().held).toBe(0);
       },
-      60_000
+      60_000,
+      { hooks: ['inflate'] }
     );
 
     pendingTest(
@@ -548,7 +592,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           restore();
         }
       },
-      60_000
+      60_000,
+      { hooks: ['inflate'] }
     );
 
     pendingTest(
@@ -594,7 +639,9 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           for (const part of [NUL, '\\', '"', E_ACUTE, ROCKET]) expect(text).toContain(part);
         }
         expect(events.at(-1).phase).toMatch(/^(done|failed|cancelled)$/);
-      }
+      },
+      undefined,
+      { hooks: ['scriptedClone'] }
     );
 
     pendingTest(
@@ -809,7 +856,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
 
   // Writes change the restored home, so they come after every other test.
   describe('writes', () => {
-    test('an issue created, commented on and closed reads back as written', async () => {
+    partTest('writes', 'an issue created, commented on and closed reads back as written', async () => {
       const e = backend.embedded;
       const created = await e.createIssue(fx.rid, 'Written by the suite', 'Body text.', ['suite']);
       expect(created.id).toMatch(OID_RE);
@@ -830,13 +877,13 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       expect((await e.issues(fx.rid)).map((entry) => entry.id)).toContain(created.id);
     });
 
-    test('a comment on an unknown patch revision is refused', async () => {
+    partTest('writes', 'a comment on an unknown patch revision is refused', async () => {
       await expect(
         backend.embedded.commentPatch(fx.rid, '0'.repeat(40), 'A comment.')
       ).rejects.toThrow();
     });
 
-    test('an imported repository is listed and seeded, then unseeded', async () => {
+    partTest('import', 'an imported repository is listed and seeded, then unseeded', async () => {
       const workingCopy = tempDir('rad-contract-wc-');
       try {
         buildSmallWorkingCopy(workingCopy);
