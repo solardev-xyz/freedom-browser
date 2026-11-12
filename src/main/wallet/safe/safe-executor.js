@@ -442,6 +442,7 @@ async function sendViaExecutor({
   record,
   intentKey,
   feeConfirmation = null,
+  guardCommit = null,
 }) {
   const executor = getSigner(executorIndex);
   const from = await executor.getAddress();
@@ -461,13 +462,13 @@ async function sendViaExecutor({
         params,
         executor,
         { ...record, metadata: { ...record.metadata, executor: from } },
-        { intentKey, onCommitted: leave }
+        { intentKey, onCommitted: leave, guardCommit }
       );
     } finally {
       leave?.();
     }
   }
-  return signAndSendTransaction(params, executor, { intentKey });
+  return signAndSendTransaction(params, executor, { intentKey, guardCommit });
 }
 
 /**
@@ -485,6 +486,10 @@ async function sendViaExecutor({
  * @param {number} params.executorIndex - Wallet index that pays gas
  * @param {Object} [params.record] - Payment-history context (tx-recorder
  *   shape); from should be the SAFE address, the executor is stamped in
+ * @param {Function} [params.guardCommit] - A site's SafeTx: its request's
+ *   guard, run after the executor's signature and before its first commit,
+ *   or before a held execution's bytes are handed off again
+ *   (signAndSendTransaction's `guardCommit`)
  * @returns {Promise<Object>} transaction-service result ({hash, …})
  */
 async function execTransaction({
@@ -495,6 +500,7 @@ async function execTransaction({
   executorIndex,
   record,
   feeConfirmation,
+  guardCommit = null,
 }) {
   const safeTx = new EthSafeTransaction(safeTxData);
   for (const { signer, data } of signatures) {
@@ -527,7 +533,24 @@ async function execTransaction({
     record,
     intentKey: execIntentKey(chainId, safeTxHash),
     feeConfirmation,
+    guardCommit,
   });
+}
+
+/**
+ * Withdraw a site from a SafeTx's execution that is already held (a first
+ * attempt committed, then not sent): its intent keeps its signed bytes,
+ * hashes and handoffs, with no site, so neither the held-payments list nor
+ * a later send or settlement records it as the site's. A no-op when no
+ * execution of it is held.
+ *
+ * @returns {Promise<boolean>} whether a held execution lost its site
+ */
+async function withdrawExecutionSite(chainId, safeTxHash) {
+  const store = require('../intent-store').getIntentStore();
+  await store.ready;
+  const held = store.byKey(execIntentKey(chainId, safeTxHash));
+  return held ? store.withdrawOrigin(held.intentId) : false;
 }
 
 /**
@@ -591,6 +614,7 @@ module.exports = {
   buildSafeTransaction,
   collectOwnerSignature,
   execTransaction,
+  withdrawExecutionSite,
   deploySafe,
   pickDefaultExecutor,
 };

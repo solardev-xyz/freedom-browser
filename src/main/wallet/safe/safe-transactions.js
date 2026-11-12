@@ -22,7 +22,12 @@
  */
 
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
-const { buildSafeTransaction, execTransaction, pickDefaultExecutor } = require('./safe-executor');
+const {
+  buildSafeTransaction,
+  execTransaction,
+  pickDefaultExecutor,
+  withdrawExecutionSite,
+} = require('./safe-executor');
 const {
   getSafeRecord,
   resolveOwnerAddresses,
@@ -79,12 +84,19 @@ const siteGuards = new Map();
  * 0011, PRQ-5b, "After a waiting signature or send"). Before each execution
  * of it, `guard(execute)` checks the site's name and key, and that the
  * requesting document is live, and runs `execute` itself in the same run as
- * its last check, or throws SAFE_SITE_WITHDRAWN. Returns the way to stop.
+ * its last check, or throws SAFE_SITE_WITHDRAWN. The execution waits on the
+ * executor's quote, the site's turn and its signer, so the same guard runs
+ * again at its last step: after the executor's signature and before the
+ * first commit, or before a held execution's bytes go out again
+ * (`execTransaction`'s `guardCommit`). Returns the way to stop.
  *
  * A site's SafeTx with no guard (its request has ended, its page gone, or
  * main restarted since) is never executed for the site either. Whenever the
  * check fails, the SafeTx isn't executed: it stays pending as the wallet's
- * own, with no site, for the user to execute or discard.
+ * own, with no site, for the user to execute or discard: the site is taken
+ * from the pending SafeTx and from an execution already held for it (a
+ * first attempt committed, then not sent), with its signatures and signed
+ * bytes kept.
  *
  * @param {string} safeTxHash
  * @param {(execute: () => Promise<object>) => Promise<object>} guard
@@ -311,6 +323,7 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
       );
     }
 
+    const guard = pending.display?.site ? siteGuards.get(pending.safeTxHash) : null;
     const execute = () =>
       execTransaction({
         chainId: pending.chainId,
@@ -329,13 +342,14 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
           ...(pending.display?.site ? { origin: pending.display.site } : {}),
           metadata: { safeAddress: pending.safeAddress, safeTxHash: pending.safeTxHash },
         },
+        // And again at its last step, after the executor's signature.
+        guardCommit: guard,
       });
     let result;
     try {
       if (pending.display?.site) {
         // A site's SafeTx executes for the site only past its request's
         // check, just before the execution (guardSiteSafeSend).
-        const guard = siteGuards.get(pending.safeTxHash);
         if (!guard) throw siteWithdrawn();
         result = await guard(execute);
       } else {
@@ -343,9 +357,17 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
       }
     } catch (err) {
       if (err?.code === SAFE_SITE_WITHDRAWN) {
-        // Not executed: kept, as the wallet's own, with no site.
+        // Not executed: kept, as the wallet's own, with no site, in every
+        // record that has one.
         const { site: _site, ...display } = pending.display || {};
         setPending(safeIndex, { ...pending, display });
+        try {
+          await withdrawExecutionSite(pending.chainId, pending.safeTxHash);
+        } catch (withdrawError) {
+          // The records couldn't be rewritten now: the held execution keeps
+          // its site in them, and the SafeTx is the wallet's.
+          console.warn('[SafeTransactions] A held execution kept its site:', withdrawError?.message);
+        }
         throw siteWithdrawn();
       }
       if (/insufficient funds/i.test(err.message)) {

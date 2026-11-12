@@ -1,10 +1,11 @@
 const fs = require('fs');
 const path = require('path');
-const { ipcMain, BrowserWindow } = require('electron');
+const { app, ipcMain, BrowserWindow } = require('electron');
 const log = require('./logger');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
-const { getRadicleDataDir, prepareRadicleDataDir } = require('./profile-paths');
+const { getRadicleDataDir, getRadicledHomeDir, prepareRadicleDataDir } = require('./profile-paths');
+const { getLockDir } = require('./service-locks');
 const { getActiveProfile } = require('./profile-resolver');
 const embedded = require('./radicle-embedded');
 const { nodeBlockReason } = require('./core/node-identity-guard');
@@ -52,11 +53,97 @@ let infoUpdatePromise = null;
 let homeGate = null;
 // The gate waits of the starts asked for and not yet past their gate. A
 // stop gives each up at once, begun or not, so it never waits out another
-// writer's hold (0008, Rollback).
+// writer's hold (0008, Rollback). Under the service, every start asked for
+// and not yet settled: a stop, or a re-key, gives it up at once, at any of
+// its waits.
 const gateWaits = new Set();
 // The failure a node reports when the holder of its home's gate ends under
 // it (0008, Rollback).
 const GATE_LOST = 'freedom-radicled hold-lock exited';
+
+// ---- the backend: the add-on, or the freedom-radicled service ----
+
+// What a manager export answers under the service until it is moved there
+// (freedom-core design 0008, step 6 on).
+const NOT_ON_SERVICE = 'Not available on the Radicle service yet';
+const notOnService = () => failure('RADICLE_SERVICE_UNSUPPORTED', NOT_ON_SERVICE);
+// The node on the service (radicle/radicled-node.js) while it starts, runs
+// or restarts; null otherwise. The last one, until its stop is proved, so a
+// new one starts only after it.
+let serviceNode = null;
+let lastServiceNode = null;
+let warnedBackend = null;
+
+/**
+ * What runs the profile's Radicle node (freedom-core design 0008, step 6;
+ * plan B6): `addon`, the libradicle add-on in main, or `service`, the
+ * freedom-radicled service process. Packaged builds always run the add-on,
+ * whatever FREEDOM_RADICLE_BACKEND says: the service is development only
+ * until the default switches. Development builds run the add-on by default,
+ * and the service with FREEDOM_RADICLE_BACKEND=service; any other value is
+ * warned of, once, and runs the default.
+ */
+function radicleBackendKind({ packaged = Boolean(app?.isPackaged), env = process.env } = {}) {
+  if (packaged) return 'addon';
+  const kind = env.FREEDOM_RADICLE_BACKEND || 'addon';
+  if (kind === 'addon' || kind === 'service') return kind;
+  if (warnedBackend !== kind) {
+    warnedBackend = kind;
+    log.warn(`[Radicle] Unknown FREEDOM_RADICLE_BACKEND=${kind}; using the add-on`);
+  }
+  return 'addon';
+}
+
+const onService = () => radicleBackendKind() === 'service';
+
+// Required when the service runs, not before: the add-on's builds load none
+// of it.
+function radicledNodeModule() {
+  return require('./radicle/radicled-node');
+}
+
+// Under the service, what the bound of the quit's Radicle leg adds to the
+// service's own: the kill 10 s after `rad.shutdown`, and up to 1 s for its
+// exit to be reaped.
+const QUIT_REAP_MS = 1_000;
+
+// The generation the background network start last ran for:
+// `{ node, generation }`, so it runs once for each process that comes up.
+let seededGeneration = null;
+
+// What `untilAborted` resolves with once its signal has aborted.
+const ABORTED = Symbol('aborted');
+
+/**
+ * `promise`'s outcome, or ABORTED as soon as `signal` aborts, whichever
+ * comes first: a start gives up at a wait the moment a stop asks it to, and
+ * what it waited for goes on by itself.
+ */
+function untilAborted(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) return Promise.resolve(ABORTED);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => resolve(ABORTED);
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      }
+    );
+  });
+}
+
+/** A start's cancel: `{ signal, done }`, aborted by a stop until `done()`. */
+function startCancel() {
+  const controller = new AbortController();
+  gateWaits.add(controller);
+  return { signal: controller.signal, done: () => gateWaits.delete(controller) };
+}
 
 function enqueueLifecycle(operation) {
   const result = lifecycleTail.then(operation, operation);
@@ -112,8 +199,9 @@ async function syncProfileMode() {
     const stopped = await stopRadicle();
     // A stop that wasn't proved (R-8): the node may still run, so it is
     // not published as disabled and stopped. The failed stop's error stays,
-    // and a later stop can still recover.
-    if (embedded.isStarted()) return stopped;
+    // and a later stop can still recover. The service's stop is proved by
+    // its process's exit.
+    if (!onService() && embedded.isStarted()) return stopped;
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Disabled for this profile');
     updateState(STATUS.STOPPED);
@@ -127,9 +215,20 @@ async function syncProfileMode() {
   return getCurrentStatus();
 }
 
-async function connectAndSeedDefault() {
+// The node's network, for the background start below: the add-on's, or
+// the service node's live generation's (`rad.connect_seeds`, its stats'
+// peer count and `rad.clone`).
+function serviceNetwork(node) {
+  return {
+    connectSeeds: (timeoutMs) => node.connectSeeds(timeoutMs),
+    status: async () => ({ connectedPeers: node.connectedPeers() }),
+    cloneRepo: (rid, timeoutMs) => node.cloneRepo(rid, timeoutMs),
+  };
+}
+
+async function connectAndSeedDefault(network = embedded) {
   try {
-    const bootstrap = await embedded.connectSeeds(15000);
+    const bootstrap = await network.connectSeeds(15000);
     const connected = Number.isFinite(bootstrap.connected) ? bootstrap.connected : 0;
     // v0.6.x returned only `{ connected }`; require at least one live peer
     // while an older addon is still installed instead of treating 0/0 as ready.
@@ -138,7 +237,7 @@ async function connectAndSeedDefault() {
     const elapsedMs = Number.isFinite(bootstrap.elapsedMs) ? bootstrap.elapsedMs : 0;
     let livePeers = connected;
     try {
-      const status = await embedded.status();
+      const status = await network.status();
       if (Number.isFinite(status.connectedPeers)) {
         livePeers = Math.max(livePeers, status.connectedPeers);
       }
@@ -158,7 +257,7 @@ async function connectAndSeedDefault() {
       );
     }
     await pushInfoUpdate();
-    await embedded.cloneRepo(FREEDOM_BROWSER_RID, 120000);
+    await network.cloneRepo(FREEDOM_BROWSER_RID, 120000);
     log.info(`[Radicle] Default repository available: ${FREEDOM_BROWSER_RID}`);
     await pushInfoUpdate();
   } catch (err) {
@@ -212,7 +311,11 @@ function onHomeGateLost(gate) {
   });
 }
 
-async function startRadicleInternal({ signal = null } = {}) {
+function startRadicleInternal(options = {}) {
+  return onService() ? startServiceInternal(options) : startAddonInternal(options);
+}
+
+async function startAddonInternal({ signal = null } = {}) {
   if (currentState === STATUS.RUNNING) return getCurrentStatus();
   if (stopUnproved()) {
     // Before prepareRadicleDataDir() or embedded.start(): nothing touches
@@ -307,22 +410,186 @@ async function startRadicleInternal({ signal = null } = {}) {
   }
 }
 
+/**
+ * The node on the freedom-radicled service (radicle/radicled-node.js;
+ * freedom-core design 0008, step 6). Its start lasts until it is up: through
+ * a wait for the vault's unlock, the switch and restarts. A stop takes it
+ * over at once (stopRadicle aborts `signal`): before the start has run, while
+ * the last node's process ends, while the home is prepared, and once the
+ * node exists, whatever it waits for. The start then returns at once,
+ * changing nothing, and the stop's own op, queued after it, publishes the
+ * state. So a stop never waits for an unlock.
+ */
+async function startServiceInternal({ signal = null } = {}) {
+  if (signal?.aborted) return getCurrentStatus();
+  // One node at a time: one that is starting, waiting for the unlock or
+  // restarting is this start already.
+  if (currentState === STATUS.RUNNING || serviceNode) return getCurrentStatus();
+  if (isDisabledForProfile()) {
+    updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
+    setStatusMessage('radicle', 'Node disabled for this profile');
+    updateState(STATUS.STOPPED);
+    return getCurrentStatus();
+  }
+  const identityBlock = nodeBlockReason('radicle');
+  if (identityBlock) {
+    clearService('radicle');
+    updateState(STATUS.ERROR, identityBlock);
+    return getCurrentStatus();
+  }
+  const { RadicledNode, DEFAULT_ALIAS } = radicledNodeModule();
+  if (!RadicledNode.isAvailable()) {
+    clearService('radicle');
+    updateState(STATUS.ERROR, 'freedom-radicled binary not found');
+    return getCurrentStatus();
+  }
+
+  updateState(STATUS.STARTING);
+  let radHome;
+  try {
+    // A node that failed may still be ending, its process holding the
+    // home: the new one, which spawns a fresh process (the Retry after
+    // "still repairing" among them), starts after it. A stop meanwhile
+    // waits for that end itself.
+    if ((await untilAborted(lastServiceNode?.stop(), signal)) === ABORTED) {
+      return getCurrentStatus();
+    }
+    lastServiceNode = null;
+    // A legacy home's carry-over, if one is due, runs under the gate of its
+    // own (profile-paths.js) and is done by now.
+    radHome = await untilAborted(prepareRadicleDataDir(), signal);
+    if (radHome === ABORTED) return getCurrentStatus();
+  } catch (err) {
+    if (signal?.aborted) return getCurrentStatus();
+    clearService('radicle');
+    updateState(STATUS.ERROR, err.message);
+    return getCurrentStatus();
+  }
+  // Again at the boundary: an identity write may have begun meanwhile.
+  const blockedNow = nodeBlockReason('radicle');
+  if (blockedNow) {
+    clearService('radicle');
+    updateState(STATUS.ERROR, blockedNow);
+    return getCurrentStatus();
+  }
+  const node = new RadicledNode({
+    home: radHome,
+    lockDir: getLockDir(),
+    ownHome: getRadicledHomeDir(),
+    alias: DEFAULT_ALIAS,
+    // The switch keeps the alias the home has (setNodeAlias's).
+    switchAlias: () => getNodeAlias() || DEFAULT_ALIAS,
+    shellVersion: app?.getVersion?.(),
+    log,
+    onFailure: (reason, failed) => handleServiceNodeFailure(reason, failed),
+    onChange: (state, changed) => handleServiceNodeChange(state, changed),
+  });
+  serviceNode = node;
+  // From here on the stop is the node's: stopRadicle stops it at once too.
+  signal?.addEventListener('abort', () => void node.stop(), { once: true });
+  const started = await node.start();
+  // A stop took it over meanwhile: its own op, queued after this one,
+  // publishes the state.
+  if (serviceNode !== node || node.stopping || signal?.aborted) return getCurrentStatus();
+  if (!started) {
+    serviceNode = null;
+    lastServiceNode = node;
+    clearService('radicle');
+    updateState(STATUS.ERROR, node.failureReason || 'Failed to start the Radicle node');
+    return getCurrentStatus();
+  }
+  updateService('radicle', {
+    api: 'radapi://local',
+    gateway: 'radapi://local',
+    mode: MODE.EMBEDDED,
+  });
+  setStatusMessage('radicle', null);
+  updateState(STATUS.RUNNING);
+  log.info('[Radicle] freedom-radicled node started:', node.activeIdentity()?.did);
+  seedGeneration(node);
+  return getCurrentStatus();
+}
+
+/**
+ * Today's background network start (connectAndSeedDefault: the seeds, then
+ * the default repository's clone), on the service node's process that has
+ * just come up: once for each process, the first and each crash's restart
+ * alike, since each is a new node to the network (0008, "Start, stop and
+ * reconciliation", step 7). A process that only went down and up again by
+ * its stats doesn't run it twice.
+ */
+function seedGeneration(node) {
+  const generation = node.generation;
+  if (generation === null || currentState !== STATUS.RUNNING) return;
+  if (seededGeneration?.node === node && seededGeneration.generation === generation) return;
+  seededGeneration = { node, generation };
+  void connectAndSeedDefault(serviceNetwork(node));
+}
+
+// The service node gave up after it was up (0008, "Crashes and restarts":
+// three crashes in 60 s, a restart's start step error): the error state,
+// with its reason. The user's start spawns a fresh one.
+function handleServiceNodeFailure(reason, node) {
+  if (node !== serviceNode) return;
+  serviceNode = null;
+  lastServiceNode = node;
+  clearService('radicle');
+  updateState(STATUS.ERROR, reason);
+}
+
+// The service node went down for a restart, or came back; or its spawn
+// waits for the vault's unlock (0008, "When the node can start"), which
+// the status says while the node stays STARTING.
+function handleServiceNodeChange(state, node) {
+  if (node !== serviceNode) return;
+  if (state === 'waiting') {
+    setStatusMessage('radicle', 'Waiting for the vault to be unlocked');
+  } else if (state === 'restarting' && currentState === STATUS.RUNNING) {
+    setStatusMessage('radicle', 'Node restarting');
+    updateState(STATUS.STARTING);
+  } else if (state === 'running' && currentState === STATUS.STARTING) {
+    setStatusMessage('radicle', null);
+    updateState(STATUS.RUNNING);
+    // A crash's restart is a new process, which seeds again.
+    seedGeneration(node);
+  }
+}
+
+// Stops the service node: resolves once its process has exited, the proof
+// it stopped, which the add-on's `isStarted()` gave (R-8). `error` is what
+// the stop leaves as the status's error, if anything.
+async function stopServiceNode({ error = null } = {}) {
+  const node = serviceNode ?? lastServiceNode;
+  if (!node && currentState === STATUS.STOPPED) return;
+  updateState(STATUS.STOPPING);
+  serviceNode = null;
+  lastServiceNode = null;
+  await node?.stop();
+  clearService('radicle');
+  updateState(error ? STATUS.ERROR : STATUS.STOPPED, error);
+}
+
 function startRadicle() {
   // Made as the start is asked for, so a stop asked for after it gives up
-  // its gate wait even before the wait has begun.
-  const gateWait = new AbortController();
-  gateWaits.add(gateWait);
-  const started = enqueueLifecycle(() => startRadicleInternal({ signal: gateWait.signal }));
-  const done = () => gateWaits.delete(gateWait);
+  // its gate wait (the add-on's) or the start itself (the service's) even
+  // before the start has begun.
+  const { signal, done } = startCancel();
+  const started = enqueueLifecycle(() => startRadicleInternal({ signal }));
   started.then(done, done);
   return started;
 }
 
-// Stop the node. Resolves once the add-on proved it stopped (its shutdown
-// joined the node's thread), and its home's gate is let go; otherwise
-// records the error and throws, the gate still held. `error` is what a
-// proved stop leaves as the status's error (the gate's loss), if anything.
-async function stopNode({ error = null } = {}) {
+// Stop the node, on its backend.
+function stopNode(options = {}) {
+  return onService() ? stopServiceNode(options) : stopAddonNode(options);
+}
+
+// Stop the add-on's node. Resolves once the add-on proved it stopped (its
+// shutdown joined the node's thread), and its home's gate is let go;
+// otherwise records the error and throws, the gate still held. `error` is
+// what a proved stop leaves as the status's error (the gate's loss), if
+// anything.
+async function stopAddonNode({ error = null } = {}) {
   // Stopped, and proved stopped: the add-on no longer counts it as started.
   if (currentState === STATUS.STOPPED && !embedded.isStarted()) return;
   updateState(STATUS.STOPPING);
@@ -351,7 +618,37 @@ async function stopRadicleInternal() {
 function stopRadicle() {
   // A start still waiting for the home's gate gives up at once.
   for (const gateWait of gateWaits) gateWait.abort();
+  // The service node stops at once too, whatever it waits for (an unlock, a
+  // restart's back-off, its start steps): `rad.shutdown` goes now, and its
+  // start settles, so this stop's own op runs next.
+  void serviceNode?.stop();
   return enqueueLifecycle(stopRadicleInternal);
+}
+
+/**
+ * The Radicle leg of the quit's wind-down (index.js). Under the service,
+ * 0008's 10 s leg ("Start, stop and reconciliation", Quit): `rad.shutdown`
+ * goes at once, the process is killed 10 s after it, and the leg ends once
+ * it has exited, or 1 s after the kill whatever happened, which keeps it
+ * under SHUTDOWN_WATCHDOG_MS's 20 s beside Tor's equal leg. The add-on's
+ * stop is today's.
+ */
+function stopRadicleAtQuit({ setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  const stopped = stopRadicle();
+  if (!onService()) return stopped;
+  const { SHUTDOWN_GRACE_MS } = require('./radicle/radicled-client');
+  return new Promise((resolve) => {
+    const timer = setTimer(() => {
+      log.warn('[Radicle] freedom-radicled did not stop within the quit leg');
+      resolve(getCurrentStatus());
+    }, SHUTDOWN_GRACE_MS + QUIT_REAP_MS);
+    timer?.unref?.();
+    const settle = () => {
+      clearTimer(timer);
+      resolve(getCurrentStatus());
+    };
+    stopped.then(settle, settle);
+  });
 }
 
 function requireRunning() {
@@ -400,6 +697,7 @@ function startTrackedFetch(rid, onStatus) {
  * to the browser's own UI or sits behind the provider's per-repo prompt.
  */
 async function seedRepository(rid, onStatus) {
+  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
@@ -433,6 +731,7 @@ async function isSeeded(fullRid) {
  * rejected, and a policy lookup that fails counts as "not seeded".
  */
 async function refetchRepository(rid, onStatus) {
+  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
@@ -446,6 +745,7 @@ async function refetchRepository(rid, onStatus) {
 }
 
 async function getSeedFetchStatus(rid, onStatus) {
+  if (onService()) return notOnService();
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   if (onStatus) seedStatus.subscribe(fullRid, onStatus);
@@ -479,6 +779,7 @@ async function cancelCloneWithRetry(rid) {
 }
 
 async function unseedRepository(rid) {
+  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
@@ -509,7 +810,24 @@ async function unseedRepository(rid) {
   }
 }
 
+// Under the service: the peer count from the node's last `rad.stats`
+// (0008: the count main shows), the libradicle build its process links,
+// and the confinement it got, for the nodes panel (design 0010, step 5).
+// The repository count comes with the service's reads.
+function getServiceConnections() {
+  const node = serviceNode;
+  const diagnostics = {
+    version: node?.version ?? null,
+    confinement: node?.confinement ?? null,
+    service: node?.buildInfo()?.service.version ?? null,
+  };
+  const unavailable = requireRunning();
+  if (unavailable) return { ...unavailable, count: 0, reposCount: null, ...diagnostics };
+  return success({ count: node?.connectedPeers() ?? 0, reposCount: null, ...diagnostics });
+}
+
 async function getConnections() {
+  if (onService()) return getServiceConnections();
   const unavailable = requireRunning();
   if (unavailable) {
     return {
@@ -559,7 +877,7 @@ function hasInjectedIdentity() {
 }
 
 function checkBinary() {
-  return embedded.isAvailable();
+  return onService() ? radicledNodeModule().RadicledNode.isAvailable() : embedded.isAvailable();
 }
 
 function getNodeAlias() {
@@ -590,6 +908,7 @@ function setNodeAlias(alias) {
       'Alias must be 1–32 bytes with no whitespace or control characters'
     ));
   }
+  if (onService()) return Promise.resolve(notOnService());
   return enqueueLifecycle(async () => {
     if (stopUnproved()) {
       return failure('RADICLE_NOT_STOPPED', UNPROVED_STOP_MESSAGE);
@@ -650,6 +969,7 @@ const PRIVATE_SEED_FAILURE = () =>
  * @returns {Promise<T>} work's result
  */
 function withRadicleStopped(work) {
+  if (onService()) return withServiceStopped(work);
   return enqueueLifecycle(async () => {
     const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
     await stopNode();
@@ -667,6 +987,38 @@ function withRadicleStopped(work) {
       }
     }
   });
+}
+
+/**
+ * withRadicleStopped under the service. When it is asked for, a start asked
+ * for and not yet settled, and the node, stop at once, as for stopRadicle:
+ * the start may be waiting for the vault, and this op would otherwise queue
+ * behind it. If either was running or starting, the node starts again after
+ * the work, and that restart's cancel is registered now, with the re-key's
+ * request: a stop asked for at any point of the re-key, its work included,
+ * gives the restart up, before it has begun or once it has.
+ */
+function withServiceStopped(work) {
+  const startPending = gateWaits.size > 0;
+  for (const start of gateWaits) start.abort();
+  const wasRunning = currentState === STATUS.RUNNING || serviceNode !== null || startPending;
+  void serviceNode?.stop();
+  const restart = wasRunning ? startCancel() : null;
+  const rekey = enqueueLifecycle(async () => {
+    await stopNode();
+    try {
+      return await work();
+    } finally {
+      if (restart && !restart.signal.aborted) {
+        const restarted = await startRadicleInternal({ signal: restart.signal });
+        if (restarted.status !== STATUS.RUNNING && !restart.signal.aborted) {
+          log.warn('[Radicle] Node did not restart after the re-key:', restarted.error);
+        }
+      }
+    }
+  });
+  if (restart) rekey.then(restart.done, restart.done);
+  return rekey;
 }
 
 /** The hook identity-manager's setRadicleLifecycle takes (R-8). */
@@ -703,8 +1055,10 @@ function registerRadicleIpc() {
 module.exports = {
   registerRadicleIpc,
   createRadicleLifecycle,
+  radicleBackendKind,
   startRadicle,
   stopRadicle,
+  stopRadicleAtQuit,
   getRadicleDataPath,
   setUseInjectedIdentity,
   hasInjectedIdentity,
@@ -721,4 +1075,6 @@ module.exports = {
   isDisabledForProfile,
   syncProfileMode,
   STATUS,
+  NOT_ON_SERVICE,
+  QUIT_REAP_MS,
 };

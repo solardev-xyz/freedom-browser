@@ -422,7 +422,7 @@ const {
 } = require('./ipfs-manager');
 const {
   registerRadicleIpc,
-  stopRadicle,
+  stopRadicleAtQuit,
   startRadicle,
   getCurrentStatus: getRadicleStatus,
   syncProfileMode: syncRadicleProfileMode,
@@ -1073,11 +1073,14 @@ let shutdownSettled = false;
 // budget underneath it, or the watchdog fires while a manager is still inside
 // its own budget and the quit proceeds with the wind-down unfinished. Longest
 // first, as of this commit: Tor SIGKILLs arti 10s after the SIGTERM
-// (tor-manager.js), Ant SIGKILLs antd after 5s (ant-manager.js), Myotis waits
-// 5s for its child to exit (myotis-process.js EXIT_WAIT_MS), and the IPFS
-// dispatcher falls back to terminate() after 2s
+// (tor-manager.js); under FREEDOM_RADICLE_BACKEND=service, freedom-radicled
+// is killed 10s after rad.shutdown, and its leg ends 1s after that whatever
+// happened (radicle-manager.js stopRadicleAtQuit, freedom-core design 0008:
+// Radicle's 10 s leg equals Tor's); Ant SIGKILLs antd after 5s
+// (ant-manager.js), Myotis waits 5s for its child to exit (myotis-process.js
+// EXIT_WAIT_MS), and the IPFS dispatcher falls back to terminate() after 2s
 // (freedom-ipfs-native-node.js DISPATCHER_STOP_TIMEOUT_MS). Re-derive against
-// those four before trimming this number.
+// those five before trimming this number.
 const SHUTDOWN_WATCHDOG_MS = 20_000;
 
 // Everything that has to happen before the process may go away. Split out of
@@ -1172,7 +1175,7 @@ async function windDown() {
     ['Core', () => coreStopped],
     ['Ant', stopAnt],
     ['IPFS', stopIpfs],
-    ['Radicle', stopRadicle],
+    ['Radicle', stopRadicleAtQuit],
     ['Tor', stopTor],
   ];
   // The async wrapper keeps a *synchronous* throw from a stop function inside

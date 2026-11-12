@@ -2131,3 +2131,41 @@ describe('state history (#94)', () => {
     });
   });
 });
+
+// freedom-core design 0011, PRQ-5b (Codex round 2 on #1191): a site's Safe
+// execution that its site no longer holds is the wallet's own, in the records
+// too.
+describe('withdrawOrigin', () => {
+  test("a held intent loses its site, for good, with its bytes, hashes and handoffs kept", async () => {
+    const { store } = await started();
+    const { raw, hash } = await sign({ nonce: 7 });
+    const intent = await store.commit({
+      chainId: CHAIN,
+      sender: ALICE.address,
+      nonce: 7,
+      hash,
+      raw,
+      via: 'original',
+      context: { kind: 'safe-send', origin: 'https://app.example', key: 'safe-exec:100:0xabc', walletIndex: 0 },
+    });
+    await sendNotSent(store, intent.intentId);
+    const heard = [];
+    store.onChange((id) => heard.push(id));
+    await expect(store.withdrawOrigin(intent.intentId)).resolves.toBe(true);
+    const after = store.get(intent.intentId);
+    expect(after.context).toEqual({ kind: 'safe-send', origin: null, key: 'safe-exec:100:0xabc', walletIndex: 0 });
+    expect(after.state).toBe('held');
+    expect(after.hashes.map((entry) => entry.hash)).toEqual([hash]);
+    expect(heard).toEqual([intent.intentId]);
+    // Nothing more to withdraw; an unknown id is no intent.
+    await expect(store.withdrawOrigin(intent.intentId)).resolves.toBe(false);
+    await expect(store.withdrawOrigin('unknown-intent')).resolves.toBe(false);
+    // After a restart of main, from the file: still no site, still sendable.
+    const reloaded = (await started()).store;
+    expect(reloaded.get(intent.intentId)).toMatchObject({
+      state: 'held',
+      context: { origin: null, key: 'safe-exec:100:0xabc' },
+    });
+    expect(reloaded.byKey('safe-exec:100:0xabc').intentId).toBe(intent.intentId);
+  });
+});
