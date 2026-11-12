@@ -49,12 +49,16 @@
  * After the signer's wait (a Ledger, the core), and before the signed bytes
  * are recorded or sent, main checks the name, the grant (or the rule and
  * custody) and the document's key again, and withdraws a send that no longer
- * holds, with nothing sent. After every send's wait, the name is resolved
- * again (`recheckThen`): the write under the key that follows (the rule's
- * last use, a contract rule) is made by the guard itself in the same run as
- * its checks, and a name that moved meanwhile gets neither the write nor
- * the send's hash, as a signature is withheld (`page-signing.js`); the
- * payment stays in the wallet's records.
+ * holds, with nothing sent. That check is the gate: once a payment that
+ * passed it has gone out, its hash is the requesting document's while that
+ * document is live, even if the name moves afterwards. The hash is a public
+ * fact about a payment the user approved for this request, and a site told
+ * nothing of a payment made could pay again (D13). Unlike a signature
+ * (`page-signing.js`), where the signature itself is the effect, nothing is
+ * withheld. Every write under the key after the send (the rule's last use, a
+ * contract rule) still waits on the name (`recheckThen`): the guard resolves
+ * it again and makes the write itself in the same run as its checks, so a
+ * name that moved gets no write.
  *
  * Device steps keep today's paths after the decision: a Ledger signs in main,
  * and a phone account's job goes through main's bridge to the chrome's
@@ -488,17 +492,16 @@ function createSendDispatchers(shared, deps = {}) {
       : null;
 
   /**
-   * After a send's wait (the device, the bridge, the core, a Safe's board):
-   * the name resolved again, then, in one run, the document holding its key
-   * and, when there is one, the write under the key (the rule's last use, a
-   * contract rule) while the grant exposes the account, made by this guard
-   * itself, never after an await of the caller's. False when the name or the
-   * key no longer holds: the send's hash is then withheld from the page, as
-   * a signature is (`page-signing.js`); the payment stays in the wallet's
-   * records.
+   * A write under the key after a send's wait (the device, the bridge, the
+   * core): the name resolved again, then, in one run, the document holding
+   * its key and the grant exposing the account, and the write (the rule's
+   * last use, a contract rule) made by this guard itself, never after an
+   * await of the caller's. False, with nothing written, when the name or the
+   * key no longer holds. The send's hash goes to the page either way: the
+   * payment has gone out.
    */
   async function recheckThen(context, ctx, write = null) {
-    if (!(await context.nameHolds(ctx.keyless))) return false;
+    if (!(await context.nameHolds())) return false;
     // From here to the write, one run: no other check can end the binding.
     if (!context.holdsKey()) return false;
     if (write && grantExposes(context.requester.key, ctx.walletIndex)) {
@@ -543,7 +546,7 @@ function createSendDispatchers(shared, deps = {}) {
     // Just before the signature, after the last wait, and again after the
     // signer's: the name, custody, the rule and the document's key.
     const ruleStillAnswers = async (effect) => {
-      if (!(await context.nameHolds(ctx.keyless))) throw withdrawn(error(NO_ADDRESS));
+      if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
       if (custody(requester.guest)) throw withdrawn(error(AGENT_CUSTODY));
       if (!ruleMatches(requester.key, ctx.walletIndex, ctx.tx, ctx.chainId)) throw withdrawn(error(RULE_GONE));
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
@@ -558,9 +561,9 @@ function createSendDispatchers(shared, deps = {}) {
     } catch (err) {
       return err?.answer ?? failure(err);
     }
-    // The site's last use, only while the name still answers; a name that
-    // moved during the send gets no hash.
-    if (!(await recheckThen(context, ctx, () => updateLastUsed(requester.key)))) return error(NO_ADDRESS);
+    // The site's last use, only while the name still answers. The hash is
+    // the page's: the payment has gone out.
+    await recheckThen(context, ctx, () => updateLastUsed(requester.key));
     return { result: sent.hash };
   }
 
@@ -572,7 +575,7 @@ function createSendDispatchers(shared, deps = {}) {
     // The name, the grant and the document's key, in the same run as the
     // effect: the signature, and after the signer's wait the send.
     const stillHeld = (effect) => async (run) => {
-      if (!(await context.nameHolds(ctx.keyless))) throw withdrawn(error(NO_ADDRESS));
+      if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
       if (!grantExposes(requester.key, ctx.walletIndex)) throw withdrawn(error(NOT_CONNECTED));
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
       effect?.();
@@ -603,13 +606,14 @@ function createSendDispatchers(shared, deps = {}) {
     // "Always allow": the contract rule, for the requester's key, from the
     // transaction the user just confirmed, so it covers only a (contract,
     // selector, chain) the user saw, with no more value than this send's;
-    // written only while the name still answers after the send's wait.
+    // written only while the name still answers after the send's wait. The
+    // hash is the page's either way: the payment has gone out.
     const selector = selectorOf(tx.data);
-    const rule =
-      choices.alwaysAllow === true && selector
-        ? () => d.addTransactionAutoApprove(requester.key, tx.to, selector, ctx.chainId, tx.value)
-        : null;
-    if (!(await recheckThen(context, ctx, rule))) return error(NO_ADDRESS);
+    if (choices.alwaysAllow === true && selector) {
+      await recheckThen(context, ctx, () =>
+        d.addTransactionAutoApprove(requester.key, tx.to, selector, ctx.chainId, tx.value)
+      );
+    }
     return { result: sent.hash };
   }
 
@@ -647,7 +651,7 @@ function createSendDispatchers(shared, deps = {}) {
     const { requester } = context;
     const safeTx = { to: ctx.tx.to, value: ctx.tx.value, data: ctx.tx.data };
     const payload = { tx: safeTx, chainId: ctx.chainId, origin: requester.key };
-    if (!(await context.nameHolds(ctx.keyless))) return error(NO_ADDRESS);
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
     if (!grantExposes(requester.key, ctx.walletIndex)) return error(NOT_CONNECTED);
     if (!context.holdsKey()) return error(NO_ADDRESS);
     let started;
@@ -682,9 +686,8 @@ function createSendDispatchers(shared, deps = {}) {
     const first = await Promise.race([settled, board]);
     const outcome = first.board ? await settled : first;
     if (outcome.outcome !== 'executed' || typeof outcome.hash !== 'string') return error(USER_REJECTED);
-    // After the board's wait: the hash reaches the page only while its name
-    // still answers.
-    if (!(await recheckThen(context, ctx))) return error(NO_ADDRESS);
+    // The SafeTx the user approved for this request has executed: its hash
+    // is the page's while the document is live, whatever the name does.
     return { result: outcome.hash };
   }
 
@@ -739,13 +742,17 @@ function createSendDispatchers(shared, deps = {}) {
   async function send(context) {
     const { requester, params } = context;
     if (!requester.key) return error(NO_ADDRESS);
-    const keyless = { keyless: error(NO_ADDRESS) };
-    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
-    // A tab the agent holds: the agent service answers, within the request.
-    // Only a tab in custody is offered to it.
-    const agent = custody(requester.guest) ? await agentAnswer(context, keyless) : null;
-    if (agent) return context.holdsKey() ? agent : error(NO_ADDRESS);
-    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    // No keyless answer is set on the record (`nameHolds`' option): every
+    // refusal before the send answers NO_ADDRESS itself, and after a send
+    // that passed main's gate the hash is the document's (see the header).
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
+    // A tab the agent holds: the agent service answers, within the request,
+    // and sends only past main's gate just before its send. Only a tab in
+    // custody is offered to it.
+    const agent = custody(requester.guest) ? await agentAnswer(context, {}) : null;
+    // Refused because the name moved: the keyless answer. Sent: the hash.
+    if (agent) return agent.error && !context.holdsKey() ? error(NO_ADDRESS) : agent;
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
     const permission = getPermission(requester.key);
     if (!permission) return error(NOT_CONNECTED);
     let tx;
@@ -762,7 +769,6 @@ function createSendDispatchers(shared, deps = {}) {
     const safe = account.type === 'safe';
     if (safe && chainId !== GNOSIS_CHAIN_ID) return error(SAFE_OFF_GNOSIS);
     const ctx = {
-      keyless,
       walletIndex,
       chainId,
       chain: chainView(chainId),
@@ -778,11 +784,11 @@ function createSendDispatchers(shared, deps = {}) {
     // A request that goes to its prompt keeps it, whatever custody does
     // next; one the rule answers reads custody again just before its send.
     if (!safe && !custody(requester.guest) && (await ruleChosen(requester.key, walletIndex, tx, chainId))) {
-      if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+      if (!(await context.nameHolds())) return error(NO_ADDRESS);
       const out = await autoSend(context, ctx);
       if (out !== NEEDS_APPROVAL) return out;
     }
-    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
     return promptedSend(context, ctx);
   }
 

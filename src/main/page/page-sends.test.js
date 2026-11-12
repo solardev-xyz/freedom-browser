@@ -1068,7 +1068,11 @@ describe('a DNS name over IPNS that moves off its key', () => {
     expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
   });
 
-  test("moved during a phone's send, which has no point before it is sent: the hash withheld, nothing written", async () => {
+  // Main's gate is before the send. A payment that passed it and went out
+  // is the requesting document's to hear of while that document is live,
+  // whatever the name does next (D13); what is written under the name after
+  // it still waits on the name.
+  test("moved during a phone's send, which is checked before the phone is asked: the hash is the page's, nothing written", async () => {
     const env = setup();
     const page = named(env, { walletIndex: PHONE_INDEX });
     env.rule(NAME);
@@ -1077,13 +1081,43 @@ describe('a DNS name over IPNS that moves off its key', () => {
     await flush();
     env.names.set(NAME, OTHER_IPNS_KEY);
     env.state.phoneHold.resolve();
-    expect(await answer).toEqual(NO_ADDRESS);
-    // The payment was made, and stays in the wallet's records.
+    expect(await answer).toEqual({ result: PHONE_HASH });
     expect(env.state.committed).toHaveLength(1);
     expect(env.state.lastUsed).toEqual([]);
   });
 
-  test('moved after the send, before its rule is written: no rule, and the hash withheld', async () => {
+  test('moved after a rule-answered send went out: the hash is the page\'s, and no last use is written', async () => {
+    const env = setup();
+    const page = named(env);
+    env.rule(NAME);
+    const real = env.deps.sends.signAndRecord.getMockImplementation();
+    env.deps.sends.signAndRecord.mockImplementationOnce(async (...args) => {
+      const out = await real(...args);
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      return out;
+    });
+    expect(await page.send(CALL)).toEqual({ result: HASH });
+    expect(env.state.committed).toHaveLength(1);
+    expect(env.state.lastUsed).toEqual([]);
+    // The binding has ended: the document's next send is refused, with nothing sent.
+    expect(await page.send(CALL)).toEqual(NO_ADDRESS);
+    expect(env.state.committed).toHaveLength(1);
+  });
+
+  test('a document that navigates while its payment goes out hears nothing: the answer is only its own', async () => {
+    const env = setup();
+    const page = named(env, { walletIndex: PHONE_INDEX });
+    env.rule(NAME);
+    env.state.phoneHold = deferred();
+    const answer = page.send(CALL);
+    await flush();
+    page.guest.commit(`ipns://${IPNS_KEY}/next`);
+    env.state.phoneHold.resolve();
+    expect(await answer).toBe(GONE);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test('moved after the send went out, before its rule is written: no rule, and the hash is the page\'s', async () => {
     const env = setup();
     const page = named(env);
     const answer = page.send(CALL);
@@ -1096,7 +1130,7 @@ describe('a DNS name over IPNS that moves off its key', () => {
       return out;
     });
     await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
-    expect(await answer).toEqual(NO_ADDRESS);
+    expect(await answer).toEqual({ result: HASH });
     expect(env.state.committed).toHaveLength(1);
     expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
   });
@@ -1194,7 +1228,7 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
     expect(env.state.safe.listeners.size).toBe(0);
   });
 
-  test('a name that moves before the SafeTx starts gets none, and one that moves before its execution gets no hash', async () => {
+  test('a name that moves before the SafeTx starts gets none; one that moves before its execution still hears its hash', async () => {
     const env = setup();
     env.names.set(NAME, IPNS_KEY);
     env.connect(NAME, SAFE_INDEX);
@@ -1217,7 +1251,7 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
     await flush();
     again.names.set(NAME, OTHER_IPNS_KEY);
     again.settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: EXEC_HASH });
-    expect(await answer).toEqual(NO_ADDRESS);
+    expect(await answer).toEqual({ result: EXEC_HASH });
   });
 });
 
@@ -1246,6 +1280,7 @@ describe('a tab the agent holds: its send inside the request', () => {
       getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
       signAndRecord: async (tx, _signer, context) => {
         agentSends.push({ tx, context });
+        env.state.afterAgentSend?.();
         return { hash: HASH, paymentId: 'payment_1' };
       },
     });
@@ -1317,6 +1352,21 @@ describe('a tab the agent holds: its send inside the request', () => {
     approvals[0].resolve('approved');
     await flush();
     expect(agentSends).toEqual([]);
+  });
+
+  test("a name that moves after the agent's send went out: the hash is the page's, its last use unwritten", async () => {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME);
+    const { approvals, agentSends } = withAgent(env);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    env.state.afterAgentSend = () => env.names.set(NAME, OTHER_IPNS_KEY);
+    const answer = page.send(TRANSFER);
+    await flush();
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ result: HASH });
+    expect(agentSends).toHaveLength(1);
+    expect(env.state.lastUsed).toEqual([]);
   });
 
   test('the name is checked again just before the send: one that moved gets none', async () => {
