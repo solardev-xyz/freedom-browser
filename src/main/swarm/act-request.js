@@ -22,6 +22,11 @@ function validateActPath(path) {
   if (path === undefined || path === null) return { ok: true, value: undefined };
   if (typeof path !== 'string') return refuse('invalid_path', 'path must be a string');
   if (path === '') return { ok: true, value: '' };
+  // A lone UTF-16 surrogate has no UTF-8 form: encodeURIComponent would throw
+  // when the request is built, after the user had already approved it.
+  if (!path.isWellFormed()) {
+    return refuse('invalid_path', 'path must be well-formed Unicode (no lone surrogates)');
+  }
   if (Buffer.byteLength(path, 'utf-8') > ACT_MAX_PATH_BYTES) {
     return refuse('invalid_path', `path exceeds ${ACT_MAX_PATH_BYTES} UTF-8 bytes`);
   }

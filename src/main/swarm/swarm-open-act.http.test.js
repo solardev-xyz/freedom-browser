@@ -292,6 +292,9 @@ describe('swarm_openAct', () => {
     [{ path: 'a//b' }, 'invalid_path'],
     [{ path: 'a\\b' }, 'invalid_path'],
     [{ path: 'a\nb' }, 'invalid_path'],
+    // A lone surrogate has no UTF-8 form, so the node URL could not be built.
+    [{ path: 'a\uD800b' }, 'invalid_path'],
+    [{ path: 'a\uDC00' }, 'invalid_path'],
     [{ options: { act: true } }, 'unsupported_option'],
   ])('%j is refused with %s before the node is asked', async (extra, reason) => {
     const result = await call(share(extra));
@@ -416,6 +419,8 @@ describe('ACT grant IPC', () => {
     expect(await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({ publisher: '02' })))
       .toMatchObject({ valid: false, reason: 'invalid_publisher' });
     expect(await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({ path: `${'x'.repeat(1025)}` })))
+      .toMatchObject({ valid: false, reason: 'invalid_path' });
+    expect(await invoke('swarm:describe-act-request', CHROME, ORIGIN, share({ path: 'a\uD800b' })))
       .toMatchObject({ valid: false, reason: 'invalid_path' });
 
     expect(await invoke('swarm:revoke-act', CHROME, ORIGIN, PUBLISHER)).toBe(true);

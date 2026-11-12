@@ -709,7 +709,7 @@ it points at. The node's key never leaves the node.
   node's `/bytes`). A string for a file in an uploaded manifest (bee-js
   `downloadFile`, the node's `/bzz`): `''` for the manifest's index, or a
   relative path such as `docs/a.pdf` (no leading `/`, no `\`, no empty, `.`
-  or `..` segments, at most 1024 UTF-8 bytes).
+  or `..` segments, no lone UTF-16 surrogates, at most 1024 UTF-8 bytes).
 - `contentType` is the node's `Content-Type` for the content, or `null`.
 
 Each call asks the user, in a prompt that names the site and the publisher
