@@ -84,7 +84,6 @@ function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSetti
       const launcherRequest = [IPC.AGENT_OPEN, IPC.AGENT_SETUP_STATE].includes(channel) && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
       if (!isTrustedSender(event.sender) && !settingsRequest && !launcherRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
-      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
       return errorEnvelope(
         'AGENT_STORAGE_UNAVAILABLE',
         'Agent storage is unavailable. Restart Freedom; if this persists, check profile-folder access or restore Agent data from a backup.'
@@ -249,7 +248,6 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.revokeAttachment !== 'function' ||
     typeof service.deleteConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
-    typeof service.handleWalletRequest !== 'function' ||
     typeof service.subscribe !== 'function' ||
     typeof service.getState !== 'function' ||
     typeof service.getWorkspaceState !== 'function'
@@ -659,28 +657,6 @@ function registerFreedomAgentIpc(options = {}) {
           AGENT_IPC_ERROR_CODES.NOT_OWNER,
           'The sender does not own that agent approval'
         );
-  };
-
-  const handleAgentWalletRequest = async (event, payload = {}) => {
-    let trusted;
-    try {
-      trusted = isTrustedSender(event?.sender);
-    } catch {
-      trusted = false;
-    }
-    if (
-      !trusted ||
-      !Number.isSafeInteger(payload.rendererTabId) ||
-      payload.rendererTabId < 1 ||
-      !payload.request ||
-      typeof payload.request !== 'object' ||
-      Array.isArray(payload.request)
-    ) {
-      return { handled: false };
-    }
-    const tabId = automationTabIdForRenderer(event.sender, payload.rendererTabId);
-    if (!tabId) return { handled: false };
-    return service.handleWalletRequest(tabId, payload.request);
   };
 
   const handleGetState = (event) => {
@@ -1421,10 +1397,7 @@ function registerFreedomAgentIpc(options = {}) {
     IPC.AGENT_SETUP_STATE,
   ]);
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
-    if (!isEnabled() && !availableWhileOff.has(channel)) {
-      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
-      return disabled();
-    }
+    if (!isEnabled() && !availableWhileOff.has(channel)) return disabled();
     return handler(event, payload);
   });
 
@@ -1489,7 +1462,6 @@ function registerFreedomAgentIpc(options = {}) {
   handle(IPC.AGENT_RESUME, handleResume);
   handle(IPC.AGENT_STOP, handleStop);
   handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
-  handle(IPC.AGENT_WALLET_REQUEST, handleAgentWalletRequest);
   handle(IPC.AGENT_GET_STATE, handleGetState);
   handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
   handle(IPC.AGENT_HELPER_REPORTS, handleHelperReports);
@@ -1538,7 +1510,6 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_RESUME);
     ipcMain.removeHandler?.(IPC.AGENT_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_DECIDE);
-    ipcMain.removeHandler?.(IPC.AGENT_WALLET_REQUEST);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_PAGE_ACTIONS);
     ipcMain.removeHandler?.(IPC.AGENT_CLEAR_CONVERSATION);

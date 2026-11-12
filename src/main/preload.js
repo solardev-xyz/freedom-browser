@@ -215,8 +215,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ...(Array.isArray(options.publicationAcknowledged) ? { publicationAcknowledged: options.publicationAcknowledged } : {}),
       ...(Array.isArray(options.publicationFix?.paths) ? { publicationFix: { paths: options.publicationFix.paths } } : {}),
     }),
-  handleAgentWalletRequest: (rendererTabId, request) =>
-    ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   getAgentDictationState: () => ipcRenderer.invoke('agent:dictation:state'),
   chooseAgentDictation: choice => ipcRenderer.invoke('agent:dictation:choose', choice),
@@ -828,8 +826,10 @@ contextBridge.exposeInMainWorld('wallet', {
   // Signing confirmation (security audit O-7): an approval screen asks main
   // for a single-use token bound to exactly the request the user confirmed,
   // and hands it to the signing call as `{ confirmation: token }`.
-  // kind: 'wallet-send' | 'dapp-send' | 'sign-message' | 'sign-typed-data'
-  //       | 'safe-send' | 'safe-message' | 'x402-payment' (x402Approve).
+  // kind: 'wallet-send' | 'safe-send' | 'executor-send' | 'intent-resend'
+  //       | 'intent-replace' | 'intent-close' | 'x402-payment' (x402Approve)
+  //       | 'x402-cap-update'. A page's kinds are main's to confirm
+  //       (freedom-core design 0011): main refuses them here.
   // A transaction's confirmation is also its fee check's approval (design
   // 0005, A): `options.feeAcknowledged` once the user confirmed a fee above
   // the threshold again; without it, main may answer FEE_CHECK_ASK_AGAIN.
@@ -865,30 +865,9 @@ contextBridge.exposeInMainWorld('wallet', {
   waitForTransaction: (txHash, chainId, confirmations) =>
     ipcRenderer.invoke('wallet:wait-for-transaction', txHash, chainId, confirmations),
 
-  // dApp-specific operations (use specific wallet index)
-  // `authorization` is `{ confirmation }` (see confirmSigning) or
-  // `{ autoApprove: permissionKey, webContentsId }`, which main honours only
-  // when that requesting guest's own page belongs to `permissionKey` and the
-  // site's stored auto-approve policy covers the request (#764).
-  dappSendTransaction: (params, walletIndex, context, authorization) =>
-    ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex, context, authorization),
-  signMessage: (message, walletIndex, authorization) =>
-    ipcRenderer.invoke('wallet:sign-message', message, walletIndex, authorization),
-  // `context.chainId`: the dApp's active chain, for an auto-approved
-  // request's view (freedom-core #88).
-  signTypedData: (typedData, walletIndex, authorization, context) =>
-    ipcRenderer.invoke('wallet:sign-typed-data', typedData, walletIndex, authorization, context),
-  // What a request signs, for its prompt (#88): the core's view of typed
-  // data, and the bytes a personal_sign sends.
-  typedDataView: (typedData, chainId) =>
-    ipcRenderer.invoke('wallet:typed-data-view', typedData, chainId),
-  messageView: (message) => ipcRenderer.invoke('wallet:message-view', message),
-
   // RPC proxy (renderer CSP blocks direct fetch to external endpoints)
   proxyRpc: (rpcUrl, method, params) =>
     ipcRenderer.invoke('wallet:proxy-rpc', { rpcUrl, method, params }),
-  requestChain: (chainId, method, params, routingContext) =>
-    ipcRenderer.invoke('wallet:chain-request', { chainId, method, params, routingContext }),
 
   // Safe multisig accounts
   createSafe: (name, ownerIndexes, threshold) =>
@@ -907,19 +886,15 @@ contextBridge.exposeInMainWorld('wallet', {
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
   safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
   safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),
-  // SafeMessage sessions (dApp message signing via EIP-1271). start
-  // binds the session to the requesting page ({origin, webContentsId})
-  // and returns state.token — required by every other call.
-  safeMessageStart: (safeIndex, request, display, requester, authorization) =>
-    ipcRenderer.invoke('wallet:safe-message-start', safeIndex, request, display, requester, authorization),
+  // SafeMessage sessions (dApp message signing via EIP-1271). Main opens
+  // one for a page's request and completes it (freedom-core design 0011);
+  // the board collects its owners' signatures with the session's token.
   safeMessageSign: (safeIndex, ownerIndex, token) =>
     ipcRenderer.invoke('wallet:safe-message-sign', safeIndex, ownerIndex, token),
   safeMessageState: (safeIndex, token) =>
     ipcRenderer.invoke('wallet:safe-message-state', safeIndex, token),
   safeMessageCancel: (safeIndex, token) =>
     ipcRenderer.invoke('wallet:safe-message-cancel', safeIndex, token),
-  safeMessageComplete: (safeIndex, token) =>
-    ipcRenderer.invoke('wallet:safe-message-complete', safeIndex, token),
 });
 
 contextBridge.exposeInMainWorld('ledger', {
@@ -1021,8 +996,8 @@ contextBridge.exposeInMainWorld('tokens', {
 
 // No bridge returns a chain's resolved RPC pool: a keyed provider's URL
 // carries the user's API key, and the chrome renderer is not trusted with
-// it (#1040). Chain reads go through wallet.requestChain; the settings
-// page reads only whether a key is set.
+// it (#1040). A page's chain reads are main's (freedom-core design 0011);
+// the settings page reads only whether a key is set.
 
 // Site permissions (web permission prompts). The chrome renderer shows
 // the anchored prompt + the address-bar indicator; both live here.
@@ -1102,32 +1077,27 @@ contextBridge.exposeInMainWorld('pagePrompts', {
   foreground: (guest) => ipcRenderer.send('page:foreground', { guest }),
 });
 
+// A site's grants and rules, read and narrowed by its permission screens.
+// Every window.ethereum, window.swarm and window.radicle request is main's
+// (freedom-core design 0011): main writes every grant and turns every rule
+// on itself, from its own prompts, so the chrome has no grant writes.
 contextBridge.exposeInMainWorld('dappPermissions', {
   getPermission: (origin) => ipcRenderer.invoke('dapp:get-permission', origin),
-  grantPermission: (origin, walletIndex, chainId) =>
-    ipcRenderer.invoke('dapp:grant-permission', origin, walletIndex, chainId),
   revokePermission: (origin) => ipcRenderer.invoke('dapp:revoke-permission', origin),
   getAllPermissions: () => ipcRenderer.invoke('dapp:get-all-permissions'),
-  updateLastUsed: (origin, chainId) => ipcRenderer.invoke('dapp:update-last-used', origin, chainId),
   getSigningAutoApprove: (origin) => ipcRenderer.invoke('dapp:get-signing-auto-approve', origin),
   setSigningAutoApprove: (origin, enabled) =>
     ipcRenderer.invoke('dapp:set-signing-auto-approve', origin, enabled),
-  isTransactionAutoApproved: (origin, to, selector, chainId, value) =>
-    ipcRenderer.invoke('dapp:is-tx-auto-approved', origin, to, selector, chainId, value),
   removeTransactionAutoApprove: (origin, to, selector, chainId) =>
     ipcRenderer.invoke('dapp:remove-tx-auto-approve', origin, to, selector, chainId),
 });
 
 contextBridge.exposeInMainWorld('swarmPermissions', {
   getPermission: (origin) => ipcRenderer.invoke('swarm:get-permission', origin),
-  grantPermission: (origin) => ipcRenderer.invoke('swarm:grant-permission', origin),
   revokePermission: (origin) => ipcRenderer.invoke('swarm:revoke-permission', origin),
   getAllPermissions: () => ipcRenderer.invoke('swarm:get-all-permissions'),
-  updateLastUsed: (origin) => ipcRenderer.invoke('swarm:update-last-used', origin),
-  getAutoApprove: (origin, type) => ipcRenderer.invoke('swarm:get-auto-approve', origin, type),
   setAutoApprove: (origin, type, enabled) =>
     ipcRenderer.invoke('swarm:set-auto-approve', origin, type, enabled),
-  grantMessaging: (origin) => ipcRenderer.invoke('swarm:grant-messaging', origin),
   revokeMessaging: (origin) => ipcRenderer.invoke('swarm:revoke-messaging', origin),
   hasMessagingGrant: (origin) => ipcRenderer.invoke('swarm:has-messaging-grant', origin),
 });
@@ -1145,17 +1115,12 @@ contextBridge.exposeInMainWorld('swarmManifest', {
 // Page-facing Radicle provider plumbing. Distinct from the host-chrome
 // `window.radicle` namespace above (node lifecycle controls). Every
 // window.radicle request is main's (freedom-core design 0011, PRQ-8): the
-// chrome has no route for one, and main refuses its grant writes and its
-// turning a rule on. These read the site's grants and revoke them.
+// chrome has no route for one and no grant writes. These read the site's
+// grants, revoke them and turn its rules off.
 contextBridge.exposeInMainWorld('radiclePermissions', {
   getPermission: (origin) => ipcRenderer.invoke('radicle:get-permission', origin),
-  grantPermission: (origin) => ipcRenderer.invoke('radicle:grant-permission', origin),
   revokePermission: (origin) => ipcRenderer.invoke('radicle:revoke-permission', origin),
   getAllPermissions: () => ipcRenderer.invoke('radicle:get-all-permissions'),
-  updateLastUsed: (origin) => ipcRenderer.invoke('radicle:update-last-used', origin),
-  hasSigningGrant: (origin) => ipcRenderer.invoke('radicle:has-signing-grant', origin),
-  grantSigning: (origin) => ipcRenderer.invoke('radicle:grant-signing', origin),
-  getAutoApprove: (origin, type) => ipcRenderer.invoke('radicle:get-auto-approve', origin, type),
   setAutoApprove: (origin, type, enabled) =>
     ipcRenderer.invoke('radicle:set-auto-approve', origin, type, enabled),
 });
@@ -1163,19 +1128,14 @@ contextBridge.exposeInMainWorld('radiclePermissions', {
 contextBridge.exposeInMainWorld('swarmFeedStore', {
   getAllOrigins: () => ipcRenderer.invoke('swarm:get-all-origins'),
   hasFeedIdentity: (origin) => ipcRenderer.invoke('swarm:has-feed-identity', origin),
-  hasFeedGrant: (origin) => ipcRenderer.invoke('swarm:has-feed-grant', origin),
   getIdentityMode: (origin) => ipcRenderer.invoke('swarm:get-identity-mode', origin),
   getOriginIdentities: (origin) => ipcRenderer.invoke('swarm:get-origin-identities', origin),
-  previewAppScopedIdentity: (origin, options) =>
-    ipcRenderer.invoke('swarm:preview-app-scoped-identity', origin, options),
   createAppScopedIdentity: (origin, options) =>
     ipcRenderer.invoke('swarm:create-app-scoped-identity', origin, options),
   ensureAntWalletIdentity: (origin, options) =>
     ipcRenderer.invoke('swarm:ensure-ant-wallet-identity', origin, options),
   activateFeedIdentity: (origin, identityId) =>
     ipcRenderer.invoke('swarm:activate-feed-identity', origin, identityId),
-  setFeedIdentity: (origin, identityMode) =>
-    ipcRenderer.invoke('swarm:set-feed-identity', origin, identityMode),
   revokeFeedAccess: (origin) => ipcRenderer.invoke('swarm:revoke-feed-access', origin),
 });
 

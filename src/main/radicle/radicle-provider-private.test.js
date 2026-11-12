@@ -129,20 +129,17 @@ test('the provider registers no route a private window, or any chrome, could for
   expect([...mockHandlers.keys()].filter((channel) => channel.startsWith('radicle:')).sort()).toEqual([
     IPC.RADICLE_GET_ALIAS,
     IPC.RADICLE_GET_ALL_PERMISSIONS,
-    IPC.RADICLE_GET_AUTO_APPROVE,
     IPC.RADICLE_GET_PERMISSION,
     IPC.RADICLE_GRANT_PERMISSION,
     IPC.RADICLE_GRANT_SIGNING,
-    IPC.RADICLE_HAS_SIGNING_GRANT,
     IPC.RADICLE_REVOKE_PERMISSION,
     IPC.RADICLE_SET_ALIAS,
     IPC.RADICLE_SET_AUTO_APPROVE,
-    IPC.RADICLE_UPDATE_LAST_USED,
   ].sort());
   expect(backendCalls()).toBe(0);
 });
 
-test('grants, rules and use records from a private window are refused; from any sender, a grant or a rule turned on is', async () => {
+test('grants and rules from a private window are refused; from any sender, a grant or a rule turned on is', async () => {
   const before = storeBytes();
   const privateEvent = { sender: mockFixture.privateSender(privateWindows) };
   const publicEvent = { sender: mockFixture.publicSender() };
@@ -156,10 +153,9 @@ test('grants, rules and use records from a private window are refused; from any 
     );
   }
   // A private (or unclassifiable) sender records nothing, not even a rule
-  // turned off or a use.
+  // turned off.
   for (const event of [privateEvent, {}]) {
     expect(mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)(event, ORIGIN, 'signing', false)).toBe(false);
-    expect(mockHandlers.get(IPC.RADICLE_UPDATE_LAST_USED)(event, ORIGIN)).toBe(false);
   }
   expect(storeBytes()).toBe(before);
 });
