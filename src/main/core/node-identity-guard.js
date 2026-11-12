@@ -9,7 +9,9 @@
  * - **Main's own writes.** From the moment main starts re-keying a node (before
  *   it stops and wipes it) until a write is known to be `installed`. An
  *   unknown or failed outcome keeps the block: the node's files may be wiped or
- *   half written. A later core report doesn't lift it; only `installed` does.
+ *   half written. A later core report doesn't lift it; only `installed` does,
+ *   or, for a write the core refused before it wrote anything (Radicle's
+ *   `lock_held`), putting main's own record back as it was.
  * - **No report yet.** Until a hello has reported recovery (at startup, and
  *   after the core exits until it is back), nothing is known. Starts are held
  *   unless the identity directory has nothing to protect: no vault and no node
@@ -71,6 +73,22 @@ function unblockNode(node) {
   reported.delete(node);
 }
 
+/** Main's own outstanding write on `node` (blockNode's status), or null. */
+function nodeWriteStatus(node) {
+  return writes.get(node) ?? null;
+}
+
+/**
+ * Puts main's own record for `node` back to `status` (null: none), and
+ * leaves the core's report as it is. For a write the core refused, which
+ * touched nothing (freedom-core design 0008, "Identity changes": a
+ * `lock_held` write): it lifts only the block it set itself.
+ */
+function restoreNodeWrite(node, status) {
+  if (status) writes.set(node, status);
+  else writes.delete(node);
+}
+
 /** Only a confirmed absence counts: an unreadable entry may hold anything. */
 function absent(file) {
   try {
@@ -117,6 +135,8 @@ module.exports = {
   setRecoveryUnknown,
   blockNode,
   unblockNode,
+  nodeWriteStatus,
+  restoreNodeWrite,
   nodeBlockReason,
   _internal: {
     reset() {
