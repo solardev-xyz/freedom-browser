@@ -12,9 +12,11 @@
  *   it stopped, so it is a writer the gate excludes too; the alias rewrite,
  *   with the node stopped; an identity re-key's wipe of the home's state,
  *   let go before the core's write takes the gate; a legacy home's
- *   carry-over into the short home (profile-paths.js); and profile delete,
- *   on a catalog profile's `R/<slot>` home, while it removes it (design
- *   0013, "Deletion", in main until the core deletes profiles).
+ *   carry-over into the short home (profile-paths.js); the removal of a
+ *   control socket the add-on left, before the service's first spawn on the
+ *   home (`removeStaleControlSocket`); and profile delete, on a catalog
+ *   profile's `R/<slot>` home, while it removes it (design 0013,
+ *   "Deletion", in main until the core deletes profiles).
  * - **Its answers** (fc-service's `hold_lock`) are the core's and
  *   freedom-ipfsd's: see hold-lock.js.
  * - **The binary** is the one the service runs (radicled-binary.js), in the
@@ -165,6 +167,79 @@ function switchedHomeRefusal(home) {
   return serviceRan ? SWITCHED_HOME_MESSAGE : null;
 }
 
+// Whether `target` is a socket, as lstat sees it: a link to one isn't.
+function isSocketAt(target) {
+  try {
+    return fs.lstatSync(target).isSocket();
+  } catch {
+    return false;
+  }
+}
+
+// Whether `dir` is a directory, not a link to one.
+function isRealDir(dir) {
+  try {
+    return fs.lstatSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Removes the control socket heartwood in the add-on left in `home` if it
+ * ended without unbinding it (a crash, a kill): `<home>/node/control.sock`,
+ * exactly that path, only when it is a socket, and only under the home's
+ * gate, before the service's first spawn on the home. The service binds no
+ * control socket (0008, deviation `control-socket`), and main's check of its
+ * grant refuses a home that holds a special file (design 0010, step 7), so a
+ * home the add-on crashed on would never start on the service. Under the
+ * gate no other gated writer, the add-on among them, can be using it.
+ *
+ * Nothing is taken or removed when there is no socket there. Nothing is
+ * removed without the gate: in a development build without the binary
+ * (ungated), when another writer holds the gate, when the gate is lost
+ * before the removal, or when `node` is a link. Resolves whether it removed
+ * the socket; never rejects.
+ *
+ * @param {string} home - the Radicle home (`getRadicleDataDir()`)
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] - gives up the gate's wait (a stop)
+ * @param {Function} [options.withGate] - `withRadicleGate` (injectable)
+ * @param {object} [options.log]
+ */
+async function removeStaleControlSocket(
+  home,
+  { signal = null, withGate = withRadicleGate, log = defaultLog } = {}
+) {
+  const nodeDir = path.join(home, 'node');
+  const socket = path.join(nodeDir, 'control.sock');
+  if (!isRealDir(nodeDir) || !isSocketAt(socket)) return false;
+  try {
+    return await withGate(
+      home,
+      (gate) => {
+        if (!gate.gated) {
+          log.warn(
+            "[Radicle] A control socket is left in the Radicle home; without the home's gate it stays"
+          );
+          return false;
+        }
+        // Again under the gate, with nothing awaited before the removal.
+        if (!gate.held() || !isRealDir(nodeDir) || !isSocketAt(socket)) return false;
+        fs.unlinkSync(socket);
+        log.info('[Radicle] Removed the control socket the add-on left in the Radicle home');
+        return true;
+      },
+      { signal, log }
+    );
+  } catch (err) {
+    log.warn("[Radicle] The add-on's control socket wasn't removed from the Radicle home", {
+      code: err?.code || 'error',
+    });
+    return false;
+  }
+}
+
 module.exports = {
   RadicleGateError,
   holdRadicleGate,
@@ -172,6 +247,7 @@ module.exports = {
   takeRadicleGate,
   withRadicleGate,
   switchedHomeRefusal,
+  removeStaleControlSocket,
   SWITCHED_HOME_MESSAGE,
   LOCK_TIMEOUT_MS,
   RELEASE_KILL_MS,

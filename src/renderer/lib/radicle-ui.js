@@ -1,7 +1,7 @@
 // Radicle node UI controls
 import { state, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
-import { countText, versionText } from './ui-format.js';
+import { countText, versionText, sandboxLabel, sandboxDetail } from './ui-format.js';
 
 // DOM elements (initialized in initRadicleUi)
 let radicleToggleBtn = null;
@@ -9,6 +9,8 @@ let radicleToggleSwitch = null;
 let radiclePeersCount = null;
 let radicleReposCount = null;
 let radicleVersionText = null;
+let radicleSandboxRow = null;
+let radicleSandboxText = null;
 let radicleInfoPanel = null;
 let radicleStatusRow = null;
 let radicleStatusLabel = null;
@@ -51,6 +53,20 @@ const applyRadicleInfo = (info) => {
   }
   if (radicleVersionText) {
     radicleVersionText.textContent = versionText(state.radicleVersionValue);
+  }
+  renderRadicleSandbox(info.confinement);
+};
+
+// The confinement the freedom-radicled process got (freedom-core design
+// 0010, "Reporting"). Only the service reports one: the add-on runs in main,
+// which has no sandbox of its own, so its panel shows no row.
+const renderRadicleSandbox = (confinement) => {
+  if (!radicleSandboxRow) return;
+  const reported = Boolean(confinement) && typeof confinement === 'object';
+  radicleSandboxRow.hidden = !reported;
+  if (radicleSandboxText) {
+    radicleSandboxText.textContent = sandboxLabel(reported ? confinement : null);
+    radicleSandboxText.title = sandboxDetail(reported ? confinement : null);
   }
 };
 
@@ -194,6 +210,8 @@ export const initRadicleUi = () => {
   radiclePeersCount = document.getElementById('radicle-peers-count');
   radicleReposCount = document.getElementById('radicle-repos-count');
   radicleVersionText = document.getElementById('radicle-version-text');
+  radicleSandboxRow = document.getElementById('radicle-sandbox-row');
+  radicleSandboxText = document.getElementById('radicle-sandbox-text');
   radicleInfoPanel = document.querySelector('.radicle-info');
   radicleStatusRow = document.getElementById('radicle-status-row');
   radicleStatusLabel = document.getElementById('radicle-status-label');

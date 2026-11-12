@@ -37,6 +37,9 @@ const loadRadicleModule = async (options = {}) => {
   const radiclePeersCount = createElement('span');
   const radicleReposCount = createElement('span');
   const radicleVersionText = createElement('span');
+  const radicleSandboxRow = createElement('div');
+  radicleSandboxRow.hidden = true;
+  const radicleSandboxText = createElement('span');
   const radicleInfoPanel = createElement('div', {
     classes: ['radicle-info'],
   });
@@ -54,6 +57,8 @@ const loadRadicleModule = async (options = {}) => {
       'radicle-peers-count': radiclePeersCount,
       'radicle-repos-count': radicleReposCount,
       'radicle-version-text': radicleVersionText,
+      'radicle-sandbox-row': radicleSandboxRow,
+      'radicle-sandbox-text': radicleSandboxText,
       'radicle-status-row': radicleStatusRow,
       'radicle-status-label': radicleStatusLabel,
       'radicle-status-value': radicleStatusValue,
@@ -128,6 +133,8 @@ const loadRadicleModule = async (options = {}) => {
       radiclePeersCount,
       radicleReposCount,
       radicleVersionText,
+      radicleSandboxRow,
+      radicleSandboxText,
       radicleInfoPanel,
       radicleStatusRow,
       radicleStatusLabel,
@@ -183,6 +190,58 @@ describe('radicle-ui', () => {
     // Counters share one empty state with the rest of the Nodes menu (#227).
     expect(ctx.elements.radicleReposCount.textContent).toBe('0');
     expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle 0.6.1');
+  });
+
+  test("the service's confinement shows a Sandbox row; the add-on's info shows none", async () => {
+    const confinement = {
+      mechanism: 'landlock-4+seccomp',
+      files: 'enforced',
+      exec: 'enforced',
+      ipc: 'partial',
+      network: 'none',
+      gaps: ['signals'],
+    };
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+      connectionsResult: {
+        success: true,
+        count: 2,
+        reposCount: null,
+        version: '0.8.0',
+        confinement,
+      },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(ctx.elements.radicleSandboxRow.hidden).toBe(false);
+    expect(ctx.elements.radicleSandboxText.textContent).toBe('Partial');
+    expect(ctx.elements.radicleSandboxText.title).toBe(
+      [
+        'Files: enforced',
+        'Programs: enforced',
+        'Local IPC: partial',
+        'Network: none',
+        'Open: signals',
+        'Mechanism: landlock-4+seccomp',
+      ].join('\n')
+    );
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle 0.8.0');
+
+    // The add-on's info carries no confinement: the row goes.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 1, reposCount: 3, version: '0.8.0' },
+    });
+    expect(ctx.elements.radicleSandboxRow.hidden).toBe(true);
   });
 
   test('an unknown seeded-repository count renders 0, like the other counters', async () => {

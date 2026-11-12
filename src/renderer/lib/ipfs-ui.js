@@ -1,7 +1,10 @@
 // IPFS node UI controls
 import { state, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
-import { versionText, UNKNOWN } from './ui-format.js';
+import { versionText, sandboxLabel, sandboxDetail, UNKNOWN } from './ui-format.js';
+
+// The sandbox's texts are shared with the Radicle panel (ui-format.js).
+export { sandboxLabel, sandboxDetail };
 
 // DOM elements (initialized in initIpfsUi)
 let ipfsToggleBtn = null;
@@ -120,35 +123,6 @@ const parseNativeBuildInfo = (raw) => {
   } catch {
     return null;
   }
-};
-
-// The service's `confinement` (freedom-core design 0010, "Reporting"), off
-// the build info: `Enforced` when every property is, `Unavailable` when the
-// OS confines nothing, `Partial` otherwise. The title lists each property.
-const SANDBOX_PROPERTIES = [
-  ['files', 'Files'],
-  ['exec', 'Programs'],
-  ['ipc', 'Local IPC'],
-  ['network', 'Network'],
-];
-
-export const sandboxLabel = (confinement) => {
-  if (!confinement || typeof confinement !== 'object') return UNKNOWN;
-  if (confinement.mechanism === 'none') return 'Unavailable';
-  const full = SANDBOX_PROPERTIES.every(([key]) => ['enforced', 'none'].includes(confinement[key]));
-  return full ? 'Enforced' : 'Partial';
-};
-
-export const sandboxDetail = (confinement) => {
-  if (!confinement || typeof confinement !== 'object') return '';
-  const properties = SANDBOX_PROPERTIES.map(
-    ([key, label]) => `${label}: ${confinement[key] ?? 'unknown'}`
-  );
-  const gaps =
-    Array.isArray(confinement.gaps) && confinement.gaps.length
-      ? [`Open: ${confinement.gaps.join(', ')}`]
-      : [];
-  return [...properties, ...gaps, `Mechanism: ${confinement.mechanism}`].join('\n');
 };
 
 const renderSandbox = (confinement) => {
