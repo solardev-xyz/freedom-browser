@@ -812,7 +812,10 @@ async function getServiceConnections() {
   try {
     const { count, reposCount } = await embedded.callScoped('node_info', {}, async (info) => {
       if (typeof info?.repos_error === 'string') {
-        log.warn('[Radicle] Could not read seeded repository count:', redactForLog(info.repos_error));
+        log.warn(
+          '[Radicle] Could not read seeded repository count:',
+          redactForLog(info.repos_error)
+        );
       }
       return {
         count: Number.isSafeInteger(info?.connected_peers) ? info.connected_peers : 0,

@@ -118,11 +118,7 @@ function onRequest({ id, method, params = {} }) {
       });
       break;
     case 'fake.unsaid':
-      sender.head(
-        id,
-        result(id, { content_type: 'application/json', bytes: params.length }),
-        true
-      );
+      sender.head(id, result(id, { content_type: 'application/json', bytes: params.length }), true);
       producers.set(id, { length: params.length, offered: 0, abortAt: null, code: 'internal' });
       break;
     case 'fake.no_body':

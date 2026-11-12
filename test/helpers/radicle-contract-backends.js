@@ -430,9 +430,7 @@ async function loadRadicledBackend({ home }) {
             if (!failure) return super.read(op, args, options);
             nodeInfoFailure = null;
             if (failure.name === 'status') {
-              const { CoreError } = jest.requireActual(
-                path.join(SRC, 'core', 'service-client.js')
-              );
+              const { CoreError } = jest.requireActual(path.join(SRC, 'core', 'service-client.js'));
               throw new CoreError('failed', failure.message);
             }
             const { body } = await super.read(op, args, options);
@@ -478,7 +476,13 @@ async function loadRadicledBackend({ home }) {
     /** One of the service's methods on the running node, as main sends it. */
     call(method, params = {}) {
       const { node, gen } = current();
-      return node.client.requestTo(gen, method, params, { caller: 'shell' }, { watchdogMs: 75_000 });
+      return node.client.requestTo(
+        gen,
+        method,
+        params,
+        { caller: 'shell' },
+        { watchdogMs: 75_000 }
+      );
     },
     failNext(name, message) {
       if (name !== 'listRepos' && name !== 'status') {

@@ -136,7 +136,7 @@ describe('ServiceClient streams', () => {
     expect(client.streamStats().outstanding).toBe(0);
   });
 
-  test("without `opens`, such a head opens nothing, and its data is a protocol fault", async () => {
+  test('without `opens`, such a head opens nothing, and its data is a protocol fault', async () => {
     const generation = client.current;
     await expect(client.callStream('fake.unsaid', { length: 1000 })).resolves.toEqual({
       result: { content_type: 'application/json', bytes: 1000 },

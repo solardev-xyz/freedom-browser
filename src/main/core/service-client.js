@@ -1960,10 +1960,10 @@ class ServiceClient extends EventEmitter {
       // or one its request's `opens` says opens.
       const opens = Boolean(
         entry.stream &&
-          hasResult &&
-          (entry.opens
-            ? entry.opens(message.result)
-            : isObject(message.result) && message.result.body === true)
+        hasResult &&
+        (entry.opens
+          ? entry.opens(message.result)
+          : isObject(message.result) && message.result.body === true)
       );
       let replied;
       try {
@@ -2008,13 +2008,7 @@ class ServiceClient extends EventEmitter {
   /** `callStream` to the ready process `gen` names, as `requestTo`. */
   requestStreamTo(gen, method, params = {}, context = { caller: 'shell' }, options = {}) {
     if (!this.serves(gen)) return Promise.reject(this.unavailable());
-    const {
-      watchdogMs = null,
-      signal = null,
-      fence = null,
-      onSent = null,
-      opens = null,
-    } = options;
+    const { watchdogMs = null, signal = null, fence = null, onSent = null, opens = null } = options;
     return this.send(gen, method, params, context, {
       watchdogMs,
       signal,

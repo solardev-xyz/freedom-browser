@@ -75,13 +75,7 @@ function sealRadicleKey(recipient, seed, ephemeral = crypto.randomBytes(32)) {
   });
   // Encap's ExtractAndExpand.
   const eaePrk = labeledExtract(KEM_SUITE, Buffer.alloc(0), 'eae_prk', dh);
-  const shared = labeledExpand(
-    KEM_SUITE,
-    eaePrk,
-    'shared_secret',
-    Buffer.concat([enc, pkR]),
-    32
-  );
+  const shared = labeledExpand(KEM_SUITE, eaePrk, 'shared_secret', Buffer.concat([enc, pkR]), 32);
   // The key schedule, base mode: no PSK.
   const context = Buffer.concat([
     Buffer.from([0]),

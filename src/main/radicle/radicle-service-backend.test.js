@@ -300,7 +300,7 @@ describe('callScoped: the collected results', () => {
     expect(RESERVE_WAIT_MS).toBe(5_000);
   });
 
-  test("each at its cap is parsed in the scope; one byte past it is too_large, its body cancelled unread, and the scope never runs", async () => {
+  test('each at its cap is parsed in the scope; one byte past it is too_large, its body cancelled unread, and the scope never runs', async () => {
     let size = 0;
     const { child, backend } = await running((m, c) => c.readReply(m.id, jsonOf(size)));
     for (const [op, cap] of Object.entries(COLLECTED_CAPS)) {

@@ -584,10 +584,10 @@ describe('on the freedom-radicled service', () => {
     expect(embedded.collectionBudget()).toEqual({ held: 0, limit: 16 * 1024 * 1024 });
   });
 
-  test('callScoped and callStream are the service backend\'s', async () => {
-    await expect(
-      embedded.callScoped('node_info', {}, async (value) => value.op)
-    ).resolves.toBe('node_info');
+  test("callScoped and callStream are the service backend's", async () => {
+    await expect(embedded.callScoped('node_info', {}, async (value) => value.op)).resolves.toBe(
+      'node_info'
+    );
     const { head, body } = await embedded.callStream('commit', { rid: 'rad:z1', revision: 'a' });
     expect(head).toEqual({ content_type: 'application/json', bytes: expect.any(Number) });
     expect(JSON.parse(await new Response(body).text())).toEqual({

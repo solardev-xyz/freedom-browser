@@ -347,7 +347,12 @@ async function runServiceNodeInfo(main, c) {
   resetWorld(world, []);
   world.reads = { node_info: c.expect };
   const connections = await manager.getConnections();
-  return asJson({ connections, calls: world.calls, warnings: world.warnings, unscripted: world.unscripted });
+  return asJson({
+    connections,
+    calls: world.calls,
+    warnings: world.warnings,
+    unscripted: world.unscripted,
+  });
 }
 
 /** The add-on's `blobAt` text for a `radicle-blob.json` file (libradicle's

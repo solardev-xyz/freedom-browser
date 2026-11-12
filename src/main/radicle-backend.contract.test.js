@@ -324,18 +324,26 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       });
     }
 
-    partTest('parsed-reads', 'readme and readmeAt parse to the composed text, with the path', async () => {
-      const composed = JSON.parse(VECTORS.reads['readme_at second'].body);
-      expect(await backend.embedded.readmeAt(fx.rid, fx.commits.second)).toEqual(composed);
-      expect(await backend.embedded.readme(fx.rid)).toEqual(composed);
-    });
+    partTest(
+      'parsed-reads',
+      'readme and readmeAt parse to the composed text, with the path',
+      async () => {
+        const composed = JSON.parse(VECTORS.reads['readme_at second'].body);
+        expect(await backend.embedded.readmeAt(fx.rid, fx.commits.second)).toEqual(composed);
+        expect(await backend.embedded.readme(fx.rid)).toEqual(composed);
+      }
+    );
 
-    partTest('network', 'cancelClone with no clone in flight answers, and changes nothing', async () => {
-      await expect(backend.embedded.cancelClone(fx.rid)).resolves.toBeDefined();
-      expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
-        VECTORS.reads.repo_info.body
-      );
-    });
+    partTest(
+      'network',
+      'cancelClone with no clone in flight answers, and changes nothing',
+      async () => {
+        await expect(backend.embedded.cancelClone(fx.rid)).resolves.toBeDefined();
+        expect(await backend.readText('repo_info', { rid: fx.rid })).toBe(
+          VECTORS.reads.repo_info.body
+        );
+      }
+    );
   });
 
   describe('the service', () => {
@@ -874,26 +882,32 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
 
   // Writes change the restored home, so they come after every other test.
   describe('writes', () => {
-    partTest('writes', 'an issue created, commented on and closed reads back as written', async () => {
-      const e = backend.embedded;
-      const created = await e.createIssue(fx.rid, 'Written by the suite', 'Body text.', ['suite']);
-      expect(created.id).toMatch(OID_RE);
-      const comment = await e.commentIssue(fx.rid, created.id, 'A comment.', null);
-      expect(comment.id).toMatch(OID_RE);
-      const closed = await e.editIssueState(fx.rid, created.id, 'closed');
-      expect(closed).toEqual({ id: created.id, state: 'closed' });
+    partTest(
+      'writes',
+      'an issue created, commented on and closed reads back as written',
+      async () => {
+        const e = backend.embedded;
+        const created = await e.createIssue(fx.rid, 'Written by the suite', 'Body text.', [
+          'suite',
+        ]);
+        expect(created.id).toMatch(OID_RE);
+        const comment = await e.commentIssue(fx.rid, created.id, 'A comment.', null);
+        expect(comment.id).toMatch(OID_RE);
+        const closed = await e.editIssueState(fx.rid, created.id, 'closed');
+        expect(closed).toEqual({ id: created.id, state: 'closed' });
 
-      const issue = await e.issue(fx.rid, created.id);
-      expect(issue).toMatchObject({
-        id: created.id,
-        title: 'Written by the suite',
-        labels: ['suite'],
-        state: { status: 'closed' },
-        author: { id: fx.did },
-      });
-      expect(issue.discussion.map((entry) => entry.body)).toEqual(['Body text.', 'A comment.']);
-      expect((await e.issues(fx.rid)).map((entry) => entry.id)).toContain(created.id);
-    });
+        const issue = await e.issue(fx.rid, created.id);
+        expect(issue).toMatchObject({
+          id: created.id,
+          title: 'Written by the suite',
+          labels: ['suite'],
+          state: { status: 'closed' },
+          author: { id: fx.did },
+        });
+        expect(issue.discussion.map((entry) => entry.body)).toEqual(['Body text.', 'A comment.']);
+        expect((await e.issues(fx.rid)).map((entry) => entry.id)).toContain(created.id);
+      }
+    );
 
     partTest('writes', 'a comment on an unknown patch revision is refused', async () => {
       await expect(
@@ -901,28 +915,33 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       ).rejects.toThrow();
     });
 
-    partTest('import', 'an imported repository is listed and seeded, then unseeded', async () => {
-      const workingCopy = tempDir('rad-contract-wc-');
-      try {
-        buildSmallWorkingCopy(workingCopy);
-        const e = backend.embedded;
-        const { rid } = await e.importRepo(workingCopy, 'contract-import', 'Imported.', 'main');
-        expect(rid).toMatch(RID_RE);
-        expect((await e.listRepos()).map((repo) => repo.rid)).toContain(rid);
-        expect((await e.listSeededRepos()).map((repo) => repo.rid)).toContain(rid);
-        expect(await e.repoInfo(rid)).toMatchObject({
-          rid,
-          name: 'contract-import',
-          defaultBranch: 'main',
-          delegates: [fx.did],
-        });
+    partTest(
+      'import',
+      'an imported repository is listed and seeded, then unseeded',
+      async () => {
+        const workingCopy = tempDir('rad-contract-wc-');
+        try {
+          buildSmallWorkingCopy(workingCopy);
+          const e = backend.embedded;
+          const { rid } = await e.importRepo(workingCopy, 'contract-import', 'Imported.', 'main');
+          expect(rid).toMatch(RID_RE);
+          expect((await e.listRepos()).map((repo) => repo.rid)).toContain(rid);
+          expect((await e.listSeededRepos()).map((repo) => repo.rid)).toContain(rid);
+          expect(await e.repoInfo(rid)).toMatchObject({
+            rid,
+            name: 'contract-import',
+            defaultBranch: 'main',
+            delegates: [fx.did],
+          });
 
-        await e.unseedRepo(rid);
-        expect((await e.listSeededRepos()).map((repo) => repo.rid)).not.toContain(rid);
-      } finally {
-        removeDir(workingCopy);
-      }
-    }, 60_000);
+          await e.unseedRepo(rid);
+          expect((await e.listSeededRepos()).map((repo) => repo.rid)).not.toContain(rid);
+        } finally {
+          removeDir(workingCopy);
+        }
+      },
+      60_000
+    );
 
     test('a stop and a start keep the home as it was', async () => {
       await backend.stop();

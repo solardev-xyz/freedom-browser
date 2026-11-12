@@ -1751,11 +1751,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       confinement: CONFINEMENT,
       service: '0.1.0',
     });
-    expect(ctx.embedded.callScoped).toHaveBeenCalledWith(
-      'node_info',
-      {},
-      expect.any(Function)
-    );
+    expect(ctx.embedded.callScoped).toHaveBeenCalledWith('node_info', {}, expect.any(Function));
     await flush();
     expect(ctx.statusSend).toHaveBeenCalledWith(
       'radicle:statusUpdate',
@@ -1815,7 +1811,9 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     );
 
     // status fails: the read fails, and so does the manager's answer.
-    answers.push(Object.assign(new Error('node thread: the node is not running'), { code: 'failed' }));
+    answers.push(
+      Object.assign(new Error('node thread: the node is not running'), { code: 'failed' })
+    );
     await expect(ctx.mod.getConnections()).resolves.toEqual({
       success: false,
       error: { code: 'GET_CONNECTIONS_FAILED', message: 'node thread: the node is not running' },
