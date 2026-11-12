@@ -32,6 +32,14 @@
 
 const { defineConfig } = require('@playwright/test');
 
+// The approvals document is on by default (freedom-core design 0011,
+// APS-2), but most specs still drive the chrome's own prompt screens, its
+// rollback path: every app a spec launches spreads this environment, so
+// the specs run that path unless they turn the document on themselves, as
+// the approvals specs do (test-e2e/approvals-fixtures.js), until they move
+// to the panel.
+process.env.FREEDOM_APPROVALS_DOCUMENT ??= '0';
+
 const PACKAGED_PROJECTS = ['packaged', 'packaged-live'];
 
 const packagedRequested =

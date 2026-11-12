@@ -16,7 +16,8 @@
  *
  * The tab in front is reported to main by tabs.js (`page:foreground`).
  *
- * With the approvals document's flag on (APS-1, `FREEDOM_APPROVALS_DOCUMENT`),
+ * With the approvals document on (APS-1, APS-2; `FREEDOM_APPROVALS_DOCUMENT=0`
+ * turns it off),
  * main sends `page:prompt` and `page:prompt-hidden` to the window's
  * approvals document instead, and refuses this window's decisions; the
  * badges and the count work as before. This module also tells main where

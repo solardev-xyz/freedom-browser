@@ -705,8 +705,8 @@ async function bootstrap() {
   // Ethereum reads, and the chain each window's switcher selected, which
   // those reads answer.
   registerPageRequestsIpc();
-  // With FREEDOM_APPROVALS_DOCUMENT=1, each window's approvals document
-  // shows main's prompts and takes the decisions (0011 APS-1).
+  // Each window's approvals document shows main's prompts and takes the
+  // decisions (0011 APS-1, APS-2), unless FREEDOM_APPROVALS_DOCUMENT=0.
   registerApprovalsIpc();
   // A page's connect from a tab the agent holds goes to the agent service,
   // as the chrome's agent route took it before (0011 PRQ-4).
