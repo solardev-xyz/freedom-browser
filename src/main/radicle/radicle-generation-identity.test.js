@@ -14,8 +14,8 @@
  * runs, the seal it answers each start with, and the derived DID
  * `keys.addresses` names.
  *
- * The service's write method is B11's, so a write the provider admits
- * reaches radicle-embedded.js's `createIssue`, which the test answers.
+ * A write the provider admits is the service's `rad.write` (plan B11), which
+ * the fake service answers; the test counts what reached it.
  */
 
 const fs = require('fs');
@@ -130,6 +130,7 @@ function serviceScript() {
         nid: child.radIdentity.nid,
         alias: message.params?.alias ?? null,
       }),
+    write: (message, child) => child.result(message.id, { id: 'c'.repeat(40) }),
     read: (message, child) => {
       if (message.params?.op !== 'identity') {
         child.error(message.id, 'not_found', 'not found');
@@ -150,9 +151,7 @@ let manager;
 let identity;
 let provider;
 let cob;
-let embedded;
 let permissions;
-let issueWrites;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-generation-identity-'));
@@ -232,16 +231,13 @@ function load(vaultState) {
   manager = require('../radicle-manager');
   provider = require('./radicle-provider-ipc');
   cob = require('./cob-service');
-  embedded = require('../radicle-embedded');
   permissions = require('./radicle-permissions');
-  // The service's write is B11's: an admitted write reaches the backend's
-  // call, which answers as the add-on did.
-  issueWrites = jest
-    .spyOn(embedded, 'createIssue')
-    .mockImplementation(async () => ({ id: 'c'.repeat(40) }));
   permissions.grantPermission(ORIGIN);
   permissions.grantSigning(ORIGIN);
 }
+
+/** The writes that reached the service, every process's. */
+const writesSent = () => service.children.flatMap((child) => child.sent('rad.write')).length;
 
 async function startNode() {
   const status = await manager.startRadicle();
@@ -283,7 +279,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
     });
     // Refused in main, before anything is sent.
     await expect(write()).resolves.toEqual({ error: NEEDS_VAULT });
-    expect(issueWrites).not.toHaveBeenCalled();
+    expect(writesSent()).toBe(0);
     // Reads work in either mode.
     await expect(cob.getIdentity()).resolves.toMatchObject({ did: throwaway(1).did });
 
@@ -297,7 +293,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
       radicle: { active: throwaway(1), nextDid: DERIVED_DID },
     });
     await expect(write()).resolves.toEqual({ error: NEEDS_VAULT });
-    expect(issueWrites).not.toHaveBeenCalled();
+    expect(writesSent()).toBe(0);
     expect(vault.sealRadicleKey).toHaveBeenCalledTimes(1);
 
     // The next start runs as the derived key, and writes go.
@@ -308,7 +304,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
       radicle: { active: derived, nextDid: DERIVED_DID },
     });
     await expect(write()).resolves.toEqual(WRITTEN);
-    expect(issueWrites).toHaveBeenCalledTimes(1);
+    expect(writesSent()).toBe(1);
     // cob-service's identity went with the throwaway generation.
     await expect(cob.getIdentity()).resolves.toMatchObject({ did: DERIVED_DID });
   });
@@ -342,7 +338,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
       radicle: { active: derived, nextDid: null },
     });
     await expect(write()).resolves.toEqual(WRITTEN);
-    expect(issueWrites).toHaveBeenCalledTimes(4);
+    expect(writesSent()).toBe(4);
     expect(manager.activeRadicleIdentity()).toMatchObject(derived);
 
     // The next start, with no vault, runs as a throwaway key.
@@ -352,7 +348,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
       radicle: { active: throwaway(1), nextDid: null },
     });
     await expect(write()).resolves.toEqual({ error: NEEDS_VAULT });
-    expect(issueWrites).toHaveBeenCalledTimes(4);
+    expect(writesSent()).toBe(4);
     // The derived identity cob-service read went with its generation.
     await expect(cob.getIdentity()).resolves.toMatchObject({ did: throwaway(1).did });
   });
