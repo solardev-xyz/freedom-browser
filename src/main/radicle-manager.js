@@ -74,9 +74,6 @@ const notOnService = () => failure('RADICLE_SERVICE_UNSUPPORTED', NOT_ON_SERVICE
 // new one starts only after it.
 let serviceNode = null;
 let lastServiceNode = null;
-// The service's reads (radicle-embedded.js, design 0008 "JSON results") go
-// to this node's running generation.
-embedded.setServiceNodeSource(() => serviceNode);
 
 const onService = () => radicleBackendKind() === 'service';
 
@@ -469,6 +466,9 @@ async function startServiceInternal({ signal = null } = {}) {
     onChange: (state, changed) => handleServiceNodeChange(state, changed),
   });
   serviceNode = node;
+  // The service's reads (radicle-embedded.js; 0008, "JSON results") go to
+  // the running generation of the node this manager holds, if any.
+  embedded.setServiceNodeSource(() => serviceNode);
   // From here on the stop is the node's: stopRadicle stops it at once too.
   signal?.addEventListener('abort', () => void node.stop(), { once: true });
   const started = await node.start();

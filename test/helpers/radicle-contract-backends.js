@@ -59,7 +59,12 @@
  * - `lacks`: the parts of today's contract it doesn't serve (`PARTS`), not
  *   yet or not by design; their tests are skipped for it, named as such;
  * - `hooks`: the test hooks it has. A pending test that needs one it
- *   lacks is skipped too.
+ *   lacks is skipped too;
+ * - `deviations`: the golden read vectors it answers otherwise, by design,
+ *   by case: the design's deviation, why, and `differs(record, vector)`,
+ *   which holds when its answer differs from the vector in that way and no
+ *   other. A listed case that matches its vector fails, until it is
+ *   removed from the list.
  *
  * The pending tests use what only the service has:
  * - `call(method, params)` for its methods;
@@ -375,7 +380,9 @@ async function loadRadicledBackend({ home }) {
     extraMocks: {
       [path.join(SRC, 'logger.js')]: () => log,
       [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
+      // The rest is the real profile's, which main's grant check reads.
       [path.join(SRC, 'profile-paths.js')]: () => ({
+        ...jest.requireActual(path.join(SRC, 'profile-paths.js')),
         getRadicleDataDir: () => home,
         getRadicledHomeDir: () => ownHome,
         prepareRadicleDataDir: async () => home,
@@ -510,18 +517,58 @@ async function loadRadicledBackend({ home }) {
   };
 }
 
+/** An error record whose message is libradicle's not-found for `kind`'s
+ * unknown ID, as the service's libradicle words it. */
+const cobNotFound = (kind) => (record, vector) =>
+  typeof vector.error === 'string' &&
+  /not found/i.test(vector.error) &&
+  record.error === `node thread: ${kind} ${'0'.repeat(40)} not found` &&
+  Object.keys(record).length === 1;
+
+/**
+ * The golden read vectors freedom-radicled answers otherwise (see the
+ * module's doc): each case, the deviation, why, and the only difference.
+ */
+const RADICLED_DEVIATIONS = {
+  'commit second': {
+    deviation: 'size-caps',
+    reason:
+      "The second commit adds the fixture's 70 MiB file. Its diff loads that blob, and the " +
+      "service's walk charges what it loads to its 16 MiB budget for loads, so the read is " +
+      'too_large (413 at the handlers), where v0.8.0 answered the diff.',
+    differs: (record, vector) =>
+      typeof vector.body === 'string' &&
+      /^\d+ bytes is over the limit of 16777216$/.test(record.error ?? '') &&
+      Object.keys(record).length === 1,
+  },
+  'issue unknown': {
+    deviation: 'not-found-text',
+    reason:
+      "An unknown issue is libradicle's not-found either way (404 at the handlers), worded " +
+      "by the service's libradicle, which looks the COB up by its ID, where v0.8.0's named " +
+      'the revspec it failed to resolve.',
+    differs: cobNotFound('issue'),
+  },
+  'patch unknown': {
+    deviation: 'not-found-text',
+    reason: "As for an unknown issue: libradicle's not-found, worded by the service's libradicle.",
+    differs: cobNotFound('patch'),
+  },
+};
+
 /**
  * The backends, each with the features it honours. A feature's pending
  * tests run against a backend that lists it here.
  */
 const BACKENDS = {
-  addon: { load: loadAddonBackend, honours: [], lacks: [], hooks: [] },
+  addon: { load: loadAddonBackend, honours: [], lacks: [], hooks: [], deviations: {} },
   // The release binary: no test hooks (they are a debug build's).
   radicled: {
     load: loadRadicledBackend,
     honours: ['call-stream', 'call-scoped', 'node-info', 'dirty-marker', 'quarantine'],
     lacks: ['handlers', 'parsed-reads', 'network', 'writes', 'import'],
     hooks: [],
+    deviations: RADICLED_DEVIATIONS,
   },
 };
 

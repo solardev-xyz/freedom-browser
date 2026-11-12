@@ -253,10 +253,27 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
   // Golden vectors: the same bytes as v0.8.0 and main's code at the
   // reference.
   describe('reads, byte for byte', () => {
+    const deviations = BACKEND ? BACKENDS[BACKEND].deviations : {};
+    test("every deviation names a read vector, the design's deviation and why", () => {
+      for (const [name, deviation] of Object.entries(deviations)) {
+        expect(VECTORS.reads).toHaveProperty([name]);
+        expect(deviation.deviation).toEqual(expect.any(String));
+        expect(deviation.reason).toEqual(expect.any(String));
+      }
+    });
+
     for (const [name, expected] of Object.entries(VECTORS?.reads || {})) {
       test(`${expected.class} ${name}`, async () => {
-        const { op: _op, args: _args, class: _class, ...record } = expected;
-        expect(await cases.get(name).run(backend)).toEqual(record);
+        const { op: _op, args: _args, class: _class, ...vector } = expected;
+        const record = await cases.get(name).run(backend);
+        const deviation = deviations[name];
+        if (!deviation) {
+          expect(record).toEqual(vector);
+          return;
+        }
+        // By design: it differs from the vector as described, and no other way.
+        expect(record).not.toEqual(vector);
+        expect(deviation.differs(record, vector)).toBe(true);
       });
     }
   });
@@ -380,7 +397,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       'call-stream',
       "handlers' reads stream: the head gives the length, the body the vector's bytes",
       async () => {
-        for (const name of ['commit second', 'tree_at second (root)', 'blob_at second README.md']) {
+        // The first commit: the second's diff is too_large on the service.
+        for (const name of ['commit first', 'tree_at second (root)', 'blob_at second README.md']) {
           const { op, args, body } = VECTORS.reads[name];
           const { head, body: stream } = await backend.embedded.callStream(op, args);
           const bytes = Buffer.from(await new Response(stream).arrayBuffer());
