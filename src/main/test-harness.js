@@ -49,6 +49,7 @@ const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
 const { enablePageRequestTestHooks } = require('./page/page-requests');
+const { enableApprovalsTestHooks } = require('./approvals/approvals-document');
 const {
   automationController,
   registerAutomationWebContents,
@@ -1295,6 +1296,9 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   // provider method takes yet: specs route methods through it and serve
   // them here.
   globalThis.__FREEDOM_TEST_PAGE_REQUESTS__ = enablePageRequestTestHooks();
+  // The approvals documents (0011 APS-1), when FREEDOM_APPROVALS_DOCUMENT=1:
+  // each window's panel and what main did with it.
+  globalThis.__FREEDOM_TEST_APPROVALS__ = enableApprovalsTestHooks();
   exposeGlobalShim(agentRuntime);
   return true;
 }

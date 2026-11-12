@@ -878,7 +878,7 @@ function loadBridge(world, constants) {
     './radicle-manager': {
       getCurrentStatus: () => ({ status: 'running' }),
       isDisabledForProfile: () => false,
-      // The add-on: no service generation, so no write refusal (plan B10).
+      // The vectors are the add-on's, which never refuses with needs_vault.
       radicleWriteRefusal: () => null,
       STATUS: { RUNNING: 'running' },
     },

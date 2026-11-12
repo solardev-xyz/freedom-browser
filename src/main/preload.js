@@ -1100,6 +1100,9 @@ contextBridge.exposeInMainWorld('pagePrompts', {
   decide: (handle, approve, choices) => ipcRenderer.invoke('page:decide', { handle, approve, choices }),
   // A send, so it reaches main in order with the tab switches around it.
   foreground: (guest) => ipcRenderer.send('page:foreground', { guest }),
+  // Where the content area starts, so main places the approvals panel below
+  // the toolbar (0011 APS-1, with FREEDOM_APPROVALS_DOCUMENT=1).
+  anchor: (top) => ipcRenderer.send('page:approvals-anchor', { top }),
 });
 
 contextBridge.exposeInMainWorld('dappPermissions', {

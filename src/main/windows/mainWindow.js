@@ -6,6 +6,7 @@ const { loadSettings } = require('../settings-store');
 const { attachAutomationToHostWebContents } = require('../automation/runtime');
 const { TEST_HARNESS_RENDERER_ARG } = require('../test-mode');
 const { attachFullscreenChromeSync } = require('../browser-fullscreen');
+const { attachApprovalsDocument } = require('../approvals/approvals-document');
 
 let currentWindowTitle = 'Freedom';
 
@@ -132,6 +133,11 @@ function createMainWindow(initialUrl = null, options = {}) {
   } else {
     window.loadFile(indexPath);
   }
+
+  // With FREEDOM_APPROVALS_DOCUMENT=1: the window's approvals document, a
+  // view above the chrome's, hidden until main has a prompt to show in it
+  // (freedom-core design 0011, APS-1).
+  attachApprovalsDocument(window);
 
   // Track this window
   mainWindows.add(window);
