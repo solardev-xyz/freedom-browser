@@ -274,6 +274,25 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   await expect.poll(() => outcome(win, KEY_A, 'chain')).toEqual({ ok: '0x1' });
   await win.evaluate(async () => (await import('./lib/sidebar.js')).open());
   await expect(win.locator('#chain-switcher-name')).toHaveText('Ethereum');
+  // The chrome may still mark a site used (its signing paths, until PRQ-5),
+  // but not write its chain.
+  const chromeWrites = await win.evaluate(async (key) => {
+    const out = {};
+    try {
+      out.timestamp = await window.dappPermissions.updateLastUsed(key);
+    } catch (err) {
+      out.timestamp = String(err?.message || err);
+    }
+    try {
+      await window.dappPermissions.updateLastUsed(key, 100);
+      out.chain = 'written';
+    } catch (err) {
+      out.chain = String(err?.message || err).includes('chain is set only') ? 'refused' : String(err);
+    }
+    return out;
+  }, KEY_A);
+  expect(chromeWrites).toEqual({ timestamp: true, chain: 'refused' });
+  expect(await grantOf(win, KEY_A)).toMatchObject({ chainId: 1 });
 
   // Every one went to main for the guest that asked; the chrome's old path
   // took none.

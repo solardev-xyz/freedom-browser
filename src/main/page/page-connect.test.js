@@ -9,6 +9,7 @@ const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { createEthereumDispatchers } = require('./page-ethereum');
+const { AgentWalletController } = require('../agent/agent-wallet-controller');
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
 const KEY_A = `bzz://${'a'.repeat(64)}`;
@@ -122,7 +123,9 @@ function backends() {
       state.selected.set(windowId, chainId);
       return true;
     }),
-    agentWalletRequest: jest.fn(async (guestId, request) => (state.agent ? state.agent(guestId, request) : { handled: false })),
+    agentWalletRequest: jest.fn(async (guestId, request, options) =>
+      (state.agent ? state.agent(guestId, request, options) : { handled: false })
+    ),
   };
   return { state, deps };
 }
@@ -146,12 +149,19 @@ function setup({ resolveEnsContent } = {}) {
   });
   const { state, deps } = backends();
   const sent = [];
+  const timers = [];
   const requests = createPageRequests({
     documents,
     webContentsFromId: (id) => guests.get(id),
     dispatchers: createEthereumDispatchers(deps),
-    setTimer: () => null,
-    clearTimer: () => {},
+    setTimer: (fn, ms) => {
+      const timer = { fn, ms, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: (timer) => {
+      if (timer) timer.cleared = true;
+    },
     chromeWindowOf: (contents) => (contents?.id >= 500 ? contents.id - 500 : null),
     sendToWindow: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
     watchWindow: () => {},
@@ -183,7 +193,15 @@ function setup({ resolveEnsContent } = {}) {
   const decide = (handle, approve, choices, windowId = 1) =>
     requests.decide({ sender: { id: 500 + windowId } }, { handle, approve, choices });
 
-  return { requests, documents, state, deps, sent, tab, greet, names, resolutions, prompts, decide, guests };
+  // Main's deadline for every request still running.
+  const expire = () => {
+    for (const timer of timers.filter((t) => !t.cleared)) {
+      timer.cleared = true;
+      timer.fn();
+    }
+  };
+
+  return { requests, documents, state, deps, sent, tab, greet, names, resolutions, prompts, decide, guests, expire };
 }
 
 describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
@@ -355,13 +373,16 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
     env.state.agent = async () => ({ handled: true, result: [SECOND] });
     const page = env.tab();
     expect(await page.ask('eth_requestAccounts')).toEqual({ result: [SECOND] });
-    expect(env.deps.agentWalletRequest).toHaveBeenCalledWith(page.guest.id, {
-      method: 'eth_requestAccounts',
-      params: [],
-      displayUrl: DAPP,
-      permissionKey: KEY_A,
-      chainId: 100,
-    });
+    expect(env.deps.agentWalletRequest).toHaveBeenCalledWith(
+      page.guest.id,
+      { method: 'eth_requestAccounts', params: [], chainId: 100 },
+      {
+        signal: expect.any(AbortSignal),
+        attested: { key: KEY_A, transportKey: KEY_A },
+        beforeEffect: expect.any(Function),
+        effectAllowed: expect.any(Function),
+      }
+    );
     expect(env.prompts()).toEqual([]);
     env.state.agent = async () => ({ handled: true, error: { code: 4001, message: 'User rejected the request' } });
     expect(await page.ask('eth_requestAccounts')).toEqual(REJECTED);
@@ -372,6 +393,172 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
     page.ask('eth_requestAccounts');
     await flush();
     expect(env.prompts()).toHaveLength(1);
+  });
+
+  // The agent's own approval runs inside the request's life: the document's
+  // one wallet slot, main's deadline and its document, and main's checks
+  // before the grant the agent writes. The agent route here is the real
+  // AgentWalletController, as the agent service calls it, with an approval
+  // the test answers.
+  describe('a tab the agent holds, inside the request\'s life', () => {
+    function withAgent(env, { pageUrl = null, withdrawOnAbort = false } = {}) {
+      const approvals = [];
+      const controller = new AgentWalletController({
+        identityManager: {
+          getDerivedWallets: async () => env.state.wallets,
+          getActiveWalletIndex: () => 0,
+        },
+        getPermission: (key) => env.state.permissions.get(key) || null,
+        grantPermission: env.deps.grantPermission,
+        updateLastUsed: env.deps.updateLastUsed,
+        updateWalletIndex: jest.fn(),
+        getChain: (chainId) => ({ chainId, name: 'Gnosis Chain', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
+      });
+      env.state.agent = (guestId, request, options) =>
+        controller.handleRequest(
+          {
+            tabId: `tab_${guestId}`,
+            // The page the agent's run sees in that tab.
+            pageUrl: pageUrl || env.guests.get(guestId).getURL(),
+            conversationId: 'conversation_1',
+            requestApproval: () =>
+              new Promise((resolve) => {
+                approvals.push({ resolve, signal: options.signal });
+                if (withdrawOnAbort) options.signal.addEventListener('abort', () => resolve('withdrawn'));
+              }),
+            attested: options.attested,
+            beforeEffect: options.beforeEffect,
+            effectAllowed: options.effectAllowed,
+          },
+          request
+        );
+      return approvals;
+    }
+
+    test('it connects under the attested key, the grant written once main\'s checks pass', async () => {
+      const env = setup();
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      expect(approvals).toHaveLength(1);
+      expect(env.prompts()).toEqual([]);
+      approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+      expect(await answer).toEqual({ result: [SECOND] });
+      expect(env.state.grants).toEqual([{ key: KEY_A, walletIndex: 1, chainId: 100 }]);
+    });
+
+    test('it holds the document\'s one wallet slot: the next request gets -32002, another document\'s doesn\'t', async () => {
+      const env = setup();
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const other = env.tab(OTHER, { front: false });
+      const first = page.ask('eth_requestAccounts');
+      await flush();
+      expect(await page.ask('eth_requestAccounts')).toEqual({
+        error: { code: -32002, message: 'Another wallet request is already pending' },
+      });
+      expect(approvals).toHaveLength(1);
+      other.ask('eth_requestAccounts');
+      await flush();
+      expect(approvals).toHaveLength(2);
+      approvals[0].resolve('declined');
+      expect(await first).toEqual(REJECTED);
+      // Answered: the slot is free again.
+      page.ask('eth_requestAccounts');
+      await flush();
+      expect(approvals).toHaveLength(3);
+    });
+
+    test('main\'s deadline answers "Request timed out", withdraws the approval, and an approval after it writes nothing', async () => {
+      const env = setup();
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      expect(approvals[0].signal.aborted).toBe(false);
+      env.expire();
+      expect(await answer).toEqual({ error: { message: 'Request timed out' } });
+      expect(approvals[0].signal.aborted).toBe(true);
+      // The agent's approval goes through anyway, later.
+      approvals[0].resolve({ status: 'approved', walletIndex: 0 });
+      await flush();
+      expect(env.state.grants).toEqual([]);
+      expect(env.state.lastUsed).toEqual([]);
+      // And the document may ask again.
+      page.ask('eth_requestAccounts');
+      await flush();
+      expect(approvals).toHaveLength(2);
+    });
+
+    test('a connected site\'s agent approval after the deadline doesn\'t touch its grant either', async () => {
+      const env = setup();
+      env.state.permissions.set(KEY_A, { origin: KEY_A, walletIndex: 0, chainId: 1 });
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      env.expire();
+      await answer;
+      approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+      await flush();
+      expect(env.state.lastUsed).toEqual([]);
+      expect(env.state.permissions.get(KEY_A)).toMatchObject({ walletIndex: 0, chainId: 1 });
+    });
+
+    test('a document that goes while the approval is open: withdrawn, and nothing written', async () => {
+      const env = setup();
+      const approvals = withAgent(env, { withdrawOnAbort: true });
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      page.guest.commit(OTHER);
+      expect(await answer).toEqual({ gone: true });
+      expect(approvals[0].signal.aborted).toBe(true);
+      await flush();
+      expect(env.state.grants).toEqual([]);
+    });
+
+    describe('a DNS name over IPNS', () => {
+      function named(options = {}) {
+        const env = setup();
+        env.names.set(NAME, IPNS_KEY);
+        const approvals = withAgent(env, { pageUrl: `ipns://${IPNS_KEY}/docs`, ...options });
+        const page = env.tab(`ipns://${IPNS_KEY}/docs`, { bind: NAME });
+        return { env, page, approvals };
+      }
+
+      test('an honest named page connects under custody, under its name', async () => {
+        const { env, page, approvals } = named();
+        const answer = page.ask('eth_requestAccounts');
+        await flush();
+        env.resolutions.length = 0;
+        approvals[0].resolve({ status: 'approved', walletIndex: 0 });
+        expect(await answer).toEqual({ result: [ACCOUNT] });
+        expect(env.state.grants).toEqual([{ key: NAME, walletIndex: 0, chainId: 100 }]);
+        // Checked again before the write.
+        expect(env.resolutions).toEqual([NAME]);
+      });
+
+      test('a name that moves while the agent\'s approval is open gets no grant', async () => {
+        const { env, page, approvals } = named();
+        const answer = page.ask('eth_requestAccounts');
+        await flush();
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        approvals[0].resolve({ status: 'approved', walletIndex: 0 });
+        expect(await answer).toEqual(NO_ADDRESS);
+        expect(env.state.grants).toEqual([]);
+      });
+
+      test('a name that has moved before it asks never reaches the agent', async () => {
+        const { env, page, approvals } = named();
+        await flush();
+        env.names.set(NAME, OTHER_IPNS_KEY);
+        expect(await page.ask('eth_requestAccounts')).toEqual(NO_ADDRESS);
+        expect(approvals).toEqual([]);
+        expect(env.deps.agentWalletRequest).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('a DNS name over IPNS', () => {
@@ -449,6 +636,9 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       pending.shift().answer(IPNS_KEY);
       await flush();
       const connect = page.ask('eth_requestAccounts');
+      await flush();
+      // Its checks before the agent's route and before the grant is read.
+      pending.shift().answer(IPNS_KEY);
       await flush();
       pending.shift().answer(IPNS_KEY);
       await flush();

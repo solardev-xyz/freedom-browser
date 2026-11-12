@@ -1698,7 +1698,15 @@ class FreedomAgentService {
     };
   }
 
-  async handleWalletRequest(tabId, payload) {
+  /**
+   * A page's wallet request from a tab of the active run. `pageRequest`,
+   * from main for a request it attested (freedom-core design 0011, PRQ-4):
+   * `attested` (the key the request acts under, and the page's transport
+   * key), `signal` (aborted when main answers the request: its approval is
+   * withdrawn), and `beforeEffect`/`effectAllowed`, which the effect waits
+   * on.
+   */
+  async handleWalletRequest(tabId, payload, pageRequest = null) {
     const run = this.activeRun;
     if (
       !this.walletController ||
@@ -1716,8 +1724,11 @@ class FreedomAgentService {
     const pageState = this.controller.getPageState?.(tabId);
     if (!pageState?.url) return { handled: false };
 
-    const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload,
-      run.scopedController?.getTabController?.(tabId)?.delegationSignal);
+    const delegationSignal = run.scopedController?.getTabController?.(tabId)?.delegationSignal;
+    const signal = pageRequest?.signal
+      ? AbortSignal.any([delegationSignal || run.workspaceAbortController?.signal, pageRequest.signal].filter(Boolean))
+      : delegationSignal;
+    const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest);
     run.pendingWalletRequests.add(handling);
     run.scopedController?.setExternalApprovalBarrier?.(handling);
     try {
@@ -3189,7 +3200,7 @@ class FreedomAgentService {
     }
   }
 
-  async #handleActiveWalletRequest(run, tabId, pageState, payload, signal) {
+  async #handleActiveWalletRequest(run, tabId, pageState, payload, signal, pageRequest = null) {
     const toolCallId = `wallet_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
     const progress = activityProgress(OPERATIONS.WALLET_ACTION, {
       origin: pageState.url,
@@ -3223,6 +3234,11 @@ class FreedomAgentService {
         pageUrl: pageState.url,
         conversationId: run.conversationId,
         requestApproval: (request) => this.#requestApproval(run, request, null, signal),
+        ...(pageRequest?.attested && {
+          attested: pageRequest.attested,
+          beforeEffect: pageRequest.beforeEffect,
+          effectAllowed: pageRequest.effectAllowed,
+        }),
       },
       payload
     );

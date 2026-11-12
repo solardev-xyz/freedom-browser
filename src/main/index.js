@@ -706,7 +706,8 @@ async function bootstrap() {
   // A page's connect from a tab the agent holds goes to the agent service,
   // as the chrome's agent route took it before (0011 PRQ-4).
   setAgentWalletRoute(
-    (guestId, request) => agentRuntime?.handlePageWalletRequest?.(guestId, request) ?? { handled: false }
+    (guestId, request, options) =>
+      agentRuntime?.handlePageWalletRequest?.(guestId, request, options) ?? { handled: false }
   );
   registerSelectedChainIpc();
   registerFeedStoreIpc();

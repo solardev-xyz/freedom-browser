@@ -375,17 +375,29 @@ class AgentWalletController {
     }
 
     const pageKey = getPermissionKey(context.pageUrl);
-    const requestKey = getPermissionKey(payload.displayUrl);
-    if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) {
-      return {
-        handled: true,
-        error: providerError(4100, 'Wallet request origin did not match the page'),
-        errorCode: ERROR_CODES.POLICY_DENIED,
-      };
+    const originMismatch = {
+      handled: true,
+      error: providerError(4100, 'Wallet request origin did not match the page'),
+      errorCode: ERROR_CODES.POLICY_DENIED,
+    };
+    let permissionKey;
+    if (context.attested) {
+      // A request main attested (freedom-core design 0011, PRQ-4): it acts
+      // under main's key (a DNS name over IPNS keeps its name), on the page
+      // this run sees on the same transport. Only connecting has moved to
+      // main so far.
+      if (payload.method !== 'eth_requestAccounts') return { handled: false };
+      const { key, transportKey } = context.attested;
+      if (typeof key !== 'string' || !key || !pageKey || pageKey !== transportKey) return originMismatch;
+      permissionKey = key;
+    } else {
+      const requestKey = getPermissionKey(payload.displayUrl);
+      if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) return originMismatch;
+      permissionKey = pageKey;
     }
 
     try {
-      const outcome = await this.#executeRequest(context, payload, pageKey);
+      const outcome = await this.#executeRequest(context, payload, permissionKey);
       return {
         handled: true,
         result: outcome.providerResult,
@@ -447,8 +459,18 @@ class AgentWalletController {
           'The selected wallet is unavailable'
         );
       }
-      if (permission) {
-        if (permission.walletIndex !== selected.index) {
+      // A request main attested writes only while main still holds it: not
+      // answered (its deadline, its page gone), the name checked again, and
+      // the page still under its key in the same run as the write.
+      if (context.attested) {
+        const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
+        if (!ready || typeof context.effectAllowed !== 'function' || context.effectAllowed() !== true) {
+          throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
+        }
+      }
+      const current = context.attested ? this.getPermission(permissionKey) : permission;
+      if (current) {
+        if (current.walletIndex !== selected.index) {
           this.updateWalletIndex(permissionKey, selected.index);
         }
         this.updateLastUsed(permissionKey, chainId);

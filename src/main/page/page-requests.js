@@ -250,6 +250,10 @@ function createPageRequests({
     trace,
   });
   const watchedWindows = new Set();
+  // document key -> the record whose wallet operation outside main's
+  // prompts (the agent service's own approval) holds the document's one
+  // wallet slot (`walletOperation`).
+  const walletOperations = new Map();
 
   const budgets = createPageBudgets({
     budgets: budgetBounds,
@@ -299,6 +303,9 @@ function createPageRequests({
       keyless: undefined,
       // What runs once the answer has reached the document (`afterAnswer`).
       after: null,
+      // Aborted when the record is answered, for a wallet operation it runs
+      // (`walletOperation`).
+      aborter: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -344,6 +351,10 @@ function createPageRequests({
     }
     record.answered = true;
     stopDeadline(record);
+    // A wallet operation still running for it (its deadline, its document
+    // gone) is told to stop, and its document's slot is free again.
+    if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
+    record.aborter?.abort();
     const current = documents.isCurrent(record.requester);
     // A request that read under a name answers as a keyless document's
     // would once the name no longer holds, checked in the same run as the
@@ -445,6 +456,7 @@ function createPageRequests({
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       prompt: (spec) => prompt(record, spec),
+      walletOperation: (run) => walletOperation(record, run),
       afterAnswer: (fn) => {
         if (typeof fn === 'function' && !record.answered) record.after = fn;
       },
@@ -466,7 +478,7 @@ function createPageRequests({
   async function prompt(record, { kind, view = {}, choices } = {}) {
     if (!KIND_SET.has(kind)) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
-    if (WALLET_KINDS.has(kind) && prompts.walletPromptOpen(record.key)) {
+    if (WALLET_KINDS.has(kind) && walletSlotTaken(record)) {
       trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
       return { error: { ...PROMPT_PENDING } };
     }
@@ -521,6 +533,44 @@ function createPageRequests({
       // A test hook never changes what main does.
     }
     return inPlace;
+  }
+
+  // Whether the record's document already has a wallet request waiting on
+  // the user: a wallet prompt of main's, or another record's wallet
+  // operation.
+  function walletSlotTaken(record) {
+    if (prompts.walletPromptOpen(record.key)) return true;
+    const holder = walletOperations.get(record.key);
+    return Boolean(holder) && holder !== record;
+  }
+
+  /**
+   * A wallet operation that asks the user somewhere other than main's
+   * prompts: the agent service's own approval, for a tab the agent holds
+   * (design 0011, "Agent custody"). It takes the document's one wallet slot
+   * as a prompt does, so the document's next wallet request gets `-32002`
+   * while it runs, and it lives within the record: `run({ signal, open })`
+   * gets a signal aborted when main answers the record (its deadline, its
+   * document gone, its window closed) and `open()`, true until then. An
+   * effect the operation makes must check `open()` first.
+   *
+   * Settles with `{ done: value }`, or `{ error }`: `-32002` while the slot
+   * is taken, or a record already answered.
+   */
+  async function walletOperation(record, run) {
+    if (record.answered) return { error: { ...INTERNAL_ERROR } };
+    if (walletSlotTaken(record)) {
+      trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
+      return { error: { ...PROMPT_PENDING } };
+    }
+    walletOperations.set(record.key, record);
+    if (!record.aborter) record.aborter = new AbortController();
+    try {
+      const value = await run({ signal: record.aborter.signal, open: () => !record.answered });
+      return { done: value };
+    } finally {
+      if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
+    }
   }
 
   /**

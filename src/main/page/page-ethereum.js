@@ -77,8 +77,9 @@ const ETHEREUM_CONNECT_METHODS = Object.freeze(['eth_requestAccounts', 'wallet_s
 const ETHEREUM_PAGE_METHODS = Object.freeze([...ETHEREUM_READ_METHODS, ...ETHEREUM_CONNECT_METHODS]);
 
 // How main reaches the agent service for a tab it holds (index.js sets it
-// once the agent runtime exists): `(guestId, request) => ({ handled, result,
-// error })`, `{ handled: false }` for a tab the agent doesn't hold.
+// once the agent runtime exists): `(guestId, request, { signal, attested,
+// beforeEffect, effectAllowed }) => ({ handled, result, error })`,
+// `{ handled: false }` for a tab the agent doesn't hold.
 let agentWalletRoute = null;
 
 /** index.js: the agent service's wallet route, for the tabs it holds. */
@@ -103,8 +104,8 @@ function defaultDependencies() {
     updateLastUsed: (key, chainId) => require('../wallet/dapp-permissions').updateLastUsed(key, chainId),
     selectChainForPage: (windowId, chainId) =>
       require('../wallet/selected-chain').selectChainForPage(windowId, chainId),
-    agentWalletRequest: async (guestId, request) =>
-      (agentWalletRoute ? agentWalletRoute(guestId, request) : { handled: false }),
+    agentWalletRequest: async (guestId, request, options) =>
+      (agentWalletRoute ? agentWalletRoute(guestId, request, options) : { handled: false }),
   };
 }
 
@@ -240,21 +241,33 @@ function createEthereumDispatchers(deps = {}) {
 
   // A tab the agent holds: the agent service answers, with its own
   // approval, as it did through the chrome (`offerAgentWalletRequest`).
-  // Custody is read live, at this request.
-  async function agentAnswer(context) {
+  // Custody is read live, at this request. The agent's approval runs inside
+  // the request's life (`walletOperation`): it holds the document's one
+  // wallet slot, it is withdrawn when main answers the request (its
+  // deadline, its document gone), and the grant the agent writes waits on
+  // main: the request still open, the name checked again, and the document
+  // still holding the key in the same run as the write. The agent acts
+  // under the attested key, which for a DNS name over IPNS is the name.
+  async function agentAnswer(context, keyless) {
     const { requester, method, params } = context;
-    let outcome;
-    try {
-      outcome = await agentWalletRequest(requester.guest, {
-        method,
-        params,
-        displayUrl: requester.url,
-        permissionKey: requester.key,
-        chainId: chainIdOf(requester),
-      });
-    } catch {
-      return null;
-    }
+    const operation = await context.walletOperation(async ({ signal, open }) => {
+      try {
+        return await agentWalletRequest(
+          requester.guest,
+          { method, params, chainId: chainIdOf(requester) },
+          {
+            signal,
+            attested: { key: requester.key, transportKey: requester.transportKey },
+            beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
+            effectAllowed: () => open() && context.holdsKey(),
+          }
+        );
+      } catch {
+        return null;
+      }
+    });
+    if (operation.error) return { error: operation.error };
+    const outcome = operation.done;
     if (!outcome || typeof outcome !== 'object' || outcome.handled !== true) return null;
     return outcome.error ? { error: outcome.error } : { result: outcome.result };
   }
@@ -301,11 +314,14 @@ function createEthereumDispatchers(deps = {}) {
   async function requestAccounts(context) {
     const { requester } = context;
     if (!requester.key) return { error: { ...NO_ADDRESS } };
-    const agent = await agentAnswer(context);
-    if (agent) return agent;
-    // Name-revalidated: before the grant is read, after every wait, and the
-    // document must hold the key at the write itself.
+    // Name-revalidated: before the key is first used (the agent's route
+    // included), after every wait, and the document must hold the key at
+    // the write itself.
     const keyless = { keyless: { error: { ...NO_ADDRESS } } };
+    if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    const agent = await agentAnswer(context, keyless);
+    // A name that moved meanwhile answers as a keyless document's would.
+    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
     if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
     const permission = getPermission(requester.key);
     if (permission) {

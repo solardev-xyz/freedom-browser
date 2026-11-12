@@ -389,4 +389,21 @@ describe('dapp-permissions — the chrome writes no grant (0011 PRQ-4)', () => {
     expect(ipcHandlers['dapp:revoke-permission']({}, 'https://swap.example')).toBe(true);
     expect(getPermission('https://swap.example')).toBeNull();
   });
+
+  test('dapp:update-last-used marks a site used, and refuses a chain the chrome supplies', () => {
+    grantPermission('https://swap.example', 0, 100);
+    const before = getPermission('https://swap.example').lastUsed;
+    jest.spyOn(Date, 'now').mockReturnValue(before + 5000);
+    expect(ipcHandlers['dapp:update-last-used']({}, 'https://swap.example')).toBe(true);
+    expect(getPermission('https://swap.example')).toMatchObject({ chainId: 100, lastUsed: before + 5000 });
+    for (const chainId of [1, null, '0x1', 0]) {
+      expect(() => ipcHandlers['dapp:update-last-used']({}, 'https://swap.example', chainId)).toThrow(
+        'A dApp connection’s chain is set only by the page’s own request'
+      );
+    }
+    expect(getPermission('https://swap.example')).toMatchObject({ chainId: 100, lastUsed: before + 5000 });
+    // A site with no grant gets none.
+    expect(ipcHandlers['dapp:update-last-used']({}, 'https://other.example')).toBe(false);
+    expect(getPermission('https://other.example')).toBeNull();
+  });
 });
