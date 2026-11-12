@@ -81,6 +81,8 @@ const {
   getRecord,
   useIndividual,
   registerPermissionManifestIpc,
+  checkPageManifest,
+  decidePageManifest,
   _resetForTests,
 } = require('./permission-manifests');
 const { handleBzzRequest: mockHandleBzzRequest } = require('./bzz-protocol');
@@ -721,5 +723,50 @@ describe('permission manifests', () => {
 
     expect(tabB.token).not.toBe(tabA.token);
     expect(() => decideManifest(tabA.token, 'allow')).toThrow('stale');
+  });
+});
+
+// A page's request through main (freedom-core design 0011, PRQ-7b): main
+// names the site and the URL, fetches on the guest's own session, and
+// decides the consent itself once the page's guard passes inside the lock.
+describe('permission manifests for a page through main', () => {
+  test('checks for main\'s key and URL on the guest\'s session; a guest that has gone gets nothing fetched', async () => {
+    mockHandleBzzRequest.mockResolvedValue(responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    const guest = liveSender();
+    const result = await checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/page', guest, eager: true });
+    expect(result).toMatchObject({ kind: 'consent', token: expect.any(String), model: { origin: 'app.eth' } });
+    expect(mockHandleBzzRequest.mock.calls[0][0].url).toBe('bzz://app.eth/freedom-manifest.json');
+    expect(mockHandleBzzRequest.mock.calls[0][1]).toEqual({ session: { partition: 'default' }, partition: null, isPrivate: false });
+    guest.destroyed = true;
+    expect(await checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/page', guest, eager: true })).toEqual({ kind: 'unresolved' });
+    expect(mockHandleBzzRequest).toHaveBeenCalledTimes(1);
+  });
+
+  test('decides only once the guard passes: a recheck or a key that fails writes nothing, and the token stays to decide', async () => {
+    mockHandleBzzRequest.mockResolvedValue(responseFor(manifest({ publish: { why: 'Publish releases' } })));
+    const { token } = await checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/', guest: liveSender(), eager: true });
+    const order = [];
+    expect(await decidePageManifest('app.eth', token, 'allow', {
+      recheck: async () => false,
+      holds: () => true,
+    })).toEqual({ refused: true });
+    expect(await decidePageManifest('app.eth', token, 'allow', {
+      recheck: async () => true,
+      holds: () => false,
+    })).toEqual({ refused: true });
+    expect(mockPermissionState['app.eth']).toBeUndefined();
+    const decided = await decidePageManifest('app.eth', token, 'allow', {
+      recheck: async () => {
+        order.push('recheck');
+        return true;
+      },
+      holds: () => {
+        order.push('holds');
+        return true;
+      },
+    });
+    expect(decided).toEqual({ allowed: true, mode: 'allow' });
+    expect(order).toEqual(['recheck', 'holds']);
+    expect(mockPermissionState['app.eth']).toMatchObject({ origin: 'app.eth', autoApprove: { publish: true } });
   });
 });

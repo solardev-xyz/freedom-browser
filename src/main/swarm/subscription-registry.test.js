@@ -231,3 +231,63 @@ describe('subscription-registry', () => {
     expect(opened[2].cancel).not.toHaveBeenCalled();
   });
 });
+
+// A page's subscription through main (freedom-core design 0011, PRQ-7b):
+// bound to its document, not to a webContents.
+describe('subscription-registry: subscriptions bound to a document', () => {
+  let opened;
+
+  beforeEach(() => {
+    registry._reset();
+    const factory = makeSocketFactory();
+    opened = factory.opened;
+    registry.configure({ openSocket: factory.openSocket, deliver: jest.fn(), maxSubscriptionsPerOrigin: 3, establishTimeoutMs: 5000 });
+  });
+
+  async function open(document, origin = 'a.eth', key = 'cd'.repeat(32)) {
+    const promise = registry.subscribe({ origin, document, deliverTo: jest.fn(), kind: 'pss', key });
+    opened[opened.length - 1].resolveEstablished();
+    return (await promise).subscriptionId;
+  }
+
+  test('a document\'s subscriptions end with it, and no other\'s', async () => {
+    await open('7:1');
+    await open('7:1');
+    const other = await open('8:1');
+    registry.cancelByDocument('7:1');
+    expect(registry.countByOrigin('a.eth')).toBe(1);
+    expect(() => registry.unsubscribeDocument('8:1', other)).not.toThrow();
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+    expect(opened[0].cancel).toHaveBeenCalled();
+  });
+
+  test('unsubscribeDocument closes only the document\'s own; a webContents\' subscription is none of a document\'s', async () => {
+    const own = await open('7:1');
+    const theirs = await open('8:1');
+    const legacy = registry.subscribe({ origin: 'a.eth', webContentsId: 9, kind: 'pss', key: 'cd'.repeat(32) });
+    const { subscriptionId: chrome } = await legacy;
+    for (const id of [theirs, chrome, 'nope']) {
+      expect(() => registry.unsubscribeDocument('7:1', id)).toThrow(expect.objectContaining({ reason: 'subscription_not_found' }));
+    }
+    registry.unsubscribeDocument('7:1', own);
+    expect(registry.countByOrigin('a.eth')).toBe(2);
+    // A document's end never closes a webContents' subscription.
+    registry.cancelByDocument(undefined);
+    expect(registry.countByOrigin('a.eth')).toBe(2);
+  });
+
+  test('a document that ends while its subscription establishes gets no id, and holds no slot', async () => {
+    const promise = registry.subscribe({ origin: 'a.eth', document: '7:1', deliverTo: jest.fn(), kind: 'pss', key: 'ef'.repeat(32) });
+    registry.cancelByDocument('7:1');
+    opened[0].resolveEstablished();
+    await expect(promise).rejects.toMatchObject({ reason: 'subscription_cancelled' });
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+  });
+
+  test('cancelById closes one, if still open', async () => {
+    const id = await open('7:1');
+    registry.cancelById(id);
+    registry.cancelById(id);
+    expect(registry.countByOrigin('a.eth')).toBe(0);
+  });
+});

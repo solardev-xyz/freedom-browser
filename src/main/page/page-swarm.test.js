@@ -4,7 +4,13 @@ const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { CLASS, methodRow } = require('./page-methods');
-const { SWARM_READ_METHODS, SWARM_PAGE_METHODS, createSwarmDispatchers } = require('./page-swarm');
+const {
+  SWARM_READ_METHODS,
+  SWARM_CONNECT_METHODS,
+  SWARM_MESSAGING_METHODS,
+  SWARM_PAGE_METHODS,
+  createSwarmDispatchers,
+} = require('./page-swarm');
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
 const HASH = 'a'.repeat(64);
@@ -176,7 +182,14 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
       .match(/'[^']+'/g)
       .map((m) => m.slice(1, -1));
     expect([...SWARM_READ_METHODS].sort()).toEqual(publicMethods.filter((m) => m !== 'swarm_unsubscribe').sort());
-    expect(SWARM_PAGE_METHODS).toEqual(SWARM_READ_METHODS);
+    // And PRQ-7b's: connecting, and the methods its messaging handler ran.
+    expect(SWARM_CONNECT_METHODS).toEqual(['swarm_requestAccess']);
+    const messagingMethods = /method === 'swarm_getMessagingIdentity' \|\|[\s\S]*?\) \{\s*result = await handleMessagingRequest/
+      .exec(source)[0]
+      .match(/'swarm_[A-Za-z]+'/g)
+      .map((m) => m.slice(1, -1));
+    expect([...SWARM_MESSAGING_METHODS].sort()).toEqual(messagingMethods.sort());
+    expect(SWARM_PAGE_METHODS).toEqual([...SWARM_READ_METHODS, ...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS]);
     expect(Object.keys(createSwarmDispatchers({ identityWalletEnabled: () => true, execute: jest.fn() })).sort()).toEqual(
       SWARM_PAGE_METHODS.map((m) => `swarm:${m}`).sort()
     );
@@ -190,6 +203,12 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     // Each has its row, of the class the design gives it.
     for (const method of PERMISSION_FREE) expect(methodRow('swarm', method).class).toBe(CLASS.PERMISSION_FREE);
     for (const method of UNDER_KEY) expect(methodRow('swarm', method).class).toBe(CLASS.NAME_REVALIDATED);
+    for (const method of [...SWARM_CONNECT_METHODS, ...SWARM_MESSAGING_METHODS]) {
+      expect({ method, class: methodRow('swarm', method).class }).toEqual({
+        method,
+        class: method === 'swarm_unsubscribe' ? CLASS.EXEMPT : CLASS.NAME_REVALIDATED,
+      });
+    }
   });
 
   test('every method runs under the attested key, for each URL form, with the page\'s params', async () => {
@@ -205,7 +224,7 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     const env = setup();
     for (const [url, key] of forms) {
       const page = env.tab(url);
-      for (const method of SWARM_PAGE_METHODS) {
+      for (const method of SWARM_READ_METHODS) {
         env.state.calls.length = 0;
         const params = { reference: 'b'.repeat(64), name: 'chat' };
         expect({ url, method, answer: await page.ask(method, params) }).toEqual({
@@ -239,6 +258,7 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
     for (const method of SWARM_PAGE_METHODS) {
       expect(await page.ask(method)).toEqual({ error: { code: 4900, message: 'Swarm provider is not available' } });
     }
+    expect(env.trace.filter((e) => e.kind === 'handle-opened')).toEqual([]);
     expect(env.execute).not.toHaveBeenCalled();
   });
 

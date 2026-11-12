@@ -281,10 +281,21 @@ describe('swarm-provider-ipc', () => {
       'swarm_readSingleOwnerChunk',
       'swarm_readFeedEntry',
       'swarm_listFeeds',
+      'swarm_requestAccess',
+      'swarm_getMessagingIdentity',
+      'swarm_subscribe',
+      'swarm_unsubscribe',
+      'swarm_sendPss',
+      'swarm_sendGsoc',
     ]);
     for (const origin of ['myapp.eth', 'https://app.example', `bzz://${'a'.repeat(64)}`]) {
       for (const method of SWARM_PAGE_METHODS) {
-        const answer = await handler({}, { method, params: { reference: 'a'.repeat(64), name: 'chat' }, origin });
+        const answer = await handler({}, {
+          method,
+          params: { reference: 'a'.repeat(64), name: 'chat', kind: 'pss', topic: 'room', subscriptionId: 'x' },
+          origin,
+          meta: { webContentsId: 9, approval: 'user' },
+        });
         expect({ origin, method, answer }).toEqual({
           origin,
           method,
@@ -307,10 +318,15 @@ describe('swarm-provider-ipc', () => {
     expect(mockReadFeedPayload).not.toHaveBeenCalled();
     expect(mockGetPublishReadiness).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockRegistrySubscribe).not.toHaveBeenCalled();
+    expect(mockRegistryUnsubscribe).not.toHaveBeenCalled();
+    expect(mockSendPss).not.toHaveBeenCalled();
+    expect(mockSendGsoc).not.toHaveBeenCalled();
+    expect(mockGetMessagingIdentity).not.toHaveBeenCalled();
     // A method still on the chrome's route keeps it.
-    expect((await handler({}, { method: 'swarm_requestAccess', params: {}, origin: 'myapp.eth' })).result).toMatchObject({
-      connected: true,
-      origin: 'myapp.eth',
+    expect((await handler({}, { method: 'swarm_getUploadStatus', params: {}, origin: 'myapp.eth' })).error).toMatchObject({
+      code: -32602,
+      message: 'tagUid must be a positive integer',
     });
   });
 
@@ -468,8 +484,6 @@ describe('swarm-provider-ipc', () => {
           const refused = await call('swarm_publishData', meta);
           expect(refused.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
         }
-        const send = await call('swarm_sendPss', { webContentsId: 9, approval: 'auto' });
-        expect(send.error).toMatchObject({ code: 4100, data: { reason: 'agent_custody' } });
         expect(mockPublishData).not.toHaveBeenCalled();
 
         mockPreFlightOk();

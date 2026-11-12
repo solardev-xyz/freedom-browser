@@ -3069,6 +3069,13 @@ describe('page requests', () => {
       'swarm_readSingleOwnerChunk',
       'swarm_readFeedEntry',
       'swarm_listFeeds',
+      // Connecting and messaging (PRQ-7b).
+      'swarm_requestAccess',
+      'swarm_getMessagingIdentity',
+      'swarm_subscribe',
+      'swarm_unsubscribe',
+      'swarm_sendPss',
+      'swarm_sendGsoc',
     ]);
     const routed = swarmMainAnswered(
       load({ argv: ['electron', bootArg(boot({ testPageRoutes: ['swarm:swarm_publishData', 'ethereum:eth_sign'] }))] })
