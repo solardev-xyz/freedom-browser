@@ -30,9 +30,11 @@
  *   yet" (`RADICLE_SERVICE_UNSUPPORTED`) until its own step moves it: the
  *   other collected results as values (`repoInfo`, `seeders`,
  *   `listSeededRepos`, `listRepos`), whose callers move into scopes; the
- *   handlers' parsed and `*Raw` reads (they move to `callStream`); the
- *   network operations, the writes and the import. `isStarted` says whether
- *   the service node runs.
+ *   handlers' parsed and `*Raw` reads, which the `rad:` and `radapi:`
+ *   handlers don't call on the service (they read through `callStream`
+ *   and `callScoped`, in their request's dweb admission); the network
+ *   operations, the writes and the import. `isStarted` says whether the
+ *   service node runs.
  */
 
 const { AsyncLocalStorage } = require('node:async_hooks');
@@ -193,10 +195,13 @@ function serviceOnly(name) {
  * A read passed through on the service (0008, "JSON results"): `{ head:
  * { content_type, bytes }, body }`, `body` a byte stream of the JSON. For
  * the handlers' reads. `signal`, or the body's `cancel()`, cancels it.
+ * `admitted`: the caller's request holds a slot of main's dweb admission
+ * (the `rad:` and `radapi:` handlers), so the read takes none of the other
+ * callers' (radicle/radicle-service-backend.js).
  */
-function callStream(op, args = {}, { signal = null } = {}) {
+function callStream(op, args = {}, { signal = null, admitted = false } = {}) {
   try {
-    return serviceOnly('callStream').callStream(op, args, { signal });
+    return serviceOnly('callStream').callStream(op, args, { signal, admitted });
   } catch (err) {
     return Promise.reject(err);
   }
@@ -208,11 +213,11 @@ function callStream(op, args = {}, { signal = null } = {}) {
  * main's collection budget holds it until the scope settles. The value
  * itself can't be what the scope resolves to: it is used there. Only the
  * closed list of small results (radicle/radicle-service-backend.js's
- * COLLECTED_CAPS).
+ * COLLECTED_CAPS). `admitted` is callStream's.
  */
-function callScoped(op, args, scope, { signal = null } = {}) {
+function callScoped(op, args, scope, { signal = null, admitted = false } = {}) {
   try {
-    return serviceOnly('callScoped').callScoped(op, args, scope, { signal });
+    return serviceOnly('callScoped').callScoped(op, args, scope, { signal, admitted });
   } catch (err) {
     return Promise.reject(err);
   }
@@ -531,7 +536,8 @@ module.exports = {
   listSeededRepos: routed('listSeededRepos', listSeededRepos),
   repoInfo: routed('repoInfo', repoInfo),
   seeders: routed('seeders', seeders),
-  // The handlers' reads: callStream on the service.
+  // The handlers' reads on the add-on: on the service, the handlers read
+  // through callStream instead (radicle-api-protocol.js).
   issues: routed('issues', issues),
   issue: routed('issue', issue),
   patches: routed('patches', patches),
