@@ -878,6 +878,8 @@ function loadBridge(world, constants) {
     './radicle-manager': {
       getCurrentStatus: () => ({ status: 'running' }),
       isDisabledForProfile: () => false,
+      // The add-on: no service generation, so no write refusal (plan B10).
+      radicleWriteRefusal: () => null,
       STATUS: { RUNNING: 'running' },
     },
     './radicle-embedded': embedded,
