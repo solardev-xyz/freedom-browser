@@ -659,6 +659,43 @@ describe("readiness (0008, Main's side)", () => {
     expect(node.onChange).toHaveBeenLastCalledWith('running', node);
   });
 
+  // Plan B10 (0008, Main's side, "The active identity belongs to the
+  // generation"): the identity is `rad.identity`'s reply, one object for the
+  // generation, and a crash's restart has its own.
+  test("the generation's identity is rad.identity's reply, the same object while it runs, and a restart's is another", async () => {
+    let throwaway = 0;
+    const script = {
+      identity: (message, c) => {
+        throwaway += 1;
+        c.result(message.id, { did: `did:key:z6MkThrowaway${throwaway}`, nid: `z6MkThrowaway${throwaway}`, ephemeral: true });
+      },
+      // rad.start names another DID: the node's stays rad.identity's.
+      start: (message, c) => c.result(message.id, { did: 'did:key:z6MkOther', nid: 'z6MkOther', alias: 'FreedomBrowser' }),
+    };
+    keys.vault.exists = false;
+    keys.vault.unlocked = false;
+    const node = await running(script);
+    const first = node.activeIdentity();
+    expect(first).toEqual({
+      did: 'did:key:z6MkThrowaway1',
+      nid: 'z6MkThrowaway1',
+      alias: 'FreedomBrowser',
+      ephemeral: true,
+    });
+    expect(Object.isFrozen(first)).toBe(true);
+    await clock.advance(HEALTH_INTERVAL_MS);
+    expect(node.activeIdentity()).toBe(first);
+
+    child(0).exit(70);
+    await settle();
+    expect(node.activeIdentity()).toBeNull();
+    await clock.advance(500);
+    expect(node.state).toBe('running');
+    const second = node.activeIdentity();
+    expect(second).not.toBe(first);
+    expect(second).toMatchObject({ did: 'did:key:z6MkThrowaway2', ephemeral: true });
+  });
+
   test("a generation that ended isn't up, and its identity goes with it", async () => {
     const node = await running();
     child(0).exit(70);
@@ -856,6 +893,120 @@ describe("a clone's progress (0008, Methods and Progress)", () => {
       code: 'stopped',
     });
     await expect(node.cloneRepo(RID, 120000)).rejects.toThrow('The Radicle node is not running');
+    expect(service.children).toHaveLength(0);
+  });
+});
+
+// Plan B13 (0008, "The escape", Main's view): each generation's report of
+// the quarantine, the stats' count, rad.quarantine_list and rad.remove_repo.
+describe('the quarantine (0008, "The escape")', () => {
+  const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+  const QID = '0123456789abcdef0123456789abcdef';
+  const entry = (n) => ({
+    rid: RID,
+    qid: n.toString(16).padStart(32, '0'),
+    kind: 'cache',
+    step: 'cache',
+    unit: null,
+    since: n,
+  });
+  const reconciled = (count, first) => (m, c) =>
+    c.result(m.id, { was_dirty: true, repaired: {}, quarantined: { count, first } });
+
+  test("each generation keeps its report, up to 16 entries, and the stats' count from then on", async () => {
+    const first = Array.from({ length: 20 }, (_, n) => entry(n));
+    let count = 20;
+    const onQuarantine = jest.fn();
+    const node = await running(
+      {
+        reconcile: reconciled(20, first),
+        stats: (m, c) => c.result(m.id, statsResult({ quarantined_count: count })),
+      },
+      { onQuarantine }
+    );
+    expect(node.quarantineReport()).toEqual({ count: 20, first: first.slice(0, 16) });
+    expect(node.quarantinedCount()).toBe(20);
+    expect(onQuarantine).not.toHaveBeenCalled();
+
+    // An online repair quarantined another: the next stats reply says so.
+    count = 21;
+    await clock.advance(HEALTH_INTERVAL_MS);
+    expect(node.quarantinedCount()).toBe(21);
+    expect(onQuarantine).toHaveBeenCalledTimes(1);
+    expect(onQuarantine).toHaveBeenCalledWith(21, node);
+    await clock.advance(HEALTH_INTERVAL_MS);
+    expect(onQuarantine).toHaveBeenCalledTimes(1);
+    // The report is the reconciliation's still.
+    expect(node.quarantineReport().count).toBe(20);
+  });
+
+  test("a report without a count is none; a crash's restart reports anew", async () => {
+    let reconciles = 0;
+    const node = await running({
+      reconcile: (m, c) => {
+        reconciles += 1;
+        if (reconciles === 1) c.result(m.id, { was_dirty: false, repaired: {}, quarantined: {} });
+        else reconciled(1, [entry(1)])(m, c);
+      },
+      stats: (m, c) => c.result(m.id, statsResult({ quarantined_count: reconciles === 1 ? 0 : 1 })),
+    });
+    expect(node.quarantineReport()).toBeNull();
+    child(0).exit(70);
+    await settle();
+    await clock.advance(500);
+    await settle();
+    expect(node.generation).not.toBeNull();
+    expect(node.quarantineReport()).toEqual({ count: 1, first: [entry(1)] });
+  });
+
+  test('quarantineList is rad.quarantine_list { page } on the running generation', async () => {
+    const node = await running({
+      quarantine_list: (m, c) => c.result(m.id, { entries: [entry(64)], next_page: null }),
+    });
+    await expect(node.quarantineList(1)).resolves.toEqual({
+      entries: [entry(64)],
+      next_page: null,
+    });
+    expect(child().sent('rad.quarantine_list').map((m) => m.params)).toEqual([{ page: 1 }]);
+  });
+
+  test('removeRepo is rad.remove_repo { rid, qid } on the generation picked', async () => {
+    const node = await running({
+      remove_repo: (m, c) => c.result(m.id, { removed: true }),
+    });
+    const target = node.writeTarget();
+    await expect(node.removeRepo(target, RID, QID)).resolves.toEqual({ removed: true });
+    expect(child().sent('rad.remove_repo').map((m) => m.params)).toEqual([{ rid: RID, qid: QID }]);
+  });
+
+  test('not_quarantined proves nothing was removed: it is answered as it came', async () => {
+    const node = await running({
+      remove_repo: (m, c) => c.error(m.id, 'not_quarantined', 'no record has that qid'),
+    });
+    await expect(node.removeRepo(node.writeTarget(), RID, QID)).rejects.toMatchObject({
+      code: 'not_quarantined',
+    });
+  });
+
+  test("a crash with a removal in flight is outcome_unknown; one picked for a generation that ended isn't sent", async () => {
+    const node = await running({ remove_repo: hang });
+    const target = node.writeTarget();
+    const removal = node.removeRepo(target, RID, QID);
+    await settle();
+    child(0).exit(70);
+    await expect(removal).rejects.toMatchObject({ code: 'outcome_unknown' });
+    await clock.advance(500);
+    await settle();
+    await expect(node.removeRepo(target, RID, QID)).rejects.toMatchObject({ code: 'stopped' });
+    expect(child(1).sent('rad.remove_repo')).toHaveLength(0);
+  });
+
+  test('with no generation running, nothing is listed or removed', async () => {
+    const node = newNode();
+    expect(node.quarantineReport()).toBeNull();
+    expect(node.quarantinedCount()).toBeNull();
+    await expect(node.quarantineList(0)).rejects.toMatchObject({ code: 'stopped' });
+    await expect(node.removeRepo(null, RID, QID)).rejects.toMatchObject({ code: 'stopped' });
     expect(service.children).toHaveLength(0);
   });
 });

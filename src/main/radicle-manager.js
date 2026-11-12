@@ -16,7 +16,9 @@ const { isPrivateSender } = require('./private/private-sender');
 // name its storage path, and a RID names the repository, so each goes
 // through redactForLog. The context alone redacts nothing.
 const { redactForLog } = require('./private/private-log-context');
+const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle/radicle-service-backend');
 const seedStatus = require('./radicle/seed-status');
+const { QuarantineView } = require('./radicle/radicle-quarantine');
 // What runs the node (plan B6): the add-on, or the freedom-radicled service.
 const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
 const {
@@ -76,6 +78,38 @@ let serviceNode = null;
 let lastServiceNode = null;
 
 const onService = () => radicleBackendKind() === 'service';
+
+// Radicle's repair as the chrome shows it, under the service (0008, "The
+// deadline" and "The escape", Main's view; plan B13): "still repairing"
+// with Retry, and the quarantined repositories with Remove
+// (radicle/radicle-quarantine.js). Empty under the add-on.
+const quarantineView = new QuarantineView({
+  broadcast: (snapshot) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.RADICLE_REPAIR_UPDATE, snapshot);
+    }
+  },
+  readNames: (rids) => quarantineNames(rids),
+  log,
+});
+
+// The quarantined repositories' names, from the node's `list_repos`,
+// collected (0008, "JSON results"): rid -> name, for those it lists. Only
+// the names leave the scope.
+function quarantineNames(rids) {
+  const wanted = new Set(rids);
+  return embedded.callScoped('list_repos', {}, async (repos) => {
+    const names = new Map();
+    for (const repo of Array.isArray(repos) ? repos : []) {
+      if (wanted.has(repo?.rid) && typeof repo.name === 'string') names.set(repo.rid, repo.name);
+    }
+    return names;
+  });
+}
+
+// A start step's `deadline` the node gave up on: "Radicle is still
+// repairing its data" (radicled-node.js's REPAIRING), with Retry.
+const stillRepairing = (node) => node?.failureCode === 'deadline';
 
 // Required when the service runs, not before: the add-on's builds load none
 // of it.
@@ -407,6 +441,8 @@ async function startServiceInternal({ signal = null } = {}) {
   // One node at a time: one that is starting, waiting for the unlock or
   // restarting is this start already.
   if (currentState === STATUS.RUNNING || serviceNode) return getCurrentStatus();
+  // A new start: the Retry after "still repairing" among them.
+  quarantineView.starting();
   if (isDisabledForProfile()) {
     updateService('radicle', { api: null, gateway: null, mode: MODE.DISABLED });
     setStatusMessage('radicle', 'Node disabled for this profile');
@@ -465,6 +501,9 @@ async function startServiceInternal({ signal = null } = {}) {
     log,
     onFailure: (reason, failed) => handleServiceNodeFailure(reason, failed),
     onChange: (state, changed) => handleServiceNodeChange(state, changed),
+    onQuarantine: (_count, changed) => {
+      if (changed === serviceNode) void quarantineView.changed(changed);
+    },
   });
   serviceNode = node;
   // The service's reads (radicle-embedded.js; 0008, "JSON results") go to
@@ -480,6 +519,7 @@ async function startServiceInternal({ signal = null } = {}) {
     serviceNode = null;
     lastServiceNode = node;
     clearService('radicle');
+    quarantineView.stopped({ repairing: stillRepairing(node) });
     updateState(STATUS.ERROR, node.failureReason || 'Failed to start the Radicle node');
     return getCurrentStatus();
   }
@@ -492,6 +532,7 @@ async function startServiceInternal({ signal = null } = {}) {
   updateState(STATUS.RUNNING);
   log.info('[Radicle] freedom-radicled node started:', node.activeIdentity()?.did);
   seedGeneration(node);
+  void quarantineView.running(node);
   return getCurrentStatus();
 }
 
@@ -519,6 +560,7 @@ function handleServiceNodeFailure(reason, node) {
   serviceNode = null;
   lastServiceNode = node;
   clearService('radicle');
+  quarantineView.stopped({ repairing: stillRepairing(node) });
   updateState(STATUS.ERROR, reason);
 }
 
@@ -535,8 +577,10 @@ function handleServiceNodeChange(state, node) {
   } else if (state === 'running' && currentState === STATUS.STARTING) {
     setStatusMessage('radicle', null);
     updateState(STATUS.RUNNING);
-    // A crash's restart is a new process, which seeds again.
+    // A crash's restart is a new process, which seeds again, and whose
+    // reconciliation reported the quarantine anew.
     seedGeneration(node);
+    void quarantineView.running(node);
   }
 }
 
@@ -549,6 +593,7 @@ async function stopServiceNode({ error = null } = {}) {
   updateState(STATUS.STOPPING);
   serviceNode = null;
   lastServiceNode = null;
+  quarantineView.stopped();
   await node?.stop();
   clearService('radicle');
   updateState(error ? STATUS.ERROR : STATUS.STOPPED, error);
@@ -634,6 +679,49 @@ function stopRadicleAtQuit({ setTimer = setTimeout, clearTimer = clearTimeout } 
     };
     stopped.then(settle, settle);
   });
+}
+
+// ---- the running generation's identity, and write admission ----
+
+/**
+ * The running node's identity under the service (freedom-core design 0008,
+ * Main's side, "The active identity belongs to the generation"):
+ * `rad.identity`'s reply for the generation that runs now, `{ did, nid,
+ * alias, ephemeral }`, kept and dropped with it (radicle/radicled-node.js).
+ * The same frozen object while that generation runs, so a value kept for it
+ * (cob-service.js's identity) can be told from one kept for another. Null
+ * with no generation running, and under the add-on, whose paths are
+ * today's.
+ */
+function activeRadicleIdentity() {
+  if (!onService()) return null;
+  return serviceNode?.activeIdentity() ?? null;
+}
+
+// What main answers for a COB write or the import while the running
+// generation's key is a throwaway one (0008, "Profiles without a vault",
+// Errors `needs_vault`).
+const NEEDS_VAULT = 'needs_vault';
+const NEEDS_VAULT_MESSAGE =
+  "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.";
+
+/**
+ * Whether main may send a COB write or the import now (0008, Main's side):
+ * `{ reason: 'needs_vault', message }` while the service's running
+ * generation is `ephemeral`, else null. Main refuses such a write before
+ * anything is sent, and the service would refuse it again.
+ *
+ * The running generation alone decides: creating, locking, unlocking or
+ * deleting the vault changes nothing until the next start, so a throwaway
+ * node keeps refusing after a vault is created, and a node with the derived
+ * key keeps admitting after a lock or a delete. With no generation running
+ * the write's own path answers (the node isn't running). Under the add-on,
+ * null: today's paths.
+ */
+function radicleWriteRefusal() {
+  return activeRadicleIdentity()?.ephemeral === true
+    ? { reason: NEEDS_VAULT, message: NEEDS_VAULT_MESSAGE }
+    : null;
 }
 
 function requireRunning() {
@@ -779,24 +867,39 @@ async function cancelCloneWithRetry(rid) {
   return false;
 }
 
+/** Whether `err` is a write's `outcome_unknown` on the service: an unseed
+ * it took and didn't confirm (0008, Writes), which may have been made. */
+const outcomeUnknown = (err) => err?.code === 'outcome_unknown';
+
+/**
+ * Stop seeding `rid`. Under the service it is `rad.unseed` (0008, Writes),
+ * on the generation running when it is asked: a write, so one whose outcome
+ * main can't know answers OUTCOME_UNKNOWN and is never sent again, not even
+ * as the re-apply after a fetch in flight.
+ */
 async function unseedRepository(rid) {
-  // Under the service, `rad.unseed` is a write (0008, Writes): its own step.
-  // The fetch's cancel below is `cancelClone`, already the service's.
-  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   const fetchDone = seedStatus.cancelFetch(fullRid);
   const cancellation = fetchDone ? cancelCloneWithRetry(fullRid) : Promise.resolve(false);
+  const unseeded = embedded.unseedRepo(fullRid);
   // Heartwood's pack transfer is a blocking operation, so native
   // cancellation can only be observed when that call returns. Re-apply
   // the policy afterward to prevent a late clone from leaving the repo
   // seeded after the user explicitly unseeded it, even if the immediate
-  // unseed attempt fails.
+  // unseed attempt fails. On the service, not after an unseed whose outcome
+  // is unknown: that would send it again.
   if (fetchDone) {
-    void Promise.all([fetchDone, cancellation])
-      .then(() => embedded.unseedRepo(fullRid))
+    const again = onService()
+      ? unseeded.then(
+          () => true,
+          (err) => !outcomeUnknown(err)
+        )
+      : true;
+    void Promise.all([fetchDone, cancellation, again])
+      .then(([, , reapply]) => (reapply ? embedded.unseedRepo(fullRid) : undefined))
       .catch((err) =>
         log.warn(
           `[Radicle] Final unseed failed for ${redactForLog(fullRid)}:`,
@@ -805,10 +908,13 @@ async function unseedRepository(rid) {
       );
   }
   try {
-    await embedded.unseedRepo(fullRid);
+    await unseeded;
     await pushInfoUpdate();
     return success();
   } catch (err) {
+    if (outcomeUnknown(err)) {
+      return failure('OUTCOME_UNKNOWN', OUTCOME_UNKNOWN_MESSAGE, { rid: fullRid });
+    }
     return failure('UNSEED_FAILED', err.message, { rid: fullRid });
   }
 }
@@ -887,6 +993,19 @@ async function getConnections() {
 
 function getCurrentStatus() {
   return { status: currentState, error: lastError };
+}
+
+/** Radicle's repair as the chrome shows it (radicle-quarantine.js): `{
+ * repairing, count, entries }`. */
+function getRadicleRepair() {
+  return quarantineView.snapshot();
+}
+
+/** Remove, for the quarantined repository the chrome showed with that
+ * `qid` (0008, "The escape"): `rad.remove_repo { rid, qid }`, refused
+ * before anything is sent for any other pair. */
+function removeQuarantinedRepo(rid, qid) {
+  return quarantineView.remove(rid, qid);
 }
 
 function getRadicleDataPath() {
@@ -978,17 +1097,23 @@ const PRIVATE_SEED_FAILURE = () =>
 
 /**
  * Run `work` with the node stopped (R-8): the wipe and key write of an
- * identity re-injection, which must never run under a live node.
+ * identity re-injection, which must never run under a live node. Under the
+ * service, the identity change: the core's write, which takes the home's
+ * gate the stopped process let go (freedom-core design 0008, "Identity
+ * changes"; identity-manager.js changeRadicleIdentityOnService).
  *
  * One lifecycle-queue operation, so every start, stop, alias change and
  * other re-key queues behind it. Inside it, once the earlier operations
  * have run:
  *  - it notes whether the node is running,
- *  - stops it and requires the add-on's proof that it stopped (a stop
- *    without that proof throws, and `work` never runs),
+ *  - stops it and requires proof that it stopped: the add-on's (a stop
+ *    without that proof throws, and `work` never runs), or under the
+ *    service the process's exit,
  *  - awaits `work`,
  *  - and in `finally` starts the node again if it was running: as the new
  *    identity, or as the old one when `work` failed before its key write.
+ *    A start the identity write left blocked (node-identity-guard.js) is
+ *    refused with its reason: the node stays stopped.
  * @template T
  * @param {() => Promise<T>} work
  * @returns {Promise<T>} work's result
@@ -1075,6 +1200,10 @@ function registerRadicleIpc() {
     isPrivateSender(event) ? PRIVATE_SEED_FAILURE() : refetchRepository(rid, pushStatus(event))
   );
   ipcMain.handle(IPC.RADICLE_GET_SEED_STATUS, (_event, rid) => getSeedFetchStatus(rid));
+  ipcMain.handle(IPC.RADICLE_GET_REPAIR, () => getRadicleRepair());
+  ipcMain.handle(IPC.RADICLE_REMOVE_QUARANTINED, (_event, rid, qid) =>
+    removeQuarantinedRepo(rid, qid)
+  );
 }
 
 module.exports = {
@@ -1088,6 +1217,8 @@ module.exports = {
   setUseInjectedIdentity,
   hasInjectedIdentity,
   getCurrentStatus,
+  getRadicleRepair,
+  removeQuarantinedRepo,
   getConnections,
   // The seed paths' reads, for their tests.
   repoExists,
@@ -1106,4 +1237,9 @@ module.exports = {
   STATUS,
   NOT_ON_SERVICE,
   QUIT_REAP_MS,
+  // The running generation's identity, and write admission (plan B10).
+  activeRadicleIdentity,
+  radicleWriteRefusal,
+  NEEDS_VAULT,
+  NEEDS_VAULT_MESSAGE,
 };

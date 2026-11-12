@@ -45,6 +45,9 @@ jest.mock('../radicle-embedded', () => ({
   commentPatch: jest.fn(async () => ({ id: 'd'.repeat(40) })),
 }));
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => false),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   getConnections: jest.fn(async () => ({ success: true, count: 3 })),

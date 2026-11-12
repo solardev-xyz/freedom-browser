@@ -9,7 +9,9 @@
 //
 // Driven through the real renderer screen: the main-process IPC the screen
 // talks to is replaced for this app instance, and the send handler is left
-// hanging to hold the UI in the device-prompt state.
+// hanging to hold the UI in the device-prompt state. A page's prompts are
+// main's (freedom-core design 0011): main sends them to the chrome
+// (`page:prompt`), which renders them once the sidebar is free.
 
 const { test, expect } = require('./fixtures');
 
@@ -39,11 +41,6 @@ function stubMainIpc(electronApp) {
     }));
     replace('ens:resolve-reverse', () => ({ success: false }));
     replace('identity:get-status', () => ({ isUnlocked: true }));
-    replace('dapp:get-permission', () => ({
-      origin: 'https://swap.example',
-      walletIndex: 1000000,
-      chainId: 8453,
-    }));
     replace('wallet:get-derived-wallets', () => ({
       success: true,
       wallets: [{
@@ -60,6 +57,15 @@ function stubMainIpc(electronApp) {
       globalThis.__resolveLedgerSend = resolve;
     }));
   });
+}
+
+const SITE = { key: 'https://swap.example', label: 'https://swap.example' };
+
+// A prompt main shows the chrome for a page's request, as main sends it.
+function sendPagePrompt(electronApp, prompt) {
+  return electronApp.evaluate(({ BrowserWindow }, message) => {
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('page:prompt', message);
+  }, prompt);
 }
 
 // Opens the send screen on a Ledger account with a recipient and amount
@@ -119,28 +125,29 @@ test('a dApp request cannot take the sidebar from an in-flight send confirmation
   await expect(window.locator('#send-back')).toBeDisabled();
   await window.screenshot({ path: 'test-results/send-ledger-in-flight.png' });
 
-  // The page now asks for a signature and for accounts while the device
-  // prompt for the send is still up.
-  await window.evaluate(async () => {
-    const dappSign = await import('./lib/wallet/dapp-sign.js');
-    const dappConnect = await import('./lib/wallet/dapp-connect.js');
-    window.__otherSurfaces = {};
-    dappSign
-      .showDappSignApproval({}, 'https://swap.example', 'personal_sign', ['0xdeadbeef', '0xledger'])
-      .then(
-        (sig) => { window.__otherSurfaces.sign = `resolved:${sig}`; },
-        (err) => { window.__otherSurfaces.sign = `rejected:${err.code || err.message}`; }
-      );
-    await new Promise((resolve, reject) => {
-      dappConnect.showDappConnect('https://swap.example', 'https://swap.example', resolve, reject, {});
-    }).then(
-      () => { window.__otherSurfaces.connect = 'resolved'; },
-      (err) => { window.__otherSurfaces.connect = `rejected:${err.code || err.message}`; }
-    );
+  // Main now shows a page's signature, then its connect, while the device
+  // prompt for the send is still up: each waits for the sidebar.
+  await sendPagePrompt(electronApp, {
+    handle: 'a'.repeat(64),
+    guest: 1,
+    kind: 'eth.sign',
+    site: SITE,
+    view: {
+      method: 'personal_sign',
+      message: { hex: '0xdeadbeef', rawHash: false },
+      account: { index: LEDGER.index, type: 'ledger' },
+      chain: { id: 8453 },
+    },
   });
-
-  await expect.poll(() => window.evaluate(() => window.__otherSurfaces?.sign)).toBe('rejected:-32002');
-  await expect.poll(() => window.evaluate(() => window.__otherSurfaces?.connect)).toBe('rejected:-32002');
+  await sendPagePrompt(electronApp, {
+    handle: 'b'.repeat(64),
+    guest: 1,
+    kind: 'eth.connect',
+    site: SITE,
+    view: { accounts: [LEDGER], defaultIndex: LEDGER.index },
+  });
+  // Several of the waiting prompts' retries pass.
+  await window.waitForTimeout(1000);
 
   // Neither screen took the sidebar; the send confirmation is untouched.
   await expect(window.locator('#sidebar-dapp-sign')).toBeHidden();
@@ -173,6 +180,10 @@ test('a dApp request cannot take the sidebar from an in-flight send confirmation
   await expect(window.locator('#send-success-view')).toBeVisible();
   await expect(window.locator('#sidebar-send')).toBeVisible();
   await expect(window.locator('#send-back')).toBeEnabled();
+  // The page's prompt still waits: the sidebar isn't back on the wallet.
+  await window.waitForTimeout(600);
+  await expect(window.locator('#sidebar-dapp-connect')).toBeHidden();
+  await expect(window.locator('#sidebar-send')).toBeVisible();
   await window.screenshot({ path: 'test-results/send-ledger-success-visible.png' });
 });
 
@@ -184,29 +195,37 @@ test('the send screen refuses to open over another surface\'s device confirmatio
   window,
 }) => {
   await stubMainIpc(electronApp);
-  // The chrome's own dApp screen, kept for rollback until PRQ-9 of
-  // freedom-core design 0011: from PRQ-5b main refuses it a dApp send's
-  // token, so its confirmation is replaced here with the rest of main.
+  // Main's answer to the approval never comes: this is the window where the
+  // device signs the page's send (main signs it, after the decision).
   await electronApp.evaluate(({ ipcMain }) => {
-    ipcMain.removeHandler('wallet:dapp-send-transaction');
-    ipcMain.handle('wallet:dapp-send-transaction', () => new Promise(() => {}));
-    ipcMain.removeHandler('wallet:confirm-signing');
-    ipcMain.handle('wallet:confirm-signing', () => ({ success: true, token: 'token-e2e', expiresAt: Date.now() + 60_000 }));
+    ipcMain.removeHandler('page:decide');
+    ipcMain.handle('page:decide', () => new Promise(() => {}));
   });
 
-  // A dApp transaction is waiting on the device.
-  await window.evaluate(async ({ ledger }) => {
+  // A page's transaction, main's send prompt (`eth.send`) on screen.
+  await window.evaluate(async ({ ledger, site }) => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
-    const dappTx = await import('./lib/wallet/dapp-tx.js');
+    const { pagePromptRenderer } = await import('./lib/page-prompt-renderers.js');
     walletState.viewMode = 'identity';
     walletState.fullAddresses.wallet = ledger.address;
     walletState.derivedWallets = [ledger];
     walletState.activeWalletIndex = ledger.index;
-    dappTx.showDappTxApproval({}, 'https://swap.example', {
-      to: '0x4200000000000000000000000000000000000006',
-      value: '0x0',
-    }).catch(() => {});
-  }, { ledger: LEDGER });
+    pagePromptRenderer('eth.send').show({
+      handle: 'c'.repeat(64),
+      guest: 1,
+      kind: 'eth.send',
+      site,
+      view: {
+        account: { index: ledger.index, name: ledger.name, address: ledger.address, type: 'ledger' },
+        chain: { id: 8453, name: 'Base', symbol: 'ETH' },
+        tx: { to: '0x4200000000000000000000000000000000000006', value: '0', data: '0x' },
+        fee: { gasLimit: '21000', gasPrice: '1000000000', estimate: '21000000000000' },
+        feeCheck: { maxCost: '21000000000000', comparable: true, ratio: '1', above: false, autoApprove: true },
+        feeAskAgain: false,
+        alwaysAllow: false,
+      },
+    });
+  }, { ledger: LEDGER, site: SITE });
 
   await expect(window.locator('#sidebar-dapp-tx')).toBeVisible();
   await window.click('#dapp-tx-approve');

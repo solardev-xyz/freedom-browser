@@ -28,8 +28,14 @@ const { LEDGER_ERROR_CODES, createLedgerError } = require('./wallet/ledger/error
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./wallet/remote/errors');
 const { forSenderWindow } = require('./windows/request-window');
 const { vaultBackend } = require('./core/vault-backend');
-const { blockNode, unblockNode } = require('./core/node-identity-guard');
+const {
+  blockNode,
+  unblockNode,
+  nodeWriteStatus,
+  restoreNodeWrite,
+} = require('./core/node-identity-guard');
 const { withRadicleGate } = require('./radicle/radicled-gate');
+const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
 const { withPrivateDir } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { verifiedDeployedMark, verifiedDeployments } = require('./wallet/safe/deployed-mark');
@@ -69,7 +75,9 @@ function setBeeLifecycle(hooks = {}) {
 // lifecycle queue (radicle-manager withRadicleStopped): it stops the node
 // (throwing, without running `work`, when the stop is not proven), awaits
 // `work`, and restarts a node that was running. Starts, alias changes and
-// other re-keys queue behind it.
+// other re-keys queue behind it. Under the freedom-radicled service the
+// proof is the process's exit, which frees the home's gate for the core's
+// write (freedom-core design 0008, "Identity changes").
 let radicleLifecycle = { withStopped: null };
 
 /**
@@ -778,7 +786,9 @@ async function injectIpfsIdentity() {
 }
 
 /**
- * Inject Radicle identity
+ * Inject Radicle identity: on the add-on, the key file the add-on loads; on
+ * the freedom-radicled service, an identity change, which writes no key
+ * (changeRadicleIdentityOnService).
  * @param {string} alias - Node alias
  * @returns {Promise<{did: string}>}
  */
@@ -800,6 +810,15 @@ async function injectRadicleIdentityNow(alias) {
 
   const expected = await deriveAddresses();
   if (!expected) throw new Error(VAULT_LOCKED_MESSAGE);
+
+  if (radicleBackendKind() === 'service') {
+    await changeRadicleIdentityOnService(dataDir, alias);
+    // The sealed form returns no DID: the node runs as the derived one,
+    // released sealed at its next start.
+    const did = expected.radicle.did;
+    console.log(`[IdentityManager] Radicle identity changed: ${did}`);
+    return { did };
+  }
 
   // The wipe and the key write, with the node stopped (R-8). blockNode keeps
   // new starts out, but it does not stop a node that is already running, so
@@ -868,6 +887,97 @@ async function injectRadicleIdentityNow(alias) {
   return { did };
 }
 
+// The waits before each retry of a Radicle identity change the core answered
+// `lock_held` or `pending_recovery` (changeRadicleIdentityOnService): five
+// writes in all. Each `lock_held` comes after the core's own 5 s on the gate.
+const RADICLE_CHANGE_RETRY_MS = Object.freeze([1_000, 2_000, 4_000, 8_000]);
+const radicleChangeRetry = { delaysMs: RADICLE_CHANGE_RETRY_MS };
+const RADICLE_HOME_IN_USE =
+  'The Radicle data is in use by another process. Close it and try again.';
+
+/**
+ * A Radicle identity change on the freedom-radicled service (freedom-core
+ * design 0008, "Identity changes"; 0001, "Multi-file writes"). One owner
+ * holds the home's gate at each step:
+ * 1. the lifecycle hook stops the service; its exit frees the gate;
+ * 2. the core takes the gate for the whole change: `nodes.write_identity
+ *    { node: 'radicle', home, alias, custody: 'sealed', wipe: true }`
+ *    journals the wipe of node/, cobs/ and storage/ and the removal of
+ *    keys/radicle and keys/radicle.pub, then does them and installs the
+ *    config. No key file is written, and main removes nothing itself;
+ * 3. the hook starts the service again if it was running. Main's block
+ *    (node-identity-guard.js), set before the first write, comes off only on
+ *    `installed`, so after any outcome that may have written the start is
+ *    refused with its reason.
+ *
+ * `lock_held` (another process holds the gate, the core touched nothing)
+ * and `pending_recovery` (the core committed but couldn't finish) keep the
+ * service stopped, and the write is tried again, after each of
+ * RADICLE_CHANGE_RETRY_MS: a later write finishes an outstanding journal
+ * before its own. Out of tries, `pending_recovery` keeps the block, which
+ * the core's startup recovery at the next launch resolves; `lock_held`
+ * alone wrote nothing, so main's record goes back to what it was, and the
+ * node restarts as it was, as after a re-key that failed before its write.
+ * Other error replies wrote nothing either; a lost reply
+ * (`core_unavailable`) may have, and keeps the block.
+ */
+async function changeRadicleIdentityOnService(home, alias) {
+  const change = async () => {
+    const before = nodeWriteStatus('radicle');
+    blockNode('radicle', 'writing');
+    // Whether an answer so far may have left the home part-written.
+    let unfinished = false;
+    const giveUp = (err) => {
+      if (unfinished) blockNode('radicle', 'pending_recovery');
+      else restoreNodeWrite('radicle', before);
+      throw err;
+    };
+    const delays = radicleChangeRetry.delaysMs;
+    let failure = null;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+      if (attempt > 0) await delay(delays[attempt - 1]);
+      let written;
+      try {
+        written = await vaultBackend.writeNodeIdentity(
+          { node: 'radicle', home, alias, custody: 'sealed', wipe: true },
+          crypto.randomUUID()
+        );
+      } catch (err) {
+        if (err?.code === 'lock_held') {
+          console.warn('[IdentityManager] The Radicle home is in use; the identity change waits');
+          failure = Object.assign(new Error(RADICLE_HOME_IN_USE), { code: 'lock_held' });
+          continue;
+        }
+        if (err?.code === 'core_unavailable') unfinished = true;
+        return giveUp(err);
+      }
+      const status = typeof written?.status === 'string' ? written.status : 'unknown';
+      if (status === 'installed') {
+        unblockNode('radicle');
+        injectedNodes.radicle = true;
+        return written;
+      }
+      // pending_recovery: the core finishes it at the next start, so the
+      // message onboarding shows says so.
+      const unfinishedWrite = new Error(
+        status === 'pending_recovery'
+          ? 'The Radicle identity write did not finish (pending_recovery); restart Freedom to complete it, or try the change again'
+          : `The Radicle identity write did not finish (${status})`
+      );
+      if (status !== 'pending_recovery') {
+        // corrupt: only a fresh write while unlocked repairs it.
+        blockNode('radicle', status);
+        throw unfinishedWrite;
+      }
+      console.warn('[IdentityManager] The Radicle identity write is pending recovery; retrying');
+      unfinished = true;
+      failure = unfinishedWrite;
+    }
+    return giveUp(failure);
+  };
+  return radicleLifecycle.withStopped ? radicleLifecycle.withStopped(change) : change();
+}
+
 /**
  * Inject all identities
  * @param {string} radicleAlias - Alias for Radicle node
@@ -913,7 +1023,19 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
   // short home still being migrated, the identity would read as missing and
   // re-injection would wipe the node/cobs/storage that are on their way in.
   await prepareRadicleDataDir();
-  if (force || !isRadicleIdentityInjected()) {
+  if (radicleBackendKind() === 'service') {
+    // Under the freedom-radicled service no key is injected: the derived
+    // identity arrives sealed at each start. Only a forced re-injection is an
+    // identity change, which wipes the node's state (freedom-core design
+    // 0008, "Identity changes": "When"). The service writes no key file, so
+    // keys/ says nothing either way and isn't read.
+    if (force) {
+      results.radicle = await injectRadicleIdentity(radicleAlias);
+      results.radicle.reinjected = true;
+    } else {
+      results.radicle = { did: addresses.radicle.did };
+    }
+  } else if (force || !isRadicleIdentityInjected()) {
     const wasInjected = isRadicleIdentityInjected();
     results.radicle = await injectRadicleIdentity(radicleAlias);
     if (wasInjected && force) {
@@ -935,17 +1057,22 @@ async function injectAllIdentities(radicleAlias = 'FreedomBrowser', force = fals
  * Returns addresses without requiring vault unlock by reading from:
  * - vault-meta.json for wallet addresses (stored at vault creation)
  * - native IPFS mode (ephemeral; no durable PeerID today)
- * - Radicle public key for DID
+ * - Radicle public key for DID (the add-on); under the freedom-radicled
+ *   service, the running generation's identity (see radicleServiceStatus)
  * @returns {Promise<Object>}
  */
 async function getIdentityStatus() {
-  await prepareRadicleDataDir();
+  const onRadicleService = radicleBackendKind() === 'service';
+  // The add-on's DID is read from the home's keys/, once a pending
+  // carry-over of an older profile's home has landed. The service's isn't.
+  if (!onRadicleService) await prepareRadicleDataDir();
   const hasVaultResult = await hasVault();
   const isUnlocked = await isVaultUnlocked();
 
   // Try to get addresses - works even when vault is locked
   let addresses = null;
   const derived = isUnlocked ? await deriveAddresses({ accounts: [0] }) : null;
+  const radicle = onRadicleService ? radicleServiceStatus(derived) : null;
 
   if (derived) {
     // Vault is unlocked - from the core (most accurate)
@@ -953,7 +1080,7 @@ async function getIdentityStatus() {
       userWallet: derived.user_wallets[0].address,
       beeWallet: derived.bee_wallet,
       ipfsPeerId: null,
-      radicleDid: derived.radicle.did,
+      radicleDid: radicle ? (radicle.active?.did ?? null) : derived.radicle.did,
     };
   } else if (hasVaultResult) {
     // Vault is locked - read from stored metadata and node config files
@@ -963,7 +1090,7 @@ async function getIdentityStatus() {
       userWallet: meta?.addresses?.userWallet || null,
       beeWallet: meta?.addresses?.beeWallet || null,
       ipfsPeerId: readIpfsPeerId(),
-      radicleDid: await readRadicleDid(),
+      radicleDid: radicle ? (radicle.active?.did ?? null) : await readRadicleDid(),
     };
   }
 
@@ -976,8 +1103,30 @@ async function getIdentityStatus() {
     ipfsIdentityMode: 'ephemeral',
     ipfsStableIdentitySupported: false,
     ipfsNativeIdentityActive: false,
-    radicleInjected: isRadicleIdentityInjected(),
+    // Under the service no key file is ever written, so its absence says
+    // nothing (0008, "Main no longer reads keys/"): not consulted there.
+    radicleInjected: onRadicleService ? false : isRadicleIdentityInjected(),
     addresses,
+    ...(radicle ? { radicle } : {}),
+  };
+}
+
+/**
+ * The Radicle identities under the freedom-radicled service (freedom-core
+ * design 0008, Main's side), neither read from the home's keys/:
+ * - `active`: the running node's, `{ did, ephemeral }` from its generation's
+ *   `rad.identity` reply, or null with no generation running. It alone is
+ *   the DID shown for the node; `addresses.radicleDid` is its DID.
+ * - `nextDid`: the identity Radicle will use at its next start, the derived
+ *   DID from `keys.addresses` while the vault is unlocked, else null. Never
+ *   the running node's: creating, locking or deleting the vault changes the
+ *   running node's identity only at its next start.
+ */
+function radicleServiceStatus(derived) {
+  const active = require('./radicle-manager').activeRadicleIdentity();
+  return {
+    active: active ? { did: active.did, ephemeral: active.ephemeral === true } : null,
+    nextDid: derived?.radicle?.did ?? null,
   };
 }
 
@@ -2206,4 +2355,8 @@ module.exports = {
   getAntDataDir,
   getIpfsDataDir,
   getRadicleDataDir,
+
+  // For tests: the retry schedule of a Radicle identity change.
+  RADICLE_CHANGE_RETRY_MS,
+  _internal: { radicleChangeRetry },
 };

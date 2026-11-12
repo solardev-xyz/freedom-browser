@@ -48,6 +48,11 @@ module.exports = {
   RADICLE_SYNC_REPO: 'radicle:syncRepo',
   RADICLE_GET_SEED_STATUS: 'radicle:getSeedStatus',
   RADICLE_SEED_STATUS_UPDATE: 'radicle:seedStatusUpdate',
+  // Radicle's repair under the service (freedom-core design 0008, "The
+  // escape"): "still repairing", and the quarantined repositories' Remove.
+  RADICLE_GET_REPAIR: 'radicle:getRepair',
+  RADICLE_REPAIR_UPDATE: 'radicle:repairUpdate',
+  RADICLE_REMOVE_QUARANTINED: 'radicle:removeQuarantined',
 
   // Tor (Arti) node management — routes .onion traffic via a local SOCKS proxy
   TOR_START: 'tor:start',
@@ -216,7 +221,6 @@ module.exports = {
   AGENT_RESUME: 'agent:resume',
   AGENT_STOP: 'agent:stop',
   AGENT_APPROVAL_DECIDE: 'agent:approval:decide',
-  AGENT_WALLET_REQUEST: 'agent:wallet:request',
   AGENT_GET_STATE: 'agent:get-state',
   AGENT_PAGE_ACTIONS: 'agent:page-actions',
   AGENT_CLEAR_CONVERSATION: 'agent:clear-conversation',
@@ -428,24 +432,15 @@ module.exports = {
   DAPP_GRANT_PERMISSION: 'dapp:grant-permission',
   DAPP_REVOKE_PERMISSION: 'dapp:revoke-permission',
   DAPP_GET_ALL_PERMISSIONS: 'dapp:get-all-permissions',
-  DAPP_UPDATE_LAST_USED: 'dapp:update-last-used',
   DAPP_GET_SIGNING_AUTO_APPROVE: 'dapp:get-signing-auto-approve',
   DAPP_SET_SIGNING_AUTO_APPROVE: 'dapp:set-signing-auto-approve',
-  DAPP_IS_TX_AUTO_APPROVED: 'dapp:is-tx-auto-approved',
   DAPP_REMOVE_TX_AUTO_APPROVE: 'dapp:remove-tx-auto-approve',
-
-  // dApp Provider (webview ↔ renderer ↔ main)
-  DAPP_PROVIDER_REQUEST: 'dapp:provider-request',
-  DAPP_PROVIDER_RESPONSE: 'dapp:provider-response',
-  DAPP_PROVIDER_EVENT: 'dapp:provider-event',
 
   // Swarm Provider Permissions
   SWARM_GET_PERMISSION: 'swarm:get-permission',
   SWARM_GRANT_PERMISSION: 'swarm:grant-permission',
   SWARM_REVOKE_PERMISSION: 'swarm:revoke-permission',
   SWARM_GET_ALL_PERMISSIONS: 'swarm:get-all-permissions',
-  SWARM_UPDATE_LAST_USED: 'swarm:update-last-used',
-  SWARM_GET_AUTO_APPROVE: 'swarm:get-auto-approve',
   SWARM_SET_AUTO_APPROVE: 'swarm:set-auto-approve',
   SWARM_GRANT_MESSAGING: 'swarm:grant-messaging',
   SWARM_REVOKE_MESSAGING: 'swarm:revoke-messaging',
@@ -458,7 +453,6 @@ module.exports = {
 
   // Swarm Provider (main-process authority). Every window.swarm method goes
   // to main on page:request (freedom-core design 0011, PRQ-7d).
-  SWARM_PROVIDER_EVENT: 'swarm:provider-event',
   // main -> chrome: a page's Swarm write failed because publishing isn't set
   // up ({ origin, reason }); the chrome shows its setup screen (PRQ-7c).
   SWARM_PUBLISH_SETUP_NEEDED: 'swarm:publish-setup-needed',
@@ -484,10 +478,8 @@ module.exports = {
   SWARM_GET_ALL_ORIGINS: 'swarm:get-all-origins',
   SWARM_HAS_FEED_IDENTITY: 'swarm:has-feed-identity',
   SWARM_SET_FEED_IDENTITY: 'swarm:set-feed-identity',
-  SWARM_HAS_FEED_GRANT: 'swarm:has-feed-grant',
   SWARM_GET_IDENTITY_MODE: 'swarm:get-identity-mode',
   SWARM_GET_ORIGIN_IDENTITIES: 'swarm:get-origin-identities',
-  SWARM_PREVIEW_APP_SCOPED_IDENTITY: 'swarm:preview-app-scoped-identity',
   SWARM_CREATE_APP_SCOPED_IDENTITY: 'swarm:create-app-scoped-identity',
   SWARM_ENSURE_ANT_WALLET_IDENTITY: 'swarm:ensure-ant-wallet-identity',
   SWARM_ACTIVATE_FEED_IDENTITY: 'swarm:activate-feed-identity',
@@ -498,10 +490,7 @@ module.exports = {
   RADICLE_GRANT_PERMISSION: 'radicle:grant-permission',
   RADICLE_REVOKE_PERMISSION: 'radicle:revoke-permission',
   RADICLE_GET_ALL_PERMISSIONS: 'radicle:get-all-permissions',
-  RADICLE_UPDATE_LAST_USED: 'radicle:update-last-used',
-  RADICLE_HAS_SIGNING_GRANT: 'radicle:has-signing-grant',
   RADICLE_GRANT_SIGNING: 'radicle:grant-signing',
-  RADICLE_GET_AUTO_APPROVE: 'radicle:get-auto-approve',
   RADICLE_SET_AUTO_APPROVE: 'radicle:set-auto-approve',
 
   // Radicle node alias (chrome UI: sidebar Nodes tab)

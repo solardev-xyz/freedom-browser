@@ -408,13 +408,11 @@ describe('permission-manage: Swarm messaging can only be revoked here (0011 PRQ-
     Object.assign(global.window.swarmPermissions, {
       getPermission: jest.fn().mockResolvedValue({ origin: 'bzz://aaaa', autoApprove: {} }),
       hasMessagingGrant: jest.fn().mockResolvedValue(granted),
-      grantMessaging: jest.fn(),
       revokeMessaging: jest.fn().mockResolvedValue(true),
     });
     global.window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
     global.window.swarmFeedStore = {
       getOriginIdentities: jest.fn().mockResolvedValue({ activeIdentityId: 'a', identities: [{ id: 'a', mode: 'app-scoped', stored: true }] }),
-      previewAppScopedIdentity: jest.fn(),
     };
     await ctx.mod.showSwarmPermissions('bzz://aaaa');
     return ctx.elements['swarm-perms-messaging-toggle'];
@@ -428,7 +426,6 @@ describe('permission-manage: Swarm messaging can only be revoked here (0011 PRQ-
     toggle.checked = true;
     await toggle.fire('change');
     expect(toggle.checked).toBe(false);
-    expect(global.window.swarmPermissions.grantMessaging).not.toHaveBeenCalled();
   });
 
   test('a grant can be revoked, and then shows disabled', async () => {
@@ -462,7 +459,6 @@ describe('the Swarm auto-approve toggles: publish (PRQ-7c), feeds and signing (P
     global.window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
     global.window.swarmFeedStore = {
       getOriginIdentities: jest.fn().mockResolvedValue({ activeIdentityId: 'a', identities: [{ id: 'a', mode: 'app-scoped', stored: true }] }),
-      previewAppScopedIdentity: jest.fn(),
     };
     await ctx.mod.showSwarmPermissions('bzz://aaaa');
     return ctx.elements[`swarm-perms-${type}-toggle`];

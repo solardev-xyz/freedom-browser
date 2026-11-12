@@ -193,17 +193,19 @@ test('connecting through main: main\'s prompt in the sidebar, the grant written 
   expect(await swarmGrant(electronApp, DAPP)).toMatchObject({ messaging: false });
   await expect.poll(() => heard(win, DAPP)).toEqual([['connect', { origin: DAPP }]]);
 
-  // The chrome's own grant writes are refused, for any site.
+  // The chrome has no grant write of its own (PRQ-9: its preload exposes
+  // none, and main refuses the channels, swarm-permissions.test.js), and
+  // turning a rule on is refused, for any site.
   const forged = await win.evaluate(async (key) => {
     const tryIt = (fn) => fn().then(() => 'accepted', (err) => String(err?.message || err));
     return {
-      grant: await tryIt(() => window.swarmPermissions.grantPermission('other.eth')),
-      messaging: await tryIt(() => window.swarmPermissions.grantMessaging(key)),
+      grant: typeof window.swarmPermissions.grantPermission,
+      messaging: typeof window.swarmPermissions.grantMessaging,
       rule: await tryIt(() => window.swarmPermissions.setAutoApprove(key, 'messaging', true)),
     };
   }, DAPP);
-  expect(forged.grant).toContain('A Swarm connection is granted only from its own prompt');
-  expect(forged.messaging).toContain('Swarm messaging is granted only from its own prompt');
+  expect(forged.grant).toBe('undefined');
+  expect(forged.messaging).toBe('undefined');
   expect(forged.rule).toContain('Messaging auto-approve is turned on only from a messaging prompt');
   expect(await swarmGrant(electronApp, 'other.eth')).toBeNull();
   expect(await swarmGrant(electronApp, DAPP)).toMatchObject({ messaging: false, autoApprove: { messaging: false } });

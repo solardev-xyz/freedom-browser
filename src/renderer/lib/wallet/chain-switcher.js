@@ -251,22 +251,3 @@ export function updateChainSwitcherDisplay() {
     }
   }
 }
-
-/**
- * Get the current selected chain ID (for dApp provider)
- */
-export function getSelectedChainId() {
-  return walletState.selectedChainId;
-}
-
-/**
- * Set the selected chain ID (called by dApp provider on wallet_switchEthereumChain)
- */
-export function setSelectedChainId(chainId) {
-  if (walletState.selectedChainId === chainId) return;
-
-  writeSelectedChain(chainId);
-  updateChainSwitcherDisplay();
-  renderAssetList();
-  console.log('[WalletUI] Chain switched to:', chainId);
-}

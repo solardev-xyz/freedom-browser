@@ -45,6 +45,9 @@ jest.mock('../radicle-embedded', () => ({
   listSeededRepos: jest.fn(async () => []),
 }));
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => false),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   getConnections: jest.fn(async () => ({ success: true, count: 3 })),
@@ -70,6 +73,7 @@ const { RADICLE_SIGN_METHODS, createRadicleDispatchers, registerRadiclePageEvent
 const permissions = require('../radicle/radicle-permissions');
 const provider = require('../radicle/radicle-provider-ipc');
 const embedded = require('../radicle-embedded');
+const manager = require('../radicle-manager');
 const IPC = require('../../shared/ipc-channels');
 
 permissions.registerRadiclePermissionsIpc();
@@ -104,6 +108,12 @@ const AGENT_CUSTODY = {
 };
 const RULE_OFF = { error: { code: 4100, message: "This action needs the user's approval", data: { reason: 'not_auto_approved' } } };
 const WRITTEN = { result: { id: 'c'.repeat(40) } };
+// Under the Radicle service, a node running with a throwaway key (plan B10).
+const THROWAWAY_KEY = {
+  reason: 'needs_vault',
+  message: "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.",
+};
+const NEEDS_VAULT = { error: { code: 4900, message: THROWAWAY_KEY.message, data: { reason: 'needs_vault' } } };
 const IDENTITY = { result: { did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' } };
 
 let nextId = 1;
@@ -564,6 +574,73 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
   });
 });
 
+// Plan B10 (freedom-core design 0008, Main's side, `needs_vault`): while
+// the service's running generation has a throwaway key, main refuses each
+// COB write before anything is sent: before the write's prompt, before the
+// rule's limit counts it, and in the guard's run just before the call.
+describe('a node running with a throwaway key (radicled B10)', () => {
+  afterEach(() => {
+    manager.radicleWriteRefusal.mockReset();
+    manager.radicleWriteRefusal.mockReturnValue(null);
+  });
+
+  test('every write is refused with no prompt, nothing signed and no rule slot spent; the identity is still disclosed', async () => {
+    manager.radicleWriteRefusal.mockReturnValue(THROWAWAY_KEY);
+    const env = setup();
+    connect(KEY_A, { signing: true });
+    connect(KEY_B, { signing: true, rule: true });
+    const page = env.tab();
+    const ruled = env.tab(`${KEY_B}/app`);
+    for (const [method, params] of Object.entries(WRITES)) {
+      expect({ method, answer: await page.ask(method, params) }).toEqual({ method, answer: NEEDS_VAULT });
+      expect({ method, answer: await ruled.ask(method, params) }).toEqual({ method, answer: NEEDS_VAULT });
+    }
+    // Params the write refuses keep the method's own answer.
+    expect(await page.ask('radicle_createIssue', { rid: RID, title: '', description: 'x' })).toMatchObject({
+      error: { code: -32602, data: { reason: 'invalid_title' } },
+    });
+    expect(env.prompts()).toEqual([]);
+    expect(mockAddon.writes).toEqual([]);
+    expect(await page.ask('radicle_getIdentity')).toEqual(IDENTITY);
+
+    // The node restarts with the derived key: the rule's whole burst is left.
+    manager.radicleWriteRefusal.mockReturnValue(null);
+    for (let i = 0; i < 5; i += 1) expect(await ruled.ask('radicle_createIssue', WRITES.radicle_createIssue)).toEqual(WRITTEN);
+    expect(env.prompts()).toEqual([]);
+  });
+
+  test('a restart with a throwaway key while the write prompt is open: the approved write is refused, nothing signed', async () => {
+    const env = setup();
+    connect(KEY_A, { signing: true });
+    const page = env.tab();
+    const answer = page.ask('radicle_commentIssue', WRITES.radicle_commentIssue);
+    const prompt = await env.shown();
+    manager.radicleWriteRefusal.mockReturnValue(THROWAWAY_KEY);
+    expect(await env.decide(prompt.handle, true)).toEqual({ ok: true });
+    expect(await answer).toEqual(NEEDS_VAULT);
+    expect(mockAddon.writes).toEqual([]);
+    expect(embedded.commentIssue).not.toHaveBeenCalled();
+  });
+
+  test("a restart with a throwaway key while the guard waits: refused in the guard's run, nothing signed", async () => {
+    const env = setup();
+    connect(NAME, { signing: true, rule: true });
+    const page = await env.named();
+    const guardCheck = deferred();
+    // The dispatcher's own check answers; the guard's waits.
+    env.gate.queue.push({ wait: Promise.resolve(), key: IPNS_KEY }, { wait: guardCheck.promise });
+    const answer = page.ask('radicle_createIssue', WRITES.radicle_createIssue);
+    await flush();
+    expect(env.resolutions).toEqual([NAME, NAME]);
+    manager.radicleWriteRefusal.mockReturnValue(THROWAWAY_KEY);
+    guardCheck.resolve();
+    expect(await answer).toEqual(NEEDS_VAULT);
+    expect(mockAddon.writes).toEqual([]);
+    expect(embedded.createIssue).not.toHaveBeenCalled();
+    expect(env.prompts()).toEqual([]);
+  });
+});
+
 describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () => {
   test('the chrome\'s grant-signing and turning the signing rule on are refused for every site; turning it off and revoking stay open', () => {
     const chrome = { sender: { id: 501 } };
@@ -597,7 +674,11 @@ describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () 
     const managerChannels = [...managerSource.matchAll(/ipcMain\.handle\(IPC\.([A-Z_]+)/g)].map((m) => IPC[m[1]]);
     expect(managerSource).not.toMatch(/radicle-permissions/);
     // Events main sends the chrome, which it never calls.
-    const pushed = [IPC.RADICLE_STATUS_UPDATE, IPC.RADICLE_SEED_STATUS_UPDATE];
+    const pushed = [
+      IPC.RADICLE_STATUS_UPDATE,
+      IPC.RADICLE_SEED_STATUS_UPDATE,
+      IPC.RADICLE_REPAIR_UPDATE,
+    ];
     expect([...registered, ...managerChannels, ...pushed].sort()).toEqual([...declared].sort());
     expect(registered).not.toContain('radicle:provider-execute');
 

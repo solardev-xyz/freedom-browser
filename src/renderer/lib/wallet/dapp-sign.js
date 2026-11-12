@@ -9,26 +9,16 @@
  * request signs, and answers the handle (`page:decide`) with the one choice
  * it offers, "always allow". Main mints the approval's token and signs. An
  * approved signature on a device keeps the screen, its Sign button showing
- * the device step, until main has answered the page. The old path
- * (`showDappSignApproval`) stays for rollback until PRQ-9; main refuses its
- * token.
+ * the device step, until main has answered the page.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
-import {
-  assertNoSignatureInFlight,
-  isSignatureInFlight,
-  signatureInFlightError,
-  beginSignatureFlight,
-  endSignatureFlight,
-} from './signature-flight.js';
+import { beginSignatureFlight, endSignatureFlight } from './signature-flight.js';
 import { open as openSidebarPanel } from '../sidebar.js';
-import { executeSign } from '../dapp-provider.js';
 import {
   bypassUnlockGateForDevice,
   bypassUnlockGateForSafe,
   signingButtonLabel,
-  isSafeAccount,
 } from './wallet-utils.js';
 import { isSafeSigningBoardOpen } from './safe-signing.js';
 import { hexToBytes, utf8Text } from './personal-sign.js';
@@ -37,12 +27,7 @@ import {
   typedDataWarningTexts,
   ignoredText,
 } from './typed-data-view.js';
-import {
-  registerDappPrompt,
-  assertNoDappPromptShowing,
-  isDappPromptShowing,
-  requestPendingError,
-} from './dapp-prompt-guard.js';
+import { registerDappPrompt } from './dapp-prompt-guard.js';
 import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 
 // DOM references
@@ -102,7 +87,7 @@ export function initDappSign() {
   registerScreenHider(() => {
     dappSignScreen?.classList.add('hidden');
     const request = dappSignPending;
-    if (!presentingPagePrompt && request?.handle && !request.deciding) {
+    if (!presentingPagePrompt && request && !request.deciding) {
       dappSignPending = null;
       walletState.identityView?.classList.remove('hidden');
       pagePromptDisplaced(request.handle);
@@ -119,13 +104,12 @@ export function initDappSign() {
 
 function setupDappSignScreen() {
   const reject = () => {
-    if (dappSignPending?.signing || dappSignPending?.deciding) return;
-    if (dappSignPending?.handle) {
-      decidePageSign(dappSignPending, false);
+    if (!dappSignPending) {
+      closeDappSign();
       return;
     }
-    rejectDappSign();
-    closeDappSign();
+    if (dappSignPending.signing || dappSignPending.deciding) return;
+    decidePageSign(dappSignPending, false);
   };
   dappSignBackBtn?.addEventListener('click', reject);
   dappSignRejectBtn?.addEventListener('click', reject);
@@ -158,105 +142,6 @@ function setupDappSignScreen() {
 }
 
 /**
- * Show dApp signing screen
- *
- * The sidebar is a single shared surface, and an in-flight signature owns
- * it: the device prompt it produced cannot be recalled, so a later request
- * must not repaint the screen, reset `dappSignPending` and re-enable
- * Reject/Back/Sign underneath it — the user would then be cancelling (or
- * confirming) request B while the device is still showing request A. The
- * lock is global (see signature-flight.js), so this refuses the newcomer
- * whichever surface is holding the device: a sibling dapp-sign request,
- * dapp-tx, or an x402 payment. The dApp can retry once the device is done.
- *
- * `prepared` is what main says the request signs (dapp-provider.js,
- * freedom-core #88): `{ message: { hex, rawHash } }` for personal_sign,
- * `{ typedData: { hash, view, warnings }, chainId }` for typed data. The
- * screen shows only that, never the dApp's own text.
- */
-export async function showDappSignApproval(webview, permissionKey, method, params, prepared = {}) {
-  assertNoSignatureInFlight();
-  assertNoDappPromptShowing();
-
-  const permission = await window.dappPermissions.getPermission(permissionKey);
-  if (!permission) {
-    throw Object.assign(new Error('Unauthorized - not connected'), { code: 4100 });
-  }
-
-  return new Promise((resolve, reject) => {
-    // Re-checked after the awaits above: the screen must still be free at
-    // the moment we take it over.
-    assertNoSignatureInFlight();
-    assertNoDappPromptShowing();
-    const request = { permissionKey, walletIndex: permission.walletIndex, method, params, resolve, reject, webview };
-    // A request still being prepared gives way and is answered now; one
-    // that is signing (a Safe ceremony) carries on with its own reference.
-    const previous = dappSignPending;
-    dappSignPending = request;
-    if (previous && !previous.signing) previous.reject({ code: 4001, message: 'Replaced by a newer request' });
-    if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
-    setDappSignCancelEnabled(true);
-    // A Safe request parked on its board leaves its "Signing…" label and
-    // error behind; this request starts clean.
-    if (dappSignApproveBtn) dappSignApproveBtn.textContent = 'Sign';
-    hideDappSignError();
-
-    if (dappSignSite) {
-      dappSignSite.textContent = permissionKey;
-    }
-
-    dappSignRawWarning?.classList.add('hidden');
-    dappSignTypedWarning?.classList.add('hidden');
-    dappSignTypedIgnored?.classList.add('hidden');
-    try {
-      if (method === 'personal_sign') {
-        displayPersonalSignMessage(prepared.message);
-      } else if (method === 'eth_signTypedData_v4') {
-        displayTypedDataView(prepared.typedData, prepared.chainId, prepared.chains);
-      }
-    } catch (err) {
-      // A message that can't be displayed is never shown, so never signed.
-      if (dappSignPending === request) dappSignPending = null;
-      throw err;
-    }
-
-    // Multi-owner accounts sign as a smart contract — be upfront that
-    // not every dApp can verify EIP-1271 signatures.
-    document
-      .getElementById('dapp-sign-safe-note')
-      ?.classList.toggle('hidden', !isSafeAccount(permission.walletIndex));
-
-    checkDappSignUnlockStatus(request).then(() => {
-      // Replaced while it was being prepared: answered then, never shown.
-      if (dappSignPending !== request) return;
-      // Another surface may have started a device signature while we were
-      // checking vault status (the user could still click Pay on an x402
-      // card, say). It owns the sidebar now — refuse rather than paint
-      // over a live confirmation.
-      if (isSignatureInFlight()) {
-        if (dappSignPending === request) dappSignPending = null;
-        reject(signatureInFlightError());
-        return;
-      }
-      // Another prompt was shown meanwhile: it keeps the screen.
-      if (isDappPromptShowing()) {
-        dappSignPending = null;
-        reject(requestPendingError());
-        return;
-      }
-      hideAllSubscreens();
-      walletState.identityView?.classList.add('hidden');
-      dappSignScreen?.classList.remove('hidden');
-
-      openSidebarPanel();
-    }).catch((err) => {
-      if (dappSignPending === request) dappSignPending = null;
-      reject(err);
-    });
-  });
-}
-
-/**
  * personal_sign, shown from the bytes main sends to sign (#88): as text
  * when they are UTF-8, else as hex. Exactly 32 bytes are always hex, with
  * a warning (#89): their signature can be a Swarm feed update, which
@@ -264,7 +149,7 @@ export async function showDappSignApproval(webview, permissionKey, method, param
  */
 function displayPersonalSignMessage(message) {
   // A view whose bytes aren't hex can't be shown, so it is never signed
-  // (showDappSignApproval refuses the request).
+  // (showPageSign refuses the request).
   if (message && hexToBytes(message.hex) === null) {
     throw new Error("This message can't be shown, so it can't be signed");
   }
@@ -416,7 +301,6 @@ async function handleDappSignPasswordUnlock() {
 export function showPageSign(prompt) {
   const view = prompt?.view || {};
   const account = view.account || {};
-  const previous = dappSignPending;
   const request = {
     handle: prompt.handle,
     walletIndex: account.index,
@@ -426,10 +310,6 @@ export function showPageSign(prompt) {
     signing: false,
   };
   dappSignPending = request;
-  // An old-path request still being prepared gives way, as before.
-  if (previous && !previous.handle && !previous.signing) {
-    previous.reject({ code: 4001, message: 'Replaced by a newer request' });
-  }
   if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
   setDappSignCancelEnabled(true);
   if (dappSignApproveBtn) dappSignApproveBtn.textContent = 'Sign';
@@ -473,7 +353,7 @@ export function showPageSign(prompt) {
  */
 export function closePageSign(handle) {
   const request = dappSignPending;
-  if (!request?.handle || request.handle !== handle) return false;
+  if (!request || request.handle !== handle) return false;
   if (request.signing) return true;
   closeDappSign();
   return true;
@@ -481,7 +361,7 @@ export function closePageSign(handle) {
 
 /** The page prompt the screen shows, or null. */
 export function shownPageSign() {
-  return dappSignPending?.handle && dappSignScreen && !dappSignScreen.classList.contains('hidden')
+  return dappSignPending && dappSignScreen && !dappSignScreen.classList.contains('hidden')
     ? dappSignPending.handle
     : null;
 }
@@ -527,73 +407,7 @@ async function decidePageSign(request, approve) {
 
 async function approveDappSign() {
   if (!dappSignPending || dappSignPending.signing) return;
-  if (dappSignPending.handle) {
-    await decidePageSign(dappSignPending, true);
-    return;
-  }
-
-  const request = dappSignPending;
-  const { permissionKey, walletIndex, method, params, resolve, webview } = request;
-  // Snapshot the auto-approve intent now: the checkbox is shared DOM that
-  // a later request can repopulate while this signature is in flight.
-  const autoApprove = Boolean(dappSignAutoApproveCheckbox?.checked);
-  const safeAccount = isSafeAccount(walletIndex);
-
-  try {
-    request.signing = true;
-    // Claim the sidebar for the whole flight: no other approval surface
-    // may repaint over or tear down a live device confirmation.
-    if (!safeAccount) beginSignatureFlight(request);
-    if (dappSignApproveBtn) {
-      dappSignApproveBtn.disabled = true;
-      dappSignApproveBtn.textContent = signingButtonLabel(walletIndex);
-    }
-    setDappSignCancelEnabled(false);
-
-    const signature = await executeSign(method, params, walletIndex, permissionKey, webview);
-
-    if (autoApprove && permissionKey) {
-      await window.dappPermissions.setSigningAutoApprove(permissionKey, true);
-      console.log('[WalletUI] Signing auto-approve enabled for:', permissionKey);
-    }
-
-    console.log('[WalletUI] dApp message signed');
-    resolve(signature);
-    // Only tear down the screen if it is still showing *this* request.
-    if (dappSignPending === request) {
-      closeDappSign();
-    }
-  } catch (err) {
-    if (err?.code === 4001) {
-      // The user closed the Safe signing board — that IS the rejection.
-      // Answer this request, not whichever one holds the screen now.
-      request.reject({ code: 4001, message: 'User rejected the request' });
-      if (dappSignPending === request) closeDappSign();
-      return;
-    }
-    console.error('[WalletUI] dApp signing failed:', err);
-    // A newer request took the screen while the Safe board was parked: this
-    // one is no longer on screen to retry, so answer it with the failure.
-    if (dappSignPending !== request) {
-      request.reject(err);
-      return;
-    }
-    showDappSignError(err.message || 'Signing failed');
-    if (dappSignApproveBtn) {
-      dappSignApproveBtn.disabled = false;
-      dappSignApproveBtn.textContent = 'Sign';
-    }
-    setDappSignCancelEnabled(true);
-    // The signing board may have replaced this screen (a Safe signature
-    // that failed to complete) — bring the approval back.
-    if (safeAccount) {
-      walletState.identityView?.classList.add('hidden');
-      dappSignScreen?.classList.remove('hidden');
-    }
-  } finally {
-    request.signing = false;
-    endSignatureFlight(request);
-  }
+  await decidePageSign(dappSignPending, true);
 }
 
 /**
@@ -603,12 +417,6 @@ async function approveDappSign() {
 function setDappSignCancelEnabled(enabled) {
   if (dappSignRejectBtn) dappSignRejectBtn.disabled = !enabled;
   if (dappSignBackBtn) dappSignBackBtn.disabled = !enabled;
-}
-
-function rejectDappSign() {
-  if (dappSignPending?.reject) {
-    dappSignPending.reject({ code: 4001, message: 'User rejected the request' });
-  }
 }
 
 function closeDappSign() {

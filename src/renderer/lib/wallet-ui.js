@@ -11,20 +11,21 @@ import { isPrivateWindow } from './private-mode.js';
 import { walletState } from './wallet/wallet-state.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 import { truncateAddress, timeAgo } from './wallet/wallet-utils.js';
+import { describeRadicleIdentity } from './wallet/radicle-identity.js';
 
 // Submodule imports
 import { initBalanceDisplay, loadChainRegistry, refreshBalances, renderAssetList, loadCachedBalances, startBalanceRefresh } from './wallet/balance-display.js';
 import { initNodeStatus } from './wallet/node-status.js';
 import { initRpcSettings } from './wallet/rpc-settings.js';
-import { initDappConnect, showDappConnect, updateConnectionBanner } from './wallet/dapp-connect.js';
-import { initDappTx, showDappTxApproval } from './wallet/dapp-tx.js';
-import { initDappSign, showDappSignApproval } from './wallet/dapp-sign.js';
+import { initDappConnect, updateConnectionBanner } from './wallet/dapp-connect.js';
+import { initDappTx } from './wallet/dapp-tx.js';
+import { initDappSign } from './wallet/dapp-sign.js';
 import { initDappX402, updateX402ConnectionBanner } from './wallet/dapp-x402.js';
 import { initRecentPayments, refreshRecentPayments } from './wallet/recent-payments.js';
 import { initSend, openSend, closeSend } from './wallet/send.js';
 import { initExportMnemonic, closeExportMnemonic } from './wallet/export-mnemonic.js';
 import { initWalletSelector, loadDerivedWallets } from './wallet/wallet-selector.js';
-import { initChainSwitcher, updateChainSwitcherDisplay, getSelectedChainId, setSelectedChainId } from './wallet/chain-switcher.js';
+import { initChainSwitcher, updateChainSwitcherDisplay } from './wallet/chain-switcher.js';
 import { initReceive, closeReceive } from './wallet/receive.js';
 import { initWalletSettings, closeWalletSettings } from './wallet/wallet-settings.js';
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
@@ -39,20 +40,17 @@ import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, openStampManager, closeStampManager } from './wallet/stamp-manager.js';
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
-import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval } from './wallet/swarm-connect.js';
-import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
+import { initSwarmConnect, updateSwarmConnectionBanner } from './wallet/swarm-connect.js';
+import { initVaultUnlock } from './wallet/vault-unlock.js';
 import { initPermissionManage, showDappPermissions, showSwarmPermissions, showX402Permissions, closeDappPerms, closeSwarmPerms, closeX402Perms } from './wallet/permission-manage.js';
 import { initPublisherIdentities, closePublisherIdentities } from './wallet/publisher-identities.js';
 import { initPublisherIdentityCreate, closePublisherIdentityCreate } from './wallet/publisher-identity-create.js';
-import { initPermissionManifest, showPermissionManifest } from './wallet/permission-manifest.js';
+import { initPermissionManifest } from './wallet/permission-manifest.js';
 
-// Re-export public API consumed by dapp-provider.js, swarm-provider.js, and index.js
-export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSignApproval };
-export { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock };
-export { showPermissionManifest };
-export { updateX402ConnectionBanner };
+// Re-export public API: the connection banners, repainted by dapp-provider.js
+// at each tab switch, and the permission screens.
+export { updateConnectionBanner, updateSwarmConnectionBanner, updateX402ConnectionBanner };
 export { showDappPermissions, showSwarmPermissions, showX402Permissions };
-export { getSelectedChainId, setSelectedChainId };
 
 // DOM references owned by the coordinator
 let setupCta;
@@ -61,6 +59,8 @@ let swarmIdEl;
 let ipfsIdEl;
 let ipfsCopyBtn;
 let radicleIdEl;
+let radicleNextGroup;
+let radicleNextIdEl;
 let passwordValueEl;
 let touchIdValueEl;
 let createdValueEl;
@@ -81,6 +81,8 @@ export function initWalletUi() {
   ipfsIdEl = document.getElementById('sidebar-ipfs-id');
   ipfsCopyBtn = document.querySelector('.node-copy-btn[data-copy="ipfs"]');
   radicleIdEl = document.getElementById('sidebar-radicle-id');
+  radicleNextGroup = document.getElementById('sidebar-radicle-next-group');
+  radicleNextIdEl = document.getElementById('sidebar-radicle-next-id');
   passwordValueEl = document.getElementById('sidebar-password-value');
   touchIdValueEl = document.getElementById('sidebar-touchid-value');
   createdValueEl = document.getElementById('sidebar-created-value');
@@ -153,6 +155,15 @@ export function initWalletUi() {
 
   // Initial state check
   updateIdentityState();
+
+  // On the Radicle service the DID shown is the running node's, which a
+  // start, a restart or a stop changes (freedom-core design 0008, Main's
+  // side): shown again at each Radicle status. The add-on's is read once.
+  window.radicle?.onStatusUpdate?.(() => {
+    if (walletState.viewMode === 'identity' && walletState.identityData?.radicle) {
+      void refreshRadicleIdentity();
+    }
+  });
 
   console.log('[WalletUI] Initialized');
 }
@@ -305,16 +316,7 @@ async function loadIdentityData() {
     }
 
     // Display Radicle DID
-    if (status.addresses?.radicleDid) {
-      const did = status.addresses.radicleDid;
-      walletState.fullAddresses.radicle = did;
-      const displayId = did.replace('did:key:', '');
-      radicleIdEl.textContent = truncateAddress(displayId, 8, 6);
-      radicleIdEl.title = did;
-    } else {
-      radicleIdEl.textContent = '--';
-      radicleIdEl.title = '';
-    }
+    renderRadicleIdentity(status);
 
     // Update security status
     await updateSecurityStatus();
@@ -327,6 +329,35 @@ async function loadIdentityData() {
 
   } catch (err) {
     console.error('[WalletUI] Failed to load identity data:', err);
+  }
+}
+
+/**
+ * The Radicle card's DID (wallet/radicle-identity.js): the running node's on
+ * the service, with the next start's apart; the add-on's as before.
+ */
+function renderRadicleIdentity(status) {
+  const view = describeRadicleIdentity(status);
+  if (view.did) walletState.fullAddresses.radicle = view.did;
+  else delete walletState.fullAddresses.radicle;
+  radicleIdEl.textContent = view.text;
+  radicleIdEl.title = view.title;
+  if (view.next) walletState.fullAddresses.radicleNext = view.next.did;
+  else delete walletState.fullAddresses.radicleNext;
+  if (radicleNextIdEl) {
+    radicleNextIdEl.textContent = view.next?.text ?? '';
+    radicleNextIdEl.title = view.next?.title ?? '';
+  }
+  radicleNextGroup?.classList.toggle('hidden', !view.next);
+}
+
+async function refreshRadicleIdentity() {
+  try {
+    const status = await window.identity.getStatus();
+    walletState.identityData = status;
+    renderRadicleIdentity(status);
+  } catch (err) {
+    console.error('[WalletUI] Failed to refresh the Radicle identity:', err);
   }
 }
 

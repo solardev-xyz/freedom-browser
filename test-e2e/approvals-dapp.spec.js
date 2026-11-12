@@ -58,7 +58,6 @@ const space = (win) => win.locator('[data-test="approvals-space"]');
 async function routeTestPrompts(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag, view: shown } = context.params || {};
       const decision = await context.prompt({ kind: 'test.prompt', view: shown });
@@ -364,7 +363,6 @@ test('a view replaced under the same handle while the panel reads its parts is n
     const send = doc.send.bind(doc);
     const state = { replaced: false, held: 0 };
     globalThis.__APS4_REPLACED__ = state;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag } = context.params || {};
       approvals.trace.push = function replaceOnFirstPart(entry, ...rest) {
@@ -438,6 +436,167 @@ test('a view replaced under the same handle while the panel reads its parts is n
   await sleep(PAST_DELAY_MS);
   await docPage.click('#approve');
   await expect.poll(() => outcome(electronApp, guest, 'large')).toEqual({ ok: 'approved:large' });
+});
+
+// Codex, #1216 round 2: the revision binds every delivery, not only a view in
+// parts. A view in parts replaced by an inline one under the same handle, the
+// new message held back as before: the old read is stale, so the panel drops
+// that load rather than show (and report) its fixed error, and then shows B.
+test('a view in parts replaced by an inline one under the same handle: the stale load is dropped, not shown as the error (0011 APS-4)', async ({
+  electronApp,
+  window: win,
+  harness,
+}) => {
+  test.setTimeout(180_000);
+  await harness.setContentFixture(`${A}/`, testPage('dapp a'));
+  const windowId = await chromeWindowId(electronApp);
+  const docPage = await approvalsPage(electronApp);
+  // Whether the panel ever shows its fixed error, however briefly.
+  await docPage.evaluate(() => {
+    const error = document.querySelector('#error');
+    window.__errorSeen = !error.hidden;
+    new MutationObserver(() => {
+      if (!error.hidden) window.__errorSeen = true;
+    }).observe(error, { attributes: true, attributeFilter: ['hidden'] });
+  });
+  await electronApp.evaluate(({ webContents }) => {
+    const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
+    const approvals = globalThis.__FREEDOM_TEST_APPROVALS__;
+    const fill = String.fromCharCode(1).repeat(4096);
+    const largeA = { title: 'Large A', message: fill, rows: Array.from({ length: 16 }, (_v, i) => ({ label: `Row ${i}`, value: fill })) };
+    const doc = webContents.getAllWebContents().find((contents) => contents.getURL() === approvals.url);
+    const send = doc.send.bind(doc);
+    const state = { replaced: false, held: 0 };
+    globalThis.__APS4_REPLACED__ = state;
+    hooks.setDispatch(async (context) => {
+      const { tag } = context.params || {};
+      approvals.trace.push = function replaceOnFirstPart(entry, ...rest) {
+        const out = Array.prototype.push.call(this, entry, ...rest);
+        if (!state.replaced && entry?.kind === 'view-part' && entry.index === 0) {
+          state.replaced = true;
+          delete approvals.trace.push;
+          doc.send = (channel, ...args) => {
+            if (channel !== 'page:prompt') return send(channel, ...args);
+            state.held += 1;
+            setTimeout(() => send(channel, ...args), 1500);
+            return undefined;
+          };
+          context.updatePrompt({ title: 'Small B', message: 'About B', rows: [] });
+          delete doc.send;
+        }
+        return out;
+      };
+      const decision = await context.prompt({ kind: 'test.prompt', view: largeA });
+      if (decision.approve === true) return { result: `approved:${tag}` };
+      return { error: { code: 4001, message: decision.closed ? `closed:${decision.closed}` : 'User rejected the request' } };
+    });
+  });
+  const guest = await openTab(electronApp, win, `${A}/`);
+  const after = await reportCount(electronApp, windowId);
+  await inGuest(electronApp, guest, `window.__ask('swap', ${JSON.stringify(view('swap'))})`);
+  const { handle } = await nextReport(electronApp, windowId, after);
+  expect(await electronApp.evaluate(() => globalThis.__APS4_REPLACED__)).toEqual({ replaced: true, held: 1 });
+
+  const trace = (await approvalsTrace(electronApp)).filter((e) => e.handle === handle);
+  const prompts = trace.filter((e) => e.kind === 'prompt');
+  expect(prompts.map((e) => e.parts > 0)).toEqual([true, false]);
+  const [a, b] = prompts.map((e) => e.revision);
+  expect(b).toBeGreaterThan(a);
+  // A's read went on after B was in: stale, never `not-shown`.
+  const stale = trace.filter((e) => e.kind === 'view-part-stale');
+  expect(stale.length).toBeGreaterThan(0);
+  expect(stale.every((e) => e.revision === a)).toBe(true);
+  expect(trace.filter((e) => e.kind === 'view-part').map((e) => [e.revision, e.index])).toEqual([[a, 0]]);
+  // The panel never showed A's fixed error, and never reported A: one
+  // report, B's.
+  expect(await docPage.evaluate(() => window.__errorSeen)).toBe(false);
+  expect(trace.filter((e) => e.kind === 'shown-ignored')).toEqual([]);
+  expect(trace.filter((e) => e.kind === 'shown').map((e) => e.revision)).toEqual([b]);
+
+  await expect(docPage.locator('#body')).toContainText('Small B');
+  await expect(docPage.locator('#body')).not.toContainText('Large A');
+  await expect(docPage.locator('#error')).toBeHidden();
+  await expect(docPage.locator('#approve')).toBeVisible();
+  await sleep(PAST_DELAY_MS);
+  await docPage.click('#approve');
+  await expect.poll(() => outcome(electronApp, guest, 'swap')).toEqual({ ok: 'approved:swap' });
+});
+
+// The same for two inline views: A is on screen and reported; B goes in under
+// the same handle and its message is held back; the panel, still showing A,
+// reports it again (its window resized). That report names A's revision, so it
+// never counts for B: Approve, clicked on A past every delay, is refused, and
+// only B, once it shows and is reported, can be approved.
+test('an inline view replaced by an inline one under the same handle: A\'s late report never counts for B (0011 APS-4)', async ({
+  electronApp,
+  window: win,
+  harness,
+}) => {
+  test.setTimeout(180_000);
+  await harness.setContentFixture(`${A}/`, testPage('dapp a'));
+  const windowId = await chromeWindowId(electronApp);
+  const docPage = await approvalsPage(electronApp);
+  await electronApp.evaluate(() => {
+    const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
+    hooks.setDispatch(async (context) => {
+      const { tag } = context.params || {};
+      globalThis.__APS4_CONTEXT__ = context;
+      const decision = await context.prompt({ kind: 'test.prompt', view: { title: 'Small A', message: 'About A', rows: [] } });
+      if (decision.approve === true) return { result: `approved:${tag}` };
+      return { error: { code: 4001, message: decision.closed ? `closed:${decision.closed}` : 'User rejected the request' } };
+    });
+  });
+  const guest = await openTab(electronApp, win, `${A}/`);
+  const after = await reportCount(electronApp, windowId);
+  await inGuest(electronApp, guest, `window.__ask('swap', ${JSON.stringify(view('swap'))})`);
+  const { handle } = await nextReport(electronApp, windowId, after);
+  await expect(docPage.locator('#body')).toContainText('Small A');
+
+  // B goes in under the same handle; its message reaches the document 3 s
+  // late.
+  await electronApp.evaluate(({ webContents }) => {
+    const approvals = globalThis.__FREEDOM_TEST_APPROVALS__;
+    const doc = webContents.getAllWebContents().find((contents) => contents.getURL() === approvals.url);
+    const send = doc.send.bind(doc);
+    doc.send = (channel, ...args) => {
+      if (channel !== 'page:prompt') return send(channel, ...args);
+      setTimeout(() => send(channel, ...args), 3000);
+      return undefined;
+    };
+    globalThis.__APS4_CONTEXT__.updatePrompt({ title: 'Small B', message: 'About B', rows: [] });
+    delete doc.send;
+  });
+  const prompts = (await approvalsTrace(electronApp)).filter((e) => e.handle === handle && e.kind === 'prompt');
+  expect(prompts.length).toBe(2);
+  const [a, b] = prompts.map((e) => e.revision);
+  expect(b).toBeGreaterThan(a);
+
+  // The panel, showing A, reports it again: for A's revision, ignored.
+  await docPage.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await expect
+    .poll(async () => (await approvalsTrace(electronApp)).filter((e) => e.kind === 'shown-ignored' && e.handle === handle).map((e) => e.revision))
+    .toEqual([a]);
+  expect((await approvalsState(electronApp))[windowId]).toMatchObject({ shown: handle, revision: b, reported: null });
+  // Past every delay, Approve on A: refused, A still on screen.
+  await sleep(PAST_DELAY_MS);
+  const decides = (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide').length;
+  await docPage.click('#approve');
+  await expect
+    .poll(async () => (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide').slice(decides))
+    .toEqual([expect.objectContaining({ ok: false, reason: 'not-reported' })]);
+  await expect(docPage.locator('#body')).toContainText('Small A');
+  expect(await outcome(electronApp, guest, 'swap')).toEqual({ pending: true });
+
+  // B arrives, is reported for its own revision, and its approval stands.
+  await expect
+    .poll(async () => (await approvalsTrace(electronApp)).filter((e) => e.kind === 'shown' && e.handle === handle).map((e) => e.revision), {
+      timeout: 15_000,
+    })
+    .toEqual([a, b]);
+  await expect(docPage.locator('#body')).toContainText('Small B');
+  await sleep(PAST_DELAY_MS);
+  await docPage.click('#approve');
+  await expect.poll(() => outcome(electronApp, guest, 'swap')).toEqual({ ok: 'approved:swap' });
 });
 
 // --- Hostile data, in every field a page chooses, for every dApp kind ---------
@@ -536,7 +695,6 @@ const HOSTILE_PROMPTS = [
 async function routeKindPrompts(electronApp) {
   await electronApp.evaluate(() => {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { kind, view: shown } = context.params || {};
       const decision = await context.prompt({ kind, view: shown });

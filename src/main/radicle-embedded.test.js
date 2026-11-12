@@ -627,11 +627,6 @@ describe('on the freedom-radicled service', () => {
     'listRepos',
     'start',
     'shutdown',
-    'unseedRepo',
-    'createIssue',
-    'commentIssue',
-    'editIssueState',
-    'commentPatch',
     'importRepo',
     'issues',
     'issue',
@@ -662,6 +657,128 @@ describe('on the freedom-radicled service', () => {
       export: name,
     });
     expect(reads).toEqual([]);
+  });
+
+  describe("the writes: the service node's rad.write and rad.unseed (plan B11)", () => {
+    const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+    const ID = 'c'.repeat(40);
+    /** The generation each write went to, and what it sent. */
+    let writes;
+    let target;
+    beforeEach(() => {
+      writes = [];
+      target = { gen: { number: 1 }, identity: { ephemeral: false } };
+      node.writeTarget = jest.fn(() => target);
+      node.write = jest.fn(async (to, op, args) => {
+        writes.push({ to, op, args });
+        return op === 'edit_issue_state' ? { id: ID, state: args.state } : { id: ID };
+      });
+      node.unseed = jest.fn(async (to, rid) => {
+        writes.push({ to, op: 'unseed', rid });
+        return { unseeded: true };
+      });
+    });
+    afterEach(() => {
+      delete node.writeTarget;
+      delete node.write;
+      delete node.unseed;
+    });
+
+    test("each COB write is rad.write with today's arguments by name, and today's result", async () => {
+      await expect(embedded.createIssue(RID, 'Bug', 'Steps', ['ui'])).resolves.toEqual({ id: ID });
+      await expect(embedded.createIssue(RID, 'Bug', 'Steps')).resolves.toEqual({ id: ID });
+      await expect(
+        embedded.commentIssue(RID, 'a'.repeat(40), 'Same', 'b'.repeat(40))
+      ).resolves.toEqual({
+        id: ID,
+      });
+      await expect(embedded.commentIssue(RID, 'a'.repeat(40), 'Same')).resolves.toEqual({ id: ID });
+      await expect(embedded.editIssueState(RID, 'a'.repeat(40), 'solved')).resolves.toEqual({
+        id: ID,
+        state: 'solved',
+      });
+      await expect(embedded.commentPatch(RID, 'd'.repeat(40), 'LGTM')).resolves.toEqual({ id: ID });
+      await expect(embedded.unseedRepo(RID)).resolves.toEqual({ unseeded: true });
+      expect(writes.map(({ op, args, rid }) => [op, args ?? rid])).toEqual([
+        ['create_issue', { rid: RID, title: 'Bug', description: 'Steps', labels: ['ui'] }],
+        ['create_issue', { rid: RID, title: 'Bug', description: 'Steps', labels: [] }],
+        [
+          'comment_issue',
+          { rid: RID, issue_id: 'a'.repeat(40), body: 'Same', reply_to: 'b'.repeat(40) },
+        ],
+        ['comment_issue', { rid: RID, issue_id: 'a'.repeat(40), body: 'Same', reply_to: null }],
+        ['edit_issue_state', { rid: RID, issue_id: 'a'.repeat(40), state: 'solved' }],
+        ['comment_patch', { rid: RID, revision_id: 'd'.repeat(40), body: 'LGTM' }],
+        ['unseed', RID],
+      ]);
+      expect(writes.every(({ to }) => to === target)).toBe(true);
+      expect(reads).toEqual([]);
+    });
+
+    test('the generation is picked when the write is called, before it returns', async () => {
+      const picked = target;
+      const pending = embedded.createIssue(RID, 'Bug', 'Steps');
+      expect(node.writeTarget).toHaveBeenCalledTimes(1);
+      // A restart after the call: the write still goes to the generation
+      // picked, which refuses it if it has ended (radicled-node.js).
+      target = { gen: { number: 2 }, identity: { ephemeral: false } };
+      await pending;
+      expect(writes.map(({ to }) => to)).toEqual([picked]);
+    });
+
+    test('no generation running: stopped, and nothing is sent', async () => {
+      target = null;
+      await expect(embedded.createIssue(RID, 'Bug', 'Steps')).rejects.toMatchObject({
+        code: 'stopped',
+      });
+      await expect(embedded.unseedRepo(RID)).rejects.toMatchObject({ code: 'stopped' });
+      expect(writes).toEqual([]);
+    });
+
+    test('a throwaway key: COB writes refused needs_vault before anything is sent; unseeding still goes', async () => {
+      target = { gen: { number: 1 }, identity: { ephemeral: true } };
+      for (const write of [
+        () => embedded.createIssue(RID, 'Bug', 'Steps'),
+        () => embedded.commentIssue(RID, 'a'.repeat(40), 'Same'),
+        () => embedded.editIssueState(RID, 'a'.repeat(40), 'closed'),
+        () => embedded.commentPatch(RID, 'd'.repeat(40), 'LGTM'),
+      ]) {
+        await expect(write()).rejects.toMatchObject({ code: 'needs_vault' });
+      }
+      expect(writes).toEqual([]);
+      await expect(embedded.unseedRepo(RID)).resolves.toEqual({ unseeded: true });
+      expect(writes).toHaveLength(1);
+    });
+
+    test("a success main can't read is outcome_unknown; the service's errors keep their code", async () => {
+      node.write.mockResolvedValueOnce({ id: 7 });
+      await expect(embedded.createIssue(RID, 'Bug', 'Steps')).rejects.toMatchObject({
+        code: 'outcome_unknown',
+        message:
+          'The Radicle node stopped before confirming this write; it may have been recorded.',
+      });
+      node.write.mockResolvedValueOnce({ id: ID });
+      await expect(embedded.editIssueState(RID, 'a'.repeat(40), 'closed')).rejects.toMatchObject({
+        code: 'outcome_unknown',
+      });
+      node.unseed.mockResolvedValueOnce({ unseeded: 'yes' });
+      await expect(embedded.unseedRepo(RID)).rejects.toMatchObject({ code: 'outcome_unknown' });
+      const quarantined = Object.assign(new Error('quarantined'), {
+        code: 'quarantined',
+        data: { kind: 'namespace', step: 'sigrefs' },
+      });
+      node.write.mockRejectedValueOnce(quarantined);
+      await expect(embedded.commentPatch(RID, 'd'.repeat(40), 'LGTM')).rejects.toBe(quarantined);
+    });
+
+    test('on the add-on, the writes stay its own', async () => {
+      process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+      await expect(embedded.createIssue(RID, 'Bug', 'Steps')).rejects.toThrow(
+        'radicle addon not available'
+      );
+      await expect(embedded.unseedRepo(RID)).rejects.toThrow('radicle addon not available');
+      expect(node.writeTarget).not.toHaveBeenCalled();
+    });
   });
 
   describe('the network operations: the service node\'s rad.connect_seeds and rad.clone', () => {

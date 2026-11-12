@@ -223,7 +223,7 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   // The chrome mints no dapp-send token, none for a site's Safe send, and
   // claims no site's contract rule.
   const forged = await win.evaluate(
-    async ({ guest: id, key, call }) => {
+    async ({ key, call }) => {
       const reason = (result) => (result?.success ? 'granted' : result?.code || result?.error);
       const tx = { ...call, chainId: 100, gasLimit: '21000', gasPrice: '1000000000' };
       return {
@@ -231,14 +231,13 @@ test('sends through main: its prompt and fee check, its own token, the contract 
         safe: reason(
           await window.wallet.confirmSigning('safe-send', 1000, { tx: { to: call.to, value: '0', data: call.data }, chainId: 100, origin: key })
         ),
-        rule: reason(
-          await window.wallet.dappSendTransaction(tx, 0, { origin: key }, { autoApprove: key, webContentsId: id, rememberAutoApprove: key })
-        ),
+        // PRQ-9: the chrome has no dApp send of its own to claim a rule on.
+        rule: typeof window.wallet.dappSendTransaction,
       };
     },
-    { guest, key: KEY_A, call: CALL }
+    { key: KEY_A, call: CALL }
   );
-  expect(forged).toEqual({ send: 'SIGNING_NOT_CONFIRMED', safe: 'SIGNING_NOT_CONFIRMED', rule: 'SIGNING_NOT_CONFIRMED' });
+  expect(forged).toEqual({ send: 'SIGNING_NOT_CONFIRMED', safe: 'SIGNING_NOT_CONFIRMED', rule: 'undefined' });
   expect(await sends(electronApp)).toEqual([]);
 
   // A contract call: main's prompt, rendered with main's site, transaction

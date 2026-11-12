@@ -8,10 +8,10 @@
 // appears, changes, is shown again or moves, with main refusing an approval
 // sooner than that, and Enter never approving.
 //
-// The prompt is the harness's own kind (`test.prompt`): the test hooks
-// route `swarm_readChunk` through main for tabs opened after `setRoutes`,
-// and serve it with a dispatcher that opens a prompt with the view the page
-// sent, so every field it shows is the page's choice.
+// The prompt is the harness's own kind (`test.prompt`): every page request
+// goes to main, and the test hooks serve `swarm_readChunk` with a dispatcher
+// that opens a prompt with the view the page sent, so every field it shows
+// is the page's choice.
 
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -71,7 +71,6 @@ async function routeTestPrompts(electronApp) {
     const hooks = globalThis.__FREEDOM_TEST_PAGE_REQUESTS__;
     const aps = { contexts: {}, decisions: [] };
     globalThis.__aps = aps;
-    hooks.setRoutes(['swarm:swarm_readChunk']);
     hooks.setDispatch(async (context) => {
       const { tag, view: shown } = context.params || {};
       aps.contexts[tag] = context;
@@ -250,9 +249,12 @@ test('the approvals document: its surface, sender checks, rendering and input ru
     reason: 'approvals-document',
   });
 
-  // The forged page's decision for the shown handle: refused.
+  // The forged page's decision for the shown handle, with the revision main
+  // sent the document: refused.
   await electronApp.evaluate(({ webContents }, args) => {
-    webContents.fromId(args.id).mainFrame.send('approvals-test:forge', { handle: args.handle });
+    const panels = Object.values(globalThis.__FREEDOM_TEST_APPROVALS__.state());
+    const revision = panels.find((panel) => panel.shown === args.handle)?.revision;
+    webContents.fromId(args.id).mainFrame.send('approvals-test:forge', { handle: args.handle, revision });
   }, { id: firstGuest, handle: one });
   await expect.poll(() => electronApp.evaluate(() => globalThis.__forged.length)).toBe(1);
   const [forged] = await electronApp.evaluate(() => globalThis.__forged);

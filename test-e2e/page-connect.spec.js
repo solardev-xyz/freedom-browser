@@ -210,20 +210,10 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
 
-  // The chrome names a site and tries to grant it: refused, for every site.
-  const forged = await win.evaluate(async (keys) => {
-    const out = [];
-    for (const key of keys) {
-      try {
-        await window.dappPermissions.grantPermission(key, 0, 100);
-        out.push('granted');
-      } catch (err) {
-        out.push(String(err?.message || err).includes('granted only from its own prompt') ? 'refused' : String(err));
-      }
-    }
-    return out;
-  }, [KEY_A, 'name.eth', 'https://swap.example']);
-  expect(forged).toEqual(['refused', 'refused', 'refused']);
+  // The chrome has no way to name a site and grant it (PRQ-9): its preload
+  // exposes no grant write, and main refuses dapp:grant-permission for every
+  // site (dapp-permissions.test.js).
+  expect(await win.evaluate(() => typeof window.dappPermissions.grantPermission)).toBe('undefined');
   expect(await grantOf(win, KEY_A)).toBeNull();
 
   await openIn(win, `${KEY_A}/`);
@@ -274,24 +264,9 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   await expect.poll(() => outcome(win, KEY_A, 'chain')).toEqual({ ok: '0x1' });
   await win.evaluate(async () => (await import('./lib/sidebar.js')).open());
   await expect(win.locator('#chain-switcher-name')).toHaveText('Ethereum');
-  // The chrome may still mark a site used (its signing paths, until PRQ-5),
-  // but not write its chain.
-  const chromeWrites = await win.evaluate(async (key) => {
-    const out = {};
-    try {
-      out.timestamp = await window.dappPermissions.updateLastUsed(key);
-    } catch (err) {
-      out.timestamp = String(err?.message || err);
-    }
-    try {
-      await window.dappPermissions.updateLastUsed(key, 100);
-      out.chain = 'written';
-    } catch (err) {
-      out.chain = String(err?.message || err).includes('chain is set only') ? 'refused' : String(err);
-    }
-    return out;
-  }, KEY_A);
-  expect(chromeWrites).toEqual({ timestamp: true, chain: 'refused' });
+  // The chrome writes neither a site's last use nor its chain: since PRQ-9
+  // its preload has no such call (main marks a site used itself).
+  expect(await win.evaluate(() => typeof window.dappPermissions.updateLastUsed)).toBe('undefined');
   expect(await grantOf(win, KEY_A)).toMatchObject({ chainId: 1 });
 
   // Every one went to main for the guest that asked; the chrome's old path

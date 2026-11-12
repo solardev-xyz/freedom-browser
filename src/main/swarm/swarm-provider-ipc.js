@@ -12,14 +12,10 @@
  * chrome: `swarm:provider-execute`, which took a site from the chrome, is
  * gone.
  *
- * The webContents-bound subscriptions below (`webContentsId`, the
- * did-navigate teardown, `navEpoch`) served the chrome's route, and only an
- * executeSwarmMethod caller with no `meta.page` reaches them now: none in
- * the app. PRQ-9 removes them.
+ * A subscription is bound to the requesting document (`meta.page`) and ends
+ * with it; a subscribe with no page is refused.
  */
 
-const { webContents } = require('electron');
-const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
 const { publishPageData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
@@ -452,7 +448,7 @@ function permissionFreeReadMeter(origin) {
  * @param {string} method
  * @param {*} params
  * @param {string} origin - The requester's attested key (page/page-swarm.js)
- * @param {{ webContentsId?: number, page?: object }} [meta] -
+ * @param {{ page?: object }} [meta] -
  *   `page` is main's own, for a page's request through main (freedom-core
  *   design 0011, PRQ-7; page/page-swarm.js):
  *   `document` names the requesting document, which a subscription is bound
@@ -466,9 +462,8 @@ function permissionFreeReadMeter(origin) {
  *   leaves held under the key (a tag's owner, a feed's record) only while
  *   the name still answers, `copied(label)` hears each copy main makes of
  *   the request's bytes, and `signal`, aborted when main answers the
- *   request or its document goes, stops an upload. `webContentsId`, for a
- *   subscription with no page, is the chrome route's old target (PRQ-9
- *   removes it).
+ *   request or its document goes, stops an upload. A subscribe with no page
+ *   is refused.
  * @returns {{ result?, error? }}
  */
 async function executeSwarmMethod(method, params, origin, meta) {
@@ -2101,61 +2096,6 @@ async function handleSendGsoc(params, origin, meta) {
   }
 }
 
-// webContents ids that already have teardown listeners attached. A
-// webview keeps its webContents across navigations, so subscriptions are
-// torn down both on 'destroyed' (tab close) and 'did-navigate' (main-frame
-// navigation away — the page that subscribed is gone either way).
-// Deliberately not 'did-navigate-in-page': a hash route or pushState
-// leaves the same document, with the same grant and the same live
-// listeners, so tearing down there would break messaging on a page that
-// is very much still there.
-const teardownAttached = new Set();
-
-// Per-webContents navigation counter. A webview keeps its webContents across
-// navigations, so a same-origin *cross-document* navigation during the
-// subscribe awaits (grant prompt + reachability probe) fires did-navigate but
-// leaves the origin re-check happy (chat.eth → chat.eth) — binding the new
-// document a subscription it never asked for. Snapshot this at request entry
-// and compare after the awaits: a cross-document navigation bumps it (in-page
-// hash/pushState does not fire did-navigate, so a live page's own routing is
-// unaffected). Listener attached once per webContents, cleared on destroy.
-const navEpochs = new Map();
-const navEpochAttached = new Set();
-
-function navEpoch(webContentsId) {
-  if (!navEpochAttached.has(webContentsId)) {
-    const contents = webContents.fromId(webContentsId);
-    if (contents && !contents.isDestroyed()) {
-      navEpochAttached.add(webContentsId);
-      contents.on('did-navigate', () => {
-        navEpochs.set(webContentsId, (navEpochs.get(webContentsId) || 0) + 1);
-      });
-      contents.once('destroyed', () => {
-        navEpochAttached.delete(webContentsId);
-        navEpochs.delete(webContentsId);
-      });
-    }
-  }
-  return navEpochs.get(webContentsId) || 0;
-}
-
-function attachWebContentsTeardown(webContentsId) {
-  if (teardownAttached.has(webContentsId)) return;
-  const contents = webContents.fromId(webContentsId);
-  if (!contents || contents.isDestroyed()) {
-    subscriptionRegistry.cancelByWebContents(webContentsId);
-    return;
-  }
-  teardownAttached.add(webContentsId);
-  contents.on('did-navigate', () => {
-    subscriptionRegistry.cancelByWebContents(webContentsId);
-  });
-  contents.once('destroyed', () => {
-    teardownAttached.delete(webContentsId);
-    subscriptionRegistry.cancelByWebContents(webContentsId);
-  });
-}
-
 // A message's data, as the page-world provider reads it.
 function subscriptionMessage(subscription, payload, receivedAt = Date.now()) {
   return {
@@ -2236,41 +2176,6 @@ async function drainToDocument(subscription, outbox) {
   }
 }
 
-function deliverSubscriptionMessage(subscription, payload) {
-  if (subscription.deliverTo) {
-    deliverToDocument(subscription, payload);
-    return;
-  }
-  const contents = webContents.fromId(subscription.webContentsId);
-  if (!contents || contents.isDestroyed()) return;
-  // A webview keeps its webContents across navigations, so the page on
-  // screen may no longer belong to the origin that subscribed. Delivering
-  // here would hand another origin's page the messages of a subscription
-  // it never asked for (and has no grant for). The did-navigate teardown
-  // below normally wins this race; this check is what makes it safe when
-  // a message and a commit land in the same tick.
-  //
-  // The comparison is on the permission key, not the exact URL: an
-  // in-page navigation (hash route, pushState) fires no did-navigate and
-  // leaves the very same document — and the same grant — in place, so
-  // keying on the URL would kill a live page's messaging on its first
-  // route change.
-  const currentOrigin = normalizeOrigin(contents.getURL());
-  if (currentOrigin !== subscription.origin) {
-    // Only the subscriptions whose origin is gone: a subscription the
-    // origin now loaded already opened on this webview is still valid.
-    subscriptionRegistry.cancelStaleByWebContents(subscription.webContentsId, currentOrigin);
-    return;
-  }
-  // The webview preload bridges this channel to the page (the preload
-  // itself keeps the literal string — sandboxed preloads cannot require
-  // shared modules).
-  contents.send(IPC.SWARM_PROVIDER_EVENT, {
-    event: 'message',
-    data: subscriptionMessage(subscription, payload),
-  });
-}
-
 /**
  * Handle swarm_subscribe: open a long-lived GSOC/PSS subscription.
  */
@@ -2314,101 +2219,15 @@ async function handleSubscribe(params, origin, meta) {
     if (topicError) return topicError;
   }
 
-  if (meta?.page) {
-    return subscribeForPage({ kind, key, topic: params.topic }, origin, meta);
+  // A subscription is bound to the requesting document: with none there
+  // is nowhere for its messages to go.
+  if (!meta?.page) {
+    return invalidParams('subscribe requires a document target', 'invalid_params');
   }
-
-  const webContentsId = meta?.webContentsId;
-  if (!Number.isInteger(webContentsId) || webContentsId <= 0) {
-    return invalidParams('subscribe requires a webContents target', 'invalid_params');
-  }
-
-  // Snapshot before the user-paced grant prompt and the reachability probe, so
-  // a cross-document navigation during either is detected below even when it
-  // stays on the same origin (which the origin re-check alone cannot catch).
-  const entryNavEpoch = navEpoch(webContentsId);
-
-  if (!hasMessagingGrant(origin)) {
-    return messagingNotGranted();
-  }
-
-  const reachable = await checkBeeReachable();
-  if (!reachable.ok) {
-    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
-  }
-
-  if (!key) {
-    // Topic-derived key: GSOC mines the room address, PSS hashes the topic.
-    try {
-      key = kind === 'gsoc'
-        ? (await messagingService.deriveGsoc(params.topic, { origin })).address
-        : messagingService.resolvePssTopicHex(params.topic);
-    } catch (err) {
-      log.error(`[SwarmProvider] subscribe derivation failed for ${origin}:`, err.message);
-      return gsocDerivationError(err) || { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
-    }
-  }
-
-  const contents = webContents.fromId(webContentsId);
-  if (!contents || contents.isDestroyed()) {
-    return invalidParams('subscribe requires a live webContents target', 'invalid_params');
-  }
-
-  // Everything above this line can take arbitrarily long — the messaging
-  // grant prompt is user-paced, the reachability probe is a network
-  // round-trip, and a GSOC topic's signer is mined in a worker that may
-  // be busy with other topics — and a webview keeps its webContents across
-  // navigations.
-  // If the user navigated the tab elsewhere while we waited, the registry
-  // entry we are about to create would bind `origin`'s subscription to a
-  // webContents now hosting someone else, and the delivery check would
-  // then happily validate it: every message for this topic would land in
-  // the other site. did-navigate cannot save us here — it fired before
-  // any entry existed. Re-check the live page instead.
-  // Two shapes of "navigated away during the awaits": a different origin now
-  // holds the webContents (origin check), or a same-origin cross-document
-  // navigation replaced the subscribing document (epoch check — did-navigate
-  // fired with no entry yet to cancel). Either way the requesting document is
-  // gone; binding now would hand its slot to a page that never subscribed.
-  if (normalizeOrigin(contents.getURL()) !== origin || navEpoch(webContentsId) !== entryNavEpoch) {
-    log.warn(`[SwarmProvider] subscribe target navigated away from ${origin}: ${kind}:${key}`);
-    return subscriptionCancelled();
-  }
-
-  // Teardown must be armed *before* the registry can hold a slot on this
-  // page's behalf: establishment can take seconds (or, against a node
-  // that stopped answering, never settle), and the page can navigate away
-  // or be closed in the meantime. Attaching only on success leaked the
-  // subscription — and its share of the per-origin cap — forever.
-  attachWebContentsTeardown(webContentsId);
-
-  try {
-    const { subscriptionId } = await subscriptionRegistry.subscribe({
-      origin,
-      webContentsId,
-      kind,
-      key,
-    });
-    log.info(`[SwarmProvider] subscribe succeeded for ${origin}: ${kind}:${key}`);
-    return { result: { subscriptionId, kind, key } };
-  } catch (err) {
-    return subscribeError(err, origin, kind, key);
-  }
+  return subscribeForPage({ kind, key, topic: params.topic }, origin, meta);
 }
 
-// A subscription that ended before it was established, or whose
-// requesting document went meanwhile: retryable, like any node failure.
-function subscriptionCancelled(message = 'Page navigated away before the subscription was established') {
-  return {
-    error: {
-      ...ERRORS.NODE_UNAVAILABLE,
-      message,
-      data: { reason: 'subscription_cancelled' },
-    },
-  };
-}
-
-// The errors a subscription that didn't open answers, both paths alike.
+// The errors a subscription that didn't open answers.
 function subscribeError(err, origin, kind, key) {
   if (err.reason === 'establish_timeout' || err.reason === 'subscription_cancelled' || err.reason === 'cancelled') {
     // Never established within the window, or torn down while we waited
@@ -2447,13 +2266,13 @@ function subscribeError(err, origin, kind, key) {
 
 /**
  * swarm_subscribe for a page, through main (freedom-core design 0011,
- * PRQ-7b): bound to the requesting document (`meta.page.document`), not to
- * a webContents. Its messages go to that document alone, through main's
- * `sendEvent` (`meta.page.deliverTo`), and it ends with the document, which
- * main tells the registry (`cancelByDocument`): no navigation counter and
- * no URL cross-check, since a document is never reused. After the waits
- * (the reachability probe, a GSOC topic's mining) the page's guard checks
- * the name and the document again before the registry holds a slot for it.
+ * PRQ-7b): bound to the requesting document (`meta.page.document`). Its
+ * messages go to that document alone, through main's `sendEvent`
+ * (`meta.page.deliverTo`), and it ends with the document, which main tells
+ * the registry (`cancelByDocument`); a document is never reused. After the
+ * waits (the reachability probe, a GSOC topic's mining) the page's guard
+ * checks the name and the document again before the registry holds a slot
+ * for it.
  */
 async function subscribeForPage({ kind, key: givenKey, topic }, origin, meta) {
   const { document, deliverTo } = meta.page;
@@ -2581,7 +2400,7 @@ async function checkSwarmPreFlight() {
 function registerSwarmProviderIpc() {
   subscriptionRegistry.configure({
     openSocket: messagingService.openSubscriptionSocket,
-    deliver: deliverSubscriptionMessage,
+    deliver: deliverToDocument,
     maxSubscriptionsPerOrigin: LIMITS.maxSubscriptions,
   });
 

@@ -20,7 +20,8 @@
  * With the flag on, main's page prompts (`page-prompts.js`) run between
  * main and this document:
  *
- *   page:prompt          main -> document  { handle, guest, kind, site, view }
+ *   page:prompt          main -> document  { handle, revision, guest, kind,
+ *                                          site, view }
  *   page:prompt-hidden   main -> document  { handle }
  *   page:prompt-closed   main -> document  { handle, reason } (and to the chrome)
  *   approvals:moved      main -> document  the panel moved or was resized
@@ -36,21 +37,22 @@
  *
  * A view over 256 KiB (very large transaction data, typed data or a
  * message; APS-4) doesn't go in one message: `page:prompt` then carries
- * `view: null` and `parts: { count, length, revision }`, and the document
+ * `view: null` and `parts: { count, length }`, and the document
  * asks for each part of the view's JSON in turn, each part within 256 KiB.
  * It joins them, checks the whole against its kind's schema as it checks
  * any view, within 4 MiB, and only then shows the prompt and reports it
  * shown. So every value is still shown in full, in its scrolling box, and
  * nothing is decided on a part.
  *
- * Each `page:prompt` main sends is a revision of its own: a prompt's view
- * can change under the same handle (`page-prompts.js update()`), and a
- * document still reading the parts of the view it was sent before must not
- * join them with the new one's. So a part is given only for the handle and
- * the revision main shows at that moment (`stale` for an earlier revision:
- * the newer prompt is already on its way to the document, which reads that
- * one afresh), and a report of a view in parts counts only for its
- * revision.
+ * Each `page:prompt` main sends carries a revision of its own, never used
+ * again: a prompt's view can change under the same handle
+ * (`page-prompts.js update()`), and the newer message can reach the
+ * document after it reported, or went on reading the parts of, the view it
+ * was sent before. So every report counts only for the revision main shows
+ * at that moment, whether its view came whole or in parts, and a part is
+ * given only for that handle and revision (`stale` for any earlier one:
+ * the newer prompt is already on its way to the document, which drops what
+ * it was loading and reads that one afresh).
  * A view over 4 MiB, more than any page request's view (a request is at
  * most 1 MiB, and the core's typed-data view one reply), is not
  * forwarded: the document shows its fixed error, and the prompt can only
@@ -250,14 +252,15 @@ function viewParts(json) {
 }
 
 /**
- * How main forwards a prompt: the message (its own fields, and the view
- * within 256 KiB, or `view: null` and `parts: { count, length, revision }`
- * for a view within 4 MiB), the view as main shows it, and the view's JSON
- * in parts. `revision` is the delivery's own (`send`).
+ * How main forwards a prompt: the message (its own fields, the delivery's
+ * `revision` (`send`), and the view within 256 KiB, or `view: null` and
+ * `parts: { count, length }` for a view within 4 MiB), the view as main
+ * shows it, and the view's JSON in parts.
  */
 function promptDelivery(payload, revision = 1) {
   const message = {
     handle: payload?.handle,
+    revision,
     guest: payload?.guest,
     kind: payload?.kind,
     site: { key: payload?.site?.key, label: payload?.site?.label },
@@ -276,7 +279,7 @@ function promptDelivery(payload, revision = 1) {
     const parts = viewParts(json);
     const view = message.view;
     message.view = null;
-    message.parts = { count: parts.length, length: json.length, revision };
+    message.parts = { count: parts.length, length: json.length };
     return { message, view, parts };
   }
   // Over 4 MiB, or not serializable: the document gets no view, shows its
@@ -539,8 +542,8 @@ function createApprovalsDocuments({
       ready: false,
       visible: false,
       shown: null,
-      // The shown prompt's view as main holds it, and its JSON in parts when
-      // it is over one message, for the revision sent last (APS-4).
+      // The shown prompt's view as main holds it, its JSON in parts when it
+      // is over one message, and the revision sent last (APS-4).
       shownView: null,
       parts: null,
       revision: 0,
@@ -685,16 +688,21 @@ function createApprovalsDocuments({
 
   /**
    * `approvals:shown { handle, revision }`: the prompt main shows is on
-   * screen. A view in parts is reported for its revision: a report for an
-   * earlier one counts for nothing (APS-4).
+   * screen. Every report names the revision it rendered: one for an earlier
+   * delivery under the same handle counts for nothing, whether its view came
+   * whole or in parts (APS-4).
    */
   function shown(event, payload) {
     const { record, reason } = senderOf(event);
     if (!record) return refused(CHANNELS.SHOWN, reason);
     const handle = isPlainObject(payload) ? payload.handle : undefined;
     const revision = isPlainObject(payload) ? payload.revision : undefined;
-    const expected = record.parts ? record.revision : undefined;
-    if (typeof handle !== 'string' || record.shown?.handle !== handle || revision !== expected) {
+    if (
+      typeof handle !== 'string' ||
+      record.shown?.handle !== handle ||
+      !Number.isInteger(revision) ||
+      revision !== record.revision
+    ) {
       trace({ kind: 'shown-ignored', window: record.windowId, handle, revision });
       return { ok: false, reason: 'not-shown' };
     }
@@ -762,13 +770,17 @@ function createApprovalsDocuments({
       return { ok: false, reason: 'invalid' };
     }
     const { handle, revision, index } = payload;
-    if (record.shown?.handle !== handle || !record.parts) return { ok: false, reason: 'not-shown' };
-    // The view changed under the same handle since the document was sent
-    // this revision: nothing of the new one goes to a read of the old.
+    if (record.shown?.handle !== handle) return { ok: false, reason: 'not-shown' };
+    // The prompt changed under the same handle since the document was sent
+    // this revision, whether the new view came whole or in parts: nothing
+    // of the new one goes to a read of the old, and the old read is dropped
+    // rather than shown as the fixed error. Before asking whether the
+    // current view has parts at all.
     if (revision !== record.revision) {
       trace({ kind: 'view-part-stale', window: record.windowId, handle, revision, index });
       return { ok: false, reason: 'stale' };
     }
+    if (!record.parts) return { ok: false, reason: 'invalid' };
     const part = record.parts[index];
     if (typeof part !== 'string') return { ok: false, reason: 'invalid' };
     trace({ kind: 'view-part', window: record.windowId, handle, revision, index });

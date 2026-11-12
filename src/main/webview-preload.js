@@ -663,7 +663,6 @@ function ethereumInjectSource() {
   );
   return `window.__FREEDOM_PROVIDER_CONFIG__ = ${info};\n${WEBVIEW_BOOT.ethereum.source}`;
 }
-const ETHEREUM_INJECT_SOURCE = PROVIDERS_ENABLED ? ethereumInjectSource() : '';
 
 // Internal pages list — canonical source is src/shared/internal-pages.json,
 // handed over with the boot switch (sync IPC as the fallback) so preloads
@@ -1715,9 +1714,9 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // Page requests: the way into main (freedom-core design 0011)
 // ============================================
 //
-// A page's provider requests move, method by method, off `sendToHost` and
-// the chrome onto channels to main, which decides who asked from the sending
-// frame itself (src/main/page/page-requests.js). This document's nonce, 16
+// Every provider request a page makes goes to main, which decides who asked
+// from the sending frame itself (src/main/page/page-requests.js) and
+// answers it: the chrome sees none of them. This document's nonce, 16
 // random bytes, lives here in the isolated world, where page scripts can't
 // read it. It goes to main with `page:hello` before any provider is
 // injected, so before any page script runs. Every `page:request` carries
@@ -1726,16 +1725,10 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // the page sees anything: main sends to a frame, and the frame can commit a
 // new document between main's check and the delivery.
 //
-// The Ethereum reads (PRQ-3), connecting (PRQ-4), signing messages and
-// typed data (PRQ-5a) and sends (PRQ-5b), and Swarm's reads (PRQ-7a),
-// connecting and messaging (PRQ-7b), publishing (PRQ-7c) and feeds and
-// signing (PRQ-7d), all of window.swarm, and all of window.radicle (PRQ-8a
-// to 8c), take the new path (PAGE_ROUTES),
-// and main answers them: their page-world
-// provider arms no timer of its own, and main's deadline answers one that
-// runs too long. Each later step of the design moves its own methods. For a test, the E2E harness can route more
-// through main (`testPageRoutes`, which main puts on the boot switch only in
-// test mode).
+// Main answers every request, a method it doesn't serve included, and its
+// deadline answers one that runs too long, so the page-world providers arm
+// no timer of their own (design 0011, "One deadline, main's"). Freedom's
+// own pages get no provider: they talk to main through freedomAPI.
 const PAGE_REQUESTS_ENABLED = PROVIDERS_ENABLED && !isInternalPage();
 const PAGE_NONCE = PAGE_REQUESTS_ENABLED
   ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (b) =>
@@ -1746,104 +1739,11 @@ if (PAGE_REQUESTS_ENABLED) {
   ipcRenderer.send('page:hello', { nonce: PAGE_NONCE });
 }
 
-// window.ethereum's read methods: `READ_ONLY_METHODS` in the chrome's
-// dapp-provider.js, and `eth_accounts`; connecting, `eth_requestAccounts`
-// and `wallet_switchEthereumChain`; signing, `personal_sign` and
-// `eth_signTypedData_v4`; and sending, `eth_sendTransaction`.
-// page-ethereum.test.js keeps these the list main's Ethereum dispatcher
-// serves (src/main/page/page-ethereum.js). And window.swarm's methods that
-// need no prompt (PRQ-7a), connecting and messaging (PRQ-7b), publishing
-// (PRQ-7c), and feeds and signing (PRQ-7d), which page-swarm.test.js keeps
-// the list main's Swarm dispatcher serves (src/main/page/page-swarm.js). A publish over 1 MiB
-// reserves its turn first (`page:reserve`, below). And all of window.radicle:
-// its reads, connecting and disconnecting (PRQ-8a), seeding (PRQ-8b) and
-// signing (PRQ-8c), which page-radicle.test.js keeps the list main's
-// Radicle dispatcher serves (src/main/page/page-radicle.js).
-const PAGE_ROUTES = new Set([
-  'ethereum:eth_requestAccounts',
-  'ethereum:wallet_switchEthereumChain',
-  'ethereum:personal_sign',
-  'ethereum:eth_signTypedData_v4',
-  'ethereum:eth_sendTransaction',
-  'ethereum:eth_chainId',
-  'ethereum:net_version',
-  'ethereum:eth_accounts',
-  'ethereum:eth_blockNumber',
-  'ethereum:eth_getBalance',
-  'ethereum:eth_getCode',
-  'ethereum:eth_getStorageAt',
-  'ethereum:eth_getTransactionCount',
-  'ethereum:eth_getBlockByNumber',
-  'ethereum:eth_getBlockByHash',
-  'ethereum:eth_getTransactionByHash',
-  'ethereum:eth_getTransactionReceipt',
-  'ethereum:eth_call',
-  'ethereum:eth_estimateGas',
-  'ethereum:eth_gasPrice',
-  'ethereum:eth_feeHistory',
-  'ethereum:eth_maxPriorityFeePerGas',
-  'ethereum:eth_getLogs',
-  'ethereum:eth_getFilterChanges',
-  'ethereum:eth_getFilterLogs',
-  'ethereum:eth_newFilter',
-  'ethereum:eth_newBlockFilter',
-  'ethereum:eth_newPendingTransactionFilter',
-  'ethereum:eth_uninstallFilter',
-  'ethereum:web3_clientVersion',
-  'ethereum:web3_sha3',
-  'swarm:swarm_getCapabilities',
-  'swarm:swarm_readChunk',
-  'swarm:swarm_readData',
-  'swarm:swarm_readSingleOwnerChunk',
-  'swarm:swarm_readFeedEntry',
-  'swarm:swarm_listFeeds',
-  'swarm:swarm_requestAccess',
-  'swarm:swarm_getMessagingIdentity',
-  'swarm:swarm_subscribe',
-  'swarm:swarm_unsubscribe',
-  'swarm:swarm_sendPss',
-  'swarm:swarm_sendGsoc',
-  'swarm:swarm_publishData',
-  'swarm:swarm_publishFiles',
-  'swarm:swarm_publishChunk',
-  'swarm:swarm_getUploadStatus',
-  'swarm:swarm_createFeed',
-  'swarm:swarm_updateFeed',
-  'swarm:swarm_writeFeedEntry',
-  'swarm:swarm_writeSingleOwnerChunk',
-  'swarm:swarm_getSigningIdentity',
-  'radicle:radicle_getCapabilities',
-  'radicle:radicle_getNodeStatus',
-  'radicle:radicle_listSeededRepos',
-  'radicle:radicle_requestAccess',
-  'radicle:radicle_disconnect',
-  'radicle:radicle_seed',
-  'radicle:radicle_unseed',
-  'radicle:radicle_sync',
-  'radicle:radicle_getSeedStatus',
-  'radicle:radicle_getIdentity',
-  'radicle:radicle_createIssue',
-  'radicle:radicle_commentIssue',
-  'radicle:radicle_editIssueState',
-  'radicle:radicle_commentPatch',
-]);
-const TEST_PAGE_ROUTES = new Set(
-  Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
-    ? WEBVIEW_BOOT.testPageRoutes.filter((route) => typeof route === 'string')
-    : []
-);
 const PAGE_MESSAGE_TYPES = new Map([
   ['ethereum', { response: 'FREEDOM_ETHEREUM_RESPONSE', event: 'FREEDOM_ETHEREUM_EVENT' }],
   ['swarm', { response: 'FREEDOM_SWARM_RESPONSE', event: 'FREEDOM_SWARM_EVENT' }],
   ['radicle', { response: 'FREEDOM_RADICLE_RESPONSE', event: 'FREEDOM_RADICLE_EVENT' }],
 ]);
-
-/** Whether this provider method goes to main on `page:request`. */
-function routedToMain(provider, method) {
-  if (!PAGE_REQUESTS_ENABLED || typeof method !== 'string') return false;
-  const route = `${provider}:${method}`;
-  return PAGE_ROUTES.has(route) || TEST_PAGE_ROUTES.has(route);
-}
 
 // To this window's own document. An opaque origin (a `data:` page, a blank
 // one) serializes as "null", which postMessage refuses as a target, so the
@@ -1853,26 +1753,6 @@ function routedToMain(provider, method) {
 // no other document: a navigation replaces the window, and its preload.
 const pageTargetOrigin = () => (window.location.origin === 'null' ? '*' : window.location.origin);
 const postToPage = (fields) => window.postMessage(fields, pageTargetOrigin());
-
-// The methods main answers, for a provider's page-world source, which arms
-// its own timer only for the others (design 0011, "One deadline, main's").
-// It reads and deletes the global before any page script runs: Ethereum's
-// `__FREEDOM_MAIN_ANSWERED__`, Swarm's `__FREEDOM_SWARM_MAIN_ANSWERED__`,
-// Radicle's `__FREEDOM_RADICLE_MAIN_ANSWERED__`.
-const MAIN_ANSWERED_GLOBALS = new Map([
-  ['ethereum', '__FREEDOM_MAIN_ANSWERED__'],
-  ['swarm', '__FREEDOM_SWARM_MAIN_ANSWERED__'],
-  ['radicle', '__FREEDOM_RADICLE_MAIN_ANSWERED__'],
-]);
-function withMainAnsweredMethods(source, provider = 'ethereum') {
-  const prefix = `${provider}:`;
-  const methods = [...PAGE_ROUTES, ...TEST_PAGE_ROUTES]
-    .filter((route) => route.startsWith(prefix))
-    .map((route) => route.slice(prefix.length))
-    .filter((method) => routedToMain(provider, method));
-  const list = JSON.stringify([...new Set(methods)]).replace(/</g, '\\u003c');
-  return `window.${MAIN_ANSWERED_GLOBALS.get(provider)} = ${list};\n${source}`;
-}
 
 // The size walk main runs on every request as it arrives (design 0011,
 // "Bounds"). A sandboxed preload can't require it, so this is a copy of
@@ -2139,56 +2019,22 @@ function injectPageProvider(name, source) {
 
 // Injected into the page realm so dapps see window.ethereum as an own-property
 // of their own window, which many wallet-detection libraries require.
-// The preload realm only bridges messages to/from the host renderer (below).
+// Every request goes to main on page:request, which answers it and sends
+// the page its events (page:event).
 //
 // PRIVATE MODE GUARD (providers): skipped entirely in private windows —
-// no injection, no bridges. Nothing announces via EIP-6963.
-if (PROVIDERS_ENABLED) {
-  injectPageProvider('ethereum', withMainAnsweredMethods(ETHEREUM_INJECT_SOURCE));
+// no injection, no bridges. Nothing announces via EIP-6963. Internal pages
+// don't get it either (design 0011, Keys: Freedom's own pages get no key
+// and no window.ethereum).
+if (PAGE_REQUESTS_ENABLED) {
+  injectPageProvider('ethereum', ethereumInjectSource());
 
-  // Bridge postMessage from page to IPC
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_ETHEREUM_REQUEST') {
       const { id, method, params } = event.data;
-      if (routedToMain('ethereum', method)) {
-        sendPageRequest('ethereum', id, method, params);
-        return;
-      }
-      const origin = window.location.origin;
-
-      ipcRenderer.sendToHost('dapp:provider-request', {
-        id,
-        method,
-        params,
-        origin,
-      });
+      sendPageRequest('ethereum', id, method, params);
     }
-  });
-
-  // Bridge IPC responses back to page
-  ipcRenderer.on('dapp:provider-response', (_event, { id, result, error }) => {
-    console.log('[webview-preload] Received provider response:', { id, result, error });
-    window.postMessage(
-      {
-        type: 'FREEDOM_ETHEREUM_RESPONSE',
-        id,
-        result,
-        error,
-      },
-      window.location.origin
-    );
-  });
-
-  ipcRenderer.on('dapp:provider-event', (_event, { event, data }) => {
-    window.postMessage(
-      {
-        type: 'FREEDOM_ETHEREUM_EVENT',
-        event,
-        data,
-      },
-      window.location.origin
-    );
   });
 }
 
@@ -2200,14 +2046,9 @@ if (PROVIDERS_ENABLED) {
 // nothing in this preload.
 const SWARM_INJECT_SOURCE = `
   (function() {
-    // The methods main answers (freedom-core design 0011, "One deadline,
-    // main's"): main's deadline answers one that runs too long, so the page
-    // arms no timer of its own for them.
-    const preamble = window.__FREEDOM_SWARM_MAIN_ANSWERED__;
-    delete window.__FREEDOM_SWARM_MAIN_ANSWERED__;
-    const mainAnswered = new Set(
-      Array.isArray(preamble) ? preamble.filter((m) => typeof m === 'string') : []
-    );
+    // Main answers every request, and its deadline answers one that runs
+    // too long (freedom-core design 0011, "One deadline, main's"): the page
+    // arms no timer of its own.
     const pendingRequests = new Map();
     let requestId = 0;
     const eventListeners = { connect: [], disconnect: [], message: [] };
@@ -2227,27 +2068,6 @@ const SWARM_INJECT_SOURCE = `
         return new Promise((resolve, reject) => {
           pendingRequests.set(id, { resolve, reject });
           window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
-          if (mainAnswered.has(method)) return;
-          const longRunning = method.startsWith('swarm_publish') ||
-            method.startsWith('swarm_send') ||
-            method === 'swarm_createFeed' ||
-            method === 'swarm_updateFeed' ||
-            method === 'swarm_writeFeedEntry' ||
-            method === 'swarm_writeSingleOwnerChunk' ||
-            method === 'swarm_getSigningIdentity' ||
-            method === 'swarm_getMessagingIdentity' ||
-            method === 'swarm_subscribe' ||
-            // A blob of up to 5 MiB joined from the network can outlast 60s.
-            method === 'swarm_readData';
-          const timeout = longRunning ? 300000 : 60000;
-          setTimeout(() => {
-            if (pendingRequests.has(id)) {
-              pendingRequests.delete(id);
-              const err = new Error('Request timed out');
-              err.code = -32603;
-              reject(err);
-            }
-          }, timeout);
         });
       },
 
@@ -2315,15 +2135,13 @@ const SWARM_INJECT_SOURCE = `
 // private windows — same policy as window.ethereum above.
 // Internal pages don't get it either: they talk to main through freedomAPI
 // and have no use for it (#432).
-if (PROVIDERS_ENABLED && !isInternalPage()) {
-  injectPageProvider('swarm', withMainAnsweredMethods(SWARM_INJECT_SOURCE, 'swarm'));
-}
-
+//
 // Every window.swarm method goes to main on page:request (freedom-core
-// design 0011, PRQ-7d), which answers it and sends the page its events
-// (page:event). A method main doesn't serve is refused there, as the chrome
-// refused it (4200). Nothing of window.swarm goes through the chrome.
+// design 0011), which answers it and sends the page its events
+// (page:event). A method main doesn't serve is refused there (4200).
 if (PAGE_REQUESTS_ENABLED) {
+  injectPageProvider('swarm', SWARM_INJECT_SOURCE);
+
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
@@ -2343,14 +2161,9 @@ if (PAGE_REQUESTS_ENABLED) {
 // Main-world source, run by injectPageProvider (see SWARM_INJECT_SOURCE).
 const RADICLE_INJECT_SOURCE = `
   (function() {
-    // The methods main answers (freedom-core design 0011, "One deadline,
-    // main's"): main's deadline answers one that runs too long, so the page
-    // arms no timer of its own for them.
-    const preamble = window.__FREEDOM_RADICLE_MAIN_ANSWERED__;
-    delete window.__FREEDOM_RADICLE_MAIN_ANSWERED__;
-    const mainAnswered = new Set(
-      Array.isArray(preamble) ? preamble.filter((m) => typeof m === 'string') : []
-    );
+    // Main answers every request, and its deadline answers one that runs
+    // too long (freedom-core design 0011, "One deadline, main's"): the page
+    // arms no timer of its own.
     const pendingRequests = new Map();
     let requestId = 0;
     const eventListeners = { connect: [], disconnect: [], seedStatus: [] };
@@ -2370,31 +2183,6 @@ const RADICLE_INJECT_SOURCE = `
         return new Promise((resolve, reject) => {
           pendingRequests.set(id, { resolve, reject });
           window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
-          if (mainAnswered.has(method)) return;
-          // Execution itself is prompt — seed/sync hand the network fetch
-          // to a background tracker (seedStatus events report progress;
-          // radicle_getSeedStatus restores a snapshot after reload). But the
-          // methods below can first block on a consent prompt while the
-          // user deliberates; timing those out at 60s rejects the page
-          // promise while the grant and the write still land in main, so
-          // the dApp retries and duplicates the COB. Match the swarm
-          // sibling's 300s budget for anything that can prompt.
-          const canPrompt = method === 'radicle_requestAccess' ||
-            method === 'radicle_seed' ||
-            method === 'radicle_getIdentity' ||
-            method === 'radicle_createIssue' ||
-            method === 'radicle_commentIssue' ||
-            method === 'radicle_editIssueState' ||
-            method === 'radicle_commentPatch';
-          const timeout = canPrompt ? 300000 : 60000;
-          setTimeout(() => {
-            if (pendingRequests.has(id)) {
-              pendingRequests.delete(id);
-              const err = new Error('Request timed out');
-              err.code = -32603;
-              reject(err);
-            }
-          }, timeout);
         });
       },
 
@@ -2454,15 +2242,13 @@ const RADICLE_INJECT_SOURCE = `
 // PRIVATE MODE GUARD (providers): window.radicle is not injected in
 // private windows — same policy as window.ethereum / window.swarm above.
 // Skipped on internal pages for the same reason as window.swarm (#432).
-if (PROVIDERS_ENABLED && !isInternalPage()) {
-  injectPageProvider('radicle', withMainAnsweredMethods(RADICLE_INJECT_SOURCE, 'radicle'));
-}
-
+//
 // Every window.radicle method goes to main on page:request (freedom-core
-// design 0011, PRQ-8c), which answers it and sends the page its events
-// (page:event). A method main doesn't serve is refused there, as the chrome
-// refused it (4200). Nothing of window.radicle goes through the chrome.
+// design 0011), which answers it and sends the page its events
+// (page:event). A method main doesn't serve is refused there (4200).
 if (PAGE_REQUESTS_ENABLED) {
+  injectPageProvider('radicle', RADICLE_INJECT_SOURCE);
+
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_RADICLE_REQUEST') {

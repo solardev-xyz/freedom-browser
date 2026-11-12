@@ -59,6 +59,12 @@
  * - **Reads** (`read`, `rad.read`) go to the running generation only, as
  *   radicle-service-backend.js sends them: none while it starts or after
  *   it ended (`stopped`).
+ * - **Writes** (0008, Writes; plan B11): `rad.write` and `rad.unseed` go to
+ *   the generation their caller picked (`writeTarget`), in the same run as
+ *   its check of that generation's identity, and to no other: once it no
+ *   longer serves, nothing is sent (`stopped`). A write the process took is
+ *   proven only by its success; any other end, a crash with the write in
+ *   flight among them, is `outcome_unknown`, and main never sends it again.
  * - **Network operations** (0008, Methods, Progress): `connectSeeds` is
  *   `rad.connect_seeds`, and `clone` is `rad.clone`, on the running
  *   generation only. A clone's `rad.progress` events, `{ id, event }`, go to
@@ -73,6 +79,15 @@
  * - **Diagnostics** (design 0010, step 5): hello's confinement is logged at
  *   each spawn, and the build info and confinement are kept for the nodes
  *   panel.
+ * - **The quarantine** (0008, "The escape", Main's view; plan B13): each
+ *   generation keeps its `rad.reconcile` report of the quarantine, `{ count,
+ *   first }` with up to 16 entries, and the count its stats replies give
+ *   (`quarantined_count`), telling `onQuarantine` when that changes.
+ *   `quarantineList` is `rad.quarantine_list { page }` on the running
+ *   generation, and `removeRepo` is `rad.remove_repo { rid, qid }` on the
+ *   generation its caller picked, a write as `write` is: `not_quarantined`
+ *   proves nothing was removed, and an answer it can't prove is
+ *   `outcome_unknown`.
  */
 
 const fs = require('fs');
@@ -84,6 +99,7 @@ const { confinementLog } = require('../ipfs/ipfsd-client');
 const { RadicledClient } = require('./radicled-client');
 const { getRadicledBinaryPath } = require('./radicled-binary');
 const { removeStaleControlSocket } = require('./radicled-gate');
+const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle-service-backend');
 
 const HEALTH_INTERVAL_MS = 5_000;
 const STATS_FRESH_MS = 15_000;
@@ -92,6 +108,8 @@ const STATS_FRESH_MS = 15_000;
 const DEFAULT_ALIAS = 'FreedomBrowser';
 const UNAVAILABLE = 'radicle_unavailable';
 const DIRECT = Object.freeze({ mode: 'direct' });
+// The most quarantine entries `rad.reconcile` reports (0008, Bounds).
+const REPORT_ENTRIES = 16;
 
 // The manager's error texts. None names a path.
 const EXITED = 'freedom-radicled exited';
@@ -107,6 +125,37 @@ const REPAIRING = 'Radicle is still repairing its data';
 const KEY_FILE_AGAIN = 'The Radicle data still holds a key file after its switch to the service';
 const START_FAILED = 'Failed to start the Radicle node';
 const IDENTITY_MISMATCH = 'freedom-radicled answered with an identity main did not ask for';
+// A write whose outcome is unknown (0008, Writes).
+const OUTCOME_UNKNOWN = 'outcome_unknown';
+
+/**
+ * The service's answers to a write that prove it didn't start (0008, Errors
+ * and Writes, "Before it, failure is definitive"): its refusals before the
+ * mutation-start boundary, and `failed` and `not_found`, which the design
+ * gives only to a libradicle error before a write starts. Any other answer
+ * to a write the process took is `outcome_unknown`; only a success is
+ * proven.
+ */
+const WRITE_REFUSALS = new Set([
+  'invalid_argument',
+  'busy',
+  'needs_vault',
+  'quarantined',
+  'stopped',
+  'deadline',
+  'cancelled',
+  'failed',
+  'not_found',
+  'unknown_method',
+  // `rad.remove_repo`: no record of the repository has that `qid`, and
+  // nothing was removed (0008, "The escape").
+  'not_quarantined',
+]);
+
+/** A write's `outcome_unknown`, as main answers it. */
+function outcomeUnknown() {
+  return new CoreError(OUTCOME_UNKNOWN, OUTCOME_UNKNOWN_MESSAGE);
+}
 
 // A start step's codes whose message the manager shows (0008, Errors).
 const STEP_MESSAGES = new Set([
@@ -116,6 +165,22 @@ const STEP_MESSAGES = new Set([
   'no_identity',
   'invalid_argument',
 ]);
+
+/**
+ * `rad.reconcile`'s report of the quarantine (0008, Methods): `{ count,
+ * first }`, `first` up to 16 entries as the service wrote them (the manager
+ * checks each), or null when the reply has no count.
+ */
+function reconcileQuarantine(report) {
+  const quarantined = report?.quarantined;
+  if (!isObject(quarantined)) return null;
+  const { count, first } = quarantined;
+  if (!Number.isSafeInteger(count) || count < 0) return null;
+  return Object.freeze({
+    count,
+    first: Object.freeze(Array.isArray(first) ? first.slice(0, REPORT_ENTRIES) : []),
+  });
+}
 
 /** What the manager shows for a start step's error `err`. */
 function stepFailure(err) {
@@ -194,6 +259,9 @@ class RadicledNode {
    *   after it was running
    * @param {Function} [options.onChange] - (state, node): `restarting`,
    *   `running` again, and `waiting` (for the vault's unlock)
+   * @param {Function} [options.onQuarantine] - (count, node) when the
+   *   running generation's stats count another number of quarantined
+   *   repositories than it last did
    * @param {string} [options.command] - the binary
    * @param {Function} [options.spawn] - child_process.spawn (injectable)
    * @param {string|null} [options.serviceVersion] - the release hello must
@@ -216,6 +284,7 @@ class RadicledNode {
     network = DIRECT,
     onFailure = null,
     onChange = null,
+    onQuarantine = null,
     command = null,
     spawn = spawnProcess,
     serviceVersion = undefined,
@@ -236,6 +305,7 @@ class RadicledNode {
     this.network = network;
     this.onFailure = onFailure;
     this.onChange = onChange;
+    this.onQuarantine = onQuarantine;
     this.command = command;
     this.spawn = spawn;
     this.serviceVersion = serviceVersion;
@@ -253,8 +323,9 @@ class RadicledNode {
     // (`deadline`: still repairing, so the manager's start retries).
     this.failureCode = null;
     this.serviceHello = null;
-    // The generation whose `rad.start` succeeded: { gen, did, nid, alias,
-    // ephemeral }. Dropped with the generation.
+    // The generation whose `rad.start` succeeded: { gen, identity }, its
+    // identity `{ did, nid, alias, ephemeral }` one frozen object for the
+    // generation's life. Dropped with the generation.
     this.active = null;
     // The last stats reply, for the `active` it was asked of.
     this.stats = null;
@@ -409,12 +480,12 @@ class RadicledNode {
   }
 
   /** The running generation's identity, `{ did, nid, alias, ephemeral }`,
-   * or null. */
+   * or null (0008, Main's side, "The active identity belongs to the
+   * generation"). One frozen object for each generation, the same at every
+   * call while it runs, so a value kept for it can be told from one kept for
+   * another; a crash's restart has its own. */
   activeIdentity() {
-    const active = this.liveActive();
-    if (!active) return null;
-    const { did, nid, alias, ephemeral } = active;
-    return { did, nid, alias, ephemeral };
+    return this.liveActive()?.identity ?? null;
   }
 
   /** The node's connected peers, as its last stats reply counted them, or
@@ -430,6 +501,28 @@ class RadicledNode {
     const active = this.liveActive();
     if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
     return this.client.connectSeeds(active.gen, timeoutMs, { signal });
+  }
+
+  /** The running generation's `rad.reconcile` report of the quarantine
+   * (0008, "The escape", Main's view): `{ count, first }`, up to 16 entries
+   * as the service wrote them, or null. */
+  quarantineReport() {
+    return this.liveActive()?.quarantine ?? null;
+  }
+
+  /** How many repositories the quarantine record holds, by the running
+   * generation's last word: its last stats reply's `quarantined_count`, or
+   * else its report's count; null with none, or no generation running. */
+  quarantinedCount() {
+    return this.liveActive()?.quarantinedCount ?? null;
+  }
+
+  /** `rad.quarantine_list { page }` on the running generation: `{ entries,
+   * next_page }`, up to 64 entries. With no generation running, `stopped`. */
+  quarantineList(page, { signal = null } = {}) {
+    const active = this.liveActive();
+    if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    return this.client.quarantineList(active.gen, page, { signal });
   }
 
   /**
@@ -486,6 +579,71 @@ class RadicledNode {
    * progress events: the manager's background clone. */
   cloneRepo(rid, timeoutMs) {
     return this.clone(rid, timeoutMs);
+  }
+
+  /**
+   * The generation a write goes to, picked now: the running one, `{ gen,
+   * identity }`, or null. Its caller picks it in the same run as its own
+   * check of that generation's identity (cob-service.js's `needs_vault`),
+   * and sends the write there with `write` or `unseed`, however long it
+   * waits in between: a write admitted for one generation never reaches
+   * another (0008, Main's side, "The active identity belongs to the
+   * generation").
+   */
+  writeTarget() {
+    return this.liveActive();
+  }
+
+  /**
+   * `rad.write { op, args }` on `target`, the generation `writeTarget`
+   * picked (0008, Writes): the service's result, or its error. Once that
+   * generation no longer serves, nothing is sent, and the write fails
+   * `stopped`. A write the process took is proven only by its success: an
+   * answer other than the service's refusals (WRITE_REFUSALS), or the
+   * process's end before it answers (a crash, a hang's kill, a stop), is
+   * `outcome_unknown`. Main never sends it again.
+   */
+  write(target, op, args) {
+    return this.mutate(target, (gen, onSent) => this.client.write(gen, op, args, { onSent }));
+  }
+
+  /** `rad.unseed { rid }` on `target`, as `write`. */
+  unseed(target, rid) {
+    return this.mutate(target, (gen, onSent) => this.client.unseed(gen, rid, { onSent }));
+  }
+
+  /** `rad.remove_repo { rid, qid }` on `target`, as `write` (0008, "The
+   * escape"): `{ removed: true }`, or `not_quarantined` when no record of
+   * `rid` has that `qid`, and nothing was removed. */
+  removeRepo(target, rid, qid) {
+    return this.mutate(target, (gen, onSent) => this.client.removeRepo(gen, rid, qid, { onSent }));
+  }
+
+  /** A write on `target`'s generation, `send(gen, onSent)`, its outcome as
+   * `write` says. */
+  mutate(target, send) {
+    if (!target?.gen) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    let sent = false;
+    let request;
+    try {
+      request = send(target.gen, () => {
+        sent = true;
+      });
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return request.catch((err) => {
+      if (!sent) {
+        // Never written: definitive. The process's end before the send is
+        // a node that doesn't run.
+        throw err?.code === UNAVAILABLE ? new CoreError('stopped', NOT_RUNNING) : err;
+      }
+      if (err instanceof CoreError && WRITE_REFUSALS.has(err.code)) throw err;
+      this.log.warn('[Radicle] a write ended with its outcome unknown', {
+        code: err?.code === UNAVAILABLE ? 'exited' : err?.code || 'error',
+      });
+      throw outcomeUnknown();
+    });
   }
 
   /**
@@ -675,9 +833,10 @@ class RadicledNode {
       return;
     }
     if (!this.carries(client, gen)) return;
+    const quarantine = reconcileQuarantine(report);
     this.log.info('[Radicle] freedom-radicled reconciled the Radicle data', {
       was_dirty: Boolean(report?.was_dirty),
-      quarantined: Number.isInteger(report?.quarantined?.count) ? report.quarantined.count : null,
+      quarantined: quarantine?.count ?? null,
     });
 
     // 6. rad.start.
@@ -689,12 +848,21 @@ class RadicledNode {
       return;
     }
     if (!this.carries(client, gen)) return;
+    // The running node's identity is `rad.identity`'s reply (0008, Main's
+    // side): its DID alone is the one main shows for the node, and its
+    // `ephemeral` alone decides write admission. `rad.start` adds the alias.
     this.active = {
       gen,
-      did: typeof started?.did === 'string' ? started.did : identity.did,
-      nid: typeof started?.nid === 'string' ? started.nid : identity.nid,
-      alias: typeof started?.alias === 'string' ? started.alias : null,
-      ephemeral,
+      identity: Object.freeze({
+        did: identity.did,
+        nid: identity.nid,
+        alias: typeof started?.alias === 'string' ? started.alias : null,
+        ephemeral,
+      }),
+      // Its reconciliation's report of the quarantine, and the count its
+      // stats replies give from then on.
+      quarantine,
+      quarantinedCount: quarantine?.count ?? null,
     };
     this.log.info('[Radicle] freedom-radicled node started', { ephemeral });
     // 7. Running once a stats reply says the node is alive.
@@ -835,6 +1003,20 @@ class RadicledNode {
     if (active !== this.active || !isObject(result)) return;
     this.stats = { active, at: this.now(), result };
     this.checkUp();
+    this.noteQuarantined(active, result.quarantined_count);
+  }
+
+  /** The stats' count of quarantined repositories, kept for `active`, and
+   * `onQuarantine` told when it changes. */
+  noteQuarantined(active, count) {
+    if (!Number.isSafeInteger(count) || count < 0 || count === active.quarantinedCount) return;
+    active.quarantinedCount = count;
+    if (typeof this.onQuarantine !== 'function' || active !== this.liveActive()) return;
+    try {
+      this.onQuarantine(count, this);
+    } catch (err) {
+      this.log.warn('[Radicle] freedom-radicled quarantine callback failed:', err.message);
+    }
   }
 
   /** Readiness, applied: running while up (0008, Main's side). */
@@ -961,6 +1143,10 @@ module.exports = {
   GRANT_REFUSED,
   KEY_UNAVAILABLE,
   REPAIRING,
+  REPORT_ENTRIES,
+  reconcileQuarantine,
   KEY_FILE_AGAIN,
   START_FAILED,
+  OUTCOME_UNKNOWN,
+  WRITE_REFUSALS,
 };

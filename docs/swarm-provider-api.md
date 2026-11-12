@@ -18,12 +18,12 @@ node joins it and checks every chunk it fetches.
 
 This document describes the code as it is. The sources of truth are:
 
-| Layer           | File                                                                                                                                                       | Role                                                                            |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Page shim       | `src/main/webview-preload.js` (the `window.swarm` block)                                                                                                   | Request ids, timeouts, convenience wrappers, events                             |
-| Chrome renderer | `src/renderer/lib/swarm-provider.js`                                                                                                                       | Feature gate, permission manifest check, consent prompts                        |
-| Main process    | `src/main/swarm/swarm-provider-ipc.js`                                                                                                                     | The authority: re-checks grants, validates params, limits, pre-flight, dispatch |
-| Services        | `src/main/swarm/{publish,chunk,feed,messaging}-service.js`, `feed-store.js`, `swarm-permissions.js`, `subscription-registry.js`, `permission-manifests.js` | Node calls, identities, grants, subscriptions                                   |
+| Layer         | File                                                                                                                                                       | Role                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Page shim     | `src/main/webview-preload.js` (the `window.swarm` block)                                                                                                   | Request ids, convenience wrappers, events; every request to main                |
+| Page requests | `src/main/page/page-requests.js`, `src/main/page/page-swarm.js`                                                                                            | The attested requester, prompts (the chrome renders them), deadlines            |
+| Main process  | `src/main/swarm/swarm-provider-ipc.js`                                                                                                                     | The authority: re-checks grants, validates params, limits, pre-flight, dispatch |
+| Services      | `src/main/swarm/{publish,chunk,feed,messaging}-service.js`, `feed-store.js`, `swarm-permissions.js`, `subscription-registry.js`, `permission-manifests.js` | Node calls, identities, grants, subscriptions                                   |
 
 The method list is `KNOWN_METHODS` in `swarm-provider-ipc.js`; behaviour is
 pinned by `swarm-provider-ipc.test.js`.
@@ -700,11 +700,11 @@ is unknown or not the caller's.
 
 ## Events
 
-| Event        | Payload      | When                                                                                          |
-| ------------ | ------------ | --------------------------------------------------------------------------------------------- |
+| Event        | Payload      | When                                                                                                             |
+| ------------ | ------------ | ---------------------------------------------------------------------------------------------------------------- |
 | `connect`    | `{ origin }` | A `requestAccess` connected the origin (its connect prompt or its manifest sheet); every open page of the origin |
-| `disconnect` | `{ origin }` | The origin's connection was revoked; every open page of the origin                            |
-| `message`    | see below    | A subscribed message arrived; only the page that subscribed                                    |
+| `disconnect` | `{ origin }` | The origin's connection was revoked; every open page of the origin                                               |
+| `message`    | see below    | A subscribed message arrived; only the page that subscribed                                                      |
 
 ```javascript
 {

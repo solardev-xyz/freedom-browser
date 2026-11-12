@@ -30,9 +30,6 @@ jest.mock('./safe/safe-transactions', () => ({
   executeSafePending: jest.fn(async () => ({ status: 'executed' })),
 }));
 jest.mock('../ens-resolver', () => ({ resolveEnsContent: jest.fn() }));
-jest.mock('./safe/safe-messages', () => ({
-  startSafeMessage: jest.fn(async () => ({ token: 'session' })),
-}));
 jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn(), DEPLOY_CHAIN_ID: 100 }));
 // The fee check at confirmation (design 0005, A): every send's fee passes,
 // unless a test says otherwise.
@@ -97,7 +94,7 @@ jest.mock('./auto-approve-pause', () => ({
   sitePaymentWaiting: jest.fn(async () => false),
 }));
 
-const { buildTxRecordContext, registerWalletIpc } = require('./wallet-ipc');
+const { buildTxRecordContext, messageViewFor, registerWalletIpc, typedDataViewFor } = require('./wallet-ipc');
 const { ipcMain, webContents } = require('electron');
 const { getBalancesWithCache } = require('./balance-service');
 
@@ -139,18 +136,16 @@ test("a wallet handler runs for its chrome's window: a phone account's job shows
 });
 
 // Security audit O-7: every signing handler refuses unless it is handed a
-// confirmation token main issued for exactly this request, or main's own
-// reading of the site's auto-approve policy covers it.
+// confirmation token main issued for exactly this request. A site's rules
+// are main's to read, for a page's request it holds (freedom-core design
+// 0011): no handler here honours one.
 describe('signing handlers require a main-side confirmation', () => {
   const { signAndRecord } = require('./tx-recorder');
   const { getSigner } = require('./signers');
   const { getActiveWalletIndex } = require('../identity-manager');
   const dappPermissions = require('./dapp-permissions');
   const { startSafeSend } = require('./safe/safe-transactions');
-  const { startSafeMessage } = require('./safe/safe-messages');
   const confirmations = require('./signing-confirmation');
-  const { takeSiteTurn, sitePaymentWaiting } = require('./auto-approve-pause');
-  let leave;
 
   const SITE = 'https://app.example';
   // The chrome window that sends every wallet IPC, and its tab guests by
@@ -176,7 +171,6 @@ describe('signing handlers require a main-side confirmation', () => {
     chainId: 100,
   };
   let handlers;
-  let signer;
 
   beforeEach(() => {
     jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -185,22 +179,14 @@ describe('signing handlers require a main-side confirmation', () => {
     ipcMain.handle.mockClear();
     registerWalletIpc();
     handlers = Object.fromEntries(ipcMain.handle.mock.calls.map(([channel, fn]) => [channel, fn]));
-    signer = {
-      signMessage: jest.fn(async () => '0xmsgsig'),
-      signTypedData: jest.fn(async () => '0xtypedsig'),
-    };
-    getSigner.mockReset().mockReturnValue(signer);
+    getSigner.mockReset().mockReturnValue({});
     signAndRecord.mockReset().mockResolvedValue({ hash: '0xhash' });
     getActiveWalletIndex.mockReset().mockReturnValue(0);
     dappPermissions.getPermission.mockReset().mockReturnValue(null);
     dappPermissions.getSigningAutoApprove.mockReset().mockReturnValue(false);
     dappPermissions.isTransactionAutoApproved.mockReset().mockReturnValue(false);
     dappPermissions.addTransactionAutoApprove.mockReset().mockReturnValue(true);
-    leave = jest.fn();
-    takeSiteTurn.mockReset().mockImplementation(async () => leave);
-    sitePaymentWaiting.mockReset().mockResolvedValue(false);
     startSafeSend.mockClear();
-    startSafeMessage.mockClear();
     guests = new Map();
     webContents.fromId.mockReset().mockImplementation((id) => guests.get(id) ?? null);
     // The requesting page (guest 12) is on SITE unless a test says otherwise.
@@ -266,22 +252,38 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(signAndRecord).not.toHaveBeenCalled();
     });
+
+    test('a wallet send has no rule to claim either', async () => {
+      const result = await handlers['wallet:send-transaction']({}, TX, {}, { autoApprove: SITE, webContentsId: 12 });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(signAndRecord).not.toHaveBeenCalled();
+    });
+  });
+
+  // freedom-core design 0011: a page's sends, signatures and chain reads
+  // are main's (page/page-sends.js, page/page-signing.js), and the chrome's
+  // old route into them is gone (PRQ-9).
+  test("the chrome's old page-request channels are gone", () => {
+    for (const channel of [
+      'wallet:dapp-send-transaction',
+      'wallet:sign-message',
+      'wallet:sign-typed-data',
+      'wallet:typed-data-view',
+      'wallet:message-view',
+      'wallet:safe-message-start',
+      'wallet:safe-message-complete',
+      'wallet:chain-request',
+    ]) {
+      expect(Object.keys(handlers)).not.toContain(channel);
+    }
   });
 
   // freedom-core design 0011, PRQ-5b: a page's send, from a Safe account
   // too, is served by main (page/page-sends.js), whose own issuer mints its
   // token and which reads the site's contract rule itself. The chrome gets
-  // no dApp-send token, and can claim no site's rule: this handler, the
-  // chrome's old path kept until PRQ-9, sends nothing a page asked for.
-  describe('wallet:dapp-send-transaction', () => {
+  // no dApp-send token, and no IPC records a rule.
+  describe('a dApp send', () => {
     const { checkAtApproval } = require('./fee-check');
-
-    test('without a token: refused, nothing signed', async () => {
-      const result = await handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signAndRecord).not.toHaveBeenCalled();
-      expect(takeSiteTurn).not.toHaveBeenCalled();
-    });
 
     test('the chrome gets no dApp-send token: nothing issued, and no fee judged', async () => {
       checkAtApproval.mockClear();
@@ -290,36 +292,6 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(result.token).toBeUndefined();
       expect(confirmations._outstandingCount()).toBe(0);
       expect(checkAtApproval).not.toHaveBeenCalled();
-    });
-
-    test("the chrome's claim of the site's rule is refused for its own guest too, before any rule is read", async () => {
-      dappPermissions.getPermission.mockReturnValue({ walletIndex: 2 });
-      dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
-      // The requesting guest (12) is on the site the claim names.
-      const result = await handlers['wallet:dapp-send-transaction'](
-        AUTO, TX, 2, { origin: SITE }, { autoApprove: SITE, webContentsId: 12, rememberAutoApprove: SITE });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(dappPermissions.isTransactionAutoApproved).not.toHaveBeenCalled();
-      expect(webContents.fromId).not.toHaveBeenCalled();
-      expect(takeSiteTurn).not.toHaveBeenCalled();
-      expect(signAndRecord).not.toHaveBeenCalled();
-      expect(dappPermissions.addTransactionAutoApprove).not.toHaveBeenCalled();
-    });
-
-    test("a page token, main's own, is never spent here", async () => {
-      const { token } = confirmations.issuePageConfirmation('dapp-send', 2, { ...TX, origin: SITE }, {
-        handle: 'a'.repeat(64),
-        key: SITE,
-      });
-      const result = await handlers['wallet:dapp-send-transaction']({}, TX, 2, { origin: SITE }, { confirmation: token });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signAndRecord).not.toHaveBeenCalled();
-    });
-
-    test('a wallet send has no rule to claim either', async () => {
-      const result = await handlers['wallet:send-transaction']({}, TX, {}, { autoApprove: SITE, webContentsId: 12 });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signAndRecord).not.toHaveBeenCalled();
     });
 
     test('no IPC channel adds an auto-approve rule on its own', () => {
@@ -344,20 +316,12 @@ describe('signing handlers require a main-side confirmation', () => {
 
   // freedom-core design 0011, PRQ-5a: a page's personal_sign and typed data,
   // from a Safe account too, are served by main (page/page-signing.js),
-  // whose own issuer mints their tokens. The chrome gets none, and can
-  // claim no site's rule for them: these handlers sign nothing a page asked
-  // for.
+  // whose own issuer mints their tokens. The chrome gets none.
   describe.each([
-    ['wallet:sign-message', 'sign-message', '0x68656c6c6f', 'signMessage'],
-    ['wallet:sign-typed-data', 'sign-typed-data', TYPED, 'signTypedData'],
-  ])('%s', (channel, kind, payload, method) => {
+    ['sign-message', '0x68656c6c6f'],
+    ['sign-typed-data', TYPED],
+  ])('%s', (kind, payload) => {
     const { vaultBackend } = require('../core/vault-backend');
-
-    test('without a token: refused, the key is never touched', async () => {
-      const result = await handlers[channel]({}, payload, 0);
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(getSigner).not.toHaveBeenCalled();
-    });
 
     test('the chrome gets no token of this kind', async () => {
       vaultBackend.typedDataView.mockClear();
@@ -366,31 +330,6 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(result.token).toBeUndefined();
       expect(confirmations._outstandingCount()).toBe(0);
       expect(vaultBackend.typedDataView).not.toHaveBeenCalled();
-    });
-
-    test("the chrome's claim of the site's rule is refused, before main reads a rule or views the data", async () => {
-      dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
-      dappPermissions.getSigningAutoApprove.mockReturnValue(true);
-      vaultBackend.typedDataView.mockClear();
-      // The requesting guest is on the site the claim names.
-      const result = await handlers[channel](AUTO, payload, 0, { autoApprove: SITE, webContentsId: 12 }, { chainId: 100 });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(dappPermissions.getSigningAutoApprove).not.toHaveBeenCalled();
-      expect(vaultBackend.typedDataView).not.toHaveBeenCalled();
-      expect(signer[method]).not.toHaveBeenCalled();
-    });
-
-    test("a page token, main's own, is never spent here", async () => {
-      const { token } = confirmations.issuePageConfirmation(
-        kind,
-        0,
-        payload,
-        { handle: 'a'.repeat(64), key: SITE },
-        kind === 'sign-typed-data' ? { hash: TYPED_HASH } : undefined
-      );
-      const result = await handlers[channel]({}, payload, 0, { confirmation: token });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signer[method]).not.toHaveBeenCalled();
     });
   });
 
@@ -517,8 +456,6 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
-  // freedom-core #88: typed data is signed only as the core's view showed
-  // it, bound to its hash, and a warned request always needs its prompt.
   // freedom-core design 0011, APS-3: with the approvals document on, the
   // wallet's own kinds are minted only on the user's approval in the
   // window's panel, of main's view of exactly the request bound.
@@ -573,6 +510,9 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
+  // freedom-core #88: typed data is signed only as the core's view showed
+  // it, bound to its hash, and a warned request always needs its prompt.
+  // Main's own prompt shows these views (page/page-signing.js).
   describe('typed data and its view', () => {
     const withData = (changes) => ({ ...TYPED, ...changes });
 
@@ -581,19 +521,18 @@ describe('signing handlers require a main-side confirmation', () => {
       vaultBackend.typedDataView.mockRejectedValueOnce(
         Object.assign(new Error('invalid typed data: too large to show in one reply'), { code: 'invalid_argument' })
       );
-      const view = await handlers['wallet:typed-data-view']({}, TYPED, 100);
-      expect(view).toMatchObject({ success: false, code: 'invalid_argument' });
+      await expect(typedDataViewFor(TYPED, 100)).rejects.toMatchObject({ code: 'invalid_argument' });
     });
 
     test("the view passes the dApp's primaryType as it came, and its chain", async () => {
       mockCoreViews.length = 0;
       for (const primaryType of ['Order', 'Other', true, false, null, 7, ['Order'], { Order: [] }]) {
-        await handlers['wallet:typed-data-view']({}, withData({ primaryType }), 100);
+        await typedDataViewFor(withData({ primaryType }), 100);
       }
       const { primaryType: _dropped, ...noPrimaryType } = TYPED;
-      await handlers['wallet:typed-data-view']({}, noPrimaryType, 100);
+      await typedDataViewFor(noPrimaryType, 100);
       // A JSON string from the dApp is parsed: its values keep their types.
-      await handlers['wallet:typed-data-view']({}, JSON.stringify(withData({ primaryType: null })), 1);
+      await typedDataViewFor(JSON.stringify(withData({ primaryType: null })), 1);
       expect(mockCoreViews.map(([, options]) => options)).toEqual([
         { primaryType: 'Order', chainId: 100 },
         { primaryType: 'Other', chainId: 100 },
@@ -615,8 +554,8 @@ describe('signing handlers require a main-side confirmation', () => {
     });
 
     test('the view reports what the approval screen warns about', async () => {
-      const view = (data, chainId) => handlers['wallet:typed-data-view']({}, data, chainId);
-      await expect(view(TYPED, 100)).resolves.toMatchObject({ success: true, hash: TYPED_HASH, warnings: [] });
+      const view = (data, chainId) => typedDataViewFor(data, chainId);
+      await expect(view(TYPED, 100)).resolves.toMatchObject({ hash: TYPED_HASH, warnings: [] });
       await expect(view(withData({ primaryType: 'Other' }), 100)).resolves.toMatchObject({ warnings: ['named-type'] });
       await expect(view(withData({ primaryType: true }), 100)).resolves.toMatchObject({ warnings: ['named-type'] });
       await expect(view(TYPED, 1)).resolves.toMatchObject({ warnings: ['chain-mismatch'] });
@@ -630,16 +569,15 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(unknown.warnings).toEqual([]);
     });
 
-    test('personal_sign is shown from the bytes main signs', async () => {
-      const view = (message) => handlers['wallet:message-view']({}, message);
-      await expect(view('0x68656c6c6f')).resolves.toEqual({ success: true, hex: '0x68656c6c6f', rawHash: false });
-      await expect(view('0x48454C4C4F')).resolves.toEqual({ success: true, hex: '0x48454c4c4f', rawHash: false });
-      await expect(view('hé')).resolves.toEqual({ success: true, hex: '0x68c3a9', rawHash: false });
-      await expect(view('0x' + 'ab'.repeat(32))).resolves.toMatchObject({ rawHash: true });
-      await expect(view('z'.repeat(32))).resolves.toMatchObject({ rawHash: true, hex: '0x' + '7a'.repeat(32) });
+    test('personal_sign is shown from the bytes main signs', () => {
+      expect(messageViewFor('0x68656c6c6f')).toEqual({ hex: '0x68656c6c6f', rawHash: false });
+      expect(messageViewFor('0x48454C4C4F')).toEqual({ hex: '0x48454c4c4f', rawHash: false });
+      expect(messageViewFor('hé')).toEqual({ hex: '0x68c3a9', rawHash: false });
+      expect(messageViewFor('0x' + 'ab'.repeat(32))).toMatchObject({ rawHash: true });
+      expect(messageViewFor('z'.repeat(32))).toMatchObject({ rawHash: true, hex: '0x' + '7a'.repeat(32) });
       // What signing would refuse, or can't show, fails before any prompt.
       for (const bad of ['0x41zz42', '0x123', ['0x00'], null]) {
-        await expect(view(bad)).resolves.toMatchObject({ success: false });
+        expect(() => messageViewFor(bad)).toThrow();
       }
     });
   });
@@ -816,42 +754,15 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(startSafeSend).not.toHaveBeenCalled();
     });
 
-    const REQUEST = { method: 'personal_sign', params: ['0xdead', '0xsafe'] };
-    const REQUESTER = { origin: SITE, webContentsId: 12 };
-
-    test('wallet:safe-message-start without a token opens no session', async () => {
-      const result = await handlers['wallet:safe-message-start']({}, 7, REQUEST, {}, REQUESTER);
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(startSafeMessage).not.toHaveBeenCalled();
-    });
-
     // freedom-core design 0011, PRQ-5a: main opens a page's Safe message
     // session itself (page/page-signing.js). The chrome gets no token for
-    // one, and claims no site's rule for one.
-    test('the chrome gets no safe-message token, and opens no session', async () => {
-      const minted = await handlers['wallet:confirm-signing']({}, 'safe-message', 7, REQUEST);
+    // one.
+    test('the chrome gets no safe-message token', async () => {
+      const request = { method: 'personal_sign', params: ['0xdead', '0xsafe'] };
+      const minted = await handlers['wallet:confirm-signing']({}, 'safe-message', 7, request);
       expect(minted).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(minted.token).toBeUndefined();
-      const page = confirmations.issuePageConfirmation('safe-message', 7, REQUEST, { handle: 'b'.repeat(64), key: SITE });
-      const result = await handlers['wallet:safe-message-start'](
-        {}, 7, REQUEST, {}, REQUESTER, { confirmation: page.token });
-      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(startSafeMessage).not.toHaveBeenCalled();
-    });
-
-    test("the chrome's claim of the site's rule opens no session, whichever guest it names", async () => {
-      dappPermissions.getPermission.mockReturnValue({ walletIndex: 7 });
-      dappPermissions.getSigningAutoApprove.mockReturnValue(true);
-      for (const [requester, claim] of [
-        [REQUESTER, { autoApprove: SITE, webContentsId: 12 }],
-        [REQUESTER, { autoApprove: 'https://other.example', webContentsId: 12 }],
-        [{ origin: SITE, webContentsId: 77 }, { autoApprove: SITE, webContentsId: 77 }],
-      ]) {
-        const result = await handlers['wallet:safe-message-start'](AUTO, 7, REQUEST, {}, requester, claim);
-        expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      }
-      expect(dappPermissions.getSigningAutoApprove).not.toHaveBeenCalled();
-      expect(startSafeMessage).not.toHaveBeenCalled();
+      expect(confirmations._outstandingCount()).toBe(0);
     });
   });
 

@@ -324,13 +324,6 @@ describe('preload', () => {
           },
         ],
       ],
-      [
-        exposures.electronAPI,
-        'handleAgentWalletRequest',
-        [7, { method: 'eth_requestAccounts' }],
-        IPC.AGENT_WALLET_REQUEST,
-        [{ rendererTabId: 7, request: { method: 'eth_requestAccounts' } }],
-      ],
       [exposures.electronAPI, 'getAgentState', [], IPC.AGENT_GET_STATE, []],
       [exposures.electronAPI, 'pickAgentFiles', [], IPC.AGENT_ATTACHMENTS_PICK_FILES, []],
       [exposures.electronAPI, 'pickAgentFolder', [], IPC.AGENT_ATTACHMENTS_PICK_FOLDER, []],
@@ -468,6 +461,14 @@ describe('preload', () => {
       [exposures.radicle, 'getStatus', [], IPC.RADICLE_GET_STATUS, []],
       [exposures.radicle, 'checkBinary', [], IPC.RADICLE_CHECK_BINARY, []],
       [exposures.radicle, 'getConnections', [], IPC.RADICLE_GET_CONNECTIONS, []],
+      [exposures.radicle, 'getRepair', [], IPC.RADICLE_GET_REPAIR, []],
+      [
+        exposures.radicle,
+        'removeQuarantined',
+        ['rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', '0123456789abcdef0123456789abcdef'],
+        IPC.RADICLE_REMOVE_QUARANTINED,
+        ['rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', '0123456789abcdef0123456789abcdef'],
+      ],
       [exposures.tor, 'start', [], IPC.TOR_START, []],
       [exposures.tor, 'stop', [], IPC.TOR_STOP, []],
       [exposures.tor, 'getStatus', [], IPC.TOR_GET_STATUS, []],
@@ -507,7 +508,6 @@ describe('preload', () => {
       [exposures.swarmManifest, 'get', ['origin.eth'], IPC.SWARM_MANIFEST_GET, ['origin.eth']],
       [exposures.swarmManifest, 'useIndividual', ['origin.eth', 'feeds'], IPC.SWARM_MANIFEST_USE_INDIVIDUAL, [{ origin: 'origin.eth', capability: 'feeds' }]],
       [exposures.swarmManifest, 'disconnect', ['origin.eth'], IPC.SWARM_MANIFEST_DISCONNECT, ['origin.eth']],
-      [exposures.swarmFeedStore, 'previewAppScopedIdentity', ['origin.eth', { label: 'Draft' }], IPC.SWARM_PREVIEW_APP_SCOPED_IDENTITY, ['origin.eth', { label: 'Draft' }]],
       [exposures.sitePermissions, 'respondToPrompt', [{ id: 1, decision: 'allow', remember: true }], IPC.PERMISSIONS_PROMPT_RESPONSE, [{ id: 1, decision: 'allow', remember: true }]],
       [exposures.sitePermissions, 'getForOrigin', ['https://example.com'], IPC.PERMISSIONS_GET_FOR_ORIGIN, ['https://example.com']],
       // #366: the chrome popover's Remove is window-scoped — main reads the
@@ -926,6 +926,24 @@ describe('preload', () => {
     }
   });
 
+  test("Radicle's repair state: subscribed, fetched at once, and cleaned up (plan B13)", async () => {
+    const repair = { repairing: true, count: 0, entries: [] };
+    const { exposures, ipcRenderer } = loadPreloadModule({
+      invokeResponses: { [IPC.RADICLE_GET_REPAIR]: repair },
+    });
+    const callback = jest.fn();
+    const cleanup = exposures.radicle.onRepairUpdate(callback);
+    const handler = ipcRenderer.listeners.get(IPC.RADICLE_REPAIR_UPDATE)[0];
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(IPC.RADICLE_GET_REPAIR);
+    await flushMicrotasks();
+    expect(callback).toHaveBeenCalledWith(repair);
+    const pushed = { repairing: false, count: 1, entries: [{ rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }] };
+    ipcRenderer.emit(IPC.RADICLE_REPAIR_UPDATE, pushed);
+    expect(callback).toHaveBeenLastCalledWith(pushed);
+    cleanup();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(IPC.RADICLE_REPAIR_UPDATE, handler);
+  });
+
   test('does not expose default gateway URLs when overrides are absent', () => {
     const { exposures } = loadPreloadModule({
       antApiEnv: null,
@@ -973,13 +991,40 @@ describe('preload', () => {
       );
       // The walk does call the bridges: the networks reads are among them.
       expect(reached).toContain('networks:get-chains');
-      expect(reached).toContain('wallet:chain-request');
       expect(exposures).not.toHaveProperty('rpcManager');
       expect(reached).not.toContain('rpc:get-effective-urls');
       expect([...reached].filter((channel) => String(channel).startsWith('rpc:'))).toEqual([]);
     } finally {
       jest.clearAllTimers();
       jest.useRealTimers();
+    }
+  });
+
+  // freedom-core design 0011: every window.ethereum, window.swarm and
+  // window.radicle request is main's. The chrome writes no grant, and has
+  // none of the calls its old request route made (PRQ-9).
+  test('exposes no grant write and none of the old request route', () => {
+    const { exposures } = loadPreloadModule();
+    const gone = {
+      electronAPI: ['handleAgentWalletRequest'],
+      wallet: [
+        'dappSendTransaction',
+        'signMessage',
+        'signTypedData',
+        'typedDataView',
+        'messageView',
+        'requestChain',
+        'safeMessageStart',
+        'safeMessageComplete',
+      ],
+      dappPermissions: ['grantPermission', 'updateLastUsed', 'isTransactionAutoApproved'],
+      swarmPermissions: ['grantPermission', 'grantMessaging', 'updateLastUsed', 'getAutoApprove'],
+      radiclePermissions: ['grantPermission', 'grantSigning', 'updateLastUsed', 'hasSigningGrant', 'getAutoApprove'],
+      swarmFeedStore: ['setFeedIdentity', 'hasFeedGrant', 'previewAppScopedIdentity'],
+    };
+    for (const [bridge, names] of Object.entries(gone)) {
+      expect(exposures[bridge]).toBeDefined();
+      for (const name of names) expect(exposures[bridge]).not.toHaveProperty(name);
     }
   });
 

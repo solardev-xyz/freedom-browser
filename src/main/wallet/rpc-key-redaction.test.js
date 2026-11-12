@@ -345,31 +345,6 @@ describe("the wallet handlers' own redaction", () => {
     }
   });
 
-  test("a JSON-RPC error object's text and data are redacted too", async () => {
-    const ipc = loadWalletIpc({
-      [require.resolve('../networks/chain-data')]: () => ({
-        isReadMethod: () => true,
-        request: jest.fn(async () => {
-          const error = ethersError(KEYED);
-          error.code = -32000;
-          error.data = { detail: `quota for ${KEY}` };
-          throw error;
-        }),
-      }),
-    });
-
-    const answer = await ipc.invoke('wallet:chain-request', {
-      chainId: 100,
-      method: 'eth_blockNumber',
-    });
-    expect(answer).toMatchObject({
-      success: false,
-      error: { code: -32000, data: { detail: 'quota for [key redacted]' } },
-    });
-    expect(JSON.stringify(answer)).not.toContain(KEYED);
-    expectNoKey(answer);
-  });
-
   test("a handler's thrown error reaches the renderer redacted", async () => {
     const ipc = loadWalletIpc({
       [require.resolve('./balance-service')]: () => ({
@@ -449,6 +424,23 @@ describe('redactedHandler', () => {
       message: 'failed at https://eth-mainnet.g.alchemy.com/[path redacted]',
       code: 'X',
     });
+  });
+
+  test("a JSON-RPC error object's text and data are redacted, its code kept", () => {
+    const wrapped = redactedHandler(() => ({
+      success: false,
+      error: { code: -32000, message: `quota exceeded at ${URL_WITH_KEY}`, data: { detail: `quota for ${KEY}` } },
+    }));
+    const reply = wrapped();
+    expect(reply).toMatchObject({
+      success: false,
+      error: {
+        code: -32000,
+        message: 'quota exceeded at https://eth-mainnet.g.alchemy.com/[path redacted]',
+        data: { detail: 'quota for [key redacted]' },
+      },
+    });
+    expect(JSON.stringify(reply)).not.toContain(KEY);
   });
 
   test('a nested error is redacted at every depth, and dropped past the bound', () => {

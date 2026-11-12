@@ -812,13 +812,16 @@ describe('feed-store', () => {
       expect(ipcHandlers[IPC.SWARM_HAS_FEED_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]).toBeDefined();
-      expect(ipcHandlers[IPC.SWARM_PREVIEW_APP_SCOPED_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_ENSURE_ANT_WALLET_IDENTITY]).toBeDefined();
       expect(ipcHandlers[IPC.SWARM_ACTIVATE_FEED_IDENTITY]).toBeDefined();
       // #89: the request that made an ethereum-wallet identity is gone.
       expect(IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY).toBeUndefined();
       expect(ipcHandlers['swarm:ensure-ethereum-wallet-identity']).toBeUndefined();
+      // A feed prompt's new identity is previewed and its grant read by main
+      // (page/page-swarm.js): the chrome's old route to them is gone (PRQ-9).
+      expect(ipcHandlers['swarm:preview-app-scoped-identity']).toBeUndefined();
+      expect(ipcHandlers['swarm:has-feed-grant']).toBeUndefined();
     });
 
     test('has-feed-identity returns false for unknown origin', () => {
@@ -922,7 +925,7 @@ describe('feed-store', () => {
       expect(entry).toMatchObject({ activeIdentityId: 'app-scoped:1', publisherKeyIndex: 1 });
     });
 
-    test('preview-app-scoped-identity does not allocate or persist until approval', async () => {
+    test('previewAppScopedIdentity does not allocate or persist until approval', async () => {
       _resetCache();
 
       const preview = await previewAppScopedIdentity('preview.eth');
