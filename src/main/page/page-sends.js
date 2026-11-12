@@ -720,10 +720,11 @@ function createSendDispatchers(shared, deps = {}) {
     // The board: it signs and executes as today. Leaving it parks the
     // SafeTx, and the page waits for its outcome, without the document's
     // wallet slot. With the approvals document on (APS-3b), main runs it in
-    // the panel, and its execution reaches `settled` as the chrome's did.
+    // the panel, and its execution reaches `settled` as the chrome's did;
+    // the board acts only on the SafeTx this request started.
     const boards = context.approvalsDocument ? d.safeBoards() : null;
     const shown = boards
-      ? boards.runSendBoard(context, { safeIndex: ctx.walletIndex }).catch(() => ({ outcome: 'failed' }))
+      ? boards.runSendBoard(context, { safeIndex: ctx.walletIndex, safeTxHash }).catch(() => ({ outcome: 'failed' }))
       : context.prompt({
           kind: 'eth.safe_send',
           view: { safeIndex: ctx.walletIndex, state: started },

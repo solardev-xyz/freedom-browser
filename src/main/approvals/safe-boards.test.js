@@ -12,15 +12,33 @@ const OWNER_C = '0x4444444444444444444444444444444444444444';
 const TO = '0x5555555555555555555555555555555555555555';
 const SAFE_INDEX = 1000;
 const WINDOW = 3;
+const HASH_A = `0x${'aa'.repeat(32)}`;
+const HASH_B = `0x${'cc'.repeat(32)}`;
+const TX_A = { to: TO, value: 400000000000000000n, data: '0xABCD', operation: 0, nonce: 7 };
+const TX_B = { to: OWNER_C, value: 9000000000000000000n, data: '0x', operation: 0, nonce: 7 };
 
 const flush = async () => {
   for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setImmediate(resolve));
 };
 const coded = (message, code) => Object.assign(new Error(message), { code });
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
 
-/** A Safe of three owners (a vault account, a Ledger, a phone), 2 of 3. */
+/**
+ * A Safe of three owners (a vault account, a Ledger, a phone), 2 of 3. Its
+ * pending SafeTx has an identity (`hash`): a step naming another one is
+ * refused, as `safe-transactions.js` refuses it.
+ */
 function backends({ threshold = 2 } = {}) {
   const state = {
+    hash: HASH_A,
+    txs: { [HASH_A]: TX_A, [HASH_B]: TX_B },
+    holds: new Map(), // owner -> a device wait, until resolved
     signed: new Set(),
     vaultSigns: true,
     unlocked: true,
@@ -41,7 +59,7 @@ function backends({ threshold = 2 } = {}) {
   const snapshot = (extra = {}) => ({
     safeIndex: SAFE_INDEX,
     chainId: 100,
-    safeTxHash: `0x${'aa'.repeat(32)}`,
+    safeTxHash: state.hash,
     threshold,
     collected: state.signed.size,
     owners: owners.map((owner) => ({ ...owner, signed: state.signed.has(owner.index) })),
@@ -51,7 +69,13 @@ function backends({ threshold = 2 } = {}) {
     status: state.superseded ? 'superseded' : 'awaiting',
     ...extra,
   });
-  const sign = async (owner) => {
+  const named = (hash) => {
+    if (hash !== undefined && (!state.pending || hash !== state.hash)) {
+      throw coded('This transaction was discarded or replaced', 'SAFE_DISCARDED');
+    }
+  };
+  const sign = async (owner, hash) => {
+    named(hash);
     state.signs.push(owner);
     if (owner === undefined) {
       state.swept += 1;
@@ -64,13 +88,19 @@ function backends({ threshold = 2 } = {}) {
       throw failure;
     }
     if (owner === 0 && !state.unlocked) throw coded('The vault is locked', 'VAULT_LOCKED');
+    const signedOn = state.hash;
+    const hold = state.holds.get(owner);
+    if (hold) await hold.promise;
+    // As signEntryOwner: a signature whose SafeTx was replaced is dropped.
+    if (state.hash !== signedOn) throw coded('discarded while signing', 'SAFE_DISCARDED');
     state.signed.add(owner);
     return snapshot();
   };
   const sends = {
     state: jest.fn(() => (state.pending ? snapshot() : null)),
-    sign: jest.fn((safeIndex, owner) => sign(owner)),
+    sign: jest.fn((safeIndex, owner, hash) => sign(owner, hash)),
     execute: jest.fn(async (safeIndex, options) => {
+      named(options?.safeTxHash);
       state.executed.push(options);
       const failure = state.executeFails.shift();
       if (failure) throw failure;
@@ -79,11 +109,23 @@ function backends({ threshold = 2 } = {}) {
       state.pending = false;
       return out;
     }),
-    cancel: jest.fn((safeIndex) => {
-      state.cancelled.push(safeIndex);
+    cancel: jest.fn((safeIndex, hash) => {
+      named(hash);
+      state.cancelled.push(state.hash);
       state.pending = false;
     }),
-    tx: jest.fn(() => ({ to: TO, value: 400000000000000000n, data: '0xABCD', operation: 0, nonce: 7 })),
+    tx: jest.fn((safeIndex, hash) => {
+      if (!state.pending || (hash !== undefined && hash !== state.hash)) return null;
+      return state.txs[state.hash];
+    }),
+  };
+  // The pending SafeTx discarded elsewhere (the chrome, another board) and
+  // another started: B, with its own signatures.
+  const replace = ({ signed = [] } = {}) => {
+    state.hash = HASH_B;
+    state.pending = true;
+    state.superseded = false;
+    state.signed = new Set(signed);
   };
   const messages = {
     state: jest.fn((safeIndex, token) =>
@@ -96,7 +138,7 @@ function backends({ threshold = 2 } = {}) {
       return sign(owner);
     }),
   };
-  return { state, sends, messages };
+  return { state, sends, messages, replace };
 }
 
 /** A panel: each prompt main shows, and the user's decisions on it. */
@@ -130,21 +172,36 @@ function panel() {
     await flush();
     return entry;
   };
-  return { ask, shown, last, decide, close: (reason) => waiting.shift().settle({ closed: reason }) };
+  const close = (reason) => waiting.shift()?.settle({ closed: reason });
+  return { ask, shown, last, decide, close, waiting };
 }
 
 function setup(options = {}) {
-  const { state, sends, messages } = backends(options);
+  const { state, sends, messages, replace } = backends(options);
   const fees = [];
   const unlocks = [];
   const prompts = [];
+  // The app's windows: open ones, and who hears each one's close.
+  const windows = { open: new Set([WINDOW]), watchers: new Map() };
+  const closeWindow = (windowId) => {
+    windows.open.delete(windowId);
+    for (const onClosed of windows.watchers.get(windowId) || []) onClosed();
+    windows.watchers.delete(windowId);
+    // As page-requests' forgetWindow: the window's own prompt closes.
+    current.close('closed');
+  };
   const boards = createSafeBoards({
-    getDerivedWallets: async () => [
+    getDerivedWallets: async () => {
+      const hook = state.beforeWallets;
+      state.beforeWallets = null;
+      if (hook) hook();
+      return [
       { index: 0, name: 'Main Wallet', address: OWNER_A, type: 'mnemonic' },
       { index: 5, name: 'Ledger 1', address: OWNER_B, type: 'ledger' },
       { index: 6, name: 'Phone', address: OWNER_C, type: 'remote' },
       { index: SAFE_INDEX, name: 'Team Safe', address: SAFE, type: 'safe' },
-    ],
+      ];
+    },
     chainName: (id) => (id === 100 ? 'Gnosis Chain' : null),
     nativeSymbol: () => 'xDAI',
     sends,
@@ -155,15 +212,24 @@ function setup(options = {}) {
     }),
     walletUnlock: jest.fn(async (windowId, view) => {
       unlocks.push([windowId, view]);
+      if (state.unlockHold) await state.unlockHold.promise;
       if (state.unlockAnswer === false) return { approve: false, choices: {} };
       state.unlocked = true;
       return { approve: true, choices: {} };
     }),
     confirmExecutorFee: jest.fn(async (windowId, offer) => {
       fees.push([windowId, offer]);
+      if (state.feeHold) await state.feeHold.promise;
       return state.feeAnswer === false ? null : { confirmation: 'executor-token', gasLimit: offer.gasLimit, fees: { gasPrice: offer.gasPrice } };
     }),
     transferOf: require('./wallet-approvals').transferOf,
+    watchWindow: jest.fn((windowId, onClosed) => {
+      if (!windows.open.has(windowId)) return null;
+      const watchers = windows.watchers.get(windowId) || new Set();
+      watchers.add(onClosed);
+      windows.watchers.set(windowId, watchers);
+      return () => watchers.delete(onClosed);
+    }),
   });
   const current = panel();
   // A page's context: its prompts go to the same panel; its vault unlock is a prompt too.
@@ -180,7 +246,7 @@ function setup(options = {}) {
       return current.ask(spec);
     }),
   };
-  return { state, sends, messages, boards, panel: current, context, fees, unlocks, prompts };
+  return { state, sends, messages, boards, panel: current, context, fees, unlocks, prompts, replace, windows, closeWindow };
 }
 
 describe('a page\'s Safe message board', () => {
@@ -313,7 +379,7 @@ describe('a Safe send\'s board, a page\'s or the wallet\'s own', () => {
       display: expect.any(Object),
       executed: { hash: `0x${'bb'.repeat(32)}`, explorerUrl: 'https://x' },
     });
-    expect(env.state.executed).toEqual([{}]);
+    expect(env.state.executed).toEqual([{ safeTxHash: HASH_A }]);
   });
 
   test('the executor\'s fee: main\'s own offer asked in the panel\'s window, then executed with that confirmation', async () => {
@@ -325,7 +391,10 @@ describe('a Safe send\'s board, a page\'s or the wallet\'s own', () => {
     await env.panel.decide(true, { action: 'sign', owner: 6 });
     expect((await run).outcome).toBe('executed');
     expect(env.fees).toEqual([[WINDOW, offer]]);
-    expect(env.state.executed).toEqual([{}, { feeConfirmation: { confirmation: 'executor-token', gasLimit: '90000', fees: { gasPrice: '1000000000' } } }]);
+    expect(env.state.executed).toEqual([
+      { safeTxHash: HASH_A },
+      { feeConfirmation: { confirmation: 'executor-token', gasLimit: '90000', fees: { gasPrice: '1000000000' } }, safeTxHash: HASH_A },
+    ]);
   });
 
   test('the fee not confirmed: the board says so, and "try again" asks again', async () => {
@@ -376,7 +445,7 @@ describe('a Safe send\'s board, a page\'s or the wallet\'s own', () => {
     await env.panel.decide(true, { action: 'discard' });
     await env.panel.decide(true, { action: 'discard' });
     expect(await run).toEqual({ outcome: 'discarded', safeTxHash: `0x${'aa'.repeat(32)}` });
-    expect(env.sends.cancel).toHaveBeenCalledWith(SAFE_INDEX);
+    expect(env.sends.cancel).toHaveBeenCalledWith(SAFE_INDEX, HASH_A);
   });
 
   test('a discard refused (a step still running): the board says why', async () => {
@@ -421,6 +490,181 @@ describe('a Safe send\'s board, a page\'s or the wallet\'s own', () => {
     await flush();
     env.panel.close('closed');
     expect(await again).toEqual({ outcome: 'closed', reason: 'closed' });
+  });
+});
+
+// Codex round 1 on #1214, finding 1: a send board's decision acts only on
+// the SafeTx it showed.
+describe('a send board is bound to the SafeTx it shows', () => {
+  test('A discarded and B started while A shows: a stale owner choice signs nothing, and B is never executed or shown', async () => {
+    const env = setup();
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    expect(env.panel.last().view).toMatchObject({ collected: 1, tx: { to: TO, data: '0xabcd' } });
+    // B already holds its threshold: a choice that reached it would execute it.
+    env.replace({ signed: [0, 6] });
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    expect(env.state.signs).toEqual([undefined]);
+    expect([...env.state.signed]).toEqual([0, 6]);
+    expect(env.state.executed).toEqual([]);
+    expect(env.panel.shown).toHaveLength(1);
+    expect(await run).toEqual({ outcome: 'gone' });
+    expect(env.state.hash).toBe(HASH_B);
+  });
+
+  test('the second discard press, after A was replaced by B: nothing discarded', async () => {
+    const env = setup();
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    await env.panel.decide(true, { action: 'discard' });
+    expect(env.panel.last().view.step).toBe(STEPS.DISCARD);
+    env.replace();
+    await env.panel.decide(true, { action: 'discard' });
+    expect(env.state.cancelled).toEqual([]);
+    expect(env.state.pending).toBe(true);
+    expect(await run).toEqual({ outcome: 'gone' });
+  });
+
+  test('"try again" after A was replaced by B at its threshold: B is not executed', async () => {
+    const env = setup();
+    env.state.executeFails.push(coded('insufficient funds for gas', 'SAFE_NEEDS_FUNDS'));
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    expect(env.panel.last().view.step).toBe(STEPS.RETRY);
+    env.replace({ signed: [0, 6] });
+    await env.panel.decide(true, { action: 'retry' });
+    // Only A's failed attempt: nothing executed for B.
+    expect(env.state.executed).toEqual([{ safeTxHash: HASH_A }]);
+    expect(env.state.pending).toBe(true);
+    expect(await run).toEqual({ outcome: 'gone' });
+  });
+
+  test('a SafeTx replaced at its execution: the step names A, and B is refused', async () => {
+    const env = setup();
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    // The threshold reached by this signature; B in place as the execution runs.
+    env.sends.execute.mockImplementationOnce(async (safeIndex, options) => {
+      env.replace({ signed: [0, 6] });
+      if (options.safeTxHash !== env.state.hash) throw coded('replaced', 'SAFE_DISCARDED');
+      throw new Error('executed B');
+    });
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    expect(env.sends.execute).toHaveBeenCalledWith(SAFE_INDEX, { safeTxHash: HASH_A });
+    expect(env.state.executed).toEqual([]);
+    expect(await run).toEqual({ outcome: 'gone' });
+  });
+
+  test('the view and its counts from one entry: replaced while the view is made, the board ends unshown', async () => {
+    const env = setup();
+    env.state.beforeWallets = () => env.replace({ signed: [0, 5, 6] });
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    expect(env.panel.shown).toEqual([]);
+    expect(env.state.executed).toEqual([]);
+    expect(await run).toEqual({ outcome: 'gone' });
+  });
+
+  test('a page\'s board shows only the SafeTx its request started', async () => {
+    const env = setup();
+    // A is pending; the page's request started B, which is gone already.
+    const run = env.boards.runSendBoard(env.context, { safeIndex: SAFE_INDEX, safeTxHash: HASH_B });
+    await flush();
+    expect(env.panel.shown).toEqual([]);
+    expect(env.state.signs).toEqual([]);
+    expect(env.state.executed).toEqual([]);
+    expect(await run).toEqual({ outcome: 'gone' });
+  });
+
+  test('every step names the SafeTx shown: the sweep, a signature, the execution', async () => {
+    const env = setup();
+    const run = env.boards.runSendBoard(env.context, { safeIndex: SAFE_INDEX, safeTxHash: HASH_A });
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    expect((await run).outcome).toBe('executed');
+    expect(env.sends.sign.mock.calls).toEqual([
+      [SAFE_INDEX, undefined, HASH_A],
+      [SAFE_INDEX, 5, HASH_A],
+    ]);
+    expect(env.sends.tx.mock.calls.every(([, hash]) => hash === HASH_A)).toBe(true);
+    expect(env.sends.execute).toHaveBeenCalledWith(SAFE_INDEX, { safeTxHash: HASH_A });
+  });
+});
+
+// Codex round 1 on #1214, finding 2: the wallet's board lives as long as its
+// window.
+describe('the wallet\'s board ends with its window', () => {
+  test.each([
+    ['a Ledger', 5],
+    ['a phone', 6],
+  ])('closed during %s\'s wait: the signature kept on its SafeTx, nothing asked or executed after', async (_label, owner) => {
+    const env = setup();
+    const device = deferred();
+    env.state.holds.set(owner, device);
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner });
+    env.closeWindow(WINDOW);
+    // The user approves on the device as the window goes: the threshold met.
+    device.resolve();
+    expect(await run).toEqual({ outcome: 'closed', reason: 'closed' });
+    expect(env.state.signed.has(owner)).toBe(true);
+    expect(env.state.executed).toEqual([]);
+    expect(env.state.pending).toBe(true);
+    expect(env.panel.shown).toHaveLength(1);
+    expect(env.windows.watchers.size).toBe(0);
+  });
+
+  test('closed during the unlock\'s wait: no vault signature made after, nothing executed', async () => {
+    const env = setup({ threshold: 1 });
+    env.state.unlocked = false;
+    env.state.unlockHold = deferred();
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner: 0 });
+    expect(env.unlocks).toEqual([[WINDOW, { reason: 'sign' }]]);
+    env.closeWindow(WINDOW);
+    env.state.unlockHold.resolve();
+    expect(await run).toEqual({ outcome: 'closed', reason: 'closed' });
+    expect(env.state.signed.size).toBe(0);
+    expect(env.state.executed).toEqual([]);
+  });
+
+  test('closed during the executor fee\'s wait: not executed with that fee', async () => {
+    const env = setup();
+    const offer = { executorIndex: 0, chainId: 100, to: SAFE, value: '0', data: '0x', gasLimit: '90000', gasPrice: '1' };
+    env.state.executeFails.push(Object.assign(coded('needs confirmation', 'FEE_CHECK_NEEDS_CONFIRMATION'), { offer }));
+    env.state.feeHold = deferred();
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    expect(env.fees).toHaveLength(1);
+    env.closeWindow(WINDOW);
+    env.state.feeHold.resolve();
+    expect(await run).toEqual({ outcome: 'closed', reason: 'closed' });
+    // Only the attempt the fee check stopped.
+    expect(env.state.executed).toEqual([{ safeTxHash: HASH_A }]);
+  });
+
+  test('a window closed already: no board, nothing swept', async () => {
+    const env = setup();
+    env.windows.open.delete(WINDOW);
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    expect(env.state.signs).toEqual([]);
+    expect(env.panel.shown).toEqual([]);
+    expect(await run).toEqual({ outcome: 'no-window' });
+  });
+
+  test('a board that ended stops hearing its window', async () => {
+    const env = setup();
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    expect(env.windows.watchers.get(WINDOW).size).toBe(1);
+    await env.panel.decide(false);
+    expect(await run).toEqual({ outcome: 'parked' });
+    expect(env.windows.watchers.get(WINDOW).size).toBe(0);
   });
 });
 
