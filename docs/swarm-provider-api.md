@@ -739,6 +739,10 @@ To share with a Freedom user, a publisher needs the user's node public key.
 On Freedom's bundled node (Ant) that is the same key as the `pssPublicKey`
 `swarm_getMessagingIdentity` returns (as of Ant v0.5.78, whose `/addresses`
 reports one key for both). An external Bee node keeps a separate PSS key.
+The user can copy their node's key from the Nodes menu's Swarm section
+("ACT Public Key", the node's `/addresses` `publicKey`) for either node. No
+provider method returns it: a stable node key identifies the user across
+sites ([#1188](https://github.com/solardev-xyz/freedom-browser/issues/1188)).
 
 ### Messaging
 

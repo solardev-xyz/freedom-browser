@@ -14,6 +14,44 @@ let beeInfoPanel = null;
 let beeStatusRow = null;
 let beeStatusLabel = null;
 let beeStatusValue = null;
+let beeActKeyText = null;
+let beeActKeyCopy = null;
+
+// The ACT public key last read from the node's /addresses (#1188), or null.
+// Not cached across menu opens the way the version is: the endpoint can move
+// from the bundled node to an external Bee, and a stale key would send
+// shares to the wrong node.
+let actPublicKey = null;
+let actKeyCopiedTimer = null;
+// Bumped every time the info panel is torn down, so a /addresses reply from
+// an earlier open (or an earlier node behind the same menu) can't repaint a
+// later one.
+let actKeyGeneration = 0;
+
+// Compressed (66 hex, 02/03) or uncompressed (130 hex, 04) secp256k1 key, as
+// Bee and Ant report it; an optional 0x is tolerated.
+const ACT_PUBLIC_KEY_RE = /^(?:0x)?(?:0[23][0-9a-f]{64}|04[0-9a-f]{128})$/i;
+
+const shortKey = (key) => {
+  const hex = key.replace(/^0x/i, '');
+  return `${hex.slice(0, 6)}…${hex.slice(-4)}`;
+};
+
+const paintActKey = (key) => {
+  actPublicKey = key;
+  if (beeActKeyText) {
+    beeActKeyText.textContent = key ? shortKey(key) : UNKNOWN;
+    // Monospace for the key itself; the Unknown placeholder reads like every
+    // other row's.
+    beeActKeyText.classList.toggle('has-key', Boolean(key));
+    if (key) beeActKeyText.setAttribute('title', key);
+    else beeActKeyText.removeAttribute('title');
+  }
+  if (beeActKeyCopy) {
+    beeActKeyCopy.disabled = !key;
+    if (!key) beeActKeyCopy.classList.remove('copied');
+  }
+};
 
 // Binary availability state
 let beeBinaryAvailable = true;
@@ -34,6 +72,8 @@ export const stopAntInfoPolling = () => {
     beeVersionText.textContent = versionText(
       state.antVersionFetched ? state.antVersionValue : ''
     );
+  actKeyGeneration += 1;
+  paintActKey(null);
 };
 
 const fetchConnectedPeers = async () => {
@@ -107,6 +147,42 @@ const fetchAntVersionOnce = async () => {
   }
 };
 
+const fetchActPublicKey = async () => {
+  if (!state.antMenuOpen) return;
+  if (!beeInfoPanel?.classList.contains('visible')) return;
+
+  const generation = actKeyGeneration;
+  let key = null;
+  try {
+    const response = await fetchAntJson('/addresses');
+    const reported = response.ok ? response.data?.publicKey : null;
+    if (typeof reported === 'string' && ACT_PUBLIC_KEY_RE.test(reported)) key = reported;
+  } catch {
+    key = null;
+  }
+  // The menu closed or the node stopped while the read was in flight.
+  if (generation !== actKeyGeneration) return;
+  if (!state.antMenuOpen || !beeInfoPanel?.classList.contains('visible')) return;
+  paintActKey(key);
+};
+
+const copyActPublicKey = async () => {
+  const key = actPublicKey;
+  if (!key || !beeActKeyCopy) return;
+  try {
+    await window.electronAPI.copyText(key);
+    beeActKeyCopy.classList.add('copied');
+    if (actKeyCopiedTimer) clearTimeout(actKeyCopiedTimer);
+    actKeyCopiedTimer = setTimeout(() => {
+      beeActKeyCopy?.classList.remove('copied');
+      actKeyCopiedTimer = null;
+    }, 1500);
+  } catch (err) {
+    console.error('[ant-ui] Copy ACT public key failed:', err);
+    pushDebug(`Copy ACT public key failed: ${err?.message || err}`);
+  }
+};
+
 export const startAntInfoPolling = () => {
   if (!state.antMenuOpen || state.currentAntStatus === 'stopped') {
     stopAntInfoPolling();
@@ -118,6 +194,9 @@ export const startAntInfoPolling = () => {
   fetchConnectedPeers();
   fetchVisiblePeers();
   if (!state.antVersionFetched) fetchAntVersionOnce();
+  // Once per open, not per poll tick: the key doesn't change while the node
+  // runs, but a reopen picks up a node switch.
+  if (!actPublicKey) fetchActPublicKey();
 
   if (state.antPeersInterval) clearInterval(state.antPeersInterval);
   state.antPeersInterval = setInterval(fetchConnectedPeers, 500);
@@ -249,6 +328,12 @@ export const initAntUi = () => {
   beeStatusRow = document.getElementById('bee-status-row');
   beeStatusLabel = document.getElementById('bee-status-label');
   beeStatusValue = document.getElementById('bee-status-value');
+  beeActKeyText = document.getElementById('bee-act-key-text');
+  beeActKeyCopy = document.getElementById('bee-act-key-copy');
+
+  beeActKeyCopy?.addEventListener('click', () => {
+    copyActPublicKey();
+  });
 
   // Check binary availability
   if (window.ant) {

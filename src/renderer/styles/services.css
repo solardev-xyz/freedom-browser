@@ -89,6 +89,51 @@
   color: var(--muted);
 }
 
+/* ACT public key row (#1188): a shortened key in the menu's monospace style
+   for keys, the full key in the title and on the clipboard. */
+.bee-act-key-row {
+  align-items: center;
+}
+
+.bee-act-key-row .bee-info-label {
+  white-space: nowrap;
+}
+
+.bee-act-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* The sidebar's inline copy button, narrowed so the key still ends on the
+   value column the rows above it end on. */
+.bee-act-key-copy.node-copy-btn-inline {
+  width: 16px;
+  height: 16px;
+  margin-right: -2px;
+}
+
+.bee-act-key-text {
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.bee-act-key-text.has-key {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-size: 11px;
+}
+
+.bee-act-key-copy:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bee-act-key-copy:disabled:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
 /* Divider between Swarm and IPFS */
 .nodes-divider {
   height: 1px;
