@@ -55,6 +55,9 @@ const mockSeedFetchStatus = {
 };
 
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => false),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   getConnections: jest.fn(async () => ({ success: true, count: 3 })),
@@ -78,6 +81,13 @@ jest.mock('./cob-service', () => {
       this.reason = reason;
     }
   }
+  // A write the running node can't make (plan B10, `needs_vault`).
+  class CobAdmissionError extends Error {
+    constructor(reason, message) {
+      super(message);
+      this.reason = reason;
+    }
+  }
   return {
     createIssue: jest.fn(async () => ({ id: 'a'.repeat(40) })),
     commentIssue: jest.fn(async () => ({ id: 'b'.repeat(40) })),
@@ -85,6 +95,7 @@ jest.mock('./cob-service', () => {
     commentPatch: jest.fn(async () => ({ id: 'd'.repeat(40) })),
     getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
     CobValidationError,
+    CobAdmissionError,
     LIMITS: { maxTitleBytes: 200, maxBodyBytes: 65536 },
   };
 });

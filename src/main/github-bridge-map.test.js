@@ -13,6 +13,9 @@ jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn((channel, fn) => mockHandlers.set(channel, fn)) },
 }));
 jest.mock('./radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   isDisabledForProfile: jest.fn(() => false),
   STATUS: { RUNNING: 'running' },

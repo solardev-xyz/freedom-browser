@@ -25,6 +25,9 @@ const mockEmbedded = {
 jest.mock('electron', () => ({ ipcMain: mockIpcMain }));
 jest.mock('child_process', () => ({ execFile: mockExecFile }));
 jest.mock('./radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   getRadicleDataPath: jest.fn(() => mockDataDir),
   getCurrentStatus: jest.fn(() => ({ status: 'running', error: null })),
   isDisabledForProfile: jest.fn(() => false),
@@ -198,4 +201,68 @@ test('does not report success or persist a bridge when native import returns an 
     IPC.GITHUB_BRIDGE_PROGRESS,
     expect.objectContaining({ step: 'success' })
   );
+});
+
+// Plan B10 (freedom-core design 0008, `needs_vault`): under the Radicle
+// service, while the running generation has a throwaway key, the import is
+// refused in main before anything is sent.
+describe('a node running with a throwaway key (radicled B10)', () => {
+  const manager = require('./radicle-manager');
+  const THROWAWAY_KEY = {
+    reason: 'needs_vault',
+    message: "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.",
+  };
+  const cloned = () =>
+    mockExecFile.mock.calls.some(([command, args]) => command === 'git' && args[0] === 'clone');
+
+  afterEach(() => {
+    manager.radicleWriteRefusal.mockReset();
+    manager.radicleWriteRefusal.mockReturnValue(null);
+  });
+
+  test('the prerequisites refuse it, and the import clones and imports nothing', async () => {
+    manager.radicleWriteRefusal.mockReturnValue(THROWAWAY_KEY);
+    await expect(mockHandlers.get(IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES)()).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_NEEDS_VAULT', message: THROWAWAY_KEY.message },
+      step: 'checking-radicle',
+    });
+    const sender = { isDestroyed: () => false, send: jest.fn() };
+    await expect(
+      mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({ sender }, 'https://github.com/openai/native-project')
+    ).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_NEEDS_VAULT', message: THROWAWAY_KEY.message },
+      step: 'checking-radicle',
+    });
+    expect(cloned()).toBe(false);
+    expect(mockEmbedded.importRepo).not.toHaveBeenCalled();
+  });
+
+  test('a restart with a throwaway key during the clone: refused before the import, and the clone is removed', async () => {
+    mockExecFile.mockImplementationOnce((command, args, options, callback) => {
+      // git --version, as before.
+      (typeof options === 'function' ? options : callback)(null, { stdout: 'git version 2.50.0\n', stderr: '' });
+    });
+    mockExecFile.mockImplementationOnce((command, args, options, callback) => {
+      // The clone: the node restarts meanwhile, with no vault.
+      manager.radicleWriteRefusal.mockReturnValue(THROWAWAY_KEY);
+      (typeof options === 'function' ? options : callback)(null, { stdout: '', stderr: '' });
+    });
+    const sender = { isDestroyed: () => false, send: jest.fn() };
+    await expect(
+      mockHandlers.get(IPC.GITHUB_BRIDGE_IMPORT)({ sender }, 'https://github.com/openai/native-project')
+    ).resolves.toMatchObject({
+      success: false,
+      error: { code: 'RADICLE_NEEDS_VAULT', message: THROWAWAY_KEY.message },
+      step: 'initializing',
+    });
+    expect(cloned()).toBe(true);
+    expect(mockEmbedded.importRepo).not.toHaveBeenCalled();
+    expect(sender.send).toHaveBeenCalledWith(IPC.GITHUB_BRIDGE_PROGRESS, {
+      step: 'error',
+      message: THROWAWAY_KEY.message,
+    });
+    expect(fs.readdirSync(mockTempRoot)).toEqual([]);
+  });
 });
