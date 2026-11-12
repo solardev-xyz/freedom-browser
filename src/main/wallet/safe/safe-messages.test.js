@@ -664,18 +664,13 @@ describe('a session main owns', () => {
     expect(getSafeMessageState(5, chromes.token)).not.toBeNull();
   });
 
-  test('the chrome may sign it on its board, but only main completes it', async () => {
+  // The chrome has no way to complete one (PRQ-9 removed
+  // wallet:safe-message-complete): main completes it.
+  test('the chrome may sign it on its board, and main completes it', async () => {
     const { token } = await startOwned();
     await signSafeMessage(5, 2, token);
-    expect(() => completeSafeMessage(5, token, { chrome: true })).toThrow(/answered by the browser itself/);
     expect(getSafeMessageState(5, token)).toMatchObject({ collected: 2 });
     const { signature } = completeSafeMessage(5, token);
     expect(signature).toBe(buildSignatureBytes([signatureOf(0), signatureOf(2)]));
-  });
-
-  test("the chrome's own session is still the chrome's to complete", async () => {
-    const { token } = await startPersonal();
-    await signSafeMessage(5, 2, token);
-    expect(completeSafeMessage(5, token, { chrome: true }).signature).toMatch(/^0x/);
   });
 });

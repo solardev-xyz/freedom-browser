@@ -51,7 +51,9 @@
 
   const ui = createBuilders(doc);
   const gate = createInputGate({ now: () => root.performance.now() });
-  let current = null; // the checked prompt shown, or null
+  // The checked prompt shown, or null; with the revision of the message it
+  // came in, which every report names (APS-4).
+  let current = null;
   let form = null; // what its template reads the user's choices from
   let deciding = false;
   // An approval for an account that signs on a device: `{ handle, closed }`
@@ -60,8 +62,9 @@
   let armTimer = null;
   let armFrame = null;
   // Each prompt message's turn: a view's parts still arriving for an older
-  // message are dropped (APS-4). Main checks the same with the revision a
-  // view in parts names: it gives a part only for the revision it shows.
+  // message are dropped (APS-4). Main checks the same with the revision
+  // every message names: it gives a part, and counts a report, only for the
+  // revision it shows.
   let turn = 0;
 
   function setButtons() {
@@ -89,9 +92,10 @@
     armFrame = root.requestAnimationFrame(() => {
       armFrame = root.requestAnimationFrame(() => {
         armFrame = null;
-        if (current?.handle !== handle) return;
+        if (current?.handle !== handle || current.revision !== revision) return;
         gate.arm();
-        // A view in parts is reported for its revision (APS-4).
+        // Reported for the revision it rendered: main counts it for that
+        // delivery alone (APS-4).
         bridge.shown(handle, revision);
         armTimer = root.setTimeout(() => {
           armTimer = null;
@@ -164,11 +168,11 @@
    */
   async function load(message, prompt) {
     const mine = turn;
-    const { revision } = prompt.parts;
+    const { revision } = prompt;
     stopWaiting();
     stopArming();
     gate.disarm();
-    current = { handle: prompt.handle, kind: null, site: null, view: null, valid: false, loading: true };
+    current = { handle: prompt.handle, revision, kind: null, site: null, view: null, valid: false, loading: true };
     form = null;
     deciding = false;
     el.body.replaceChildren(ui.note('Loading the request…'));
@@ -190,7 +194,9 @@
       } catch {
         answer = null;
       }
-      if (mine !== turn || current?.handle !== prompt.handle) return;
+      if (mine !== turn || current?.handle !== prompt.handle || current.revision !== revision) return;
+      // Replaced under the same handle, whole or in parts: dropped, not
+      // shown as the fixed error; the newer message is on its way.
       if (answer?.ok !== true && answer?.reason === 'stale') return;
       if (answer?.ok !== true || typeof answer.part !== 'string' || answer.part.length === 0) break;
       parts.push(answer.part);

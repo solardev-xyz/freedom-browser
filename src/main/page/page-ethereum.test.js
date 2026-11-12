@@ -164,12 +164,10 @@ function setup({ resolveEnsContent } = {}) {
 }
 
 describe('Ethereum reads through main (freedom-core design 0011, PRQ-3)', () => {
-  test('the dispatcher serves exactly the moved methods: the chrome\'s read-only list, eth_accounts, connecting, signing and sends', () => {
-    // The chrome's own list, read from the code that serves it.
-    const source = fs.readFileSync(path.join(__dirname, '../../renderer/lib/dapp-provider.js'), 'utf-8');
-    const readOnly = JSON.parse(
-      `[${/const READ_ONLY_METHODS = \[([\s\S]*?)\];/.exec(source)[1].replace(/'/g, '"').replace(/,\s*$/, '')}]`
-    );
+  test('the dispatcher serves exactly the moved methods: the read-only list, eth_accounts, connecting, signing and sends', () => {
+    // The read-only list the chrome served (page-methods.test.js pins it):
+    // eth_chainId, net_version and the RPC reads.
+    const readOnly = ['eth_chainId', 'net_version', ...ETHEREUM_RPC_READS];
     expect(readOnly).toHaveLength(25);
     expect([...ETHEREUM_READ_METHODS].sort()).toEqual([...readOnly, 'eth_accounts'].sort());
     expect([...ETHEREUM_PAGE_METHODS].sort()).toEqual(
@@ -185,14 +183,10 @@ describe('Ethereum reads through main (freedom-core design 0011, PRQ-3)', () => 
     expect(Object.keys(createEthereumDispatchers(backends().deps)).sort()).toEqual(
       ETHEREUM_PAGE_METHODS.map((method) => `ethereum:${method}`).sort()
     );
-    // The preload routes exactly these of window.ethereum's to main.
+    // The preload sends every window.ethereum method to main (PRQ-9): it
+    // keeps no list of routed methods, so nothing goes anywhere else.
     const preload = fs.readFileSync(path.join(__dirname, '../webview-preload.js'), 'utf-8');
-    const routes = /const PAGE_ROUTES = new Set\(\[([\s\S]*?)\]\);/
-      .exec(preload)[1]
-      .match(/'[^']+'/g)
-      .map((r) => r.slice(1, -1))
-      .filter((r) => r.startsWith('ethereum:'));
-    expect(routes.sort()).toEqual(ETHEREUM_PAGE_METHODS.map((method) => `ethereum:${method}`).sort());
+    expect(preload).not.toMatch(/PAGE_ROUTES|routedToMain|sendToHost\('(?:dapp|swarm|radicle):/);
     // Each has its row, of the class the design gives it.
     for (const method of ETHEREUM_READ_METHODS) {
       const expected = method === 'eth_accounts' ? CLASS.NAME_REVALIDATED : CLASS.PERMISSION_FREE;

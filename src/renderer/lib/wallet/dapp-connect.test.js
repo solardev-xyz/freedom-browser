@@ -1,7 +1,6 @@
 /**
- * Tests for the dApp Connect prompt and the connection banner. The Connect,
- * Sign and Send prompts share the sidebar: while one shows an undecided
- * request, a newcomer is refused (dapp-prompt-guard.js).
+ * Tests for the dApp connection banner. Main's connect prompt (`eth.connect`)
+ * is tested with the page prompts (page-prompts.test.js).
  */
 
 const { createDocument, createElement } = require('../../../../test/helpers/fake-dom.js');
@@ -75,10 +74,7 @@ async function loadDappConnect({ activeDisplayUrl = '', activeWebview = null } =
   };
 
   const provider = {
-    getActiveWebview: jest.fn(() => activeWebview),
     getActiveDisplayUrl: jest.fn(() => activeDisplayUrl),
-    getPermissionKey: jest.fn((url) => url || null),
-    getNavigationGeneration: jest.fn(() => 0),
   };
   const sent = [];
   if (activeWebview) activeWebview.send = jest.fn((...args) => sent.push(args));
@@ -170,10 +166,6 @@ const DAPP_CONNECT_ELEMENT_IDS = [
   'sidebar-dapp-connect',
 ];
 
-function flush() {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
 async function loadDappConnectPrompt() {
   jest.resetModules();
 
@@ -184,10 +176,8 @@ async function loadDappConnectPrompt() {
   elementsById['sidebar-dapp-connect'].classList.add('hidden');
   global.document = createDocument({ elementsById });
 
-  const grantPermission = jest.fn().mockResolvedValue({ success: true });
   global.window = {
     dappPermissions: {
-      grantPermission,
       getPermission: jest.fn().mockResolvedValue(null),
     },
   };
@@ -204,50 +194,28 @@ async function loadDappConnectPrompt() {
   }));
   jest.doMock('./wallet-utils.js', () => ({
     escapeHtml: jest.fn((text) => text),
-    isSafeAccount: jest.fn(() => false),
-    isSafeDeployed: jest.fn(() => true),
   }));
   jest.doMock('../sidebar.js', () => ({ open: jest.fn(), isVisible: jest.fn(() => true) }));
   // Webviews by committed site; the active one is `provider.active`.
-  const provider = { active: null, keys: new Map(), generations: new Map() };
+  const provider = { active: null, keys: new Map() };
   jest.doMock('../dapp-provider.js', () => ({
-    getActiveWebview: jest.fn(() => provider.active),
     getActiveDisplayUrl: jest.fn(() => provider.keys.get(provider.active) ?? ''),
-    getPermissionKey: jest.fn((url) => url || null),
-    getNavigationGeneration: jest.fn((wv) => provider.generations.get(wv) ?? 0),
   }));
   jest.doMock('./permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
-  jest.doMock('../url-utils.js', () => ({ parseOnchainAppUrl: jest.fn(() => null) }));
 
   const mod = await import('./dapp-connect.js');
   mod.initDappConnect();
-  const guard = await import('./dapp-prompt-guard.js');
 
   const tab = (site) => {
-    const webview = { send: jest.fn() };
+    const webview = {};
     provider.keys.set(webview, site);
     return webview;
   };
 
-  function openConnect(site, webview = tab(site)) {
-    const settled = { state: 'pending', webview };
-    // showDappConnect reveals the screen synchronously, as in the app.
-    mod.showDappConnect(
-      site,
-      site,
-      (value) => Object.assign(settled, { state: 'resolved', value }),
-      (value) => Object.assign(settled, { state: 'rejected', value }),
-      webview
-    );
-    return settled;
-  }
-
-  const hideForOtherScreen = () => require('./wallet-state.js').registerScreenHider.mock.calls[0][0]();
-
-  return { mod, elements: elementsById, grantPermission, openConnect, hideForOtherScreen, guard, provider, tab };
+  return { mod, elements: elementsById, provider, tab };
 }
 
-describe('dapp-connect prompt', () => {
+describe('dapp-connect banner updates', () => {
   beforeEach(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -257,130 +225,6 @@ describe('dapp-connect prompt', () => {
     global.window = originalWindow;
     global.document = originalDocument;
     jest.restoreAllMocks();
-  });
-
-  test('a newcomer never replaces the site on screen', async () => {
-    const { elements, grantPermission, openConnect, guard } = await loadDappConnectPrompt();
-    const first = openConnect('https://app.example');
-    expect(guard.isDappPromptShowing()).toBe(true);
-
-    const second = openConnect('https://other.example');
-    expect(second).toMatchObject({ state: 'rejected', value: { code: -32002 } });
-    expect(elements['dapp-connect-site'].textContent).toBe('https://app.example');
-
-    elements['dapp-connect-approve'].dispatch('click');
-    await flush();
-    expect(grantPermission.mock.calls[0][0]).toBe('https://app.example');
-    expect(first.state).toBe('resolved');
-    expect(guard.isDappPromptShowing()).toBe(false);
-  });
-
-  test('a prompt another screen hid holds off nothing', async () => {
-    const { openConnect, hideForOtherScreen } = await loadDappConnectPrompt();
-    openConnect('https://app.example');
-
-    hideForOtherScreen();
-    expect(openConnect('https://other.example').state).toBe('pending');
-  });
-
-  test('a request another screen hid is answered when a newcomer replaces it', async () => {
-    const { elements, grantPermission, openConnect, hideForOtherScreen } = await loadDappConnectPrompt();
-    const first = openConnect('https://app.example');
-
-    hideForOtherScreen();
-    const second = openConnect('https://other.example');
-    expect(first).toMatchObject({ state: 'rejected', value: { code: 4001 } });
-    expect(second.state).toBe('pending');
-
-    // The newcomer is the one on screen, and the one Connect grants.
-    expect(elements['dapp-connect-site'].textContent).toBe('https://other.example');
-    elements['dapp-connect-approve'].dispatch('click');
-    await flush();
-    expect(grantPermission.mock.calls[0][0]).toBe('https://other.example');
-    expect(second.state).toBe('resolved');
-  });
-
-  test('a grant being written behind another screen settles itself, not as replaced', async () => {
-    const { elements, grantPermission, openConnect, hideForOtherScreen } = await loadDappConnectPrompt();
-    let finishGrant;
-    grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
-    const first = openConnect('https://app.example');
-    elements['dapp-connect-approve'].dispatch('click');
-    await flush();
-
-    hideForOtherScreen();
-    const second = openConnect('https://other.example');
-    expect(first.state).toBe('pending');
-
-    finishGrant({ success: true });
-    await flush();
-    expect(first.state).toBe('resolved');
-    // The first grant's completion leaves the newcomer's screen up.
-    expect(second.state).toBe('pending');
-    expect(elements['sidebar-dapp-connect'].classList.contains('hidden')).toBe(false);
-  });
-
-  test('while the grant is written, there is no way out and no second grant', async () => {
-    const { elements, grantPermission, openConnect } = await loadDappConnectPrompt();
-    let finishGrant;
-    grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
-    const first = openConnect('https://app.example');
-
-    elements['dapp-connect-approve'].dispatch('click');
-    await flush();
-    elements['dapp-connect-reject'].dispatch('click');
-    elements['dapp-connect-back'].dispatch('click');
-    elements['dapp-connect-approve'].dispatch('click');
-    // Still deciding: a newcomer waits.
-    expect(openConnect('https://other.example').state).toBe('rejected');
-
-    finishGrant({ success: true });
-    await flush();
-    expect(first.state).toBe('resolved');
-    expect(grantPermission).toHaveBeenCalledTimes(1);
-  });
-
-  test('a failed grant answers the dApp', async () => {
-    const { elements, grantPermission, openConnect } = await loadDappConnectPrompt();
-    grantPermission.mockRejectedValueOnce(new Error('disk full'));
-    const first = openConnect('https://app.example');
-
-    elements['dapp-connect-approve'].dispatch('click');
-    await flush();
-    expect(first).toMatchObject({ state: 'rejected', value: { code: -32603 } });
-  });
-
-  test("a grant's events reach only the document that asked", async () => {
-    const { elements, grantPermission, openConnect, provider } = await loadDappConnectPrompt();
-    let finishGrant;
-    grantPermission.mockReturnValueOnce(new Promise((resolve) => (finishGrant = resolve)));
-    const first = openConnect('https://app.example');
-
-    elements['dapp-connect-approve'].dispatch('click');
-    await flush();
-    // The tab navigates to another site while the grant is written.
-    provider.generations.set(first.webview, 1);
-    finishGrant({ success: true });
-    await flush();
-    expect(first.webview.send).not.toHaveBeenCalled();
-  });
-
-  test("an earlier request's favicon never lands on a later one", async () => {
-    const { elements, openConnect } = await loadDappConnectPrompt();
-    let faviconA;
-    window.electronAPI = {
-      getCachedFavicon: jest
-        .fn()
-        .mockReturnValueOnce(new Promise((resolve) => (faviconA = resolve)))
-        .mockResolvedValue(null),
-    };
-    openConnect('https://a.example');
-    elements['dapp-connect-reject'].dispatch('click');
-    openConnect('https://b.example');
-    await flush();
-    faviconA('data:image/png;base64,AAAA');
-    await flush();
-    expect(elements['dapp-connect-favicon'].src).toBe('');
   });
 
   test("a stale banner lookup never repaints a newer one", async () => {

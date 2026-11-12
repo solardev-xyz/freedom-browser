@@ -10,7 +10,7 @@ const { pathToFileURL } = require('url');
 const approvals = require('./approvals-document');
 const { createPageDocuments } = require('../page/page-documents');
 const { createPageRequests } = require('../page/page-requests');
-const { createWalletApprovals, REJECTED } = require('./wallet-approvals');
+const { createWalletApprovals, REJECTED, LIMITED } = require('./wallet-approvals');
 
 const {
   createApprovalsDocuments,
@@ -45,6 +45,11 @@ const OTHER_HANDLE = 'b'.repeat(64);
 const SITE = { key: `bzz://${'c'.repeat(64)}`, label: `bzz://${'c'.repeat(64)}` };
 const VIEW = { title: 'One', message: 'About one', rows: [] };
 const prompt = (handle = HANDLE, view = VIEW) => ({ handle, guest: 7, kind: 'test.prompt', site: SITE, view });
+// The revision of the prompt main sent a document last: what the document
+// names when it reports that prompt shown (APS-4).
+const sentRevision = (contents) => contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)?.[1]?.revision;
+// A prompt's message as main forwards it: its own fields and its revision.
+const delivered = (revision, handle = HANDLE, view = VIEW) => ({ handle, revision, guest: 7, kind: 'test.prompt', site: SITE, view });
 
 let nextContentsId = 100;
 
@@ -494,7 +499,7 @@ describe('the sender checks', () => {
     const env = setup();
     const { contents } = attached(env);
     env.docs.send(1, CHANNELS.PROMPT, prompt());
-    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: true });
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) })).toEqual({ ok: true });
 
     // Another webContents, even with the view's id, a sub-frame, a frame
     // that went, and the view after it navigated, in place or not.
@@ -535,7 +540,7 @@ describe('the sender checks', () => {
     const one = attached(env, 1);
     const two = attached(env, 2);
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE));
-    env.docs.shown(eventFrom(one.contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(one.contents), { handle: HANDLE, revision: sentRevision(one.contents) });
     env.advance(INPUT_DELAY_MS);
     // Window 2's document, for window 1's handle: it shows nothing.
     expect(await env.docs.decide(eventFrom(two.contents), { handle: HANDLE, approve: true })).toEqual({
@@ -573,7 +578,7 @@ describe('main\'s own input delay', () => {
       ok: false,
       reason: 'not-reported',
     });
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
     env.advance(499);
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
@@ -595,7 +600,7 @@ describe('main\'s own input delay', () => {
     const { window, contents } = attached(env);
     const approve = () => env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
     const showAndWait = () => {
-      env.docs.shown(eventFrom(contents), { handle: HANDLE });
+      env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
       env.advance(INPUT_DELAY_MS);
     };
     env.docs.send(1, CHANNELS.PROMPT, prompt());
@@ -630,7 +635,7 @@ describe('main\'s own input delay', () => {
     const env = setup();
     const { contents } = attached(env);
     env.docs.send(1, CHANNELS.PROMPT, prompt());
-    expect(env.docs.shown(eventFrom(contents), { handle: OTHER_HANDLE })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.shown(eventFrom(contents), { handle: OTHER_HANDLE, revision: sentRevision(contents) })).toEqual({ ok: false, reason: 'not-shown' });
     expect(env.docs.shown(eventFrom(contents), 'nope')).toEqual({ ok: false, reason: 'not-shown' });
     expect(env.docs.state()[1].reported).toBeNull();
   });
@@ -643,8 +648,8 @@ describe('main\'s prompts in the document', () => {
     env.docs.send(1, CHANNELS.PROMPT, prompt());
     expect(view.visible).toBe(true);
     expect(contents.focused).toBe(true);
-    expect(contents.sent).toEqual([[CHANNELS.PROMPT, prompt()]]);
-    expect(env.docs.state()[1]).toMatchObject({ visible: true, shown: HANDLE });
+    expect(contents.sent).toEqual([[CHANNELS.PROMPT, delivered(1)]]);
+    expect(env.docs.state()[1]).toMatchObject({ visible: true, shown: HANDLE, revision: 1 });
 
     // Another handle's hidden: ignored.
     env.docs.send(1, CHANNELS.HIDDEN, { handle: OTHER_HANDLE });
@@ -671,7 +676,7 @@ describe('main\'s prompts in the document', () => {
     env.docs.ready(eventFrom(contents));
     expect(contents.sent).toEqual([
       [CHANNELS.THEME, { theme: 'dark' }],
-      [CHANNELS.PROMPT, prompt()],
+      [CHANNELS.PROMPT, delivered(1)],
     ]);
   });
 
@@ -680,13 +685,14 @@ describe('main\'s prompts in the document', () => {
     const { contents } = attached(env);
     expect(env.docs.reshow(1)).toBe(false);
     env.docs.send(1, CHANNELS.PROMPT, prompt());
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     expect(env.docs.reshow(1)).toBe(true);
-    expect(contents.sent.at(-1)).toEqual([CHANNELS.PROMPT, prompt()]);
+    // The same delivery: the revision the document rendered stays.
+    expect(contents.sent.at(-1)).toEqual([CHANNELS.PROMPT, delivered(1)]);
     expect(env.docs.state()[1].reported).toBeNull();
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'not-reported' });
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
     expect(env.docs.reshow(2)).toBe(false);
   });
@@ -706,8 +712,11 @@ describe('main\'s prompts in the document', () => {
     expect(outgoingPrompt(prompt(HANDLE, { n: 1n }))).not.toHaveProperty('parts');
     const fits = { title: 'x'.repeat(MAX_VIEW_BYTES - 20) };
     expect(outgoingPrompt(prompt(HANDLE, fits)).view).toBe(fits);
-    // Only the prompt's own fields.
-    expect(Object.keys(outgoingPrompt({ ...prompt(), extra: 1 }))).toEqual(['handle', 'guest', 'kind', 'site', 'view']);
+    // Only the prompt's own fields, and the delivery's revision.
+    expect(Object.keys(outgoingPrompt({ ...prompt(), extra: 1 }))).toEqual(['handle', 'revision', 'guest', 'kind', 'site', 'view']);
+    expect(outgoingPrompt(prompt(), 7).revision).toBe(7);
+    // Over 4 MiB: no view, and still a revision the fixed error is reported for.
+    expect(outgoingPrompt(prompt(HANDLE, { title: 'x'.repeat(MAX_PARTED_VIEW_BYTES) }), 9)).toEqual(delivered(9, HANDLE, null));
   });
 
   test('registers the document\'s channels and the chrome\'s anchor', () => {
@@ -733,9 +742,10 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     const message = outgoingPrompt(prompt(HANDLE, view));
     const json = JSON.stringify(view);
     expect(message.view).toBeNull();
-    expect(message.parts).toEqual({ count: Math.ceil(json.length / VIEW_PART_UNITS), length: json.length, revision: 1 });
-    expect(outgoingPrompt(prompt(HANDLE, view), 7).parts.revision).toBe(7);
-    expect(Object.keys(message)).toEqual(['handle', 'guest', 'kind', 'site', 'view', 'parts']);
+    expect(message.parts).toEqual({ count: Math.ceil(json.length / VIEW_PART_UNITS), length: json.length });
+    expect(message.revision).toBe(1);
+    expect(outgoingPrompt(prompt(HANDLE, view), 7).revision).toBe(7);
+    expect(Object.keys(message)).toEqual(['handle', 'revision', 'guest', 'kind', 'site', 'view', 'parts']);
     const parts = viewParts(json);
     expect(parts.join('')).toBe(json);
     for (const piece of parts) expect(Buffer.byteLength(piece, 'utf8')).toBeLessThanOrEqual(MAX_VIEW_BYTES);
@@ -779,11 +789,11 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     expect(part(env, contents, 0.5)).toEqual({ ok: false, reason: 'invalid' });
     expect(env.docs.viewPart(eventFrom(contents), null)).toEqual({ ok: false, reason: 'invalid' });
     expect(env.docs.viewPart(eventFrom(contents), { handle: HANDLE, index: 0 })).toEqual({ ok: false, reason: 'invalid' });
-    expect(part(env, contents, 0, HANDLE, sent.parts.revision + 1)).toEqual({ ok: false, reason: 'stale' });
+    expect(part(env, contents, 0, HANDLE, sent.revision + 1)).toEqual({ ok: false, reason: 'stale' });
     expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'not-shown' });
     // Another window's document, the chrome, a sub-frame.
     expect(part(env, two.contents, 0)).toEqual({ ok: false, reason: 'not-shown' });
-    const revision = sent.parts.revision;
+    const revision = sent.revision;
     expect(env.docs.viewPart({ sender: { id: 501 }, senderFrame: {} }, { handle: HANDLE, revision, index: 0 })).toEqual({
       ok: false,
       reason: 'not-the-view',
@@ -793,7 +803,7 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     );
     // A view within one message has no parts.
     env.docs.send(1, CHANNELS.PROMPT, prompt(OTHER_HANDLE));
-    expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'not-shown' });
+    expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'invalid' });
     // Hidden, or closed: nothing more, and main lets the parts go.
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
     env.docs.send(1, CHANNELS.HIDDEN, { handle: HANDLE });
@@ -813,9 +823,9 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     const view = { account: { index: 1, name: 'Ledger', address: null, type: 'ledger' }, data: `0x${'ab'.repeat(200 * 1024)}` };
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'not-reported' });
-    // A view in parts is reported for its revision.
+    // A report names its revision.
     expect(env.docs.shown(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: false, reason: 'not-shown' });
-    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: lastPrompt(contents).parts.revision });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: lastPrompt(contents).revision });
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
     env.advance(INPUT_DELAY_MS);
     const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
@@ -841,12 +851,12 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     expect(hybrid.message).toMatch(/^a+b+$/);
 
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, viewA));
-    const a = lastPrompt(contents).parts.revision;
+    const a = lastPrompt(contents).revision;
     expect(part(env, contents, 0, HANDLE, a)).toEqual({ ok: true, part: partsA[0] });
     // The prompt's view changes, the handle stays: a new revision.
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, viewB));
     const sentB = lastPrompt(contents);
-    const b = sentB.parts.revision;
+    const b = sentB.revision;
     expect(b).toBeGreaterThan(a);
     expect(sentB.parts.count).toBe(partsB.length);
     // Nothing of B, or of A, for a read of A: every index is stale.
@@ -868,7 +878,7 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     // B, read whole for its own revision, is B; sent again as it is (a
     // document that loads afresh), it keeps its revision.
     expect(env.docs.reshow(1)).toBe(true);
-    expect(lastPrompt(contents).parts.revision).toBe(b);
+    expect(lastPrompt(contents).revision).toBe(b);
     const pieces = partsB.map((_piece, index) => part(env, contents, index, HANDLE, b));
     expect(pieces.every((answer) => answer.ok === true)).toBe(true);
     expect(JSON.parse(pieces.map((answer) => answer.part).join(''))).toEqual(viewB);
@@ -876,6 +886,103 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     expect(env.docs.state()[1]).toMatchObject({ reported: HANDLE, revision: b });
     env.advance(INPUT_DELAY_MS);
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: true });
+  });
+
+  // Codex, #1216 round 2: the revision binds every delivery, not only a
+  // view in parts. Main installs B under A's handle; B's message is still on
+  // its way when the document, showing A, reports it again (the panel moved,
+  // say) or reads on.
+  test('an inline view replaced by an inline one under the same handle: A\'s late report never counts for B', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, { ...VIEW, title: 'A' }));
+    const a = sentRevision(contents);
+    expect(Number.isInteger(a)).toBe(true);
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: a })).toEqual({ ok: true });
+    env.advance(INPUT_DELAY_MS);
+    // B goes in under the same handle, inline too.
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, { ...VIEW, title: 'B' }));
+    const b = sentRevision(contents);
+    expect(b).toBeGreaterThan(a);
+    expect(env.docs.state()[1]).toMatchObject({ shown: HANDLE, parts: 0, revision: b, reported: null });
+    // The document, still showing A, reports it: nothing counts, with or
+    // without a revision, or with one main never sent.
+    for (const revision of [a, undefined, null, String(b), b + 1]) {
+      expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision })).toEqual({ ok: false, reason: 'not-shown' });
+    }
+    expect(env.trace.filter((e) => e.kind === 'shown-ignored').map((e) => e.revision)).toEqual([a, undefined, null, String(b), b + 1]);
+    expect(env.docs.state()[1].reported).toBeNull();
+    env.advance(INPUT_DELAY_MS);
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({
+      ok: false,
+      reason: 'not-reported',
+    });
+    // B rendered and reported for its own revision: it counts, after its delay.
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: b })).toEqual({ ok: true });
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
+    env.advance(INPUT_DELAY_MS);
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: true });
+  });
+
+  test('a view in parts replaced by an inline one under the same handle: A\'s read is stale, its report counts for nothing', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    const viewA = big(300 * 1024, 'a');
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, viewA));
+    const a = sentRevision(contents);
+    expect(part(env, contents, 0, HANDLE, a).ok).toBe(true);
+    // B, inline, under the same handle: main keeps no parts now.
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, { ...VIEW, title: 'B' }));
+    const b = sentRevision(contents);
+    expect(b).toBeGreaterThan(a);
+    expect(env.docs.state()[1]).toMatchObject({ parts: 0, revision: b });
+    // A's next reads are stale, not `not-shown`: the document drops the load
+    // rather than show (and report) A's fixed error.
+    for (const index of [0, 1, 2]) {
+      expect(part(env, contents, index, HANDLE, a)).toEqual({ ok: false, reason: 'stale' });
+    }
+    expect(env.trace.filter((e) => e.kind === 'view-part-stale').map((e) => [e.revision, e.index])).toEqual([
+      [a, 0],
+      [a, 1],
+      [a, 2],
+    ]);
+    // Had the document shown A's fixed error anyway, its report would not
+    // count for B.
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: a })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.state()[1].reported).toBeNull();
+    // B's own revision asks for a part of a view that came whole: nothing.
+    expect(part(env, contents, 0, HANDLE, b)).toEqual({ ok: false, reason: 'invalid' });
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: b })).toEqual({ ok: true });
+  });
+
+  test('an inline view replaced by one in parts under the same handle: A\'s report doesn\'t count while B loads', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, { ...VIEW, title: 'A' }));
+    const a = sentRevision(contents);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, big(300 * 1024, 'b')));
+    const b = sentRevision(contents);
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: a })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(part(env, contents, 0, HANDLE, a)).toEqual({ ok: false, reason: 'stale' });
+    expect(part(env, contents, 0, HANDLE, b).ok).toBe(true);
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: b })).toEqual({ ok: true });
+  });
+
+  test('every delivery\'s revision is new: shown again after hiding, or in another window', () => {
+    const env = setup();
+    const one = attached(env, 1);
+    const two = attached(env, 2);
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    const first = sentRevision(one.contents);
+    env.docs.send(1, CHANNELS.HIDDEN, { handle: HANDLE });
+    expect(env.docs.shown(eventFrom(one.contents), { handle: HANDLE, revision: first })).toEqual({ ok: false, reason: 'not-shown' });
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    const second = sentRevision(one.contents);
+    env.docs.send(2, CHANNELS.PROMPT, prompt(OTHER_HANDLE));
+    const third = sentRevision(two.contents);
+    expect(new Set([first, second, third]).size).toBe(3);
+    expect(env.docs.shown(eventFrom(one.contents), { handle: HANDLE, revision: first })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.shown(eventFrom(one.contents), { handle: HANDLE, revision: second })).toEqual({ ok: true });
   });
 
   test('a reject while a view in parts loads needs no report', async () => {
@@ -930,7 +1037,7 @@ class Guest extends EventEmitter {
   }
 }
 
-function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null } = {}) {
+function withPageRequests({ flag = true, testPrompts = true, dispatch = null, unlockVault = null, promptBudgets = null } = {}) {
   const env = setup();
   const guests = new Map();
   const toChrome = [];
@@ -968,6 +1075,7 @@ function withPageRequests({ flag = true, testPrompts = true, dispatch = null, un
     },
     approvals: flag ? env.docs : null,
     ...(unlockVault ? { unlockVault } : {}),
+    ...(promptBudgets ? { promptBudgets } : {}),
   });
   env.decide.mockImplementation((windowId, payload) => requests.decideInWindow(windowId, payload));
 
@@ -1003,7 +1111,7 @@ describe('the flag on, with main\'s page prompts (page-requests.js)', () => {
     await flush();
     const [[channel, shown]] = contents.sent;
     expect(channel).toBe(CHANNELS.PROMPT);
-    expect(shown).toEqual({ handle: expect.stringMatching(/^[0-9a-f]{64}$/), guest: page.guest.id, kind: 'test.prompt', site: { key: KEY, label: KEY }, view: VIEW });
+    expect(shown).toEqual({ handle: expect.stringMatching(/^[0-9a-f]{64}$/), revision: 1, guest: page.guest.id, kind: 'test.prompt', site: { key: KEY, label: KEY }, view: VIEW });
     // The chrome: the badge, not the prompt.
     expect(env.chromeChannels()).toEqual(['page:prompt-pending']);
 
@@ -1015,7 +1123,7 @@ describe('the flag on, with main\'s page prompts (page-requests.js)', () => {
     expect(env.requests.promptState()[1].shown).toBe(shown.handle);
 
     // The document's, after its report and the delay.
-    env.docs.shown(eventFrom(contents), { handle: shown.handle });
+    env.docs.shown(eventFrom(contents), { handle: shown.handle, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true })).toEqual({ ok: true });
     expect(await answer).toEqual({ result: 'approved' });
@@ -1051,7 +1159,7 @@ describe('the flag on, with main\'s page prompts (page-requests.js)', () => {
     const changed = { ...VIEW, title: 'Changed' };
     expect(env.contexts[0].updatePrompt(changed)).toBe(true);
     expect(contents.sent.at(-1)).toEqual([CHANNELS.PROMPT, expect.objectContaining({ handle, view: changed })]);
-    env.docs.shown(eventFrom(contents), { handle });
+    env.docs.shown(eventFrom(contents), { handle, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     await env.docs.decide(eventFrom(contents), { handle, approve: false });
     await flush();
@@ -1124,7 +1232,7 @@ describe('APS-3b: the Safe boards show in the document, the chrome decides none,
         ok: false,
         reason: 'approvals-document',
       });
-      env.docs.shown(eventFrom(contents), { handle: shown.handle });
+      env.docs.shown(eventFrom(contents), { handle: shown.handle, revision: sentRevision(contents) });
       env.advance(INPUT_DELAY_MS);
       // Answered once the request is (no `released` here).
       pending.push(env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false }));
@@ -1159,7 +1267,7 @@ describe('APS-3b: the Safe boards show in the document, the chrome decides none,
     await flush();
     for (let i = 0; i < 3; i += 1) {
       const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1].handle;
-      env.docs.shown(eventFrom(contents), { handle: shown });
+      env.docs.shown(eventFrom(contents), { handle: shown, revision: sentRevision(contents) });
       env.advance(INPUT_DELAY_MS);
       env.docs.decide(eventFrom(contents), { handle: shown, approve: true });
       await flush();
@@ -1182,7 +1290,7 @@ describe('APS-3: an approval for a device\'s account keeps the panel up while it
     let answer;
     env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, deviceView('ledger')));
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
     expect(env.docs.state()[1].waiting).toBe('ledger');
@@ -1202,7 +1310,7 @@ describe('APS-3: an approval for a device\'s account keeps the panel up while it
     let answer;
     env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, deviceView('mnemonic')));
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
     env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
@@ -1211,7 +1319,7 @@ describe('APS-3: an approval for a device\'s account keeps the panel up while it
     await decided;
 
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, deviceView('remote')));
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     const rejected = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: false });
     expect(env.docs.state()[1].waiting).toBeNull();
@@ -1221,7 +1329,7 @@ describe('APS-3: an approval for a device\'s account keeps the panel up while it
     await rejected;
 
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, deviceView('remote')));
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     const first = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
     env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
@@ -1244,6 +1352,7 @@ describe('APS-3: the window\'s own prompts', () => {
     expect(channel).toBe(CHANNELS.PROMPT);
     expect(shown).toEqual({
       handle: expect.stringMatching(/^[0-9a-f]{64}$/),
+      revision: 1,
       guest: null,
       kind: 'wallet.send',
       site: { key: 'freedom:wallet', label: 'Your wallet' },
@@ -1255,7 +1364,7 @@ describe('APS-3: the window\'s own prompts', () => {
       ok: false,
       reason: 'approvals-document',
     });
-    env.docs.shown(eventFrom(contents), { handle: shown.handle });
+    env.docs.shown(eventFrom(contents), { handle: shown.handle, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     // Answered: a window's prompt has no request (Codex, #1210).
     expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true })).toEqual({ ok: true });
@@ -1269,7 +1378,7 @@ describe('APS-3: the window\'s own prompts', () => {
     const waiting = env.requests.walletPrompt(1, { kind: 'wallet.send', view: {} });
     await flush();
     expect(env.docs.state()[1].shown).toBe(pageHandle);
-    env.docs.shown(eventFrom(contents), { handle: pageHandle });
+    env.docs.shown(eventFrom(contents), { handle: pageHandle, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     await env.docs.decide(eventFrom(contents), { handle: pageHandle, approve: false });
     await flush();
@@ -1331,7 +1440,7 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
     await flush();
     const [channel, shown] = contents.sent.at(-1);
     expect(channel).toBe(CHANNELS.PROMPT);
-    env.docs.shown(eventFrom(contents), { handle: shown.handle });
+    env.docs.shown(eventFrom(contents), { handle: shown.handle, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     return shown;
   }
@@ -1465,6 +1574,136 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
   });
 });
 
+// Codex, freedom-core #335: a window's own prompts have no request record,
+// so nothing bounded them; a compromised chrome could leave any number of
+// large views (and the requests behind them) waiting. Every open prompt's
+// view, and a window's own prompt's request, are charged to its window and
+// the browser (0011, "Prompt views").
+describe('the prompt budget, through wallet:confirm-signing and a page\'s prompts', () => {
+  const ACCOUNT = '0x1111111111111111111111111111111111111111';
+  const TO = '0x2222222222222222222222222222222222222222';
+  const WALLETS = [{ index: 0, name: 'Main Wallet', address: ACCOUNT, type: 'mnemonic' }];
+  const SEND = { chainId: 100, to: TO, value: '1', data: '0x', gasLimit: '21000', gasPrice: '1000000000' };
+  const MiB = 1024 * 1024;
+
+  const confirmations = (env) =>
+    createWalletApprovals({
+      walletPrompt: (windowId, spec) => env.requests.walletPrompt(windowId, spec),
+      chromeWindowOf: (contents) => (contents?.id >= 500 && contents.id < 600 ? contents.id - 500 : null),
+      getDerivedWallets: async () => WALLETS,
+    });
+
+  test('many concurrent confirmations from one window: past its 64 open prompts each is refused, nothing asked or minted', async () => {
+    const env = withPageRequests();
+    const { contents } = attached(env);
+    const approvals = confirmations(env);
+    const mint = jest.fn(() => ({ token: 'token' }));
+    const outcomes = new Array(80).fill(null);
+    for (let i = 0; i < outcomes.length; i += 1) {
+      approvals.confirm({ sender: { id: 501 }, kind: 'wallet-send', index: 0, payload: SEND }, mint).then((outcome) => {
+        outcomes[i] = outcome;
+      });
+    }
+    await flush();
+    // The first 64 wait in the window; the other 16 are answered at once.
+    expect(outcomes.filter((outcome) => outcome === null)).toHaveLength(64);
+    expect(outcomes.filter((outcome) => outcome === LIMITED)).toHaveLength(16);
+    expect(LIMITED).toMatchObject({ approved: false, code: 'LIMIT_EXCEEDED' });
+    expect(env.requests.promptState()[1].open).toHaveLength(64);
+    expect(env.requests.promptUsage()).toMatchObject({ count: 64, windows: { 1: { count: 64 } } });
+    expect(env.chromeChannels().filter((c) => c === 'page:prompt-pending')).toHaveLength(64);
+    expect(mint).not.toHaveBeenCalled();
+    // One rejected: its charge goes, and the next confirmation is asked.
+    const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false })).toEqual({ ok: true });
+    await flush();
+    expect(env.requests.promptUsage().count).toBe(63);
+    let next = null;
+    approvals.confirm({ sender: { id: 501 }, kind: 'wallet-send', index: 0, payload: SEND }, mint).then((outcome) => (next = outcome));
+    await flush();
+    expect(next).toBeNull();
+    expect(env.requests.promptUsage().count).toBe(64);
+    // The window closes: every one of its own prompts closes, and lets go.
+    env.closeWindow(1);
+    await flush();
+    expect(outcomes.filter((outcome) => outcome === null)).toHaveLength(0);
+    expect(next).toEqual(REJECTED);
+    expect(env.requests.promptUsage()).toEqual({ count: 0, bytes: 0, windows: {} });
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  test('large requests, from three windows: past a window\'s 8 MiB, or the browser\'s 16 MiB, refused; the request is charged with its view', async () => {
+    const env = withPageRequests();
+    for (const id of [1, 2, 3]) attached(env, id);
+    const approvals = confirmations(env);
+    // A send whose data is 1 MiB of hex: about 1 MiB in the view, and 1 MiB
+    // more in the request main keeps while the prompt waits.
+    const large = { ...SEND, data: `0x${'ab'.repeat(MiB / 2)}` };
+    const ask = (window) => {
+      const state = { outcome: null };
+      approvals.confirm({ sender: { id: 500 + window }, kind: 'wallet-send', index: 0, payload: large }, () => ({})).then((outcome) => {
+        state.outcome = outcome;
+      });
+      return state;
+    };
+    const one = ask(1);
+    await flush();
+    const each = env.requests.promptUsage().bytes;
+    expect(each).toBeGreaterThan(2 * MiB);
+    expect(each).toBeLessThan(2 * MiB + 4096);
+    const perWindow = Math.floor((8 * MiB) / each);
+    expect(perWindow).toBe(3);
+    const asked = [one];
+    for (let i = 1; i < perWindow + 2; i += 1) asked.push(ask(1));
+    await flush();
+    expect(asked.map((state) => state.outcome === LIMITED)).toEqual([false, false, false, true, true]);
+    expect(env.requests.promptUsage().windows[1]).toEqual({ count: 3, bytes: 3 * each });
+    // Window 2 has its own 8 MiB; the browser's 16 MiB then leaves window
+    // 3 room for one.
+    const two = [ask(2), ask(2), ask(2)];
+    const three = [ask(3), ask(3)];
+    await flush();
+    expect(two.map((state) => state.outcome)).toEqual([null, null, null]);
+    expect(three.map((state) => state.outcome === LIMITED)).toEqual([false, true]);
+    expect(env.requests.promptUsage()).toMatchObject({ count: 7, bytes: 7 * each });
+    expect(env.requests.promptUsage().bytes).toBeLessThanOrEqual(16 * MiB);
+  });
+
+  test('a page\'s prompt past the budget: the page gets -32005, and no handle opens', async () => {
+    // As every dispatcher does, a prompt's `{ error }` answers the page.
+    const dispatch = async (context) => {
+      const decision = await context.prompt({ kind: 'test.prompt', view: context.params.view });
+      if (decision.error) return { error: decision.error };
+      return decision.approve === true ? { result: 'approved' } : { error: { code: 4001, message: 'User rejected the request' } };
+    };
+    const env = withPageRequests({ dispatch, promptBudgets: { window: { count: 1, bytes: MiB }, browser: { count: 4, bytes: 4 * MiB } } });
+    const { contents } = attached(env);
+    const firstTab = env.tab();
+    const first = firstTab.ask(VIEW);
+    await flush();
+    expect(env.requests.promptState()[1].open).toHaveLength(1);
+    const second = await env.tab().ask(VIEW);
+    expect(second).toEqual({ error: { code: -32005, message: 'Limit exceeded' } });
+    expect(env.requests.promptState()[1].open).toHaveLength(1);
+    expect(env.requests.stats().handles).toBe(1);
+    expect(env.chromeChannels().filter((c) => c === 'page:prompt-pending')).toHaveLength(1);
+    // A window's own prompt is refused there too, with `-32005`.
+    expect(await env.requests.walletPrompt(1, { kind: 'wallet.send', view: VIEW })).toEqual({
+      error: { code: -32005, message: 'Limit exceeded' },
+    });
+    // The first rejected: its charge goes, and the next page's prompt opens.
+    env.requests.foreground({ sender: { id: 501 } }, { guest: firstTab.guest.id });
+    const handle = env.requests.promptState()[1].shown;
+    expect(handle).toEqual(expect.any(String));
+    expect(await env.docs.decide(eventFrom(contents), { handle, approve: false })).toEqual({ ok: true });
+    expect(await first).toEqual({ error: { code: 4001, message: 'User rejected the request' } });
+    expect(env.requests.promptUsage()).toEqual({ count: 0, bytes: 0, windows: {} });
+    env.tab().ask(VIEW);
+    await flush();
+    expect(env.requests.promptUsage().count).toBe(1);
+  });
+});
+
 describe('APS-3b: a board\'s approval to sign with a device owner keeps the panel up while main signs', () => {
   const owners = [
     { index: 1, type: 'ledger', signed: false },
@@ -1489,7 +1728,7 @@ describe('APS-3b: a board\'s approval to sign with a device owner keeps the pane
     let answer;
     env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
     env.docs.send(1, CHANNELS.PROMPT, board(kind));
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: sentRevision(contents) });
     env.advance(INPUT_DELAY_MS);
     const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true, ...(choices ? { choices } : {}) });
     expect(env.docs.state()[1].waiting).toBe(device);
@@ -1514,7 +1753,7 @@ describe('APS-3b: a window\'s own vault unlock, for the wallet\'s Safe board', (
     const unlocked = env.requests.walletUnlock(1, { reason: 'send' });
     const decideShown = async (choices) => {
       const shown = contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
-      env.docs.shown(eventFrom(contents), { handle: shown.handle });
+      env.docs.shown(eventFrom(contents), { handle: shown.handle, revision: sentRevision(contents) });
       env.advance(INPUT_DELAY_MS);
       const answer = await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true, choices });
       await flush();

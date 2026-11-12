@@ -37,9 +37,8 @@ test('unavailable Agent rejects every request safely while preserving chrome own
   expect(ipcMain.handlers.size).toBe(requestChannels.length);
   expect(ipcMain.handlers.has(IPC.AGENT_EVENT)).toBe(false);
   expect(ipcMain.handlers.has(IPC.AGENT_PROVIDER_AUTH_EVENT)).toBe(false);
-  for (const [channel, handler] of ipcMain.handlers) {
-    if (channel === IPC.AGENT_WALLET_REQUEST) expect(await handler({ sender })).toEqual({ handled: false });
-    else expect(await handler({ sender })).toMatchObject({
+  for (const handler of ipcMain.handlers.values()) {
+    expect(await handler({ sender })).toMatchObject({
       ok: false, error: { code: 'AGENT_STORAGE_UNAVAILABLE', message: expect.stringContaining('Restart Freedom') },
     });
     expect(await handler({ sender: createSender() })).toMatchObject({
@@ -95,7 +94,6 @@ function createService(options = {}) {
     revokeAttachment: options.revokeAttachment || jest.fn(async () => null),
     deleteConversation: options.deleteConversation || jest.fn(async () => false),
     decideApproval: options.decideApproval || jest.fn(async () => true),
-    handleWalletRequest: options.handleWalletRequest || jest.fn(async () => ({ handled: false })),
     getState: jest.fn(() => ({
       status: 'running',
       conversationId: 'conversation_test',
@@ -1059,25 +1057,12 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.decideApproval).toHaveBeenCalledWith('run_test', 'approval_test', true);
   });
 
-  test('routes only trusted, exactly bound wallet requests to the active Agent service', async () => {
+  // A page's wallet request reaches the Agent service only through main's
+  // attestation (runtime.js `handlePageWalletRequest`; freedom-core design
+  // 0011): the chrome's old route, which named the tab itself, is gone.
+  test('registers no chrome route for a page wallet request', () => {
     const ctx = register();
-    const handleWallet = ctx.ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST);
-    const request = { method: 'eth_requestAccounts', chainId: 100 };
-
-    await expect(
-      handleWallet({ sender: ctx.otherSender }, { rendererTabId: 7, request })
-    ).resolves.toEqual({ handled: false });
-    expect(ctx.service.handleWalletRequest).not.toHaveBeenCalled();
-
-    await expect(
-      handleWallet({ sender: ctx.sender }, { rendererTabId: 99, request })
-    ).resolves.toEqual({ handled: false });
-    expect(ctx.service.handleWalletRequest).not.toHaveBeenCalled();
-
-    await expect(
-      handleWallet({ sender: ctx.sender }, { rendererTabId: 7, request })
-    ).resolves.toEqual({ handled: false });
-    expect(ctx.service.handleWalletRequest).toHaveBeenCalledWith('tab_bound', request);
+    expect(ctx.ipcMain.handlers.has('agent:wallet:request')).toBe(false);
   });
 
   test('passes an approved Agent wallet account choice as bounded decision data', async () => {

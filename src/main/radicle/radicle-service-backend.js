@@ -68,6 +68,23 @@
  *   - The service's own end of a clone, its deadline (`deadline`) or its
  *     stop (`stopped`), is an error, as any other of the service's.
  *
+ * - **The writes** (0008, Methods `rad.write` and `rad.unseed`, Writes):
+ *   `write(op, args)`, today's four COB writes by op (`create_issue`,
+ *   `comment_issue`, `edit_issue_state`, `comment_patch`) with today's
+ *   arguments by name, answers today's result, `{ id }`, or `{ id, state }`
+ *   for `edit_issue_state`; `unseed(rid)` answers `{ unseeded }`.
+ *   - **The generation is picked at the call,** synchronously: the one
+ *     running then, whose identity cob-service.js has just checked in the
+ *     same run (`needs_vault`). The write goes there and to no other, after
+ *     its wait for one of the other callers' slots: if that generation has
+ *     ended meanwhile, nothing is sent (`stopped`), even if another runs by
+ *     then. One whose key is a throwaway one is refused `needs_vault` for
+ *     a COB write, before anything is sent.
+ *   - **Only a success is proven:** a write the process took and ended
+ *     otherwise than with one of its refusals, a crash with it in flight
+ *     included, is `outcome_unknown` (radicled-node.js), and so is a
+ *     success main can't read. Main never sends a write again.
+ *
  * Every failure carries the service's code, or main's: `stopped` with no
  * node running, `busy`, `too_large`, `cancelled`, and `internal` for a
  * reply main can't read as the design says.
@@ -128,6 +145,19 @@ const MAX_WAITING = 64;
 
 const NOT_RUNNING = 'The Radicle node is not running';
 
+/** The COB writes' ops (0008, Methods `rad.write`), and whether each
+ * answers the state beside the ID. */
+const WRITE_OPS = Object.freeze({
+  create_issue: { state: false },
+  comment_issue: { state: false },
+  edit_issue_state: { state: true },
+  comment_patch: { state: false },
+});
+/** What a write whose outcome is unknown answers (0008, Writes): the
+ * provider's text for it too. */
+const OUTCOME_UNKNOWN_MESSAGE =
+  'The Radicle node stopped before confirming this write; it may have been recorded.';
+
 function cancelled() {
   return new CoreError('cancelled', 'Cancelled');
 }
@@ -149,6 +179,22 @@ function badNetworkReply(method) {
     'internal',
     `freedom-radicled answered ${method} with a result main can't read`
   );
+}
+
+/** A success main can't read: the write may well have been made. */
+function unreadableWrite() {
+  return new CoreError('outcome_unknown', OUTCOME_UNKNOWN_MESSAGE);
+}
+
+/** A COB write's result as the add-on gave it: `{ id }`, or `{ id, state }`
+ * for `edit_issue_state`; any other is `outcome_unknown`. */
+function writeOutcome(op, result) {
+  if (!isObject(result) || typeof result.id !== 'string' || result.id === '') {
+    throw unreadableWrite();
+  }
+  if (!WRITE_OPS[op].state) return { id: result.id };
+  if (typeof result.state !== 'string') throw unreadableWrite();
+  return { id: result.id, state: result.state };
 }
 
 /** A clone's answer as the add-on gave it: `{ ok: true }` or `{ cancelled:
@@ -586,6 +632,64 @@ class RadicleServiceBackend {
     if (cancels.size === 0) this.clones.delete(rid);
   }
 
+  /**
+   * A COB write, `rad.write { op, args }` (see the module's doc): today's
+   * result, or the service's error, `outcome_unknown` for one whose outcome
+   * main can't know. The generation is picked before this returns.
+   */
+  write(op, args) {
+    if (!Object.hasOwn(WRITE_OPS, op)) {
+      return Promise.reject(new CoreError('invalid_argument', `${op} isn't a Radicle write`));
+    }
+    const picked = this.pick({ cob: true });
+    return this.onTarget(picked, async (node, target) =>
+      writeOutcome(op, await node.write(target, op, args))
+    );
+  }
+
+  /** `rad.unseed { rid }` (see the module's doc): `{ unseeded }`. The
+   * generation is picked before this returns; any throwaway key unseeds. */
+  unseed(rid) {
+    const picked = this.pick({ cob: false });
+    return this.onTarget(picked, async (node, target) => {
+      const result = await node.unseed(target, rid);
+      if (!isObject(result) || typeof result.unseeded !== 'boolean') throw unreadableWrite();
+      return { unseeded: result.unseeded };
+    });
+  }
+
+  /**
+   * The generation a write goes to, now: `{ node, target }`, or the error
+   * that refuses it before anything is sent: `stopped` with none running,
+   * and for a COB write (`cob`) `needs_vault` on a throwaway key.
+   */
+  pick({ cob }) {
+    const node = this.node();
+    const target = node?.writeTarget() ?? null;
+    if (!target) return { error: new CoreError('stopped', NOT_RUNNING) };
+    if (cob && target.identity?.ephemeral === true) {
+      return {
+        error: new CoreError(
+          'needs_vault',
+          'The Radicle node runs with a throwaway key: publishing needs a vault'
+        ),
+      };
+    }
+    return { node, target };
+  }
+
+  /** `work(node, target)` on the picked generation, once one of the other
+   * callers' slots is free, holding it until the work settles. */
+  async onTarget(picked, work) {
+    if (picked.error) throw picked.error;
+    const release = await this.slots.take();
+    try {
+      return await work(picked.node, picked.target);
+    } finally {
+      release();
+    }
+  }
+
   /** `work(node)` on the running node, holding one of the other callers'
    * slots until it settles; `signal` gives up the wait for one. */
   async withSlot(signal, work) {
@@ -660,6 +764,8 @@ module.exports = {
   KEEP_BYTES,
   MAX_OUTSTANDING,
   MAX_WAITING,
+  WRITE_OPS,
+  OUTCOME_UNKNOWN_MESSAGE,
   // How a collected body is decoded, for the heap measurement.
   readText,
 };

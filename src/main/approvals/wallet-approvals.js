@@ -48,6 +48,13 @@ const PROMPT_KINDS = Object.freeze({
 
 const REJECTED = Object.freeze({ approved: false, error: 'User rejected the request', code: 'USER_REJECTED' });
 const NO_WINDOW = Object.freeze({ approved: false, error: 'This window has no approvals document', code: 'NO_WINDOW' });
+// Past the prompt budget (0011, "Prompt views"): nothing is asked, and no
+// token minted.
+const LIMITED = Object.freeze({
+  approved: false,
+  error: 'Too many approvals are waiting in the panel',
+  code: 'LIMIT_EXCEEDED',
+});
 const NO_ACCOUNT = Object.freeze({
   approved: false,
   error: "This request's account isn't in the wallet",
@@ -377,7 +384,7 @@ function createWalletApprovals({
    * `{ approved: true, ...onApproved() }` only on their approval there, the
    * fee confirmed again when it is above the threshold at the press; with
    * a refusal, and nothing asked, for an index-bound kind whose account
-   * main can't show.
+   * main can't show, or when the prompt budget is full (`LIMITED`).
    *
    * Each prompt's decision is released (`page-requests.js` `walletPrompt`)
    * once what it started is done: a rejection at once, an approval whose
@@ -421,7 +428,11 @@ function createWalletApprovals({
           view,
           choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
           released,
+          // The chrome's request, kept here while the prompt waits: charged
+          // to the prompt budget with its view.
+          holds: payload,
         });
+        if (decision?.error) return LIMITED;
         if (decision?.approve !== true) return REJECTED;
         if (feeChecked) {
           // The fee at the press (design 0005, A): above the threshold and
@@ -483,4 +494,4 @@ function getWalletApprovals() {
   return shared;
 }
 
-module.exports = { PROMPT_KINDS, REJECTED, NO_ACCOUNT, createWalletApprovals, getWalletApprovals, transferOf };
+module.exports = { PROMPT_KINDS, REJECTED, LIMITED, NO_ACCOUNT, createWalletApprovals, getWalletApprovals, transferOf };

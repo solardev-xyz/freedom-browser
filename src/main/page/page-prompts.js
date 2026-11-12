@@ -32,7 +32,23 @@
  * A prompt that shows has no deadline from then on, hidden again or not
  * (`page-requests.js` `markShown`). One that never showed closes at its
  * method's deadline (`expired`), and nothing shows it after.
+ *
+ * Every open prompt's view is charged to its window and to the browser
+ * (0011, "Bounds": "Prompt views"), a page's prompt and the window's own
+ * alike, so what main keeps for prompts nobody has answered is bounded
+ * whoever opens them. A view is charged at the UTF-8 bytes of its JSON, as
+ * the approvals document measures it, and a window's own prompt (the
+ * wallet's, which has no request record and so no request charge) also at
+ * the request it answers, which its caller holds while it waits. A prompt
+ * that doesn't fit is never opened (`admit`): the caller gets `-32005`.
+ * The charge is let go when the prompt closes, and moves with its view on
+ * `update`. A view over the 4 MiB the approvals document shows is charged in
+ * full but not kept: the prompt holds `null`, which shows the fixed error,
+ * and can only be rejected.
  */
+
+const { measurePageRequest } = require('../../shared/page-request-bounds');
+const { VALUE_BYTES } = require('./page-budgets');
 
 const CHANNELS = Object.freeze({
   PENDING: 'page:prompt-pending',
@@ -81,6 +97,47 @@ const WALLET_KINDS = new Set([
 
 const DECIDE_KEYS = new Set(['handle', 'approve', 'choices']);
 
+const MiB = 1024 * 1024;
+// Open prompts and the bytes of their views (and of the requests a
+// window's own prompts answer), per window and in the browser (0011, "The
+// numbers"). One view of the most the approvals document shows fits a
+// window twice and the browser four times; an honest view is a few KiB.
+const PROMPT_BUDGETS = Object.freeze({
+  window: Object.freeze({ count: 64, bytes: 8 * MiB }),
+  browser: Object.freeze({ count: 256, bytes: 16 * MiB }),
+});
+// The most of a view the approvals document shows (in parts, APS-4;
+// `approvals-document.js` MAX_PARTED_VIEW_BYTES). Over it, main keeps none.
+const MAX_SHOWN_VIEW_BYTES = 4 * MiB;
+const LIMIT_EXCEEDED = Object.freeze({ code: -32005, message: 'Limit exceeded' });
+
+/**
+ * A view's size: the UTF-8 bytes of its JSON, as the approvals document
+ * measures it. Infinity for one that can't be serialized, which is never
+ * admitted.
+ */
+function viewSize(view) {
+  try {
+    const json = JSON.stringify(view);
+    return typeof json === 'string' ? Buffer.byteLength(json, 'utf8') : 0;
+  } catch {
+    return Infinity;
+  }
+}
+
+/**
+ * What the request a window's own prompt answers is charged, as a page
+ * request is (0011, "The size and the charge"): its size by the page
+ * requests' walk, which stops past `max`, and 128 bytes for each value and
+ * property name, for their place in the heap. Infinity past `max`, or for
+ * a request the walk refuses.
+ */
+function heldSize(holds, max) {
+  if (holds === undefined) return 0;
+  const measured = measurePageRequest(holds, max);
+  return measured.ok ? measured.size + VALUE_BYTES * (measured.values + measured.names) : Infinity;
+}
+
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
@@ -102,12 +159,19 @@ function hasOnlyKeys(value, keys) {
  *   has shown: it has no deadline from now on.
  * @param {(entry: object) => void} options.decided close the entry's handle
  *   as decided (`page-requests.js`), which comes back here as `closed`.
+ * @param {(entry: object) => void} [options.cancel] close the entry's handle
+ *   as cancelled: its changed view doesn't fit the budget.
  * @param {(entry: object) => void} [options.trace]
+ * @param {{window: {count: number, bytes: number}, browser: {count: number, bytes: number}}} [options.budgets]
  */
-function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
+function createPagePrompts({ send, markShown, decided, cancel, trace = () => {}, budgets = PROMPT_BUDGETS }) {
   const windows = new Map(); // window id -> { front: guest id | null, shown: entry | null }
   const open = new Map(); // handle -> entry, in order of arrival
   let lastOrder = 0;
+  // What open prompts are charged: per window, and in the browser.
+  const charged = new Map(); // window id -> { count, bytes }
+  const total = { count: 0, bytes: 0 };
+  const cancelEntry = typeof cancel === 'function' ? cancel : (entry) => closed(entry.handle, 'cancelled');
 
   const windowState = (windowId) => {
     let state = windows.get(windowId);
@@ -160,6 +224,67 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     });
   }
 
+  const usageOf = (windowId) => charged.get(windowId) || { count: 0, bytes: 0 };
+
+  // Whether `bytes` more, and `count` more prompts, fit the window's and the
+  // browser's budgets.
+  const fits = (windowId, count, bytes) => {
+    const used = usageOf(windowId);
+    return (
+      Number.isFinite(bytes) &&
+      used.count + count <= budgets.window.count &&
+      used.bytes + bytes <= budgets.window.bytes &&
+      total.count + count <= budgets.browser.count &&
+      total.bytes + bytes <= budgets.browser.bytes
+    );
+  };
+
+  const take = (windowId, count, bytes) => {
+    const used = usageOf(windowId);
+    const next = { count: used.count + count, bytes: used.bytes + bytes };
+    if (next.count === 0 && next.bytes === 0) charged.delete(windowId);
+    else charged.set(windowId, next);
+    total.count += count;
+    total.bytes += bytes;
+  };
+
+  /**
+   * Room for a new prompt in window `windowId`: its view, and for a window's
+   * own prompt the request it answers (`holds`). Returns the charge, taken
+   * now, or null when the window's or the browser's budget is full, and
+   * nothing is held. The caller opens the prompt with it (`add`) at once,
+   * or lets it go (`release`).
+   */
+  function admit(windowId, { view, holds } = {}) {
+    const viewBytes = viewSize(view);
+    const heldBytes = heldSize(holds, budgets.window.bytes);
+    const bytes = viewBytes + heldBytes;
+    if (!fits(windowId, 1, bytes)) {
+      trace({ kind: 'prompt-over-budget', window: windowId, bytes: Number.isFinite(bytes) ? bytes : null, usage: usage() });
+      return null;
+    }
+    take(windowId, 1, bytes);
+    return { window: windowId, viewBytes, heldBytes, released: false };
+  }
+
+  /** Let a charge go: its prompt closed, or never opened. */
+  function release(charge) {
+    if (!charge || charge.released) return;
+    charge.released = true;
+    take(charge.window, -1, -(charge.viewBytes + charge.heldBytes));
+  }
+
+  // What the prompt keeps of a view: none of one over what the approvals
+  // document shows, whose fixed error needs nothing of it.
+  const kept = (view, viewBytes) => (viewBytes > MAX_SHOWN_VIEW_BYTES ? null : view);
+
+  /** For tests and diagnostics: what open prompts are charged. */
+  function usage() {
+    const out = { count: total.count, bytes: total.bytes, windows: {} };
+    for (const [windowId, used] of charged) out.windows[windowId] = { ...used };
+    return out;
+  }
+
   /** The open prompt's kind, or null. */
   function kindOf(handle) {
     return open.get(handle)?.kind ?? null;
@@ -179,8 +304,13 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
    * `released`, when given, settles once what the decision started is done
    * (a vault unlock's attempt), and the decision's invocation is answered
    * then rather than when its whole request is (`page-requests.js`).
+   *
+   * `charge` is the prompt's, from `admit`; without one it is admitted
+   * here. Returns null, and opens nothing, when it doesn't fit.
    */
-  function add({ handle, record, window: windowId, guest, document, kind, site, view, choices, released }) {
+  function add({ handle, record, window: windowId, guest, document, kind, site, view, choices, released, charge }) {
+    const taken = charge || admit(windowId, { view });
+    if (!taken) return null;
     let settle;
     const decision = new Promise((resolve) => {
       settle = resolve;
@@ -193,7 +323,8 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
       document,
       kind,
       site: Object.freeze({ key: site.key, label: site.label }),
-      view,
+      view: kept(view, taken.viewBytes),
+      charge: taken,
       choices: typeof choices === 'function' ? choices : () => ({}),
       order: ++lastOrder,
       shownOnce: false,
@@ -211,12 +342,24 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
   /**
    * The prompt's content changed (a dispatcher has more to show): it shows
    * again with the new view if it is the one shown, and the renderer
-   * restarts its input delay. Returns whether the handle was open.
+   * restarts its input delay. Its charge moves to the new view; a view that
+   * doesn't fit closes the prompt as cancelled. Returns whether the handle
+   * is open.
    */
   function update(handle, view) {
     const entry = open.get(handle);
     if (!entry) return false;
-    entry.view = view;
+    const { charge } = entry;
+    const viewBytes = viewSize(view);
+    const grows = Number.isFinite(viewBytes) ? viewBytes - charge.viewBytes : Infinity;
+    if (grows > 0 && !fits(entry.window, 0, grows)) {
+      trace({ kind: 'prompt-over-budget', window: entry.window, handle, bytes: Number.isFinite(viewBytes) ? viewBytes : null, usage: usage() });
+      cancelEntry(entry);
+      return false;
+    }
+    take(entry.window, 0, viewBytes - charge.viewBytes);
+    charge.viewBytes = viewBytes;
+    entry.view = kept(view, viewBytes);
     if (windowState(entry.window).shown !== entry) return true;
     trace({ kind: 'prompt-updated', handle });
     tell(entry.window, CHANNELS.PROMPT, {
@@ -234,6 +377,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     const entry = open.get(handle);
     if (!entry) return;
     open.delete(handle);
+    release(entry.charge);
     const state = windowState(entry.window);
     if (state.shown === entry) state.shown = null;
     tell(entry.window, CHANNELS.CLOSED, { handle, reason });
@@ -311,7 +455,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
     return out;
   }
 
-  return { add, update, closed, foreground, decide, kindOf, walletPromptOpen, forgetWindow, state };
+  return { admit, release, add, update, closed, foreground, decide, kindOf, walletPromptOpen, forgetWindow, state, usage };
 }
 
 module.exports = {
@@ -320,5 +464,8 @@ module.exports = {
   KIND_SET,
   TEST_KIND,
   WALLET_KINDS,
+  PROMPT_BUDGETS,
+  MAX_SHOWN_VIEW_BYTES,
+  LIMIT_EXCEEDED,
   createPagePrompts,
 };

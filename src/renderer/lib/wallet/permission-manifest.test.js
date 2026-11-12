@@ -109,7 +109,7 @@ async function loadPermissionManifest() {
   const hideAllSubscreens = jest.fn(() => screenHiders.forEach((fn) => fn()));
 
   global.document = document;
-  global.window = {};
+  global.window = { pagePrompts: { decide: jest.fn().mockResolvedValue({ ok: true }) } };
 
   jest.doMock('./wallet-state.js', () => ({
     walletState: { identityView },
@@ -122,21 +122,21 @@ async function loadPermissionManifest() {
   }));
 
   const mod = await import('./permission-manifest.js');
-  const signatureFlight = await import('./signature-flight.js');
   const pagePromptRenderers = await import('../page-prompt-renderers.js');
   mod.initPermissionManifest();
 
-  return { mod, signatureFlight, pagePromptRenderers, elements: document.elements, hideAllSubscreens, openSidebarPanel };
+  return { mod, pagePromptRenderers, elements: document.elements, hideAllSubscreens, openSidebarPanel };
 }
 
-// Track settlement without awaiting a promise that may never settle.
-function trackedConsent(promise) {
-  const state = { outcome: undefined, settled: false, promise };
-  promise.then((outcome) => {
-    state.settled = true;
-    state.outcome = outcome;
+// Main's consent prompt for `site`, as `page:prompt` brings it to the sheet.
+function showManifest(ctx, handle, site, appName = 'App') {
+  ctx.pagePromptRenderers.pagePromptRenderer('swarm.manifest').show({
+    handle,
+    guest: 3,
+    kind: 'swarm.manifest',
+    site: { key: site, label: site },
+    view: { model: manifestModel(site, appName) },
   });
-  return state;
 }
 
 // A freshly presented prompt ignores clicks for its input-protection window
@@ -147,7 +147,7 @@ async function armPrompt() {
   await Promise.resolve();
 }
 
-describe('permission manifest consent queues concurrent requests', () => {
+describe('the permission manifest sheet queues main\'s prompts', () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -159,53 +159,55 @@ describe('permission manifest consent queues concurrent requests', () => {
     jest.restoreAllMocks();
   });
 
-  test('a second consent request waits its turn instead of clobbering the first', async () => {
+  test('a second consent prompt waits its turn instead of clobbering the first', async () => {
     const ctx = await loadPermissionManifest();
     const screen = ctx.elements['sidebar-swarm-manifest'];
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha')));
-    const second = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://beta', 'Beta')));
+    showManifest(ctx, 'h1', 'bzz://alpha', 'Alpha');
+    showManifest(ctx, 'h2', 'bzz://beta', 'Beta');
 
-    // Only the first request is on screen; the second is queued, not denied.
+    // Only the first prompt is on screen; the second is queued, not denied.
     expect(screen.classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-manifest-site'].textContent).toBe('bzz://alpha');
-    expect(first.settled).toBe(false);
-    expect(second.settled).toBe(false);
+    expect(decide).not.toHaveBeenCalled();
 
-    // Allow all settles the first request only, then shows the queued one.
+    // Allow all answers the first prompt only, then shows the queued one.
     await armPrompt();
     await ctx.elements['swarm-manifest-allow'].fire('click');
-    expect(await first.promise).toBe('allow');
-    expect(second.settled).toBe(false);
+    expect(decide.mock.calls).toEqual([['h1', true, { outcome: 'allow' }]]);
     expect(screen.classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-manifest-site'].textContent).toBe('bzz://beta');
 
-    // "Connect, but ask each time" settles the second and closes the sheet.
+    // "Connect, but ask each time" answers the second and closes the sheet.
     await armPrompt();
     await ctx.elements['swarm-manifest-individual'].fire('click');
-    expect(await second.promise).toBe('individual');
+    expect(decide).toHaveBeenLastCalledWith('h2', true, { outcome: 'individual' });
     expect(screen.classList.contains('hidden')).toBe(true);
   });
 
-  test('dismissing the sheet denies the queued requests too', async () => {
+  test('dismissing the sheet reports every queued prompt displaced', async () => {
     const ctx = await loadPermissionManifest();
+    const displaced = jest.fn();
+    ctx.pagePromptRenderers.onPagePromptDisplaced(displaced);
 
-    const first = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha')));
-    const second = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://beta', 'Beta')));
+    showManifest(ctx, 'h1', 'bzz://alpha', 'Alpha');
+    showManifest(ctx, 'h2', 'bzz://beta', 'Beta');
 
     // Another screen taking over the sidebar fires every screen hider.
     ctx.hideAllSubscreens();
 
-    expect(await first.promise).toBe('deny');
-    expect(await second.promise).toBe('deny');
+    expect(displaced.mock.calls).toEqual([['h1'], ['h2']]);
+    expect(global.window.pagePrompts.decide).not.toHaveBeenCalled();
     expect(ctx.elements['sidebar-swarm-manifest'].classList.contains('hidden')).toBe(true);
   });
 
-  test('double-clicking Allow settles one request and leaves the queued one on screen', async () => {
+  test('double-clicking Allow answers one prompt and leaves the queued one on screen', async () => {
     const ctx = await loadPermissionManifest();
+    const { decide } = global.window.pagePrompts;
 
-    const first = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha')));
-    const second = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://beta', 'Beta')));
+    showManifest(ctx, 'h1', 'bzz://alpha', 'Alpha');
+    showManifest(ctx, 'h2', 'bzz://beta', 'Beta');
 
     await armPrompt();
     await Promise.all([
@@ -213,22 +215,21 @@ describe('permission manifest consent queues concurrent requests', () => {
       ctx.elements['swarm-manifest-allow'].fire('click'),
     ]);
 
-    expect(await first.promise).toBe('allow');
     // The second click landed inside the queued prompt's arm window, so it
-    // did not settle the request that just took the screen.
-    expect(second.settled).toBe(false);
+    // did not answer the prompt that just took the screen.
+    expect(decide.mock.calls).toEqual([['h1', true, { outcome: 'allow' }]]);
     expect(ctx.elements['sidebar-swarm-manifest'].classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-manifest-site'].textContent).toBe('bzz://beta');
 
     await armPrompt();
     await ctx.elements['swarm-manifest-reject'].fire('click');
-    expect(await second.promise).toBe('deny');
+    expect(decide).toHaveBeenLastCalledWith('h2', false, {});
   });
 
   test('buttons are disabled during the input-protection window', async () => {
     const ctx = await loadPermissionManifest();
 
-    const consent = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha')));
+    showManifest(ctx, 'h1', 'bzz://alpha', 'Alpha');
     expect(ctx.elements['swarm-manifest-allow'].disabled).toBe(true);
     expect(ctx.elements['swarm-manifest-individual'].disabled).toBe(true);
     expect(ctx.elements['swarm-manifest-reject'].disabled).toBe(true);
@@ -237,61 +238,7 @@ describe('permission manifest consent queues concurrent requests', () => {
     expect(ctx.elements['swarm-manifest-allow'].disabled).toBe(false);
 
     await ctx.elements['swarm-manifest-allow'].fire('click');
-    expect(await consent.promise).toBe('allow');
-  });
-
-  test('a live device confirmation refuses the sheet with the standard error', async () => {
-    const ctx = await loadPermissionManifest();
-    const screen = ctx.elements['sidebar-swarm-manifest'];
-    const signer = {};
-    ctx.signatureFlight.beginSignatureFlight(signer);
-
-    try {
-      // Same pre-check as the sibling swarm prompts: the request is refused
-      // with the standard in-flight error instead of a generic internal one,
-      // and the sheet never touches the sidebar the device prompt owns.
-      await expect(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha'), 'tok-1'))
-        .rejects.toMatchObject({ code: -32002 });
-      expect(screen.classList.contains('hidden')).toBe(true);
-      expect(ctx.hideAllSubscreens).not.toHaveBeenCalled();
-    } finally {
-      ctx.signatureFlight.endSignatureFlight(signer);
-    }
-
-    // Nothing was cached against the refused token, so the retry the dApp is
-    // told to make gets a real sheet once the device is done.
-    const retry = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha'), 'tok-1'));
-    expect(screen.classList.contains('hidden')).toBe(false);
-    await armPrompt();
-    await ctx.elements['swarm-manifest-allow'].fire('click');
-    expect(await retry.promise).toBe('allow');
-  });
-
-  test('two tabs sharing one consent token get one sheet and one answer', async () => {
-    const ctx = await loadPermissionManifest();
-    const screen = ctx.elements['sidebar-swarm-manifest'];
-
-    // Main hands both tabs the same outstanding token for the same origin.
-    const tabA = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha'), 'tok-1'));
-    const tabB = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha'), 'tok-1'));
-
-    await armPrompt();
-    await ctx.elements['swarm-manifest-allow'].fire('click');
-
-    // One answer settles both, and no duplicate sheet is left behind.
-    expect(await tabA.promise).toBe('allow');
-    expect(await tabB.promise).toBe('allow');
-    expect(screen.classList.contains('hidden')).toBe(true);
-
-    // A tab arriving late on the same token replays the answer, no sheet.
-    const tabC = trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://alpha', 'Alpha'), 'tok-1'));
-    expect(await tabC.promise).toBe('allow');
-    expect(screen.classList.contains('hidden')).toBe(true);
-
-    // A different consent still gets its own sheet.
-    trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://beta', 'Beta'), 'tok-2'));
-    expect(screen.classList.contains('hidden')).toBe(false);
-    expect(ctx.elements['swarm-manifest-site'].textContent).toBe('bzz://beta');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('h1', true, { outcome: 'allow' });
   });
 });
 

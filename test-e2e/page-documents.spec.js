@@ -7,7 +7,8 @@
 // first: a hello that arrived before it would land on the previous number,
 // which already has its nonce, and be ignored, so the new document's requests
 // would be refused. The probe of 2026-09-28 showed the order to the embedder
-// (`guest-main-frame.js`); this spec repeats it in main, for main's own module
+// (for the chrome's `guest-main-frame.js`, which PRQ-9 removed); this spec
+// repeats it in main, for main's own module
 // (src/main/page/page-documents.js), across a same-process navigation, a
 // cross-process one, a reload, and back and forward. It also records whether a
 // back/forward traversal restored a page from the back/forward cache (which

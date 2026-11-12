@@ -29,6 +29,9 @@ jest.mock('electron-log', () => ({ info: jest.fn(), warn: jest.fn(), error: jest
 // The node: running unless a test stops it; its connection count can be held.
 const mockNode = { status: 'running', disabled: false, connections: null, seeded: [{ rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }] };
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => mockNode.disabled),
   getCurrentStatus: jest.fn(() => ({ status: mockNode.status, error: null })),
   getConnections: jest.fn(async () => {
@@ -50,6 +53,10 @@ jest.mock('../radicle/cob-service', () => ({
   getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   clearIdentityCache: jest.fn(),
   CobValidationError: class CobValidationError extends Error {},
+  CobAdmissionError: class CobAdmissionError extends Error {},
+  CobOutcomeUnknownError: class CobOutcomeUnknownError extends Error {},
+  OUTCOME_UNKNOWN_MESSAGE:
+    'The Radicle node stopped before confirming this write; it may have been recorded.',
 }));
 
 const { EventEmitter } = require('events');
@@ -264,7 +271,7 @@ afterAll(() => {
 });
 
 describe('the methods main serves (0011 PRQ-8a)', () => {
-  test('the dispatcher serves every window.radicle method, each with its row, and the preload routes exactly these', () => {
+  test('the dispatcher serves every window.radicle method, each with its row, and the preload sends them all to main', () => {
     expect(RADICLE_READ_METHODS).toEqual(['radicle_getCapabilities', 'radicle_getNodeStatus', 'radicle_listSeededRepos']);
     expect(RADICLE_CONNECT_METHODS).toEqual(['radicle_requestAccess', 'radicle_disconnect']);
     expect(RADICLE_SEED_METHODS).toEqual(['radicle_seed', 'radicle_unseed', 'radicle_sync', 'radicle_getSeedStatus']);
@@ -281,13 +288,10 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
     expect(Object.keys(createRadicleDispatchers({ execute: jest.fn() })).sort()).toEqual(
       RADICLE_PAGE_METHODS.map((m) => `radicle:${m}`).sort()
     );
+    // The preload sends every window.radicle method to main (PRQ-8c), and
+    // keeps no list of routed methods (PRQ-9).
     const preload = fs.readFileSync(path.join(__dirname, '../webview-preload.js'), 'utf-8');
-    const routes = /const PAGE_ROUTES = new Set\(\[([\s\S]*?)\]\);/
-      .exec(preload)[1]
-      .match(/'[^']+'/g)
-      .map((r) => r.slice(1, -1))
-      .filter((r) => r.startsWith('radicle:'));
-    expect(routes.sort()).toEqual(RADICLE_PAGE_METHODS.map((m) => `radicle:${m}`).sort());
+    expect(preload).not.toMatch(/PAGE_ROUTES|routedToMain|sendToHost\('radicle:/);
     // Each has the design's class.
     for (const method of RADICLE_PAGE_METHODS) {
       expect({ method, class: methodRow('radicle', method).class }).toEqual({

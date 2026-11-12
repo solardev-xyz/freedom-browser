@@ -1,7 +1,6 @@
 /**
  * A personal_sign's bytes for its approval screen. Main reads the dApp's
- * message (`wallet:message-view`: strict 0x hex decoded, any other string
- * as UTF-8) and hands the screen the very bytes it sends to sign, as hex,
+ * message (strict 0x hex decoded, any other string as UTF-8) and hands the screen the very bytes it sends to sign, as hex,
  * with whether they are a raw 32-byte value (freedom-core #88, #89). These
  * helpers only turn that hex back into something to show.
  */

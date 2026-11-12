@@ -4,25 +4,21 @@
 // Tab webviews run with nodeIntegrationInSubFrames, so a compromised
 // cross-origin iframe renderer still has ipcRenderer.sendToHost and can emit
 // `dapp:provider-request` / `swarm:provider-request` /
-// `radicle:provider-request`. The chrome must not handle those under the tab's
-// top page (its wallet, Swarm and Radicle grants).
+// `radicle:provider-request` to the chrome. Since freedom-core design 0011
+// (PRQ-9) every provider request goes from the top frame's preload to main,
+// which refuses a sub-frame's itself, and the chrome has no provider route at
+// all: such a message must do nothing, whichever frame it names.
 //
 // A real renderer compromise can't be staged from a test, so the forged
 // message is injected where it would land: as an `ipc-message` event on the
 // real <webview> element in the chrome, carrying the iframe's *real*
-// [processId, routingId] as reported by the main process. A positive control
-// sends the identical synthetic event with the main frame's pair and must
-// raise the prompt, proving the injection path reaches the real listener.
-// The real top-frame providers (window.ethereum / window.swarm /
-// window.radicle) are exercised end to end first.
+// [processId, routingId] as reported by the main process, and then the main
+// frame's. The real top-frame providers (window.ethereum / window.swarm /
+// window.radicle) are exercised end to end, through main.
 
 // Not a spec file on its own (no `.spec.js` suffix, so the harness project's
 // testMatch skips it): `onchain-apps.spec.js` requires it, which puts these
 // tests in CI's curated `e2e-tabs` job without a `.github/workflows` edit.
-// These tests are the only check against the real Electron field names the
-// guard reads (`ipc-message.frameId`, `did-frame-navigate`'s `isMainFrame` /
-// `frameProcessId` / `frameRoutingId`). The unit tests feed synthetic events,
-// so they would stay green if an Electron bump renamed any of those fields.
 // The describe block scopes the test.use / beforeEach below to these tests.
 //
 // Run just these tests with:
@@ -205,13 +201,16 @@ test.describe('provider frame attribution (O-6)', () => {
     }
     await win.screenshot({ path: path.join(test.info().outputDir, 'subframe-ignored.png') });
 
-    // --- Positive control: the same injection from the main frame is handled --
-    await injectRequest(win, 'radicle:provider-request', ids.main, {
-      id: 9004, method: 'radicle_requestAccess', params: {},
-    });
-    await expect(radicleConsent).toBeVisible();
-    await win.click('#radicle-consent-reject');
-    await expect(radicleConsent).toBeHidden();
+    // --- The same injection from the main frame: the chrome has no route ----
+    // (PRQ-9). A page's requests reach main only through its preload.
+    for (const [channel, request] of forged) {
+      await injectRequest(win, channel, ids.main, { ...request, id: request.id + 100 });
+      await win.waitForTimeout(1000);
+      await expect(dappConnect, channel).toBeHidden();
+      await expect(swarmConnect, channel).toBeHidden();
+      await expect(radicleConsent, channel).toBeHidden();
+      expect(await executeCalls(electronApp), channel).toEqual([]);
+    }
 
     // --- Real top-frame calls, end to end -------------------------------------
     // window.ethereum: request + connect.

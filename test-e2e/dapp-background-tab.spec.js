@@ -193,31 +193,10 @@ test('a background tab is attributed to its own site, never the visible one', as
     .toBe(4100);
   await expect(win.locator('#sidebar-dapp-sign')).toBeHidden();
 
-  // Main does not take the renderer's word for the site either: the trusted
-  // dApp's key claimed for the background tab's guest is refused, and since
-  // main reads a page's rule itself (PRQ-5a), so is the same claim for the
-  // trusted tab's own guest.
-  const refused = await win.evaluate(
-    async ({ url, key, message }) => {
-      const guestOf = (u) =>
-        [...document.querySelectorAll('webview')].find((w) => w.getURL() === u).getWebContentsId();
-      return {
-        borrowed: await window.wallet.signMessage(message, 0, {
-          autoApprove: key,
-          webContentsId: guestOf(url.other),
-        }),
-        noGuest: await window.wallet.signMessage(message, 0, { autoApprove: key }),
-        own: await window.wallet.signMessage(message, 0, {
-          autoApprove: key,
-          webContentsId: guestOf(url.trusted),
-        }),
-      };
-    },
-    { url: { other: OTHER_URL, trusted: TRUSTED_URL }, key: TRUSTED_KEY, message: MESSAGE }
-  );
-  expect(refused.borrowed).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-  expect(refused.noGuest).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-  expect(refused.own).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+  // Main does not take the renderer's word for the site either: since PRQ-9
+  // the chrome has no signing call of its own to claim the trusted dApp's
+  // rule with, for the background tab's guest or its own.
+  expect(await win.evaluate(() => typeof window.wallet.signMessage)).toBe('undefined');
 
   // Once the other site is connected (no auto-approve), its signature needs
   // a prompt, which waits for its tab (PRQ-5a, as connecting does from
