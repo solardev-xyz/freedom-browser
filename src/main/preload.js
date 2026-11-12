@@ -1143,8 +1143,10 @@ contextBridge.exposeInMainWorld('swarmManifest', {
 });
 
 // Page-facing Radicle provider plumbing. Distinct from the host-chrome
-// `window.radicle` namespace above (node lifecycle controls) — these back
-// the consent flow and authority calls for the injected page provider.
+// `window.radicle` namespace above (node lifecycle controls). Every
+// window.radicle request is main's (freedom-core design 0011, PRQ-8): the
+// chrome has no route for one, and main refuses its grant writes and its
+// turning a rule on. These read the site's grants and revoke them.
 contextBridge.exposeInMainWorld('radiclePermissions', {
   getPermission: (origin) => ipcRenderer.invoke('radicle:get-permission', origin),
   grantPermission: (origin) => ipcRenderer.invoke('radicle:grant-permission', origin),
@@ -1156,18 +1158,6 @@ contextBridge.exposeInMainWorld('radiclePermissions', {
   getAutoApprove: (origin, type) => ipcRenderer.invoke('radicle:get-auto-approve', origin, type),
   setAutoApprove: (origin, type, enabled) =>
     ipcRenderer.invoke('radicle:set-auto-approve', origin, type, enabled),
-});
-
-contextBridge.exposeInMainWorld('radicleProvider', {
-  // meta names the requesting guest and how a seed, unseed or signed write
-  // was approved, for main's Agent custody check (radicle-provider-ipc.js).
-  execute: (method, params, origin, meta) =>
-    ipcRenderer.invoke('radicle:provider-execute', { method, params, origin, meta }),
-  onEvent: (callback) => {
-    const handler = (_event, value) => callback(value);
-    ipcRenderer.on('radicle:providerEvent', handler);
-    return () => ipcRenderer.removeListener('radicle:providerEvent', handler);
-  },
 });
 
 contextBridge.exposeInMainWorld('swarmFeedStore', {

@@ -1729,8 +1729,8 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // The Ethereum reads (PRQ-3), connecting (PRQ-4), signing messages and
 // typed data (PRQ-5a) and sends (PRQ-5b), and Swarm's reads (PRQ-7a),
 // connecting and messaging (PRQ-7b), publishing (PRQ-7c) and feeds and
-// signing (PRQ-7d), all of window.swarm, and Radicle's reads, connecting,
-// disconnecting (PRQ-8a) and seeding (PRQ-8b), take the new path (PAGE_ROUTES),
+// signing (PRQ-7d), all of window.swarm, and all of window.radicle (PRQ-8a
+// to 8c), take the new path (PAGE_ROUTES),
 // and main answers them: their page-world
 // provider arms no timer of its own, and main's deadline answers one that
 // runs too long. Each later step of the design moves its own methods. For a test, the E2E harness can route more
@@ -1755,10 +1755,10 @@ if (PAGE_REQUESTS_ENABLED) {
 // need no prompt (PRQ-7a), connecting and messaging (PRQ-7b), publishing
 // (PRQ-7c), and feeds and signing (PRQ-7d), which page-swarm.test.js keeps
 // the list main's Swarm dispatcher serves (src/main/page/page-swarm.js). A publish over 1 MiB
-// reserves its turn first (`page:reserve`, below). And window.radicle's reads,
-// connecting and disconnecting (PRQ-8a) and seeding (PRQ-8b), which
-// page-radicle.test.js keeps the list main's Radicle dispatcher serves
-// (src/main/page/page-radicle.js).
+// reserves its turn first (`page:reserve`, below). And all of window.radicle:
+// its reads, connecting and disconnecting (PRQ-8a), seeding (PRQ-8b) and
+// signing (PRQ-8c), which page-radicle.test.js keeps the list main's
+// Radicle dispatcher serves (src/main/page/page-radicle.js).
 const PAGE_ROUTES = new Set([
   'ethereum:eth_requestAccounts',
   'ethereum:wallet_switchEthereumChain',
@@ -1821,6 +1821,11 @@ const PAGE_ROUTES = new Set([
   'radicle:radicle_unseed',
   'radicle:radicle_sync',
   'radicle:radicle_getSeedStatus',
+  'radicle:radicle_getIdentity',
+  'radicle:radicle_createIssue',
+  'radicle:radicle_commentIssue',
+  'radicle:radicle_editIssueState',
+  'radicle:radicle_commentPatch',
 ]);
 const TEST_PAGE_ROUTES = new Set(
   Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
@@ -2453,42 +2458,17 @@ if (PROVIDERS_ENABLED && !isInternalPage()) {
   injectPageProvider('radicle', withMainAnsweredMethods(RADICLE_INJECT_SOURCE, 'radicle'));
 }
 
-if (PROVIDERS_ENABLED) {
-  // Bridge postMessage from page to IPC (Radicle)
+// Every window.radicle method goes to main on page:request (freedom-core
+// design 0011, PRQ-8c), which answers it and sends the page its events
+// (page:event). A method main doesn't serve is refused there, as the chrome
+// refused it (4200). Nothing of window.radicle goes through the chrome.
+if (PAGE_REQUESTS_ENABLED) {
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data.type === 'FREEDOM_RADICLE_REQUEST') {
       const { id, method, params } = event.data;
-      if (routedToMain('radicle', method)) {
-        sendPageRequest('radicle', id, method, params);
-        return;
-      }
-      ipcRenderer.sendToHost('radicle:provider-request', { id, method, params });
+      sendPageRequest('radicle', id, method, params);
     }
-  });
-
-  // Bridge IPC responses back to page (Radicle)
-  ipcRenderer.on('radicle:provider-response', (_event, { id, result, error }) => {
-    window.postMessage(
-      {
-        type: 'FREEDOM_RADICLE_RESPONSE',
-        id,
-        result,
-        error,
-      },
-      window.location.origin
-    );
-  });
-
-  ipcRenderer.on('radicle:provider-event', (_event, { event, data }) => {
-    window.postMessage(
-      {
-        type: 'FREEDOM_RADICLE_EVENT',
-        event,
-        data,
-      },
-      window.location.origin
-    );
   });
 }
 
