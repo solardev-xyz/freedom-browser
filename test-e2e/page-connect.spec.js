@@ -245,6 +245,8 @@ test('connecting through main: its prompt, its grant, and the chrome\'s forged o
   await expect(connectScreen(win)).toBeVisible();
   expect(await outcome(win, KEY_A, 'connect')).toEqual({ pending: true });
 
+  // Let the sidebar finish sliding in before the evidence shot.
+  await expect(win.locator('#dapp-connect-reject')).toBeInViewport({ ratio: 1 });
   await win.screenshot({ path: test.info().outputPath('page-connect-prompt.png') });
   await win.click('#dapp-connect-approve');
   await expect.poll(() => outcome(win, KEY_A, 'connect')).toEqual({ ok: [account] });
