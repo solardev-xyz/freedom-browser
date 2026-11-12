@@ -969,44 +969,56 @@ const PRIVATE_SEED_FAILURE = () =>
  * @returns {Promise<T>} work's result
  */
 function withRadicleStopped(work) {
-  // Under the service, a start asked for and not yet settled, and the node,
-  // stop at once, as for stopRadicle: the start may be waiting for the
-  // vault, and this op would otherwise queue behind it. Either is started
-  // again after the work.
-  let startPending = false;
-  if (onService()) {
-    startPending = gateWaits.size > 0;
-    for (const start of gateWaits) start.abort();
-    void serviceNode?.stop();
-  }
+  if (onService()) return withServiceStopped(work);
   return enqueueLifecycle(async () => {
-    const service = onService();
-    const wasRunning =
-      currentState === STATUS.RUNNING ||
-      (service ? serviceNode !== null || startPending : embedded.isStarted());
+    const wasRunning = currentState === STATUS.RUNNING || embedded.isStarted();
     await stopNode();
-    if (!service && embedded.isStarted()) {
+    if (embedded.isStarted()) {
       throw new Error('The Radicle node did not stop, so its data was not reset');
     }
     try {
       return await work();
     } finally {
       if (wasRunning) {
-        // Under the service, a stop asked for during the restart gives it
-        // up, as any start; the add-on's restart is today's.
-        const { signal, done } = service ? startCancel() : { signal: null, done() {} };
-        let restarted;
-        try {
-          restarted = await startRadicleInternal({ signal });
-        } finally {
-          done();
-        }
+        const restarted = await startRadicleInternal();
         if (restarted.status !== STATUS.RUNNING) {
           log.warn('[Radicle] Node did not restart after the re-key:', restarted.error);
         }
       }
     }
   });
+}
+
+/**
+ * withRadicleStopped under the service. When it is asked for, a start asked
+ * for and not yet settled, and the node, stop at once, as for stopRadicle:
+ * the start may be waiting for the vault, and this op would otherwise queue
+ * behind it. If either was running or starting, the node starts again after
+ * the work, and that restart's cancel is registered now, with the re-key's
+ * request: a stop asked for at any point of the re-key, its work included,
+ * gives the restart up, before it has begun or once it has.
+ */
+function withServiceStopped(work) {
+  const startPending = gateWaits.size > 0;
+  for (const start of gateWaits) start.abort();
+  const wasRunning = currentState === STATUS.RUNNING || serviceNode !== null || startPending;
+  void serviceNode?.stop();
+  const restart = wasRunning ? startCancel() : null;
+  const rekey = enqueueLifecycle(async () => {
+    await stopNode();
+    try {
+      return await work();
+    } finally {
+      if (restart && !restart.signal.aborted) {
+        const restarted = await startRadicleInternal({ signal: restart.signal });
+        if (restarted.status !== STATUS.RUNNING && !restart.signal.aborted) {
+          log.warn('[Radicle] Node did not restart after the re-key:', restarted.error);
+        }
+      }
+    }
+  });
+  if (restart) rekey.then(restart.done, restart.done);
+  return rekey;
 }
 
 /** The hook identity-manager's setRadicleLifecycle takes (R-8). */

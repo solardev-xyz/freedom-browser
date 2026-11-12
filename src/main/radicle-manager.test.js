@@ -1239,6 +1239,8 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
         this.cloneRepo = jest.fn(async () => ({ ok: true }));
         module.nodes.push(this);
         module.created.resolve(this);
+        // A vault that is unlocked: the node comes up at once.
+        if (module.autoStart) this.resolveStart(true);
       }
       static isAvailable() {
         return module.available;
@@ -1548,6 +1550,85 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       await expect(rekey).resolves.toBe('written');
       await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
       expect(ctx.radicledNode.nodes).toHaveLength(2);
+    });
+  });
+
+  // Review round 2: the re-key's restart is cancellable from the moment the
+  // re-key is asked for, so a stop during its work suppresses it.
+  describe("a stop during a re-key's work, before its replacement node exists", () => {
+    async function runningThenRekey(ctx) {
+      const started = ctx.mod.startRadicle();
+      (await ctx.radicledNode.created.promise).resolveStart(true);
+      await started;
+      const working = deferred();
+      const finish = deferred();
+      const work = jest.fn(async () => {
+        working.resolve();
+        await finish.promise;
+        return 'written';
+      });
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+      await working.promise;
+      return { rekey, finish };
+    }
+
+    test('vault unlocked: the restart is given up, and no node is made after the work', async () => {
+      const ctx = load();
+      const { rekey, finish } = await runningThenRekey(ctx);
+      // Any replacement would come up at once.
+      ctx.radicledNode.autoStart = true;
+      const before = broadcastStatuses(ctx).length;
+      const stopped = ctx.mod.stopRadicle();
+      finish.resolve();
+      await expect(rekey).resolves.toBe('written');
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+      // Nothing started after the stop was asked for.
+      const after = broadcastStatuses(ctx).slice(before);
+      expect(after).not.toContain('starting');
+      expect(after).not.toContain('running');
+      expect(after.at(-1)).toBe('stopped');
+    });
+
+    test('vault locked: the stop completes, with no restart left waiting for an unlock', async () => {
+      const ctx = load();
+      const { rekey, finish } = await runningThenRekey(ctx);
+      // Any replacement would wait for the vault: its start never settles.
+      const stopped = ctx.mod.stopRadicle();
+      finish.resolve();
+      await expect(rekey).resolves.toBe('written');
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'stopped', error: null });
+    });
+
+    test('a stop asked for after the re-key, before its op runs: no restart either', async () => {
+      const ctx = load();
+      const started = ctx.mod.startRadicle();
+      (await ctx.radicledNode.created.promise).resolveStart(true);
+      await started;
+      ctx.radicledNode.autoStart = true;
+      const work = jest.fn(async () => 'written');
+      const rekey = ctx.mod.createRadicleLifecycle().withStopped(work);
+      const stopped = ctx.mod.stopRadicle();
+      await expect(rekey).resolves.toBe('written');
+      await expect(stopped).resolves.toEqual({ status: 'stopped', error: null });
+      expect(work).toHaveBeenCalledTimes(1);
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+    });
+
+    test('a re-key of a stopped node starts nothing, and leaves no start for a later re-key', async () => {
+      const ctx = load();
+      ctx.radicledNode.autoStart = true;
+      const lifecycle = ctx.mod.createRadicleLifecycle();
+      const first = lifecycle.withStopped(async () => 'one');
+      const second = lifecycle.withStopped(async () => 'two');
+      await expect(first).resolves.toBe('one');
+      await expect(second).resolves.toBe('two');
+      expect(ctx.radicledNode.nodes).toHaveLength(0);
+      expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'stopped', error: null });
     });
   });
 
