@@ -96,6 +96,7 @@ const {
   timeoutError,
 } = require('./page-methods');
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 const signingConfirmation = require('../wallet/signing-confirmation');
 const { CHANNELS: PROMPT_CHANNELS, KIND_SET, WALLET_KINDS, createPagePrompts } = require('./page-prompts');
 
@@ -511,8 +512,38 @@ function createPageRequests({
       },
       liveDocuments: () => documents.liveDocuments(),
       sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
+      inGrantOrder: (key, job) => inGrantOrder(key, job),
+      inChainOrder: (windowId, job) => inChainOrder(windowId, job),
       copied: (label) => copied(record, label),
     });
+  }
+
+  // Events in order (design 0011, "Events"; PRQ-6): one change's sends run
+  // after the last change's in the same domain, so each document hears the
+  // changes in their order, and the last it hears is main's state, even
+  // when a send waits on a name's resolution. A domain per permission key
+  // for its grant's events (a connect, a revocation, an account change), and
+  // one per window for its chain's.
+  const eventQueues = new Map();
+
+  function inOrder(domain, job) {
+    const before = eventQueues.get(domain) || Promise.resolve();
+    const done = before.then(() => job()).catch(() => undefined);
+    eventQueues.set(domain, done);
+    done.then(() => {
+      if (eventQueues.get(domain) === done) eventQueues.delete(domain);
+    });
+    return done;
+  }
+
+  /** Run `job` (it sends a grant's events for `key`) after the key's earlier ones. */
+  function inGrantOrder(key, job) {
+    return inOrder(`grant:${normalizeOrigin(key)}`, job);
+  }
+
+  /** Run `job` (it sends window `windowId`'s chain events) after its earlier ones. */
+  function inChainOrder(windowId, job) {
+    return inOrder(`chain:${windowId}`, job);
   }
 
   /**
@@ -1006,6 +1037,8 @@ function createPageRequests({
   return {
     track: (contents) => documents.track(contents),
     liveDocuments: () => documents.liveDocuments(),
+    inGrantOrder,
+    inChainOrder,
     bindName,
     hello,
     reserve,

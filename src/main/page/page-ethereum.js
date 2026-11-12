@@ -329,15 +329,20 @@ function createEthereumDispatchers(deps = {}) {
   }
 
   // The grant's events (today's, from the chrome's connect): the account to
-  // every live document of the key, `connect` to the one that asked.
-  async function announceConnection(context, account, chainId) {
+  // every live document of the key, `connect` to the one that asked. In the
+  // key's order with its other grant events (PRQ-6, `page-events.js`), so a
+  // revocation made after this connect is heard after it, even while a
+  // name's resolution holds this one.
+  function announceConnection(context, account, chainId) {
     const { requester } = context;
     const others = context
       .liveDocuments()
       .filter((doc) => doc.key === requester.key && !(doc.guest === requester.guest && doc.navigation === requester.navigation));
-    await context.sendEvent(requester, 'accountsChanged', [account]);
-    await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
-    for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
+    return context.inGrantOrder(requester.key, async () => {
+      await context.sendEvent(requester, 'accountsChanged', [account]);
+      await context.sendEvent(requester, 'connect', { chainId: hex(chainId) });
+      for (const doc of others) await context.sendEvent(doc, 'accountsChanged', [account]);
+    });
   }
 
   async function requestAccounts(context) {
@@ -348,9 +353,22 @@ function createEthereumDispatchers(deps = {}) {
     // the write itself.
     const keyless = { keyless: { error: { ...NO_ADDRESS } } };
     if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
+    const unconnected = !getPermission(requester.key);
     const agent = await agentAnswer(context, keyless);
     // A name that moved meanwhile answers as a keyless document's would.
-    if (agent) return context.holdsKey() ? agent : { error: { ...NO_ADDRESS } };
+    if (agent) {
+      if (!context.holdsKey()) return { error: { ...NO_ADDRESS } };
+      // The agent's approval wrote the site's first grant: its events, as
+      // main's own connect sends them (PRQ-6). An existing grant's account
+      // change is told by the grant store (`page-events.js`).
+      const granted = unconnected && Array.isArray(agent.result) ? getPermission(requester.key) : null;
+      const account = agent.result?.[0];
+      if (granted && typeof account === 'string') {
+        const chainId = Number.isSafeInteger(granted.chainId) && granted.chainId > 0 ? granted.chainId : chainIdOf(requester);
+        context.afterAnswer(() => announceConnection(context, account, chainId));
+      }
+      return agent;
+    }
     if (!(await context.nameHolds(keyless))) return { error: { ...NO_ADDRESS } };
     const permission = getPermission(requester.key);
     if (permission) {
@@ -432,22 +450,27 @@ function createEthereumDispatchers(deps = {}) {
     const previous = windowChainOf(requester.window);
     if (getPermission(requester.key)) updateLastUsed(requester.key, requested);
     selectChainForPage(requester.window, requested);
-    // The page that asked hears it first, as from the chrome, unless it is
-    // an onchain app, which keeps its own chain.
-    if (!pinned) await context.sendEvent(requester, 'chainChanged', hex(requested));
     // The chain changed for every other page of the window too, but the
     // onchain apps.
-    if (previous !== requested) {
-      const others = context
-        .liveDocuments()
-        .filter(
-          (doc) =>
-            doc.window === requester.window &&
-            !doc.chain &&
-            !(doc.guest === requester.guest && doc.navigation === requester.navigation)
-        );
+    const others =
+      previous === requested
+        ? []
+        : context
+          .liveDocuments()
+          .filter(
+            (doc) =>
+              doc.window === requester.window &&
+              !doc.chain &&
+              !(doc.guest === requester.guest && doc.navigation === requester.navigation)
+          );
+    // In the window's order with the chain switcher's events (PRQ-6,
+    // `page-events.js`), and before the answer, as from the chrome.
+    await context.inChainOrder(requester.window, async () => {
+      // The page that asked hears it first, unless it is an onchain app,
+      // which keeps its own chain.
+      if (!pinned) await context.sendEvent(requester, 'chainChanged', hex(requested));
       for (const doc of others) await context.sendEvent(doc, 'chainChanged', hex(requested));
-    }
+    });
     return { result: null };
   }
 

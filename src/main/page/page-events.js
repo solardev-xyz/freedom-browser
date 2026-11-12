@@ -29,8 +29,10 @@
  *
  * The documents are the ones live when the change happened. Main sends one
  * change's events after the last change's, per window for the chain and
- * per key for the account, so each document hears the changes in their
- * order, and the last it hears is the state main holds.
+ * per key for the grant (`inChainOrder`, `inGrantOrder`), in the same
+ * domains as a moved method's own events (a connect's new grant, a page's
+ * chain switch), so each document hears the changes in their order, and the
+ * last it hears is the state main holds.
  */
 
 const { FALLBACK_CHAIN_ID } = require('./page-ethereum');
@@ -59,17 +61,14 @@ function defaultDependencies() {
 function createPageEvents(deps = {}) {
   const { requests, getDerivedWallets, normalizeKey } = { ...defaultDependencies(), ...deps };
 
-  // name -> the promise of its last change's sends
-  const queues = new Map();
-
-  function enqueue(name, job) {
-    const before = queues.get(name) || Promise.resolve();
-    const done = before.then(job).catch(() => []);
-    queues.set(name, done);
-    done.then(() => {
-      if (queues.get(name) === done) queues.delete(name);
-    });
-    return done;
+  // Resolves with the job's outcomes, or [] if it failed.
+  async function ordered(queue, job) {
+    try {
+      const outcomes = await queue(job);
+      return Array.isArray(outcomes) ? outcomes : [];
+    } catch {
+      return [];
+    }
   }
 
   async function sendAll(targets, event, data) {
@@ -106,7 +105,10 @@ function createPageEvents(deps = {}) {
     if (before === after) return Promise.resolve([]);
     // Every page of the window reads the selection, but an onchain app.
     const targets = live().filter((doc) => doc.window === windowId && !doc.chain);
-    return enqueue(`chain:${windowId}`, () => sendAll(targets, 'chainChanged', hex(after)));
+    return ordered(
+      (job) => requests().inChainOrder(windowId, job),
+      () => sendAll(targets, 'chainChanged', hex(after))
+    );
   }
 
   async function accountsFor(walletIndex) {
@@ -137,8 +139,9 @@ function createPageEvents(deps = {}) {
   function grantChanged({ key, walletIndex } = {}) {
     if (typeof key !== 'string' || !key) return Promise.resolve([]);
     const targets = live().filter((doc) => sameKey(doc, key));
-    return enqueue(`accounts:${key}`, async () =>
-      sendAll(targets, 'accountsChanged', await accountsFor(walletIndex))
+    return ordered(
+      (job) => requests().inGrantOrder(key, job),
+      async () => sendAll(targets, 'accountsChanged', await accountsFor(walletIndex))
     );
   }
 

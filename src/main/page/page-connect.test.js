@@ -9,6 +9,8 @@ const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { createEthereumDispatchers } = require('./page-ethereum');
+const { createPageEvents } = require('./page-events');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
@@ -453,6 +455,55 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       expect(env.state.grants).toEqual([{ key: KEY_A, walletIndex: 1, chainId: 100 }]);
     });
 
+    // #1192 round 1: the agent's first connect writes a grant, so the key's
+    // pages hear it as from main's own connect.
+    test('a first connect: accountsChanged to every live document of the key, and connect to the one that asked (PRQ-6)', async () => {
+      const env = setup();
+      const approvals = withAgent(env);
+      const other = env.tab(`${KEY_A}/other`, { front: false });
+      const elsewhere = env.tab(OTHER, { front: false });
+      const inWindow2 = env.tab(`${KEY_A}/x`, { window: 2, front: false });
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+      expect(await answer).toEqual({ result: [SECOND] });
+      await flush();
+      expect(page.guest.events).toEqual([
+        ['accountsChanged', [SECOND]],
+        ['connect', { chainId: '0x64' }],
+      ]);
+      expect(other.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+      expect(inWindow2.guest.events).toEqual([['accountsChanged', [SECOND]]]);
+      expect(elsewhere.guest.events).toEqual([]);
+    });
+
+    test('a connected site\'s agent approval writes no new grant, so sends no new-grant events (an account change is the grant store\'s to tell)', async () => {
+      const env = setup();
+      env.state.permissions.set(KEY_A, { origin: KEY_A, walletIndex: 1, chainId: 100 });
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      approvals[0].resolve({ status: 'approved', walletIndex: 1 });
+      expect(await answer).toEqual({ result: [SECOND] });
+      await flush();
+      expect(page.guest.events).toEqual([]);
+    });
+
+    test('a declined agent approval sends nothing', async () => {
+      const env = setup();
+      const approvals = withAgent(env);
+      const page = env.tab();
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      approvals[0].resolve('declined');
+      expect((await answer).error).toBeDefined();
+      await flush();
+      expect(page.guest.events).toEqual([]);
+      expect(env.state.grants).toEqual([]);
+    });
+
     test('it holds the document\'s one wallet slot: the next request gets -32002, another document\'s doesn\'t', async () => {
       const env = setup();
       const approvals = withAgent(env);
@@ -490,6 +541,8 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       await flush();
       expect(env.state.grants).toEqual([]);
       expect(env.state.lastUsed).toEqual([]);
+      // Nothing written, so nothing told (PRQ-6).
+      expect(page.guest.events).toEqual([]);
       // And the document may ask again.
       page.ask('eth_requestAccounts');
       await flush();
@@ -632,6 +685,55 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       expect(page.guest.events).toEqual([
         ['accountsChanged', [ACCOUNT]],
         ['connect', { chainId: '0x64' }],
+      ]);
+    });
+
+    // #1192 round 1: a connect's new-grant events and the key's other grant
+    // events are one ordering domain (PRQ-6), so a revocation made while the
+    // connect's accountsChanged waits on the name is heard after it.
+    test('a revocation while the connect\'s accountsChanged waits on the name: heard after it, the last event main\'s state', async () => {
+      const names = new Map([[NAME, IPNS_KEY]]);
+      const resolved = [];
+      let holdAt = null;
+      let open;
+      const gate = new Promise((resolve) => (open = resolve));
+      const env = setup({
+        resolveEnsContent: async (name) => {
+          resolved.push(name);
+          if (holdAt !== null && --holdAt === 0) await gate;
+          const key = names.get(name);
+          return key ? { type: 'ok', protocol: 'ipns', decoded: key } : { type: 'not_found' };
+        },
+      });
+      const page = env.tab(`ipns://${IPNS_KEY}/docs`, { bind: NAME });
+      const events = createPageEvents({
+        requests: () => env.requests,
+        getDerivedWallets: async () => env.state.wallets,
+        normalizeKey: normalizeOrigin,
+      });
+      const answer = page.ask('eth_requestAccounts');
+      await flush();
+      // After the decision: the check before the grant, then the one before
+      // the connect's accountsChanged, which waits.
+      resolved.length = 0;
+      holdAt = 2;
+      await env.decide(env.prompts()[0].handle, true, { walletIndex: 0 });
+      expect(await answer).toEqual({ result: [ACCOUNT] });
+      await flush();
+      expect(resolved).toEqual([NAME, NAME]);
+      expect(page.guest.events).toEqual([]);
+      // The grant is revoked meanwhile. Its event waits for the connect's.
+      env.state.permissions.delete(NAME);
+      const revoked = events.grantChanged({ key: NAME, walletIndex: null });
+      await flush();
+      expect(resolved).toEqual([NAME, NAME]);
+      expect(page.guest.events).toEqual([]);
+      open();
+      await revoked;
+      expect(page.guest.events).toEqual([
+        ['accountsChanged', [ACCOUNT]],
+        ['connect', { chainId: '0x64' }],
+        ['accountsChanged', []],
       ]);
     });
 
