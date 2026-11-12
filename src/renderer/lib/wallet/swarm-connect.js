@@ -334,6 +334,30 @@ export function initSwarmConnect() {
       closeSwarmPublishApproval
     )
   );
+  // Feeds and signing (PRQ-7d): main unlocks the vault first, on its own
+  // prompt, so its view carries the site's identities and their owners.
+  registerPagePromptRenderer(
+    'swarm.feed',
+    pagePromptRenderer(
+      swarmFeedQueue,
+      () => swarmFeedScreen,
+      (prompt) => {
+        const view = prompt.view || {};
+        return {
+          handle: prompt.handle,
+          permissionKey: siteOf(prompt),
+          view,
+          method: view.method,
+          autoApproveType: view.mode === 'signing' ? 'signing' : 'feeds',
+          params: {
+            ...(typeof view.name === 'string' ? { name: view.name } : {}),
+            ...(typeof view.identifier === 'string' ? { identifier: view.identifier } : {}),
+          },
+        };
+      },
+      closeSwarmFeedApproval
+    )
+  );
 }
 
 function setupSwarmConnectScreen() {
@@ -960,7 +984,11 @@ export function showSwarmFeedApproval(permissionKey, params, resolve, reject, op
   swarmFeedQueue.show({ permissionKey, params, resolve, reject, autoApproveType, method: options.method });
 }
 
-function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, method }) {
+// The identities main's view offers (PRQ-7d): the site's, and the new
+// app-scoped one, which joins the list when the user asks for it.
+const viewIdentities = (view) => (Array.isArray(view?.identities) ? view.identities.filter((i) => i && typeof i.id === 'string') : []);
+
+function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, method, handle, view }) {
   swarmFeedIdentityState = null;
   if (swarmFeedAutoApproveCheckbox) swarmFeedAutoApproveCheckbox.checked = false;
 
@@ -968,6 +996,24 @@ function presentSwarmFeedApproval({ permissionKey, params, autoApproveType, meth
 
   if (swarmFeedSite) {
     swarmFeedSite.textContent = permissionKey || 'Unknown';
+  }
+
+  if (handle) {
+    // Main's prompt: the vault is unlocked already, and the identities and
+    // their owners are main's.
+    const identities = viewIdentities(view);
+    const fresh = view?.newIdentity && typeof view.newIdentity.id === 'string' ? view.newIdentity : null;
+    if (fresh && view.activeIdentityId === fresh.id) identities.push(fresh);
+    swarmFeedIdentityState = { activeIdentityId: view?.activeIdentityId ?? null, identities };
+    renderFeedIdentitySelector();
+    swarmFeedUnlock?.classList.add('hidden');
+    swarmFeedVaultUnlocked = true;
+    syncFeedApproveButton();
+    hideAllSubscreens();
+    walletState.identityView?.classList.add('hidden');
+    swarmFeedScreen?.classList.remove('hidden');
+    openSidebarPanel();
+    return;
   }
 
   renderFeedIdentitySelector();
@@ -1038,7 +1084,7 @@ function renderFeedIdentitySelector() {
 }
 
 async function refreshFeedIdentitySelector() {
-  if (!swarmFeedQueue.current?.permissionKey) return;
+  if (!swarmFeedQueue.current?.permissionKey || swarmFeedQueue.current.handle) return;
   try {
     swarmFeedIdentityState = await loadFeedIdentityState(swarmFeedQueue.current.permissionKey);
     renderFeedIdentitySelector();
@@ -1072,6 +1118,15 @@ async function activateFeedPromptIdentity(identity) {
 
 async function createFeedPromptIdentity() {
   if (!swarmFeedQueue.current?.permissionKey) return;
+  if (swarmFeedQueue.current.handle) {
+    // Main's prompt offers one new identity, made only if the user approves.
+    const fresh = swarmFeedQueue.current.view?.newIdentity;
+    if (!fresh || typeof fresh.id !== 'string') return;
+    swarmFeedIdentityState = addOrReplaceIdentity(swarmFeedIdentityState, fresh);
+    swarmFeedIdentityState.activeIdentityId = fresh.id;
+    renderFeedIdentitySelector();
+    return;
+  }
   const { permissionKey } = swarmFeedQueue.current;
   try {
     const preview = await window.swarmFeedStore.previewAppScopedIdentity(permissionKey);
@@ -1215,6 +1270,14 @@ async function approveSwarmFeed(pending) {
   let identityState = swarmFeedIdentityState;
   const alwaysAllow = !!swarmFeedAutoApproveCheckbox?.checked;
 
+  if (pending.handle) {
+    // Main makes the identity the site's, grants feed access and sets the
+    // rule, for the site it attested.
+    const identity = identityState?.activeIdentityId;
+    await decidePagePrompt(pending.handle, true, { identity, alwaysAllow });
+    return;
+  }
+
   try {
     if (!identityState?.activeIdentityId) {
       identityState = await loadFeedIdentityState(permissionKey);
@@ -1258,6 +1321,10 @@ async function persistFeedPromptIdentity(permissionKey, identity) {
 }
 
 function rejectSwarmFeed(pending) {
+  if (pending.handle) {
+    decidePagePrompt(pending.handle, false);
+    return;
+  }
   const { reject } = pending;
   reject({ code: 4001, message: 'User rejected feed access' });
   console.log('[SwarmConnect] Feed access rejected');

@@ -82,26 +82,21 @@ A request that has had no answer is rejected with
   and `swarm_readData` (a blob of several MiB fetched from the network);
 - **60 s** for everything else, including `swarm_requestAccess`.
 
-For every method but the feed and signing ones, Freedom itself keeps the
-time, from when the request reaches it, until the request's prompt shows:
-a prompt on screen waits for the user, with no limit, and the page waits
-for the answer. A request whose prompt never showed within its time (a
-background tab's, say) is closed and rejected as above, and nothing happens
-for it. A large upload's wait for its turn ([Limits](#limits)) comes before
-the request reaches Freedom, so it doesn't count.
+Freedom itself keeps the time, from when the request reaches it, until
+the request's prompt shows: a prompt on screen waits for the user, with no
+limit, and the page waits for the answer. A request whose prompt never
+showed within its time (a background tab's, say) is closed and rejected as
+above, and nothing happens for it. A large upload's wait for its turn
+([Limits](#limits)) comes before the request reaches Freedom, so it doesn't
+count.
 
 An upload Freedom sends to the node (`swarm_publishData`,
 `swarm_publishFiles`) stops when its request ends that way, or its page
 navigates. It is also given up on, with `-32603`, when the node stops taking
-it for 60 s, or hasn't answered 300 s after taking it all.
-
-The feed and signing methods are still timed by the page shim: the budget
-covers the whole request, prompt included, and a user who takes longer than
-that on a prompt gets a `-32603 Request timed out` on the page even though
-the decision, once made, still takes effect; retry the call to pick it up.
-The node-side bounds named elsewhere (15 s to mine a GSOC topic, 30 s for a
-subscription to establish) cover only that stage, not the request end to
-end.
+it for 60 s, or hasn't answered 300 s after taking it all. A chunk or feed
+write stops the same way, and is given up on after 300 s. The node-side
+bounds named elsewhere (15 s to mine a GSOC topic, 30 s for a subscription
+to establish) cover only that stage, not the request end to end.
 
 A timed-out request may still complete on the node. A response that settles
 after the page navigated away is never delivered to the new document.
@@ -222,9 +217,13 @@ Notes:
 
 - Feeds and Signing share **one** feed grant; they differ only in which
   auto-approve flag skips the per-call prompt.
-- If the feed grant exists but the identity vault is locked, the user is asked
-  to unlock it; the unlock prompt (which names the site) takes the place of
-  the per-call approval for that call.
+- A feed or signing call while the identity vault is locked asks the user to
+  unlock it first (the unlock prompt names the site); then the feed prompt
+  shows, unless the site's rule answers. The feed prompt shows the site's
+  publisher identities and their owners, and the one the user picks becomes
+  the site's.
+- An "always allow" rule is turned on only from its own prompt; a site's
+  permission screen can only turn one off.
 - Every rejected prompt is `4001`. No node write happens before the user
   approves.
 - The main process re-checks every grant; the chrome's prompts are UX, not the

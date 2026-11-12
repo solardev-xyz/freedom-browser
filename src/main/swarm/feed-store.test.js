@@ -55,6 +55,7 @@ const {
   getOriginIdentityStateWithOwners,
   previewAppScopedIdentity,
   createAppScopedIdentity,
+  createAppScopedIdentityAt,
   ensureAntWalletIdentity,
   activateIdentity,
   getFeed,
@@ -826,84 +827,35 @@ describe('feed-store', () => {
       expect(result).toBe(false);
     });
 
-    test('set-feed-identity creates origin entry with app-scoped mode', async () => {
+    // freedom-core design 0011, PRQ-7d: the chrome's feed grant is refused,
+    // for every site and mode, with nothing written. Main grants feed access
+    // from its own feed prompt (page/page-swarm-feeds.test.js covers the
+    // grant, #89's refusal included).
+    test('set-feed-identity is refused for every site and mode, writing nothing', async () => {
       _resetCache();
-      const result = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test.eth', 'app-scoped');
-      expect(result.identityMode).toBe('app-scoped');
-      expect(result.publisherKeyIndex).toEqual(expect.any(Number));
-    });
-
-    test('set-feed-identity is idempotent — does not allocate new key index', async () => {
-      _resetCache();
-      const first = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
-      const firstIndex = first.publisherKeyIndex;
-      const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
-      expect(second.publisherKeyIndex).toBe(firstIndex);
-    });
-
-    test('set-feed-identity ignores different mode on re-grant', async () => {
-      _resetCache();
-      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-mode.eth', 'app-scoped');
-      const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-mode.eth', 'bee-wallet');
-      // Should return existing entry, not switch mode
-      expect(second.identityMode).toBe('app-scoped');
-    });
-
-    test('set-feed-identity rejects invalid identity mode', async () => {
-      _resetCache();
-      await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-bad.eth', 'invalid'))
-        .rejects.toThrow('Invalid identity mode');
-    });
-
-    // #89: a request naming the removed mode fails with a plain error, for
-    // a new origin and an existing one, and nothing falls back to a key.
-    test('set-feed-identity refuses the removed ethereum-wallet mode', async () => {
-      _resetCache();
-      await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth.eth', 'ethereum-wallet'))
-        .rejects.toThrow(UNAVAILABLE);
-      expect(getOriginEntry('ipc-eth.eth')).toBeNull();
-
-      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth2.eth', 'app-scoped');
-      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-eth2.eth');
-      await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth2.eth', 'ethereum-wallet'))
-        .rejects.toThrow(UNAVAILABLE);
-      expect(hasFeedGrant('ipc-eth2.eth')).toBe(false);
-    });
-
-    test('set-feed-identity refuses an origin whose stored identity is an ethereum wallet', async () => {
-      storeWalletIdentity('ipc-stored.eth', 2);
-      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-stored.eth');
-      for (const mode of ['app-scoped', 'bee-wallet']) {
-        await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-stored.eth', mode))
-          .rejects.toThrow(UNAVAILABLE);
+      setOriginEntry('ipc-revoked.eth', { identityMode: 'app-scoped', feedGranted: true });
+      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-revoked.eth');
+      for (const origin of ['ipc-new.eth', 'ipc-revoked.eth']) {
+        for (const mode of ['app-scoped', 'bee-wallet', 'ethereum-wallet', 'invalid']) {
+          expect(() => ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, origin, mode)).toThrow(
+            'Swarm feed access is granted only from its own prompt'
+          );
+        }
       }
-      // Not re-granted, and no other identity chosen for it.
-      expect(hasFeedGrant('ipc-stored.eth')).toBe(false);
-      expect(getOriginEntry('ipc-stored.eth').activeIdentityId).toBe('ethereum-wallet:2');
-      expect(Object.keys(getOriginEntry('ipc-stored.eth').identities)).toEqual(['ethereum-wallet:2']);
-
-      // Switching to another identity explicitly, then granting, works.
-      await ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]({}, 'ipc-stored.eth', { activate: true });
-      const granted = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-stored.eth', 'app-scoped');
-      expect(granted).toMatchObject({ identityMode: 'app-scoped', feedGranted: true });
+      expect(getOriginEntry('ipc-new.eth')).toBeNull();
+      expect(hasFeedGrant('ipc-revoked.eth')).toBe(false);
     });
 
     test('has-feed-identity returns true after identity set', async () => {
       _resetCache();
-      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test2.eth', 'bee-wallet');
+      setOriginEntry('ipc-test2.eth', { identityMode: 'bee-wallet', feedGranted: true });
       const result = ipcHandlers[IPC.SWARM_HAS_FEED_IDENTITY]({}, 'ipc-test2.eth');
       expect(result).toBe(true);
     });
 
-    test('set-feed-identity also grants feed access', async () => {
-      _resetCache();
-      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-grant.eth', 'app-scoped');
-      expect(hasFeedGrant('ipc-grant.eth')).toBe(true);
-    });
-
     test('revoke-feed-access clears feed grant', async () => {
       _resetCache();
-      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-revoke.eth', 'bee-wallet');
+      setOriginEntry('ipc-revoke.eth', { identityMode: 'bee-wallet', feedGranted: true });
       expect(hasFeedGrant('ipc-revoke.eth')).toBe(true);
       await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-revoke.eth');
       expect(hasFeedGrant('ipc-revoke.eth')).toBe(false);
@@ -911,18 +863,9 @@ describe('feed-store', () => {
       expect(hasIdentityMode('ipc-revoke.eth')).toBe(true);
     });
 
-    test('set-feed-identity re-grants after revocation without new key', async () => {
-      _resetCache();
-      const first = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-regrant.eth', 'app-scoped');
-      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-regrant.eth');
-      const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-regrant.eth', 'app-scoped');
-      expect(second.feedGranted).toBe(true);
-      expect(second.publisherKeyIndex).toBe(first.publisherKeyIndex);
-    });
-
     test('identity management IPC creates, ensures, and activates identities', async () => {
       _resetCache();
-      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-manage.eth', 'app-scoped');
+      setOriginEntry('ipc-manage.eth', { identityMode: 'app-scoped', feedGranted: true });
 
       const withNewIdentity = await ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]({}, 'ipc-manage.eth', {
         label: 'Second identity',
@@ -962,6 +905,23 @@ describe('feed-store', () => {
       ]);
     });
 
+    // freedom-core design 0011, PRQ-7d (Codex round 1 on #1201): main
+    // creates the new identity a feed prompt showed on exactly its key.
+    test('createAppScopedIdentityAt takes exactly the key it names, or throws with nothing written', async () => {
+      _resetCache();
+      const preview = await previewAppScopedIdentity('at.eth');
+      expect(preview.publisherKeyIndex).toBe(0);
+      // Another site takes that key first.
+      createAppScopedIdentity('other.eth', { activate: true });
+      expect(() => createAppScopedIdentityAt('at.eth', preview.publisherKeyIndex, { activate: true })).toThrow(
+        expect.objectContaining({ code: 'identity_taken' })
+      );
+      expect(getOriginEntry('at.eth')).toBeNull();
+      // The key now next is taken as named.
+      const entry = createAppScopedIdentityAt('at.eth', 1, { activate: true });
+      expect(entry).toMatchObject({ activeIdentityId: 'app-scoped:1', publisherKeyIndex: 1 });
+    });
+
     test('preview-app-scoped-identity does not allocate or persist until approval', async () => {
       _resetCache();
 
@@ -981,7 +941,7 @@ describe('feed-store', () => {
 
     test('get-origin-identities includes Bee wallet as an available identity', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-available.eth', 'app-scoped');
+      setOriginEntry('ipc-available.eth', { identityMode: 'app-scoped', feedGranted: true });
 
       const state = await ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]({}, 'ipc-available.eth');
       const beeIdentity = state.identities.find((identity) => identity.id === 'bee-wallet');
@@ -995,7 +955,7 @@ describe('feed-store', () => {
 
     test('get-origin-identities offers no wallet account (#89)', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-wallets.eth', 'app-scoped');
+      setOriginEntry('ipc-wallets.eth', { identityMode: 'app-scoped', feedGranted: true });
 
       const state = await ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]({}, 'ipc-wallets.eth');
 
@@ -1004,7 +964,7 @@ describe('feed-store', () => {
 
     test('get-origin-identities requires unlocked vault for owner inspection', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-locked.eth', 'app-scoped');
+      setOriginEntry('ipc-locked.eth', { identityMode: 'app-scoped', feedGranted: true });
       mockGetDerivedKeys.mockReturnValue(null);
 
       await expect(ipcHandlers[IPC.SWARM_GET_ORIGIN_IDENTITIES]({}, 'ipc-locked.eth'))

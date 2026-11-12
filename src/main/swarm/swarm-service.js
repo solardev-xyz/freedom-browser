@@ -16,14 +16,21 @@ let beeClientUrl = null;
 
 /**
  * Get or create the Bee client. Recreates if the Bee API URL has changed.
+ * With a `signal`, a client of its own whose every call stops on it (a page
+ * request's write, freedom-core design 0011, PRQ-7d), not the shared one.
  */
-function getBee() {
+function getBee({ signal } = {}) {
   // bee-js brings its own HTTP stack, which does not honour `session.setProxy`
   // — an external Ant API on a `.onion` host is not reached over Tor. Tracked
   // with the other Swarm call sites in #360.
   const url = getAntApiUrl();
   if (!url) {
     throw new Error('Swarm node is not ready');
+  }
+  if (signal) {
+    const bound = new Bee(url);
+    bound.requestOptions.signal = signal;
+    return bound;
   }
   if (!beeClient || beeClientUrl !== url) {
     beeClient = new Bee(url);

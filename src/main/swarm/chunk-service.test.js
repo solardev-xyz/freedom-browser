@@ -185,7 +185,7 @@ describe('chunk-service', () => {
     const result = await publishChunk(Buffer.from('hello'), { span: 5n });
 
     expect(mockMakeContentAddressedChunk).toHaveBeenCalledWith(Buffer.from('hello'), 5n);
-    expect(mockSelectBestBatch).toHaveBeenCalledWith(4096);
+    expect(mockSelectBestBatch).toHaveBeenCalledWith(4096, {});
     expect(mockUploadChunk).toHaveBeenCalledWith(BATCH_ID, cac, { pin: true, deferred: false });
     expect(result).toEqual({ reference: CAC_REFERENCE, batchIdUsed: BATCH_ID });
   });

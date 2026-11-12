@@ -44,20 +44,13 @@ const PROJECTIONS = {
   signing: ['connection', 'identity', 'feedGrant', 'autoApprove.signing'],
   messaging: ['connection', 'messagingGrant', 'autoApprove.messaging'],
 };
-// What main alone writes, from a page's decision on its own prompt
-// (freedom-core design 0011): the connection, the messaging grant and
-// messaging's rule (PRQ-7b), and publishing's rule (PRQ-7c), whose chrome
-// writes are refused. The chrome's manifest flow neither writes nor claims
-// them, and never asks for a capability that is nothing else (messaging,
-// publish): main's own check does.
-const PAGE_ONLY_PROJECTIONS = new Set(['connection', 'messagingGrant', 'autoApprove.messaging', 'autoApprove.publish']);
-const pageOnlyCapability = (capability) =>
-  PROJECTIONS[capability].every((projection) => PAGE_ONLY_PROJECTIONS.has(projection));
-
 let storeCache = null;
 let storeLoadedFromBackup = false;
 let faultInjector = null;
-// The chrome's consents (`swarm:manifest-check` / `swarm:manifest-decide`).
+// The in-process callers' consents (`checkManifest` with no owner): shared
+// between their checks, and replayed once decided. The chrome's own channels
+// for them (`swarm:manifest-check` / `swarm:manifest-decide`) are gone
+// (freedom-core design 0011, PRQ-7d): only main checks a page's manifest.
 const tokens = new Map();
 const completedTokens = new Map();
 // Main's own consents for a page's request (freedom-core design 0011,
@@ -372,12 +365,11 @@ function removeOwners(record, capabilities) {
   return operations.sort((left, right) => Number(left.projection === 'connection') - Number(right.projection === 'connection'));
 }
 
-function addManagedCapability(origin, record, capability, { skip = null } = {}) {
+function addManagedCapability(origin, record, capability) {
   const operations = [];
   record.managed ||= {};
   for (const projection of PROJECTIONS[capability]) {
     if (record.detached?.[projection]) continue;
-    if (skip?.has(projection)) continue;
     const owners = record.managed[projection] || [];
     if (owners.length > 0) {
       if (!owners.includes(capability)) record.managed[projection] = [...owners, capability];
@@ -524,13 +516,11 @@ function buildConsentModel(origin, record, manifest, changed, removed) {
 
 /**
  * `deps.owner` says whose consent this is: `page` (main's own, for a page's
- * request: `checkPageManifest`), `chrome` (the chrome's channels, which
- * never ask for or write what only main grants), or neither (in-process
- * callers that decide themselves, tests).
+ * request: `checkPageManifest`), or none (in-process callers that decide
+ * themselves, tests).
  */
 async function checkManifest({ origin, committedUrl, eager = false }, deps = {}) {
   const forPage = deps.owner === 'page';
-  const restricted = deps.owner === 'chrome';
   recoverPending();
   const key = normalizeOrigin(origin);
   const state = loadStore();
@@ -585,11 +575,7 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
       decidedAt: Date.now(),
     };
   }
-  // The chrome's sheet never asks for what only main grants (PRQ-7b): such
-  // a capability stays unacknowledged until main's own check asks for it.
-  const changed = additions.filter(
-    (capability) => !satisfied.includes(capability) && !(restricted && pageOnlyCapability(capability))
-  );
+  const changed = additions.filter((capability) => !satisfied.includes(capability));
   record.revision = existing?.revision || 0;
   if (removalOperations.length > 0 || removed.length > 0 || satisfied.length > 0) {
     record.revision += 1;
@@ -619,12 +605,11 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
     firstContact,
     changed,
     expiresAt: Date.now() + TOKEN_TTL_MS,
-    restricted,
   };
   if (forPage) {
-    // A page's consent is its request's own: never coalesced, never the
-    // chrome's. The pool is swept and bounded first: the oldest waiting
-    // consent goes past the bound.
+    // A page's consent is its request's own: never coalesced. The pool is
+    // swept and bounded first: the oldest waiting consent goes past the
+    // bound.
     sweepPageTokens();
     while (pageTokens.size >= MAX_PAGE_TOKENS) pageTokens.delete(pageTokens.keys().next().value);
     const token = crypto.randomBytes(24).toString('base64url');
@@ -645,13 +630,11 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
 }
 
 /**
- * Decide a consent. By default from the shared pool, which replays a
- * decided token's result; one the chrome's channels minted never writes or
- * claims what only main grants (PAGE_ONLY_PROJECTIONS). A page's (`owner:
- * 'page'`, from `decidePageManifest` only) comes from main's own pool,
- * once.
+ * Decide a consent. By default from the in-process callers' shared pool,
+ * which replays a decided token's result. A page's (`owner: 'page'`, from
+ * `decidePageManifest` only) comes from main's own pool, once.
  */
-function decideManifest(token, outcome, { owner = 'chrome' } = {}) {
+function decideManifest(token, outcome, { owner = null } = {}) {
   recoverPending();
   const forPage = owner === 'page';
   const pool = forPage ? pageTokens : tokens;
@@ -673,7 +656,6 @@ function decideManifest(token, outcome, { owner = 'chrome' } = {}) {
     pool.delete(token);
     throw new Error('Manifest consent is stale');
   }
-  const skip = pending.restricted ? PAGE_ONLY_PROJECTIONS : null;
   const record = structuredClone(state.records[pending.origin] || { managed: {}, acknowledged: {} });
   const operations = [];
   if (outcome !== 'deny') {
@@ -685,7 +667,7 @@ function decideManifest(token, outcome, { owner = 'chrome' } = {}) {
       // ahead of `runTransaction`: a crash between the grant and the journal
       // would otherwise leave the origin connected with no record, receipt or
       // acknowledgement, and nothing for `recoverPending` to replay.
-      if (!skip?.has('connection') && !permissions.getPermission(pending.origin)) {
+      if (!permissions.getPermission(pending.origin)) {
         operations.push({ projection: 'connection', enabled: true });
       }
     }
@@ -706,7 +688,7 @@ function decideManifest(token, outcome, { owner = 'chrome' } = {}) {
         whyShown: pending.manifest.capabilities[capability].why,
         decidedAt: Date.now(),
       };
-      if (outcome === 'allow') operations.push(...addManagedCapability(pending.origin, record, capability, { skip }));
+      if (outcome === 'allow') operations.push(...addManagedCapability(pending.origin, record, capability));
       else operations.push(...removeOwners(record, [capability]));
     }
     record.receipts ||= [];
@@ -824,23 +806,10 @@ function registerPermissionManifestIpc() {
   // that claims it — and can re-assert it on the next projection.
   permissions.onManifestMutation(detachManaged);
   feeds.onManifestMutation(detachManaged);
-  ipcMain.handle(IPC.SWARM_MANIFEST_CHECK, (event, request) => {
-    const sender = event?.sender;
-    // Read at receipt, before the lock's queue (see manifestFetchContext).
-    const fetchContext = manifestFetchContext(sender);
-    if (!fetchContext) return { kind: 'unresolved' };
-    return withOriginLock(request.origin, () => (
-      stillAsking(sender, fetchContext)
-        ? checkManifest(request, { fetchContext, owner: 'chrome' })
-        : { kind: 'unresolved' }
-    ));
-  });
-  // The chrome's own consents only: a page's (main's pool) is never found
-  // here, and what only main grants is never written from here (PRQ-7b).
-  ipcMain.handle(IPC.SWARM_MANIFEST_DECIDE, (_event, { token, outcome }) => {
-    const origin = tokens.get(token)?.origin || `consent-token:${token}`;
-    return withOriginLock(origin, () => decideManifest(token, outcome));
-  });
+  // No check or decide for the chrome (freedom-core design 0011, PRQ-7d):
+  // main checks a page's manifest itself, for the document's own key and
+  // URL, and decides the consent on its own prompt (checkPageManifest,
+  // decidePageManifest). The chrome reads a site's record, and narrows it.
   ipcMain.handle(IPC.SWARM_MANIFEST_GET, (_event, origin) => (
     withOriginLock(origin, () => getRecord(origin))
   ));

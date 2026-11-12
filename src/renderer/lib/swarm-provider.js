@@ -1,13 +1,15 @@
 /**
- * Swarm Provider Handler (Renderer Side)
+ * Swarm Provider Handler (Renderer Side) — no longer reached
  *
- * Handles Swarm provider requests from webviews:
- * - Routes swarm_requestAccess through connection approval UI
- * - Forwards validated requests to main process (the authority)
- * - Fast-fail checks for feature gate and basic validation
+ * Every window.swarm method goes from the page's preload to main on
+ * page:request (freedom-core design 0011, PRQ-7a to 7d; see
+ * src/main/page/page-swarm.js), which shows the prompts the chrome renders
+ * and answers the page itself. The preload sends nothing here any more, and
+ * the main-process routes this code called (`swarm:provider-execute`, the
+ * manifest check and decide) are gone, as are the grant writes it made.
+ * PRQ-9 removes it with the other providers' request code.
  *
- * Communication flow:
- * webview (window.swarm) → renderer (this) → main (swarm-provider-ipc.js)
+ * Was: webview (window.swarm) → renderer (this) → main (swarm-provider-ipc.js)
  */
 
 import { getPermissionKey } from './dapp-provider.js';
@@ -74,16 +76,8 @@ const SETUP_REASONS = new Set([
   'no-usable-stamps',
 ]);
 
-// The methods this module ran with no prompt and no manifest check. They
-// now go from the page's preload straight to main, which serves them under
-// the page's attested key (freedom-core design 0011, PRQ-7a and, for
-// swarm_unsubscribe, 7b; src/main/page/page-swarm.js), as do
-// swarm_requestAccess and the other messaging methods (PRQ-7b), and
-// publishing and swarm_getUploadStatus (PRQ-7c), whose prompts and manifest
-// check main shows itself, and whose setup routing main asks for
-// (`swarm:publish-setup-needed`). Main refuses all of them on
-// swarm:provider-execute, and the chrome's grant writes they made. Their
-// branches below stay for rollback until PRQ-9 removes this path.
+// The methods this module ran with no prompt and no manifest check (see the
+// file header: main serves every method now).
 const PUBLIC_METHODS = new Set([
   'swarm_getCapabilities',
   'swarm_readFeedEntry',
