@@ -97,7 +97,7 @@ describe('isSenderAllowed', () => {
   // freedom-core design 0011, "The way in": a tab's top frame only, never an
   // internal page, and, unlike every other channel, never the chrome.
   test('the page channels take a tab webview\'s top frame and refuse the chrome', () => {
-    expect(PAGE_CHANNELS).toEqual(['page:hello', 'page:request']);
+    expect(PAGE_CHANNELS).toEqual(['page:hello', 'page:reserve', 'page:request']);
     for (const channel of PAGE_CHANNELS) {
       expect(WEBVIEW_CHANNEL_TIERS.get(channel)).toBe(TIER.PAGE);
       expect(isSenderAllowed(channel, web())).toBe(true);

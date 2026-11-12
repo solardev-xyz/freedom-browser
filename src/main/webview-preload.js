@@ -1761,21 +1761,210 @@ function routedToMain(provider, method) {
 
 const postToPage = (fields) => window.postMessage(fields, window.location.origin);
 
+// The size walk main runs on every request as it arrives (design 0011,
+// "Bounds"). A sandboxed preload can't require it, so this is a copy of
+// src/shared/page-request-bounds.js between its BEGIN and END lines, which
+// page-request-bounds.test.js keeps identical.
+// BEGIN page-request-bounds
+const PAGE_REQUEST_LIMITS = Object.freeze({
+  maxValues: 10000,
+  maxDepth: 32,
+  bigintBits: 256,
+  bigintBytes: 32,
+  defaultBytes: 1024 * 1024,
+  ticketAbove: 1024 * 1024,
+});
+
+// Today's Swarm payload limits (`LIMITS` in swarm-provider-ipc.js), which
+// the two methods that carry data or files may fill, plus 64 KiB for the
+// rest of the request.
+const PAGE_REQUEST_PAYLOADS = Object.freeze({
+  'swarm:swarm_publishData': Object.freeze({
+    limit: 10 * 1024 * 1024,
+    message: 'Payload exceeds maximum size of 10485760 bytes',
+  }),
+  'swarm:swarm_publishFiles': Object.freeze({
+    limit: 50 * 1024 * 1024,
+    message: 'Total size exceeds maximum of 52428800 bytes',
+  }),
+});
+const PAGE_REQUEST_REST = 64 * 1024;
+const PAGE_REQUEST_BIGINT_BOUND = 1n << BigInt(PAGE_REQUEST_LIMITS.bigintBits);
+
+function pageRequestPayload(provider, method) {
+  const key = `${provider}:${method}`;
+  return Object.prototype.hasOwnProperty.call(PAGE_REQUEST_PAYLOADS, key) ? PAGE_REQUEST_PAYLOADS[key] : null;
+}
+
+/** The most a request of this method may measure, in bytes. */
+function pageRequestMaxBytes(provider, method) {
+  const payload = pageRequestPayload(provider, method);
+  return payload ? payload.limit + PAGE_REQUEST_REST : PAGE_REQUEST_LIMITS.defaultBytes;
+}
+
+// The UTF-8 length of a string, stopping once it passes `cap`.
+function pageRequestUtf8Length(text, cap) {
+  // Every UTF-16 unit takes at least one UTF-8 byte.
+  if (text.length > cap) return text.length;
+  let bytes = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) {
+      bytes += 1;
+    } else if (unit < 0x800) {
+      bytes += 2;
+    } else if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < text.length) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+    if (bytes > cap) return bytes;
+  }
+  return bytes;
+}
+
+function pageRequestIsPlainObject(value) {
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Walk `root` against `maxBytes`. A top-level property named `skipKey` is
+ * left out (main's own ticket). `replaceView(view)`, when given, is called
+ * for a Uint8Array that doesn't span its buffer, and its answer takes the
+ * view's place in its parent and is measured instead (the preload sends a
+ * copy of just the view's bytes).
+ *
+ * @returns {{ok: true, size: number, values: number, names: number} |
+ *   {ok: false, reason: 'type'|'values'|'depth'|'bigint'|'size', size: number}}
+ */
+function measurePageRequest(root, maxBytes, options = {}) {
+  const skipKey = options.skipKey === undefined ? null : options.skipKey;
+  const replaceView = typeof options.replaceView === 'function' ? options.replaceView : null;
+  const max = PAGE_REQUEST_LIMITS.maxValues;
+  let size = 0;
+  let values = 0;
+  let names = 0;
+  // Four slots per value still to walk: the value, its depth, its parent
+  // and its key in the parent.
+  const stack = [root, 1, null, null];
+  const fail = (reason) => ({ ok: false, reason, size });
+  while (stack.length > 0) {
+    const key = stack.pop();
+    const parent = stack.pop();
+    const depth = stack.pop();
+    let value = stack.pop();
+    values += 1;
+    if (values > max) return fail('values');
+    if (depth > PAGE_REQUEST_LIMITS.maxDepth) return fail('depth');
+    const type = typeof value;
+    if (type === 'string') {
+      size += pageRequestUtf8Length(value, maxBytes - size);
+    } else if (type === 'bigint') {
+      if (value >= PAGE_REQUEST_BIGINT_BOUND || value <= -PAGE_REQUEST_BIGINT_BOUND) return fail('bigint');
+      size += PAGE_REQUEST_LIMITS.bigintBytes;
+    } else if (type === 'number' || type === 'boolean' || type === 'undefined' || value === null) {
+      // A value, and nothing more.
+    } else if (type !== 'object') {
+      return fail('type');
+    } else if (value instanceof Uint8Array) {
+      if (replaceView && parent !== null && (value.byteOffset !== 0 || value.byteLength !== value.buffer.byteLength)) {
+        value = replaceView(value);
+        parent[key] = value;
+      }
+      size += value.buffer.byteLength;
+    } else if (value instanceof ArrayBuffer) {
+      size += value.byteLength;
+    } else if (Array.isArray(value)) {
+      if (values + stack.length / 4 + value.length > max) return fail('values');
+      for (let i = value.length - 1; i >= 0; i -= 1) stack.push(value[i], depth + 1, value, i);
+    } else if (pageRequestIsPlainObject(value)) {
+      for (const name in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, name)) continue;
+        if (depth === 1 && name === skipKey) continue;
+        if (values + stack.length / 4 + 1 > max) return fail('values');
+        names += 1;
+        size += pageRequestUtf8Length(name, maxBytes - size);
+        if (size > maxBytes) return fail('size');
+        stack.push(value[name], depth + 1, value, name);
+      }
+    } else {
+      return fail('type');
+    }
+    if (size > maxBytes) return fail('size');
+  }
+  return { ok: true, size, values, names };
+}
+
+/** The error a page gets for a request the walk refuses. */
+function pageRequestWalkError(reason, provider, method, size) {
+  if (reason === 'size') {
+    const payload = pageRequestPayload(provider, method);
+    if (payload) {
+      return {
+        code: -32602,
+        message: payload.message,
+        data: { reason: 'payload_too_large', limit: payload.limit, actual: size },
+      };
+    }
+    return { code: -32005, message: 'Limit exceeded' };
+  }
+  if (reason === 'values' || reason === 'depth') return { code: -32005, message: 'Limit exceeded' };
+  return { code: -32602, message: 'Invalid parameters' };
+}
+// END page-request-bounds
+
+// A view that doesn't span its buffer goes to main as a copy of just its own
+// bytes, so main, which counts a view at its whole buffer, gets what this
+// measured.
+const copyView = (view) => view.slice();
+
+// A document's large requests go one at a time, each on its own ticket.
+let largeRequests = Promise.resolve();
+
 // Send one request to main, and post main's answer to the page under the
-// page's own request id. An answer for a document that has gone never comes
-// back here (its invoke went with it); one marked `gone` is dropped anyway.
+// page's own request id. It is measured first, as main measures it, and one
+// main would refuse is answered here and never sent. An answer for a
+// document that has gone never comes back here (its invoke went with it);
+// one marked `gone` is dropped anyway.
 function sendPageRequest(provider, id, method, params) {
   const types = PAGE_MESSAGE_TYPES.get(provider);
+  const answer = (fields) => postToPage({ type: types.response, id, ...fields });
+  const failed = () => answer({ error: { code: -32603, message: 'Internal error' } });
+  const deliver = (reply) => {
+    if (!reply || typeof reply !== 'object' || reply.gone === true) return;
+    answer({ result: reply.result, error: reply.error });
+  };
   const request = { nonce: PAGE_NONCE, provider, method, params };
-  ipcRenderer.invoke('page:request', request).then(
-    (answer) => {
-      if (!answer || typeof answer !== 'object' || answer.gone === true) return;
-      postToPage({ type: types.response, id, result: answer.result, error: answer.error });
-    },
-    () => {
-      postToPage({ type: types.response, id, error: { code: -32603, message: 'Internal error' } });
+  const max = pageRequestMaxBytes(provider, method);
+  const measured = measurePageRequest(request, max, { replaceView: copyView });
+  if (!measured.ok) {
+    answer({ error: pageRequestWalkError(measured.reason, provider, method, measured.size) });
+    return;
+  }
+  if (measured.size <= PAGE_REQUEST_LIMITS.ticketAbove) {
+    ipcRenderer.invoke('page:request', request).then(deliver, failed);
+    return;
+  }
+  largeRequests = largeRequests.then(async () => {
+    try {
+      const reservation = await ipcRenderer.invoke('page:reserve', { nonce: PAGE_NONCE, method, bytes: measured.size });
+      if (!reservation || typeof reservation !== 'object' || reservation.gone === true) return;
+      if (typeof reservation.ticket !== 'string') {
+        deliver({ error: reservation.error || { code: -32603, message: 'Internal error' } });
+        return;
+      }
+      deliver(await ipcRenderer.invoke('page:request', { ...request, ticket: reservation.ticket }));
+    } catch {
+      failed();
     }
-  );
+  });
 }
 
 if (PAGE_REQUESTS_ENABLED) {
