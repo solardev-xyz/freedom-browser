@@ -308,6 +308,34 @@
   height: 15px;
 }
 
+/* Page requests waiting for the user (freedom-core design 0011, PRQ-4):
+   every open prompt of the window, its tab's or a background tab's. */
+.wallet-toggle-btn {
+  position: relative;
+}
+
+.wallet-prompt-count {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  color: var(--agent-on-accent);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 14px;
+  text-align: center;
+  background: var(--accent);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.wallet-prompt-count.hidden {
+  display: none;
+}
+
 /* ============================================
    Setup CTA (No vault state)
    ============================================ */

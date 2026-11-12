@@ -2992,6 +2992,74 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  // freedom-core design 0011, PRQ-4: a page request main attested carries
+  // main's key, the checks the effect waits on, and a signal main aborts
+  // when it answers the request.
+  test('a page request main attested: its approval is withdrawn when main answers the request', async () => {
+    const fake = createFakeSession();
+    const scopedController = {
+      execute: jest.fn(),
+      prepareResume: jest.fn(async () => ({ ok: true })),
+      getActiveTabId: jest.fn(() => 'tab_assigned'),
+      getWorkspaceState: jest.fn(() => ({ tabIds: ['tab_assigned'], activeTabId: 'tab_assigned' })),
+      setExternalApprovalBarrier: jest.fn(),
+    };
+    let seen = null;
+    const walletController = {
+      handleRequest: jest.fn(async (context) => {
+        seen = context;
+        const decision = await context.requestApproval({
+          action: 'wallet_connection',
+          operation: OPERATIONS.WALLET_ACTION,
+          tabId: context.tabId,
+          origin: context.attested.key,
+          destinationOrigin: context.attested.key,
+          label: 'Connect a wallet account',
+          wallet: { kind: 'connection', chainId: 100, chainName: 'Gnosis', wallets: [], defaultWalletIndex: 0, requiresUnlock: false },
+        });
+        return { handled: true, error: { code: 4001, message: String(decision) } };
+      }),
+    };
+    const { service } = createService(fake, {
+      controller: {
+        execute: jest.fn(),
+        getPageState: jest.fn(() => ({ tabId: 'tab_assigned', url: 'https://app.example/swap', navigationId: 4 })),
+      },
+      createControllerScope: jest.fn(async () => scopedController),
+      walletController,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const answered = new AbortController();
+    const pageRequest = {
+      signal: answered.signal,
+      attested: { key: 'https://app.example', transportKey: 'https://app.example' },
+      beforeEffect: jest.fn(async () => true),
+      effectAllowed: jest.fn(() => true),
+    };
+    const response = service.handleWalletRequest(
+      'tab_assigned',
+      { method: 'eth_requestAccounts', params: [], chainId: 100 },
+      pageRequest
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events.find((event) => event.type === 'approval_requested')).toMatchObject({ action: 'wallet_connection' });
+    expect(seen).toMatchObject({
+      attested: pageRequest.attested,
+      beforeEffect: pageRequest.beforeEffect,
+      effectAllowed: pageRequest.effectAllowed,
+    });
+    // Main answers the request (its deadline): the approval is withdrawn.
+    answered.abort();
+    await expect(response).resolves.toEqual({ handled: true, error: { code: 4001, message: 'withdrawn' } });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
   test('leaves wallet requests from inactive or unrelated tabs to the human wallet flow', async () => {
     const fake = createFakeSession();
     const walletController = { handleRequest: jest.fn() };

@@ -307,6 +307,74 @@ describe('AgentWalletController', () => {
     );
   });
 
+  // freedom-core design 0011, PRQ-4: main attests a page's connect and
+  // passes its key, and the checks the grant write waits on.
+  describe('a connect main attested', () => {
+    const IPNS = 'ipns://k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
+    const attestedContext = (gate = {}, approval = jest.fn(async () => 'approved')) => ({
+      ...context(approval),
+      pageUrl: `${IPNS}/docs`,
+      attested: { key: 'example.com', transportKey: IPNS },
+      beforeEffect: gate.beforeEffect || jest.fn(async () => true),
+      effectAllowed: gate.effectAllowed || jest.fn(() => true),
+    });
+    const attestedRequest = { method: 'eth_requestAccounts', params: [], chainId: 100 };
+
+    test('acts under main\'s key, a DNS name over its IPNS page, once main\'s checks pass', async () => {
+      const harness = createHarness();
+      const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true) };
+      const provider = await harness.controller.handleRequest(attestedContext(gate), attestedRequest);
+      expect(provider).toMatchObject({ handled: true, result: ['0x1111111111111111111111111111111111111111'] });
+      expect(provider.receipt.wallet.origin).toBe('example.com');
+      expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
+      expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('example.com', 0, 100);
+      expect(gate.beforeEffect).toHaveBeenCalledTimes(1);
+      expect(gate.effectAllowed).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+      ['main has answered the request, or the name moved', { beforeEffect: jest.fn(async () => false) }],
+      ['the page left its key in the run of the write', { effectAllowed: jest.fn(() => false) }],
+    ])('writes nothing when %s', async (_name, gate) => {
+      const harness = createHarness({ permission: { walletIndex: 1, chainId: 1 } });
+      const provider = await harness.controller.handleRequest(attestedContext(gate), attestedRequest);
+      expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+      expect(harness.dependencies.grantPermission).not.toHaveBeenCalled();
+      expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
+      expect(harness.dependencies.updateWalletIndex).not.toHaveBeenCalled();
+    });
+
+    test('a page this run sees on another transport, or no key, is refused before any approval', async () => {
+      const harness = createHarness();
+      const approval = jest.fn(async () => 'approved');
+      for (const attested of [
+        { key: 'example.com', transportKey: 'ipns://k51other' },
+        { key: '', transportKey: IPNS },
+        { transportKey: IPNS },
+      ]) {
+        const provider = await harness.controller.handleRequest(
+          { ...attestedContext({}, approval), attested },
+          attestedRequest
+        );
+        expect(provider).toMatchObject({ handled: true, error: { code: 4100 } });
+      }
+      expect(approval).not.toHaveBeenCalled();
+      expect(harness.dependencies.grantPermission).not.toHaveBeenCalled();
+    });
+
+    test('only a connect comes attested: another method is left to its own path', async () => {
+      const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+      const approval = jest.fn(async () => 'approved');
+      const provider = await harness.controller.handleRequest(attestedContext({}, approval), {
+        method: 'personal_sign',
+        params: ['0x68656c6c6f', '0x1111111111111111111111111111111111111111'],
+        chainId: 100,
+      });
+      expect(provider).toEqual({ handled: false });
+      expect(approval).not.toHaveBeenCalled();
+    });
+  });
+
   test('returns EIP-1193 rejection and a typed Agent cancellation when declined', async () => {
     const harness = createHarness();
     const provider = await harness.controller.handleRequest(

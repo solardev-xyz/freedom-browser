@@ -4,6 +4,8 @@ const {
   DEFAULT_SELECTED_CHAIN_ID,
   selectedChainOf,
   selectChain,
+  selectChainForPage,
+  PAGE_SELECTED_CHANNEL,
   registerSelectedChainIpc,
   resetSelectedChains,
 } = require('./selected-chain');
@@ -73,5 +75,27 @@ describe('the selected chain in main (freedom-core design 0011, PRQ-3)', () => {
     windows.get('chrome-2').destroyed = true;
     ipc.emit(CHANNEL, { sender: 'chrome-2' }, 3);
     expect(selectedChainOf(2)).toBe(10);
+  });
+
+  // PRQ-4: a page's wallet_switchEthereumChain is main's; main selects the
+  // chain for the page's window and tells that window's chrome.
+  test('a page\'s switch selects the chain for its window and tells that window\'s chrome', () => {
+    const win = new FakeWindow(4);
+    win.webContents = { send: jest.fn(), isDestroyed: () => false };
+    const windowFromId = (id) => (id === 4 ? win : null);
+    expect(selectChainForPage(4, 1, { windowFromId })).toBe(true);
+    expect(selectedChainOf(4)).toBe(1);
+    expect(win.webContents.send).toHaveBeenCalledWith(PAGE_SELECTED_CHANNEL, 1);
+    expect(PAGE_SELECTED_CHANNEL).toBe('wallet:page-selected-chain');
+    // Not "All Chains", not a malformed chain, not a window that has gone.
+    expect(selectChainForPage(4, null, { windowFromId })).toBe(false);
+    expect(selectChainForPage(4, 0, { windowFromId })).toBe(false);
+    expect(selectChainForPage(5, 10, { windowFromId })).toBe(false);
+    expect(selectedChainOf(5)).toBe(100);
+    win.emit('closed');
+    expect(selectedChainOf(4)).toBe(100);
+    win.destroyed = true;
+    expect(selectChainForPage(4, 10, { windowFromId })).toBe(false);
+    expect(win.webContents.send).toHaveBeenCalledTimes(1);
   });
 });

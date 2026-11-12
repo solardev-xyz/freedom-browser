@@ -353,3 +353,57 @@ describe('dapp-permissions — a transaction rule covers no more value than its 
     expect(covers('0')).toBe(false);
   });
 });
+
+// freedom-core design 0011, PRQ-4: main writes a connection itself, for the
+// key it attested, from the user's decision on its own prompt. The chrome's
+// grant write named the site, so it is refused for every site; revoking,
+// which only narrows, stays open.
+describe('dapp-permissions — the chrome writes no grant (0011 PRQ-4)', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    registerDappPermissionsIpc();
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  test.each([
+    'https://swap.example',
+    'bzz://' + 'a'.repeat(64),
+    'name.eth',
+    'example.com',
+    'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100',
+    '',
+    undefined,
+  ])('dapp:grant-permission for %p is refused and writes nothing', (site) => {
+    expect(() => ipcHandlers['dapp:grant-permission']({}, site, 0, 100)).toThrow(
+      'A dApp connection is granted only from its own prompt'
+    );
+    expect(getAllPermissions()).toEqual([]);
+    if (site) expect(getPermission(site)).toBeNull();
+  });
+
+  test('an existing grant is left as it is, and revoking it still works', () => {
+    grantPermission('https://swap.example', 1, 1);
+    expect(() => ipcHandlers['dapp:grant-permission']({}, 'https://swap.example', 0, 100)).toThrow();
+    expect(getPermission('https://swap.example')).toMatchObject({ walletIndex: 1, chainId: 1 });
+    expect(ipcHandlers['dapp:revoke-permission']({}, 'https://swap.example')).toBe(true);
+    expect(getPermission('https://swap.example')).toBeNull();
+  });
+
+  test('dapp:update-last-used marks a site used, and refuses a chain the chrome supplies', () => {
+    grantPermission('https://swap.example', 0, 100);
+    const before = getPermission('https://swap.example').lastUsed;
+    jest.spyOn(Date, 'now').mockReturnValue(before + 5000);
+    expect(ipcHandlers['dapp:update-last-used']({}, 'https://swap.example')).toBe(true);
+    expect(getPermission('https://swap.example')).toMatchObject({ chainId: 100, lastUsed: before + 5000 });
+    for (const chainId of [1, null, '0x1', 0]) {
+      expect(() => ipcHandlers['dapp:update-last-used']({}, 'https://swap.example', chainId)).toThrow(
+        'A dApp connection’s chain is set only by the page’s own request'
+      );
+    }
+    expect(getPermission('https://swap.example')).toMatchObject({ chainId: 100, lastUsed: before + 5000 });
+    // A site with no grant gets none.
+    expect(ipcHandlers['dapp:update-last-used']({}, 'https://other.example')).toBe(false);
+    expect(getPermission('https://other.example')).toBeNull();
+  });
+});

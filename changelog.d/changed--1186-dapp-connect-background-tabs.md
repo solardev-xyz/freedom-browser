@@ -1,0 +1,2 @@
+- A dApp in a background tab that asks to connect now waits for you to switch to it, with a dot on its tab and a count on the wallet button, instead of opening the wallet sidebar over the tab you're on ([#1186](https://github.com/solardev-xyz/freedom-browser/pull/1186))
+  - A connect request you haven't seen after a minute is closed and the page is told it timed out; one you're looking at waits for your answer

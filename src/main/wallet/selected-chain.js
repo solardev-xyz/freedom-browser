@@ -11,6 +11,11 @@
  * read the chain of the page's own window from here, as the chrome read its
  * own state before.
  *
+ * A page's `wallet_switchEthereumChain` is main's from PRQ-4
+ * (`page/page-ethereum.js`): main selects the chain for the page's window
+ * itself (`selectChainForPage`) and tells that window's chrome
+ * (`wallet:page-selected-chain`), whose switcher then shows it.
+ *
  * A window that has reported nothing has the switcher's default, Gnosis
  * (100). `null` is the switcher's "All Chains", which reads as Gnosis too.
  * A compromised chrome can change this; that is no approval (the design's
@@ -18,6 +23,8 @@
  */
 
 const CHANNEL = 'wallet:select-chain';
+// main -> chrome: a page's switch selected this chain for the window.
+const PAGE_SELECTED_CHANNEL = 'wallet:page-selected-chain';
 
 // The chain switcher's own default (`walletState.selectedChainId`).
 const DEFAULT_SELECTED_CHAIN_ID = 100;
@@ -46,6 +53,41 @@ function forgetWindow(windowId) {
   watched.delete(windowId);
 }
 
+function watch(win) {
+  const windowId = win.id;
+  if (watched.has(windowId)) return;
+  watched.add(windowId);
+  win.once('closed', () => forgetWindow(windowId));
+}
+
+/**
+ * A page's `wallet_switchEthereumChain` selects `chainId` for its window:
+ * main records it, and tells that window's chrome so its switcher shows
+ * it. False for a malformed chain or a window that has gone.
+ */
+function selectChainForPage(
+  windowId,
+  chainId,
+  { windowFromId = (id) => require('electron').BrowserWindow.fromId(id) } = {}
+) {
+  if (!isChainId(chainId)) return false;
+  let win;
+  try {
+    win = windowFromId(windowId);
+  } catch {
+    return false;
+  }
+  if (!win || win.isDestroyed?.()) return false;
+  if (!selectChain(windowId, chainId)) return false;
+  watch(win);
+  try {
+    if (!win.webContents.isDestroyed?.()) win.webContents.send(PAGE_SELECTED_CHANNEL, chainId);
+  } catch {
+    // The window is closing; its selection goes with it.
+  }
+  return true;
+}
+
 /**
  * `wallet:select-chain`, a `send` from the chrome (the sender policy lets
  * only the chrome call a channel no webview tier lists). Sent before the
@@ -64,12 +106,8 @@ function registerSelectedChainIpc(
       return;
     }
     if (!win || win.isDestroyed?.() || !Number.isInteger(win.id)) return;
-    const windowId = win.id;
-    if (!selectChain(windowId, chainId)) return;
-    if (!watched.has(windowId)) {
-      watched.add(windowId);
-      win.once('closed', () => forgetWindow(windowId));
-    }
+    if (!selectChain(win.id, chainId)) return;
+    watch(win);
   });
 }
 
@@ -81,9 +119,11 @@ function resetSelectedChains() {
 
 module.exports = {
   CHANNEL,
+  PAGE_SELECTED_CHANNEL,
   DEFAULT_SELECTED_CHAIN_ID,
   selectedChainOf,
   selectChain,
+  selectChainForPage,
   registerSelectedChainIpc,
   resetSelectedChains,
 };
