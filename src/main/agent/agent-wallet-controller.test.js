@@ -383,9 +383,19 @@ describe('AgentWalletController', () => {
         expect(provider.receipt.wallet.origin).toBe('example.com');
         expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
         expect(harness.signer[signerMethod]).toHaveBeenCalledTimes(1);
-        expect(gate.beforeEffect).toHaveBeenCalledTimes(1);
-        // Before the signature, and before the grant's last use.
+        // Both before the signature, and again before the grant's last use.
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
         expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
+        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100);
+      });
+
+      test("the name moving during the signature: signed, but the grant's last use untouched", async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect }), { method, params, chainId: 100 });
+        expect(provider).toMatchObject({ handled: true });
+        expect(harness.signer[signerMethod]).toHaveBeenCalledTimes(1);
+        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
       });
 
       test.each([
