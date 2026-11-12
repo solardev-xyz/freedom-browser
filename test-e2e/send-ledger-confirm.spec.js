@@ -184,9 +184,14 @@ test('the send screen refuses to open over another surface\'s device confirmatio
   window,
 }) => {
   await stubMainIpc(electronApp);
+  // The chrome's own dApp screen, kept for rollback until PRQ-9 of
+  // freedom-core design 0011: from PRQ-5b main refuses it a dApp send's
+  // token, so its confirmation is replaced here with the rest of main.
   await electronApp.evaluate(({ ipcMain }) => {
     ipcMain.removeHandler('wallet:dapp-send-transaction');
     ipcMain.handle('wallet:dapp-send-transaction', () => new Promise(() => {}));
+    ipcMain.removeHandler('wallet:confirm-signing');
+    ipcMain.handle('wallet:confirm-signing', () => ({ success: true, token: 'token-e2e', expiresAt: Date.now() + 60_000 }));
   });
 
   // A dApp transaction is waiting on the device.

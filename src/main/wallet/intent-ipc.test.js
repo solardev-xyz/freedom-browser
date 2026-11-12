@@ -162,7 +162,12 @@ async function heldDeployment(running, safeAddress = '0x' + '5a'.repeat(20)) {
   return { key, held };
 }
 
-function authorize(running, how, walletIndex, tx) {
+// A dApp send's confirmation binds the site it is for, as the approval's
+// does. From freedom-core design 0011 PRQ-5b a page's send is main's
+// (page/page-sends.js), which builds its record context itself and names no
+// intent key; the chrome's route, kept until PRQ-9, takes no rule claim, and
+// still drops a context key for a confirmation minted directly here.
+function authorize(running, walletIndex, tx) {
   mockPermission = {
     site: SITE,
     walletIndex,
@@ -170,15 +175,12 @@ function authorize(running, how, walletIndex, tx) {
     selector: tx.data.slice(0, 10),
     chainId: tx.chainId,
   };
-  // A dApp send's confirmation binds the site it is for, as the approval's does.
-  return how === 'confirmed'
-    ? {
-        confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, {
-          ...tx,
-          origin: SITE,
-        }).token,
-      }
-    : { autoApprove: SITE, webContentsId: 12 };
+  return {
+    confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, {
+      ...tx,
+      origin: SITE,
+    }).token,
+  };
 }
 
 const call = (chainId) => ({
@@ -190,9 +192,9 @@ const call = (chainId) => ({
   gasPrice: '1000000000',
 });
 
-describe.each(['confirmed', 'auto-approved'])(
+describe.each(['confirmed'])(
   'a %s dApp send whose context names an intent key',
-  (how) => {
+  () => {
     test("another account's request sends its own transaction, not the held one", async () => {
       // The review's probe: Bob's call on chain 1, naming Alice's deployment.
       const running = start();
@@ -203,7 +205,7 @@ describe.each(['confirmed', 'auto-approved'])(
         tx,
         1,
         { intentKey: key, origin: SITE },
-        authorize(running, how, 1, tx)
+        authorize(running, 1, tx)
       );
 
       expect(reply).toMatchObject({ success: true, chainId: 1, from: BOB.address });
@@ -229,7 +231,7 @@ describe.each(['confirmed', 'auto-approved'])(
         tx,
         0,
         { intentKey: key, origin: SITE },
-        authorize(running, how, 0, tx)
+        authorize(running, 0, tx)
       );
 
       expect(reply).toMatchObject({ success: true, chainId: 1, from: ALICE.address });
@@ -249,7 +251,7 @@ describe.each(['confirmed', 'auto-approved'])(
           tx,
           1,
           { [name]: futureKey, origin: SITE },
-          authorize(running, how, 1, tx)
+          authorize(running, 1, tx)
         );
         expect(reply.success).toBe(true);
         expect(running.store.get(reply.intentId).context.key).toBeNull();
@@ -514,7 +516,7 @@ describe('held payments over IPC (4b)', () => {
       tx,
       1,
       { origin: SITE },
-      authorize(running, 'confirmed', 1, tx)
+      authorize(running, 1, tx)
     );
     expect(failed).toMatchObject({
       success: false,

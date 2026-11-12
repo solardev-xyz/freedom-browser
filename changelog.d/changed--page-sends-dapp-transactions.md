@@ -1,0 +1,4 @@
+- A dApp's transaction request in a background tab now waits for you to switch to it, as its connect and signature requests do, instead of opening the wallet sidebar over the tab you're on
+  - A transaction request you haven't seen after five minutes is closed and the site is told it timed out; one you're looking at waits for your answer
+  - A transaction that fails after you approve it now tells the site and closes the request; a payment that got as far as being signed stays in Payments waiting, where you can send it again
+  - A multi-owner account's transaction you leave on its signing board keeps the site waiting until it is sent or discarded, without blocking the site's other wallet requests
