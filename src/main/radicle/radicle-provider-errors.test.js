@@ -73,7 +73,8 @@ const manager = require('../radicle-manager');
 const permissions = require('./radicle-permissions');
 const cob = require('./cob-service');
 const privateWindows = require('../private/private-windows');
-const { registerRadicleProviderIpc } = require('./radicle-provider-ipc');
+const { registerRadicleProviderIpc, executeRadicleForPage } = require('./radicle-provider-ipc');
+const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
 
 registerRadicleProviderIpc();
 
@@ -88,13 +89,19 @@ const privateChrome = mockFixture.privateSender(privateWindows);
 // The renderer reports the user's per-write approval, so no approval rule
 // is in play and each request reaches its backend.
 const META = { webContentsId: 9, approval: 'user' };
+// A method main's page dispatcher serves (freedom-core design 0011, PRQ-8)
+// runs on main's page path, under the attested key, and its replies follow
+// the same rule; the chrome's route refuses it. The rest run on the
+// chrome's route.
 const execute = (sender, method, params = {}) =>
-  mockHandlers.get(IPC.RADICLE_PROVIDER_EXECUTE)(sender === undefined ? {} : { sender }, {
-    method,
-    params,
-    origin: ORIGIN,
-    meta: META,
-  });
+  RADICLE_PAGE_METHODS.includes(method)
+    ? executeRadicleForPage(method, params, ORIGIN)
+    : mockHandlers.get(IPC.RADICLE_PROVIDER_EXECUTE)(sender === undefined ? {} : { sender }, {
+      method,
+      params,
+      origin: ORIGIN,
+      meta: META,
+    });
 
 // Absolute paths of each kind, as #1050's tests find them.
 const UNIX_PATH = /(?:^|[\s'"(=:,])\/(?!\/)[^\s'"/]/;
@@ -537,7 +544,9 @@ describe('private senders (#1073)', () => {
   const lines = () =>
     loggedLines().filter((args) => args.includes(text) || args.includes('<private>'));
 
-  test.each(LOG_SITES)(
+  // A private window's request never reaches main's page path (main's
+  // attestation refuses it, PRQ-2), so these are the chrome route's.
+  test.each(LOG_SITES.filter((site) => !RADICLE_PAGE_METHODS.includes(site.method)))(
     '$label: a private window logs <private>, a normal one the detail',
     async ({ method, params, fail }) => {
       fail(text);
@@ -564,19 +573,21 @@ describe('private senders (#1073)', () => {
     ['a sender with no window', { id: 77, isDestroyed: () => false }],
     ['a destroyed sender', { isDestroyed: () => true }],
   ])('%s logs <private>', async (_label, sender) => {
-    embedded.listSeededRepos.mockRejectedValueOnce(new Error(text));
-    await execute(sender, 'radicle_listSeededRepos');
-    expect(lines()).toEqual([['[radicle-provider] radicle_listSeededRepos failed:', '<private>']]);
+    cob.clearIdentityCache();
+    embedded.identity.mockRejectedValueOnce(new Error(text));
+    await execute(sender, 'radicle_getIdentity');
+    expect(lines()).toEqual([['[radicle-provider] radicle_getIdentity failed:', '<private>']]);
   });
 
   test.each(['null', 'throw'])(
     'a public sender whose window lookup gives %s logs <private>',
     async (mode) => {
       mockFixture.lookup.mode = mode;
-      embedded.listSeededRepos.mockRejectedValueOnce(new Error(text));
-      await execute(publicChrome, 'radicle_listSeededRepos');
+      cob.clearIdentityCache();
+      embedded.identity.mockRejectedValueOnce(new Error(text));
+      await execute(publicChrome, 'radicle_getIdentity');
       expect(lines()).toEqual([
-        ['[radicle-provider] radicle_listSeededRepos failed:', '<private>'],
+        ['[radicle-provider] radicle_getIdentity failed:', '<private>'],
       ]);
     }
   );
