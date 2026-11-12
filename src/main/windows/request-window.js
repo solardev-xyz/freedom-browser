@@ -10,12 +10,14 @@
  * the one that asked: a page's request runs for the window that hosts its
  * tab (`page-requests.js`), a wallet handler for the chrome that called it
  * (`wallet-ipc.js`, `intent-ipc.js`, the remote account's check in
- * `identity-manager.js`), and a Safe board for the window it shows in. Each
- * entry point runs its work inside `runInWindow`, and the bridge reads the
- * window back with `requestWindowId`, however many layers lie between.
+ * `identity-manager.js`), a Safe board for the window it shows in, and an
+ * x402 payment for the window that hosts its tab (`x402/sign-flow.js`,
+ * APS-5). Each entry point runs its work inside `runInWindow`, and the
+ * bridge reads the window back with `requestWindowId`, however many layers
+ * lie between.
  *
- * Outside every entry point (the agent, an x402 payment), there is no
- * window, and the bridge keeps its old target: the focused window.
+ * Outside every entry point (the agent), there is no window, and the bridge
+ * keeps its old target: the focused window.
  */
 
 const { AsyncLocalStorage } = require('async_hooks');

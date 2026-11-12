@@ -6,15 +6,20 @@
 // user's approval there; a fee above the threshold is asked again in the
 // panel, whatever the chrome says it acknowledged.
 
+const http = require('http');
+const { verifyTypedData } = require('ethers');
 const {
   test,
   expect,
+  VAULT_PASSWORD,
   PAST_DELAY_MS,
   sleep,
+  inGuest,
   approvalsState,
   approvalsTrace,
   chromeWindowId,
   approvalsPage,
+  openTab,
   reportCount,
   nextReport,
   clickTooSoon,
@@ -265,4 +270,171 @@ test('a resend asked again after a replacement says why, in the panel (0011 APS-
   await docPage.click('#approve');
   await expect(win.locator('#send-success-view')).toBeVisible();
   expect(await electronApp.evaluate(() => globalThis.__resends.length)).toBe(2);
+});
+
+// --- APS-5: an x402 payment, asked and approved in the panel ----------------
+
+const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+const PAY_TO = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
+const ACCEPT = {
+  scheme: 'exact',
+  network: 'eip155:8453',
+  // Within the x402 client's own limit on one payment ($1).
+  amount: '500000',
+  asset: USDC_BASE,
+  payTo: PAY_TO,
+  maxTimeoutSeconds: 300,
+  extra: { name: 'USD Coin', version: '2' },
+};
+
+// A paywall on loopback: /article answers 402 with its x402 requirements,
+// and 200 once a request carries a PAYMENT-SIGNATURE, which it keeps. The
+// harness's http stub is taken off for it, so its responses come through
+// Chromium's network stack and main's webRequest handlers, x402's detector
+// and injector among them.
+async function startPaywall(electronApp) {
+  const paid = [];
+  const server = http.createServer((req, res) => {
+    const html = (title) => `<!doctype html><title>${title}</title><h1>${title}</h1>`;
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`${html('home')}<script>window.__ready = true</script>`);
+      return;
+    }
+    if (req.url !== '/article') {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const signature = req.headers['payment-signature'];
+    if (signature) {
+      paid.push(signature);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html('paid'));
+      return;
+    }
+    const requirements = { x402Version: 2, resource: { url: `${origin}/article` }, accepts: [ACCEPT] };
+    res.writeHead(402, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'PAYMENT-REQUIRED': Buffer.from(JSON.stringify(requirements)).toString('base64'),
+    });
+    res.end(html('402'));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await electronApp.evaluate(({ session }) => session.defaultSession.protocol.unhandle('http'));
+  return {
+    origin,
+    url: `${origin}/article`,
+    paid,
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections();
+        server.close(resolve);
+      }),
+  };
+}
+
+test('a 402 paid from the panel: main\'s view, the chrome refused, the panel\'s approval pays (0011 APS-5)', async ({ electronApp, window: win }) => {
+  test.setTimeout(180_000);
+  const paywall = await startPaywall(electronApp);
+  try {
+    const windowId = await chromeWindowId(electronApp);
+    const docPage = await approvalsPage(electronApp);
+    const unlocked = await win.evaluate((password) => window.identity.unlock(password), VAULT_PASSWORD);
+    expect(unlocked, JSON.stringify(unlocked)).toMatchObject({ success: true });
+    let account = null;
+    await expect
+      .poll(async () => {
+        account = (await win.evaluate(() => window.wallet.getDerivedWallets()))?.wallets?.[0]?.address ?? null;
+        return account;
+      })
+      .toMatch(/^0x[0-9a-fA-F]{40}$/);
+    // The card's balances, which would need the network, are replaced; the
+    // detection, the confirmation, the approval and the signature are main's.
+    await electronApp.evaluate(({ ipcMain }, { accept, url }) => {
+      ipcMain.removeHandler('x402:get-details');
+      ipcMain.handle('x402:get-details', (_event, args) => ({
+        success: true,
+        url,
+        detectionId: args.detectionId,
+        accepts: [
+          {
+            accept,
+            tuple: { chainId: 8453, asset: accept.asset.toLowerCase(), amount: accept.amount },
+            balanceKey: `8453:${accept.asset.toLowerCase()}`,
+            asset: { symbol: 'USDC', decimals: 6 },
+            balance: '9000000',
+            fundable: true,
+            autoPay: { kind: 'none' },
+          },
+        ],
+        initialSelectionIndex: 0,
+      }));
+    }, { accept: ACCEPT, url: paywall.url });
+
+    // The page's 402 opens the payment card in the sidebar: the tab opens
+    // on the site first, so the tab switch is over when the 402 comes.
+    const guest = await openTab(electronApp, win, `${paywall.origin}/`);
+    await electronApp.evaluate(({ webContents }, args) => {
+      webContents.fromId(args.guest).loadURL(args.url).catch(() => {});
+    }, { guest, url: paywall.url });
+    await expect(win.locator('#sidebar-x402-approval')).toBeVisible();
+    await expect(win.locator('#x402-approval-approve')).toBeEnabled();
+
+    // Pay asks in the panel, with main's view of the payment.
+    const after = await reportCount(electronApp, windowId);
+    await win.click('#x402-approval-approve');
+    const { handle } = await nextReport(electronApp, windowId, after);
+    await expect(docPage.locator('#heading')).toHaveText('Payment Required');
+    await expect(docPage.locator('#site')).toHaveText('Your wallet');
+    const body = docPage.locator('#body');
+    await expect(body).toContainText(paywall.origin);
+    await expect(body).toContainText(account);
+    await expect(body).toContainText('0.5 USDC');
+    await expect(body).toContainText(PAY_TO);
+    await expect(body).toContainText('Base (chain 8453)');
+    await expect(body).toContainText(paywall.url);
+    await expect(docPage.locator('#approve')).toHaveText('Pay');
+    await docPage.screenshot({ path: test.info().outputPath('approvals-x402-payment.png') });
+    // The chrome can't decide it, and nothing is paid yet.
+    expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, {}), handle)).toEqual({ ok: false, reason: 'approvals-document' });
+    await sleep(PAST_DELAY_MS);
+    expect(paywall.paid).toHaveLength(0);
+
+    // The panel's approval mints the token the card pays with.
+    await docPage.click('#approve');
+    await expect.poll(() => paywall.paid.length, { timeout: 30_000 }).toBe(1);
+    await expect.poll(() => inGuest(electronApp, guest, 'document.title').catch(() => null)).toBe('paid');
+    await expect(win.locator('#sidebar-x402-approval')).toBeHidden();
+    await expect.poll(async () => (await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, shown: null });
+
+    // What reached the seller: an EIP-3009 authorization for the entry the
+    // panel showed, signed by the account it named.
+    const [header] = paywall.paid;
+    const sent = JSON.parse(Buffer.from(header, 'base64').toString('utf8'));
+    const { authorization, signature } = sent.payload;
+    expect(authorization).toMatchObject({ from: account, to: PAY_TO, value: '500000' });
+    const signer = verifyTypedData(
+      { name: 'USD Coin', version: '2', chainId: 8453, verifyingContract: USDC_BASE },
+      {
+        TransferWithAuthorization: [
+          { name: 'from', type: 'address' },
+          { name: 'to', type: 'address' },
+          { name: 'value', type: 'uint256' },
+          { name: 'validAfter', type: 'uint256' },
+          { name: 'validBefore', type: 'uint256' },
+          { name: 'nonce', type: 'bytes32' },
+        ],
+      },
+      authorization,
+      signature
+    );
+    expect(signer.toLowerCase()).toBe(account.toLowerCase());
+    // One decision, the panel's.
+    const decides = (await approvalsTrace(electronApp)).filter((e) => e.kind === 'decide' && e.ok === true);
+    expect(decides).toHaveLength(1);
+  } finally {
+    await paywall.close();
+  }
 });

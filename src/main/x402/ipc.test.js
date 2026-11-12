@@ -16,7 +16,12 @@ jest.mock('electron', () => ({
   webContents: {
     fromId: jest.fn(),
   },
+  // The chrome window a host webContents is: none, unless a test says so.
+  BrowserWindow: {
+    fromWebContents: (...args) => mockFromWebContents(...args),
+  },
 }));
+const mockFromWebContents = jest.fn(() => null);
 
 const mockClient = {
   createPaymentPayload: jest.fn(),
@@ -130,7 +135,8 @@ const { webContents } = require('electron');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const intercept = require('./intercept');
 const { outgoingHeaderForVersion } = require('./intercept');
-const { registerX402Ipc } = require('./ipc');
+const { registerX402Ipc, paymentApprovalRequest } = require('./ipc');
+const { requestWindowId } = require('../windows/request-window');
 const confirmations = require('../wallet/signing-confirmation');
 
 beforeAll(() => {
@@ -2073,6 +2079,145 @@ describe("x402 payment authority belongs to the window hosting the payment's tab
     await expect(waiting).rejects.toThrow('tab destroyed');
     await expect(senderWaiting).rejects.toThrow('tab destroyed');
     expect(intercept.consumePendingUnlockResume(45)).toMatchObject({ authorizedBy: 'cap' });
+  });
+});
+
+// === The approvals panel's prompt (freedom-core design 0011, APS-5) =======
+//
+// With the approvals document on, `wallet:confirm-signing` asks for a payment
+// in the window's panel with main's record of it: `paymentApprovalRequest`
+// builds what the prompt shows and the token binds, and refuses, with
+// nothing asked, whatever x402:approve would refuse.
+
+describe('the panel asks for a payment as main holds it', () => {
+  const FORGED = { scheme: 'exact', network: 'eip155:8453', amount: '1', asset: '0xforged', payTo: '0xforged' };
+  const SIGNED = { x402Version: 2, payload: { authorization: {}, signature: '0xabc' } };
+
+  test('the tab, URL and entry from main\'s record, not the chrome\'s; its token pays through x402:approve', async () => {
+    detectOn(42, { id: 8301 });
+    const request = paymentApprovalRequest(CHROME, {
+      webContentsId: 42,
+      detectionId: 'req-8301',
+      url: 'https://evil.example/',
+      acceptIndex: 0,
+      accept: FORGED,
+      grant: { capAmount: '5000000', windowSeconds: 86400, note: 'x' },
+    });
+    expect(request).toEqual({
+      webContentsId: 42,
+      detectionId: 'req-8301',
+      url: 'https://api.example/article',
+      acceptIndex: 0,
+      accept: v2Detected().requirements.accepts[0],
+      grant: { capAmount: '5000000', windowSeconds: 86400 },
+    });
+    mockClient.createPaymentPayload.mockResolvedValue(SIGNED);
+    const result = await ipcHandlers['x402:approve'](fromChrome, {
+      webContentsId: 42,
+      detectionId: 'req-8301',
+      selectedAcceptIndex: 0,
+      grant: { capAmount: '5000000', windowSeconds: 86400 },
+      confirmation: confirmationFor(request),
+    });
+    expect(result).toEqual({ success: true });
+    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+  });
+
+  test('a subresource\'s is judged by the awaiting detection\'s tab, not the one named', async () => {
+    detectOn(42, { id: 8302, resourceType: 'xhr' });
+    await Promise.resolve();
+    expect(paymentApprovalRequest(CHROME, { webContentsId: 43, detectionId: 'req-8302' })).toMatchObject({
+      webContentsId: 42,
+      acceptIndex: 0,
+      grant: null,
+    });
+    webContents.fromId.mockImplementation((id) =>
+      id === 42 ? { ...hostedTab({ id }), hostWebContents: { id: 2, send: jest.fn() } } : hostedTab({ id })
+    );
+    expect(() => paymentApprovalRequest(CHROME, { webContentsId: 43, detectionId: 'req-8302' })).toThrow(
+      'This payment is not on a tab of this window'
+    );
+    intercept.abortPendingApprovalsForTab(42, new Error('done'));
+  });
+
+  test('refused, with nothing asked, as x402:approve would refuse it', async () => {
+    detectOn(42, { id: 8303 });
+    detectOn(42, { id: 8304 });
+    // Superseded, unknown, or none named.
+    expect(() => paymentApprovalRequest(CHROME, { webContentsId: 42, detectionId: 'req-8303' })).toThrow(/stale/);
+    expect(() => paymentApprovalRequest(CHROME, { webContentsId: 42 })).toThrow('No pending x402 payment to approve');
+    // Another window's tab, or a sender that is none.
+    expect(() => paymentApprovalRequest({ id: 2 }, { webContentsId: 42, detectionId: 'req-8304' })).toThrow('not on a tab of this window');
+    // No entry at the index.
+    for (const acceptIndex of [1, -1, 0.5, '0']) {
+      expect(() => paymentApprovalRequest(CHROME, { webContentsId: 42, detectionId: 'req-8304', acceptIndex })).toThrow('No such payment option');
+    }
+    // An allowance the panel couldn't show as granted.
+    for (const grant of [
+      { capAmount: 5000000, windowSeconds: 86400 },
+      { capAmount: '5e6', windowSeconds: 86400 },
+      { capAmount: '5000000', windowSeconds: '86400' },
+      { capAmount: '5000000', windowSeconds: 0 },
+      { capAmount: '5000000', windowSeconds: 1.5 },
+      { capAmount: '5000000' },
+      ['5000000', 86400],
+      'all',
+    ]) {
+      expect(() => paymentApprovalRequest(CHROME, { webContentsId: 42, detectionId: 'req-8304', grant })).toThrow('Invalid auto-pay allowance');
+    }
+    // Approved already.
+    mockClient.createPaymentPayload.mockResolvedValue(SIGNED);
+    expect(await approveAsCard(42)).toEqual({ success: true });
+    detectOn(42, { id: 8305 });
+    intercept.claimApproval('req-8305', 42);
+    expect(() => paymentApprovalRequest(CHROME, { webContentsId: 42, detectionId: 'req-8305' })).toThrow('already been approved');
+  });
+});
+
+// A phone account's job goes to the window that asked (APS-4's
+// request-window): for x402, the window hosting the payment's tab, on every
+// path that signs, the auto-pay within a cap included (APS-5).
+describe('an x402 payment signs for the window hosting its tab', () => {
+  const SIGNED = { x402Version: 2, payload: { authorization: {}, signature: '0xabc' } };
+  let signedFor;
+
+  beforeEach(() => {
+    signedFor = [];
+    mockFromWebContents.mockImplementation((contents) =>
+      contents?.id === CHROME.id ? { id: 7, isDestroyed: () => false, webContents: contents } : null
+    );
+    mockCreateClient.mockImplementation(async () => {
+      signedFor.push(requestWindowId());
+      return mockClient;
+    });
+    mockClient.createPaymentPayload.mockResolvedValue(SIGNED);
+  });
+  afterEach(() => {
+    mockFromWebContents.mockReset().mockReturnValue(null);
+    intercept.clearAllHostSenders();
+  });
+
+  test('a paywall paid on its card, a subresource paid on its card, and an auto-pay', async () => {
+    detectOn(42, { id: 8401 });
+    expect(await approveAsCard(42)).toEqual({ success: true });
+
+    const detecting = detectOn(42, { id: 8402, resourceType: 'xhr', url: 'https://api.example/seg' });
+    await Promise.resolve();
+    expect(await approveAsCard(42, { detectionId: 'req-8402' })).toMatchObject({ success: true, pending: true });
+    expect(await detecting).toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+
+    mockGetPermission.mockReturnValue({ capAmount: '1000000', spentAmount: '0', createdAt: 1, expiresAt: 4102444800, generation: 1 });
+    expect(await detectOn(42, { id: 8403, resourceType: 'xhr', url: 'https://api.example/seg2' })).toMatchObject({
+      statusLine: 'HTTP/1.1 307 Temporary Redirect',
+    });
+    expect(signedFor).toEqual([7, 7, 7]);
+  });
+
+  test('a tab main never saw in a window signs as before, for no window', async () => {
+    mockFromWebContents.mockReturnValue(null);
+    detectOn(42, { id: 8404 });
+    expect(await approveAsCard(42)).toEqual({ success: true });
+    expect(signedFor).toEqual([null]);
   });
 });
 

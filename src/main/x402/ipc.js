@@ -195,6 +195,99 @@ function refreshAndBroadcastBalances(webContentsId, address) {
 // What a window is told when it names a payment on a tab it doesn't host.
 const NOT_THIS_WINDOW = 'This payment is not on a tab of this window';
 
+/**
+ * Which payment an approval names, from main's record (`x402:approve`, and
+ * the approvals panel's prompt for it). The subresource path: the detector
+ * is awaiting the approval Promise for this detectionId. The mainFrame
+ * approval card: the tab-keyed detection, only while it still carries the
+ * same detectionId.
+ *
+ * P1: a stale detectionId must NOT fall through to the tab-keyed record.
+ * If A's card click arrives after B's 402 has superseded A in main, we
+ * MUST refuse — falling through would sign B (whatever's currently in
+ * detectedPayments[id]) and re-create the "approved A, paid B" race we
+ * designed against.
+ *
+ * @returns {{ awaiting: object|null, record: object|null }}
+ */
+function approvalRecord(webContentsId, detectionId) {
+  const awaiting = detectionId ? getPendingApproval(detectionId) : null;
+  if (awaiting) {
+    return {
+      awaiting,
+      record: { webContentsId: awaiting.webContentsId, url: awaiting.url, requirements: awaiting.requirements },
+    };
+  }
+  if (detectionId) {
+    const stored = getDetectedPayment(webContentsId);
+    if (stored && stored.detectionId === detectionId) {
+      return {
+        awaiting: null,
+        record: {
+          webContentsId,
+          url: stored.url,
+          requirements: stored.requirements,
+          // Defence in depth: a cap tag rides through so the inject
+          // handler still withholds on a raced-over cap.
+          authorizedBy: stored.authorizedBy,
+        },
+      };
+    }
+  }
+  return { awaiting: null, record: null };
+}
+
+/** An allowance granted with a payment, as the panel shows it: none, or a whole cap and window. */
+function grantOf(grant) {
+  if (grant === undefined || grant === null) return null;
+  if (
+    typeof grant !== 'object' ||
+    Array.isArray(grant) ||
+    typeof grant.capAmount !== 'string' ||
+    !/^\d{1,78}$/.test(grant.capAmount) ||
+    !Number.isSafeInteger(grant.windowSeconds) ||
+    grant.windowSeconds <= 0
+  ) {
+    throw new Error('Invalid auto-pay allowance');
+  }
+  return { capAmount: grant.capAmount, windowSeconds: grant.windowSeconds };
+}
+
+/**
+ * The payment a chrome's Pay names, as main holds it, for the approvals
+ * panel's prompt (freedom-core design 0011, APS-5): the detection's tab,
+ * URL and the `accepts[]` entry at the chosen index from main's record,
+ * never the chrome's copy of them, with the allowance the card grants with
+ * it. Refused, with nothing asked, as `x402:approve` would refuse it: a
+ * stale or unknown detection, a tab another window hosts, a payment
+ * already approved, no entry at that index, or a malformed allowance.
+ * The `x402-payment` token the panel's approval mints binds exactly this,
+ * and `x402:approve` rebuilds it from the same record.
+ *
+ * @param {object} sender the chrome webContents asking
+ * @param {{ webContentsId: number, detectionId: string, acceptIndex?: number, grant?: object }} payload
+ */
+function paymentApprovalRequest(sender, payload = {}) {
+  const detectionId = payload?.detectionId;
+  const { record } = approvalRecord(payload?.webContentsId, detectionId);
+  if (!record) {
+    throw new Error(detectionId ? 'Approval is stale — the detection has been superseded' : 'No pending x402 payment to approve');
+  }
+  if (!guestHostedBy(sender, record.webContentsId)) throw new Error(NOT_THIS_WINDOW);
+  if (isApprovalClaimed(detectionId)) throw new Error('This payment has already been approved');
+  const acceptIndex = payload.acceptIndex ?? 0;
+  const accept = Number.isInteger(acceptIndex) && acceptIndex >= 0 ? record.requirements?.accepts?.[acceptIndex] : undefined;
+  if (!accept) throw new Error('No such payment option for this payment');
+  return {
+    webContentsId: record.webContentsId,
+    detectionId,
+    url: record.url,
+    acceptIndex,
+    accept,
+    grant: grantOf(payload.grant),
+  };
+}
+
 function registerX402Ipc() {
   // The tab-scoped handlers accept an explicit `webContentsId` from the
   // sidebar (which is the host webContents and doesn't know which
@@ -323,37 +416,10 @@ function registerX402Ipc() {
     const id = args.webContentsId;
     const { detectionId, grant, selectedAcceptIndex, confirmation } = args;
 
-    // Which payment this approves, from main's record. WP7.1 subresource
-    // path: the detector is awaiting the approval Promise for this
-    // detectionId. mainFrame approval card: the tab-keyed detection,
-    // only while it still carries the same detectionId.
-    //
-    // P1: a stale detectionId must NOT fall through to the tab-keyed
-    // record. If A's card click arrives after B's 402 has superseded A
-    // in main, we MUST refuse — falling through would sign B (whatever's
-    // currently in detectedPayments[id]) and re-create the "approved A,
-    // paid B" race we designed against.
-    const awaiting = detectionId ? getPendingApproval(detectionId) : null;
-    let record = null;
-    if (awaiting) {
-      record = {
-        webContentsId: awaiting.webContentsId,
-        url: awaiting.url,
-        requirements: awaiting.requirements,
-      };
-    } else if (detectionId) {
-      const stored = getDetectedPayment(id);
-      if (stored && stored.detectionId === detectionId) {
-        record = {
-          webContentsId: id,
-          url: stored.url,
-          requirements: stored.requirements,
-          // Defence in depth: a cap tag rides through so the inject
-          // handler still withholds on a raced-over cap.
-          authorizedBy: stored.authorizedBy,
-        };
-      }
-    }
+    // Which payment this approves, from main's record (`approvalRecord`):
+    // the WP7.1 subresource path's awaiting detection, or the mainFrame
+    // card's tab-keyed one, never a stale detection's successor.
+    const { awaiting, record } = approvalRecord(id, detectionId);
     if (!record) {
       discardConfirmation(confirmation);
       return {
@@ -627,4 +693,5 @@ function registerX402Ipc() {
 
 module.exports = {
   registerX402Ipc,
+  paymentApprovalRequest,
 };

@@ -29,7 +29,9 @@ const {
   clearDetectedPayment,
   setPendingPayment,
   sendToHost,
+  hostWindowIdOf,
 } = require('./intercept');
+const { runInWindow } = require('../windows/request-window');
 const { grant: grantPermission, charge: chargeCap, refund: refundCharge } = require('./permissions');
 const { tupleFromAccept } = require('./payment-utils');
 const { isUserPageId } = require('../wallet/agent-tab-custody');
@@ -155,12 +157,19 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
   // The charge this call holds until the pending payment takes it over:
   // one handed in, or one taken below. Given back if nothing is stashed.
   const held = { charge: opts.charge ?? null };
-  try {
-    return await signAndStash(webContentsId, opts, held);
-  } catch (err) {
-    if (held.charge) refundAndTell(webContentsId, held.charge);
-    throw err;
-  }
+  // It runs for the window that hosts the tab (freedom-core design 0011,
+  // APS-5): with the approvals document on, a phone account's job goes to
+  // that window's sidebar, where its card or its panel's prompt was, not
+  // to whichever window has focus. An auto-pay within a cap, which asks
+  // nothing, goes there too.
+  return runInWindow(hostWindowIdOf(webContentsId), async () => {
+    try {
+      return await signAndStash(webContentsId, opts, held);
+    } catch (err) {
+      if (held.charge) refundAndTell(webContentsId, held.charge);
+      throw err;
+    }
+  });
 }
 
 function refundAndTell(webContentsId, charge) {

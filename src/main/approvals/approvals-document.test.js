@@ -1476,6 +1476,55 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
     expect(await confirmed).toEqual({ token: 'token', approved: true });
   });
 
+  // APS-5: x402's payment and an auto-pay cap's edit, the same way.
+  test.each([
+    [
+      'x402-payment',
+      0,
+      {
+        webContentsId: 42,
+        detectionId: 'req-1',
+        url: 'https://pay.example/a',
+        acceptIndex: 0,
+        accept: { scheme: 'exact', network: 'eip155:8453', amount: '2500000', asset: TO, payTo: TO },
+        grant: null,
+      },
+    ],
+    [
+      'x402-cap-update',
+      null,
+      { window: 501, origin: 'https://pay.example', chainId: 8453, asset: TO, capAmount: '9', current: { capAmount: '5', createdAt: 1, expiresAt: 2, generation: 1 } },
+    ],
+  ])('%s: the chrome can\'t decide it; the document\'s approval mints once, its rejection never', async (kind, index, payload) => {
+    const env = withPageRequests();
+    const { contents } = attached(env);
+    const approvals = createWalletApprovals({
+      walletPrompt: (windowId, spec) => env.requests.walletPrompt(windowId, spec),
+      chromeWindowOf: (sent) => (sent?.id === 501 ? 1 : null),
+      getDerivedWallets: async () => WALLETS,
+      checkFees: async () => BELOW,
+      checkAtApproval: async () => ({ ...BELOW, askAgain: false }),
+      x402Cap: () => ({ origin: 'https://pay.example', capAmount: '5', spentAmount: '0', createdAt: 1, expiresAt: 2 }),
+    });
+    const mint = jest.fn(() => ({ token: 'token' }));
+    const rejected = approvals.confirm({ sender: chrome, kind, index, payload }, mint);
+    let shown = await onScreen(env, contents);
+    expect(shown).toMatchObject({ guest: null, kind: `wallet.${kind.replace(/-/g, '_')}` });
+    expect(await env.requests.decide({ sender: chrome }, { handle: shown.handle, approve: true })).toEqual({
+      ok: false,
+      reason: 'approvals-document',
+    });
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false })).toEqual({ ok: true });
+    expect(await rejected).toMatchObject({ approved: false, code: 'USER_REJECTED' });
+    expect(mint).not.toHaveBeenCalled();
+
+    const approved = approvals.confirm({ sender: chrome, kind, index, payload }, mint);
+    shown = await onScreen(env, contents);
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true })).toEqual({ ok: true });
+    expect(await approved).toEqual({ token: 'token', approved: true });
+    expect(mint).toHaveBeenCalledTimes(1);
+  });
+
   test('a rejection is answered, and mints nothing; a fee asked again is answered as it asks, and its second press mints', async () => {
     const env = withPageRequests();
     const { contents } = attached(env);

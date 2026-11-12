@@ -29,6 +29,23 @@ const PAYLOADS = {
   'executor-send': [0, { chainId: 100, to: SAFE, value: '0', data: '0x6a761202', gasLimit: '90000', gasPrice: '2000000000' }],
 };
 
+// x402 (APS-5): main's token list, its reading of an entry, the paid URL's
+// key and the caps it holds, as the app's are.
+const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const CAPS = new Map([['https://pay.example|8453|' + USDC, { origin: 'https://pay.example', chainId: 8453, asset: USDC, capAmount: '5000000', spentAmount: '1250000', createdAt: 1000, expiresAt: 87400 }]]);
+const X402_DEPS = {
+  chainName: (chainId) => ({ 100: 'Gnosis Chain', 8453: 'Base' })[chainId] ?? null,
+  nativeSymbol: (chainId) => ({ 100: 'xDAI', 8453: 'ETH' })[chainId] ?? null,
+  tokenOf: (chainId, asset) => (chainId === 8453 && asset.toLowerCase() === USDC ? { symbol: 'USDC', decimals: 6, name: 'USD Coin' } : null),
+  x402Tuple: (accept) =>
+    typeof accept?.network === 'string' && accept.network.startsWith('eip155:')
+      ? { chainId: Number(accept.network.slice(7)), asset: accept.asset.toLowerCase(), amount: accept.amount }
+      : null,
+  x402Origin: (url) => new URL(url).origin,
+  // As the store: the origin normalised, the asset in any case.
+  x402Cap: (origin, chainId, asset) => CAPS.get(`${new URL(origin).origin}|${chainId}|${asset.toLowerCase()}`) ?? null,
+};
+
 function setup({ verdict = BELOW, atPress = [], wallets = async () => WALLETS, now = () => 0 } = {}) {
   const prompts = [];
   const decisions = [];
@@ -44,8 +61,7 @@ function setup({ verdict = BELOW, atPress = [], wallets = async () => WALLETS, n
     }),
     chromeWindowOf: (contents) => (contents?.id >= 500 ? contents.id - 500 : null),
     getDerivedWallets: wallets,
-    chainName: (chainId) => (chainId === 100 ? 'Gnosis Chain' : null),
-    nativeSymbol: (chainId) => (chainId === 100 ? 'xDAI' : null),
+    ...X402_DEPS,
     checkFees: jest.fn(async () => verdict),
     checkAtApproval,
     now: () => now(),
@@ -282,5 +298,97 @@ describe('a resend asked again after a replacement', () => {
     clock += 2 * 60 * 1000 + 1;
     await ask(env, REPLACED);
     expect(env.prompts[5].view.replaced).toBeNull();
+  });
+});
+
+// freedom-core design 0011, APS-5: x402's payment and an auto-pay cap's edit
+// ask in the window's panel, with main's view, so that with the document on
+// the chrome mints no approval at all.
+describe('x402\'s two kinds ask in the window\'s panel', () => {
+  const PAYMENT = {
+    webContentsId: 42,
+    detectionId: 'req-9100',
+    url: 'https://pay.example/article?id=7',
+    acceptIndex: 1,
+    accept: { scheme: 'exact', network: 'eip155:8453', amount: '2500000', asset: USDC, payTo: TO, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } },
+    grant: null,
+  };
+  const CAP_EDIT = {
+    window: 501,
+    origin: 'https://PAY.example',
+    chainId: 8453,
+    asset: USDC,
+    capAmount: '10000000',
+    windowSeconds: undefined,
+    current: { capAmount: '5000000', createdAt: 1000, expiresAt: 87400, generation: 3 },
+  };
+
+  test('a payment: main\'s view of the active account, the seller\'s entry and the grant, fitting its template', async () => {
+    const env = setup();
+    const minted = await env.approvals.confirm({ sender: chrome, kind: 'x402-payment', index: 0, payload: PAYMENT, feeChecked: false }, () => ({ token: 't' }));
+    expect(minted).toEqual({ token: 't', approved: true });
+    const [prompt] = env.prompts;
+    expect(prompt.windowId).toBe(1);
+    expect(prompt.kind).toBe('wallet.x402_payment');
+    expect(prompt.view).toEqual({
+      account: WALLETS[0],
+      site: 'https://pay.example',
+      url: PAYMENT.url,
+      payment: { scheme: 'exact', network: 'eip155:8453', asset: USDC, amount: '2500000', payTo: TO },
+      chain: { id: 8453, name: 'Base', symbol: 'ETH' },
+      token: { symbol: 'USDC', decimals: 6 },
+      grant: null,
+    });
+    expect(kinds.checkMessage(message(prompt.kind, prompt.view)).valid).toBe(true);
+    expect(prompt.choices({})).toEqual({});
+    expect(prompt.choices({ grant: { capAmount: '1' } })).toBeNull();
+
+    // With an allowance, on a phone account; a V1 entry main reads no chain for.
+    await env.approvals.confirm({
+      sender: chrome,
+      kind: 'x402-payment',
+      index: 1,
+      payload: { ...PAYMENT, accept: { scheme: 'exact', network: 'base', maxAmountRequired: '7', asset: USDC, payTo: TO }, grant: { capAmount: '9000000', windowSeconds: 86400 } },
+    });
+    const v1 = env.prompts[1].view;
+    expect(v1).toMatchObject({ account: { index: 1, type: 'ledger' }, chain: null, token: null, grant: { capAmount: '9000000', windowSeconds: 86400 } });
+    expect(v1.payment.amount).toBe('7');
+    expect(kinds.checkMessage(message('wallet.x402_payment', v1)).valid).toBe(true);
+  });
+
+  test('a payment: a rejection says no, and an account main can\'t show asks nothing', async () => {
+    const env = setup();
+    env.decisions.push({ approve: false, choices: {} });
+    const onApproved = jest.fn(() => ({ token: 't' }));
+    expect(await env.approvals.confirm({ sender: chrome, kind: 'x402-payment', index: 0, payload: PAYMENT }, onApproved)).toEqual(REJECTED);
+    expect(await env.approvals.confirm({ sender: chrome, kind: 'x402-payment', index: 77, payload: PAYMENT }, onApproved)).toEqual(NO_ACCOUNT);
+    expect(env.prompts).toHaveLength(1);
+    expect(onApproved).not.toHaveBeenCalled();
+  });
+
+  test('a cap\'s edit: main\'s view of the cap it holds and the change, fitting its template', async () => {
+    const env = setup();
+    expect(await env.approvals.confirm({ sender: chrome, kind: 'x402-cap-update', index: null, payload: CAP_EDIT })).toEqual({ approved: true });
+    const [prompt] = env.prompts;
+    expect(prompt.kind).toBe('wallet.x402_cap_update');
+    expect(prompt.view).toEqual({
+      site: 'https://pay.example',
+      chain: { id: 8453, name: 'Base', symbol: 'ETH' },
+      asset: USDC,
+      token: { symbol: 'USDC', decimals: 6 },
+      current: { capAmount: '5000000', spentAmount: '1250000', expiresAt: 87400 },
+      change: { capAmount: '10000000', windowSeconds: null, expiresAt: null },
+    });
+    expect(kinds.checkMessage(message(prompt.kind, prompt.view)).valid).toBe(true);
+    // A new window: its end from the grant's start, as the store computes it.
+    await env.approvals.confirm({ sender: chrome, kind: 'x402-cap-update', index: null, payload: { ...CAP_EDIT, capAmount: undefined, windowSeconds: 7 * 86400 } });
+    expect(env.prompts[1].view.change).toEqual({ capAmount: null, windowSeconds: 7 * 86400, expiresAt: 1000 + 7 * 86400 });
+  });
+
+  test('a cap\'s edit main can\'t show asks nothing', async () => {
+    const env = setup();
+    await expect(env.approvals.confirm({ sender: chrome, kind: 'x402-cap-update', index: null, payload: { ...CAP_EDIT, asset: TO } })).rejects.toThrow('No such auto-pay cap');
+    await expect(env.approvals.confirm({ sender: chrome, kind: 'x402-cap-update', index: null, payload: { ...CAP_EDIT, windowSeconds: 1.5 } })).rejects.toThrow('Invalid window');
+    expect(env.prompts).toHaveLength(0);
   });
 });
