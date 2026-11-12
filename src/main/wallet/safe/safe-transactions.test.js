@@ -107,6 +107,7 @@ const {
   getSafeSendState,
   getAllSafeSendStates,
   cancelSafeSend,
+  onSafeSendSettled,
 } = require('./safe-transactions');
 const { getPending, setPending, clearPending } = require('./pending-store');
 
@@ -389,6 +390,43 @@ describe('getSafeSendState / cancelSafeSend', () => {
     expect(getSafeSendState(5)).not.toBeNull();
     cancelSafeSend(5);
     expect(getSafeSendState(5)).toBeNull();
+  });
+});
+
+// freedom-core design 0011, PRQ-5b: a page's Safe send waits on main's own
+// record of its SafeTx's outcome, whichever screen executed or discarded it.
+describe('onSafeSendSettled', () => {
+  test('hears an execution with its hash, and a discard; not a failure, a supersession or a stopped listener', async () => {
+    const heard = [];
+    const stop = onSafeSendSettled((event) => heard.push(event));
+    // A listener that throws changes nothing for the others.
+    const stopThrowing = onSafeSendSettled(() => {
+      throw new Error('listener failed');
+    });
+    await start();
+    await signSafePending(5, 2);
+    mockExecTransaction.mockRejectedValueOnce(new Error('RPC down'));
+    await expect(executeSafePending(5)).rejects.toThrow('RPC down');
+    expect(heard).toEqual([]);
+    await executeSafePending(5);
+    expect(heard).toEqual([{ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'executed', hash: TX_HASH }]);
+
+    await start();
+    await signSafePending(5, 2);
+    mockRpcRequest.mockResolvedValue('0x4');
+    await executeSafePending(5);
+    expect(heard).toHaveLength(1);
+    cancelSafeSend(5);
+    expect(heard.at(-1)).toEqual({ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+    // Nothing pending: nothing to hear.
+    cancelSafeSend(5);
+    expect(heard).toHaveLength(2);
+
+    stop();
+    stopThrowing();
+    await start();
+    cancelSafeSend(5);
+    expect(heard).toHaveLength(2);
   });
 });
 

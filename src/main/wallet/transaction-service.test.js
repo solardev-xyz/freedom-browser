@@ -94,6 +94,53 @@ describe('signAndSendTransaction (signer-based)', () => {
     } finally { errorLog.mockRestore(); }
   });
 
+  // freedom-core design 0011, PRQ-5b: a page's send checks its name and its
+  // document again after the signer's wait, before the signed bytes are
+  // recorded or sent.
+  it("the caller's guard commits a signed transaction itself, or withdraws it with nothing recorded or sent", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const params = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '1000',
+      gasLimit: '21000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      chainId: 8453,
+    };
+    const onCommitted = jest.fn();
+    const withdrawn = Object.assign(new Error('withdrawn'), { code: 'INTENT_WITHDRAWN', answer: { error: {} } });
+    const refusing = jest.fn(async () => {
+      throw withdrawn;
+    });
+    // Withdrawn after the signature: the very error, nothing in the records,
+    // nothing broadcast, and the nonce free for the next.
+    await expect(signAndSendTransaction(params, signer, { guardCommit: refusing, onCommitted })).rejects.toBe(withdrawn);
+    expect(refusing).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+    expect(onCommitted).not.toHaveBeenCalled();
+    await mockIntentStore.ready;
+    expect(mockIntentStore.held()).toEqual([]);
+    // Let through: the guard commits, and the send goes on at the same nonce.
+    const passing = jest.fn(async (commit) => commit());
+    const result = await signAndSendTransaction(params, signer, { guardCommit: passing, onCommitted });
+    expect(passing).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ nonce: 5 });
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastRawTransaction).toHaveBeenCalledTimes(1);
+    console.error.mockRestore();
+  });
+
+  it('a phone signs and broadcasts in one step: it has no guard point', async () => {
+    const guardCommit = jest.fn();
+    const phone = { sendTransaction: jest.fn(async () => ({ hash: '0xphone' })) };
+    await signAndSendTransaction(
+      { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', gasLimit: '21000', chainId: 100 },
+      phone,
+      { guardCommit }
+    ).catch(() => {});
+    expect(guardCommit).not.toHaveBeenCalled();
+  });
+
   it('fetches the nonce for the signer address, signs, and broadcasts', async () => {
     const result = await signAndSendTransaction(
       {
