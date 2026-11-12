@@ -1099,6 +1099,7 @@ function enablePageRequestTestHooks() {
       sharedHooks.holdRequest = typeof hold === 'function' ? hold : undefined;
     },
     promptState: () => getPageRequests().promptState(),
+    liveDocuments: () => getPageRequests().liveDocuments(),
     sendEvent: (target, provider, event, data) => getPageRequests().sendEvent(target, provider, event, data),
     stats: () => getPageRequests().stats(),
   };
