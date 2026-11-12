@@ -684,12 +684,15 @@ async function resendIntent(intentId, { hash, guardHandoff = null } = {}) {
     throw error;
   }
   let handoff;
-  const takeHandoff = () =>
-    withAccountLock({ chainId: intent.chainId, sender: intent.sender }, () => store.handoff(intentId, hash));
+  const takeHandoff = () => store.handoff(intentId, hash);
   try {
     // A keyed send's caller may guard its last point before the bytes go
-    // out again (sendUnderKey): the guard takes the handoff itself.
-    handoff = await (guardHandoff ? runGuarded(guardHandoff, takeHandoff) : takeHandoff());
+    // out again (sendUnderKey). The account's lock comes first, however long
+    // another send of the account holds it; then the guard checks, and takes
+    // the handoff itself, in the same run.
+    handoff = await withAccountLock({ chainId: intent.chainId, sender: intent.sender }, () =>
+      guardHandoff ? runGuarded(guardHandoff, takeHandoff) : takeHandoff()
+    );
   } catch (err) {
     if (guardRefusals.has(err)) throw err;
     console.error('[TransactionService] Transaction not sent:', err);

@@ -42,6 +42,7 @@ const {
   SAFE_PENDING_EXISTS,
   SAFE_NEEDS_FUNDS,
   SAFE_SITE_WITHDRAWN,
+  SAFE_SITE_WITHDRAWING,
 } = require('./errors');
 const {
   acquire,
@@ -94,9 +95,13 @@ const siteGuards = new Map();
  * main restarted since) is never executed for the site either. Whenever the
  * check fails, the SafeTx isn't executed: it stays pending as the wallet's
  * own, with no site, for the user to execute or discard: the site is taken
- * from the pending SafeTx and from an execution already held for it (a
- * first attempt committed, then not sent), with its signatures and signed
- * bytes kept.
+ * from an execution already held for it (a first attempt committed, then not
+ * sent), durably, and only then from the pending SafeTx, with its signatures
+ * and signed bytes kept. If the held execution's records can't be rewritten,
+ * nothing changes and nothing is sent (SAFE_SITE_WITHDRAWING): the next
+ * attempt, with no guard, tries again. A crash between the two leaves a held
+ * execution with no site under a pending SafeTx that still names it, which
+ * the next attempt finishes.
  *
  * @param {string} safeTxHash
  * @param {(execute: () => Promise<object>) => Promise<object>} guard
@@ -108,6 +113,14 @@ function guardSiteSafeSend(safeTxHash, guard) {
   return () => {
     if (siteGuards.get(safeTxHash) === guard) siteGuards.delete(safeTxHash);
   };
+}
+
+function siteWithdrawing() {
+  return codedError(
+    "The site that asked for this transaction no longer holds it, so it wasn't sent. " +
+      "The wallet couldn't record it as your own yet: try again.",
+    SAFE_SITE_WITHDRAWING
+  );
 }
 
 function siteWithdrawn() {
@@ -358,16 +371,17 @@ async function executeSafePending(safeIndex, { feeConfirmation = null } = {}) {
     } catch (err) {
       if (err?.code === SAFE_SITE_WITHDRAWN) {
         // Not executed: kept, as the wallet's own, with no site, in every
-        // record that has one.
-        const { site: _site, ...display } = pending.display || {};
-        setPending(safeIndex, { ...pending, display });
+        // record that has one. The held execution's intent first, durably
+        // (a no-op when it has none, or none with a site); only then the
+        // pending SafeTx. If the intent can't be rewritten, neither changes.
         try {
           await withdrawExecutionSite(pending.chainId, pending.safeTxHash);
         } catch (withdrawError) {
-          // The records couldn't be rewritten now: the held execution keeps
-          // its site in them, and the SafeTx is the wallet's.
-          console.warn('[SafeTransactions] A held execution kept its site:', withdrawError?.message);
+          console.warn('[SafeTransactions] A held execution kept its site for now:', withdrawError?.message);
+          throw siteWithdrawing();
         }
+        const { site: _site, ...display } = pending.display || {};
+        setPending(safeIndex, { ...pending, display });
         throw siteWithdrawn();
       }
       if (/insufficient funds/i.test(err.message)) {

@@ -27,6 +27,9 @@ const CODES = {
   /** A site's SafeTx whose site no longer holds it (its name moved, or its
    * page has gone) is not executed for the site: it stays, as the wallet's. */
   SAFE_SITE_WITHDRAWN: 'SAFE_SITE_WITHDRAWN',
+  /** The same, but the records couldn't yet be rewritten to say so: the
+   * SafeTx still names its site, and the next attempt finishes the move. */
+  SAFE_SITE_WITHDRAWING: 'SAFE_SITE_WITHDRAWING',
 };
 
 function codedError(message, code) {
