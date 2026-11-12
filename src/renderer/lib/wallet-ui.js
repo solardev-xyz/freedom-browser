@@ -11,6 +11,7 @@ import { isPrivateWindow } from './private-mode.js';
 import { walletState } from './wallet/wallet-state.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 import { truncateAddress, timeAgo } from './wallet/wallet-utils.js';
+import { describeRadicleIdentity } from './wallet/radicle-identity.js';
 
 // Submodule imports
 import { initBalanceDisplay, loadChainRegistry, refreshBalances, renderAssetList, loadCachedBalances, startBalanceRefresh } from './wallet/balance-display.js';
@@ -58,6 +59,8 @@ let swarmIdEl;
 let ipfsIdEl;
 let ipfsCopyBtn;
 let radicleIdEl;
+let radicleNextGroup;
+let radicleNextIdEl;
 let passwordValueEl;
 let touchIdValueEl;
 let createdValueEl;
@@ -78,6 +81,8 @@ export function initWalletUi() {
   ipfsIdEl = document.getElementById('sidebar-ipfs-id');
   ipfsCopyBtn = document.querySelector('.node-copy-btn[data-copy="ipfs"]');
   radicleIdEl = document.getElementById('sidebar-radicle-id');
+  radicleNextGroup = document.getElementById('sidebar-radicle-next-group');
+  radicleNextIdEl = document.getElementById('sidebar-radicle-next-id');
   passwordValueEl = document.getElementById('sidebar-password-value');
   touchIdValueEl = document.getElementById('sidebar-touchid-value');
   createdValueEl = document.getElementById('sidebar-created-value');
@@ -150,6 +155,15 @@ export function initWalletUi() {
 
   // Initial state check
   updateIdentityState();
+
+  // On the Radicle service the DID shown is the running node's, which a
+  // start, a restart or a stop changes (freedom-core design 0008, Main's
+  // side): shown again at each Radicle status. The add-on's is read once.
+  window.radicle?.onStatusUpdate?.(() => {
+    if (walletState.viewMode === 'identity' && walletState.identityData?.radicle) {
+      void refreshRadicleIdentity();
+    }
+  });
 
   console.log('[WalletUI] Initialized');
 }
@@ -302,16 +316,7 @@ async function loadIdentityData() {
     }
 
     // Display Radicle DID
-    if (status.addresses?.radicleDid) {
-      const did = status.addresses.radicleDid;
-      walletState.fullAddresses.radicle = did;
-      const displayId = did.replace('did:key:', '');
-      radicleIdEl.textContent = truncateAddress(displayId, 8, 6);
-      radicleIdEl.title = did;
-    } else {
-      radicleIdEl.textContent = '--';
-      radicleIdEl.title = '';
-    }
+    renderRadicleIdentity(status);
 
     // Update security status
     await updateSecurityStatus();
@@ -324,6 +329,35 @@ async function loadIdentityData() {
 
   } catch (err) {
     console.error('[WalletUI] Failed to load identity data:', err);
+  }
+}
+
+/**
+ * The Radicle card's DID (wallet/radicle-identity.js): the running node's on
+ * the service, with the next start's apart; the add-on's as before.
+ */
+function renderRadicleIdentity(status) {
+  const view = describeRadicleIdentity(status);
+  if (view.did) walletState.fullAddresses.radicle = view.did;
+  else delete walletState.fullAddresses.radicle;
+  radicleIdEl.textContent = view.text;
+  radicleIdEl.title = view.title;
+  if (view.next) walletState.fullAddresses.radicleNext = view.next.did;
+  else delete walletState.fullAddresses.radicleNext;
+  if (radicleNextIdEl) {
+    radicleNextIdEl.textContent = view.next?.text ?? '';
+    radicleNextIdEl.title = view.next?.title ?? '';
+  }
+  radicleNextGroup?.classList.toggle('hidden', !view.next);
+}
+
+async function refreshRadicleIdentity() {
+  try {
+    const status = await window.identity.getStatus();
+    walletState.identityData = status;
+    renderRadicleIdentity(status);
+  } catch (err) {
+    console.error('[WalletUI] Failed to refresh the Radicle identity:', err);
   }
 }
 

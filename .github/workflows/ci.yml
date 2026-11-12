@@ -1644,8 +1644,12 @@ jobs:
       # (`page-radicle-sign`, PRQ-8c), and the approvals document behind its
       # flag, which only the window's own view can drive, under its CSP and
       # Trusted Types, with its input held for 500 ms and Enter never
-      # approving (`approvals-document`, APS-1).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle + page-radicle-seed + page-radicle-sign + approvals-document E2E
+      # approving (`approvals-document`, APS-1), and the dApp prompts in it,
+      # from their kinds' templates, with the chrome showing only the badges
+      # and making room for the panel (`approvals-dapp`, APS-2), and the
+      # wallet's own approvals in it, whose tokens only its approval mints
+      # (`approvals-wallet`, APS-3).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm + page-swarm-connect + page-swarm-publish + page-swarm-feeds + page-radicle + page-radicle-seed + page-radicle-sign + approvals-document + approvals-dapp + approvals-wallet E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1674,7 +1678,9 @@ jobs:
             test-e2e/page-radicle.spec.js \
             test-e2e/page-radicle-seed.spec.js \
             test-e2e/page-radicle-sign.spec.js \
-            test-e2e/approvals-document.spec.js
+            test-e2e/approvals-document.spec.js \
+            test-e2e/approvals-dapp.spec.js \
+            test-e2e/approvals-wallet.spec.js
 
       - name: Upload software rendering profile
         if: always()

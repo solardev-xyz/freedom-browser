@@ -29,6 +29,9 @@ jest.mock('electron-log', () => ({ info: jest.fn(), warn: jest.fn(), error: jest
 // The node: running unless a test stops it; its connection count can be held.
 const mockNode = { status: 'running', disabled: false, connections: null, seeded: [{ rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }] };
 jest.mock('../radicle-manager', () => ({
+  // The add-on: no service generation, so no write refusal (plan B10).
+  activeRadicleIdentity: jest.fn(() => null),
+  radicleWriteRefusal: jest.fn(() => null),
   isDisabledForProfile: jest.fn(() => mockNode.disabled),
   getCurrentStatus: jest.fn(() => ({ status: mockNode.status, error: null })),
   getConnections: jest.fn(async () => {
@@ -50,6 +53,7 @@ jest.mock('../radicle/cob-service', () => ({
   getIdentity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   clearIdentityCache: jest.fn(),
   CobValidationError: class CobValidationError extends Error {},
+  CobAdmissionError: class CobAdmissionError extends Error {},
 }));
 
 const { EventEmitter } = require('events');

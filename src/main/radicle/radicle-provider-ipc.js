@@ -61,6 +61,7 @@ const {
   getNodeAlias,
   setNodeAlias,
   isDisabledForProfile,
+  radicleWriteRefusal,
   STATUS,
 } = require('../radicle-manager');
 const cob = require('./cob-service');
@@ -429,6 +430,9 @@ function wrapCobError(method, err) {
   if (err instanceof cob.CobValidationError) {
     return providerError(ERRORS.INVALID_PARAMS, err.message, { reason: err.reason });
   }
+  if (err instanceof cob.CobAdmissionError) {
+    return providerError(ERRORS.UNAVAILABLE, err.message, { reason: err.reason });
+  }
   logAddonError(method, err.message);
   const failed = SIGNED_WRITE_METHODS.has(method)
     ? ADDON_ERROR_TEXTS.writeFailed
@@ -522,6 +526,16 @@ async function executeRadicleMethod(
     if (!nodeRunning() && !WORKS_WHILE_STOPPED.has(method)) {
       throw providerError(ERRORS.UNAVAILABLE, 'Radicle node is not running', {
         reason: 'node-stopped',
+      });
+    }
+    // Under the service, a node running with a throwaway key can't publish
+    // (freedom-core design 0008, `needs_vault`): refused before the rule's
+    // rate limit counts it, and before anything is sent. cob-service checks
+    // again just before the write.
+    const writeRefusal = SIGNED_WRITE_METHODS.has(method) ? radicleWriteRefusal() : null;
+    if (writeRefusal) {
+      throw providerError(ERRORS.UNAVAILABLE, writeRefusal.message, {
+        reason: writeRefusal.reason,
       });
     }
     if (SIGNED_WRITE_METHODS.has(method) && approval !== 'user') {

@@ -99,6 +99,11 @@ const agentCustodyByTabId = new Map();
 // Open page prompts per guest webContents id (freedom-core design 0011,
 // PRQ-4): a tab whose request waits shows a badge (page-prompts.js).
 let walletPromptCounts = new Map();
+// The guest this window last reported in front (`reportForeground`).
+let frontGuest = null;
+// Whether main shows this window's prompt here rather than in the approvals
+// document: a Safe board, which the chrome still renders (page-prompts.js).
+let chromePromptShown = false;
 
 // The guest webContents id of a tab's webview, or null while it isn't
 // attached (Electron throws until then).
@@ -116,11 +121,35 @@ const guestIdOf = (tab) => {
 // at every switch and when the tab in front gets its guest; a tab with no
 // page reports none.
 const reportForeground = (tab) => {
+  frontGuest = guestIdOf(tab);
   try {
-    window.pagePrompts?.foreground?.(guestIdOf(tab));
+    window.pagePrompts?.foreground?.(frontGuest);
   } catch {
     // Main keeps the last report.
   }
+  renderApprovalsSpace();
+};
+
+// With the approvals document on (freedom-core design 0011, APS-2), main
+// shows the oldest prompt of the guest this window last reported in front,
+// in a panel at the right of the content area: the page makes room for it
+// while that guest has an open prompt, as it does for the sidebar. Only the
+// layout follows this; which prompt shows, and its decision, are main's.
+const renderApprovalsSpace = () => {
+  if (window.pagePrompts?.approvalsDocument !== true) return;
+  const space = document.getElementById('approvals-space');
+  // The window's own prompts (the wallet's) count under `null` and show
+  // whichever tab is in front.
+  const ownPrompts = (walletPromptCounts.get(null) || 0) > 0;
+  const guestPrompts = frontGuest !== null && (walletPromptCounts.get(frontGuest) || 0) > 0;
+  const open = !chromePromptShown && (ownPrompts || guestPrompts);
+  space?.classList.toggle('open', open);
+};
+
+/** A prompt main shows in the chrome itself (a Safe board) is up, or down. */
+export const setChromePromptShown = (shown) => {
+  chromePromptShown = shown === true;
+  renderApprovalsSpace();
 };
 let onAgentTabClaim = null;
 const agentCustodyListeners = new Set();
@@ -409,6 +438,7 @@ export const getTabIdForWebview = (webview) => {
 export const setWalletPromptCounts = (counts) => {
   walletPromptCounts = counts instanceof Map ? new Map(counts) : new Map();
   renderTabs();
+  renderApprovalsSpace();
 };
 
 // The tab whose webview is guest webContents `guestId`, or null. Main names
@@ -1532,7 +1562,9 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.title = tab.kind === 'workspace-viewer' ? `${tab.title} — read-only workspace viewer` : tab.title || 'New Tab';
   tabEl.classList.toggle('agent-owned', agentCustodyByTabId.has(tab.id));
   tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
-  const promptCount = walletPromptCounts.get(guestIdOf(tab)) || 0;
+  // A tab's own guest only: the window's own prompts (`null`) badge no tab.
+  const promptGuest = guestIdOf(tab);
+  const promptCount = promptGuest === null ? 0 : walletPromptCounts.get(promptGuest) || 0;
   tabEl.classList.toggle('has-wallet-prompt', promptCount > 0);
   const promptBadge = tabEl.querySelector('.tab-prompt-badge');
   if (promptBadge) {

@@ -49,8 +49,10 @@ import {
   closePageConnect,
   shownPageConnect,
   onPageConnectDisplaced,
+  updateConnectionBanner,
 } from './wallet/dapp-connect.js';
-import { setWalletPromptCounts } from './tabs.js';
+import { updateSwarmConnectionBanner } from './wallet/swarm-connect.js';
+import { setWalletPromptCounts, setChromePromptShown } from './tabs.js';
 import { pagePromptRenderer, onPagePromptDisplaced } from './page-prompt-renderers.js';
 
 // How often a prompt that couldn't show yet looks again.
@@ -130,8 +132,15 @@ function takeDown(handle) {
   if (shown?.handle !== handle) return;
   const renderer = rendererFor(shown.kind);
   shown = null;
+  setChromePromptShown(false);
   stopRetry();
   renderer?.close(handle);
+}
+
+function refreshBanners() {
+  Promise.resolve()
+    .then(() => Promise.all([updateConnectionBanner(), updateSwarmConnectionBanner()]))
+    .catch(() => {});
 }
 
 // Report where the content area starts, now and whenever it moves (the
@@ -157,7 +166,9 @@ export function initPagePrompts() {
   countEl = document.getElementById('wallet-prompt-count');
   reportAnchor(api);
   api.onPending?.((message) => {
-    if (typeof message?.handle !== 'string' || !Number.isInteger(message.guest)) return;
+    // A guest's prompt, or the window's own (the wallet's, `guest: null`,
+    // APS-3), which shows in the approvals panel whichever tab is in front.
+    if (typeof message?.handle !== 'string' || !(Number.isInteger(message.guest) || message.guest === null)) return;
     pending.set(message.handle, message.guest);
     paintCounts();
   });
@@ -166,6 +177,9 @@ export function initPagePrompts() {
     pending.delete(message.handle);
     takeDown(message.handle);
     paintCounts();
+    // A decision in the approvals document may have connected a site: the
+    // sidebar's connection banners read the grants again (APS-2).
+    if (api.approvalsDocument === true) refreshBanners();
   });
   api.onHidden?.((message) => {
     if (typeof message?.handle === 'string') takeDown(message.handle);
@@ -174,6 +188,7 @@ export function initPagePrompts() {
     if (typeof message?.handle !== 'string' || !rendererFor(message.kind)) return;
     if (shown && shown.handle !== message.handle) takeDown(shown.handle);
     shown = message;
+    setChromePromptShown(true);
     render();
   });
   // Another screen took the sidebar from a prompt main still shows: it

@@ -103,7 +103,7 @@ async function load({ appBody = null } = {}) {
   }));
   jest.doMock('./wallet/permission-manage.js', () => ({ showDappPermissions: jest.fn() }));
   jest.doMock('./url-utils.js', () => ({ parseOnchainAppUrl: () => null }));
-  const tabs = { setWalletPromptCounts: jest.fn() };
+  const tabs = { setWalletPromptCounts: jest.fn(), setChromePromptShown: jest.fn() };
   jest.doMock('./tabs.js', () => tabs);
 
   const connect = await import('./wallet/dapp-connect.js');

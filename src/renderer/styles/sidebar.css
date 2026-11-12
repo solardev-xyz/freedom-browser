@@ -30,6 +30,16 @@
   transition: width 0.2s ease, border-width 0.2s ease;
 }
 
+.approvals-space {
+  width: 0;
+  flex-shrink: 0;
+}
+
+/* The approvals panel's width (src/main/approvals/approvals-document.js). */
+.approvals-space.open {
+  width: 320px;
+}
+
 .sidebar.collapsed {
   width: 0;
   border-left-width: 0;
