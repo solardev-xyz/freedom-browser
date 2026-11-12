@@ -32,7 +32,7 @@
   'use strict';
 
   const { text, integer, boolean, oneOf, list, record, nullable, anyOf, json } = core.schema;
-  const { isPlainObject, conforms, viewBytes, MAX_VIEW_BYTES } = core;
+  const { isPlainObject, conforms, viewBytes, MAX_VIEW_BYTES, MAX_PARTED_VIEW_BYTES } = core;
 
   const HANDLE = /^[0-9a-f]{64}$/;
   const MESSAGE_KEYS = ['handle', 'guest', 'kind', 'site', 'view'];
@@ -45,8 +45,13 @@
   const HASH = /^0x[0-9a-fA-F]{64}$/;
   const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
   const RATIO = /^[0-9]+(?:\.[0-9]+)?$/;
-  // Every byte a page may send, as hex, within the view's 256 KiB.
-  const MAX_HEX = 2 * MAX_VIEW_BYTES + 2;
+  // Every byte a page may send, as hex: a field's bound is the whole view's.
+  // A view within one message stays within 256 KiB however long a field's
+  // bound; one main sends in parts, within 4 MiB (APS-4).
+  const MAX_HEX = MAX_PARTED_VIEW_BYTES;
+  // A view in parts (APS-4): how many, and its JSON's length in UTF-16 code
+  // units, which is never more than its bytes.
+  const PARTS = record({ count: integer({ min: 1, max: 256 }), length: integer({ min: 1, max: MAX_PARTED_VIEW_BYTES }) });
 
   const SITE = record({ key: text(2048), label: text(2048) });
   const ACCOUNT = record({
@@ -1190,25 +1195,56 @@
    * is nothing to answer); otherwise the handle, and its site and view only
    * when the whole message fits its kind's schema (`valid`). An invalid one
    * shows the fixed error and can only be rejected.
+   *
+   * A view over 256 KiB comes in parts (APS-4): the message then has
+   * `view: null` and `parts: { count, length }`, and, its other fields
+   * checked, comes back with those `parts` and no view, not yet valid. The
+   * page asks main for the parts and checks the joined view (`checkJoined`).
    */
-  function checkMessage(message) {
+  function checkMessage(message, { joined = false } = {}) {
     if (!isPlainObject(message)) return null;
     const { handle } = message;
     if (typeof handle !== 'string' || !HANDLE.test(handle)) return null;
+    const invalid = { handle, kind: null, site: null, view: null, valid: false };
     const keys = Object.keys(message);
     const kind = typeof message.kind === 'string' && hasOwn(KINDS, message.kind) ? message.kind : null;
-    const valid =
+    const parted = !joined && hasOwn(message, 'parts');
+    const expected = parted ? [...MESSAGE_KEYS, 'parts'] : MESSAGE_KEYS;
+    const framed =
       kind !== null &&
-      keys.length === MESSAGE_KEYS.length &&
-      keys.every((key) => MESSAGE_KEYS.includes(key)) &&
+      keys.length === expected.length &&
+      keys.every((key) => expected.includes(key)) &&
       // A page's prompt names its tab's guest; the wallet's own, none.
       (kind.startsWith('wallet.') ? message.guest === null : Number.isInteger(message.guest)) &&
-      conforms(message.site, SITE) &&
-      viewBytes(message.view) <= MAX_VIEW_BYTES &&
+      conforms(message.site, SITE);
+    if (!framed) return invalid;
+    if (parted) {
+      return message.view === null && conforms(message.parts, PARTS)
+        ? { handle, kind, site: message.site, view: null, valid: false, parts: { ...message.parts } }
+        : invalid;
+    }
+    const valid =
+      viewBytes(message.view) <= (joined ? MAX_PARTED_VIEW_BYTES : MAX_VIEW_BYTES) &&
       conforms(message.view, KINDS[kind].schema);
-    return valid
-      ? { handle, kind, site: message.site, view: message.view, valid: true }
-      : { handle, kind: null, site: null, view: null, valid: false };
+    return valid ? { handle, kind, site: message.site, view: message.view, valid: true } : invalid;
+  }
+
+  /**
+   * A view main sent in parts (APS-4), joined: the message's view is the
+   * JSON the parts make, checked as any view is, within 4 MiB. Invalid when
+   * it doesn't parse.
+   */
+  function checkJoined(message, json) {
+    if (!isPlainObject(message) || typeof json !== 'string') return null;
+    let view;
+    try {
+      view = JSON.parse(json);
+    } catch {
+      return checkMessage({ handle: message.handle });
+    }
+    const framed = {};
+    for (const key of MESSAGE_KEYS) framed[key] = key === 'view' ? view : message[key];
+    return checkMessage(framed, { joined: true });
   }
 
   const BOARDS = new Set(['eth.safe_message', 'eth.safe_send', 'wallet.safe_board']);
@@ -1234,5 +1270,5 @@
     return type === 'ledger' || type === 'remote' ? type : null;
   }
 
-  return Object.freeze({ KINDS, SITE, checkMessage, deviceOf, typedDataText, units });
+  return Object.freeze({ KINDS, SITE, checkMessage, checkJoined, deviceOf, typedDataText, units });
 });

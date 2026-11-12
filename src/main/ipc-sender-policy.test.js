@@ -151,7 +151,7 @@ describe('isSenderAllowed', () => {
   // chrome, which must not be able to decide. Main then checks the exact
   // view (approvals-document.js).
   test('the approvals channels take the approvals document\'s top frame and refuse the chrome', () => {
-    expect(APPROVALS_CHANNELS).toEqual(['approvals:ready', 'approvals:shown', 'approvals:decide']);
+    expect(APPROVALS_CHANNELS).toEqual(['approvals:ready', 'approvals:shown', 'approvals:decide', 'approvals:view-part']);
     expect(APPROVALS_HTML).toBe(path.join(path.dirname(CHROME_INDEX), 'approvals', 'approvals.html'));
     const approvalsDoc = (extra = {}) => makeEvent({ type: 'window', url: fileUrl(APPROVALS_HTML), ...extra });
     for (const channel of APPROVALS_CHANNELS) {

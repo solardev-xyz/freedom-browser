@@ -9,7 +9,10 @@
  *
  *   - a closed, bounded schema per kind: an unknown kind or field, a wrong
  *     type, a value over its bound, or a view over 256 KiB shows a fixed
- *     error, and the prompt can then only be rejected;
+ *     error, and the prompt can then only be rejected; a view main sends in
+ *     parts (APS-4) is asked for part by part, joined, and checked whole,
+ *     within 4 MiB, before anything of it shows or the prompt is reported
+ *     shown;
  *   - text only: every value goes in with `textContent`, from fixed
  *     templates; nothing from a page is ever markup, a style, a URL or an
  *     attribute (and the CSP's Trusted Types make every markup sink throw);
@@ -56,6 +59,9 @@
   let waiting = null;
   let armTimer = null;
   let armFrame = null;
+  // Each prompt message's turn: a view's parts still arriving for an older
+  // message are dropped (APS-4).
+  let turn = 0;
 
   function setButtons() {
     el.approve.hidden = !current || !current.valid;
@@ -140,6 +146,52 @@
     // Focus starts on Reject.
     el.reject.focus();
     rearm();
+  }
+
+  /**
+   * A prompt whose view comes in parts (APS-4): the panel shows it is
+   * loading, with nothing to approve and the input gate closed, while the
+   * page asks main for each part in turn. The joined view is checked whole
+   * and then shown as any prompt is; a part refused, a length that doesn't
+   * match, or a view off its schema shows the fixed error.
+   */
+  async function load(message, prompt) {
+    const mine = turn;
+    stopWaiting();
+    stopArming();
+    gate.disarm();
+    current = { handle: prompt.handle, kind: null, site: null, view: null, valid: false, loading: true };
+    form = null;
+    deciding = false;
+    el.body.replaceChildren(ui.note('Loading the request…'));
+    el.site.textContent = visible(prompt.site.label);
+    el.error.hidden = true;
+    el.heading.textContent = 'Request';
+    el.approve.textContent = 'Approve';
+    el.reject.textContent = 'Reject';
+    el.panel.hidden = false;
+    el.panel.classList.add('arming');
+    setButtons();
+    el.reject.focus();
+    const parts = [];
+    let length = 0;
+    for (let index = 0; index < prompt.parts.count && length <= prompt.parts.length; index += 1) {
+      let answer;
+      try {
+        answer = await bridge.viewPart(prompt.handle, index);
+      } catch {
+        answer = null;
+      }
+      if (mine !== turn || current?.handle !== prompt.handle) return;
+      if (answer?.ok !== true || typeof answer.part !== 'string' || answer.part.length === 0) break;
+      parts.push(answer.part);
+      length += answer.part.length;
+    }
+    const whole =
+      parts.length === prompt.parts.count && length === prompt.parts.length
+        ? kinds.checkJoined(message, parts.join(''))
+        : null;
+    render(whole?.valid ? whole : { handle: prompt.handle, kind: null, site: null, view: null, valid: false });
   }
 
   function clear(handle) {
@@ -231,7 +283,10 @@
 
   bridge.onPrompt((message) => {
     const prompt = kinds.checkMessage(message);
-    if (prompt) render(prompt);
+    if (!prompt) return;
+    turn += 1;
+    if (prompt.parts) load(message, prompt);
+    else render(prompt);
   });
   bridge.onHidden((message) => clear(message?.handle));
   bridge.onClosed((message) => clear(message?.handle));

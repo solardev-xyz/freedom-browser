@@ -30,6 +30,21 @@
  *                                          and the document's input delay started
  *   approvals:decide     document -> main  { handle, approve, choices }
  *                                          -> { ok } | { ok: false, reason }
+ *   approvals:view-part  document -> main  { handle, index }
+ *                                          -> { ok, part } | { ok: false, reason }
+ *
+ * A view over 256 KiB (very large transaction data, typed data or a
+ * message; APS-4) doesn't go in one message: `page:prompt` then carries
+ * `view: null` and `parts: { count, length }`, and the document asks for
+ * each part of the view's JSON in turn, for the prompt main shows it at
+ * that moment, each part within 256 KiB. It joins them, checks the whole
+ * against its kind's schema as it checks any view, within 4 MiB, and only
+ * then shows the prompt and reports it shown. So every value is still
+ * shown in full, in its scrolling box, and nothing is decided on a part.
+ * A view over 4 MiB, more than any page request's view (a request is at
+ * most 1 MiB, and the core's typed-data view one reply), is not
+ * forwarded: the document shows its fixed error, and the prompt can only
+ * be rejected.
  *
  * The chrome keeps `page:prompt-pending` and `page:prompt-closed` for the
  * badges and the count, and its `page:decide` is refused
@@ -50,9 +65,9 @@
  *
  * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
  * narrows what the chrome can do, so packaged builds honour it too. It
- * stays off by default until the panel's gaps close (views over 256 KiB)
- * and the page and wallet specs drive it; the default flips in its own pull
- * request. The Safe signing boards show here from APS-3b.
+ * stays off by default until the page and wallet specs drive it; the
+ * default flips in its own pull request. The Safe signing boards show here
+ * from APS-3b, and views over 256 KiB in parts from APS-4.
  */
 
 const fs = require('fs');
@@ -120,12 +135,13 @@ const CHANNELS = Object.freeze({
   READY: 'approvals:ready',
   SHOWN: 'approvals:shown',
   DECIDE: 'approvals:decide',
+  VIEW_PART: 'approvals:view-part',
   ANCHOR: 'page:approvals-anchor',
 });
 
-// The channels a renderer sends main here. The sender policy gives the
-// first three to the approvals document alone (`ipc-sender-policy.js`).
-const DOCUMENT_CHANNELS = Object.freeze([CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.DECIDE]);
+// The channels a renderer sends main here. The sender policy gives these to
+// the approvals document alone (`ipc-sender-policy.js`).
+const DOCUMENT_CHANNELS = Object.freeze([CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.DECIDE, CHANNELS.VIEW_PART]);
 
 // Clicks and keys do nothing for this long after a prompt appears, its
 // content changes, or the panel is shown again or moves; main refuses an
@@ -148,8 +164,16 @@ const MIN_PANEL_HEIGHT = 240;
 // fits beside some content (outer size: room for a frame and title bar).
 const MIN_WINDOW_SIZE = Object.freeze([480, 360]);
 
-// The most of a view main forwards (design 0011, "What a prompt shows").
+// The most of a view main forwards in one message (design 0011, "What a
+// prompt shows").
 const MAX_VIEW_BYTES = 256 * 1024;
+// The most of a view main forwards in parts (APS-4): over every page
+// request's view (a request is at most 1 MiB, its data shown as hex, and
+// the core's typed-data view one 1 MiB reply).
+const MAX_PARTED_VIEW_BYTES = 4 * 1024 * 1024;
+// A part, in UTF-16 code units of the view's JSON: at most 192 KiB of
+// UTF-8, so each part is within one message's 256 KiB.
+const VIEW_PART_UNITS = 64 * 1024;
 
 // Pinned, so a default change or a stray option can't weaken the renderer
 // that holds the decision channel.
@@ -202,26 +226,57 @@ function ownFile(url) {
   return FILES.has(file) ? file : null;
 }
 
-/** What main forwards of a prompt: its fields, and a view only within its size. */
-function outgoingPrompt(payload) {
-  let view = payload?.view;
-  let bytes;
-  try {
-    const json = JSON.stringify(view);
-    bytes = typeof json === 'string' ? Buffer.byteLength(json, 'utf8') : 0;
-  } catch {
-    bytes = Infinity;
+/** A view's JSON in parts of `VIEW_PART_UNITS`, never splitting a surrogate pair. */
+function viewParts(json) {
+  const parts = [];
+  for (let start = 0; start < json.length; ) {
+    let end = Math.min(json.length, start + VIEW_PART_UNITS);
+    const last = json.charCodeAt(end - 1);
+    if (end < json.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    parts.push(json.slice(start, end));
+    start = end;
   }
-  // Over its size, or not serializable: the document gets no view, shows
-  // its fixed error, and the prompt can only be rejected.
-  if (bytes > MAX_VIEW_BYTES) view = null;
-  return {
+  return parts;
+}
+
+/**
+ * How main forwards a prompt: the message (its own fields, and the view
+ * within 256 KiB, or `view: null` and `parts: { count, length }` for a view
+ * within 4 MiB), the view as main shows it, and the view's JSON in parts.
+ */
+function promptDelivery(payload) {
+  const message = {
     handle: payload?.handle,
     guest: payload?.guest,
     kind: payload?.kind,
     site: { key: payload?.site?.key, label: payload?.site?.label },
-    view,
+    view: payload?.view,
   };
+  let json;
+  let bytes;
+  try {
+    json = JSON.stringify(message.view);
+    bytes = typeof json === 'string' ? Buffer.byteLength(json, 'utf8') : 0;
+  } catch {
+    bytes = Infinity;
+  }
+  if (bytes <= MAX_VIEW_BYTES) return { message, view: message.view, parts: null };
+  if (bytes <= MAX_PARTED_VIEW_BYTES) {
+    const parts = viewParts(json);
+    const view = message.view;
+    message.view = null;
+    message.parts = { count: parts.length, length: json.length };
+    return { message, view, parts };
+  }
+  // Over 4 MiB, or not serializable: the document gets no view, shows its
+  // fixed error, and the prompt can only be rejected.
+  message.view = null;
+  return { message, view: null, parts: null };
+}
+
+/** What main forwards of a prompt in its message (`promptDelivery`). */
+function outgoingPrompt(payload) {
+  return promptDelivery(payload).message;
 }
 
 /**
@@ -471,6 +526,10 @@ function createApprovalsDocuments({
       ready: false,
       visible: false,
       shown: null,
+      // The shown prompt's view as main holds it, and its JSON in parts when
+      // it is over one message (APS-4).
+      shownView: null,
+      parts: null,
       report: null,
       // `{ handle, device }` while an approval for a device's account signs.
       waiting: null,
@@ -529,8 +588,10 @@ function createApprovalsDocuments({
     if (!record) return;
     const handle = payload?.handle;
     if (channel === CHANNELS.PROMPT) {
-      const message = outgoingPrompt(payload);
+      const { message, view, parts } = promptDelivery(payload);
       record.shown = message;
+      record.shownView = view;
+      record.parts = parts;
       record.report = null;
       record.waiting = null;
       show(record);
@@ -539,6 +600,8 @@ function createApprovalsDocuments({
     } else if (channel === CHANNELS.HIDDEN) {
       if (record.shown?.handle !== handle) return;
       record.shown = null;
+      record.shownView = null;
+      record.parts = null;
       record.report = null;
       trace({ kind: 'hidden', window: windowId, handle });
       deliver(record, CHANNELS.HIDDEN, { handle });
@@ -546,6 +609,8 @@ function createApprovalsDocuments({
     } else if (channel === CHANNELS.CLOSED) {
       if (record.shown?.handle === handle) {
         record.shown = null;
+        record.shownView = null;
+        record.parts = null;
         record.report = null;
         // Approved for a device: the panel stays up while it signs.
         if (record.waiting?.handle !== handle) hide(record);
@@ -643,7 +708,7 @@ function createApprovalsDocuments({
     }
     // Approved for an account that signs on a device: the panel keeps
     // saying where to confirm until the request is answered.
-    const device = payload.approve ? deviceOf(record.shown, payload.choices) : null;
+    const device = payload.approve ? deviceOf({ kind: record.shown.kind, view: record.shownView }, payload.choices) : null;
     if (device) record.waiting = { handle: payload.handle, device };
     let result;
     try {
@@ -656,6 +721,24 @@ function createApprovalsDocuments({
       if (!record.shown) hide(record);
     }
     return out(isPlainObject(result) ? result : { ok: false, reason: 'failed' });
+  }
+
+  /**
+   * `approvals:view-part { handle, index }` from a window's own document:
+   * one part of the view of the prompt main shows it at this moment, when
+   * that view came in parts (APS-4).
+   */
+  function viewPart(event, payload) {
+    const { record, reason } = senderOf(event);
+    if (!record) return refused(CHANNELS.VIEW_PART, reason);
+    if (!isPlainObject(payload) || typeof payload.handle !== 'string' || !Number.isInteger(payload.index)) {
+      return { ok: false, reason: 'invalid' };
+    }
+    if (record.shown?.handle !== payload.handle || !record.parts) return { ok: false, reason: 'not-shown' };
+    const part = record.parts[payload.index];
+    if (typeof part !== 'string') return { ok: false, reason: 'invalid' };
+    trace({ kind: 'view-part', window: record.windowId, handle: payload.handle, index: payload.index });
+    return { ok: true, part };
   }
 
   /**
@@ -683,6 +766,7 @@ function createApprovalsDocuments({
       shown(event, payload);
     });
     ipcMain.handle(CHANNELS.DECIDE, (event, payload) => decideFrom(event, payload));
+    ipcMain.handle(CHANNELS.VIEW_PART, (event, payload) => viewPart(event, payload));
     ipcMain.on(CHANNELS.ANCHOR, (event, payload) => {
       anchor(event, payload);
     });
@@ -714,6 +798,7 @@ function createApprovalsDocuments({
         bounds: record.bounds ? { ...record.bounds } : null,
         top: record.top,
         shown: record.shown ? record.shown.handle : null,
+        parts: record.parts ? record.parts.length : 0,
         reported: record.report ? record.report.handle : null,
         waiting: record.waiting ? record.waiting.device : null,
       };
@@ -721,7 +806,7 @@ function createApprovalsDocuments({
     return out;
   }
 
-  return { attach, send, ready, shown, decide: decideFrom, anchor, register, reshow, state, serve };
+  return { attach, send, ready, shown, decide: decideFrom, viewPart, anchor, register, reshow, state, serve };
 }
 
 // The app's one instance, and its test hooks: inert until the E2E harness
@@ -806,10 +891,14 @@ module.exports = {
   MIN_PANEL_HEIGHT,
   MIN_WINDOW_SIZE,
   MAX_VIEW_BYTES,
+  MAX_PARTED_VIEW_BYTES,
+  VIEW_PART_UNITS,
   WEB_PREFERENCES,
   isApprovalsDocumentEnabled,
   ownFile,
   outgoingPrompt,
+  promptDelivery,
+  viewParts,
   panelBounds,
   panelFits,
   createApprovalsDocuments,

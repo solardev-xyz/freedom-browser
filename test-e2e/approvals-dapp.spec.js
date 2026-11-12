@@ -258,6 +258,78 @@ test.describe('with a vault', () => {
   });
 });
 
+// APS-4: a view over 256 KiB (here a 300 KiB message) is no longer only
+// rejectable: main sends it in parts the panel asks for, the panel checks
+// the joined view and shows it in full, and only then reports it shown.
+test.describe('with a vault, a view over 256 KiB', () => {
+  test.use({ withVault: true });
+
+  test('a 300 KiB message shows in full in the panel, from parts, and its approval signs it (0011 APS-4)', async ({
+    electronApp,
+    window: win,
+    harness,
+  }) => {
+    test.setTimeout(180_000);
+    await harness.setContentFixture(`${A}/`, dappPage('dapp'));
+    const windowId = await chromeWindowId(electronApp);
+    const docPage = await approvalsPage(electronApp);
+    const guest = await openTab(electronApp, win, `${A}/`);
+    const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
+    const ask = (id, method, params = []) =>
+      inGuest(electronApp, guest, `window.__ask(${JSON.stringify(id)}, ${JSON.stringify(method)}, ${JSON.stringify(params)})`);
+    const answer = (id) => inGuest(electronApp, guest, `window.__asked[${JSON.stringify(id)}] || null`);
+
+    let after = await reportCount(electronApp, windowId);
+    await ask('connect', 'eth_requestAccounts');
+    await nextReport(electronApp, windowId, after);
+    await sleep(PAST_DELAY_MS);
+    await docPage.click('#approve');
+    await expect.poll(() => answer('connect')).toEqual({ ok: [account] });
+
+    const lines = [];
+    for (let i = 0; lines.join('\n').length < 300 * 1024; i += 1) lines.push(`Freedom large message, line ${i}: the panel shows every line.`);
+    const text = lines.join('\n');
+    const hex = `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+    after = await reportCount(electronApp, windowId);
+    await ask('large', 'personal_sign', [hex, account]);
+    await nextReport(electronApp, windowId, after);
+    await expect(docPage.locator('#heading')).toHaveText('Unlock Vault');
+    await sleep(PAST_DELAY_MS);
+    await docPage.fill('input[type="password"]', VAULT_PASSWORD);
+    after = await reportCount(electronApp, windowId);
+    await docPage.click('#approve');
+    const sign = (await nextReport(electronApp, windowId, after)).handle;
+    await expect(docPage.locator('#heading')).toHaveText('Sign Message');
+    // Shown in full: the cut line, and every character in the scrolling box.
+    await expect(docPage.locator('#body')).toContainText('more characters below');
+    const full = await docPage.evaluate(() => {
+      const box = document.querySelector('#body .field-full');
+      return { length: box.textContent.length, head: box.textContent.slice(0, 60), tail: box.textContent.slice(-60) };
+    });
+    expect(full).toEqual({ length: text.length, head: text.slice(0, 60), tail: text.slice(-60) });
+    await expect(docPage.locator('#error')).toBeHidden();
+    // The view came in parts, each asked for before the prompt was reported.
+    const trace = await approvalsTrace(electronApp);
+    const parts = trace.filter((e) => e.kind === 'view-part' && e.handle === sign);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.map((e) => e.index)).toEqual(parts.map((_e, i) => i));
+    const shownAt = trace.findIndex((e) => e.kind === 'shown' && e.handle === sign);
+    expect(trace.findIndex((e) => e.kind === 'view-part' && e.handle === sign && e.index === parts.length - 1)).toBeLessThan(shownAt);
+    const prompt = trace.find((e) => e.kind === 'prompt' && e.handle === sign);
+    expect(prompt).toBeTruthy();
+    // The chrome still can't decide it; the panel's approval signs the whole message.
+    expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { alwaysAllow: false }), sign)).toEqual({
+      ok: false,
+      reason: 'approvals-document',
+    });
+    await docPage.screenshot({ path: test.info().outputPath('approvals-large-view.png') });
+    await sleep(PAST_DELAY_MS);
+    await docPage.click('#approve');
+    await expect.poll(async () => (await answer('large'))?.ok || null, { timeout: 15_000 }).toMatch(/^0x[0-9a-f]{130}$/i);
+    expect(verifyMessage(text, (await answer('large')).ok)).toBe(account);
+  });
+});
+
 // --- Hostile data, in every field a page chooses, for every dApp kind ---------
 
 const cp = (code) => String.fromCodePoint(code);

@@ -19,6 +19,7 @@ const {
   registerApprovalsIpc,
   ownFile,
   outgoingPrompt,
+  viewParts,
   panelBounds,
   APPROVALS_HTML,
   APPROVALS_URL,
@@ -28,6 +29,8 @@ const {
   CHANNELS,
   INPUT_DELAY_MS,
   MAX_VIEW_BYTES,
+  MAX_PARTED_VIEW_BYTES,
+  VIEW_PART_UNITS,
   DEFAULT_TOP,
   MAX_TOP,
   MIN_PANEL_WIDTH,
@@ -697,9 +700,10 @@ describe('main\'s prompts in the document', () => {
     expect(two.contents.sent).toEqual([[CHANNELS.THEME, { theme: 'light' }]]);
   });
 
-  test('a view over 256 KiB, or one that can\'t be measured, is not forwarded', () => {
+  test('a view over 256 KiB, or one that can\'t be measured, is not forwarded in its message', () => {
     expect(outgoingPrompt(prompt(HANDLE, { title: 'x'.repeat(MAX_VIEW_BYTES) })).view).toBeNull();
     expect(outgoingPrompt(prompt(HANDLE, { n: 1n })).view).toBeNull();
+    expect(outgoingPrompt(prompt(HANDLE, { n: 1n }))).not.toHaveProperty('parts');
     const fits = { title: 'x'.repeat(MAX_VIEW_BYTES - 20) };
     expect(outgoingPrompt(prompt(HANDLE, fits)).view).toBe(fits);
     // Only the prompt's own fields.
@@ -711,7 +715,102 @@ describe('main\'s prompts in the document', () => {
     expect(env.ipc.on.mock.calls.map(([channel]) => channel).sort()).toEqual(
       [CHANNELS.READY, CHANNELS.SHOWN, CHANNELS.ANCHOR].sort()
     );
-    expect(env.ipc.handle.mock.calls.map(([channel]) => channel)).toEqual([CHANNELS.DECIDE]);
+    expect(env.ipc.handle.mock.calls.map(([channel]) => channel)).toEqual([CHANNELS.DECIDE, CHANNELS.VIEW_PART]);
+  });
+});
+
+// APS-4: a view over 256 KiB goes in parts the document asks for, each
+// within 256 KiB, for the prompt main shows it at that moment.
+describe('APS-4: a view over 256 KiB, in parts', () => {
+  const big = (chars, fill = 'x') => ({ title: 'T', message: fill.repeat(chars), rows: [] });
+  const part = (env, contents, index, handle = HANDLE) => env.docs.viewPart(eventFrom(contents), { handle, index });
+
+  test('the message names its parts and carries no view; the parts join to the view\'s JSON, each within 256 KiB', () => {
+    const view = big(600 * 1024);
+    const message = outgoingPrompt(prompt(HANDLE, view));
+    const json = JSON.stringify(view);
+    expect(message.view).toBeNull();
+    expect(message.parts).toEqual({ count: Math.ceil(json.length / VIEW_PART_UNITS), length: json.length });
+    expect(Object.keys(message)).toEqual(['handle', 'guest', 'kind', 'site', 'view', 'parts']);
+    const parts = viewParts(json);
+    expect(parts.join('')).toBe(json);
+    for (const piece of parts) expect(Buffer.byteLength(piece, 'utf8')).toBeLessThanOrEqual(MAX_VIEW_BYTES);
+    // Over 4 MiB: no view, no parts.
+    const over = outgoingPrompt(prompt(HANDLE, big(MAX_PARTED_VIEW_BYTES)));
+    expect(over.view).toBeNull();
+    expect(over).not.toHaveProperty('parts');
+  });
+
+  test('a part never splits a surrogate pair, and three-byte characters stay within 256 KiB a part', () => {
+    const emoji = String.fromCodePoint(0x1f642);
+    const odd = `"${'a'.repeat(VIEW_PART_UNITS - 2)}${emoji.repeat(4)}"`;
+    const parts = viewParts(odd);
+    expect(parts.join('')).toBe(odd);
+    for (const piece of parts) {
+      const last = piece.charCodeAt(piece.length - 1);
+      expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
+    }
+    const wide = JSON.stringify(big(400 * 1024, '\u20ac'));
+    for (const piece of viewParts(wide)) expect(Buffer.byteLength(piece, 'utf8')).toBeLessThanOrEqual(MAX_VIEW_BYTES);
+  });
+
+  test('the document gets each part of the prompt it shows; nothing for another, a hidden or closed one, or another sender', () => {
+    const env = setup();
+    const { contents } = attached(env);
+    const two = attached(env, 2);
+    const view = big(300 * 1024);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
+    const [, sent] = contents.sent.find(([channel]) => channel === CHANNELS.PROMPT);
+    expect(sent.view).toBeNull();
+    expect(env.docs.state()[1].parts).toBe(sent.parts.count);
+    const pieces = [];
+    for (let index = 0; index < sent.parts.count; index += 1) {
+      const answer = part(env, contents, index);
+      expect(answer.ok).toBe(true);
+      pieces.push(answer.part);
+    }
+    expect(JSON.parse(pieces.join(''))).toEqual(view);
+    expect(part(env, contents, sent.parts.count)).toEqual({ ok: false, reason: 'invalid' });
+    expect(part(env, contents, -1)).toEqual({ ok: false, reason: 'invalid' });
+    expect(part(env, contents, 0.5)).toEqual({ ok: false, reason: 'invalid' });
+    expect(env.docs.viewPart(eventFrom(contents), null)).toEqual({ ok: false, reason: 'invalid' });
+    expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'not-shown' });
+    // Another window's document, the chrome, a sub-frame.
+    expect(part(env, two.contents, 0)).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.viewPart({ sender: { id: 501 }, senderFrame: {} }, { handle: HANDLE, index: 0 })).toEqual({
+      ok: false,
+      reason: 'not-the-view',
+    });
+    expect(env.docs.viewPart(eventFrom(contents, { url: APPROVALS_URL }), { handle: HANDLE, index: 0 }).ok).toBe(false);
+    // A view within one message has no parts.
+    env.docs.send(1, CHANNELS.PROMPT, prompt(OTHER_HANDLE));
+    expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'not-shown' });
+    // Hidden, or closed: nothing more, and main lets the parts go.
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
+    env.docs.send(1, CHANNELS.HIDDEN, { handle: HANDLE });
+    expect(part(env, contents, 0)).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.state()[1].parts).toBe(0);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
+    env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
+    expect(part(env, contents, 0)).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.state()[1].parts).toBe(0);
+  });
+
+  test('an approval still waits for the report and its 500 ms; a device\'s account is read from main\'s whole view', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    let answer;
+    env.decide.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    const view = { account: { index: 1, name: 'Ledger', address: null, type: 'ledger' }, data: `0x${'ab'.repeat(200 * 1024)}` };
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'not-reported' });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
+    env.advance(INPUT_DELAY_MS);
+    const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
+    expect(env.docs.state()[1].waiting).toBe('ledger');
+    answer({ ok: true });
+    expect(await decided).toEqual({ ok: true });
   });
 });
 

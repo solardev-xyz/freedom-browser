@@ -20,5 +20,7 @@ contextBridge.exposeInMainWorld(
     ready: () => ipcRenderer.send('approvals:ready'),
     shown: (handle) => ipcRenderer.send('approvals:shown', { handle }),
     decide: (handle, approve, choices) => ipcRenderer.invoke('approvals:decide', { handle, approve, choices }),
+    // A part of a view over 256 KiB (APS-4), for the prompt main shows.
+    viewPart: (handle, index) => ipcRenderer.invoke('approvals:view-part', { handle, index }),
   })
 );
