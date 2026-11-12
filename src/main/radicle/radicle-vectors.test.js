@@ -26,8 +26,10 @@
  *
  * What only the service has (`source: design`: the progress queue, the
  * `rad.stats` results, `rad.blob`'s ranges and refusals, the service's
- * answers) has no `main` to replay here; later PRs run every file again
- * against main's service path.
+ * answers) has no `main` to replay here. Main's service path runs the files
+ * again below: radicle-reads.json and radicle-blob.json (B7, B8), and
+ * radicle-network.json with the service's progress queue (B9); the others
+ * with their steps.
  *
  * **Drift.** A case main no longer answers as recorded fails, unless it is
  * listed in KNOWN_STALE: main changed it on purpose, and freedom-core
@@ -460,10 +462,16 @@ function serviceCalls(addonCalls) {
         out.push({ method: 'rad.connect_seeds', params: { timeout_ms: args[0] } });
         break;
       case 'cloneRepo':
-        out.push({ method: 'rad.clone', params: { rid: args[0], timeout_ms: args[1], progress: false } });
+        out.push({
+          method: 'rad.clone',
+          params: { rid: args[0], timeout_ms: args[1], progress: false },
+        });
         break;
       case 'cloneRepoWithProgress':
-        out.push({ method: 'rad.clone', params: { rid: args[0], timeout_ms: args[1], progress: true } });
+        out.push({
+          method: 'rad.clone',
+          params: { rid: args[0], timeout_ms: args[1], progress: true },
+        });
         break;
       case 'listRepos':
         out.push({ op: 'node_info', args: {} });
@@ -503,38 +511,44 @@ const mainLines = (lines) => lines.filter((line) => !line.startsWith('[RadicleEm
     const cases = (name) =>
       networkVectors ? networkVectors[name].map((c) => [c.id, c]) : [[`(no ${name})`, null]];
 
-    test.each(cases('reports'))('reports/%s: the background start over the service answer', async (_id, c) => {
-      const replay = await harness.runServiceReport(main, c);
-      expect(replay.unscripted).toEqual([]);
-      expect(replay.unanswered).toBe(0);
-      expect(replay.main.calls).toEqual(serviceCalls(c.main.calls));
-      expect(replay.main.infos).toEqual(mainLines(c.main.infos));
-      expect(replay.main.warnings).toEqual(mainLines(c.main.warnings));
-    });
+    test.each(cases('reports'))(
+      'reports/%s: the background start over the service answer',
+      async (_id, c) => {
+        const replay = await harness.runServiceReport(main, c);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.unanswered).toBe(0);
+        expect(replay.main.calls).toEqual(serviceCalls(c.main.calls));
+        expect(replay.main.infos).toEqual(mainLines(c.main.infos));
+        expect(replay.main.warnings).toEqual(mainLines(c.main.warnings));
+      }
+    );
 
-    test.each(cases('progress'))('progress/%s: the same statuses, byte for byte', async (_id, c) => {
-      const replay = await harness.runServiceProgress(main, c);
-      expect(replay.unscripted).toEqual([]);
-      expect(replay.unanswered).toBe(0);
-      expect(replay.main.statuses).toStrictEqual(c.main.statuses);
-      expect(JSON.stringify(replay.main.statuses)).toBe(JSON.stringify(c.main.statuses));
-      // The same calls, as the service routes them. The node info the
-      // fetch's steps push is one read at a time, joined while one is in
-      // flight: how many there are follows how long each takes, which the
-      // service's reads and the add-on's don't share (see KNOWN_STALE).
-      const expected = serviceCalls(c.main.calls);
-      const isInfo = (call) => call.op === 'node_info';
-      expect(replay.main.calls.filter((call) => !isInfo(call))).toEqual(
-        expected.filter((call) => !isInfo(call))
-      );
-      expect(replay.main.calls.filter(isInfo).length).toBeGreaterThanOrEqual(
-        expected.filter(isInfo).length
-      );
-      expect(replay.main.warnings).toEqual(mainLines(c.main.warnings));
-    });
+    test.each(cases('progress'))(
+      'progress/%s: the same statuses, byte for byte',
+      async (_id, c) => {
+        const replay = await harness.runServiceProgress(main, c);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.unanswered).toBe(0);
+        expect(replay.main.statuses).toStrictEqual(c.main.statuses);
+        expect(JSON.stringify(replay.main.statuses)).toBe(JSON.stringify(c.main.statuses));
+        // The same calls, as the service routes them. The node info the
+        // fetch's steps push is one read at a time, joined while one is in
+        // flight: how many there are follows how long each takes, which the
+        // service's reads and the add-on's don't share (see KNOWN_STALE).
+        const expected = serviceCalls(c.main.calls);
+        const isInfo = (call) => call.op === 'node_info';
+        expect(replay.main.calls.filter((call) => !isInfo(call))).toEqual(
+          expected.filter((call) => !isInfo(call))
+        );
+        expect(replay.main.calls.filter(isInfo).length).toBeGreaterThanOrEqual(
+          expected.filter(isInfo).length
+        );
+        expect(replay.main.warnings).toEqual(mainLines(c.main.warnings));
+      }
+    );
 
     test.each(cases('queue'))(
-      "queue/%s: what the service writes, through seed-status.js",
+      'queue/%s: what the service writes, through seed-status.js',
       async (_id, c) => {
         const replay = await harness.runServiceQueue(main, c);
         expect(replay.unscripted).toEqual([]);
@@ -576,42 +590,55 @@ const mainLines = (lines) => lines.filter((line) => !line.startsWith('[RadicleEm
         }
         // The terminal's status last.
         const terminal = events.at(-1).phase;
-        const state = { done: 'fetched', cancelled: 'cancelled', failed: 'failed' }[terminal] ?? 'fetched';
+        const state =
+          { done: 'fetched', cancelled: 'cancelled', failed: 'failed' }[terminal] ?? 'fetched';
         expect(last.state).toBe(state);
       }
     );
 
     const resultCases = networkVectors
       ? networkVectors.results.flatMap((c) =>
-          c.expect.nothing ? [[`${c.id} (deadline)`, c, 'deadline'], [`${c.id} (stop)`, c, 'stop']] : [[c.id, c, null]]
+          c.expect.nothing
+            ? [
+                [`${c.id} (deadline)`, c, 'deadline'],
+                [`${c.id} (stop)`, c, 'stop'],
+              ]
+            : [[c.id, c, null]]
         )
       : [['(no results)', null, null]];
-    test.each(resultCases)("results/%s: the last status for the service's answer", async (_id, c, ending) => {
-      const replay = await harness.runServiceResult(main, c, ending);
-      expect(replay.unscripted).toEqual([]);
-      const recorded = c.main.final;
-      const error = c.expect.error ?? (c.expect.nothing ? harness.SERVICE_ENDINGS[ending] : null);
-      let expected = recorded;
-      if (error && error.message !== recorded.lastError) {
-        // The service's own text: a closed repository's, or its deadline's
-        // or stop's, where the add-on answered libradicle's.
-        expected = {
-          ...recorded,
-          state: 'failed',
-          progress: { phase: 'failed', reason: error.message },
-          lastError: error.message,
-        };
+    test.each(resultCases)(
+      "results/%s: the last status for the service's answer",
+      async (_id, c, ending) => {
+        const replay = await harness.runServiceResult(main, c, ending);
+        expect(replay.unscripted).toEqual([]);
+        const recorded = c.main.final;
+        const error = c.expect.error ?? (c.expect.nothing ? harness.SERVICE_ENDINGS[ending] : null);
+        let expected = recorded;
+        if (error && error.message !== recorded.lastError) {
+          // The service's own text: a closed repository's, or its deadline's
+          // or stop's, where the add-on answered libradicle's.
+          expected = {
+            ...recorded,
+            state: 'failed',
+            progress: { phase: 'failed', reason: error.message },
+            lastError: error.message,
+          };
+        }
+        expect(replay.main.final).toStrictEqual(expected);
+        expect(JSON.stringify(replay.main.final)).toBe(JSON.stringify(expected));
+        expect(replay.main.warnings).toEqual(
+          error ? [`[seed-status] ${harness.RID} fetch failed: ${error.message}`] : []
+        );
       }
-      expect(replay.main.final).toStrictEqual(expected);
-      expect(JSON.stringify(replay.main.final)).toBe(JSON.stringify(expected));
-      expect(replay.main.warnings).toEqual(
-        error ? [`[seed-status] ${harness.RID} fetch failed: ${error.message}`] : []
-      );
-    });
+    );
 
     test("the service's own texts are the deliberate differences: a closed repository's, and the deadline's and the stop's", () => {
       const differ = networkVectors.results
-        .filter((c) => c.expect.nothing || (c.expect.error && c.expect.error.message !== c.main.final.lastError))
+        .filter(
+          (c) =>
+            c.expect.nothing ||
+            (c.expect.error && c.expect.error.message !== c.main.final.lastError)
+        )
         .map((c) => c.id);
       expect(differ).toEqual([
         'cancelled-by-the-deadline-or-the-stop',

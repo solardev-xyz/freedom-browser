@@ -103,7 +103,10 @@ class CloneRun {
   async fail(code, message, data) {
     await this.hub.flush();
     const error = data === undefined ? { code, message } : { code, message, data };
-    this.child.sender.reply(this.id, Buffer.from(JSON.stringify({ type: 'response', id: this.id, error })));
+    this.child.sender.reply(
+      this.id,
+      Buffer.from(JSON.stringify({ type: 'response', id: this.id, error }))
+    );
     this.child.pump();
   }
 }
@@ -259,7 +262,11 @@ describe('a clone: rad.clone and its progress', () => {
     const { embedded, runs } = await running();
     const done = embedded.cloneRepo(FREEDOM_BROWSER_RID);
     await settle();
-    expect(runs[0].params).toEqual({ rid: FREEDOM_BROWSER_RID, timeout_ms: 120000, progress: false });
+    expect(runs[0].params).toEqual({
+      rid: FREEDOM_BROWSER_RID,
+      timeout_ms: 120000,
+      progress: false,
+    });
     runs[0].start();
     await runs[0].answer({ ok: true });
     await expect(done).resolves.toEqual({ ok: true });
@@ -267,23 +274,34 @@ describe('a clone: rad.clone and its progress', () => {
 
   test.each([
     ['failed', 'no seeds found for rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', undefined],
-    ['not_found', 'fetching rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5 failed: repository not found', undefined],
-    ['quarantined', "rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5 is quarantined: Radicle couldn't repair it", { kind: 'namespace', step: null }],
+    [
+      'not_found',
+      'fetching rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5 failed: repository not found',
+      undefined,
+    ],
+    [
+      'quarantined',
+      "rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5 is quarantined: Radicle couldn't repair it",
+      { kind: 'namespace', step: null },
+    ],
     ['stopped', 'the repository is being repaired', undefined],
     ['deadline', 'past its deadline', undefined],
     ['stopped', 'the Radicle service is stopping', undefined],
-  ])("the service's %s keeps its code and message, after the terminal event", async (code, message, data) => {
-    const { embedded, runs } = await running();
-    const seen = [];
-    const done = embedded.cloneRepoWithProgress(RID, 120000, (event) => seen.push(event));
-    await settle();
-    runs[0].start();
-    runs[0].emit({ phase: 'failed', reason: message });
-    await runs[0].fail(code, message, data);
-    const err = await done.catch((e) => e);
-    expect(err).toMatchObject({ code, message, ...(data ? { data } : {}) });
-    expect(seen).toEqual([{ phase: 'failed', reason: message }]);
-  });
+  ])(
+    "the service's %s keeps its code and message, after the terminal event",
+    async (code, message, data) => {
+      const { embedded, runs } = await running();
+      const seen = [];
+      const done = embedded.cloneRepoWithProgress(RID, 120000, (event) => seen.push(event));
+      await settle();
+      runs[0].start();
+      runs[0].emit({ phase: 'failed', reason: message });
+      await runs[0].fail(code, message, data);
+      const err = await done.catch((e) => e);
+      expect(err).toMatchObject({ code, message, ...(data ? { data } : {}) });
+      expect(seen).toEqual([{ phase: 'failed', reason: message }]);
+    }
+  );
 
   test('an answer that is neither { ok } nor { cancelled } is internal', async () => {
     const { embedded, runs } = await running();
@@ -312,7 +330,7 @@ describe('a clone: rad.clone and its progress', () => {
   });
 });
 
-describe('cancelClone(rid): the cancel of that RID\'s progress clone', () => {
+describe("cancelClone(rid): the cancel of that RID's progress clone", () => {
   test('with no clone of the RID in flight: { cancelled: false }, and nothing is sent', async () => {
     const { child, embedded, runs } = await running();
     await expect(embedded.cancelClone(RID)).resolves.toEqual({ cancelled: false });
@@ -348,7 +366,7 @@ describe('cancelClone(rid): the cancel of that RID\'s progress clone', () => {
     expect(runs[0].start()).toBe(false);
   });
 
-  test("once it has started: the cancel goes at once, and the clone settles when it stops, with its events until then and cancelled last", async () => {
+  test('once it has started: the cancel goes at once, and the clone settles when it stops, with its events until then and cancelled last', async () => {
     const { child, embedded, runs } = await running();
     const order = [];
     const clone = embedded
@@ -448,7 +466,13 @@ describe('cancelClone(rid): the cancel of that RID\'s progress clone', () => {
     for (let index = 1; index <= FAILED; index += 1) {
       for (const event of failedCandidate(index, TOTAL)) run.emit(event);
     }
-    run.emit({ phase: 'connecting', nid: NID, addr: 'seed21.example:8776', index: 21, total: TOTAL });
+    run.emit({
+      phase: 'connecting',
+      nid: NID,
+      addr: 'seed21.example:8776',
+      index: 21,
+      total: TOTAL,
+    });
     await settle();
     expect(events).toHaveLength(1);
 
@@ -493,7 +517,10 @@ describe('cancelClone(rid): the cancel of that RID\'s progress clone', () => {
     // seed-status counted them all, and its last status is the cancel.
     const counted = statuses.filter((s) => s.progress?.phase === 'peer-failed');
     expect(
-      counted.reduce((sum, s) => sum + (Number.isInteger(s.progress.count) ? s.progress.count : 1), 0)
+      counted.reduce(
+        (sum, s) => sum + (Number.isInteger(s.progress.count) ? s.progress.count : 1),
+        0
+      )
     ).toBe(FAILED);
     expect(statuses.at(-2)).toMatchObject({ state: 'fetching', progress: { phase: 'cancelled' } });
     expect(statuses.at(-1)).toMatchObject({ state: 'cancelled', progress: { phase: 'cancelled' } });
@@ -547,7 +574,14 @@ describe("the other callers' slots (0008, Main's side)", () => {
     expect(clone.value).toEqual({ cancelled: true });
     expect(backend.callers()).toEqual({ outstanding: 1, waiting: 0 });
     expect(child.sent('rad.clone')).toEqual([]);
-    child.result(seeds[0].id, { attempted: 0, connected: 0, target: 0, targetReached: true, elapsedMs: 0, failures: [] });
+    child.result(seeds[0].id, {
+      attempted: 0,
+      connected: 0,
+      target: 0,
+      targetReached: true,
+      elapsedMs: 0,
+      failures: [],
+    });
     await connect;
     expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
   });

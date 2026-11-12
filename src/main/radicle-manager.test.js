@@ -1878,7 +1878,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     expect(ctx.withRadicleGate).not.toHaveBeenCalled();
   });
 
-  describe("the seed paths on the service: rad.clone with progress, and the collected reads", () => {
+  describe('the seed paths on the service: rad.clone with progress, and the collected reads', () => {
     const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
     /** callScoped answering each op's value in its scope. */
     const scoped = (answers) =>
@@ -2004,7 +2004,11 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
           message: 'Seeding is not available in private windows',
         },
       };
-      for (const event of [{ sender: privateGuest }, { sender: { isDestroyed: () => true } }, null]) {
+      for (const event of [
+        { sender: privateGuest },
+        { sender: { isDestroyed: () => true } },
+        null,
+      ]) {
         expect(await ctx.handlers.get(IPC.RADICLE_SEED)(event, RID)).toEqual(refused);
         expect(await ctx.handlers.get(IPC.RADICLE_SYNC_REPO)(event, RID)).toEqual(refused);
       }

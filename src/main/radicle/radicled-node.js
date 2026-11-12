@@ -19,7 +19,8 @@
  *   6. `rad.start { alias }`;
  *   7. running, once a `rad.stats` reply says `node_alive`. The manager
  *      then runs today's background `connect_seeds(15000)` and the default
- *      repository's clone (`connectSeeds`, `cloneRepo`).
+ *      repository's clone, through radicle-embedded.js's network
+ *      operations (`connectSeeds` and `clone` here).
  *
  *   Main sees the recipient, `enc` and the ciphertext, never the key, and
  *   logs none of them.

@@ -757,9 +757,7 @@ function runServiceReport(main, c) {
  * published. */
 async function seedThrough(main) {
   const statuses = [];
-  const started = await main.manager.seedRepository(RID, (status) =>
-    statuses.push(asJson(status))
-  );
+  const started = await main.manager.seedRepository(RID, (status) => statuses.push(asJson(status)));
   if (started.success !== true) throw new Error('seedRepository refused');
   await started.status.done;
   return statuses;

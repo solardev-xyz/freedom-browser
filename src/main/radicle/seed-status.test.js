@@ -161,7 +161,7 @@ test('cancelled fetches cannot resurrect their record', async () => {
   await expect(tracker.getStatus(RID)).resolves.toMatchObject({ state: 'idle' });
 });
 
-describe("a summary of peer failures (freedom-core design 0008, Progress, deviation progress-summary)", () => {
+describe('a summary of peer failures (freedom-core design 0008, Progress, deviation progress-summary)', () => {
   /** A fetch whose progress the test emits, and every status it published. */
   function tracked() {
     let emit;
@@ -211,7 +211,9 @@ describe("a summary of peer failures (freedom-core design 0008, Progress, deviat
       expect(s.progress).not.toHaveProperty('summary');
     }
     // The singles and the summary's count: every failure.
-    const singles = statuses.filter((s) => s.progress?.phase === 'peer-failed' && !('count' in s.progress));
+    const singles = statuses.filter(
+      (s) => s.progress?.phase === 'peer-failed' && !('count' in s.progress)
+    );
     const counted = statuses.reduce((sum, s) => sum + (s.progress?.count ?? 0), 0);
     expect(singles.length + counted).toBe(20);
     emit({ phase: 'fetching', nid: 'z6MkPeer21', index: 21, total: 21 });

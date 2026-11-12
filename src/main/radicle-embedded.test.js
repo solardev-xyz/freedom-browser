@@ -671,7 +671,14 @@ describe('on the freedom-radicled service', () => {
       calls = [];
       node.connectSeeds = jest.fn(async (timeoutMs, options) => {
         calls.push(['connectSeeds', timeoutMs, options]);
-        return { attempted: 1, connected: 1, target: 1, targetReached: true, elapsedMs: 3, failures: [] };
+        return {
+          attempted: 1,
+          connected: 1,
+          target: 1,
+          targetReached: true,
+          elapsedMs: 3,
+          failures: [],
+        };
       });
       node.clone = jest.fn(
         (rid, timeoutMs, { onProgress = null, signal = null } = {}) =>
@@ -695,7 +702,12 @@ describe('on the freedom-radicled service', () => {
     test('cloneRepo: no progress, 120000 by default', async () => {
       const done = embedded.cloneRepo('rad:z1');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(calls[0]).toMatchObject({ rid: 'rad:z1', timeoutMs: 120000, onProgress: null, signal: null });
+      expect(calls[0]).toMatchObject({
+        rid: 'rad:z1',
+        timeoutMs: 120000,
+        onProgress: null,
+        signal: null,
+      });
       calls[0].resolve({ ok: true });
       await expect(done).resolves.toEqual({ ok: true });
     });

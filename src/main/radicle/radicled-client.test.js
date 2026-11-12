@@ -755,7 +755,7 @@ describe("rad.clone's cancel (0008, Methods: it replaces cancelClone(rid))", () 
     expect(client.serves(gen)).toBe(true);
   });
 
-  test("once it has started: the cancel goes at once, and the caller waits for the clone to stop, under the network watchdog", async () => {
+  test('once it has started: the cancel goes at once, and the caller waits for the clone to stop, under the network watchdog', async () => {
     const clones = [];
     const gen = await ready({
       clone: (m, c) => {

@@ -145,7 +145,10 @@ function badReply(message) {
 }
 
 function badNetworkReply(method) {
-  return new CoreError('internal', `freedom-radicled answered ${method} with a result main can't read`);
+  return new CoreError(
+    'internal',
+    `freedom-radicled answered ${method} with a result main can't read`
+  );
 }
 
 /** A clone's answer as the add-on gave it: `{ ok: true }` or `{ cancelled:
