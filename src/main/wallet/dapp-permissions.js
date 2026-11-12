@@ -18,6 +18,7 @@ const { transactionAutoApprovePaused } = require('./auto-approve-pause');
 const PERMISSIONS_FILE = 'dapp-permissions.json';
 const GRANT_REFUSED = 'A dApp connection is granted only from its own prompt';
 const CHAIN_REFUSED = 'A dApp connection’s chain is set only by the page’s own request';
+const SIGNING_RULE_REFUSED = 'Signing auto-approve is turned on only from a signing prompt';
 const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
 // In-memory cache of permissions
@@ -444,8 +445,14 @@ function registerDappPermissionsIpc() {
     return getSigningAutoApprove(origin);
   });
 
+  // Clearing only (freedom-core design 0011, PRQ-5): main sets a site's
+  // signing rule itself, for the requester's key, from the user's "always
+  // allow" on a signing prompt main showed (page/page-signing.js). The
+  // chrome named the site here, so a rule it sets is refused. Turning one
+  // off only narrows, and stays open.
   ipcMain.handle(IPC.DAPP_SET_SIGNING_AUTO_APPROVE, (_event, origin, enabled) => {
-    return setSigningAutoApprove(origin, enabled);
+    if (enabled !== false) throw new Error(SIGNING_RULE_REFUSED);
+    return setSigningAutoApprove(origin, false);
   });
 
   // The renderer's question before a dApp transaction: auto-approve it, or

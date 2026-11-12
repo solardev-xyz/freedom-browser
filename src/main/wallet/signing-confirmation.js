@@ -79,6 +79,20 @@
  * stored auto-approve policy in main instead of trusting the renderer's
  * decision. Likewise an x402 payment a site's allowance covers is paid by
  * main's detector without a token (`x402/intercept.js`).
+ *
+ * The page kinds (freedom-core design 0011, "Approval tokens"): the kinds
+ * that serve a page's request, `dapp-send`, `sign-message`,
+ * `sign-typed-data`, `safe-message` and a `safe-send` that names a site.
+ * Their tokens come from main's own issuer (`issuePageConfirmation`), which
+ * the page dispatcher calls on the user's approval of a prompt main showed
+ * for a live request; the token never leaves main, and the dispatcher spends
+ * it (`consumePageConfirmation`). A page token's binding gains two fields,
+ * both from main's request record: the prompt's handle, so a token answers
+ * one prompt, and the requester's attested key, so a token minted for one
+ * site's request can't sign another's. A page token is never spent on the
+ * chrome's route (`consumeConfirmation`), nor a chrome token on a page's.
+ * The chrome's `wallet:confirm-signing` refuses each page kind once its
+ * methods have moved to main (`wallet-ipc.js`, PRQ-5).
  */
 
 const crypto = require('crypto');
@@ -110,7 +124,21 @@ const MAX_CLOSE_HASHES = 64;
 
 const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
 
-const outstanding = new Map(); // token -> { kind, digest, expiresAt, bound }
+// The kinds that serve page requests, but a Safe send, which is one only
+// when it names a site (a dApp's transaction from a Safe account).
+const PAGE_KINDS = Object.freeze([KINDS.DAPP_SEND, KINDS.SIGN_MESSAGE, KINDS.SIGN_TYPED_DATA, KINDS.SAFE_MESSAGE]);
+const PAGE_KIND_SET = new Set(PAGE_KINDS);
+
+/** Whether a confirmation of `kind` for `payload` serves a page's request. */
+function isPageKind(kind, payload) {
+  if (PAGE_KIND_SET.has(kind)) return true;
+  return kind === KINDS.SAFE_SEND && payload?.origin !== undefined && payload?.origin !== null;
+}
+
+// A page token's handle: the 32 random bytes main issued, in hex.
+const HANDLE = /^[0-9a-f]{64}$/;
+
+const outstanding = new Map(); // token -> { kind, digest, expiresAt, bound, page }
 let now = () => Date.now();
 
 function notConfirmed(reason) {
@@ -431,8 +459,19 @@ function bindingFor(kind, accountIndex, payload) {
   }
 }
 
-function digestFor(kind, accountIndex, payload) {
-  return sha256(stableStringify({ kind, ...bindingFor(kind, accountIndex, payload) }));
+function digestFor(kind, accountIndex, payload, page = null) {
+  const binding = { kind, ...bindingFor(kind, accountIndex, payload) };
+  if (page) binding.page = page;
+  return sha256(stableStringify(binding));
+}
+
+/** A page token's two fields from main's request record, checked. */
+function pageBinding(page) {
+  const handle = page?.handle;
+  const key = page?.key;
+  if (typeof handle !== 'string' || !HANDLE.test(handle)) throw new Error('A page confirmation needs its handle');
+  if (typeof key !== 'string' || key.length === 0) throw new Error('A page confirmation needs its key');
+  return { handle, key };
 }
 
 function pruneExpired() {
@@ -460,7 +499,25 @@ function digestHex(value) {
  * @returns {{token: string, expiresAt: number}}
  */
 function issueConfirmation(kind, accountIndex, payload, bound = {}) {
-  const digest = digestFor(kind, accountIndex, payload);
+  return issue(kind, digestFor(kind, accountIndex, payload), bound, false);
+}
+
+/**
+ * Main's own issuer for a page's request (design 0011, "Approval tokens"):
+ * a token of a page kind, bound to the prompt's handle and the requester's
+ * attested key as well. The page dispatcher calls it only on the user's
+ * approval of a prompt main showed for a live request record, with the
+ * handle and key from that record and the account and payload from the
+ * request main holds (`page-requests.js`). Throws for any other kind.
+ *
+ * @param {{handle: string, key: string}} page
+ */
+function issuePageConfirmation(kind, accountIndex, payload, page, bound = {}) {
+  if (!isPageKind(kind, payload)) throw new Error(`Not a page confirmation kind: ${kind}`);
+  return issue(kind, digestFor(kind, accountIndex, payload, pageBinding(page)), bound, true);
+}
+
+function issue(kind, digest, bound, page) {
   const kept = kind === KINDS.SIGN_TYPED_DATA ? { hash: digestHex(bound?.hash) } : {};
   pruneExpired();
   while (outstanding.size >= MAX_OUTSTANDING) {
@@ -469,7 +526,7 @@ function issueConfirmation(kind, accountIndex, payload, bound = {}) {
   }
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = now() + CONFIRMATION_TTL_MS;
-  outstanding.set(token, { kind, digest, expiresAt, bound: kept });
+  outstanding.set(token, { kind, digest, expiresAt, bound: kept, page });
   return { token, expiresAt };
 }
 
@@ -482,6 +539,22 @@ function issueConfirmation(kind, accountIndex, payload, bound = {}) {
  * @returns {object} what was bound with it (`{ hash }` for sign-typed-data)
  */
 function consumeConfirmation(token, kind, accountIndex, payload) {
+  return consume(token, kind, () => digestFor(kind, accountIndex, payload), false);
+}
+
+/**
+ * Spend a page token (main's page dispatcher only): as `consumeConfirmation`,
+ * and the token must have been minted by main's own issuer for this handle
+ * and this key. A token minted for handle A is refused for handle B, and one
+ * minted for one site's request for another's.
+ *
+ * @param {{handle: string, key: string}} page
+ */
+function consumePageConfirmation(token, kind, accountIndex, payload, page) {
+  return consume(token, kind, () => digestFor(kind, accountIndex, payload, pageBinding(page)), true);
+}
+
+function consume(token, kind, digestOf, page) {
   if (typeof token !== 'string' || token.length === 0) {
     throw notConfirmed('no confirmation token');
   }
@@ -493,9 +566,14 @@ function consumeConfirmation(token, kind, accountIndex, payload) {
   if (entry.expiresAt <= now()) {
     throw notConfirmed('confirmation expired');
   }
+  // A page token is spent only by main's dispatcher, and a chrome token
+  // never answers a page's request.
+  if (entry.page !== page) {
+    throw notConfirmed(page ? 'not a page confirmation' : 'a page confirmation is spent only by main');
+  }
   let digest;
   try {
-    digest = digestFor(kind, accountIndex, payload);
+    digest = digestOf();
   } catch (err) {
     throw notConfirmed(err.message);
   }
@@ -530,10 +608,14 @@ module.exports = {
   CONFIRMATION_TTL_MS,
   MAX_OUTSTANDING,
   KINDS,
+  PAGE_KINDS,
   NOT_CONFIRMED,
   bindingFor,
+  isPageKind,
   issueConfirmation,
+  issuePageConfirmation,
   consumeConfirmation,
+  consumePageConfirmation,
   discardConfirmation,
   _reset,
   _setNow,

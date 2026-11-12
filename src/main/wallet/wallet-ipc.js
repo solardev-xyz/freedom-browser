@@ -104,6 +104,21 @@ function feeAsk(err) {
   return err?.feeCheck && err?.offer ? { feeCheck: err.feeCheck, offer: err.offer } : {};
 }
 
+// The page kinds whose methods main serves now (freedom-core design 0011,
+// "Approval tokens"; PRQ-5): `personal_sign` and `eth_signTypedData_v4`, from
+// a Safe account too. Main's own issuer mints them for a page's request
+// (page/page-signing.js), so the chrome's `wallet:confirm-signing` refuses
+// them, and the signing handlers refuse the chrome's
+// `{ autoApprove, webContentsId }` claim for them: main reads the site's rule
+// itself, for the requester's attested key. A dApp's send, and a Safe send
+// that names a site, move in their own step.
+const CHROME_REFUSED_KINDS = new Set([
+  CONFIRM_KINDS.SIGN_MESSAGE,
+  CONFIRM_KINDS.SIGN_TYPED_DATA,
+  CONFIRM_KINDS.SAFE_MESSAGE,
+]);
+const PAGE_KIND_REFUSED = 'This request comes from a page: main confirms it itself';
+
 function notAuthorized(reason) {
   const err = new Error(`Signing was not confirmed: ${reason}`);
   err.code = NOT_CONFIRMED;
@@ -216,14 +231,6 @@ function messageViewFor(message) {
   return { hex: '0x' + bytes.toString('hex'), rawHash: signsRawHash(message) };
 }
 
-/** Main's own evaluation of a dApp's signing auto-approve flag. */
-function isDappSigningAutoApproved(permissionKey, walletIndex) {
-  return Boolean(
-    permissionFor(permissionKey, walletIndex) &&
-      dappPermissions.getSigningAutoApprove(permissionKey)
-  );
-}
-
 /**
  * True only when `webContentsId` names a live `<webview>` guest of the
  * chrome window that sent this IPC (`sender`) and that guest's committed
@@ -311,6 +318,11 @@ async function dnsNameServesIpnsGuest(permissionKey, guestKey) {
  * @returns {Promise<'confirmed'|'auto-approved'>}
  */
 async function authorizeSigning(authorization, kind, accountIndex, payload, autoApproveCheck, sender = null) {
+  // A page kind's rule is main's to read, for the request it holds
+  // (page/page-signing.js), never the chrome's to claim.
+  if (authorization?.autoApprove !== undefined && CHROME_REFUSED_KINDS.has(kind)) {
+    throw notAuthorized("main reads a page's rules itself");
+  }
   if (authorization?.confirmation) {
     consumeConfirmation(authorization.confirmation, kind, accountIndex, payload);
     return 'confirmed';
@@ -650,6 +662,11 @@ function registerWalletIpc() {
   // verdict it gets back.
   handle('wallet:confirm-signing', async (event, kind, accountIndex, payload, options) => {
     try {
+      // A page's signature is confirmed by main's own issuer, on the user's
+      // decision of the prompt main showed (design 0011, PRQ-5).
+      if (CHROME_REFUSED_KINDS.has(kind)) {
+        return { success: false, error: PAGE_KIND_REFUSED, code: NOT_CONFIRMED };
+      }
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
         return { success: false, error: 'This payment is not on a tab of this window' };
       }
@@ -671,14 +688,10 @@ function registerWalletIpc() {
           return { success: false, error: error.message, code: error.code, feeCheck: verdict };
         }
       }
-      // Typed data: the token binds the digest the user confirmed, as the
-      // core computes it, which the signature then passes as expected_hash.
-      const bound =
-        kind === CONFIRM_KINDS.SIGN_TYPED_DATA
-          ? { hash: (await typedDataViewFor(payload)).hash }
-          : undefined;
-      const { token, expiresAt } = issueConfirmation(kind, index, payload, bound);
-      return { success: true, token, expiresAt, ...(bound ? { hash: bound.hash } : {}) };
+      // Typed data, whose token binds the core's digest, is a page kind:
+      // main's own issuer mints it (page/page-signing.js).
+      const { token, expiresAt } = issueConfirmation(kind, index, payload);
+      return { success: true, token, expiresAt };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -749,15 +762,18 @@ function registerWalletIpc() {
   handle('wallet:dapp-send-transaction', (event, params, walletIndex, context, authorization) =>
     handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization, event?.sender));
 
-  // Sign a personal message (EIP-191) for a dApp
+  // A dApp's personal_sign (EIP-191) and typed data (EIP-712): the chrome's
+  // old path, kept for rollback until PRQ-9. A page's request is served by
+  // main now (page/page-signing.js), whose own issuer mints its token on the
+  // user's decision, and the chrome gets none (`wallet:confirm-signing`) and
+  // can claim no site's rule (`authorizeSigning`). So these sign nothing a
+  // page asked for.
   handle('wallet:sign-message', async (event, message, walletIndex, authorization) => {
     try {
       if (!message) {
         return { success: false, error: 'Message is required' };
       }
-      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, (key) =>
-        isAutoApprovableMessage('personal_sign', message) && isDappSigningAutoApproved(key, walletIndex),
-      event?.sender);
+      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, null, event?.sender);
 
       const signature = await getSigner(walletIndex).signMessage(message);
 
@@ -768,35 +784,21 @@ function registerWalletIpc() {
     }
   });
 
-  // Sign typed data (EIP-712) for a dApp. `context.chainId` is the dApp's
-  // active chain, which an auto-approved request's view compares (#88).
-  handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization, context) => {
+  handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization) => {
     try {
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
       }
-      let expectedHash;
-      if (authorization?.confirmation) {
-        // The digest the user confirmed: the core signs nothing else.
-        ({ hash: expectedHash } = consumeConfirmation(
-          authorization.confirmation,
-          CONFIRM_KINDS.SIGN_TYPED_DATA,
-          walletIndex,
-          typedData
-        ));
-      } else {
-        // A request with a warning always shows its prompt, even under
-        // auto-approve (#88): only an unwarned view is auto-signed, for a
-        // requesting page that belongs to the site (#764).
-        const viewed =
-          authorization?.autoApprove !== undefined
-            ? await typedDataViewFor(typedData, context?.chainId)
-            : null;
-        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, (key) =>
-          viewed !== null && viewed.warnings.length === 0 && isDappSigningAutoApproved(key, walletIndex),
-        event?.sender);
-        expectedHash = viewed.hash;
+      if (!authorization?.confirmation) {
+        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, null, event?.sender);
       }
+      // The digest the user confirmed: the core signs nothing else.
+      const { hash: expectedHash } = consumeConfirmation(
+        authorization.confirmation,
+        CONFIRM_KINDS.SIGN_TYPED_DATA,
+        walletIndex,
+        typedData
+      );
 
       const signature = await getSigner(walletIndex).signTypedData(typedData, { expectedHash });
 
@@ -931,30 +933,19 @@ function registerWalletIpc() {
   // SafeMessage sessions — dApp message signing via EIP-1271 (see
   // safe/safe-messages.js). Same granular board API as sends; complete
   // returns the concatenated owner signatures instead of a state. Each
-  // session is bound to its requesting page: start takes the requester
-  // identity and returns a per-session token that every other call must
-  // present.
+  // session is bound to its requesting page and guarded by a per-session
+  // token that every other call must present.
+  //
+  // A page's Safe message is served by main now (page/page-signing.js),
+  // which opens the session itself on the user's decision or the site's
+  // rule. This start is the chrome's old path, kept for rollback until
+  // PRQ-9: the chrome gets no token for it (`wallet:confirm-signing`) and
+  // can claim no site's rule (`authorizeSigning`), so it opens nothing a
+  // page asked for.
   handle('wallet:safe-message-start', (event, ...args) =>
     safeStateHandler(async (safeIndex, request, display, requester, authorization) => {
-      // Same confirmation point as safe-send; follow-up calls are bound to
-      // the session token this returns. A dApp's signing auto-approve is
-      // evaluated here, in main — for the page the session is bound to only.
-      // A Safe signs on Gnosis only, so that is the chain a typed-data
-      // request's view compares (#88).
       const { startSafeMessage } = require('./safe/safe-messages');
-      const { DEPLOY_CHAIN_ID } = require('./safe/safe-service');
-      const viewed =
-        !authorization?.confirmation &&
-        authorization?.autoApprove !== undefined &&
-        request?.method === 'eth_signTypedData_v4'
-          ? await typedDataViewFor(request.params?.[1], DEPLOY_CHAIN_ID)
-          : null;
-      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, (key) =>
-        key === (requester?.origin ?? null) &&
-          authorization.webContentsId === (requester?.webContentsId ?? null) &&
-          isAutoApprovableMessage(request?.method, request?.params?.[0]) &&
-          (viewed === null || viewed.warnings.length === 0) &&
-          isDappSigningAutoApproved(key, safeIndex), event?.sender);
+      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, null, event?.sender);
       return startSafeMessage({ safeIndex, request, display, requester });
     })(event, ...args)
   );
@@ -983,10 +974,12 @@ function registerWalletIpc() {
     })
   );
 
+  // A session main opened for a page's request is completed by main, which
+  // answers the page: the chrome's board only collects its signatures.
   handle('wallet:safe-message-complete', async (_event, safeIndex, token) => {
     try {
       const { completeSafeMessage } = require('./safe/safe-messages');
-      const { signature } = completeSafeMessage(safeIndex, token);
+      const { signature } = completeSafeMessage(safeIndex, token, { chrome: true });
       return { success: true, signature };
     } catch (err) {
       return { success: false, error: err.message, code: err.code };
@@ -1053,7 +1046,11 @@ function registerWalletIpc() {
 }
 
 module.exports = {
+  CHROME_REFUSED_KINDS,
   authorizeSigning,
   buildTxRecordContext,
+  isAutoApprovableMessage,
+  messageViewFor,
   registerWalletIpc,
+  typedDataViewFor,
 };

@@ -61,6 +61,20 @@
  * pending per document at a time; a second request gets `-32002`. The
  * prompt carries main's `site`, the request's attested key, and whatever the
  * user decides, the dispatcher acts on its own record.
+ *
+ * A record prompts one prompt at a time, and may prompt again once its
+ * prompt is decided (PRQ-5: a vault unlock and then the signature, or a Safe
+ * message's approval and then its signing board). An approved wallet prompt
+ * keeps the document's one wallet slot for its record until main answers
+ * it, so the record's next prompt, or its effect, isn't raced by another.
+ *
+ * Main's own issuer (PRQ-5, design 0011 "Approval tokens"): a page kind's
+ * approval token is minted only for a live record whose prompt the user has
+ * just approved (`context.confirm`), bound to that prompt's handle and the
+ * requester's attested key, with the account and payload the dispatcher
+ * holds. The dispatcher spends it itself (`context.spend`), after checking
+ * the document again: a token for a document that has gone is refused and
+ * burnt. An approval mints one token.
  */
 
 const crypto = require('crypto');
@@ -80,6 +94,7 @@ const {
   timeoutError,
 } = require('./page-methods');
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
+const signingConfirmation = require('../wallet/signing-confirmation');
 const { CHANNELS: PROMPT_CHANNELS, KIND_SET, WALLET_KINDS, createPagePrompts } = require('./page-prompts');
 
 const CHANNELS = Object.freeze({
@@ -123,6 +138,12 @@ const PROMPT_PENDING = { code: -32002, message: 'Another wallet request is alrea
 
 /** A refused requester: the attestation's reason, nothing more. */
 const refusal = (reason) => errorOf(UNAUTHORIZED, { reason });
+
+function notConfirmed(reason) {
+  const err = new Error(`Signing was not confirmed: ${reason}`);
+  err.code = signingConfirmation.NOT_CONFIRMED;
+  return err;
+}
 
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -246,7 +267,7 @@ function createPageRequests({
   const prompts = createPagePrompts({
     send: (windowId, channel, payload) => sendToWindow(windowId, channel, payload),
     markShown: (entry) => markShown(entry.record),
-    decided: (entry) => closeHandle(entry.record, CLOSED.DECIDED),
+    decided: (entry) => decidedEntry(entry),
     trace,
   });
   const watchedWindows = new Set();
@@ -306,6 +327,10 @@ function createPageRequests({
       // Aborted when the record is answered, for a wallet operation it runs
       // (`walletOperation`).
       aborter: null,
+      // The handle of the prompt the user last approved, until main's issuer
+      // mints its one token (`confirm`), and the handle that token is for.
+      approved: null,
+      tokenHandle: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -410,10 +435,24 @@ function createPageRequests({
     return true;
   }
 
+  // A decision on a record's prompt: the handle closes, decided. An
+  // approval is what main's issuer may mint the record's token on, and an
+  // approved wallet prompt keeps the document's wallet slot for its record
+  // until main answers it.
+  function decidedEntry(entry) {
+    const { record } = entry;
+    if (entry.decided?.approve === true && !record.answered) {
+      record.approved = entry.handle;
+      if (WALLET_KINDS.has(entry.kind) && !walletOperations.has(record.key)) walletOperations.set(record.key, record);
+    }
+    closeHandle(record, CLOSED.DECIDED);
+  }
+
   // A handle for the record's prompt: 32 random bytes, scoped to its window.
+  // One at a time: the open one, or a new one once the last has closed.
   function openHandle(record) {
     if (record.answered) return null;
-    if (record.handle) return handles.get(record.handle) === record ? record.handle : null;
+    if (record.handle && handles.get(record.handle) === record) return record.handle;
     const handle = randomHex(HANDLE_BYTES);
     record.handle = handle;
     handles.set(handle, record);
@@ -456,6 +495,8 @@ function createPageRequests({
       openHandle: () => openHandle(record),
       markShown: () => markShown(record),
       prompt: (spec) => prompt(record, spec),
+      confirm: (kind, accountIndex, payload, bound) => confirm(record, kind, accountIndex, payload, bound),
+      spend: (token, kind, accountIndex, payload) => spend(record, token, kind, accountIndex, payload),
       walletOperation: (run) => walletOperation(record, run),
       afterAnswer: (fn) => {
         if (typeof fn === 'function' && !record.answered) record.after = fn;
@@ -478,6 +519,9 @@ function createPageRequests({
   async function prompt(record, { kind, view = {}, choices } = {}) {
     if (!KIND_SET.has(kind)) throw new Error(`page-requests: no prompt of kind ${kind}`);
     if (record.answered) return { closed: CLOSED.CANCELLED };
+    if (record.handle && handles.get(record.handle) === record) {
+      throw new Error('page-requests: a record prompts one prompt at a time');
+    }
     if (WALLET_KINDS.has(kind) && walletSlotTaken(record)) {
       trace({ kind: 'prompt-refused', id: record.id, reason: 'pending' });
       return { error: { ...PROMPT_PENDING } };
@@ -497,6 +541,55 @@ function createPageRequests({
       choices,
     });
     return entry.decision;
+  }
+
+  /**
+   * Main's own issuer (design 0011, "Approval tokens"): a token of a page
+   * kind, for this live record only, on the approval of the prompt the user
+   * just decided, bound to that prompt's handle and the requester's attested
+   * key. The account and payload are the dispatcher's, from the request main
+   * holds. One approval mints one token. Throws (`SIGNING_NOT_CONFIRMED`)
+   * with nothing minted otherwise. The token never leaves main.
+   */
+  function confirm(record, kind, accountIndex, payload, bound) {
+    const handle = record.approved;
+    if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
+      throw notConfirmed('no live request approved by the user');
+    }
+    record.approved = null;
+    const { token } = signingConfirmation.issuePageConfirmation(
+      kind,
+      accountIndex,
+      payload,
+      { handle, key: record.requester.key },
+      bound
+    );
+    record.tokenHandle = handle;
+    trace({ kind: 'token-minted', id: record.id, token: kind });
+    return token;
+  }
+
+  /**
+   * Spend the record's token for the request it is about to sign: the
+   * document checked again first, and the token refused and burnt if the
+   * document has gone or no longer holds its key. Returns what the token
+   * bound (`{ hash }` for typed data).
+   */
+  function spend(record, token, kind, accountIndex, payload) {
+    if (record.answered || !documents.isCurrent(record.requester) || !documents.holdsKey(record.requester)) {
+      signingConfirmation.discardConfirmation(token);
+      throw notConfirmed('the document that asked has gone');
+    }
+    const handle = record.tokenHandle;
+    record.tokenHandle = null;
+    try {
+      return signingConfirmation.consumePageConfirmation(token, kind, accountIndex, payload, {
+        handle,
+        key: record.requester.key,
+      });
+    } finally {
+      trace({ kind: 'token-spent', id: record.id, token: kind });
+    }
   }
 
   // Whether a name-revalidated method may use its document's key now
