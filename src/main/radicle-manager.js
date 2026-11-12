@@ -196,14 +196,15 @@ async function syncProfileMode() {
   return getCurrentStatus();
 }
 
-// The node's network, for the background start below: the add-on's, or
-// the service node's live generation's (`rad.connect_seeds`, its stats'
-// peer count and `rad.clone`).
+// The node's network, for the background start below: the add-on's, or,
+// under the service, `radicle-embedded.js`'s network operations on it
+// (`rad.connect_seeds` and `rad.clone`, as any other caller's), with the
+// peer count of the node's last stats.
 function serviceNetwork(node) {
   return {
-    connectSeeds: (timeoutMs) => node.connectSeeds(timeoutMs),
+    connectSeeds: (timeoutMs) => embedded.connectSeeds(timeoutMs),
     status: async () => ({ connectedPeers: node.connectedPeers() }),
-    cloneRepo: (rid, timeoutMs) => node.cloneRepo(rid, timeoutMs),
+    cloneRepo: (rid, timeoutMs) => embedded.cloneRepo(rid, timeoutMs),
   };
 }
 
@@ -660,6 +661,9 @@ async function getSeederCount(rid) {
   return (await embedded.seeders(rid)).seeding;
 }
 
+// The fetch: the add-on's clone, or under the service `rad.clone` with its
+// `rad.progress` events (radicle-embedded.js), whose peer failures past 8
+// may come folded into one summary (seed-status.js).
 function startTrackedFetch(rid, onStatus) {
   const publishStatus = (status) => {
     onStatus?.(status);
@@ -687,7 +691,6 @@ function startTrackedFetch(rid, onStatus) {
  * to the browser's own UI or sits behind the provider's per-repo prompt.
  */
 async function seedRepository(rid, onStatus) {
-  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
@@ -724,7 +727,6 @@ async function isSeeded(fullRid) {
  * rejected, and a policy lookup that fails counts as "not seeded".
  */
 async function refetchRepository(rid, onStatus) {
-  if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;
   const fullRid = validateAndNormalizeRid(rid);
@@ -738,7 +740,6 @@ async function refetchRepository(rid, onStatus) {
 }
 
 async function getSeedFetchStatus(rid, onStatus) {
-  if (onService()) return notOnService();
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   if (onStatus) seedStatus.subscribe(fullRid, onStatus);
@@ -772,6 +773,8 @@ async function cancelCloneWithRetry(rid) {
 }
 
 async function unseedRepository(rid) {
+  // Under the service, `rad.unseed` is a write (0008, Writes): its own step.
+  // The fetch's cancel below is `cancelClone`, already the service's.
   if (onService()) return notOnService();
   const unavailable = requireRunning();
   if (unavailable) return unavailable;

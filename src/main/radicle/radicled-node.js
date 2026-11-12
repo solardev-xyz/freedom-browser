@@ -58,6 +58,13 @@
  * - **Reads** (`read`, `rad.read`) go to the running generation only, as
  *   radicle-service-backend.js sends them: none while it starts or after
  *   it ended (`stopped`).
+ * - **Network operations** (0008, Methods, Progress): `connectSeeds` is
+ *   `rad.connect_seeds`, and `clone` is `rad.clone`, on the running
+ *   generation only. A clone's `rad.progress` events, `{ id, event }`, go to
+ *   its own callback, found by the request's ID in its generation, while
+ *   the request waits for its answer; an event for any other request is
+ *   dropped. Its `signal` is its cancel: main's `cancel` goes at once, and
+ *   the answer comes when the clone stops (radicled-client.js's `clone`).
  * - **Before the first spawn of each start**, a control socket the add-on
  *   left at `<home>/node/control.sock` is removed under the home's gate
  *   (`removeStaleControlSocket`), so the grant check doesn't refuse a home
@@ -267,6 +274,9 @@ class RadicledNode {
     this.started = null;
     this.resolveStart = null;
     this.stopping = null;
+    // The clones waiting for their answer whose progress main reads:
+    // `${generation}:${id}` -> the callback for each event's text.
+    this.progress = new Map();
   }
 
   /** Whether this build has the freedom-radicled binary. */
@@ -348,6 +358,7 @@ class RadicledNode {
     client.on('ready', (hello) => this.onReady(client, hello));
     client.on('exit', () => this.onExit(client));
     client.on('failed', (reason) => this.onClientFailed(client, reason));
+    client.on('event', (name, data) => this.onEvent(client, name, data));
     this.schedulePoll();
     // Readiness is the node's: the handshake's failures arrive as events.
     client.start().catch(() => {});
@@ -413,11 +424,11 @@ class RadicledNode {
   }
 
   /** `rad.connect_seeds { timeout_ms }` on the running generation: today's
-   * report. */
-  connectSeeds(timeoutMs) {
+   * report. With no generation running, `stopped`. */
+  connectSeeds(timeoutMs, { signal = null } = {}) {
     const active = this.liveActive();
-    if (!active) return Promise.reject(new Error(NOT_RUNNING));
-    return this.client.connectSeeds(active.gen, timeoutMs);
+    if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    return this.client.connectSeeds(active.gen, timeoutMs, { signal });
   }
 
   /**
@@ -439,12 +450,66 @@ class RadicledNode {
     return active ? this.client.streamStats(active.gen) : null;
   }
 
-  /** `rad.clone { rid, timeout_ms }` on the running generation, without
-   * progress events. */
-  cloneRepo(rid, timeoutMs) {
+  /**
+   * `rad.clone { rid, timeout_ms, progress }` on the running generation:
+   * `{ ok: true }`, or `{ cancelled: true }` once `signal` has cancelled a
+   * clone that started. With `onProgress`, `progress` is true, and each of
+   * the clone's `rad.progress` events reaches it as its JSON text, in the
+   * order written, until the answer: the terminal event (`done`, `failed`
+   * or `cancelled`) last. With no generation running, `stopped`.
+   */
+  clone(rid, timeoutMs, { onProgress = null, signal = null } = {}) {
     const active = this.liveActive();
-    if (!active) return Promise.reject(new Error(NOT_RUNNING));
-    return this.client.clone(active.gen, { rid, timeout_ms: timeoutMs, progress: false });
+    if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    const progress = typeof onProgress === 'function';
+    let key = null;
+    const onSent = progress
+      ? (id, generation) => {
+          key = `${generation}:${id}`;
+          this.progress.set(key, onProgress);
+        }
+      : null;
+    const answered = this.client.clone(
+      active.gen,
+      { rid, timeout_ms: timeoutMs, progress },
+      { signal, onSent }
+    );
+    const forget = () => {
+      if (key !== null && this.progress.get(key) === onProgress) this.progress.delete(key);
+    };
+    answered.then(forget, forget);
+    return answered;
+  }
+
+  /** `rad.clone { rid, timeout_ms }` on the running generation, without
+   * progress events: the manager's background clone. */
+  cloneRepo(rid, timeoutMs) {
+    return this.clone(rid, timeoutMs);
+  }
+
+  /**
+   * An event of the client's current generation (the client emits no
+   * other): a `rad.progress` goes to its clone's callback while the clone
+   * waits for its answer. One for a request that has its answer, or that
+   * asked for no progress, or that isn't one of the clones', is dropped.
+   */
+  onEvent(client, name, data) {
+    if (client !== this.client || name !== 'rad.progress') return;
+    const gen = client.current;
+    const { id, event } = data ?? {};
+    if (!gen || !Number.isSafeInteger(id) || typeof event !== 'string') return;
+    // Progress stops at the answer (0008, Progress): the request is no
+    // longer pending once its answer is read, before its caller hears it.
+    if (!gen.pending?.has(id)) return;
+    const onProgress = this.progress.get(`${gen.number}:${id}`);
+    if (!onProgress) return;
+    try {
+      onProgress(event);
+    } catch (err) {
+      this.log.warn('[Radicle] A clone progress callback failed', {
+        code: err?.code || err?.name || 'error',
+      });
+    }
   }
 
   // ---- the vault's unlock ----
