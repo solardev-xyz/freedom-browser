@@ -228,7 +228,7 @@ function vectorCases(fx) {
     handler(`manager getConnections${label}`, async (backend) => {
       const restore = inject?.(backend);
       try {
-        return { body: JSON.stringify(await backend.manager.getConnections()) };
+        return { body: JSON.stringify(await backend.getConnections()) };
       } finally {
         restore?.();
       }

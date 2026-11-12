@@ -55,6 +55,9 @@
  * - **Stop** is the process's end: `rad.shutdown`, and the kill 10 s after
  *   it. The exit is the proof that the node stopped, in place of the
  *   add-on's `isStarted()` (R-8).
+ * - **Reads** (`read`, `rad.read`) go to the running generation only, as
+ *   radicle-service-backend.js sends them: none while it starts or after
+ *   it ended (`stopped`).
  * - **Before the first spawn of each start**, a control socket the add-on
  *   left at `<home>/node/control.sock` is removed under the home's gate
  *   (`removeStaleControlSocket`), so the grant check doesn't refuse a home
@@ -68,7 +71,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { spawn: spawnProcess } = require('child_process');
 const defaultLog = require('../logger');
-const { isObject } = require('../core/service-client');
+const { CoreError, isObject } = require('../core/service-client');
 const { confinementLog } = require('../ipfs/ipfsd-client');
 const { RadicledClient } = require('./radicled-client');
 const { getRadicledBinaryPath } = require('./radicled-binary');
@@ -415,6 +418,25 @@ class RadicledNode {
     const active = this.liveActive();
     if (!active) return Promise.reject(new Error(NOT_RUNNING));
     return this.client.connectSeeds(active.gen, timeoutMs);
+  }
+
+  /**
+   * `rad.read { op, args }` on the running generation (0008, "JSON
+   * results"): `{ result, body }`, the head and its JSON body as a byte
+   * stream (radicled-client.js's `read`). `signal` cancels it, before the
+   * head or during the body. With no generation running, `stopped`.
+   */
+  read(op, args, { signal = null } = {}) {
+    const active = this.liveActive();
+    if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    return this.client.read(active.gen, op, args, { signal });
+  }
+
+  /** What main holds for the running generation's streams (the client's
+   * `streamStats`), or null. */
+  streamStats() {
+    const active = this.liveActive();
+    return active ? this.client.streamStats(active.gen) : null;
   }
 
   /** `rad.clone { rid, timeout_ms }` on the running generation, without

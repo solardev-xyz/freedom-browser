@@ -258,3 +258,57 @@ for (const name of FILES) {
     });
   });
 }
+
+/**
+ * On main's service path (the radicled plan's B7): `FREEDOM_RADICLE_BACKEND=
+ * service`, over a fake service node whose `rad.read` answers each op with
+ * the vector's service text (`expect`, which the design gives `node_info`).
+ * The manager's `getConnections` reads the composed `node_info`, collected,
+ * and must answer as it answered over the add-on, with the service's
+ * diagnostics beside it (`confinement`, `service`), and log what it logged.
+ * The handlers' answers (`root` and `stats`, and the other ops) move onto
+ * the service with the handlers.
+ */
+const readsVectors = vectors['radicle-reads.json'];
+const nodeInfoCases = readsVectors?.cases.filter((c) => c.op === 'node_info') ?? [];
+(readsVectors ? describe : describe.skip)(
+  "radicle-reads.json's node_info through main's service path",
+  () => {
+    let previousBackend;
+    let main;
+    beforeAll(() => {
+      previousBackend = process.env.FREEDOM_RADICLE_BACKEND;
+      process.env.FREEDOM_RADICLE_BACKEND = 'service';
+      main = harness.loadServiceReadsMain();
+    });
+    afterAll(() => {
+      if (previousBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+      else process.env.FREEDOM_RADICLE_BACKEND = previousBackend;
+    });
+
+    test("has cases, each with the design's answer", () => {
+      expect(nodeInfoCases.length).toBeGreaterThan(0);
+      for (const c of nodeInfoCases) expect(c.expect.source).toBe('design');
+    });
+
+    test.each(nodeInfoCases.map((c) => [c.id, c]))(
+      '%s: getConnections rebuilt from the service answer',
+      async (_id, c) => {
+        const replay = await harness.runServiceNodeInfo(main, c);
+        expect(replay.unscripted).toEqual([]);
+        // One collected read, node_info with the case's args, and nothing of
+        // the add-on's.
+        expect(replay.calls).toEqual([{ op: 'node_info', args: c.args }]);
+        const { confinement, service, ...connections } = replay.connections;
+        expect(connections).toStrictEqual(c.main.connections);
+        expect(JSON.stringify(connections)).toBe(JSON.stringify(c.main.connections));
+        expect(confinement).toEqual(main.node.confinement);
+        expect(service).toBe('0.1.0');
+        // The manager's own lines, as over the add-on.
+        expect(replay.warnings).toEqual(
+          c.main.warnings.filter((line) => line.startsWith('[Radicle] '))
+        );
+      }
+    );
+  }
+);
