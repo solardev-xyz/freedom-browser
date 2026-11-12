@@ -25,12 +25,15 @@ const {
   radicledEnv,
   radicledService,
   serveArgs,
+  importArgs,
   validHello,
   validRecipient,
   HANG_GRACE_MS,
   MAX_TIMER_MS,
   SHUTDOWN_GRACE_MS,
   STATS_WATCHDOG_MS,
+  WATCHDOG_MS,
+  OFFLINE,
 } = require('./radicled-client');
 const { getRadicledBinaryPath } = require('./radicled-binary');
 const { PINNED_RADICLED_VERSION } = require('./radicled-pin');
@@ -193,6 +196,53 @@ describe('the serve process', () => {
     expect(
       serveArgs({ home: 'h', lockDir: 'l', network: { mode: 'socks5', ip: '::1', port: 9150 } })
     ).toContain('socks5:[::1]:9150');
+  });
+
+  // The one-shot import process (design 0010, D5; plan B14).
+  test("import, the home, the lock directory, the source, each protected root and main's PID: no network", () => {
+    expect(
+      importArgs({
+        home: 'h',
+        lockDir: 'l',
+        source: 's',
+        protectedRoots: ['p1', 'p2'],
+        parentPid: 42,
+      })
+    ).toEqual([
+      'import',
+      '--home',
+      'h',
+      '--lock-dir',
+      'l',
+      '--source',
+      's',
+      '--protected',
+      'p1',
+      '--protected',
+      'p2',
+      '--parent-pid',
+      '42',
+    ]);
+    expect(importArgs({ home: 'h', lockDir: 'l', source: 's' })).toEqual([
+      'import',
+      '--home',
+      'h',
+      '--lock-dir',
+      'l',
+      '--source',
+      's',
+      '--parent-pid',
+      String(process.pid),
+    ]);
+  });
+
+  test('with a source, the client is the import process: offline, whatever policy it is given', async () => {
+    await ready({}, { source: 's', protectedRoots: ['p'], network: SOCKS5 });
+    expect(service.spawned[0].args).toEqual(
+      importArgs({ home: HOME, lockDir: LOCK_DIR, source: 's', protectedRoots: ['p'] })
+    );
+    expect(client.hello.network).toEqual(OFFLINE);
+    expect(WATCHDOG_MS['rad.import_repo']).toBe(300_000 + HANG_GRACE_MS);
   });
 
   test('the client spawns the binary radicled-binary.js names, with those arguments', async () => {
@@ -474,6 +524,15 @@ describe('the handshake', () => {
     ['malformed gaps', { ...HELLO, confinement: { ...CONFINEMENT, gaps: 'signals' } }],
   ])('refuses %s', (_why, hello) => {
     expect(validHello(hello, DIRECT, PINNED_RADICLED_VERSION)).toBeNull();
+  });
+
+  test("the import process's hello reports no network, exactly; a serve process's may not", () => {
+    const offline = { ...HELLO, network: { mode: 'offline' } };
+    expect(validHello(offline, OFFLINE)).toMatchObject({ network: OFFLINE });
+    expect(validHello(HELLO, OFFLINE)).toBeNull();
+    expect(validHello({ ...HELLO, network: { mode: 'offline', extra: 1 } }, OFFLINE)).toBeNull();
+    expect(validHello({ ...HELLO, network: undefined }, OFFLINE)).toBeNull();
+    expect(validHello(offline, DIRECT)).toBeNull();
   });
 
   test('a recipient is 32 bytes in canonical standard base64', () => {

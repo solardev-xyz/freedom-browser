@@ -9,9 +9,11 @@
  * answers what the script says, by method without `rad.` (`hello`,
  * `identity`, `reconcile`, `start`, `stats`, `read`, …), and the default
  * otherwise:
- * - `hello`: `helloFor(args)`, the `--network` policy it was spawned with,
- *   a recipient, the libradicle build and a confinement report;
+ * - `hello`: `helloFor(args)`, the `--network` policy it was spawned with
+ *   (the import process's `{ mode: "offline" }`), a recipient, the
+ *   libradicle build and a confinement report;
  * - `identity`, `reconcile`, `start`: their results for a fresh home;
+ * - `import_repo`: `{ rid: IMPORT_RID }`;
  * - `stats`: a running node's (`statsResult`);
  * - `shutdown`: the process exits 0;
  * - anything else: `unknown_method`.
@@ -45,7 +47,10 @@
  * - **a start step it answers with an error ends it** (0008, Errors): after
  *   an error reply to `rad.identity`, `rad.reconcile` or `rad.start` it
  *   exits 0, unless the script sets `lingerAfterFailedStep` (a process
- *   that doesn't end, for main's kill).
+ *   that doesn't end, for main's kill);
+ * - **the import process ends after the import's answer** (design 0010,
+ *   D5): after any reply to `rad.import_repo` it exits 0, unless the script
+ *   sets `lingerAfterImport`.
  */
 
 const fs = require('fs');
@@ -82,12 +87,16 @@ const HELLO = Object.freeze({
 
 const DID = 'did:key:z6MkfakeRadicledNode';
 const NID = 'z6MkfakeRadicledNode';
+/** The repository a fake import process imports. */
+const IMPORT_RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
 /** The start steps: an error reply to one ends the process (0008, Errors). */
 const START_STEPS = new Set(['rad.identity', 'rad.reconcile', 'rad.start']);
 
-/** The hello a process spawned with `args` answers: its policy. */
+/** The hello a process spawned with `args` answers: its policy, or the
+ * import process's none. */
 function helloFor(args = []) {
+  if (args[0] === 'import') return { ...HELLO, network: { mode: 'offline' } };
   return { ...HELLO, network: networkOf(args) ?? HELLO.network };
 }
 
@@ -219,6 +228,9 @@ class FakeRadicledChild extends FakeIpfsdChild {
       case 'stats':
         this.result(message.id, statsResult());
         break;
+      case 'import_repo':
+        this.result(message.id, { rid: IMPORT_RID });
+        break;
       case 'shutdown':
         setImmediate(() => this.exit(0));
         break;
@@ -245,10 +257,24 @@ class FakeRadicledChild extends FakeIpfsdChild {
     this.body(id, bytes);
   }
 
-  /** An error reply; after a start step's, the process ends (exit 0). */
+  /** A result; after the import's, the import process ends (exit 0). */
+  result(id, result) {
+    super.result(id, result);
+    this.afterImport(id);
+  }
+
+  /** An error reply; after a start step's, or the import's, the process
+   * ends (exit 0). */
   error(id, code, message = code) {
     super.error(id, code, message);
     if (START_STEPS.has(this.methods.get(id)) && !this.script.lingerAfterFailedStep) {
+      setImmediate(() => this.exit(0));
+    }
+    this.afterImport(id);
+  }
+
+  afterImport(id) {
+    if (this.methods.get(id) === 'rad.import_repo' && !this.script.lingerAfterImport) {
       setImmediate(() => this.exit(0));
     }
   }
@@ -283,4 +309,5 @@ module.exports = {
   RECIPIENT,
   DID,
   NID,
+  IMPORT_RID,
 };

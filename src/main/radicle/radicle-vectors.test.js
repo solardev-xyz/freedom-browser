@@ -701,3 +701,70 @@ const { ProgressQueue, envelope } = require('../../../test/helpers/fake-radicled
     }
   });
 });
+
+/**
+ * On main's service path for the import (the radicled plan's B14):
+ * `FREEDOM_RADICLE_BACKEND=service`, `importGitHubRepo` whole over main's
+ * import on the one-shot import process (radicle/radicled-import.js) and a
+ * fake freedom-radicled whose `rad.import_repo` answers each case's
+ * `expect`, the service's answer (`source: design`). Main sends
+ * `importRepo`'s arguments as `rad.import_repo`'s params, field by field
+ * (`path` being `--source`), and then answers and does exactly what it did
+ * over the add-on: `{ rid }` read into `rid.slice(4)`, only "already exists
+ * in storage" an already-bridged repository, and every other answer the
+ * import's failure with the service's message. What differs by design: no
+ * add-on call, and the clone made in the OS's temporary directory, not the
+ * profile's.
+ */
+const importVectors = vectors['radicle-import.json'];
+const serviceImportCases = importVectors?.imports.filter((c) => c.expect) ?? [];
+(importVectors ? describe : describe.skip)(
+  "radicle-import.json through main's service path (the import process)",
+  () => {
+    let previousBackend;
+    beforeAll(() => {
+      previousBackend = process.env.FREEDOM_RADICLE_BACKEND;
+      process.env.FREEDOM_RADICLE_BACKEND = 'service';
+    });
+    afterAll(() => {
+      if (previousBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+      else process.env.FREEDOM_RADICLE_BACKEND = previousBackend;
+    });
+
+    test("has cases, each with the service's answer: its four successes and its eleven refusals", () => {
+      expect(serviceImportCases.filter((c) => c.expect.result_text)).toHaveLength(4);
+      expect(serviceImportCases.filter((c) => c.expect.error)).toHaveLength(11);
+      for (const c of serviceImportCases) expect(c.expect.source).toBe('design');
+    });
+
+    test.each(serviceImportCases.map((c) => [c.id, c]))(
+      '%s: main answers as it did over the add-on',
+      async (_id, c) => {
+        const replay = await harness.runServiceImport(c, importVectors.constants);
+        expect({ unscripted: replay.unscripted, unread: replay.unread }).toEqual({
+          unscripted: [],
+          unread: [],
+        });
+        expect(replay.gitLeft).toBe(0);
+        const [source, name, description, defaultBranch] = c.addon.args;
+        expect(replay.imports).toEqual([
+          { path: source, name, description, default_branch: defaultBranch },
+        ]);
+        expect(replay.spawned).toHaveLength(1);
+        const args = replay.spawned[0];
+        expect(args[0]).toBe('import');
+        expect(args[args.indexOf('--source') + 1]).toBe(source);
+        // The clone in the OS's temporary directory, not the profile's.
+        expect(replay.mkdtemp).toEqual(['freedom-github-bridge-']);
+        const { calls, temp, ...now } = replay.main;
+        const { calls: addonCalls, temp: profileTemp, ...recorded } = c.main;
+        expect(addonCalls).toHaveLength(1);
+        expect(profileTemp).toEqual(['github-bridge']);
+        expect(calls).toEqual([]);
+        expect(temp).toEqual([]);
+        expect(now).toStrictEqual(recorded);
+        expect(JSON.stringify(now)).toBe(JSON.stringify(recorded));
+      }
+    );
+  }
+);

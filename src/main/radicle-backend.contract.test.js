@@ -718,7 +718,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       'import-in-process',
       "an import leaves the working copy's configuration and refs untouched",
       async () => {
-        const workingCopy = tempDir('rad-contract-wc-');
+        // Named by its real path, as the GitHub bridge names its clone.
+        const workingCopy = fs.realpathSync.native(tempDir('rad-contract-wc-'));
         try {
           buildSmallWorkingCopy(workingCopy);
           const before = snapshotGitDir(workingCopy);
@@ -1028,15 +1029,18 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       'import',
       'an imported repository is listed and seeded, then unseeded',
       async () => {
-        const workingCopy = tempDir('rad-contract-wc-');
+        // Named by its real path, as the GitHub bridge names its clone.
+        const workingCopy = fs.realpathSync.native(tempDir('rad-contract-wc-'));
         try {
           buildSmallWorkingCopy(workingCopy);
           const e = backend.embedded;
           const { rid } = await e.importRepo(workingCopy, 'contract-import', 'Imported.', 'main');
           expect(rid).toMatch(RID_RE);
-          expect((await e.listRepos()).map((repo) => repo.rid)).toContain(rid);
-          expect((await e.listSeededRepos()).map((repo) => repo.rid)).toContain(rid);
-          expect(await e.repoInfo(rid)).toMatchObject({
+          // Read as every backend serves them: the text of each op.
+          const rids = async (op) => JSON.parse(await backend.readText(op)).map((repo) => repo.rid);
+          expect(await rids('list_repos')).toContain(rid);
+          expect(await rids('list_seeded_repos')).toContain(rid);
+          expect(JSON.parse(await backend.readText('repo_info', { rid }))).toMatchObject({
             rid,
             name: 'contract-import',
             defaultBranch: 'main',
@@ -1044,7 +1048,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           });
 
           await e.unseedRepo(rid);
-          expect((await e.listSeededRepos()).map((repo) => repo.rid)).not.toContain(rid);
+          expect(await rids('list_seeded_repos')).not.toContain(rid);
         } finally {
           removeDir(workingCopy);
         }
