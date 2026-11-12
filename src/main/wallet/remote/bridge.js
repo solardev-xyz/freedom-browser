@@ -101,8 +101,9 @@ function markDelivery(err, job) {
  * (`windows/request-window.js`): its panel's device wait points to its own
  * sidebar, so the QR must show there, not in whichever window has focus.
  * A window that asked and has closed gets none, and the job fails with
- * REMOTE_NO_UI. Without an asking window (the agent, an x402 payment), or
- * with the document off, the focused window, as before.
+ * REMOTE_NO_UI. An x402 payment asks for the window that hosts its tab
+ * (APS-5). Without an asking window (the agent), or with the document off,
+ * the focused window, as before.
  */
 function getTargetWindow() {
   if (isApprovalsDocumentEnabled()) {

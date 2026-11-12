@@ -990,6 +990,132 @@
   });
 
 
+  // --- x402 (APS-5): a 402's payment and an auto-pay cap's edit, as main
+  // holds them. The seller's entry (its scheme, network, asset, amount and
+  // recipient) and the paid URL are the server's choice, shown as a page's;
+  // the site key, the chain and the asset's symbol are main's.
+
+  // A field's bound is the whole view's, as for hex: the paid URL is the
+  // page's, and no shorter bound would let a payment the card shows through.
+  const MAX_URL = MAX_PARTED_VIEW_BYTES;
+  const X402_TOKEN = nullable(record({ symbol: text(32), decimals: integer({ min: 0, max: 77 }) }));
+  const X402_TEXT = text(1024);
+  const SECONDS = integer({ min: 1 });
+
+  /** A span of seconds in the largest whole unit it divides into. */
+  function durationText(seconds) {
+    const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'}`;
+    const DAY = 24 * 60 * 60;
+    if (seconds % (365 * DAY) === 0) return plural(seconds / (365 * DAY), 'year');
+    if (seconds % DAY === 0) return plural(seconds / DAY, 'day');
+    if (seconds % 3600 === 0) return plural(seconds / 3600, 'hour');
+    if (seconds % 60 === 0) return plural(seconds / 60, 'minute');
+    return plural(seconds, 'second');
+  }
+
+  /** A wall-clock time in seconds, in UTC to the minute. */
+  function timeText(seconds) {
+    const date = new Date(seconds * 1000);
+    return Number.isNaN(date.getTime()) ? String(seconds) : `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  }
+
+  /** An amount of an asset's base units, in whole units when main knows the asset. */
+  const assetAmount = (amount, token) => (token ? `${units(amount, token.decimals)} ${token.symbol}` : `${amount} base units`);
+
+  const walletX402Payment = Object.freeze({
+    schema: record({
+      account: WALLET_ACCOUNT,
+      site: text(2048),
+      url: text(MAX_URL),
+      payment: record({ scheme: X402_TEXT, network: X402_TEXT, asset: X402_TEXT, amount: decimal(), payTo: X402_TEXT }),
+      chain: nullable(SEND_CHAIN),
+      token: X402_TOKEN,
+      grant: nullable(record({ capAmount: decimal(), windowSeconds: SECONDS })),
+    }),
+    heading: () => 'Payment Required',
+    approve: () => 'Pay',
+    render(view, ui, body) {
+      const { payment, token } = view;
+      body.append(
+        ui.own('Site', view.site),
+        ui.note('requests an on-chain payment'),
+        ui.own('From', walletAccountText(view.account)),
+        ui.page('Amount', assetAmount(payment.amount, token)),
+        ui.page('To', payment.payTo, { mono: true })
+      );
+      if (!token) {
+        body.append(
+          ui.page('Asset', payment.asset, { mono: true }),
+          ui.warning("This site asks for payment in an asset Freedom doesn't recognise.")
+        );
+      }
+      body.append(
+        view.chain ? ui.own('Network', chainText(view.chain)) : ui.page('Network', payment.network),
+        ui.page('Payment scheme', payment.scheme),
+        ui.page('Page', view.url)
+      );
+      if (view.grant) {
+        body.append(
+          ui.section('Auto-pay future payments to this site'),
+          ui.own('Spend cap', assetAmount(view.grant.capAmount, token)),
+          ui.own('For', durationText(view.grant.windowSeconds)),
+          ui.warning('Until the cap is spent or the time is up, Freedom pays this site without asking.')
+        );
+      }
+      if (DEVICE_NOTES[view.account.type]) body.append(ui.note(DEVICE_NOTES[view.account.type]));
+      return { choices: noChoices };
+    },
+  });
+
+  const walletX402CapUpdate = Object.freeze({
+    schema: record({
+      site: text(2048),
+      chain: SEND_CHAIN,
+      asset: X402_TEXT,
+      token: X402_TOKEN,
+      current: record({ capAmount: decimal(), spentAmount: decimal(), expiresAt: integer({ min: 0 }) }),
+      change: record({
+        capAmount: nullable(decimal()),
+        windowSeconds: nullable(SECONDS),
+        expiresAt: nullable(integer({ min: 0 })),
+      }),
+    }),
+    heading: () => 'Change auto-pay',
+    approve: () => 'Save',
+    render(view, ui, body) {
+      const { current, change, token } = view;
+      body.append(
+        ui.note('Auto-pay pays this site without asking, up to its spend cap, until its time is up.'),
+        ui.own('Site', view.site),
+        ui.own('Network', chainText(view.chain)),
+        token ? ui.own('Asset', token.symbol) : ui.page('Asset', view.asset, { mono: true }),
+        ui.own('Spent so far', assetAmount(current.spentAmount, token))
+      );
+      let widens = false;
+      if (change.capAmount !== null) {
+        widens = widens || BigInt(change.capAmount) > BigInt(current.capAmount);
+        body.append(
+          ui.own('Spend cap now', assetAmount(current.capAmount, token)),
+          ui.own('New spend cap', assetAmount(change.capAmount, token))
+        );
+      }
+      if (change.windowSeconds !== null && change.expiresAt !== null) {
+        widens = widens || change.expiresAt > current.expiresAt;
+        body.append(
+          ui.own('Ends now', timeText(current.expiresAt)),
+          ui.own('New end', `${timeText(change.expiresAt)}, ${durationText(change.windowSeconds)} after it was granted`)
+        );
+      }
+      body.append(
+        widens
+          ? ui.warning('This lets the site take more without asking.')
+          : ui.note('This lowers what the site can take without asking.')
+      );
+      return { choices: noChoices };
+    },
+  });
+
+
   // --- The Safe signing boards (APS-3b): main's view of a board -------------
 
   const BOARD_ACCOUNT = record({ index: integer({ min: 0 }), name: text(256), address: nullable(text(42, { pattern: ADDRESS })) });
@@ -1166,6 +1292,8 @@
     'wallet.intent_replace': walletIntentReplace,
     'wallet.intent_close': walletIntentClose,
     'wallet.executor_send': walletExecutorSend,
+    'wallet.x402_payment': walletX402Payment,
+    'wallet.x402_cap_update': walletX402CapUpdate,
     // The Safe signing boards (APS-3b), and the vault unlock a wallet board's
     // step asks for.
     'eth.safe_message': ethSafeMessage,

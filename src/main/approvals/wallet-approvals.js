@@ -25,6 +25,14 @@
  * then says why (APS-4): the prompt names the transaction approved before
  * (`replaced`), so the user sees the payment changed, with a higher fee,
  * rather than a second prompt they didn't cause.
+ *
+ * x402's two kinds ask here too (APS-5), so that with the document on the
+ * chrome mints no approval at all: a 402's payment (`x402-payment`), with
+ * main's record of its detection (the paid URL, the seller's entry at the
+ * chosen index), the active account and the allowance granted with it; and
+ * an edit of a site's auto-pay cap (`x402-cap-update`), with the cap as
+ * main holds it and the change. An auto-pay within a cap asks nothing, as
+ * before.
  */
 
 const PROMPT_KINDS = Object.freeze({
@@ -34,6 +42,8 @@ const PROMPT_KINDS = Object.freeze({
   'intent-replace': 'wallet.intent_replace',
   'intent-close': 'wallet.intent_close',
   'executor-send': 'wallet.executor_send',
+  'x402-payment': 'wallet.x402_payment',
+  'x402-cap-update': 'wallet.x402_cap_update',
 });
 
 const REJECTED = Object.freeze({ approved: false, error: 'User rejected the request', code: 'USER_REJECTED' });
@@ -48,7 +58,7 @@ const NO_ACCOUNT = Object.freeze({
 // panel must show that very account, from main's wallet list, or nothing
 // is asked. An intent's kinds bind its sender's address instead, which a
 // held payment may keep after its account has left the wallet.
-const INDEX_BOUND = new Set(['wallet-send', 'safe-send', 'executor-send']);
+const INDEX_BOUND = new Set(['wallet-send', 'safe-send', 'executor-send', 'x402-payment']);
 
 // ERC-20's transfer(address,uint256): the recipient and the amount, read
 // from the data main binds, so the panel says what a token send does.
@@ -99,6 +109,8 @@ function txOf(source) {
   };
 }
 
+const textOr = (value, fallback = '') => (typeof value === 'string' ? value : fallback);
+
 function transferOf(tx) {
   const match = TRANSFER.exec(tx.data);
   if (!match) return null;
@@ -114,6 +126,14 @@ function transferOf(tx) {
  * @param {(chainId: number) => string|null} deps.nativeSymbol
  * @param {(tx: object) => Promise<object>} deps.checkFees
  * @param {(tx: object, options: object) => Promise<object>} deps.checkAtApproval
+ * @param {(chainId: number, asset: string) => object|null} [deps.tokenOf] an
+ *   asset main knows: `{ symbol, decimals }` from its token list
+ * @param {(accept: object) => object|null} [deps.x402Tuple] an x402 entry's
+ *   `{ chainId, asset, amount }`, or null for a network main can't pay on
+ * @param {(url: string) => string|null} [deps.x402Origin] the paid URL's
+ *   origin, the key its allowance is granted under
+ * @param {(origin: string, chainId: number, asset: string) => object|null} [deps.x402Cap]
+ *   a site's active auto-pay cap, as main holds it
  * @param {() => number} [deps.now]
  */
 function createWalletApprovals({
@@ -124,6 +144,10 @@ function createWalletApprovals({
   nativeSymbol = () => null,
   checkFees,
   checkAtApproval,
+  tokenOf = () => null,
+  x402Tuple = () => null,
+  x402Origin = () => null,
+  x402Cap = () => null,
   now = () => Date.now(),
 }) {
   // A held payment's last approved resend, by intent id: the hash it bound.
@@ -196,6 +220,76 @@ function createWalletApprovals({
     return { id: chainId, name, symbol: symbol || 'ETH' };
   }
 
+  // An asset as main's token list has it, for amounts in whole units.
+  function tokenView(chainId, asset) {
+    let token;
+    try {
+      token = tokenOf(chainId, asset);
+    } catch {
+      token = null;
+    }
+    if (!token || typeof token.symbol !== 'string' || !Number.isSafeInteger(token.decimals)) return null;
+    return { symbol: token.symbol, decimals: token.decimals };
+  }
+
+  function safely(fn, ...args) {
+    try {
+      return fn(...args) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // A 402's payment (APS-5): the seller's entry as main's record of the
+  // detection holds it, and what main makes of it (the chain, the asset).
+  function x402PaymentView(account, payload) {
+    const accept = payload.accept;
+    const tuple = safely(x402Tuple, accept);
+    const chainId = Number.isSafeInteger(tuple?.chainId) && tuple.chainId > 0 ? tuple.chainId : null;
+    const grant = payload.grant ? { capAmount: payload.grant.capAmount, windowSeconds: payload.grant.windowSeconds } : null;
+    return {
+      account,
+      site: textOr(safely(x402Origin, payload.url)),
+      url: textOr(payload.url),
+      payment: {
+        scheme: textOr(accept.scheme),
+        network: textOr(accept.network),
+        asset: textOr(accept.asset),
+        amount: decimal(accept.amount ?? accept.maxAmountRequired) ?? '0',
+        payTo: textOr(accept.payTo),
+      },
+      chain: chainId === null ? null : chainOf(chainId),
+      token: chainId === null ? null : tokenView(chainId, tuple.asset),
+      grant,
+    };
+  }
+
+  // An auto-pay cap's edit (APS-5): the cap as main holds it, and the change.
+  function x402CapView(payload) {
+    const cap = safely(x402Cap, payload.origin, payload.chainId, payload.asset);
+    if (!cap || !payload.current) throw new Error('No such auto-pay cap');
+    if (payload.windowSeconds !== null && payload.windowSeconds !== undefined && !Number.isSafeInteger(payload.windowSeconds)) {
+      throw new Error('Invalid window');
+    }
+    const windowSeconds = Number.isSafeInteger(payload.windowSeconds) ? payload.windowSeconds : null;
+    return {
+      site: textOr(cap.origin),
+      chain: chainOf(payload.chainId),
+      asset: textOr(payload.asset),
+      token: tokenView(payload.chainId, payload.asset),
+      current: {
+        capAmount: payload.current.capAmount,
+        spentAmount: decimal(cap.spentAmount) ?? '0',
+        expiresAt: payload.current.expiresAt,
+      },
+      change: {
+        capAmount: typeof payload.capAmount === 'string' ? payload.capAmount : null,
+        windowSeconds,
+        expiresAt: windowSeconds === null ? null : payload.current.createdAt + windowSeconds,
+      },
+    };
+  }
+
   /**
    * Main's view of the request, for its kind's template in the document.
    * Null for an index-bound kind whose account main can't show.
@@ -261,6 +355,10 @@ function createWalletApprovals({
           feeCheck,
           feeAskAgain: askAgain,
         };
+      case 'x402-payment':
+        return x402PaymentView(account, payload);
+      case 'x402-cap-update':
+        return x402CapView(payload);
       default:
         throw new Error(`wallet-approvals: no view for ${kind}`);
     }
@@ -373,6 +471,13 @@ function getWalletApprovals() {
       },
       checkFees: (tx) => fees.checkFees(tx),
       checkAtApproval: (tx, options) => fees.checkAtApproval(tx, options),
+      tokenOf: (chainId, asset) => {
+        const { getToken, getTokenKey } = require('../token-registry');
+        return getToken(getTokenKey(chainId, asset)) ?? null;
+      },
+      x402Tuple: (accept) => require('../x402/payment-utils').tupleFromAccept(accept),
+      x402Origin: (url) => require('../x402/intercept').originKeyForUrl(url),
+      x402Cap: (origin, chainId, asset) => require('../x402/permissions').getPermission(origin, chainId, asset),
     });
   }
   return shared;
