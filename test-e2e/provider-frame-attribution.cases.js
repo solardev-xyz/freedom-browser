@@ -102,9 +102,33 @@ test.describe('provider frame attribution (O-6)', () => {
   // no Ant node and no Radicle addon, and what matters here is whether the
   // chrome forwarded a request at all. The Swarm permission-manifest lookup
   // also needs a node, so it reports "no manifest" (legacy per-capability
-  // prompts), on the chrome's path and on main's own (PRQ-7b).
+  // prompts), on the chrome's path and on main's own (PRQ-7b). A publish
+  // goes to main (PRQ-7c), which uploads it to a fake Ant here, answering
+  // every upload with one reference.
   async function recordProviderExecutes(electronApp) {
-    await electronApp.evaluate(({ ipcMain }, root) => {
+    await electronApp.evaluate(async ({ ipcMain }, root) => {
+      const load = process.mainModule.require;
+      const http = load('http');
+      const ant = http.createServer((req, res) => {
+        const json = (body) => {
+          res.writeHead(req.method === 'POST' ? 201 : 200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        if (req.method === 'GET' && req.url === '/stamps') {
+          return json({ stamps: [{ batchID: 'e2'.repeat(32), utilization: 0, usable: true, label: 'e2e', depth: 24, amount: '100000000000', bucketDepth: 16, blockNumber: 1, immutableFlag: true, batchTTL: 365 * 24 * 3600 }] });
+        }
+        if (req.method === 'POST' && req.url.startsWith('/bzz')) {
+          req.resume();
+          req.on('end', () => json({ reference: 'ab'.repeat(32) }));
+          return undefined;
+        }
+        res.writeHead(404);
+        return res.end();
+      });
+      await new Promise((resolve) => ant.listen(0, '127.0.0.1', resolve));
+      globalThis.__attributionAnt = ant;
+      load(`${root}/src/main/service-registry`).updateService('ant', { api: `http://127.0.0.1:${ant.address().port}` });
+      load(`${root}/src/main/swarm/publish-setup-service`).getPublishSetupService().getPublishReadiness = async () => ({ ok: true });
       const calls = [];
       globalThis.__providerExecuteCalls = calls;
       ipcMain.removeHandler('swarm:manifest-check');
@@ -209,9 +233,9 @@ test.describe('provider frame attribution (O-6)', () => {
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatch(/^0x[0-9a-fA-F]{40}$/);
 
-    // window.swarm: connect + publish. Connecting goes to main, which shows
-    // its own prompt in the same screen and writes the grant (freedom-core
-    // design 0011, PRQ-7b); publishing still takes the chrome's path.
+    // window.swarm: connect + publish. Both go to main, which shows its own
+    // prompts in the same screens, writes the grant (freedom-core design
+    // 0011, PRQ-7b) and publishes (PRQ-7c).
     await inPage(win, `window.__swarm = window.swarm.requestAccess(); 0`);
     await expect(swarmConnect).toBeVisible();
     await win.click('#swarm-connect-approve');
@@ -227,8 +251,13 @@ test.describe('provider frame attribution (O-6)', () => {
     const publishPrompt = win.locator('#sidebar-swarm-publish-approve');
     await expect(publishPrompt).toBeVisible();
     await win.screenshot({ path: path.join(test.info().outputDir, 'top-frame-swarm-publish.png') });
+    await win.waitForTimeout(600);
     await win.click('#swarm-publish-confirm');
     expect(await inPage(win, 'window.__published.then((r) => JSON.stringify(r))')).toContain('abab');
+    const swarmMain = await electronApp.evaluate(() =>
+      globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.filter((e) => e.kind === 'recorded' && e.provider === 'swarm').map((e) => e.method)
+    );
+    expect(swarmMain).toContain('swarm_publishData');
 
     // window.radicle: connect.
     await inPage(win, `window.__radicle = window.radicle.requestAccess(); 0`);
@@ -238,11 +267,9 @@ test.describe('provider frame attribution (O-6)', () => {
 
     const calls = await executeCalls(electronApp);
     expect(calls.map((c) => c.method)).not.toContain('swarm_requestAccess');
+    expect(calls.map((c) => c.method)).not.toContain('swarm_publishData');
     expect(calls.map((c) => `${c.channel} ${c.method}`)).toEqual(
-      expect.arrayContaining([
-        'swarm:provider-execute swarm_publishData',
-        'radicle:provider-execute radicle_requestAccess',
-      ])
+      expect.arrayContaining(['radicle:provider-execute radicle_requestAccess'])
     );
     // Every forwarded call ran under the top page's origin.
     expect(calls.every((c) => c.origin?.includes(DAPP_HASH))).toBe(true);
