@@ -485,3 +485,42 @@ describe('forged decisions and reports are refused', () => {
     expect(env.messages('page:prompt')).toHaveLength(1);
   });
 });
+
+// A prompt's content can change while it is open (0011 "Rendering a page's
+// data": the renderer's input delay starts again when it does, APS-1).
+describe('update', () => {
+  const { createPagePrompts, TEST_KIND, KIND_SET, WALLET_KINDS } = require('./page-prompts');
+  const site = { key: DAPP_A, label: DAPP_A };
+
+  function prompts() {
+    const sent = [];
+    const api = createPagePrompts({
+      send: (windowId, channel, payload) => sent.push([windowId, channel, payload]),
+      markShown: () => true,
+      decided: () => {},
+    });
+    return { api, sent };
+  }
+
+  test('the shown prompt shows again with its new view; a waiting one changes quietly', () => {
+    const { api, sent } = prompts();
+    api.foreground(1, 10);
+    api.add({ handle: 'h1', record: {}, window: 1, guest: 10, document: '10:1', kind: 'eth.sign', site, view: { n: 1 } });
+    api.add({ handle: 'h2', record: {}, window: 1, guest: 11, document: '11:1', kind: 'eth.sign', site, view: { n: 2 } });
+    sent.length = 0;
+    expect(api.update('h1', { n: 3 })).toBe(true);
+    expect(sent).toEqual([[1, 'page:prompt', { handle: 'h1', guest: 10, kind: 'eth.sign', site, view: { n: 3 } }]]);
+    expect(api.update('h2', { n: 4 })).toBe(true);
+    expect(sent).toHaveLength(1);
+    api.foreground(1, 11);
+    expect(sent.at(-1)).toEqual([1, 'page:prompt', { handle: 'h2', guest: 11, kind: 'eth.sign', site, view: { n: 4 } }]);
+    api.closed('h2', 'decided');
+    expect(api.update('h2', { n: 5 })).toBe(false);
+  });
+
+  test('the harness\'s kind is no production kind and no wallet kind', () => {
+    expect(TEST_KIND).toBe('test.prompt');
+    expect(KIND_SET.has(TEST_KIND)).toBe(false);
+    expect(WALLET_KINDS.has(TEST_KIND)).toBe(false);
+  });
+});
