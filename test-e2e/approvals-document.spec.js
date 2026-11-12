@@ -374,6 +374,52 @@ test('the approvals document: its surface, sender checks, rendering and input ru
   expect(await docPage.evaluate((h) => window.approvals.decide(h, true, undefined), sixReport.handle)).toEqual({ ok: true });
   await expect.poll(() => outcome(electronApp, guest, 'six')).toEqual({ ok: 'approved:six' });
 
+  // The panel stays whole: the window keeps a minimum size, and at that
+  // size, with the chrome saying its content starts as low as it may, the
+  // panel keeps its heading and both buttons, and an approval counts.
+  const minimum = await electronApp.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).getMinimumSize(), windowId);
+  expect(minimum[0]).toBeGreaterThanOrEqual(480);
+  expect(minimum[1]).toBeGreaterThanOrEqual(360);
+  const fullSize = await electronApp.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).getSize(), windowId);
+  await win.evaluate(() => window.pagePrompts.anchor(240));
+  await electronApp.evaluate(({ BrowserWindow }, args) => BrowserWindow.fromId(args.id).setSize(args.w, args.h), {
+    id: windowId,
+    w: minimum[0],
+    h: minimum[1],
+  });
+  after = await reportCount(electronApp, windowId);
+  await ask(electronApp, guest, 'small', view('small'));
+  const small = (await nextReport(electronApp, windowId, after)).handle;
+  const smallBounds = (await approvalsState(electronApp))[windowId].bounds;
+  expect(smallBounds.height).toBeGreaterThanOrEqual(240);
+  expect(smallBounds.width).toBeGreaterThanOrEqual(240);
+  for (const control of ['#heading', '#reject', '#approve']) {
+    await expect(docPage.locator(control)).toBeInViewport({ ratio: 1 });
+  }
+  await sleep(PAST_DELAY_MS);
+  await docPage.click('#approve');
+  await expect.poll(() => outcome(electronApp, guest, 'small')).toEqual({ ok: 'approved:small' });
+  expect(small).toMatch(/^[0-9a-f]{64}$/);
+
+  // Smaller than that (a screen smaller than the minimum): no room for the
+  // panel, and the chrome can't decide, so main closes the prompt as
+  // rejected rather than leave the page waiting.
+  await electronApp.evaluate(({ BrowserWindow }, id) => {
+    const w = BrowserWindow.fromId(id);
+    w.setMinimumSize(1, 1);
+    w.setSize(300, 200);
+  }, windowId);
+  await ask(electronApp, guest, 'tiny', view('tiny'));
+  await expect.poll(() => outcome(electronApp, guest, 'tiny')).toEqual({ code: 4001, message: 'User rejected the request' });
+  expect((await approvalsTrace(electronApp)).some((e) => e.kind === 'no-room')).toBe(true);
+  expect((await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, shown: null });
+  await electronApp.evaluate(({ BrowserWindow }, args) => {
+    const w = BrowserWindow.fromId(args.id);
+    w.setMinimumSize(args.min[0], args.min[1]);
+    w.setSize(args.size[0], args.size[1]);
+  }, { id: windowId, min: minimum, size: fullSize });
+  await win.evaluate(() => window.pagePrompts.anchor(Math.round(document.querySelector('.app-body').getBoundingClientRect().top)));
+
   // Sender checks on a live prompt: the view after a same-document
   // navigation, and another window's own document, are refused.
   after = await reportCount(electronApp, windowId);
@@ -463,6 +509,8 @@ test('the approvals document: its surface, sender checks, rendering and input ru
     ['four', true],
     ['five', true],
     ['six', true],
+    ['small', true],
+    ['tiny', false],
     ['seven', false],
   ]);
 });
