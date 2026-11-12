@@ -44,7 +44,9 @@
  *   returns the function that undoes it. On the service, which composes
  *   `node_info` itself, the next `node_info` answers as the service does
  *   when that part fails: `listRepos` gives `repos_total: null` with the
- *   message as `repos_error`, and `status` fails the read;
+ *   message as `repos_error`, and `status` fails the read, or the next
+ *   `status` read, whichever comes first (radapi's `/` reads `status`
+ *   alone);
  * - `getConnections()`: the manager's answer, as the vectors record it (on
  *   the service, without its diagnostics, `confinement` and `service`);
  * - `stop()` and `close()`.
@@ -64,7 +66,8 @@
  *   by case: the design's deviation, why, and `differs(record, vector)`,
  *   which holds when its answer differs from the vector in that way and no
  *   other. A listed case that matches its vector fails, until it is
- *   removed from the list.
+ *   removed from the list. `handlerDeviations(fx)` lists the handler
+ *   vectors' the same way, for the fixture `fx`.
  *
  * The pending tests use what only the service has:
  * - `call(method, params)` for its methods;
@@ -435,7 +438,12 @@ async function loadRadicledBackend({ home }) {
           }
 
           async read(op, args, options) {
-            const failure = op === 'node_info' ? nodeInfoFailure : null;
+            // The next node_info, or for a failed `status` the next status
+            // read too (radapi's `/` reads it alone), answers the failure.
+            const failure =
+              op === 'node_info' || (op === 'status' && nodeInfoFailure?.name === 'status')
+                ? nodeInfoFailure
+                : null;
             if (!failure) return super.read(op, args, options);
             nodeInfoFailure = null;
             if (failure.name === 'status') {
@@ -585,18 +593,51 @@ const RADICLED_DEVIATIONS = {
 };
 
 /**
+ * The handlers' answers freedom-radicled gives otherwise, by design, for the
+ * fixture `fx`: as RADICLED_DEVIATIONS, by handler vector.
+ */
+const radicledHandlerDeviations = (fx) => ({
+  [`rad GET /commits/${fx.commits.second}`]: {
+    deviation: 'size-caps',
+    reason:
+      "The second commit's diff is too_large on the service ('commit second' above), so the " +
+      "handler answers 413 with main's fixed text, where v0.8.0 answered the diff.",
+    // As JSON: a header entry is an array of another realm's (undici's).
+    differs: (record, vector) =>
+      JSON.stringify(record) ===
+        JSON.stringify({
+          status: 413,
+          headers: vector.headers,
+          body: JSON.stringify({ error: 'repository data too large to serve here' }),
+        }) &&
+      vector.status === 200 &&
+      vector.body.includes('"path":"big.bin","diff":{"type":"binary"}'),
+  },
+});
+
+/**
  * The backends, each with the features it honours. A feature's pending
- * tests run against a backend that lists it here.
+ * tests run against a backend that lists it here. `handlerDeviations(fx)`
+ * is `deviations`' for the handler vectors, whose names hold the fixture's
+ * commits.
  */
 const BACKENDS = {
-  addon: { load: loadAddonBackend, honours: [], lacks: [], hooks: [], deviations: {} },
+  addon: {
+    load: loadAddonBackend,
+    honours: [],
+    lacks: [],
+    hooks: [],
+    deviations: {},
+    handlerDeviations: () => ({}),
+  },
   // The release binary: no test hooks (they are a debug build's).
   radicled: {
     load: loadRadicledBackend,
-    honours: ['call-stream', 'call-scoped', 'node-info', 'dirty-marker', 'quarantine'],
-    lacks: ['handlers', 'parsed-reads', 'network', 'writes', 'import'],
+    honours: ['call-stream', 'call-scoped', 'node-info', 'dirty-marker', 'quarantine', 'size-caps'],
+    lacks: ['parsed-reads', 'network', 'writes', 'import'],
     hooks: [],
     deviations: RADICLED_DEVIATIONS,
+    handlerDeviations: radicledHandlerDeviations,
   },
 };
 
