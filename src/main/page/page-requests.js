@@ -42,11 +42,12 @@
  * `WebFrameMain.send` targets a frame, and the frame can commit a new
  * document between the check and the delivery.
  *
- * The app serves the Ethereum reads here (PRQ-3, `page-ethereum.js`):
- * the preload sends those on `page:request`, and every other method still
- * takes today's path through the chrome. The E2E harness can route and
- * serve any method through a test hook (`enablePageRequestTestHooks`).
- * Later steps (PRQ-4 to PRQ-8) move the rest.
+ * The app serves Ethereum's methods here (PRQ-3 to PRQ-5, `page-ethereum.js`)
+ * and Swarm's reads (PRQ-7a, `page-swarm.js`): the preload sends those on
+ * `page:request`, and every other method still takes today's path through
+ * the chrome. The E2E harness can route and serve any method through a
+ * test hook (`enablePageRequestTestHooks`). Later steps (the rest of PRQ-7,
+ * and PRQ-8) move the rest.
  *
  * `page:bind-name { guest, name, key }` (the design's "Names over IPNS")
  * comes from the chrome, before it loads `ipns://<key>` for a DNS name: it
@@ -1095,9 +1096,10 @@ function resolveBoundName(name) {
 function getPageRequests() {
   if (!shared) {
     const { createEthereumDispatchers } = require('./page-ethereum');
+    const { createSwarmDispatchers } = require('./page-swarm');
     shared = createPageRequests({
       documents: createPageDocuments({ resolveEnsContent: resolveBoundName }),
-      dispatchers: createEthereumDispatchers(),
+      dispatchers: { ...createEthereumDispatchers(), ...createSwarmDispatchers() },
       hooks: sharedHooks,
     });
   }

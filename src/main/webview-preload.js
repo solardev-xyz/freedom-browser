@@ -1727,9 +1727,10 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // new document between main's check and the delivery.
 //
 // The Ethereum reads (PRQ-3), connecting (PRQ-4), signing messages and
-// typed data (PRQ-5a) and sends (PRQ-5b) take the new path (PAGE_ROUTES), and main answers them: their page-world provider arms no
-// timer of its own, and main's deadline answers one that runs too long. Each later step of the
-// design moves its own methods. For a test, the E2E harness can route more
+// typed data (PRQ-5a) and sends (PRQ-5b), and Swarm's reads (PRQ-7a) take
+// the new path (PAGE_ROUTES), and main answers them: their page-world
+// provider arms no timer of its own, and main's deadline answers one that
+// runs too long. Each later step of the design moves its own methods. For a test, the E2E harness can route more
 // through main (`testPageRoutes`, which main puts on the boot switch only in
 // test mode).
 const PAGE_REQUESTS_ENABLED = PROVIDERS_ENABLED && !isInternalPage();
@@ -1746,8 +1747,10 @@ if (PAGE_REQUESTS_ENABLED) {
 // dapp-provider.js, and `eth_accounts`; connecting, `eth_requestAccounts`
 // and `wallet_switchEthereumChain`; signing, `personal_sign` and
 // `eth_signTypedData_v4`; and sending, `eth_sendTransaction`.
-// page-ethereum.test.js keeps this the list main's Ethereum dispatcher
-// serves (src/main/page/page-ethereum.js).
+// page-ethereum.test.js keeps these the list main's Ethereum dispatcher
+// serves (src/main/page/page-ethereum.js). And window.swarm's methods that
+// need no prompt (PRQ-7a), which page-swarm.test.js keeps the list main's
+// Swarm dispatcher serves (src/main/page/page-swarm.js).
 const PAGE_ROUTES = new Set([
   'ethereum:eth_requestAccounts',
   'ethereum:wallet_switchEthereumChain',
@@ -1780,6 +1783,12 @@ const PAGE_ROUTES = new Set([
   'ethereum:eth_uninstallFilter',
   'ethereum:web3_clientVersion',
   'ethereum:web3_sha3',
+  'swarm:swarm_getCapabilities',
+  'swarm:swarm_readChunk',
+  'swarm:swarm_readData',
+  'swarm:swarm_readSingleOwnerChunk',
+  'swarm:swarm_readFeedEntry',
+  'swarm:swarm_listFeeds',
 ]);
 const TEST_PAGE_ROUTES = new Set(
   Array.isArray(WEBVIEW_BOOT?.testPageRoutes)
@@ -1808,17 +1817,22 @@ function routedToMain(provider, method) {
 const pageTargetOrigin = () => (window.location.origin === 'null' ? '*' : window.location.origin);
 const postToPage = (fields) => window.postMessage(fields, pageTargetOrigin());
 
-// The Ethereum methods main answers, for the page-world provider, which
-// arms its own timer only for the others (design 0011, "One deadline,
-// main's"). It reads and deletes the global before any page script runs.
-function withMainAnsweredMethods(source) {
-  const prefix = 'ethereum:';
+// The methods main answers, for a provider's page-world source, which arms
+// its own timer only for the others (design 0011, "One deadline, main's").
+// It reads and deletes the global before any page script runs: Ethereum's
+// `__FREEDOM_MAIN_ANSWERED__`, Swarm's `__FREEDOM_SWARM_MAIN_ANSWERED__`.
+const MAIN_ANSWERED_GLOBALS = new Map([
+  ['ethereum', '__FREEDOM_MAIN_ANSWERED__'],
+  ['swarm', '__FREEDOM_SWARM_MAIN_ANSWERED__'],
+]);
+function withMainAnsweredMethods(source, provider = 'ethereum') {
+  const prefix = `${provider}:`;
   const methods = [...PAGE_ROUTES, ...TEST_PAGE_ROUTES]
     .filter((route) => route.startsWith(prefix))
     .map((route) => route.slice(prefix.length))
-    .filter((method) => routedToMain('ethereum', method));
+    .filter((method) => routedToMain(provider, method));
   const list = JSON.stringify([...new Set(methods)]).replace(/</g, '\\u003c');
-  return `window.__FREEDOM_MAIN_ANSWERED__ = ${list};\n${source}`;
+  return `window.${MAIN_ANSWERED_GLOBALS.get(provider)} = ${list};\n${source}`;
 }
 
 // The size walk main runs on every request as it arrives (design 0011,
@@ -2147,6 +2161,14 @@ if (PROVIDERS_ENABLED) {
 // nothing in this preload.
 const SWARM_INJECT_SOURCE = `
   (function() {
+    // The methods main answers (freedom-core design 0011, "One deadline,
+    // main's"): main's deadline answers one that runs too long, so the page
+    // arms no timer of its own for them.
+    const preamble = window.__FREEDOM_SWARM_MAIN_ANSWERED__;
+    delete window.__FREEDOM_SWARM_MAIN_ANSWERED__;
+    const mainAnswered = new Set(
+      Array.isArray(preamble) ? preamble.filter((m) => typeof m === 'string') : []
+    );
     const pendingRequests = new Map();
     let requestId = 0;
     const eventListeners = { connect: [], disconnect: [], message: [] };
@@ -2166,6 +2188,7 @@ const SWARM_INJECT_SOURCE = `
         return new Promise((resolve, reject) => {
           pendingRequests.set(id, { resolve, reject });
           window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
+          if (mainAnswered.has(method)) return;
           const longRunning = method.startsWith('swarm_publish') ||
             method.startsWith('swarm_send') ||
             method === 'swarm_createFeed' ||
@@ -2254,7 +2277,7 @@ const SWARM_INJECT_SOURCE = `
 // Internal pages don't get it either: they talk to main through freedomAPI
 // and have no use for it (#432).
 if (PROVIDERS_ENABLED && !isInternalPage()) {
-  injectPageProvider('swarm', SWARM_INJECT_SOURCE);
+  injectPageProvider('swarm', withMainAnsweredMethods(SWARM_INJECT_SOURCE, 'swarm'));
 }
 
 if (PROVIDERS_ENABLED) {

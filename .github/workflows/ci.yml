@@ -1612,10 +1612,12 @@ jobs:
       # tokens only main mints and whose site rules only main reads
       # (`page-signing`, PRQ-5a), sends, whose fee main quotes and
       # judges, whose tokens only main mints and whose contract rules only
-      # main reads and records (`page-sends`, PRQ-5b), and the chain
+      # main reads and records (`page-sends`, PRQ-5b), the chain
       # switcher's and a revocation's Ethereum events, which main sends to
-      # the right documents only (`page-events`, PRQ-6).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events E2E
+      # the right documents only (`page-events`, PRQ-6), and window.swarm's
+      # reads, which main serves under the page's attested key and the
+      # chrome's route refuses (`page-swarm`, PRQ-7a).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends + page-events + page-swarm E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1636,7 +1638,8 @@ jobs:
             test-e2e/page-connect.spec.js \
             test-e2e/page-signing.spec.js \
             test-e2e/page-sends.spec.js \
-            test-e2e/page-events.spec.js
+            test-e2e/page-events.spec.js \
+            test-e2e/page-swarm.spec.js
 
       - name: Upload software rendering profile
         if: always()
