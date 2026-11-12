@@ -440,6 +440,22 @@ describe('payments waiting: the fee check on a replacement (design 0005, A)', ()
     expect(window.wallet.intentReplace).toHaveBeenCalled();
   });
 
+  test('with the approvals panel on, raised fees far above today’s go to the panel at the first press (APS-4)', async () => {
+    const { elements, payment, mod } = await offered(ABOVE);
+    window.pagePrompts = { approvalsDocument: true };
+    await mod.handleAction('replace', payment);
+    // The verdict still shows, and nothing here asks again.
+    expect(markup(elements)).toContain("This network fee is 20× today's network fee.");
+    expect(markup(elements)).not.toContain('Send anyway');
+    await mod.handleAction('confirm-replace', payment);
+    // One press, and no acknowledgement of the chrome's: the panel asks,
+    // twice for such a fee, itself.
+    expect(window.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+    expect(window.wallet.confirmSigning.mock.calls[0]).toHaveLength(3);
+    expect(window.wallet.confirmSigning.mock.calls[0][0]).toBe('intent-replace');
+    expect(window.wallet.intentReplace).toHaveBeenCalledTimes(1);
+  });
+
   test('raised fees newly above at the press: nothing signed, and the step asks again', async () => {
     const { elements, payment, mod } = await offered({ ...ABOVE, ratio: '1', above: false });
     window.wallet.confirmSigning.mockResolvedValueOnce({

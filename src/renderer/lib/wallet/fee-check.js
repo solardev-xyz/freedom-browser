@@ -20,6 +20,12 @@
  * A Safe's execution or activation that main stopped for its executor's fee
  * (FEE_CHECK_NEEDS_CONFIRMATION) is shown on the signing board or the
  * account card (describeFeeCheck), and confirmed there (confirmOfferedFee).
+ *
+ * With the approvals panel on (FREEDOM_APPROVALS_DOCUMENT=1, freedom-core
+ * design 0011, APS-4), main asks about a fee above the threshold in the
+ * panel, with its own second press, and reads no acknowledgement from the
+ * chrome. The screens then show the verdict and ask nothing themselves
+ * (`panelConfirmsFees`): the fee warning is asked once, in the panel.
  */
 
 import { confirmSigning } from './signing-confirmation.js';
@@ -36,6 +42,15 @@ export const FEE_CHECK_NEEDS_CONFIRMATION = 'FEE_CHECK_NEEDS_CONFIRMATION';
 
 /** Main's answer to a send whose fee wasn't shown: nothing was signed. */
 export const FEE_NOT_SHOWN = 'FEE_NOT_SHOWN';
+
+/**
+ * Whether the approvals panel confirms a fee above the threshold (design
+ * 0011, APS-4): with it on, a screen's Confirm goes straight on to main,
+ * which asks in the panel, twice for such a fee.
+ */
+export function panelConfirmsFees() {
+  return globalThis.window?.pagePrompts?.approvalsDocument === true;
+}
 
 /** Every text the fee check shows. */
 export const FEE_CHECK = Object.freeze({
@@ -228,10 +243,12 @@ export class FeeConfirmation {
   /**
    * The user pressed confirm. True to go on; false while no verdict is
    * shown, and when the fee is above the threshold and not yet confirmed
-   * again: the screen then asks, and the next press confirms it.
+   * again: the screen then asks, and the next press confirms it. With the
+   * approvals panel on, the panel asks instead: true once a verdict shows.
    */
   proceed() {
     if (this.state !== 'shown' || !this.verdict) return false;
+    if (panelConfirmsFees()) return true;
     if (!this.verdict.above || this.acknowledged) return true;
     if (this.asking) {
       this.acknowledged = true;
@@ -242,9 +259,12 @@ export class FeeConfirmation {
     return false;
   }
 
-  /** What the confirmation's request tells main of the user's answer. */
+  /**
+   * What the confirmation's request tells main of the user's answer:
+   * nothing with the approvals panel on, where main asks itself.
+   */
   options() {
-    return this.acknowledged ? { feeAcknowledged: true } : undefined;
+    return this.acknowledged && !panelConfirmsFees() ? { feeAcknowledged: true } : undefined;
   }
 
   /**
@@ -264,7 +284,7 @@ export class FeeConfirmation {
 
   /** The confirm button's label: `label`, or "Send anyway" while asking. */
   confirmLabel(label) {
-    return this.asking && !this.acknowledged ? FEE_CHECK.sendAnyway : label;
+    return this.asking && !this.acknowledged && !panelConfirmsFees() ? FEE_CHECK.sendAnyway : label;
   }
 
   render() {
@@ -288,7 +308,7 @@ export class FeeConfirmation {
       const above = Boolean(verdict?.above);
       if (warningTextEl) {
         warningTextEl.textContent = above
-          ? `${FEE_CHECK.above(verdict.ratio)}${this.asking ? ` ${FEE_CHECK.askAgain}` : ''}`
+          ? `${FEE_CHECK.above(verdict.ratio)}${this.asking && !panelConfirmsFees() ? ` ${FEE_CHECK.askAgain}` : ''}`
           : '';
       }
       warningEl.classList.toggle('hidden', !above);

@@ -206,6 +206,34 @@ test('above the threshold: warned, and asked again before anything is signed', a
   expect(confirmation.confirmLabel('Confirm')).toBe('Confirm');
 });
 
+test('with the approvals panel on, a fee above the threshold is asked about in the panel, not here (APS-4)', async () => {
+  window.pagePrompts = { approvalsDocument: true };
+  expect(feeCheck.panelConfirmsFees()).toBe(true);
+  window.wallet.feeCheck.mockResolvedValue({
+    success: true,
+    feeCheck: { ...VERDICT, ratio: '20', above: true, autoApprove: false },
+  });
+  const { elements, confirmation } = screen();
+  // Nothing goes on before a verdict shows, as without the panel.
+  const loading = confirmation.load({ chainId: 1, gasLimit: '21000', gasPrice: '1' });
+  expect(confirmation.proceed()).toBe(false);
+  await loading;
+  // The verdict shows; the first press goes on, with no acknowledgement and
+  // no "Send anyway".
+  expect(elements.warningTextEl.textContent).toBe("This network fee is 20× today's network fee.");
+  expect(confirmation.proceed()).toBe(true);
+  expect(confirmation.options()).toBeUndefined();
+  expect(confirmation.confirmLabel('Confirm')).toBe('Confirm');
+  // Main never answers the chrome's screen with an ask-again then; if one
+  // came, it would still not ask here.
+  confirmation.askAgain(Object.assign(new Error('again'), { code: feeCheck.FEE_CHECK_ASK_AGAIN, feeCheck: { ...VERDICT, ratio: '4', above: true } }));
+  expect(confirmation.confirmLabel('Confirm')).toBe('Confirm');
+  expect(elements.warningTextEl.textContent).toBe("This network fee is 4× today's network fee.");
+  expect(confirmation.options()).toBeUndefined();
+  window.pagePrompts = { approvalsDocument: false };
+  expect(feeCheck.panelConfirmsFees()).toBe(false);
+});
+
 test("main's ask-again at the press shows its verdict and asks", async () => {
   const { elements, confirmation } = screen();
   await confirmation.load({ chainId: 1, gasLimit: '21000', gasPrice: '1' });
