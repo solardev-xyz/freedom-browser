@@ -16,6 +16,10 @@
  *
  * A write the provider admits is the service's `rad.write` (plan B11), which
  * the fake service answers; the test counts what reached it.
+ *
+ * Identity changes (0008, "Identity changes"; the plan's B12) run here too:
+ * identity-manager.js's change through the manager's lifecycle hook, the
+ * core's `nodes.write_identity` faked as the core answers it.
  */
 
 const fs = require('fs');
@@ -408,5 +412,120 @@ describe("main no longer reads keys/ (0008, Main's side)", () => {
       exists.mockRestore();
       reads.mockRestore();
     }
+  });
+});
+
+// freedom-core design 0008, "Identity changes" (the radicled step-5 plan's
+// B12): identity-manager's change through the manager's lifecycle hook, on
+// a real RadicledNode over the fake service. The core's write is faked as
+// the core answers it: `lock_held` while any freedom-radicled process holds
+// the home's gate, else what the test scripts, then `installed`.
+describe('identity changes on the service (0008, "Identity changes")', () => {
+  const SEALED_SPEC = {
+    node: 'radicle',
+    alias: 'FreedomBrowser',
+    custody: 'sealed',
+    wipe: true,
+  };
+
+  /**
+   * Main's modules over a vault that's unlocked, identity-manager's hook
+   * wired to the manager as index.js wires it, and the core's write
+   * scripted; each write records whether a process held the gate, the
+   * manager's state and main's block on Radicle at that point.
+   */
+  function loadForChange(answers = [], { onLockHeld = () => {} } = {}) {
+    load({ exists: true, unlocked: true });
+    identity.setRadicleLifecycle(manager.createRadicleLifecycle());
+    identity._internal.radicleChangeRetry.delaysMs = [0, 0, 0, 0];
+    const guard = require('../core/node-identity-guard');
+    const calls = [];
+    vault.writeNodeIdentity.mockImplementation(async (spec) => {
+      const holder = service.children.some((child) => !child.exited);
+      calls.push({
+        spec: { ...spec, home: spec.home === home ? 'home' : spec.home },
+        holder,
+        state: manager.getCurrentStatus().status,
+        blocked: guard.nodeBlockReason('radicle') !== null,
+      });
+      if (holder) {
+        onLockHeld();
+        throw coded('lock_held', 'The Radicle home is in use');
+      }
+      return answers.length > 0 ? answers.shift() : { status: 'installed' };
+    });
+    return { calls, guard };
+  }
+
+  const atWrite = { spec: { ...SEALED_SPEC, home: 'home' }, holder: false, state: 'stopped' };
+
+  test('stop, then the core writes with no process on the home, then start: the new process runs as the derived identity', async () => {
+    const { calls } = loadForChange();
+    await startNode();
+    const first = service.children[0];
+
+    await expect(identity.injectRadicleIdentity('FreedomBrowser')).resolves.toEqual({
+      did: DERIVED_DID,
+    });
+    expect(calls).toEqual([{ ...atWrite, blocked: true }]);
+    expect(first.exited).toBe(true);
+    expect(manager.getCurrentStatus()).toEqual({ status: 'running', error: null });
+    expect(service.children).toHaveLength(2);
+    expect(manager.activeRadicleIdentity()).toMatchObject(derived);
+    expect(vault.sealRadicleKey).toHaveBeenCalledTimes(2);
+  });
+
+  test("lock_held with a service holding the gate: the change waits with main's node stopped, and completes once that process ends", async () => {
+    // Another freedom-radicled on the home, which main neither started nor
+    // stops: it ends after the core's first refusal.
+    let other = null;
+    const { calls } = loadForChange([], { onLockHeld: () => other.exit(0) });
+    await startNode();
+    other = service.spawn('freedom-radicled', ['serve', '--home', home], {
+      env: { HOME: root },
+    });
+
+    await expect(identity.injectRadicleIdentity('FreedomBrowser')).resolves.toEqual({
+      did: DERIVED_DID,
+    });
+    expect(calls).toEqual([
+      { ...atWrite, holder: true, blocked: true },
+      { ...atWrite, blocked: true },
+    ]);
+    // Main's node spawned again only after the write was installed.
+    expect(service.children).toHaveLength(3);
+    expect(manager.getCurrentStatus()).toEqual({ status: 'running', error: null });
+  });
+
+  test('pending_recovery, then completion: the node stays stopped and blocked until the retry is installed', async () => {
+    const { calls, guard } = loadForChange([{ status: 'pending_recovery' }]);
+    await startNode();
+
+    await expect(identity.injectRadicleIdentity('FreedomBrowser')).resolves.toEqual({
+      did: DERIVED_DID,
+    });
+    expect(calls).toEqual([
+      { ...atWrite, blocked: true },
+      { ...atWrite, blocked: true },
+    ]);
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
+    expect(service.children).toHaveLength(2);
+    expect(manager.getCurrentStatus()).toEqual({ status: 'running', error: null });
+  });
+
+  test('pending_recovery on every try: the node stays stopped, with the reason, and no process is spawned', async () => {
+    const pending = { status: 'pending_recovery' };
+    loadForChange([pending, pending, pending, pending, pending]);
+    await startNode();
+
+    await expect(identity.injectRadicleIdentity('FreedomBrowser')).rejects.toThrow(
+      'The Radicle identity write did not finish (pending_recovery)'
+    );
+    expect(vault.writeNodeIdentity).toHaveBeenCalledTimes(5);
+    expect(service.children).toHaveLength(1);
+    expect(manager.getCurrentStatus()).toEqual({
+      status: 'error',
+      error: 'Node identity update did not finish; restart Freedom to complete it',
+    });
   });
 });
