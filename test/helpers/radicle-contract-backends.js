@@ -356,9 +356,14 @@ async function loadRadicledBackend({ home }) {
   // The service refuses a home with a key file: the key reaches the node
   // sealed instead, as from the core, and the home is as a switched one.
   fs.rmSync(path.join(home, 'keys'), { recursive: true, force: true });
+  // Main's grant check compares canonical paths, and refuses a Windows short
+  // name it can't (the runners' temporary directory has one): the real path.
+  const realHome = fs.realpathSync.native(home);
   // The profile's directory, outside the home: the service's own HOME and
   // the run's lock directory. Removed by close().
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicled-contract-'));
+  const userData = fs.realpathSync.native(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-radicled-contract-'))
+  );
   const ownHome = path.join(userData, 'radicled-home');
   const lockDir = path.join(userData, 'locks');
   fs.mkdirSync(lockDir);
@@ -383,9 +388,9 @@ async function loadRadicledBackend({ home }) {
       // The rest is the real profile's, which main's grant check reads.
       [path.join(SRC, 'profile-paths.js')]: () => ({
         ...jest.requireActual(path.join(SRC, 'profile-paths.js')),
-        getRadicleDataDir: () => home,
+        getRadicleDataDir: () => realHome,
         getRadicledHomeDir: () => ownHome,
-        prepareRadicleDataDir: async () => home,
+        prepareRadicleDataDir: async () => realHome,
       }),
       [path.join(SRC, 'profile-resolver.js')]: () => ({ getActiveProfile: () => null }),
       [path.join(SRC, 'core', 'node-identity-guard.js')]: () => ({ nodeBlockReason: () => null }),
