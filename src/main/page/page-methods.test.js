@@ -221,6 +221,12 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
     add('ethereum', read('main/page/page-events.js'), /sendAll\(targets, '([A-Za-z]+)'/g);
     add('swarm', read('renderer/lib/wallet/swarm-connect.js'), /event: '([A-Za-z]+)'/g);
     add('swarm', read('main/swarm/swarm-provider-ipc.js'), /event: '([A-Za-z]+)'/g);
+    // Main's own Swarm events, for a page's requests through main (PRQ-7b).
+    add(
+      'swarm',
+      read('main/page/page-swarm.js'),
+      /(?:announce\(context, |sendEvent\((?:requester|doc), (?:'swarm', )?)'([A-Za-z]+)'/g
+    );
     add('radicle', read('renderer/lib/radicle-provider.js'), /sendRadicleEvent\(webview, '([A-Za-z]+)'/g);
     // Main's seed-status broadcaster, which the chrome relays to the key's
     // webviews.

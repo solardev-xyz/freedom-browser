@@ -80,7 +80,7 @@ global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({}) }));
 const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
-const { SWARM_PAGE_METHODS, createSwarmDispatchers } = require('./page-swarm');
+const { SWARM_READ_METHODS, createSwarmDispatchers } = require('./page-swarm');
 const { executeSwarmMethod, clearPermissionFreeReadBudgets } = require('../swarm/swarm-provider-ipc');
 const { getPermissionKey } = require('../../shared/origin-utils');
 
@@ -223,7 +223,7 @@ describe('Swarm reads: the same answers as the chrome\'s (freedom-core design 00
       }
     }
     expect(CALLS.map(([method]) => method).filter((m, i, all) => all.indexOf(m) === i).sort()).toEqual(
-      [...SWARM_PAGE_METHODS].sort()
+      [...SWARM_READ_METHODS].sort()
     );
   });
 

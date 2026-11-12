@@ -144,6 +144,9 @@ async function loadSwarmConnect() {
     swarmProvider: {
       execute: jest.fn().mockResolvedValue({ result: {} }),
     },
+    pagePrompts: {
+      decide: jest.fn().mockResolvedValue({ ok: true }),
+    },
     identity: {
       getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }),
     },
@@ -190,11 +193,13 @@ async function loadSwarmConnect() {
 
   const mod = await import('./swarm-connect.js');
   const signatureFlight = await import('./signature-flight.js');
+  const pagePromptRenderers = await import('../page-prompt-renderers.js');
   mod.initSwarmConnect();
 
   return {
     mod,
     signatureFlight,
+    pagePromptRenderers,
     elements: document.elements,
     hideAllSubscreens,
     openSidebarPanel,
@@ -636,8 +641,10 @@ describe('disconnectSwarmApp', () => {
   });
 
   // A key from the permissions list can name a site in another tab: revoking
-  // it must leave the visible, still-connected site's banner (and its page)
-  // alone; revoking the visible site hides the banner and tells its page.
+  // it must leave the visible, still-connected site's banner alone; revoking
+  // the visible site hides the banner. Main tells the site's pages, every
+  // one of them (freedom-core design 0011, PRQ-7b): the chrome sends no
+  // event into a page.
   test('hides the banner only when the revoked site is the one it shows', async () => {
     const ctx = await loadSwarmConnect();
     const provider = await import('../dapp-provider.js');
@@ -658,9 +665,110 @@ describe('disconnectSwarmApp', () => {
 
     await ctx.mod.disconnectSwarmApp('bzz://visible');
     expect(banner.classList.contains('hidden')).toBe(true);
-    expect(visible.send).toHaveBeenCalledWith('swarm:provider-event', {
-      event: 'disconnect',
-      data: { origin: 'bzz://visible' },
+    expect(visible.send).not.toHaveBeenCalled();
+  });
+});
+
+// Main's own prompts for a page's requests (freedom-core design 0011,
+// PRQ-7b): the screens render what main sends and answer its handle alone.
+// They name no site and write no grant.
+describe('main\'s Swarm prompts in the chrome', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const SITE = { key: 'bzz://aaaa', label: 'bzz://aaaa' };
+
+  test('swarm.connect: main\'s site shows, and Connect answers the handle once armed, writing nothing itself', async () => {
+    const ctx = await loadSwarmConnect();
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.connect');
+    renderer.show({ handle: 'h1', guest: 7, kind: 'swarm.connect', site: SITE, view: {} });
+    const screen = ctx.elements['sidebar-swarm-connect'];
+    expect(screen.classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-connect-site'].textContent).toBe('bzz://aaaa');
+    expect(renderer.isShowing()).toBe('h1');
+    // Inside the input-protection window a click does nothing.
+    await ctx.elements['swarm-connect-approve'].fire('click');
+    expect(global.window.pagePrompts.decide).not.toHaveBeenCalled();
+    await armPrompt();
+    await ctx.elements['swarm-connect-approve'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('h1', true, {});
+    expect(global.window.swarmPermissions.grantPermission).not.toHaveBeenCalled();
+    expect(global.window.swarmProvider.execute).not.toHaveBeenCalled();
+    expect(screen.classList.contains('hidden')).toBe(true);
+    expect(renderer.isShowing()).toBe(null);
+  });
+
+  test('swarm.connect: Reject answers the handle; main closing it takes the screen down', async () => {
+    const ctx = await loadSwarmConnect();
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.connect');
+    renderer.show({ handle: 'h2', guest: 7, kind: 'swarm.connect', site: SITE, view: {} });
+    await armPrompt();
+    await ctx.elements['swarm-connect-reject'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('h2', false, {});
+
+    renderer.show({ handle: 'h3', guest: 7, kind: 'swarm.connect', site: SITE, view: {} });
+    expect(renderer.isShowing()).toBe('h3');
+    renderer.close('h3');
+    expect(ctx.elements['sidebar-swarm-connect'].classList.contains('hidden')).toBe(true);
+    expect(renderer.isShowing()).toBe(null);
+    await armPrompt();
+    await ctx.elements['swarm-connect-approve'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledTimes(1);
+  });
+
+  test('a screen another one takes the sidebar from reports main\'s prompt displaced, and rejects nothing', async () => {
+    const ctx = await loadSwarmConnect();
+    const displaced = jest.fn();
+    ctx.pagePromptRenderers.onPagePromptDisplaced(displaced);
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.connect');
+    renderer.show({ handle: 'h4', guest: 7, kind: 'swarm.connect', site: SITE, view: {} });
+    ctx.mod.showSwarmPublishApproval('https://b.example', { data: 'x' }, () => {}, () => {}, 'swarm_publishData');
+    expect(displaced).toHaveBeenCalledWith('h4');
+    expect(renderer.isShowing()).toBe(null);
+    expect(global.window.pagePrompts.decide).not.toHaveBeenCalled();
+  });
+
+  test('swarm.messaging: a send shows main\'s topic and size and offers "always allow"; the grant prompt offers none', async () => {
+    const ctx = await loadSwarmConnect();
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.messaging');
+    renderer.show({
+      handle: 'm1',
+      guest: 7,
+      kind: 'swarm.messaging',
+      site: SITE,
+      view: { method: 'swarm_sendPss', grantMode: false, topic: 'room', size: 5 },
     });
+    expect(ctx.elements['swarm-messaging-site'].textContent).toBe('bzz://aaaa');
+    expect(ctx.elements['swarm-messaging-topic'].textContent).toBe('room');
+    expect(ctx.elements['swarm-messaging-size'].textContent).toContain('5');
+    expect(ctx.elements['swarm-messaging-size-row'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['swarm-messaging-auto-approve-label'].classList.contains('hidden')).toBe(false);
+    ctx.elements['swarm-messaging-auto-approve'].checked = true;
+    await armPrompt();
+    await ctx.elements['swarm-messaging-confirm'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenCalledWith('m1', true, { alwaysAllow: true });
+    expect(global.window.swarmPermissions.setAutoApprove).not.toHaveBeenCalled();
+
+    renderer.show({
+      handle: 'm2',
+      guest: 7,
+      kind: 'swarm.messaging',
+      site: SITE,
+      view: { method: 'swarm_subscribe', grantMode: true },
+    });
+    expect(ctx.elements['swarm-messaging-title'].textContent).toBe('Messaging Access');
+    expect(ctx.elements['swarm-messaging-auto-approve-label'].classList.contains('hidden')).toBe(true);
+    ctx.elements['swarm-messaging-auto-approve'].checked = true;
+    await armPrompt();
+    await ctx.elements['swarm-messaging-confirm'].fire('click');
+    expect(global.window.pagePrompts.decide).toHaveBeenLastCalledWith('m2', true, {});
   });
 });

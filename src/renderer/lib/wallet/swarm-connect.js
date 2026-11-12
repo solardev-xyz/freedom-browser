@@ -9,9 +9,10 @@ import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-st
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { formatBytes } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getPermissionKey, getActiveWebview, getActivePageUrl } from '../dapp-provider.js';
+import { getPermissionKey, getActivePageUrl } from '../dapp-provider.js';
 import { showSwarmPermissions } from './permission-manage.js';
 import { createPromptQueue, setButtonsDisabled } from './prompt-queue.js';
+import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 import {
   BEE_WALLET_IDENTITY_ID,
   getActivePublisherIdentity,
@@ -145,11 +146,46 @@ function syncFeedSharedIdentityNotice() {
   syncFeedApproveButton();
 }
 
+// A screen another one hid: its old-path requests are rejected, and main's
+// prompt (a page request through main, freedom-core design 0011) is told
+// it was displaced, so it shows again once the sidebar is free.
 function rejectDismissed(queue) {
   for (const pending of queue.drain()) {
-    pending.reject({ code: 4001, message: 'User dismissed prompt' });
+    if (pending.handle) pagePromptDisplaced(pending.handle);
+    else pending.reject({ code: 4001, message: 'User dismissed prompt' });
   }
 }
+
+async function decidePagePrompt(handle, approve, choices = {}) {
+  try {
+    return await window.pagePrompts?.decide?.(handle, approve, choices);
+  } catch (err) {
+    console.error('[SwarmConnect] The decision did not reach main:', err);
+    return null;
+  }
+}
+
+/**
+ * A screen's renderer for main's prompts of one kind (`page:prompt`, design
+ * 0011, PRQ-7b): main's prompt goes through the screen's own queue, with
+ * its input-protection window, and is answered for its handle alone.
+ */
+function pagePromptRenderer(queue, screen, toEntry, close) {
+  return {
+    show: (prompt) => {
+      if (queue.current?.handle === prompt.handle) return;
+      queue.show(toEntry(prompt));
+    },
+    close: (handle) => {
+      if (queue.withdraw((entry) => entry.handle === handle)) close();
+    },
+    isShowing: () =>
+      queue.current?.handle && screen() && !screen().classList.contains('hidden') ? queue.current.handle : null,
+  };
+}
+
+// The site main attested, as main labels it.
+const siteOf = (prompt) => prompt?.site?.label || prompt?.site?.key || 'Unknown';
 
 export function initSwarmConnect() {
   swarmConnectScreen = document.getElementById('sidebar-swarm-connect');
@@ -254,6 +290,36 @@ export function initSwarmConnect() {
   setupSwarmPublishScreen();
   setupSwarmMessagingScreen();
   setupSwarmFeedScreen();
+
+  // Main's own prompts for a page's requests (PRQ-7b): connecting, and
+  // messaging access and sends.
+  registerPagePromptRenderer(
+    'swarm.connect',
+    pagePromptRenderer(
+      swarmConnectQueue,
+      () => swarmConnectScreen,
+      (prompt) => ({ handle: prompt.handle, permissionKey: siteOf(prompt) }),
+      closeSwarmConnect
+    )
+  );
+  registerPagePromptRenderer(
+    'swarm.messaging',
+    pagePromptRenderer(
+      swarmMessagingQueue,
+      () => swarmMessagingScreen,
+      (prompt) => {
+        const view = prompt.view || {};
+        return {
+          handle: prompt.handle,
+          permissionKey: siteOf(prompt),
+          params: typeof view.topic === 'string' ? { topic: view.topic } : {},
+          size: Number.isSafeInteger(view.size) ? view.size : null,
+          options: { method: view.method, grantMode: view.grantMode === true },
+        };
+      },
+      closeSwarmMessagingApproval
+    )
+  );
 }
 
 function setupSwarmConnectScreen() {
@@ -342,6 +408,14 @@ function closeSwarmConnect() {
 }
 
 async function approveSwarmConnect(pending) {
+  if (pending.handle) {
+    // Main writes the grant, for the site it attested, and answers the
+    // page; the banner reads the grant once it has.
+    closeSwarmConnect();
+    await decidePagePrompt(pending.handle, true);
+    updateSwarmConnectionBanner();
+    return;
+  }
   const { permissionKey, resolve, webview } = pending;
 
   try {
@@ -372,6 +446,10 @@ async function approveSwarmConnect(pending) {
 }
 
 function rejectSwarmConnect(pending) {
+  if (pending.handle) {
+    decidePagePrompt(pending.handle, false);
+    return;
+  }
   const { reject } = pending;
   reject({ code: 4001, message: 'User rejected Swarm access' });
   console.log('[SwarmConnect] Rejected');
@@ -432,16 +510,8 @@ export async function disconnectSwarmApp(permissionKey = null) {
       await window.swarmFeedStore?.revokeFeedAccess?.(key);
     }
     console.log('[SwarmConnect] Disconnected:', key);
-
-    // Only the visible page can be told — and only when it is the site
-    // that was disconnected.
-    const webview = getActiveWebview();
-    if (webview && webview.send && getPermissionKey(getActivePageUrl()) === key) {
-      webview.send('swarm:provider-event', {
-        event: 'disconnect',
-        data: { origin: key },
-      });
-    }
+    // Main tells every open page of the site (freedom-core design 0011,
+    // "Events"; PRQ-7b).
 
     // Only the banner of the site that was revoked: a key from the
     // permissions list can name a site in another tab.
@@ -660,7 +730,7 @@ export function showSwarmMessagingApproval(permissionKey, params, resolve, rejec
   swarmMessagingQueue.show({ permissionKey, params, resolve, reject, options });
 }
 
-function presentSwarmMessagingApproval({ permissionKey, params, options }) {
+function presentSwarmMessagingApproval({ permissionKey, params, options, size }) {
   const { method, grantMode } = options || {};
 
   if (swarmMessagingSite) swarmMessagingSite.textContent = permissionKey || 'Unknown';
@@ -684,8 +754,13 @@ function presentSwarmMessagingApproval({ permissionKey, params, options }) {
   }
 
   if (swarmMessagingSizeRow && swarmMessagingSize) {
-    if (isSend && params?.data !== undefined && params?.data !== null) {
-      swarmMessagingSize.textContent = formatBytes(payloadByteSize(params.data));
+    // Main's prompt carries the size it measured; the old path measures the
+    // page's data here.
+    const bytes = size !== undefined
+      ? size
+      : (params?.data !== undefined && params?.data !== null ? payloadByteSize(params.data) : null);
+    if (isSend && bytes !== null) {
+      swarmMessagingSize.textContent = formatBytes(bytes);
       swarmMessagingSizeRow.classList.remove('hidden');
     } else {
       swarmMessagingSizeRow.classList.add('hidden');
@@ -722,6 +797,14 @@ async function approveSwarmMessaging(pending) {
   // Read the shared checkbox before the first await (see approveSwarmPublish).
   const alwaysAllow = !!swarmMessagingAutoApproveCheckbox?.checked;
 
+  if (pending.handle) {
+    // Main writes the grant or the rule, for the site it attested; "always
+    // allow" only where the prompt offered it (a send).
+    const offered = !pending.options?.grantMode && ['swarm_sendPss', 'swarm_sendGsoc'].includes(pending.options?.method);
+    await decidePagePrompt(pending.handle, true, offered ? { alwaysAllow } : {});
+    return;
+  }
+
   if (alwaysAllow && permissionKey) {
     await window.swarmPermissions.setAutoApprove(permissionKey, 'messaging', true);
     console.log('[SwarmConnect] Auto-approve messaging enabled for:', permissionKey);
@@ -732,6 +815,10 @@ async function approveSwarmMessaging(pending) {
 }
 
 function rejectSwarmMessaging(pending) {
+  if (pending.handle) {
+    decidePagePrompt(pending.handle, false);
+    return;
+  }
   const { reject } = pending;
   reject({ code: 4001, message: 'User rejected the request' });
   console.log('[SwarmConnect] Messaging rejected');

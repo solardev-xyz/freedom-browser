@@ -114,6 +114,26 @@ export function createPromptQueue(present, onArmedChange) {
       this.showNext();
     },
 
+    /**
+     * Take back the requests `match` picks, waiting or on screen (main hid
+     * or closed its prompt). Returns true when the one on screen was among
+     * them: the caller takes the screen down, then shows the next one
+     * (`showNext`).
+     */
+    withdraw(match) {
+      for (let i = waiting.length - 1; i >= 0; i -= 1) {
+        if (match(waiting[i])) waiting.splice(i, 1);
+      }
+      if (!current || !match(current)) return false;
+      current = null;
+      if (armTimer) {
+        clearTimeout(armTimer);
+        armTimer = null;
+      }
+      setArmed(false);
+      return true;
+    },
+
     /** The screen was dismissed: hand back every request so all get rejected. */
     drain() {
       const dropped = current ? [current, ...waiting] : waiting.slice();

@@ -136,6 +136,7 @@ const permissionElementIds = [
   'swarm-perms-site',
   'swarm-perms-publish-toggle',
   'swarm-perms-feeds-toggle',
+  'swarm-perms-messaging-toggle',
   'swarm-perms-disconnect',
   'sidebar-x402-permissions',
   'x402-perms-back',
@@ -390,5 +391,53 @@ describe('permission-manage: the signing rule can only be turned off here (0011 
     await toggle.fire('change');
     expect(toggle.checked).toBe(false);
     expect(global.window.dappPermissions.setSigningAutoApprove).not.toHaveBeenCalled();
+  });
+});
+
+// freedom-core design 0011, PRQ-7b: main grants Swarm messaging from the
+// user's decision on its own messaging prompt. Here it can only be revoked.
+describe('permission-manage: Swarm messaging can only be revoked here (0011 PRQ-7b)', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  async function showSwarm(ctx, granted) {
+    Object.assign(global.window.swarmPermissions, {
+      getPermission: jest.fn().mockResolvedValue({ origin: 'bzz://aaaa', autoApprove: {} }),
+      hasMessagingGrant: jest.fn().mockResolvedValue(granted),
+      grantMessaging: jest.fn(),
+      revokeMessaging: jest.fn().mockResolvedValue(true),
+    });
+    global.window.identity = { getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }) };
+    global.window.swarmFeedStore = {
+      getOriginIdentities: jest.fn().mockResolvedValue({ activeIdentityId: 'a', identities: [{ id: 'a', mode: 'app-scoped', stored: true }] }),
+      previewAppScopedIdentity: jest.fn(),
+    };
+    await ctx.mod.showSwarmPermissions('bzz://aaaa');
+    return ctx.elements['swarm-perms-messaging-toggle'];
+  }
+
+  test('no grant shows disabled, and turning it on asks main for nothing', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = await showSwarm(ctx, false);
+    expect(toggle.checked).toBe(false);
+    expect(toggle.disabled).toBe(true);
+    toggle.checked = true;
+    await toggle.fire('change');
+    expect(toggle.checked).toBe(false);
+    expect(global.window.swarmPermissions.grantMessaging).not.toHaveBeenCalled();
+  });
+
+  test('a grant can be revoked, and then shows disabled', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = await showSwarm(ctx, true);
+    expect(toggle.checked).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    toggle.checked = false;
+    await toggle.fire('change');
+    expect(global.window.swarmPermissions.revokeMessaging).toHaveBeenCalledWith('bzz://aaaa');
+    expect(toggle.disabled).toBe(true);
   });
 });
