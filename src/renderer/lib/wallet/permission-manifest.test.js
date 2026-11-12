@@ -123,9 +123,10 @@ async function loadPermissionManifest() {
 
   const mod = await import('./permission-manifest.js');
   const signatureFlight = await import('./signature-flight.js');
+  const pagePromptRenderers = await import('../page-prompt-renderers.js');
   mod.initPermissionManifest();
 
-  return { mod, signatureFlight, elements: document.elements, hideAllSubscreens, openSidebarPanel };
+  return { mod, signatureFlight, pagePromptRenderers, elements: document.elements, hideAllSubscreens, openSidebarPanel };
 }
 
 // Track settlement without awaiting a promise that may never settle.
@@ -291,5 +292,66 @@ describe('permission manifest consent queues concurrent requests', () => {
     trackedConsent(ctx.mod.showPermissionManifest(manifestModel('bzz://beta', 'Beta'), 'tok-2'));
     expect(screen.classList.contains('hidden')).toBe(false);
     expect(ctx.elements['swarm-manifest-site'].textContent).toBe('bzz://beta');
+  });
+});
+
+// Main's own consent prompt for a page's request (freedom-core design 0011,
+// PRQ-7b): the sheet renders main's model under main's site and answers the
+// handle; the consent's token never reaches the chrome.
+describe('main\'s manifest consent in the chrome', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    jest.restoreAllMocks();
+  });
+
+  const prompt = (handle) => ({
+    handle,
+    guest: 3,
+    kind: 'swarm.manifest',
+    site: { key: 'bzz://aaaa', label: 'bzz://aaaa' },
+    view: { model: manifestModel('bzz://other', 'App') },
+  });
+
+  test('each answer goes back for the handle: allow and individual as approvals, reject as a denial', async () => {
+    const ctx = await loadPermissionManifest();
+    global.window.pagePrompts = { decide: jest.fn().mockResolvedValue({ ok: true }) };
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.manifest');
+    for (const [button, handle, expected] of [
+      ['swarm-manifest-allow', 'h1', [true, { outcome: 'allow' }]],
+      ['swarm-manifest-individual', 'h2', [true, { outcome: 'individual' }]],
+      ['swarm-manifest-reject', 'h3', [false, {}]],
+    ]) {
+      renderer.show(prompt(handle));
+      expect(renderer.isShowing()).toBe(handle);
+      // Main's site, whatever the model says.
+      expect(ctx.elements['swarm-manifest-site'].textContent).toBe('bzz://aaaa');
+      expect(ctx.elements['swarm-manifest-name'].textContent).toBe('App');
+      await armPrompt();
+      await ctx.elements[button].fire('click');
+      expect(global.window.pagePrompts.decide).toHaveBeenLastCalledWith(handle, ...expected);
+      expect(renderer.isShowing()).toBe(null);
+    }
+  });
+
+  test('main closing the prompt takes the sheet down; another screen taking the sidebar reports it displaced', async () => {
+    const ctx = await loadPermissionManifest();
+    global.window.pagePrompts = { decide: jest.fn() };
+    const displaced = jest.fn();
+    ctx.pagePromptRenderers.onPagePromptDisplaced(displaced);
+    const renderer = ctx.pagePromptRenderers.pagePromptRenderer('swarm.manifest');
+    renderer.show(prompt('h4'));
+    renderer.close('h4');
+    expect(ctx.elements['sidebar-swarm-manifest'].classList.contains('hidden')).toBe(true);
+    expect(renderer.isShowing()).toBe(null);
+    renderer.show(prompt('h5'));
+    ctx.hideAllSubscreens();
+    expect(displaced).toHaveBeenCalledWith('h5');
+    expect(global.window.pagePrompts.decide).not.toHaveBeenCalled();
   });
 });

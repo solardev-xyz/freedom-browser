@@ -1,0 +1,4 @@
+- A site in a background tab that asks for Swarm access or messaging now waits for you to switch to it, with a dot on its tab and a count on the wallet button, instead of opening the sidebar over the tab you're on ([#1194](https://github.com/solardev-xyz/freedom-browser/pull/1194))
+  - A request you haven't seen within its time limit is closed and the page is told it timed out; one you're looking at waits for your answer
+  - Disconnecting a site's Swarm access now tells every open page of the site, not only the tab in front
+  - Swarm messaging can no longer be turned on from a site's permission screen, only revoked; the site asks for it when it first sends or receives a message

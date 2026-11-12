@@ -102,13 +102,17 @@ test.describe('provider frame attribution (O-6)', () => {
   // no Ant node and no Radicle addon, and what matters here is whether the
   // chrome forwarded a request at all. The Swarm permission-manifest lookup
   // also needs a node, so it reports "no manifest" (legacy per-capability
-  // prompts).
+  // prompts), on the chrome's path and on main's own (PRQ-7b).
   async function recordProviderExecutes(electronApp) {
-    await electronApp.evaluate(({ ipcMain }) => {
+    await electronApp.evaluate(({ ipcMain }, root) => {
       const calls = [];
       globalThis.__providerExecuteCalls = calls;
       ipcMain.removeHandler('swarm:manifest-check');
       ipcMain.handle('swarm:manifest-check', () => ({ kind: 'legacy', reason: 'e2e' }));
+      process.mainModule.require(`${root}/src/main/swarm/permission-manifests`).checkPageManifest = async () => ({
+        kind: 'legacy',
+        reason: 'e2e',
+      });
       for (const channel of ['swarm:provider-execute', 'radicle:provider-execute']) {
         ipcMain.removeHandler(channel);
         ipcMain.handle(channel, (_event, args) => {
@@ -117,7 +121,7 @@ test.describe('provider frame attribution (O-6)', () => {
           return { result: { connected: true, origin: args?.origin } };
         });
       }
-    });
+    }, path.resolve(__dirname, '..'));
   }
 
   const executeCalls = (electronApp) =>
@@ -205,11 +209,17 @@ test.describe('provider frame attribution (O-6)', () => {
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatch(/^0x[0-9a-fA-F]{40}$/);
 
-    // window.swarm: connect + publish.
+    // window.swarm: connect + publish. Connecting goes to main, which shows
+    // its own prompt in the same screen and writes the grant (freedom-core
+    // design 0011, PRQ-7b); publishing still takes the chrome's path.
     await inPage(win, `window.__swarm = window.swarm.requestAccess(); 0`);
     await expect(swarmConnect).toBeVisible();
     await win.click('#swarm-connect-approve');
-    await inPage(win, 'window.__swarm');
+    expect(await inPage(win, 'window.__swarm.then((r) => JSON.stringify(r))')).toContain('connected');
+    const swarmRecorded = await electronApp.evaluate(() =>
+      globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.filter((e) => e.kind === 'recorded' && e.provider === 'swarm').map((e) => e.method)
+    );
+    expect(swarmRecorded).toContain('swarm_requestAccess');
     await inPage(
       win,
       `window.__published = window.swarm.request({ method: 'swarm_publishData', params: { data: 'hello', contentType: 'text/plain' } }); 0`
@@ -227,9 +237,9 @@ test.describe('provider frame attribution (O-6)', () => {
     expect(await inPage(win, 'window.__radicle.then((r) => JSON.stringify(r))')).toContain('connected');
 
     const calls = await executeCalls(electronApp);
+    expect(calls.map((c) => c.method)).not.toContain('swarm_requestAccess');
     expect(calls.map((c) => `${c.channel} ${c.method}`)).toEqual(
       expect.arrayContaining([
-        'swarm:provider-execute swarm_requestAccess',
         'swarm:provider-execute swarm_publishData',
         'radicle:provider-execute radicle_requestAccess',
       ])

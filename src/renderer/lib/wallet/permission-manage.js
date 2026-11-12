@@ -125,10 +125,21 @@ export function initPermissionManage() {
       updateSwarmConnectionBanner(swarmPermsKey);
     }
   });
+  // Messaging is granted only from a messaging prompt main shows (freedom-
+  // core design 0011, PRQ-7b): here it can only be revoked.
   swarmPermsMessagingToggle?.addEventListener('change', async () => {
     if (!swarmPermsKey) return;
-    if (swarmPermsMessagingToggle.checked) await window.swarmPermissions.grantMessaging(swarmPermsKey);
-    else await window.swarmPermissions.revokeMessaging(swarmPermsKey);
+    if (swarmPermsMessagingToggle.checked) {
+      swarmPermsMessagingToggle.checked = false;
+      syncSwarmMessagingToggle();
+      return;
+    }
+    try {
+      await window.swarmPermissions.revokeMessaging(swarmPermsKey);
+    } catch (err) {
+      console.error('[WalletUI] Revoking Swarm messaging failed:', err);
+    }
+    syncSwarmMessagingToggle();
     updateSwarmConnectionBanner(swarmPermsKey);
   });
 
@@ -275,6 +286,7 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
   }
   if (swarmPermsMessagingToggle) {
     swarmPermsMessagingToggle.checked = await window.swarmPermissions.hasMessagingGrant(permissionKey);
+    syncSwarmMessagingToggle();
   }
   await renderManifestGrant(permissionKey);
   await refreshSwarmIdentitySection();
@@ -331,8 +343,18 @@ async function refreshSwarmPermissionControls(origin) {
   if (swarmPermsSigningToggle) swarmPermsSigningToggle.checked = permission?.autoApprove?.signing === true;
   if (swarmPermsMessagingToggle) {
     swarmPermsMessagingToggle.checked = await window.swarmPermissions.hasMessagingGrant(origin);
+    syncSwarmMessagingToggle();
   }
   updateSwarmConnectionBanner(origin);
+}
+
+// Off can't be turned on here: only from a messaging prompt.
+function syncSwarmMessagingToggle() {
+  if (!swarmPermsMessagingToggle) return;
+  swarmPermsMessagingToggle.disabled = !swarmPermsMessagingToggle.checked;
+  swarmPermsMessagingToggle.title = swarmPermsMessagingToggle.checked
+    ? ''
+    : 'This site asks for messaging access when it first sends or receives a message';
 }
 
 export function closeSwarmPerms() {
