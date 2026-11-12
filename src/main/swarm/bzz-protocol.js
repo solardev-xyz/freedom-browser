@@ -37,6 +37,17 @@
  *    by Bee for non-redundant content, so they're always safe to set.
  *  - Response body is streamed (no buffering), so large files and media
  *    Range requests don't balloon memory.
+ *  - Single-range reads are a kept contract (#169): `Range: bytes=a-b`,
+ *    `bytes=a-` and `bytes=-n` are forwarded verbatim and the node's 206
+ *    (`Content-Range: bytes a-b/<total>`, exact `Content-Length`, the slice)
+ *    reaches the page unmodified, cold or cached; a range running past the
+ *    end comes back clamped, one starting at or past it as 416 with an
+ *    unsatisfied-range `Content-Range` (`bytes` star slash total), never
+ *    retried. A 200 HEAD always carries `Accept-Ranges: bytes` (see
+ *    `withHeadAcceptRanges`).
+ *    Multi-range is passed through as the node answers it and is not part
+ *    of the contract. See docs/protocols/swarm.md,
+ *    "Byte ranges on `bzz://`".
  */
 
 const log = require('../logger');
@@ -458,6 +469,24 @@ function withoutPageStateHeaders(response) {
   return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// Ant answers a `bzz:` HEAD with the file's `Content-Length` but no
+// `Accept-Ranges` (observed on antd v0.5.77, 2026-11-11), although the GET it
+// describes honours a single `Range` and says so. A reader that sizes a file
+// with HEAD and looks for `Accept-Ranges: bytes` before reading it lazily
+// would then fall back to fetching the whole object. Every node the handler
+// talks to serves a `bzz:` file GET with byte ranges (Ant's streaming joiner,
+// Bee's `http.ServeContent`), so a successful HEAD gets the header the GET
+// would have carried. Only a 200 HEAD: redirects, 304s and errors describe no
+// byte-addressable file. A node that already sends the header streams through
+// untouched.
+function withHeadAcceptRanges(response, method) {
+  if (method !== 'HEAD' || response.status !== 200) return response;
+  if (response.headers.has('accept-ranges')) return response;
+  const headers = new Headers(response.headers);
+  headers.set('accept-ranges', 'bytes');
+  return new Response(null, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * Core handler, exported for testability. `fetchImpl` defaults to global
  * fetch but tests can inject a stub. `attemptTimeoutMs` is exposed for
@@ -520,7 +549,10 @@ async function handleBzzRequest(
       fetchImpl,
       attemptTimeoutMs
     );
-    return withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl));
+    return withHeadAcceptRanges(
+      withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl)),
+      method
+    );
   } catch (err) {
     const code = errorCodeForLog(err);
     const isConnRefused = code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND';
