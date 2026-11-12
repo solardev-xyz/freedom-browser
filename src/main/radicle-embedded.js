@@ -32,14 +32,20 @@
  *   the add-on's did, and `cancelClone(rid)` cancels the request of that
  *   RID's progress clone, which then settles `{ cancelled: true }` once it
  *   stops;
+ * - **the writes** are `rad.write` and `rad.unseed` (0008, Writes):
+ *   `createIssue`, `commentIssue`, `editIssueState` and `commentPatch`
+ *   with today's arguments and results, and `unseedRepo`. Each picks the
+ *   running generation when it is called, before it returns, and goes to
+ *   no other; a write whose outcome main can't know fails
+ *   `outcome_unknown`, and is never sent again;
  * - **every other export** answers "Not available on the Radicle service
  *   yet" (`RADICLE_SERVICE_UNSUPPORTED`) until its own step moves it: the
  *   other collected results as values (`repoInfo`, `seeders`,
  *   `listSeededRepos`, `listRepos`), whose callers move into scopes; the
  *   handlers' parsed and `*Raw` reads, which the `rad:` and `radapi:`
  *   handlers don't call on the service (they read through `callStream`
- *   and `callScoped`, in their request's dweb admission); the writes and
- *   the import. `isStarted` says whether the service node runs.
+ *   and `callScoped`, in their request's dweb admission); and the import.
+ *   `isStarted` says whether the service node runs.
  */
 
 const { AsyncLocalStorage } = require('node:async_hooks');
@@ -385,6 +391,20 @@ const serviceCloneRepo = async (rid, timeoutMs = 120000) => service().cloneRepo(
 const serviceCloneRepoWithProgress = async (rid, timeoutMs = 120000, onProgress = () => {}) =>
   service().cloneRepoWithProgress(rid, timeoutMs, parsedProgress(onProgress));
 const serviceCancelClone = async (rid) => service().cancelClone(rid);
+
+// The writes on the service (0008, Methods `rad.write` and `rad.unseed`):
+// today's arguments, by name, and today's results. Not async: each picks
+// its generation before it returns, in its caller's run (cob-service.js
+// checks that generation's identity just before).
+const serviceCreateIssue = (rid, title, description, labels = []) =>
+  service().write('create_issue', { rid, title, description, labels });
+const serviceCommentIssue = (rid, issueId, body, replyTo) =>
+  service().write('comment_issue', { rid, issue_id: issueId, body, reply_to: replyTo ?? null });
+const serviceEditIssueState = (rid, issueId, state) =>
+  service().write('edit_issue_state', { rid, issue_id: issueId, state });
+const serviceCommentPatch = (rid, revisionId, body) =>
+  service().write('comment_patch', { rid, revision_id: revisionId, body });
+const serviceUnseedRepo = (rid) => service().unseed(rid);
 const unseedRepo = (rid) => call('unseedRepo', rid);
 const listRepos = () => call('listRepos');
 const listSeededRepos = () => call('listSeededRepos');
@@ -545,12 +565,13 @@ module.exports = {
     serviceCloneRepoWithProgress
   ),
   cancelClone: routed('cancelClone', cancelClone, serviceCancelClone),
-  // Writes and the import: their own steps.
-  unseedRepo: routed('unseedRepo', unseedRepo),
-  createIssue: routed('createIssue', createIssue),
-  commentIssue: routed('commentIssue', commentIssue),
-  editIssueState: routed('editIssueState', editIssueState),
-  commentPatch: routed('commentPatch', commentPatch),
+  // The writes: the service's `rad.write` and `rad.unseed`.
+  unseedRepo: routed('unseedRepo', unseedRepo, serviceUnseedRepo),
+  createIssue: routed('createIssue', createIssue, serviceCreateIssue),
+  commentIssue: routed('commentIssue', commentIssue, serviceCommentIssue),
+  editIssueState: routed('editIssueState', editIssueState, serviceEditIssueState),
+  commentPatch: routed('commentPatch', commentPatch, serviceCommentPatch),
+  // The import: its own step.
   importRepo: routed('importRepo', importRepo),
   // The collected results that may outlive their scope (0008, "JSON
   // results"); the others are read in callScoped, where their callers use

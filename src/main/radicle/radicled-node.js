@@ -59,6 +59,12 @@
  * - **Reads** (`read`, `rad.read`) go to the running generation only, as
  *   radicle-service-backend.js sends them: none while it starts or after
  *   it ended (`stopped`).
+ * - **Writes** (0008, Writes; plan B11): `rad.write` and `rad.unseed` go to
+ *   the generation their caller picked (`writeTarget`), in the same run as
+ *   its check of that generation's identity, and to no other: once it no
+ *   longer serves, nothing is sent (`stopped`). A write the process took is
+ *   proven only by its success; any other end, a crash with the write in
+ *   flight among them, is `outcome_unknown`, and main never sends it again.
  * - **Network operations** (0008, Methods, Progress): `connectSeeds` is
  *   `rad.connect_seeds`, and `clone` is `rad.clone`, on the running
  *   generation only. A clone's `rad.progress` events, `{ id, event }`, go to
@@ -84,6 +90,7 @@ const { confinementLog } = require('../ipfs/ipfsd-client');
 const { RadicledClient } = require('./radicled-client');
 const { getRadicledBinaryPath } = require('./radicled-binary');
 const { removeStaleControlSocket } = require('./radicled-gate');
+const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle-service-backend');
 
 const HEALTH_INTERVAL_MS = 5_000;
 const STATS_FRESH_MS = 15_000;
@@ -107,6 +114,34 @@ const REPAIRING = 'Radicle is still repairing its data';
 const KEY_FILE_AGAIN = 'The Radicle data still holds a key file after its switch to the service';
 const START_FAILED = 'Failed to start the Radicle node';
 const IDENTITY_MISMATCH = 'freedom-radicled answered with an identity main did not ask for';
+// A write whose outcome is unknown (0008, Writes).
+const OUTCOME_UNKNOWN = 'outcome_unknown';
+
+/**
+ * The service's answers to a write that prove it didn't start (0008, Errors
+ * and Writes, "Before it, failure is definitive"): its refusals before the
+ * mutation-start boundary, and `failed` and `not_found`, which the design
+ * gives only to a libradicle error before a write starts. Any other answer
+ * to a write the process took is `outcome_unknown`; only a success is
+ * proven.
+ */
+const WRITE_REFUSALS = new Set([
+  'invalid_argument',
+  'busy',
+  'needs_vault',
+  'quarantined',
+  'stopped',
+  'deadline',
+  'cancelled',
+  'failed',
+  'not_found',
+  'unknown_method',
+]);
+
+/** A write's `outcome_unknown`, as main answers it. */
+function outcomeUnknown() {
+  return new CoreError(OUTCOME_UNKNOWN, OUTCOME_UNKNOWN_MESSAGE);
+}
 
 // A start step's codes whose message the manager shows (0008, Errors).
 const STEP_MESSAGES = new Set([
@@ -487,6 +522,64 @@ class RadicledNode {
    * progress events: the manager's background clone. */
   cloneRepo(rid, timeoutMs) {
     return this.clone(rid, timeoutMs);
+  }
+
+  /**
+   * The generation a write goes to, picked now: the running one, `{ gen,
+   * identity }`, or null. Its caller picks it in the same run as its own
+   * check of that generation's identity (cob-service.js's `needs_vault`),
+   * and sends the write there with `write` or `unseed`, however long it
+   * waits in between: a write admitted for one generation never reaches
+   * another (0008, Main's side, "The active identity belongs to the
+   * generation").
+   */
+  writeTarget() {
+    return this.liveActive();
+  }
+
+  /**
+   * `rad.write { op, args }` on `target`, the generation `writeTarget`
+   * picked (0008, Writes): the service's result, or its error. Once that
+   * generation no longer serves, nothing is sent, and the write fails
+   * `stopped`. A write the process took is proven only by its success: an
+   * answer other than the service's refusals (WRITE_REFUSALS), or the
+   * process's end before it answers (a crash, a hang's kill, a stop), is
+   * `outcome_unknown`. Main never sends it again.
+   */
+  write(target, op, args) {
+    return this.mutate(target, (gen, onSent) => this.client.write(gen, op, args, { onSent }));
+  }
+
+  /** `rad.unseed { rid }` on `target`, as `write`. */
+  unseed(target, rid) {
+    return this.mutate(target, (gen, onSent) => this.client.unseed(gen, rid, { onSent }));
+  }
+
+  /** A write on `target`'s generation, `send(gen, onSent)`, its outcome as
+   * `write` says. */
+  mutate(target, send) {
+    if (!target?.gen) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    let sent = false;
+    let request;
+    try {
+      request = send(target.gen, () => {
+        sent = true;
+      });
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    return request.catch((err) => {
+      if (!sent) {
+        // Never written: definitive. The process's end before the send is
+        // a node that doesn't run.
+        throw err?.code === UNAVAILABLE ? new CoreError('stopped', NOT_RUNNING) : err;
+      }
+      if (err instanceof CoreError && WRITE_REFUSALS.has(err.code)) throw err;
+      this.log.warn('[Radicle] a write ended with its outcome unknown', {
+        code: err?.code === UNAVAILABLE ? 'exited' : err?.code || 'error',
+      });
+      throw outcomeUnknown();
+    });
   }
 
   /**
@@ -969,4 +1062,6 @@ module.exports = {
   REPAIRING,
   KEY_FILE_AGAIN,
   START_FAILED,
+  OUTCOME_UNKNOWN,
+  WRITE_REFUSALS,
 };
