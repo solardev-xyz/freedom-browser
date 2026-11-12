@@ -537,6 +537,35 @@ describe('signed write approval (R-6)', () => {
       did: 'did:key:z6MkTest',
     });
   });
+
+  // Plan B10 (freedom-core design 0008, `needs_vault`).
+  test('a node running with a throwaway key: every write is refused before the rule counts it, and nothing is sent', async () => {
+    const message = "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.";
+    manager.radicleWriteRefusal.mockReturnValue({ reason: 'needs_vault', message });
+    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const err = await expectProviderError(write('auto'), 4900, 'needs_vault');
+        expect(err.message).toBe(message);
+      }
+      await expectProviderError(write('user'), 4900, 'needs_vault');
+      expect(cob.commentIssue).not.toHaveBeenCalled();
+      await expect(executeRadicleMethod('radicle_getIdentity', {}, ORIGIN)).resolves.toMatchObject({
+        did: 'did:key:z6MkTest',
+      });
+    } finally {
+      manager.radicleWriteRefusal.mockReturnValue(null);
+    }
+    // The node restarted with the derived key: the rule's whole burst is left.
+    for (let i = 0; i < 5; i += 1) await write('auto');
+    expect(cob.commentIssue).toHaveBeenCalledTimes(5);
+  });
+
+  test("cob-service's admission refusal is the provider's 4900 with its reason", async () => {
+    cob.commentIssue.mockRejectedValueOnce(new cob.CobAdmissionError('needs_vault', 'throwaway key'));
+    const err = await expectProviderError(write('user'), 4900, 'needs_vault');
+    expect(err.message).toBe('throwaway key');
+  });
 });
 
 // freedom-core design 0011, PRQ-8a: a forged chrome origin refused. The
