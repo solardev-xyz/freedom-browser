@@ -404,21 +404,27 @@ class RadicledClient extends ServiceClient {
     });
   }
 
-  /** `rad.write { op, args }` on `gen`, watched for 60 s + 15 s. */
-  write(gen, op, args, { signal = null, fence = null } = {}) {
+  /** `rad.write { op, args }` on `gen`, watched for 60 s + 15 s. `onSent`
+   * is requestTo's: it runs once the frame is written, so the caller can
+   * tell a write the process may have taken from one it never got (0008,
+   * Writes: a crash with a write in flight is `outcome_unknown`). */
+  write(gen, op, args, { signal = null, fence = null, onSent = null } = {}) {
     return this.requestTo(gen, 'rad.write', { op, args }, CONTEXT, {
       watchdogMs: WATCHDOG_MS['rad.write'],
       signal,
       fence,
+      onSent,
     });
   }
 
-  /** `rad.unseed { rid }` on `gen`, watched for 60 s + 15 s. */
-  unseed(gen, rid, { signal = null, fence = null } = {}) {
+  /** `rad.unseed { rid }` on `gen`, watched for 60 s + 15 s; `onSent` as
+   * for `write`. */
+  unseed(gen, rid, { signal = null, fence = null, onSent = null } = {}) {
     return this.requestTo(gen, 'rad.unseed', { rid }, CONTEXT, {
       watchdogMs: WATCHDOG_MS['rad.unseed'],
       signal,
       fence,
+      onSent,
     });
   }
 
