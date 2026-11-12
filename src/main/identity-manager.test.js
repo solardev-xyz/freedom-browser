@@ -7,6 +7,22 @@ const {
   removeTempUserDataDir,
 } = require('../../test/helpers/main-process-test-utils');
 
+// The Radicle home's gate (radicle/radicled-gate.js), faked for every load
+// (a registration outlives resetModules): held at once, unless a test sets
+// `refuse`. `events` records each take and release.
+const mockRadicleGate = { refuse: null, events: [] };
+jest.mock('./radicle/radicled-gate', () => ({
+  withRadicleGate: async (home, fn) => {
+    if (mockRadicleGate.refuse) throw mockRadicleGate.refuse;
+    mockRadicleGate.events.push({ take: home });
+    try {
+      return await fn({ gated: true, held: () => true });
+    } finally {
+      mockRadicleGate.events.push({ release: home });
+    }
+  },
+}));
+
 const ENV_KEYS = [
   'FREEDOM_ANT_DATA',
   'FREEDOM_BEE_DATA',
@@ -1617,6 +1633,49 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
       expect.objectContaining({ node: 'radicle', alias: 'Alias' }),
       expect.any(String)
     );
+  });
+
+  // freedom-core design 0008, "Spawn and lock": the wipe runs under the
+  // home's gate, which is let go before the core's write takes it.
+  test("a Radicle re-key wipes under the home's gate, and lets it go before the core's write", async () => {
+    const { mgr, backend, storage } = await loadForRekey();
+    mockRadicleGate.events = [];
+    const steps = [];
+    const write = backend.writeNodeIdentity.getMockImplementation();
+    backend.writeNodeIdentity.mockImplementation(async (spec, ...rest) => {
+      steps.push({ write: spec.home, events: [...mockRadicleGate.events] });
+      return write(spec, ...rest);
+    });
+    mgr.setRadicleLifecycle({ withStopped: (work) => work() });
+
+    await expect(mgr.injectRadicleIdentity('Alias')).resolves.toEqual({ did: 'did:key:zTest' });
+    expect(fs.existsSync(storage)).toBe(false);
+    expect(steps).toEqual([
+      {
+        write: dataDirs.radicle,
+        events: [{ take: dataDirs.radicle }, { release: dataDirs.radicle }],
+      },
+    ]);
+  });
+
+  test("a Radicle re-key the home's gate refuses touches nothing, and blocks nothing", async () => {
+    const { mgr, backend, guard, storage, keyPath } = await loadForRekey();
+    const held = Object.assign(
+      new Error('The Radicle data is in use by another process. Close it and try again.'),
+      { name: 'RadicleGateError', code: 'lock_held' }
+    );
+    mockRadicleGate.refuse = held;
+    mgr.setRadicleLifecycle({ withStopped: (work) => work() });
+
+    try {
+      await expect(mgr.injectRadicleIdentity('Alias')).rejects.toBe(held);
+    } finally {
+      mockRadicleGate.refuse = null;
+    }
+    expect(fs.existsSync(storage)).toBe(true);
+    expect(fs.readFileSync(keyPath, 'utf8')).toBe('key');
+    expect(backend.writeNodeIdentity).not.toHaveBeenCalled();
+    expect(guard.nodeBlockReason('radicle')).toBeNull();
   });
 
   test('a Radicle re-key wipes nothing before the stop completes (R-8)', async () => {

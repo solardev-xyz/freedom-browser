@@ -98,34 +98,54 @@ async function sweepOrphanedRadicleStagingDirs(radicleDir) {
 // as the old synchronous copy was — when the source is empty or the
 // destination already has entries, including entries that appeared while we
 // were copying.
+//
+// It writes the home, so it runs under the home's gate (freedom-core design
+// 0008, "Spawn and lock"; radicle/radicled-gate.js), from its check that the
+// home is empty to its rename into place: a service or another build's
+// add-on holding even a new, empty home fails the carry-over, with nothing
+// replaced, rather than having its home renamed away under it. A later
+// prepareRadicleDataDir() tries again. The quick checks before the gate only
+// skip it where there is nothing to carry over.
 async function migrateProfileRadicleData(profileRadicleDir, radicleDir) {
   if (!(await hasEntriesAsync(profileRadicleDir)) || (await hasEntriesAsync(radicleDir))) {
     return;
   }
 
   await fs.promises.mkdir(path.dirname(radicleDir), { recursive: true });
-  await sweepOrphanedRadicleStagingDirs(radicleDir);
-  const stagingDir = `${radicleDir}${RADICLE_STAGING_INFIX}${process.pid}-${Date.now()}`;
-  try {
-    await fsOffload.copyPath(profileRadicleDir, stagingDir, {
-      recursive: true,
-      force: false,
-      errorOnExist: false,
-    });
-    // getRadicleDataDir may have created the destination as an empty dir in the
-    // meantime; only an *empty* one may be replaced.
+  // Required here, not at load: it loads the logger and the lock directory,
+  // which every importer of this module would otherwise load too.
+  const { withRadicleGate } = require('./radicle/radicled-gate');
+  await withRadicleGate(radicleDir, async (gate) => {
+    // Again under the gate: the home may have gained entries meanwhile.
+    if (await hasEntriesAsync(radicleDir)) return;
+    await sweepOrphanedRadicleStagingDirs(radicleDir);
+    const stagingDir = `${radicleDir}${RADICLE_STAGING_INFIX}${process.pid}-${Date.now()}`;
     try {
-      await fs.promises.rmdir(radicleDir);
-    } catch (err) {
-      if (err.code !== 'ENOENT') {
-        if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return;
-        throw err;
+      await fsOffload.copyPath(profileRadicleDir, stagingDir, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+      });
+      // A gate lost during the copy: another writer may hold the home now.
+      if (gate.gated && !gate.held()) {
+        throw new Error("The Radicle home's lock was lost; its data was not carried over");
       }
+      // getRadicleDataDir, or the gate's holder, may have created the
+      // destination as an empty dir in the meantime; only an *empty* one may
+      // be replaced.
+      try {
+        await fs.promises.rmdir(radicleDir);
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return;
+          throw err;
+        }
+      }
+      await fs.promises.rename(stagingDir, radicleDir);
+    } finally {
+      await fsOffload.removePath(stagingDir, { recursive: true, force: true });
     }
-    await fs.promises.rename(stagingDir, radicleDir);
-  } finally {
-    await fsOffload.removePath(stagingDir, { recursive: true, force: true });
-  }
+  });
 }
 
 const radicleMigrations = new Map();

@@ -28,6 +28,7 @@ const { LEDGER_ERROR_CODES, createLedgerError } = require('./wallet/ledger/error
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./wallet/remote/errors');
 const { vaultBackend } = require('./core/vault-backend');
 const { blockNode, unblockNode } = require('./core/node-identity-guard');
+const { withRadicleGate } = require('./radicle/radicled-gate');
 const { withPrivateDir } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { verifiedDeployedMark, verifiedDeployments } = require('./wallet/safe/deployed-mark');
@@ -808,27 +809,44 @@ async function injectRadicleIdentityNow(alias) {
   // this, and the data is left alone. Only an installed write unblocks the
   // node, so after a failed one the restart is refused with its reason. The
   // core refuses the write while the vault is locked.
+  //
+  // The wipe runs under the home's gate (freedom-core design 0008, "Spawn
+  // and lock"; radicle/radicled-gate.js): the add-on's proved stop shows
+  // only that this process's node stopped, not that no other writer (a
+  // freedom-radicled service, another build's add-on) holds the home. A
+  // gate held elsewhere refuses the re-key before anything is removed, and
+  // blocks nothing. The gate is let go before the core's write, which takes
+  // the same gate itself: main never holds it while the core needs it (0008,
+  // "Identity changes").
   const rekey = async () => {
-    blockNode('radicle', 'writing');
+    // Set once the gate is held and the wipe may begin.
+    let begun = false;
     let written;
     try {
       // When re-injecting with a new key, Radicle's persisted node state
       // (fingerprint, routing db, etc.) becomes invalid. Remove stale state
       // directories.
-      const staleDirs = ['node', 'cobs', 'storage'];
-      for (const dir of staleDirs) {
-        if (await removePathWithRetry(path.join(dataDir, dir))) {
-          console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+      await withRadicleGate(dataDir, async (gate) => {
+        blockNode('radicle', 'writing');
+        begun = true;
+        const staleDirs = ['node', 'cobs', 'storage'];
+        for (const dir of staleDirs) {
+          if (gate.gated && !gate.held()) {
+            throw new Error("The Radicle home's lock was lost; its data was not fully reset");
+          }
+          if (await removePathWithRetry(path.join(dataDir, dir))) {
+            console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+          }
         }
-      }
+      });
       // The core writes keys/radicle, keys/radicle.pub and the config.json
-      // alias together, through its journal.
+      // alias together, through its journal, under the home's gate.
       written = await vaultBackend.writeNodeIdentity(
         { node: 'radicle', home: dataDir, alias },
         crypto.randomUUID()
       );
     } catch (err) {
-      blockNode('radicle', 'pending_recovery');
+      if (begun) blockNode('radicle', 'pending_recovery');
       throw err;
     }
     if (written.status !== 'installed') {
