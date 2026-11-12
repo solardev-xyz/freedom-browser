@@ -128,6 +128,17 @@ function normalizeError(error) {
   return out;
 }
 
+// The `ticket` a payload carries as an own property, whatever kind of
+// object it is, or undefined.
+function presentedTicket(payload) {
+  if (payload === null || typeof payload !== 'object') return undefined;
+  try {
+    return Object.prototype.hasOwnProperty.call(payload, 'ticket') ? payload.ticket : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Only the keys a request of this kind has.
 function hasOnlyKeys(payload, keys) {
   for (const key in payload) {
@@ -403,16 +414,18 @@ function createPageRequests({
    * document that asked has gone.
    */
   function request(event, payload) {
-    if (!isPlainObject(payload)) return errorOf(INVALID_REQUEST);
     // A ticket is burnt on arrival, before any other check, whether the
-    // request is then served or refused: none is presented twice.
-    const presented = Object.prototype.hasOwnProperty.call(payload, 'ticket');
-    const ticket = presented ? budgets.burn(payload.ticket) : null;
+    // request is then served or refused, and whatever it arrived on: an
+    // array or any other container can carry an own `ticket` through IPC
+    // too. None is presented twice.
+    const ticket = budgets.burn(presentedTicket(payload));
     const refuse = (answer, reason) => {
       budgets.refuseTicket(ticket);
       trace({ kind: 'refused', reason });
       return answer;
     };
+    if (!isPlainObject(payload)) return refuse(errorOf(INVALID_REQUEST), 'shape');
+    const presented = Object.prototype.hasOwnProperty.call(payload, 'ticket');
     if (!hasOnlyKeys(payload, REQUEST_KEYS)) return refuse(errorOf(INVALID_REQUEST), 'shape');
     const { nonce, provider, method, params } = payload;
     if (typeof provider !== 'string' || !PROVIDER_SET.has(provider)) return refuse(errorOf(INVALID_REQUEST), 'shape');
