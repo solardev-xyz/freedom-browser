@@ -28,6 +28,29 @@ const TX_PARAMS = {
   data: '0x095ea7b3' + '0'.repeat(56) + 'deadbeef' + 'f'.repeat(64),
 };
 
+// Main's send prompt for a page's transaction (freedom-core design 0011),
+// as main sends it to the chrome, which renders it once the sidebar is free.
+function sendTxPrompt(electronApp, handle) {
+  return electronApp.evaluate(({ BrowserWindow }, { handle: h, ledger, tx }) => {
+    const message = {
+      handle: h,
+      guest: 1,
+      kind: 'eth.send',
+      site: { key: 'https://swap.example', label: 'https://swap.example' },
+      view: {
+        account: { index: ledger.index, name: ledger.name, address: ledger.address, type: 'ledger' },
+        chain: { id: 8453, name: 'Base', symbol: 'ETH' },
+        tx,
+        fee: { gasLimit: '21000', gasPrice: '1000000000', estimate: '21000000000000' },
+        feeCheck: { maxCost: '21000000000000', comparable: true, ratio: '1', above: false, autoApprove: true },
+        feeAskAgain: false,
+        alwaysAllow: true,
+      },
+    };
+    for (const win of BrowserWindow.getAllWindows()) win.webContents.send('page:prompt', message);
+  }, { handle, ledger: LEDGER, tx: TX_PARAMS });
+}
+
 const USDC_ACCEPT = {
   accept: {
     scheme: 'exact',
@@ -153,17 +176,12 @@ test('a dApp request mid-payment cannot cancel an in-flight Ledger payment', asy
   await expect(window.locator('#x402-approval-reject')).toBeDisabled();
   await expect(window.locator('#x402-approval-back')).toBeDisabled();
 
-  // A dApp request lands while the device is showing the payment. It must
-  // be refused rather than firing hideAllSubscreens() — which would run the
-  // card's hider and cancel the detection out from under the device.
-  const settled = await window.evaluate(async (txParams) => {
-    const dappTx = await import('./lib/wallet/dapp-tx.js');
-    return dappTx.showDappTxApproval({}, 'https://swap.example', txParams).then(
-      (hash) => `resolved:${hash}`,
-      (err) => `rejected:${err.code || err.message}`
-    );
-  }, TX_PARAMS);
-  expect(settled).toBe('rejected:-32002');
+  // A dApp request lands while the device is showing the payment: main's
+  // prompt for it waits rather than firing hideAllSubscreens() — which would
+  // run the card's hider and cancel the detection out from under the device.
+  await sendTxPrompt(electronApp, 'a'.repeat(64));
+  // Several of the waiting prompt's retries pass.
+  await window.waitForTimeout(1000);
 
   expect(await cancelCounts(electronApp)).toEqual({ cancel: 0, reject: 0 });
   await expect(window.locator('#sidebar-dapp-tx')).toBeHidden();
@@ -182,12 +200,7 @@ test('a dApp request mid-payment cannot cancel an in-flight Ledger payment', asy
   await expect(window.locator('#sidebar-x402-approval')).toBeHidden();
   expect(await cancelCounts(electronApp)).toEqual({ cancel: 0, reject: 0 });
 
-  const afterSettle = await window.evaluate(async (txParams) => {
-    const dappTx = await import('./lib/wallet/dapp-tx.js');
-    dappTx.showDappTxApproval({}, 'https://swap.example', txParams).catch(() => {});
-    return 'requested';
-  }, TX_PARAMS);
-  expect(afterSettle).toBe('requested');
+  await sendTxPrompt(electronApp, 'b'.repeat(64));
   await expect(window.locator('#sidebar-dapp-tx')).toBeVisible();
 });
 
@@ -422,14 +435,9 @@ test('closing the paying tab mid-payment releases the sidebar instead of brickin
   await expect(window.locator('#wallet-toggle-btn')).toBeEnabled();
   expect(await cancelCounts(electronApp)).toEqual({ cancel: 0, reject: 0 });
 
-  // Acceptance: the wallet works again — a dApp request is served rather
-  // than refused -32002, and the sidebar can be closed normally.
-  const settled = await window.evaluate(async (txParams) => {
-    const dappTx = await import('./lib/wallet/dapp-tx.js');
-    dappTx.showDappTxApproval({}, 'https://swap.example', txParams).catch(() => {});
-    return 'requested';
-  }, TX_PARAMS);
-  expect(settled).toBe('requested');
+  // Acceptance: the wallet works again — a dApp request's prompt shows
+  // rather than waiting, and the sidebar can be closed normally.
+  await sendTxPrompt(electronApp, 'c'.repeat(64));
   await expect(window.locator('#sidebar-dapp-tx')).toBeVisible();
   await window.screenshot({ path: 'test-results/x402-tab-close-after.png' });
 });

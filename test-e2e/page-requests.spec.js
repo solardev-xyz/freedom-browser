@@ -4,10 +4,9 @@
 // held past its check reaches a replacement document and is dropped there by
 // the nonce, and a sub-frame or a private window gets nothing.
 //
-// No provider method takes the new path yet. The harness's test hooks
-// (src/main/page/page-requests.js, `enablePageRequestTestHooks`) route two
-// Swarm methods through main for this spec, by the boot switch of tabs
-// opened after `setRoutes`, and serve them with a test dispatcher.
+// The harness's test hooks (src/main/page/page-requests.js,
+// `enablePageRequestTestHooks`) serve the page's Swarm requests with a test
+// dispatcher for this spec.
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
