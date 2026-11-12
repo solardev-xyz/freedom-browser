@@ -134,7 +134,7 @@ export function createPromptQueue(present, onArmedChange) {
       return true;
     },
 
-    /** The screen was dismissed: hand back every request so all get rejected. */
+    /** The screen was dismissed: hand back every prompt, for main to show again. */
     drain() {
       const dropped = current ? [current, ...waiting] : waiting.slice();
       current = null;

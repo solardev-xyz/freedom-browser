@@ -141,9 +141,9 @@ const NO_ADDRESS = Object.freeze({
   message: 'This page has no address to connect from yet',
   data: Object.freeze({ reason: 'no_address' }),
 });
-// The chrome's answers, as its radicle-provider.js gave them: a method that
-// needs the connection, for a site without one, and a rejected prompt
-// (radicle-consent.js).
+// The answers the chrome's radicle-provider.js gave until main took its
+// requests, kept for pages: a method that needs the connection, for a site
+// without one, and a rejected prompt.
 const NOT_CONNECTED = Object.freeze({ code: 4100, message: 'Origin not authorized. Call radicle_requestAccess first.' });
 const USER_REJECTED = Object.freeze({ code: 4001, message: 'User rejected the request' });
 // The method's own answer for a repository id it doesn't accept.
