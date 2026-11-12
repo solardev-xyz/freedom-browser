@@ -1,0 +1,3 @@
+- A site in a background tab that asks to act as your Radicle identity, or to sign an issue or comment as you, now waits for you to switch to it, with a dot on its tab and a count on the wallet button ([#1205](https://github.com/solardev-xyz/freedom-browser/pull/1205))
+  - A request you haven't seen within five minutes is closed and the page is told it timed out; one you're looking at waits for your answer
+  - A write Radicle wouldn't accept, such as an issue with an empty title, is refused without asking you

@@ -103,10 +103,12 @@ rule, with `the fetch failed` for a failure of no other kind. The code and
 
 `data.reason` values include: `invalid_rid`, `invalid_id`, `invalid_title`,
 `invalid_body`, `not_seeded`, `repo_not_found`, `announce_failed`,
-`payload_too_large`. A signed write main refuses carries `4100` with
-`approval_required` (no per-write approval and no "always allow writes"
-rule), `auto_write_limit` (the rule's rate limit is used up; Freedom then
-shows the per-write prompt itself) or `agent_custody`.
+`payload_too_large`. A signed write the site's "always allow writes" rule
+answered, and that Freedom refuses just before signing it, carries `4100`
+with `agent_custody` (the tab entered Agent custody meanwhile),
+`not_auto_approved` (the rule was turned off meanwhile), `not_connected` or
+`signing_not_granted` (the grant was revoked meanwhile). Past the rule's
+rate limit Freedom shows the per-write prompt itself.
 
 ## Permission tiers
 
@@ -129,13 +131,18 @@ shows the per-write prompt itself) or `agent_custody`.
    prompts with its exact content, saying that it is signed with the
    user's Radicle identity and is public and permanent; rejection → 4001.
    The prompt offers a per-site **"always allow writes"** rule
-   (`autoApprove.signing`). Writes the rule answers are rate-limited per
+   (`autoApprove.signing`), which only that choice turns on; the browser
+   can only turn it off. Writes the rule answers are rate-limited per
    origin in main: a burst of 5, then 1 per 30 s, and at most 50 in any
    24 hours. Past the limit a write falls back to the prompt, where the
    user can also turn the rule off. The counts are held in memory.
    On a tab Freedom Agent holds, the rule does not apply: each write
-   prompts, and main refuses one the renderer reports as automatic
-   (`4100`, reason `agent_custody`).
+   prompts, and its prompt offers no rule.
+   The prompt shows exactly what the write signs: params the write refuses
+   (`-32602` with its reason) are refused with no prompt. Freedom checks
+   the page again just before the node signs and publishes the write, after
+   the prompt; a write that went out answers with its id even if the page's
+   name moves while it is published.
 
 Auto-approve is stored per origin and per tier as `{ node, signing }`,
 mirroring the Swarm provider's `{ publish, feeds, signing }` model, and

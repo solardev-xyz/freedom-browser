@@ -48,7 +48,6 @@ module.exports = {
   RADICLE_SYNC_REPO: 'radicle:syncRepo',
   RADICLE_GET_SEED_STATUS: 'radicle:getSeedStatus',
   RADICLE_SEED_STATUS_UPDATE: 'radicle:seedStatusUpdate',
-  RADICLE_PROVIDER_EVENT: 'radicle:providerEvent',
 
   // Tor (Arti) node management — routes .onion traffic via a local SOCKS proxy
   TOR_START: 'tor:start',
@@ -504,9 +503,6 @@ module.exports = {
   RADICLE_GRANT_SIGNING: 'radicle:grant-signing',
   RADICLE_GET_AUTO_APPROVE: 'radicle:get-auto-approve',
   RADICLE_SET_AUTO_APPROVE: 'radicle:set-auto-approve',
-
-  // Radicle Provider (main-process authority)
-  RADICLE_PROVIDER_EXECUTE: 'radicle:provider-execute',
 
   // Radicle node alias (chrome UI: sidebar Nodes tab)
   RADICLE_GET_ALIAS: 'radicle:get-alias',

@@ -66,7 +66,29 @@
  *     newer status replaces an older one but never an ending, and past the
  *     bound the oldest waiting repository goes.
  *
- * Signing still takes the chrome's path until its part moves it (PRQ-8c).
+ * PRQ-8c: signing, and the last of window.radicle.
+ *
+ *   - `radicle_getIdentity` and the four COB writes need the site's signing
+ *     grant. A connected site without it is asked for it first
+ *     (`radicle.sign`, grant mode), and main writes it.
+ *   - `radicle_getIdentity` discloses the user's Radicle identity: a read
+ *     under the key, answered keyless once the name has moved.
+ *   - Each COB write needs the user's approval: main's per-write prompt
+ *     (`radicle.sign`, write mode), showing exactly what the write signs, or
+ *     the site's "always allow writes" rule, rate-limited per site, which
+ *     never answers for a tab in Agent custody, read live. A rule-answered
+ *     write past the limit falls back to the prompt. "Always allow", the
+ *     prompt's one choice outside custody, sets or clears the rule, by main.
+ *   - Each write is its effect: the add-on signs and publishes in one call,
+ *     so the guard runs just before it, after every wait main controls, and
+ *     checks the name, the connection and the signing grant, custody and the
+ *     rule for a rule-answered write, and the document's key, in the same run
+ *     as the call and the site's last use. A write that went out after a
+ *     passing check answers as written, even if the name moves meanwhile.
+ *
+ * With PRQ-8c every window.radicle method is main's: the chrome's route
+ * (`radicle:provider-execute`) is gone, and none of the chrome's channels
+ * writes a Radicle grant or turns a rule on.
  */
 
 /** PRQ-8a: the methods that read under the key, with no prompt. */
@@ -78,8 +100,25 @@ const RADICLE_CONNECT_METHODS = Object.freeze(['radicle_requestAccess', 'radicle
 /** PRQ-8b: seeding. */
 const RADICLE_SEED_METHODS = Object.freeze(['radicle_seed', 'radicle_unseed', 'radicle_sync', 'radicle_getSeedStatus']);
 
-/** Every method main's Radicle dispatcher serves. */
-const RADICLE_PAGE_METHODS = Object.freeze([...RADICLE_READ_METHODS, ...RADICLE_CONNECT_METHODS, ...RADICLE_SEED_METHODS]);
+/** PRQ-8c: signing. */
+const RADICLE_SIGN_METHODS = Object.freeze([
+  'radicle_getIdentity',
+  'radicle_createIssue',
+  'radicle_commentIssue',
+  'radicle_editIssueState',
+  'radicle_commentPatch',
+]);
+
+/** Every method main's Radicle dispatcher serves: all of window.radicle's. */
+const RADICLE_PAGE_METHODS = Object.freeze([
+  ...RADICLE_READ_METHODS,
+  ...RADICLE_CONNECT_METHODS,
+  ...RADICLE_SEED_METHODS,
+  ...RADICLE_SIGN_METHODS,
+]);
+
+// The writes a per-write prompt or the site's signing rule answers.
+const WRITE_METHODS = new Set(RADICLE_SIGN_METHODS.filter((method) => method !== 'radicle_getIdentity'));
 
 // The node actions a prompt or the site's node rule answers.
 const NODE_METHODS = new Set(['radicle_seed', 'radicle_unseed']);
@@ -125,6 +164,12 @@ const AGENT_CUSTODY = Object.freeze({
   message: 'A page in Agent custody needs approval for this action',
   data: Object.freeze({ reason: 'agent_custody' }),
 });
+// executeRadicleMethod's answer for a signing grant revoked before a write.
+const SIGNING_GONE = Object.freeze({
+  code: 4100,
+  message: 'Origin lacks the signing grant',
+  data: Object.freeze({ reason: 'signing_not_granted' }),
+});
 // A node action its rule answered, whose rule was turned off before it.
 const RULE_OFF = Object.freeze({
   code: 4100,
@@ -160,6 +205,10 @@ function defaultDependencies() {
     updateLastUsed: (key) => permissions().updateLastUsed(key),
     validateRid: (rid) => require('../radicle-manager').validateAndNormalizeRid(rid),
     inCustody: (guest) => require('./page-signing').guestInCustody(guest),
+    hasSigningGrant: (key) => permissions().hasSigningGrant(key),
+    grantSigning: (key) => permissions().grantSigning(key),
+    setAutoApprove: (key, type, enabled) => permissions().setAutoApprove(key, type, enabled),
+    validateWrite: (method, params) => require('../radicle/cob-service').validateWrite(method, params),
   };
 }
 
@@ -178,6 +227,10 @@ function createRadicleDispatchers(deps = {}) {
     updateLastUsed,
     validateRid,
     inCustody,
+    hasSigningGrant,
+    grantSigning,
+    setAutoApprove,
+    validateWrite,
   } = { ...defaultDependencies(), ...deps };
 
   // Whether the agent holds the tab now. Unknown custody counts as custody:
@@ -369,6 +422,165 @@ function createRadicleDispatchers(deps = {}) {
     return execute('radicle_disconnect', {}, requester.key);
   }
 
+  const hasSigning = (key) => {
+    try {
+      return hasSigningGrant(key) === true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * The signing grant, asked for once (`radicle.sign`, grant mode) and
+   * written by main for the requester's key, under the same checks as every
+   * grant write. Resolves null when the site holds it, or the answer that
+   * ends the request.
+   */
+  async function signingGranted(context, nameCheck) {
+    const { requester, method } = context;
+    const key = requester.key;
+    if (hasSigning(key)) return null;
+    const decision = await context.prompt({
+      kind: 'radicle.sign',
+      view: { mode: 'grant', method },
+      choices: (raw) => (Object.keys(raw).length === 0 ? {} : null),
+    });
+    if (decision.error) return { error: decision.error };
+    if (decision.closed || decision.approve !== true) return error(USER_REJECTED);
+    let written;
+    try {
+      // A grant another document of the key wrote meanwhile is kept. A
+      // connection revoked meanwhile takes no signing grant.
+      written = await writeUnderKey(context, nameCheck, () => {
+        if (!hasSigning(key)) grantSigning(key);
+      });
+    } catch (err) {
+      return { error: failure(err, 'Failed to save the signing grant') };
+    }
+    if (!written) return error(NO_ADDRESS);
+    return null;
+  }
+
+  /**
+   * `radicle_getIdentity` (PRQ-8c): the signing grant, then the identity,
+   * which discloses the user's DID and node id: the name is resolved before
+   * and after its wait, and the answer goes out only while the document
+   * still holds the key.
+   */
+  async function identity(context) {
+    const { requester, method, params } = context;
+    const key = requester.key;
+    if (!key) return error(NO_ADDRESS);
+    const keyless = { keyless: error(NO_ADDRESS) };
+    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    if (!getPermission(key)) return error(NOT_CONNECTED);
+    const granted = await signingGranted(context, keyless);
+    if (granted) return granted;
+    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    // From here to the grants' read and the last use, one run.
+    if (!context.holdsKey()) return error(NO_ADDRESS);
+    const out = await execute(method, params, key);
+    if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+    return out;
+  }
+
+  /**
+   * A signed write's guard (`page.effect`): after every wait main controls,
+   * the name again, the connection and the signing grant, then, for a write
+   * the rule answered, custody and the rule itself, then the document's key,
+   * and the site's last use and the write in the same run.
+   */
+  async function guardWrite(context, nameCheck, ruled, run) {
+    const { requester } = context;
+    const key = requester.key;
+    if (!(await context.nameHolds(nameCheck))) return { refused: error(NO_ADDRESS).error };
+    if (!getPermission(key)) return { refused: error(CONNECTION_GONE).error };
+    if (!hasSigning(key)) return { refused: error(SIGNING_GONE).error };
+    if (ruled && custody(requester.guest)) return { refused: error(AGENT_CUSTODY).error };
+    if (ruled && getAutoApprove(key, 'signing') !== true) return { refused: error(RULE_OFF).error };
+    if (!context.holdsKey()) return { refused: error(NO_ADDRESS).error };
+    try {
+      updateLastUsed(key);
+    } catch {
+      // The write stands; the timestamp didn't change.
+    }
+    return { value: await run() };
+  }
+
+  /**
+   * A COB write (PRQ-8c): the connection, the signing grant, then the site's
+   * rule or main's per-write prompt, and the write under the guard.
+   */
+  async function write(context) {
+    const { requester, method, params } = context;
+    const key = requester.key;
+    if (!key) return error(NO_ADDRESS);
+    // A write that went out after a passing check answers as written, even
+    // if the name moves meanwhile: it is signed and published for the
+    // request the user approved. Every refusal before it answers keyless.
+    const nameCheck = {};
+    if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    if (!getPermission(key)) return error(NOT_CONNECTED);
+    const granted = await signingGranted(context, nameCheck);
+    if (granted) return granted;
+    // The prompt shows exactly what the write signs: params the write
+    // refuses are refused before it, with the method's own answer.
+    let fields;
+    try {
+      fields = validateWrite(method, params);
+    } catch (err) {
+      return {
+        error: {
+          code: -32602,
+          message: typeof err?.message === 'string' ? err.message : 'Invalid params',
+          ...(err?.reason ? { data: { reason: err.reason } } : {}),
+        },
+      };
+    }
+    // A standing rule is chosen only outside Agent custody, read live now.
+    // A request that goes to its prompt keeps it, whatever custody does
+    // next; one the rule answers reads custody again just before its write.
+    const agentHeld = custody(requester.guest);
+    const ruleOn = !agentHeld && getAutoApprove(key, 'signing') === true;
+    if (ruleOn) {
+      const out = await execute(method, params, key, {
+        approval: 'auto',
+        page: { effect: (run) => guardWrite(context, nameCheck, true, run) },
+      });
+      // Past the rule's limit, the write asks the user instead.
+      if (out?.error?.data?.reason !== 'auto_write_limit') return out;
+      if (!(await context.nameHolds(nameCheck))) return error(NO_ADDRESS);
+    }
+    const decision = await context.prompt({
+      kind: 'radicle.sign',
+      view: { mode: 'write', method, ...fields, agentHeld, alwaysAllow: ruleOn },
+      // "Always allow", the write prompt's one choice outside custody.
+      choices: (raw) => {
+        const names = Object.keys(raw);
+        if (agentHeld) return names.length === 0 ? {} : null;
+        if (!names.every((name) => name === 'alwaysAllow')) return null;
+        if (raw.alwaysAllow !== undefined && typeof raw.alwaysAllow !== 'boolean') return null;
+        return raw.alwaysAllow === undefined ? {} : { alwaysAllow: raw.alwaysAllow };
+      },
+    });
+    if (decision.error) return { error: decision.error };
+    if (decision.closed || decision.approve !== true) return error(USER_REJECTED);
+    const alwaysAllow = decision.choices.alwaysAllow;
+    if (typeof alwaysAllow === 'boolean' && alwaysAllow !== ruleOn) {
+      let written;
+      try {
+        written = await writeUnderKey(context, nameCheck, () => setAutoApprove(key, 'signing', alwaysAllow));
+      } catch (err) {
+        return { error: failure(err, 'Failed to save the signing rule') };
+      }
+      if (!written) return error(NO_ADDRESS);
+    }
+    return execute(method, params, key, {
+      approval: 'user',
+      page: { effect: (run) => guardWrite(context, nameCheck, false, run) },
+    });
+  }
+
   const dispatchers = {};
   for (const method of RADICLE_READ_METHODS) dispatchers[`radicle:${method}`] = underKey;
   dispatchers['radicle:radicle_requestAccess'] = requestAccess;
@@ -377,6 +589,8 @@ function createRadicleDispatchers(deps = {}) {
   dispatchers['radicle:radicle_sync'] = sync;
   // A fetch's state, and the site's subscription to it: a read under the key.
   dispatchers['radicle:radicle_getSeedStatus'] = underKey;
+  dispatchers['radicle:radicle_getIdentity'] = identity;
+  for (const method of WRITE_METHODS) dispatchers[`radicle:${method}`] = write;
   return dispatchers;
 }
 
@@ -530,6 +744,7 @@ module.exports = {
   RADICLE_READ_METHODS,
   RADICLE_CONNECT_METHODS,
   RADICLE_SEED_METHODS,
+  RADICLE_SIGN_METHODS,
   RADICLE_PAGE_METHODS,
   SEED_STATUS_QUEUE,
   createRadicleDispatchers,

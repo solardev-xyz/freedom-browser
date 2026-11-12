@@ -394,10 +394,71 @@ describe('radicle-consent renders main\'s radicle.connect prompt', () => {
     }
   });
 
+  // PRQ-8c: the signing grant, and each signed write with what main signs.
+  test('radicle.sign in grant mode shows the signing copy and answers with no choice', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.sign');
+    renderer.show({ ...PROMPT, kind: 'radicle.sign', view: { mode: 'grant', method: 'radicle_getIdentity' } });
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Act as your Radicle identity?');
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenCalledWith(PROMPT.handle, true, {});
+  });
+
+  test('radicle.sign in write mode shows exactly main\'s fields, offers "always allow" and answers it on approval', async () => {
+    const rid = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.sign');
+    renderer.show({
+      ...PROMPT,
+      kind: 'radicle.sign',
+      view: { mode: 'write', method: 'radicle_createIssue', rid, title: 'Bug', description: 'Steps', labels: ['ui'], agentHeld: false, alwaysAllow: true },
+    });
+    expect(elementsById['radicle-consent-title'].textContent).toBe('Open this issue as you?');
+    expect(elementsById['radicle-consent-wants'].textContent).toBe(`asks to open an issue in ${rid}`);
+    expect(elementsById['radicle-consent-allows'].children.map((li) => li.textContent)).toEqual([
+      'Title: Bug',
+      'Description: Steps',
+      'Label: ui',
+    ]);
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(false);
+    expect(elementsById['radicle-consent-always'].checked).toBe(true);
+    elementsById['radicle-consent-always'].checked = false;
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenCalledWith(PROMPT.handle, true, { alwaysAllow: false });
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+  });
+
+  test('radicle.sign for a tab in Agent custody offers no rule, says so, and answers with no choice', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.sign');
+    renderer.show({
+      ...PROMPT,
+      kind: 'radicle.sign',
+      view: { mode: 'write', method: 'radicle_commentPatch', rid: 'rad:z1', patchId: 'b'.repeat(40), body: 'LGTM', agentHeld: true, alwaysAllow: false },
+    });
+    expect(elementsById['radicle-consent-warning'].textContent).toMatch(/^Freedom Agent is using this tab\. /);
+    expect(elementsById['radicle-consent-always-row'].classList.contains('hidden')).toBe(true);
+    jest.advanceTimersByTime(500);
+    elementsById['radicle-consent-approve'].dispatch('click');
+    expect(window.pagePrompts.decide).toHaveBeenCalledWith(PROMPT.handle, true, {});
+  });
+
+  test('a radicle.sign view off its form shows nothing', async () => {
+    const { elementsById, renderers } = await loadConsent();
+    const renderer = renderers.pagePromptRenderer('radicle.sign');
+    for (const view of [{}, { mode: 'write', method: 'radicle_seed', rid: 'rad:z1' }, { mode: 'other' }]) {
+      renderer.show({ ...PROMPT, kind: 'radicle.sign', view });
+      expect({ view, hidden: elementsById['sidebar-radicle-consent'].classList.contains('hidden') }).toEqual({ view, hidden: true });
+    }
+  });
+
   test('a kind it doesn\'t render shows nothing', async () => {
     const { elementsById, renderers } = await loadConsent();
-    expect(renderers.pagePromptRenderer('radicle.sign')).toBeUndefined();
-    renderers.pagePromptRenderer('radicle.connect').show({ ...PROMPT, kind: 'radicle.sign' });
+    expect(renderers.pagePromptRenderer('eth.sign')).toBeUndefined();
+    renderers.pagePromptRenderer('radicle.connect').show({ ...PROMPT, kind: 'eth.sign' });
     expect(elementsById['sidebar-radicle-consent'].classList.contains('hidden')).toBe(true);
   });
 });

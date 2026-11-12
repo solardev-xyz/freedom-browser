@@ -13,13 +13,14 @@
  * and main sends its events. From PRQ-8a the reads, connecting and
  * disconnecting are main's (`radicle_getCapabilities`,
  * `radicle_getNodeStatus`, `radicle_listSeededRepos`,
- * `radicle_requestAccess`, `radicle_disconnect`), and from PRQ-8b seeding
+ * `radicle_requestAccess`, `radicle_disconnect`), from PRQ-8b seeding
  * (`radicle_seed`, `radicle_unseed`, `radicle_sync`,
- * `radicle_getSeedStatus`): their branches below receive nothing, the
- * chrome's route refuses them, and `connect`, `disconnect` and `seedStatus`
- * come from main, which sends nothing to the chrome's `onEvent` relay any
- * more. The branches stay for rollback until PRQ-9 removes the chrome's
- * request code.
+ * `radicle_getSeedStatus`), and from PRQ-8c signing (`radicle_getIdentity`
+ * and the COB writes): all of window.radicle. This module receives
+ * nothing: the preload sends the chrome no Radicle request, main has no
+ * route for one (`radicle:provider-execute` is gone, and with it the chrome
+ * preload's `radicleProvider`), and `connect`, `disconnect` and `seedStatus`
+ * come from main. It stays until PRQ-9 removes the chrome's request code.
  */
 
 import { getPermissionKey } from './dapp-provider.js';

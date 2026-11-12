@@ -66,19 +66,17 @@ jest.mock('./radicle-permissions', () => ({
   revokePermission: jest.fn(() => true),
 }));
 
-const IPC = require('../../shared/ipc-channels');
 const log = require('../logger');
 const embedded = require('../radicle-embedded');
 const manager = require('../radicle-manager');
 const permissions = require('./radicle-permissions');
 const cob = require('./cob-service');
-const privateWindows = require('../private/private-windows');
 const {
   registerRadicleProviderIpc,
   executeRadicleForPage,
   setSeedStatusSink,
 } = require('./radicle-provider-ipc');
-const { RADICLE_PAGE_METHODS } = require('../page/page-radicle');
+const { runWithPrivateLogContext } = require('../private/private-log-context');
 
 registerRadicleProviderIpc();
 
@@ -89,23 +87,13 @@ const ISSUE = 'a'.repeat(40);
 const PATCH = 'b'.repeat(40);
 
 const publicChrome = mockFixture.publicSender();
-const privateChrome = mockFixture.privateSender(privateWindows);
-// The renderer reports the user's per-write approval, so no approval rule
-// is in play and each request reaches its backend.
-const META = { webContentsId: 9, approval: 'user' };
-// A method main's page dispatcher serves (freedom-core design 0011, PRQ-8)
-// runs on main's page path, under the attested key, and its replies follow
-// the same rule; the chrome's route refuses it. The rest run on the
-// chrome's route.
-const execute = (sender, method, params = {}) =>
-  RADICLE_PAGE_METHODS.includes(method)
-    ? executeRadicleForPage(method, params, ORIGIN)
-    : mockHandlers.get(IPC.RADICLE_PROVIDER_EXECUTE)(sender === undefined ? {} : { sender }, {
-      method,
-      params,
-      origin: ORIGIN,
-      meta: META,
-    });
+// The user approved each write on main's prompt, so no approval rule is in
+// play and each request reaches its backend.
+const META = { approval: 'user' };
+// Every window.radicle method is main's (freedom-core design 0011, PRQ-8):
+// a page's request runs on main's page path, under the attested key, and
+// the chrome has no route. `_sender` is kept for the call sites' shape.
+const execute = (_sender, method, params = {}) => executeRadicleForPage(method, params, ORIGIN, META);
 
 // Absolute paths of each kind, as #1050's tests find them.
 const UNIX_PATH = /(?:^|[\s'"(=:,])\/(?!\/)[^\s'"/]/;
@@ -396,7 +384,7 @@ describe('add-on error texts (#1073)', () => {
       await execute(publicChrome, 'radicle_seed', { rid: RID });
       expect(sink).toHaveBeenCalledWith(ORIGIN, publicStatus(text));
       for (const [, payload] of sink.mock.calls) expectNoPath(payload, home);
-      expect(mockSend).not.toHaveBeenCalledWith(IPC.RADICLE_PROVIDER_EVENT, expect.anything());
+      expect(mockSend).not.toHaveBeenCalledWith('radicle:providerEvent', expect.anything());
       await execute(publicChrome, 'radicle_disconnect');
       setSeedStatusSink(null);
     }
@@ -542,7 +530,7 @@ const LOG_SITES = [
   },
 ];
 
-describe('private senders (#1073)', () => {
+describe('private log contexts (#1073)', () => {
   const [, home, sep] = HOMES[0];
   const text = TEXTS.storage(home, sep);
   // Each line the request logged with the add-on's text in it, or with
@@ -551,12 +539,13 @@ describe('private senders (#1073)', () => {
     loggedLines().filter((args) => args.includes(text) || args.includes('<private>'));
 
   // A private window's request never reaches main's page path (main's
-  // attestation refuses it, PRQ-2), so these are the chrome route's.
-  test.each(LOG_SITES.filter((site) => !RADICLE_PAGE_METHODS.includes(site.method)))(
-    '$label: a private window logs <private>, a normal one the detail',
+  // attestation refuses it, PRQ-2), and no route is left in the chrome
+  // (PRQ-8c). The provider's lines still redact in any private log context.
+  test.each(LOG_SITES)(
+    '$label: in a private log context it logs <private>, in a normal one the detail',
     async ({ method, params, fail }) => {
       fail(text);
-      const privateReply = await execute(privateChrome, method, params);
+      const privateReply = await runWithPrivateLogContext(true, () => execute(undefined, method, params));
       expect(lines().length).toBeGreaterThan(0);
       for (const args of loggedLines()) expectNoPath(args, home);
       expect(lines().every((args) => args.includes('<private>'))).toBe(true);
@@ -570,31 +559,6 @@ describe('private senders (#1073)', () => {
       // The reply is the same either way.
       expect(privateReply).toEqual(publicReply);
       expectNoPath(privateReply, home);
-    }
-  );
-
-  // A sender main can't place in a known public window counts as private.
-  test.each([
-    ['no sender', undefined],
-    ['a sender with no window', { id: 77, isDestroyed: () => false }],
-    ['a destroyed sender', { isDestroyed: () => true }],
-  ])('%s logs <private>', async (_label, sender) => {
-    cob.clearIdentityCache();
-    embedded.identity.mockRejectedValueOnce(new Error(text));
-    await execute(sender, 'radicle_getIdentity');
-    expect(lines()).toEqual([['[radicle-provider] radicle_getIdentity failed:', '<private>']]);
-  });
-
-  test.each(['null', 'throw'])(
-    'a public sender whose window lookup gives %s logs <private>',
-    async (mode) => {
-      mockFixture.lookup.mode = mode;
-      cob.clearIdentityCache();
-      embedded.identity.mockRejectedValueOnce(new Error(text));
-      await execute(publicChrome, 'radicle_getIdentity');
-      expect(lines()).toEqual([
-        ['[radicle-provider] radicle_getIdentity failed:', '<private>'],
-      ]);
     }
   );
 });
