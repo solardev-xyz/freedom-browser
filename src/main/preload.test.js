@@ -117,6 +117,9 @@ describe('preload', () => {
     expect(ipcRenderer.invoke).toHaveBeenCalledWith('page:decide', { handle: 'h', approve: true, choices: { walletIndex: 1 } });
     exposures.pagePrompts.foreground(7);
     expect(ipcRenderer.send).toHaveBeenCalledWith('page:foreground', { guest: 7 });
+    // Where the content area starts, for the approvals panel (APS-1).
+    exposures.pagePrompts.anchor(85);
+    expect(ipcRenderer.send).toHaveBeenCalledWith('page:approvals-anchor', { top: 85 });
   });
 
   test('reads saved helper report pages through the narrow history bridge', async () => {

@@ -36,6 +36,12 @@
  *     take only a tab webview's top frame, and never an internal page or the
  *     chrome, which has no page to speak for. Main then attests the sender
  *     itself (src/main/page/page-documents.js).
+ *   - The approvals document's channels (`approvals:ready`, `approvals:shown`,
+ *     `approvals:decide`; design 0011, "The approvals document", APS-1) take
+ *     only the top frame of `renderer/approvals/approvals.html`, and never
+ *     the chrome: a decision there is the user's, and the chrome must not
+ *     be able to make one. Main then checks the sender is that window's own
+ *     view (src/main/approvals/approvals-document.js).
  *   - Anything else (another webContents type, a sub-frame of the chrome, a
  *     frame that already navigated away) is refused.
  *
@@ -50,6 +56,7 @@ const { fileURLToPath } = require('url');
 const RENDERER_DIR = path.resolve(__dirname, '..', 'renderer');
 const CHROME_INDEX = path.join(RENDERER_DIR, 'index.html');
 const PAGES_DIR = path.join(RENDERER_DIR, 'pages');
+const APPROVALS_HTML = path.join(RENDERER_DIR, 'approvals', 'approvals.html');
 
 const internalPages = require('../shared/internal-pages.json');
 const INTERNAL_PAGE_FILES = new Set([
@@ -66,6 +73,7 @@ const TIER = Object.freeze({
   AGENT_LAUNCHER: 'agent-launcher',
   PROFILE_MANAGER: 'profile-manager',
   PAGE: 'page',
+  APPROVALS: 'approvals',
 });
 
 // Channels webview-preload.js reaches main on, outside any freedomAPI guard.
@@ -215,6 +223,11 @@ const PAGE_CHANNELS = [
 ];
 const PAGE_CHANNEL_SET = new Set(PAGE_CHANNELS);
 
+// The approvals document's own channels (APS-1): its top frame only. Like
+// the page channels, these refuse the chrome.
+const APPROVALS_CHANNELS = ['approvals:ready', 'approvals:shown', 'approvals:decide'];
+const APPROVALS_CHANNEL_SET = new Set(APPROVALS_CHANNELS);
+
 const WEBVIEW_CHANNEL_TIERS = new Map([
   ...PUBLIC_CHANNELS.map((c) => [c, TIER.PUBLIC]),
   ...PAGE_CHANNELS.map((c) => [c, TIER.PAGE]),
@@ -295,11 +308,24 @@ function isPageSender(event) {
   return internalPageFileOf(event) === null;
 }
 
+// The approvals document: a view's top frame, not detached, on the packaged
+// file. Main checks the exact view itself.
+function isApprovalsSender(event) {
+  if (senderType(event) !== 'window') return false;
+  try {
+    if (event.senderFrame?.detached) return false;
+  } catch {
+    return false;
+  }
+  return topFrameFilePath(event) === APPROVALS_HTML;
+}
+
 /**
  * @returns {boolean} whether `event`'s sender may use `channel`.
  */
 function isSenderAllowed(channel, event) {
   if (PAGE_CHANNEL_SET.has(channel)) return isPageSender(event);
+  if (APPROVALS_CHANNEL_SET.has(channel)) return isApprovalsSender(event);
   if (isChromeSender(event)) return true;
   // The isolated PDF worker is a separate BrowserWindow, not chrome or a tab.
   // Only its result channel crosses this boundary; PdfProcessor additionally
@@ -456,6 +482,8 @@ module.exports = {
   SETTINGS_CHANNELS,
   PROFILE_MANAGER_CHANNELS,
   PAGE_CHANNELS,
+  APPROVALS_CHANNELS,
   CHROME_INDEX,
   PAGES_DIR,
+  APPROVALS_HTML,
 };
