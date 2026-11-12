@@ -167,7 +167,7 @@ describe('text, encoded for where it shows', () => {
 describe('a view in parts (APS-4)', () => {
   const { checkJoined } = kinds;
   const { MAX_PARTED_VIEW_BYTES } = core;
-  const parted = (fields = {}) => ({ ...message({ view: null }), parts: { count: 2, length: 300000 }, ...fields });
+  const parted = (fields = {}) => ({ ...message({ view: null }), parts: { count: 2, length: 300000, revision: 3 }, ...fields });
   const send = (data) => ({
     account: { index: 0, name: 'Main', address: `0x${'1'.repeat(40)}`, type: 'mnemonic' },
     chain: { id: 100, name: 'Gnosis Chain', symbol: 'xDAI' },
@@ -187,15 +187,20 @@ describe('a view in parts (APS-4)', () => {
       site: SITE,
       view: null,
       valid: false,
-      parts: { count: 2, length: 300000 },
+      parts: { count: 2, length: 300000, revision: 3 },
     });
     const invalid = { handle: HANDLE, kind: null, site: null, view: null, valid: false };
     for (const item of [
       parted({ view: VIEW }),
-      parted({ parts: { count: 0, length: 1 } }),
-      parted({ parts: { count: 257, length: 300000 } }),
-      parted({ parts: { count: 2, length: MAX_PARTED_VIEW_BYTES + 1 } }),
-      parted({ parts: { count: 2, length: 300000, extra: 1 } }),
+      parted({ parts: { count: 0, length: 1, revision: 3 } }),
+      parted({ parts: { count: 257, length: 300000, revision: 3 } }),
+      parted({ parts: { count: 2, length: MAX_PARTED_VIEW_BYTES + 1, revision: 3 } }),
+      parted({ parts: { count: 2, length: 300000, revision: 3, extra: 1 } }),
+      // Every part is asked for by the revision main sent (Codex, #1216).
+      parted({ parts: { count: 2, length: 300000 } }),
+      parted({ parts: { count: 2, length: 300000, revision: 0 } }),
+      parted({ parts: { count: 2, length: 300000, revision: 1.5 } }),
+      parted({ parts: { count: 2, length: 300000, revision: '3' } }),
       parted({ parts: null }),
       parted({ kind: 'nope' }),
       parted({ guest: null }),
@@ -209,7 +214,7 @@ describe('a view in parts (APS-4)', () => {
     const view = send(bigData);
     const json = JSON.stringify(view);
     expect(json.length).toBeGreaterThan(MAX_VIEW_BYTES);
-    const msg = { handle: HANDLE, guest: 3, kind: 'eth.send', site: SITE, view: null, parts: { count: 10, length: json.length } };
+    const msg = { handle: HANDLE, guest: 3, kind: 'eth.send', site: SITE, view: null, parts: { count: 10, length: json.length, revision: 1 } };
     // Within one message's bound it would be refused; joined, it fits.
     expect(checkMessage({ ...msg, parts: undefined, view }).valid).toBe(false);
     const joined = checkJoined(msg, json);

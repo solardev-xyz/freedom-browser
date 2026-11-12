@@ -723,14 +723,18 @@ describe('main\'s prompts in the document', () => {
 // within 256 KiB, for the prompt main shows it at that moment.
 describe('APS-4: a view over 256 KiB, in parts', () => {
   const big = (chars, fill = 'x') => ({ title: 'T', message: fill.repeat(chars), rows: [] });
-  const part = (env, contents, index, handle = HANDLE) => env.docs.viewPart(eventFrom(contents), { handle, index });
+  // For the revision window 1's document was sent last, unless one is named.
+  const part = (env, contents, index, handle = HANDLE, revision = env.docs.state()[1].revision) =>
+    env.docs.viewPart(eventFrom(contents), { handle, revision, index });
+  const lastPrompt = (contents) => contents.sent.filter(([channel]) => channel === CHANNELS.PROMPT).at(-1)[1];
 
   test('the message names its parts and carries no view; the parts join to the view\'s JSON, each within 256 KiB', () => {
     const view = big(600 * 1024);
     const message = outgoingPrompt(prompt(HANDLE, view));
     const json = JSON.stringify(view);
     expect(message.view).toBeNull();
-    expect(message.parts).toEqual({ count: Math.ceil(json.length / VIEW_PART_UNITS), length: json.length });
+    expect(message.parts).toEqual({ count: Math.ceil(json.length / VIEW_PART_UNITS), length: json.length, revision: 1 });
+    expect(outgoingPrompt(prompt(HANDLE, view), 7).parts.revision).toBe(7);
     expect(Object.keys(message)).toEqual(['handle', 'guest', 'kind', 'site', 'view', 'parts']);
     const parts = viewParts(json);
     expect(parts.join('')).toBe(json);
@@ -774,14 +778,19 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     expect(part(env, contents, -1)).toEqual({ ok: false, reason: 'invalid' });
     expect(part(env, contents, 0.5)).toEqual({ ok: false, reason: 'invalid' });
     expect(env.docs.viewPart(eventFrom(contents), null)).toEqual({ ok: false, reason: 'invalid' });
+    expect(env.docs.viewPart(eventFrom(contents), { handle: HANDLE, index: 0 })).toEqual({ ok: false, reason: 'invalid' });
+    expect(part(env, contents, 0, HANDLE, sent.parts.revision + 1)).toEqual({ ok: false, reason: 'stale' });
     expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'not-shown' });
     // Another window's document, the chrome, a sub-frame.
     expect(part(env, two.contents, 0)).toEqual({ ok: false, reason: 'not-shown' });
-    expect(env.docs.viewPart({ sender: { id: 501 }, senderFrame: {} }, { handle: HANDLE, index: 0 })).toEqual({
+    const revision = sent.parts.revision;
+    expect(env.docs.viewPart({ sender: { id: 501 }, senderFrame: {} }, { handle: HANDLE, revision, index: 0 })).toEqual({
       ok: false,
       reason: 'not-the-view',
     });
-    expect(env.docs.viewPart(eventFrom(contents, { url: APPROVALS_URL }), { handle: HANDLE, index: 0 }).ok).toBe(false);
+    expect(env.docs.viewPart(eventFrom(contents, { url: APPROVALS_URL }), { handle: HANDLE, revision, index: 0 }).ok).toBe(
+      false
+    );
     // A view within one message has no parts.
     env.docs.send(1, CHANNELS.PROMPT, prompt(OTHER_HANDLE));
     expect(part(env, contents, 0, OTHER_HANDLE)).toEqual({ ok: false, reason: 'not-shown' });
@@ -804,13 +813,78 @@ describe('APS-4: a view over 256 KiB, in parts', () => {
     const view = { account: { index: 1, name: 'Ledger', address: null, type: 'ledger' }, data: `0x${'ab'.repeat(200 * 1024)}` };
     env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, view));
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'not-reported' });
-    env.docs.shown(eventFrom(contents), { handle: HANDLE });
+    // A view in parts is reported for its revision.
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: false, reason: 'not-shown' });
+    env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: lastPrompt(contents).parts.revision });
     expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: false, reason: 'too-soon' });
     env.advance(INPUT_DELAY_MS);
     const decided = env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true });
     expect(env.docs.state()[1].waiting).toBe('ledger');
     answer({ ok: true });
     expect(await decided).toEqual({ ok: true });
+  });
+
+  // Codex, #1216 round 1: `page-prompts.update()` replaces a prompt's view
+  // under the same handle, so a read of the parts must not run on into the
+  // new view's.
+  test('a view replaced under the same handle while its parts are read: the old revision gets no part of the new', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    const viewA = big(300 * 1024, 'a');
+    const viewB = big(300 * 1024, 'b');
+    const partsA = viewParts(JSON.stringify(viewA));
+    const partsB = viewParts(JSON.stringify(viewB));
+    // Same shape: A's first part joined to B's others parses, and fits the
+    // schema, which is why the revision has to tell them apart.
+    expect(partsB.length).toBe(partsA.length);
+    const hybrid = JSON.parse([partsA[0], ...partsB.slice(1)].join(''));
+    expect(hybrid.message).toMatch(/^a+b+$/);
+
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, viewA));
+    const a = lastPrompt(contents).parts.revision;
+    expect(part(env, contents, 0, HANDLE, a)).toEqual({ ok: true, part: partsA[0] });
+    // The prompt's view changes, the handle stays: a new revision.
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, viewB));
+    const sentB = lastPrompt(contents);
+    const b = sentB.parts.revision;
+    expect(b).toBeGreaterThan(a);
+    expect(sentB.parts.count).toBe(partsB.length);
+    // Nothing of B, or of A, for a read of A: every index is stale.
+    for (let index = 0; index <= partsA.length; index += 1) {
+      expect(part(env, contents, index, HANDLE, a)).toEqual({ ok: false, reason: 'stale' });
+    }
+    expect(env.trace.filter((e) => e.kind === 'view-part-stale').map((e) => e.revision)).toEqual(
+      new Array(partsA.length + 1).fill(a)
+    );
+    // A report of A, or one naming no revision, doesn't count for B.
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: a })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE })).toEqual({ ok: false, reason: 'not-shown' });
+    expect(env.docs.state()[1].reported).toBeNull();
+    env.advance(INPUT_DELAY_MS);
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({
+      ok: false,
+      reason: 'not-reported',
+    });
+    // B, read whole for its own revision, is B; sent again as it is (a
+    // document that loads afresh), it keeps its revision.
+    expect(env.docs.reshow(1)).toBe(true);
+    expect(lastPrompt(contents).parts.revision).toBe(b);
+    const pieces = partsB.map((_piece, index) => part(env, contents, index, HANDLE, b));
+    expect(pieces.every((answer) => answer.ok === true)).toBe(true);
+    expect(JSON.parse(pieces.map((answer) => answer.part).join(''))).toEqual(viewB);
+    expect(env.docs.shown(eventFrom(contents), { handle: HANDLE, revision: b })).toEqual({ ok: true });
+    expect(env.docs.state()[1]).toMatchObject({ reported: HANDLE, revision: b });
+    env.advance(INPUT_DELAY_MS);
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: true })).toEqual({ ok: true });
+  });
+
+  test('a reject while a view in parts loads needs no report', async () => {
+    const env = setup();
+    const { contents } = attached(env);
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, big(300 * 1024, 'a')));
+    env.docs.send(1, CHANNELS.PROMPT, prompt(HANDLE, big(300 * 1024, 'b')));
+    expect(await env.docs.decide(eventFrom(contents), { handle: HANDLE, approve: false })).toEqual({ ok: true });
+    expect(env.decisions).toEqual([[1, { handle: HANDLE, approve: false }]]);
   });
 });
 

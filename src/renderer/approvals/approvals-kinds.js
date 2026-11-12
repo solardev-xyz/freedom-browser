@@ -49,9 +49,14 @@
   // A view within one message stays within 256 KiB however long a field's
   // bound; one main sends in parts, within 4 MiB (APS-4).
   const MAX_HEX = MAX_PARTED_VIEW_BYTES;
-  // A view in parts (APS-4): how many, and its JSON's length in UTF-16 code
-  // units, which is never more than its bytes.
-  const PARTS = record({ count: integer({ min: 1, max: 256 }), length: integer({ min: 1, max: MAX_PARTED_VIEW_BYTES }) });
+  // A view in parts (APS-4): how many, its JSON's length in UTF-16 code
+  // units, which is never more than its bytes, and the revision of the
+  // prompt they are main's view of, which every part is asked for.
+  const PARTS = record({
+    count: integer({ min: 1, max: 256 }),
+    length: integer({ min: 1, max: MAX_PARTED_VIEW_BYTES }),
+    revision: integer({ min: 1 }),
+  });
 
   const SITE = record({ key: text(2048), label: text(2048) });
   const ACCOUNT = record({
@@ -1324,7 +1329,7 @@
    * shows the fixed error and can only be rejected.
    *
    * A view over 256 KiB comes in parts (APS-4): the message then has
-   * `view: null` and `parts: { count, length }`, and, its other fields
+   * `view: null` and `parts: { count, length, revision }`, and, its other fields
    * checked, comes back with those `parts` and no view, not yet valid. The
    * page asks main for the parts and checks the joined view (`checkJoined`).
    */
