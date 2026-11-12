@@ -545,16 +545,18 @@ const RADICLED_DEVIATIONS = {
       /^\d+ bytes is over the limit of 16777216$/.test(record.error ?? '') &&
       Object.keys(record).length === 1,
   },
+  // Not one of 0008's named deviations: the libradicle the service links
+  // words this error otherwise than v0.8.0 did.
   'issue unknown': {
-    deviation: 'not-found-text',
+    deviation: 'libradicle-text',
     reason:
       "An unknown issue is libradicle's not-found either way (404 at the handlers), worded " +
-      "by the service's libradicle, which looks the COB up by its ID, where v0.8.0's named " +
-      'the revspec it failed to resolve.',
+      "by the libradicle the service links, which names the COB it didn't find, where " +
+      "v0.8.0's named the revspec it failed to resolve.",
     differs: cobNotFound('issue'),
   },
   'patch unknown': {
-    deviation: 'not-found-text',
+    deviation: 'libradicle-text',
     reason: "As for an unknown issue: libradicle's not-found, worded by the service's libradicle.",
     differs: cobNotFound('patch'),
   },
