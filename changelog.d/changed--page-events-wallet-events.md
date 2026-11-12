@@ -1,3 +1,0 @@
-- Switching chains in the wallet now tells every site open in that window, not only the tab in front, and disconnecting a site tells every tab that has it open, in every window
-  - A site connected to an account you delete is told it's disconnected too
-  - Choosing "All Chains" now tells open sites they're on Gnosis, the chain they read then
