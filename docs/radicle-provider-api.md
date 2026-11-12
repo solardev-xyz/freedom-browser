@@ -210,7 +210,7 @@ Resolves:
   seedersKnown: number|null, // network seeders discovered for the fetch
   attemptCount: number,
   recentAttempts: [{ nid, ok, error?, at }],  // last 5 per-seed results
-  progress: { phase, candidates?, nid?, addr?, index?, total?, reason? }|null,
+  progress: { phase, candidates?, nid?, addr?, index?, total?, reason?, count? }|null,
   lastError: string|null,
   startedAt: number|null,
   finishedAt: number|null
@@ -221,6 +221,11 @@ Resolves:
 `fetching`, `peer-failed`, `done`, `failed`, or `cancelled`. Peer-level
 events are streamed by the embedded node; byte-level percentages are not
 currently available from Heartwood's fetch transport.
+
+A `peer-failed` with a `count` stands for several seeds' failures at once,
+with no `nid` or position: `count` of them, and `reason` the latest. Each of
+its reasons is a recent attempt with `nid: null`. (Freedom's Radicle service,
+still in development, folds a burst of failures past eight into one.)
 
 `idle` means nothing is known this session (not tracked, not stored).
 A `failed` repo may still flip to `fetched` later — the node keeps
