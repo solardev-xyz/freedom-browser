@@ -117,6 +117,10 @@
 .bee-act-key-text {
   font-family: inherit;
   white-space: nowrap;
+  /* --text, not the panel's --muted: the panel's grey is a recorded #261
+     contrast gap in light (3.85:1), and theme-parity holds a new readout to
+     4.5:1. This is also the one value in the panel a user acts on. */
+  color: var(--text);
 }
 
 .bee-act-key-text.has-key {

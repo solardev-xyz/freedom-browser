@@ -27,6 +27,11 @@ let actKeyCopiedTimer = null;
 // an earlier open (or an earlier node behind the same menu) can't repaint a
 // later one.
 let actKeyGeneration = 0;
+// The generation an /addresses read is in flight for, or null: one read per
+// open at a time, since the 5 s status refresh calls updateAntUi again while
+// one may still be pending. A read left over from an earlier open doesn't
+// hold up the current one.
+let actKeyInFlight = null;
 
 // Compressed (66 hex, 02/03) or uncompressed (130 hex, 04) secp256k1 key, as
 // Bee and Ant report it; an optional 0x is tolerated.
@@ -152,6 +157,8 @@ const fetchActPublicKey = async () => {
   if (!beeInfoPanel?.classList.contains('visible')) return;
 
   const generation = actKeyGeneration;
+  if (actKeyInFlight === generation) return;
+  actKeyInFlight = generation;
   let key = null;
   try {
     const response = await fetchAntJson('/addresses');
@@ -159,6 +166,8 @@ const fetchActPublicKey = async () => {
     if (typeof reported === 'string' && ACT_PUBLIC_KEY_RE.test(reported)) key = reported;
   } catch {
     key = null;
+  } finally {
+    if (actKeyInFlight === generation) actKeyInFlight = null;
   }
   // The menu closed or the node stopped while the read was in flight.
   if (generation !== actKeyGeneration) return;
@@ -194,8 +203,9 @@ export const startAntInfoPolling = () => {
   fetchConnectedPeers();
   fetchVisiblePeers();
   if (!state.antVersionFetched) fetchAntVersionOnce();
-  // Once per open, not per poll tick: the key doesn't change while the node
-  // runs, but a reopen picks up a node switch.
+  // Not per poll tick: the key doesn't change while the node runs. Read on
+  // each open (a reopen picks up a node switch) and again from updateAntUi
+  // once the node reports running, if the first read found it still starting.
   if (!actPublicKey) fetchActPublicKey();
 
   if (state.antPeersInterval) clearInterval(state.antPeersInterval);
@@ -218,6 +228,11 @@ export const updateAntUi = (status, error) => {
   // Fetch version immediately when Bee becomes running (don't wait for polling)
   if (status === 'running' && !state.antVersionFetched) {
     fetchAntVersionOnce();
+  }
+  // Same for the ACT key, but only while the menu shows it (the read bails
+  // otherwise): an open menu whose first read hit a node still starting.
+  if (status === 'running' && !actPublicKey) {
+    fetchActPublicKey();
   }
 
   // Update status line and toggle state from registry

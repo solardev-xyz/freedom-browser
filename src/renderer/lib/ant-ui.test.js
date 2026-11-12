@@ -449,4 +449,44 @@ describe('ACT public key row (#1188)', () => {
     await flushMicrotasks();
     expect(ctx.elements.beeActKeyCopy.disabled).toBe(false);
   });
+
+  test('a read that found the node still starting is retried once it runs', async () => {
+    let up = false;
+    const apiGetImpl = jest.fn(async (endpoint) => {
+      if (endpoint !== '/addresses') return { ok: true, status: 200, data: {} };
+      if (!up) throw new Error('Ant API unreachable');
+      return { ok: true, status: 200, data: { publicKey: ACT_KEY } };
+    });
+    const ctx = await loadBeeModule({ currentAntStatus: 'starting', windowBee: false, apiGetImpl });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+    expect(ctx.elements.beeActKeyText.textContent).toBe('Unknown');
+
+    // The menu stays open; the node comes up. The poll intervals already
+    // exist, so only updateAntUi can trigger the second read.
+    up = true;
+    ctx.mod.updateAntUi('running');
+    await flushMicrotasks();
+    expect(ctx.elements.beeActKeyText.textContent).toBe('02abab…abab');
+    expect(ctx.elements.beeActKeyCopy.disabled).toBe(false);
+
+    // Once it has the key, later status refreshes don't read again.
+    const reads = apiGetImpl.mock.calls.filter(([e]) => e === '/addresses').length;
+    ctx.mod.updateAntUi('running');
+    await flushMicrotasks();
+    expect(apiGetImpl.mock.calls.filter(([e]) => e === '/addresses').length).toBe(reads);
+  });
+
+  test('status refreshes do not stack /addresses reads while one is in flight', async () => {
+    const apiGetImpl = jest.fn((endpoint) =>
+      endpoint === '/addresses' ? new Promise(() => {}) : Promise.resolve({ ok: true, data: {} })
+    );
+    const ctx = await loadBeeModule({ currentAntStatus: 'running', windowBee: false, apiGetImpl });
+    ctx.mod.initAntUi();
+    await openMenu(ctx);
+    ctx.mod.updateAntUi('running');
+    ctx.mod.updateAntUi('running');
+    await flushMicrotasks();
+    expect(apiGetImpl.mock.calls.filter(([e]) => e === '/addresses')).toHaveLength(1);
+  });
 });
