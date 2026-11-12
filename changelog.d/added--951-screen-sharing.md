@@ -1,0 +1,4 @@
+- Sites can share your screen: a call in Google Meet or Jitsi opens Freedom's picker, where you choose a tab, a window or your entire screen ([#951](https://github.com/solardev-xyz/freedom-browser/issues/951))
+  - Sharing a tab can include its sound; on Windows, sharing the screen can include the system's sound
+  - The site gets only what you pick, each time it asks, and Freedom remembers nothing; a site cannot open the picker without a click
+  - On a Mac without permission to record the screen, the picker says so and opens the right pane of System Settings; sharing a tab works without that permission

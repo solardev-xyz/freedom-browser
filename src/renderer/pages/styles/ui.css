@@ -222,6 +222,13 @@
   background: var(--surface-hover);
 }
 
+/* The chosen one of a set of interactive cards (a picker's tiles). */
+.ui-card--selected,
+.ui-card--selected:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .ui-card__title {
   margin: 0 0 var(--space-2);
   color: var(--text-muted);
@@ -477,7 +484,8 @@ textarea.ui-field__control {
   background: var(--surface-hover);
 }
 
-.ui-list-row--selected {
+.ui-list-row--selected,
+.ui-list-row--selected:hover {
   background: var(--accent-soft);
 }
 
@@ -666,6 +674,46 @@ textarea.ui-field__control {
 }
 
 /* ============================================
+   Tabs
+   ============================================ */
+
+/* A row of views over one area, the selected one underlined in the accent:
+   `role="tablist"` on the row, `role="tab"` and `aria-selected` on each
+   `__tab` button. */
+.ui-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.ui-tabs__tab {
+  position: relative;
+  min-height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+
+.ui-tabs__tab:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.ui-tabs__tab[aria-selected='true'] {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* ============================================
    Focus
    ============================================ */
 
@@ -674,7 +722,8 @@ textarea.ui-field__control {
 .ui-button:focus-visible,
 .ui-icon-button:focus-visible,
 .ui-card--interactive:focus-visible,
-.ui-list-row--interactive:focus-visible {
+.ui-list-row--interactive:focus-visible,
+.ui-tabs__tab:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }

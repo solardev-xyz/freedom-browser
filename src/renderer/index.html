@@ -5538,6 +5538,94 @@
       </div>
     </dialog>
 
+    <!-- Screen sharing (#951): a site's getDisplayMedia() opens this picker over
+         its tab; the pick is the consent. Filled by lib/screen-share-picker.js. -->
+    <dialog
+      id="screen-share-picker"
+      data-test="screen-share-picker"
+      class="modal screen-share-picker"
+      aria-labelledby="screen-share-title"
+      aria-describedby="screen-share-lede"
+    >
+      <div class="screen-share-picker__window">
+        <h2 id="screen-share-title" class="screen-share-picker__title">
+          Choose what to share with
+          <span id="screen-share-origin" class="screen-share-picker__origin"></span>
+        </h2>
+        <p id="screen-share-lede" class="screen-share-picker__lede">
+          The site sees everything in what you share, until you stop sharing on the site.
+        </p>
+        <div class="ui-tabs" role="tablist" aria-label="What to share">
+          <button
+            type="button"
+            class="ui-tabs__tab"
+            role="tab"
+            id="screen-share-kind-tab"
+            data-kind="tab"
+            aria-controls="screen-share-pane"
+            aria-selected="true"
+          >
+            Freedom tab
+          </button>
+          <button
+            type="button"
+            class="ui-tabs__tab"
+            role="tab"
+            id="screen-share-kind-window"
+            data-kind="window"
+            aria-controls="screen-share-pane"
+            aria-selected="false"
+            tabindex="-1"
+          >
+            Window
+          </button>
+          <button
+            type="button"
+            class="ui-tabs__tab"
+            role="tab"
+            id="screen-share-kind-screen"
+            data-kind="screen"
+            aria-controls="screen-share-pane"
+            aria-selected="false"
+            tabindex="-1"
+          >
+            Entire screen
+          </button>
+        </div>
+        <div
+          id="screen-share-pane"
+          class="screen-share-picker__pane"
+          role="tabpanel"
+          aria-labelledby="screen-share-kind-tab"
+        ></div>
+        <div class="screen-share-picker__footer">
+          <label id="screen-share-audio-label" class="screen-share-picker__audio" hidden>
+            <input type="checkbox" id="screen-share-audio" />
+            <span id="screen-share-audio-text">Also share tab audio</span>
+          </label>
+          <div class="ui-button-row ui-button-row--end">
+            <button
+              type="button"
+              id="screen-share-cancel"
+              data-test="screen-share-cancel"
+              class="ui-button"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              id="screen-share-submit"
+              data-test="screen-share-submit"
+              class="ui-button ui-button--primary"
+              disabled
+            >
+              Share
+            </button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="add-bookmark-modal" class="modal">
       <div class="modal-content">
         <div class="modal-header">

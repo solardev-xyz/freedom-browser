@@ -1012,6 +1012,46 @@ contextBridge.exposeInMainWorld('sitePermissions', {
   allowPopups: (origin) => ipcRenderer.invoke('popups:allow-site', origin),
 });
 
+// Screen sharing (#951): the picker a site's getDisplayMedia() opens in this
+// window. Main sends {id, guestId, origin, audio: {tab, screen}, platform};
+// the picker lists one pane at a time ('tab' | 'window' | 'screen') and
+// answers with a listed source id, or null to cancel.
+contextBridge.exposeInMainWorld('screenShare', {
+  onPickerOpen: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('screen-share:picker-open', handler);
+    return () => ipcRenderer.removeListener('screen-share:picker-open', handler);
+  },
+  // Main ended the request without a pick ({id}): the tab navigated or closed.
+  onPickerClose: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('screen-share:picker-close', handler);
+    return () => ipcRenderer.removeListener('screen-share:picker-close', handler);
+  },
+  // A page asked through getUserMedia's chromeMediaSource and was stopped
+  // ({origin, guestId}).
+  onBlocked: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('screen-share:blocked', handler);
+    return () => ipcRenderer.removeListener('screen-share:blocked', handler);
+  },
+  // A tab in this window is being shared ({guestId}), or no longer is.
+  onTabShared: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('screen-share:tab-shared', handler);
+    return () => ipcRenderer.removeListener('screen-share:tab-shared', handler);
+  },
+  onTabUnshared: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('screen-share:tab-unshared', handler);
+    return () => ipcRenderer.removeListener('screen-share:tab-unshared', handler);
+  },
+  listSources: (id, kind) => ipcRenderer.invoke('screen-share:list-sources', { id, kind }),
+  respond: (id, sourceId, audio) =>
+    ipcRenderer.invoke('screen-share:respond', { id, sourceId, audio }),
+  openSystemSettings: (id) => ipcRenderer.invoke('screen-share:open-system-settings', { id }),
+});
+
 // External-protocol URLs typed into the address bar (magnet:, mailto:, …).
 // Resolves {opened, reason?}; `opened: false` means "not ours — search it"
 // (no OS handler for the scheme) or a blocked scheme. See #406.
