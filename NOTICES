@@ -33,12 +33,12 @@ freedom-ipfsd (IPFS service)
   https://github.com/solardev-xyz/freedom-core
   License: not chosen yet (pending the maintainer's decision).
   Statically links third-party Rust crates, among them freedom-ipfs's
-  (MIT OR Apache-2.0), and the Rust toolchain's runtime. On Linux it is
-  dynamically linked against the system's GNU C Library (glibc 2.17 or
-  newer), and statically carries glibc's startup and libc_nonshared
-  objects (LGPL-2.1-or-later, with the GNU C Library's exception for
-  linking) and LLVM's libunwind (Apache-2.0 WITH LLVM-exception). Their
-  notices ship beside the binary:
+  (MIT OR Apache-2.0), the C library SQLite 3.54.1 (public domain), and
+  the Rust toolchain's runtime. On Linux it is dynamically linked against
+  the system's GNU C Library (glibc 2.17 or newer), and statically carries
+  glibc's startup and libc_nonshared objects (LGPL-2.1-or-later, with the
+  GNU C Library's exception for linking) and LLVM's libunwind (Apache-2.0
+  WITH LLVM-exception). Their notices ship beside the binary:
   resources/freedom-ipfsd/THIRD-PARTY-NOTICES and
   resources/freedom-ipfsd/THIRD-PARTY-NOTICES-rust-std.html.
   It includes attohttpc 0.30.1, unmodified, under the Mozilla Public
@@ -73,7 +73,7 @@ freedom-radicled (Radicle service)
     (sha256 23c7391e4b9f4ffab1a624223cc1d7385ff9a678f490768add717de7ea2f4d89)
   under libgit2/. To relink freedom-radicled against a modified libgit2 or
   LibXDiff, its complete source is https://github.com/solardev-xyz/freedom-core
-  at the tag radicled-v0.1.0 (services/freedom-radicled, with its
+  at the tag radicled-v0.1.1 (services/freedom-radicled, with its
   Cargo.lock; RELEASING.md describes the build).
   It includes colored 2.2.0, unmodified, under the Mozilla Public License
   2.0 (its text and its source's location are in THIRD-PARTY-NOTICES). Its

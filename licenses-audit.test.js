@@ -712,9 +712,11 @@ describe('copyleft', () => {
       'ipfsd-v0.2.1': [['attohttpc', '0.30.1']],
       'ipfsd-v0.3.0': [['attohttpc', '0.30.1']],
       'ipfsd-v0.4.0': [['attohttpc', '0.30.1']],
+      'ipfsd-v0.4.1': [['attohttpc', '0.30.1']],
     },
     'freedom-radicled-bin/${os}-${arch}/': {
       'radicled-v0.1.0': [['colored', '2.2.0']],
+      'radicled-v0.1.1': [['colored', '2.2.0']],
     },
   };
 

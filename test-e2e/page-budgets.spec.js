@@ -350,10 +350,12 @@ test('every method\'s largest legal request, in each worst form, stays within it
   }
 
   // The measurement sees an unpaid copy: the largest swarm_publishData with
-  // one more live copy, of 128 KiB and of 32 KiB, that its charge doesn't
-  // pay for, measures over its charge.
+  // one more live copy, of 128 KiB and of 96 KiB, that its charge doesn't
+  // pay for, measures over its charge. Main's 64 KiB bookkeeping allowance
+  // sets the floor: a smaller unpaid copy can hide in what main's own record
+  // leaves of it.
   const unpaid = {};
-  for (const bytes of [128 * 1024, 32 * 1024]) {
+  for (const bytes of [128 * 1024, 96 * 1024]) {
     await electronApp.evaluate((_electron, n) => {
       globalThis.__budgets.unpaid = n;
     }, bytes);

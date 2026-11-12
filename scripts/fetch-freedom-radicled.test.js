@@ -22,15 +22,15 @@ const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[ke
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'radicled-v0.1.0-test';
-const PINNED_TAG = 'radicled-v0.1.0';
-// The SHA256SUMS radicled-v0.1.0 published, byte for byte. Its sha256 is the
+const PINNED_TAG = 'radicled-v0.1.1';
+// The SHA256SUMS radicled-v0.1.1 published, byte for byte. Its sha256 is the
 // pinned digest, so a bump has to replace it along with the tag and digest.
 const PUBLISHED_SUMS = [
-  '7206b09e27e6e48e8a7507f1a06d5ec67166152cfa9360dc1f8bdce126547617  freedom-radicled-v0.1.0-darwin-amd64.tar.gz',
-  '60d983a352d85ff5bb103b43c18a8fc4191cedee37ef7121509fa98e2e4a219a  freedom-radicled-v0.1.0-darwin-arm64.tar.gz',
-  '13ca64b2333d7b38b75e4a20add7e2ff844c1bce2a2ed464e7eed509703a6367  freedom-radicled-v0.1.0-linux-amd64.tar.gz',
-  'a2cc7d9c975b8d405e285e0cfcb5c3dce31e2ce26121b97a7efe622d0ebbf830  freedom-radicled-v0.1.0-linux-arm64.tar.gz',
-  '7d19d5db661cd8d3be3489f973f2ccbc6bb499e63f0d75a6a15e980bb9fa2734 *freedom-radicled-v0.1.0-windows-amd64.zip',
+  '9bac32f9ee603e2d5a1950c793360ae85d77cf66155adff951b09de9cdd2a9b0  freedom-radicled-v0.1.1-darwin-amd64.tar.gz',
+  'ed2941c4cac71086efe93e8376fdbc9cc10b2f2696ab8d5982aa5e7bb04b20fc  freedom-radicled-v0.1.1-darwin-arm64.tar.gz',
+  '4bfae4561fc0323584d47a1922b4485f0ce53e3f52ad13819fcb6d3c290c412e  freedom-radicled-v0.1.1-linux-amd64.tar.gz',
+  '484ade86a1759bae98487ea204ed1d8c508b7b4b9c0275be4d54016051f781a6  freedom-radicled-v0.1.1-linux-arm64.tar.gz',
+  '7a93a4db8d3ca934a9efb3968c2b151e6b00c5627a9fd40fb1851b6959bc5c4a *freedom-radicled-v0.1.1-windows-amd64.zip',
   '',
 ].join('\n');
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
@@ -265,14 +265,14 @@ describe('manifest and asset selection', () => {
   });
 
   test('a radicled-v tag names its archives by the version alone', () => {
-    expect(fetcher.archiveVersion(PINNED_TAG)).toBe('v0.1.0');
+    expect(fetcher.archiveVersion(PINNED_TAG)).toBe('v0.1.1');
     // Only the service's prefix is dropped.
     expect(fetcher.archiveVersion('cored-v0.1.0')).toBe('cored-v0.1.0');
     expect(fetcher.archiveVersion('ipfsd-v0.1.0')).toBe('ipfsd-v0.1.0');
     const { release } = releaseFixture(PINNED_TAG);
     for (const target of fetcher.TARGETS) {
       const asset = fetcher.assetFor(release.assets, target, PINNED_TAG);
-      expect(asset.name).toMatch(/^freedom-radicled-v0\.1\.0-/);
+      expect(asset.name).toMatch(/^freedom-radicled-v0\.1\.1-/);
       // The tag's own spelling is never an archive name.
       const prefixed = {
         ...asset,
@@ -358,7 +358,7 @@ describe('verified installation', () => {
       'Error:',
       expect.objectContaining({
         message: expect.stringMatching(
-          /^Checksum mismatch for freedom-radicled-v0\.1\.0-darwin-arm64\.tar\.gz: expected 60d983a3/
+          /^Checksum mismatch for freedom-radicled-v0\.1\.1-darwin-arm64\.tar\.gz: expected ed2941c4/
         ),
       })
     );
