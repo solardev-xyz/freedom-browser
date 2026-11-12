@@ -90,6 +90,11 @@ background tab's, say) is closed and rejected as above, and nothing happens
 for it. A large upload's wait for its turn ([Limits](#limits)) comes before
 the request reaches Freedom, so it doesn't count.
 
+An upload Freedom sends to the node (`swarm_publishData`,
+`swarm_publishFiles`) stops when its request ends that way, or its page
+navigates. It is also given up on, with `-32603`, when the node stops taking
+it for 60 s, or hasn't answered 300 s after taking it all.
+
 The feed and signing methods are still timed by the page shim: the budget
 covers the whole request, prompt included, and a user who takes longer than
 that on a prompt gets a `-32603 Request timed out` on the page even though
