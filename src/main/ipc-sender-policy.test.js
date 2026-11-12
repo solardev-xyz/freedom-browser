@@ -9,6 +9,7 @@ const {
   installIpcSenderPolicy,
   TIER,
   WEBVIEW_CHANNEL_TIERS,
+  PAGE_CHANNELS,
   CHROME_INDEX,
   PAGES_DIR,
 } = policy;
@@ -91,6 +92,40 @@ describe('isSenderAllowed', () => {
       // Not even an internal page: only the chrome renders these flows.
       expect(isSenderAllowed(channel, page('settings.html'))).toBe(false);
     }
+  });
+
+  // freedom-core design 0011, "The way in": a tab's top frame only, never an
+  // internal page, and, unlike every other channel, never the chrome.
+  test('the page channels take a tab webview\'s top frame and refuse the chrome', () => {
+    expect(PAGE_CHANNELS).toEqual(['page:hello', 'page:request']);
+    for (const channel of PAGE_CHANNELS) {
+      expect(WEBVIEW_CHANNEL_TIERS.get(channel)).toBe(TIER.PAGE);
+      expect(isSenderAllowed(channel, web())).toBe(true);
+      expect(isSenderAllowed(channel, web('bzz://abcd/'))).toBe(true);
+      // A keyless page still reaches main, which gives it no site methods.
+      expect(isSenderAllowed(channel, web('about:blank'))).toBe(true);
+      // The chrome has no page to speak for.
+      expect(isSenderAllowed(channel, chrome())).toBe(false);
+      // A sub-frame, a frame gone or detached, and a page outside a webview.
+      expect(isSenderAllowed(channel, web('https://evil.example/', { subFrame: true }))).toBe(false);
+      expect(isSenderAllowed(channel, web('https://evil.example/', { noFrame: true }))).toBe(false);
+      const detached = web();
+      detached.senderFrame.detached = true;
+      expect(isSenderAllowed(channel, detached)).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'window', url: 'https://evil.example/' }))).toBe(false);
+      expect(isSenderAllowed(channel, makeEvent({ type: 'browserView', url: 'https://evil.example/' }))).toBe(false);
+      // Our own pages have no site and use freedomAPI.
+      expect(isSenderAllowed(channel, page('settings.html'))).toBe(false);
+      expect(isSenderAllowed(channel, page('home.html'))).toBe(false);
+      // The chrome's index.html loaded inside a webview is a page like any other.
+      expect(isSenderAllowed(channel, makeEvent({ type: 'webview', url: fileUrl(CHROME_INDEX) }))).toBe(true);
+      // A sender whose frame throws when read is refused.
+      const throwing = web();
+      Object.defineProperty(throwing, 'senderFrame', { get() { throw new Error('disposed'); } });
+      expect(isSenderAllowed(channel, throwing)).toBe(false);
+    }
+    // page:event goes the other way (WebFrameMain.send): nothing takes it in main.
+    expect(isSenderAllowed('page:event', web())).toBe(false);
   });
 
   test('public bootstrap channels answer any sender and frame', () => {
@@ -313,7 +348,10 @@ describe('webview tiers mirror webview-preload.js', () => {
     // issued from installInternalPageTheme (internal pages).
     const outside = source.slice(0, start) + source.slice(end);
     for (const match of outside.matchAll(CALL)) {
-      add(match[2], match[2] === 'internal:get-theme' ? TIER.INTERNAL : TIER.PUBLIC);
+      const tier = match[2] === 'internal:get-theme'
+        ? TIER.INTERNAL
+        : PAGE_CHANNELS.includes(match[2]) ? TIER.PAGE : TIER.PUBLIC;
+      add(match[2], tier);
     }
     return tiers;
   }

@@ -48,6 +48,7 @@ const { app, BrowserWindow, ipcMain, safeStorage, webContents } = require('elect
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
+const { enablePageRequestTestHooks } = require('./page/page-requests');
 const {
   automationController,
   registerAutomationWebContents,
@@ -1290,6 +1291,10 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   installExternalProtocolRecorder();
   installUpdaterRecorder();
   installFeeReferenceFixture();
+  // The page request path (freedom-core design 0011, PRQ-2), which no
+  // provider method takes yet: specs route methods through it and serve
+  // them here.
+  globalThis.__FREEDOM_TEST_PAGE_REQUESTS__ = enablePageRequestTestHooks();
   exposeGlobalShim(agentRuntime);
   return true;
 }

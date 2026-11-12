@@ -95,16 +95,23 @@ function buildEthereumInjectSource(uuid) {
 
 /**
  * The command-line switch for a tab webview's renderer: base64 of a JSON
- * object `{ isPrivate, internalPages, ethereum? }`. A private webview never
- * gets the wallet providers, so its switch leaves the provider out.
+ * object `{ isPrivate, internalPages, ethereum?, testPageRoutes? }`. A
+ * private webview never gets the wallet providers, so its switch leaves the
+ * provider out. `testPageRoutes` is the E2E harness's: the provider methods
+ * the preload sends to main on `page:request` for a test (freedom-core
+ * design 0011, PRQ-2). Main passes it only in test mode, and only when there
+ * are some.
  */
-function buildWebviewBootSwitch({ isPrivate }) {
+function buildWebviewBootSwitch({ isPrivate, testPageRoutes = [] }) {
   const boot = { isPrivate: isPrivate === true, internalPages };
   if (!boot.isPrivate) {
     boot.ethereum = {
       info: getEthereumProviderInfoStatic(),
       source: getEthereumInjectSource(),
     };
+    if (Array.isArray(testPageRoutes) && testPageRoutes.length > 0) {
+      boot.testPageRoutes = testPageRoutes.filter((route) => typeof route === 'string');
+    }
   }
   return WEBVIEW_BOOT_SWITCH + Buffer.from(JSON.stringify(boot), 'utf-8').toString('base64');
 }

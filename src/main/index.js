@@ -477,6 +477,7 @@ const { registerSwarmPermissionsIpc } = require('./swarm/swarm-permissions');
 const { registerSwarmProviderIpc } = require('./swarm/swarm-provider-ipc');
 const { registerRadiclePermissionsIpc } = require('./radicle/radicle-permissions');
 const { registerRadicleProviderIpc } = require('./radicle/radicle-provider-ipc');
+const { registerPageRequestsIpc } = require('./page/page-requests');
 const { registerFeedStoreIpc } = require('./swarm/feed-store');
 const { registerPermissionManifestIpc } = require('./swarm/permission-manifests');
 const { registerGithubBridgeIpc, cleanupTempDirs } = require('./github-bridge');
@@ -695,6 +696,9 @@ async function bootstrap() {
   registerSwarmProviderIpc();
   registerRadiclePermissionsIpc();
   registerRadicleProviderIpc();
+  // page:hello and page:request (freedom-core design 0011). No provider
+  // method is served on them yet.
+  registerPageRequestsIpc();
   registerFeedStoreIpc();
   registerPermissionManifestIpc();
 

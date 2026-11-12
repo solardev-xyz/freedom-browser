@@ -30,6 +30,11 @@
  *       PROFILE_MANAGER settings.html or profiles.html.
  *     `ipc-sender-policy.test.js` parses webview-preload.js and fails if a
  *     channel is added there without a tier here, or given a different tier.
+ *   - The page channels (`page:hello`, `page:request`; freedom-core design
+ *     0011, "The way in") are the one exception to the chrome's reach: they
+ *     take only a tab webview's top frame, and never an internal page or the
+ *     chrome, which has no page to speak for. Main then attests the sender
+ *     itself (src/main/page/page-documents.js).
  *   - Anything else (another webContents type, a sub-frame of the chrome, a
  *     frame that already navigated away) is refused.
  *
@@ -59,6 +64,7 @@ const TIER = Object.freeze({
   SETTINGS: 'settings',
   AGENT_LAUNCHER: 'agent-launcher',
   PROFILE_MANAGER: 'profile-manager',
+  PAGE: 'page',
 });
 
 // Channels webview-preload.js reaches main on, outside any freedomAPI guard.
@@ -198,8 +204,18 @@ const PROFILE_MANAGER_CHANNELS = [
   'profile:request-create-modal',
 ];
 
+// A page's own requests to main (freedom-core design 0011, PRQ-2): a tab
+// webview's top frame that isn't an internal page. Unlike every other
+// channel, these refuse the chrome.
+const PAGE_CHANNELS = [
+  'page:hello',
+  'page:request',
+];
+const PAGE_CHANNEL_SET = new Set(PAGE_CHANNELS);
+
 const WEBVIEW_CHANNEL_TIERS = new Map([
   ...PUBLIC_CHANNELS.map((c) => [c, TIER.PUBLIC]),
+  ...PAGE_CHANNELS.map((c) => [c, TIER.PAGE]),
   ...INTERNAL_CHANNELS.map((c) => [c, TIER.INTERNAL]),
   ...SETTINGS_CHANNELS.map((c) => [c, TIER.SETTINGS]),
   ...PROFILE_MANAGER_CHANNELS.map((c) => [c, TIER.PROFILE_MANAGER]),
@@ -265,10 +281,23 @@ function internalPageFileOf(event) {
   return internalPageFileForPath(topFrameFilePath(event));
 }
 
+// A tab webview's top frame, not detached, and not one of our internal pages.
+function isPageSender(event) {
+  if (senderType(event) !== 'webview') return false;
+  try {
+    const frame = event.senderFrame;
+    if (!frame || frame.detached || frame !== event.sender.mainFrame) return false;
+  } catch {
+    return false;
+  }
+  return internalPageFileOf(event) === null;
+}
+
 /**
  * @returns {boolean} whether `event`'s sender may use `channel`.
  */
 function isSenderAllowed(channel, event) {
+  if (PAGE_CHANNEL_SET.has(channel)) return isPageSender(event);
   if (isChromeSender(event)) return true;
   // The isolated PDF worker is a separate BrowserWindow, not chrome or a tab.
   // Only its result channel crosses this boundary; PdfProcessor additionally
@@ -424,6 +453,7 @@ module.exports = {
   INTERNAL_CHANNELS,
   SETTINGS_CHANNELS,
   PROFILE_MANAGER_CHANNELS,
+  PAGE_CHANNELS,
   CHROME_INDEX,
   PAGES_DIR,
 };
