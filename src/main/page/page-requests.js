@@ -96,6 +96,7 @@ const {
   timeoutError,
 } = require('./page-methods');
 const { createPageDocuments, transportKeyOf } = require('./page-documents');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 const signingConfirmation = require('../wallet/signing-confirmation');
 const { CHANNELS: PROMPT_CHANNELS, KIND_SET, WALLET_KINDS, createPagePrompts } = require('./page-prompts');
 
@@ -326,6 +327,11 @@ function createPageRequests({
       keyless: undefined,
       // What runs once the answer has reached the document (`afterAnswer`).
       after: null,
+      // Resolves once the record is answered, whether or not the document
+      // is still there, with how (`whenAnswered`).
+      answeredGate: null,
+      openAnsweredGate: null,
+      answerOutcome: null,
       // Aborted when the record is answered, for a wallet operation it runs
       // (`walletOperation`).
       aborter: null,
@@ -391,6 +397,10 @@ function createPageRequests({
       value = { ...record.keyless };
     }
     record.resolve(current ? value : GONE);
+    // `ok`: the document that asked got a result, not an error (its
+    // deadline, a name lost) and not nothing (it had gone).
+    record.answerOutcome = Object.freeze({ delivered: current, ok: Boolean(current && value && !value.error) });
+    record.openAnsweredGate?.(record.answerOutcome);
     trace({ kind: current ? 'answered' : 'gone', id: record.id, value: current ? value : undefined });
     const after = record.after;
     record.after = null;
@@ -509,10 +519,55 @@ function createPageRequests({
       afterAnswer: (fn) => {
         if (typeof fn === 'function' && !record.answered) record.after = fn;
       },
+      // Resolves once main has answered the record, the document there or
+      // gone, with `{ delivered, ok }`: for events queued at an effect, sent
+      // after the answer, and to the document that asked only if it got a
+      // result.
+      whenAnswered: () => whenAnswered(record),
       liveDocuments: () => documents.liveDocuments(),
       sendEvent: (target, event, data) => sendEvent(target, record.provider, event, data),
+      inGrantOrder: (key, job) => inGrantOrder(key, job),
+      inChainOrder: (windowId, job) => inChainOrder(windowId, job),
       copied: (label) => copied(record, label),
     });
+  }
+
+  function whenAnswered(record) {
+    if (record.answered) return Promise.resolve(record.answerOutcome);
+    if (!record.answeredGate) {
+      record.answeredGate = new Promise((resolve) => {
+        record.openAnsweredGate = resolve;
+      });
+    }
+    return record.answeredGate;
+  }
+
+  // Events in order (design 0011, "Events"; PRQ-6): one change's sends run
+  // after the last change's in the same domain, so each document hears the
+  // changes in their order, and the last it hears is main's state, even
+  // when a send waits on a name's resolution. A domain per permission key
+  // for its grant's events (a connect, a revocation, an account change), and
+  // one per window for its chain's.
+  const eventQueues = new Map();
+
+  function inOrder(domain, job) {
+    const before = eventQueues.get(domain) || Promise.resolve();
+    const done = before.then(() => job()).catch(() => undefined);
+    eventQueues.set(domain, done);
+    done.then(() => {
+      if (eventQueues.get(domain) === done) eventQueues.delete(domain);
+    });
+    return done;
+  }
+
+  /** Run `job` (it sends a grant's events for `key`) after the key's earlier ones. */
+  function inGrantOrder(key, job) {
+    return inOrder(`grant:${normalizeOrigin(key)}`, job);
+  }
+
+  /** Run `job` (it sends window `windowId`'s chain events) after its earlier ones. */
+  function inChainOrder(windowId, job) {
+    return inOrder(`chain:${windowId}`, job);
   }
 
   /**
@@ -923,6 +978,24 @@ function createPageRequests({
    * @returns {Promise<{ok: true} | {ok: false, reason: string}>}
    */
   async function sendEvent(target, provider, event, data) {
+    const outcome = await deliverEvent(target, provider, event, data);
+    if (!outcome.ok) {
+      trace({
+        kind: 'event-refused',
+        provider,
+        event,
+        guest: target?.guest ?? null,
+        navigation: target?.navigation ?? null,
+        reason: outcome.reason,
+      });
+    }
+    return outcome;
+  }
+
+  // The checks and the send. Up to its first wait it runs in the caller's
+  // turn: an event that resolves no name is sent before `sendEvent` returns
+  // its promise, so events sent one after another arrive in that order.
+  async function deliverEvent(target, provider, event, data) {
     const row = eventRow(provider, event);
     if (!row) return { ok: false, reason: 'unlisted' };
     if (!target || !documents.isCurrent(target)) return { ok: false, reason: 'navigated' };
@@ -987,6 +1060,9 @@ function createPageRequests({
 
   return {
     track: (contents) => documents.track(contents),
+    liveDocuments: () => documents.liveDocuments(),
+    inGrantOrder,
+    inChainOrder,
     bindName,
     hello,
     reserve,
@@ -1080,6 +1156,7 @@ function enablePageRequestTestHooks() {
       sharedHooks.holdRequest = typeof hold === 'function' ? hold : undefined;
     },
     promptState: () => getPageRequests().promptState(),
+    liveDocuments: () => getPageRequests().liveDocuments(),
     sendEvent: (target, provider, event, data) => getPageRequests().sendEvent(target, provider, event, data),
     stats: () => getPageRequests().stats(),
   };

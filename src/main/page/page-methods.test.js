@@ -215,6 +215,10 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
     };
     add('ethereum', dappProvider, /sendProviderEvent\(webview, '([A-Za-z]+)'/g);
     add('ethereum', read('renderer/lib/wallet/dapp-connect.js'), /event: '([A-Za-z]+)'/g);
+    // Main's own Ethereum events: a moved method's (PRQ-4), and the chain
+    // switcher's and a grant's changes (PRQ-6).
+    add('ethereum', read('main/page/page-ethereum.js'), /context\.sendEvent\([A-Za-z]+, '([A-Za-z]+)'/g);
+    add('ethereum', read('main/page/page-events.js'), /sendAll\(targets, '([A-Za-z]+)'/g);
     add('swarm', read('renderer/lib/wallet/swarm-connect.js'), /event: '([A-Za-z]+)'/g);
     add('swarm', read('main/swarm/swarm-provider-ipc.js'), /event: '([A-Za-z]+)'/g);
     add('radicle', read('renderer/lib/radicle-provider.js'), /sendRadicleEvent\(webview, '([A-Za-z]+)'/g);
@@ -226,7 +230,6 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
         'ethereum:accountsChanged',
         'ethereum:chainChanged',
         'ethereum:connect',
-        'ethereum:disconnect',
         'swarm:connect',
         'swarm:disconnect',
         'swarm:message',
@@ -247,6 +250,11 @@ describe('the method table (freedom-core design 0011, "Which methods check the n
     // today, so it has no row and main sends none.
     expect(listened.ethereum).toContain('message');
     expect(eventRow('ethereum', 'message')).toBeNull();
+    // Ethereum's `disconnect` keeps its row ("as today"), though nothing
+    // sends it: the chrome's one emitter was never called, and went with
+    // the chrome's other Ethereum event emitters in PRQ-6.
+    expect(sent.has('ethereum:disconnect')).toBe(false);
+    expect(eventRow('ethereum', 'disconnect')).not.toBeNull();
   });
 
   test('a method or event with no row is null, prototype names included', () => {

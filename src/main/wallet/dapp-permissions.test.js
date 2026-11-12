@@ -44,6 +44,8 @@ const {
   removeTransactionAutoApprove,
   getSigningAutoApprove,
   setSigningAutoApprove,
+  updateWalletIndex,
+  onGrantChanged,
   registerDappPermissionsIpc,
   _resetCache,
 } = require('./dapp-permissions');
@@ -436,5 +438,81 @@ describe('dapp-permissions — the chrome sets no signing rule (0011 PRQ-5a)', (
     setSigningAutoApprove('https://swap.example', true);
     expect(ipcHandlers['dapp:set-signing-auto-approve']({}, 'https://swap.example', false)).toBe(true);
     expect(getSigningAutoApprove('https://swap.example')).toBe(false);
+  });
+});
+
+// freedom-core design 0011, PRQ-6: main tells every live document of a key
+// when its grant is revoked or its account changes (page/page-events.js),
+// so the store says when either happens, with the normalized key.
+describe('dapp-permissions — a revoked grant or a changed account is told (0011 PRQ-6)', () => {
+  let heard;
+  let stop;
+
+  beforeEach(() => {
+    heard = [];
+    stop = onGrantChanged((change) => heard.push({ ...change }));
+  });
+
+  afterEach(() => stop());
+
+  test('a revocation, by any form of the key, is told once with the normalized key; nothing to revoke tells nothing', () => {
+    grantPermission('vitalik.eth', 0, 1);
+    expect(heard).toEqual([]);
+    expect(revokePermission('ens://VITALIK.eth/blog')).toBe(true);
+    expect(heard).toEqual([{ key: 'vitalik.eth', walletIndex: null }]);
+    expect(revokePermission('vitalik.eth')).toBe(false);
+    expect(heard).toHaveLength(1);
+  });
+
+  test('the chrome\'s dapp:revoke-permission is told too', () => {
+    registerDappPermissionsIpc();
+    grantPermission('https://app.example', 0, 1);
+    expect(ipcHandlers['dapp:revoke-permission']({}, 'https://app.example/path')).toBe(true);
+    expect(heard).toEqual([{ key: 'https://app.example', walletIndex: null }]);
+  });
+
+  test('a deleted account\'s grants are each told as revoked', () => {
+    grantPermission('https://a.example', 2, 1);
+    grantPermission('https://b.example', 2, 1);
+    grantPermission('https://c.example', 3, 1);
+    revokePermissionsForWalletIndex(2);
+    expect(heard).toEqual([
+      { key: 'https://a.example', walletIndex: null },
+      { key: 'https://b.example', walletIndex: null },
+    ]);
+    revokePermissionsForWalletIndex(9);
+    expect(heard).toHaveLength(2);
+  });
+
+  test('an account change is told with the new account, and only when it changes', () => {
+    grantPermission('https://app.example', 0, 1);
+    expect(updateWalletIndex('https://app.example', 0)).toBe(true);
+    expect(heard).toEqual([]);
+    expect(updateWalletIndex('https://app.example', 1)).toBe(true);
+    expect(heard).toEqual([{ key: 'https://app.example', walletIndex: 1 }]);
+    expect(updateWalletIndex('https://none.example', 1)).toBe(false);
+    expect(heard).toHaveLength(1);
+  });
+
+  test('a grant written, its chain, its rules and its last use are not told here', () => {
+    grantPermission('https://app.example', 0, 1);
+    setSigningAutoApprove('https://app.example', true);
+    addTransactionAutoApprove('https://app.example', '0x' + '1'.repeat(40), '0x095ea7b3', 1, 0);
+    expect(heard).toEqual([]);
+  });
+
+  test('one listener\'s failure does not keep another from hearing; a stopped listener hears nothing', () => {
+    const stopThrowing = onGrantChanged(() => {
+      throw new Error('boom');
+    });
+    grantPermission('https://app.example', 0, 1);
+    expect(revokePermission('https://app.example')).toBe(true);
+    expect(heard).toEqual([{ key: 'https://app.example', walletIndex: null }]);
+    stopThrowing();
+    stop();
+    grantPermission('https://app.example', 0, 1);
+    revokePermission('https://app.example');
+    expect(heard).toHaveLength(1);
+    expect(onGrantChanged('not a function')()).toBeUndefined();
   });
 });

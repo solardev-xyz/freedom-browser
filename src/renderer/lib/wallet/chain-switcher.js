@@ -1,13 +1,15 @@
 /**
  * Chain Switcher Module
  *
- * Chain dropdown, selection, dApp chain events.
+ * Chain dropdown and selection. The selection is main's to tell pages
+ * (freedom-core design 0011, PRQ-6): main hears every change here
+ * (`wallet:select-chain`) and sends `chainChanged` to every page of this
+ * window whose chain follows it. The chrome sends no page an event.
  */
 
 import { walletState } from './wallet-state.js';
 import { escapeHtml } from './wallet-utils.js';
 import { renderAssetList, loadChainRegistry } from './balance-display.js';
-import { getActiveWebview, emitChainChanged } from '../dapp-provider.js';
 
 // DOM references
 let chainSwitcherBtn;
@@ -17,20 +19,41 @@ let chainSwitcherLogoPlaceholder;
 let chainSwitcherDropdown;
 let chainSwitcherList;
 
+// The number of main's latest page selection this switcher has shown
+// (freedom-core design 0011, PRQ-6). Reported with every pick, so main can
+// refuse one made before the switcher showed it.
+let seenSequence = 0;
+
 /**
  * Write the selected chain, and tell main: main answers pages' Ethereum
  * reads (`eth_chainId`, `net_version`, the RPC reads) with this window's
- * selection (freedom-core design 0011, PRQ-3). Told before any
- * `chainChanged` goes to a page, so a page that asks on that event reads
- * the new chain.
+ * selection (freedom-core design 0011, PRQ-3), and tells the window's pages
+ * of the change itself (PRQ-6), after it has recorded it, so a page that
+ * asks on its `chainChanged` reads the new chain.
  */
 function writeSelectedChain(chainId) {
   walletState.selectedChainId = chainId;
   try {
-    window.wallet?.selectChain?.(chainId);
+    window.wallet?.selectChain?.(chainId, seenSequence);
   } catch (err) {
     console.error('[WalletUI] Failed to report the selected chain:', err);
   }
+}
+
+/**
+ * Show a selection main made, `{ chainId, sequence }`, unless this switcher
+ * has shown a newer one. Main has it already, so nothing goes back.
+ */
+function showMainSelection(selection) {
+  const sequence = selection?.sequence;
+  const chainId = selection?.chainId;
+  if (!Number.isSafeInteger(sequence) || sequence <= seenSequence) return;
+  if (chainId !== null && !(Number.isSafeInteger(chainId) && chainId > 0)) return;
+  seenSequence = sequence;
+  if (walletState.selectedChainId === chainId) return;
+  walletState.selectedChainId = chainId;
+  updateChainSwitcherDisplay();
+  renderAssetList();
 }
 
 export function initChainSwitcher() {
@@ -49,10 +72,10 @@ export function initChainSwitcher() {
 
   // A page's wallet_switchEthereumChain runs in main now (freedom-core
   // design 0011, PRQ-4), which selected the chain for this window and told
-  // the page: the switcher shows it, and tells no page again.
-  window.wallet?.onPageSelectedChain?.((chainId) => {
-    if (Number.isSafeInteger(chainId) && chainId > 0) setSelectedChainId(chainId);
-  });
+  // its pages: the switcher shows it, and reports nothing back. Main
+  // numbers its selections, and refuses a pick made before the switcher
+  // showed its latest, which it then shows again (PRQ-6).
+  window.wallet?.onPageSelectedChain?.(showMainSelection);
 }
 
 function setupChainSwitcher() {
@@ -193,21 +216,11 @@ async function renderChainList() {
 function selectChain(chainId) {
   closeChainDropdown();
 
-  const previousChainId = walletState.selectedChainId;
+  // Main tells the window's pages (freedom-core design 0011, PRQ-6).
   writeSelectedChain(chainId);
 
   updateChainSwitcherDisplay();
   renderAssetList();
-
-  // Emit chainChanged event to active webview if chain actually changed
-  if (previousChainId !== chainId && chainId !== null) {
-    const webview = getActiveWebview();
-    if (webview) {
-      const chainIdHex = '0x' + chainId.toString(16);
-      emitChainChanged(webview, chainIdHex);
-      console.log('[WalletUI] Emitted chainChanged to dApp:', chainIdHex);
-    }
-  }
 }
 
 /**
