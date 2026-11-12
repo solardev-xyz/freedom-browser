@@ -23,12 +23,6 @@ const ROOT = path.resolve(__dirname, '..');
 const FORGED_PRELOAD = path.join(__dirname, 'page-budgets-forged-preload.js');
 const MiB = 1024 * 1024;
 const REST = 64 * 1024;
-// The measurement's resolution, and nothing else: main's heap and external
-// memory after a full GC also count whatever main allocated between the
-// baseline and the copy that isn't the request's (other IPC, timers, the
-// harness's trace). Observed up to about 130 KiB. Main's own bookkeeping of
-// the request is in its charge (16 KiB), not in this.
-const RESOLUTION = 256 * 1024;
 
 // The page builds each request: `form` filling `size`, the request's whole
 // size by the walk (its nonce, provider, method and the property names).
@@ -78,9 +72,10 @@ async function instrument(electronApp) {
       const memory = process.memoryUsage();
       return memory.heapUsed + memory.external;
     };
-    const state = { baseline: 0, copies: [], served: [], forged: [] };
+    const state = { baseline: 0, copies: [], accounted: null, unpaid: 0, served: [], forged: [] };
     state.mark = () => {
       state.copies = [];
+      state.accounted = null;
       state.baseline = used();
     };
     globalThis.__budgets = state;
@@ -99,35 +94,53 @@ async function instrument(electronApp) {
     // Buffer, an ArrayBuffer viewed.
     const normalizeBytes = (bytes) => (Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes));
     const isBinary = (value) => value instanceof Uint8Array || value instanceof ArrayBuffer;
+    // What V8 holds a value in: a string at one or two bytes a character,
+    // binary data at its length. Null for anything else (the values form),
+    // which only the heap measurement accounts for.
+    const bytesOf = (value) => {
+      if (typeof value === 'string') {
+        for (let i = 0; i < value.length; i += 1) if (value.charCodeAt(i) > 0xff) return 2 * value.length;
+        return value.length;
+      }
+      return isBinary(value) ? value.byteLength : null;
+    };
     hooks.setDispatch(async (context) => {
       const { method, params } = context;
       const data = Array.isArray(params) ? params[0] : params && params.data;
       const live = [];
+      const accounted = { ipc: bytesOf(data), copies: [] };
+      state.accounted = accounted;
+      // A copy the request's path makes, accounted at its own size, then
+      // reported to main (whose hook measures the heap).
+      const copy = (label, value, bytes = bytesOf(value)) => {
+        live.push(value);
+        accounted.copies.push({ label, bytes });
+        // A test's unpaid copy: live, unaccounted, and not in the charge.
+        if (state.unpaid > 0 && live.length === 1) live.push(Buffer.alloc(state.unpaid, 1));
+        context.copied(label);
+      };
       state.served.push({ method, data: Buffer.isBuffer(data) ? 'Buffer' : data instanceof Uint8Array ? 'Uint8Array' : typeof data });
       if (method === 'swarm_publishData') {
         if (typeof data === 'string') {
-          live.push(Buffer.from(data, 'utf8'));
-          context.copied('fetch');
+          copy('fetch', Buffer.from(data, 'utf8'));
         } else if (isBinary(data)) {
-          live.push(normalizeBytes(data));
-          context.copied('normalizeBytes');
-          live.push(Buffer.from(live[0]));
-          context.copied('fetch');
+          // A view of an ArrayBuffer, or a Buffer, is no copy.
+          const bytes = normalizeBytes(data);
+          copy('normalizeBytes', bytes, bytes === data || !(data instanceof Uint8Array) ? 0 : bytes.byteLength);
+          copy('fetch', Buffer.from(bytes));
         } else {
-          context.copied('validated');
+          copy('validated', null, 0);
         }
       } else if (method === 'swarm_publishFiles') {
         if (isBinary(data)) {
-          live.push(normalizeBytes(data));
-          context.copied('normalizeBytes');
+          const bytes = normalizeBytes(data);
+          copy('normalizeBytes', bytes, bytes === data || !(data instanceof Uint8Array) ? 0 : bytes.byteLength);
         }
-        live.push(Buffer.alloc(1024 * 1024));
-        context.copied('stream');
+        copy('stream', Buffer.alloc(1024 * 1024));
       } else {
-        live.push(JSON.stringify(params, hex));
-        context.copied('json');
-        live.push(Buffer.from(live[0], 'utf8'));
-        context.copied('body');
+        const json = JSON.stringify(params, hex);
+        copy('json', json);
+        copy('body', Buffer.from(json, 'utf8'));
       }
       return { result: live.length };
     });
@@ -140,6 +153,17 @@ const state = (electronApp) =>
     forged: globalThis.__budgets.forged.slice(),
     trace: globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice(),
   }));
+
+/** Run one case: main's measured peak at each copy, and the bytes its path accounted. */
+async function measured(electronApp, win, provider, method, form, size) {
+  await electronApp.evaluate(() => globalThis.__budgets.mark());
+  const answer = await ask(win, provider, method, form, size);
+  const { copies, accounted } = await electronApp.evaluate(() => ({
+    copies: globalThis.__budgets.copies.slice(),
+    accounted: globalThis.__budgets.accounted,
+  }));
+  return { answer, copies, accounted };
+}
 
 const activeGuestId = (win) =>
   win.evaluate(() => document.querySelector('webview:not(.hidden)')?.getWebContentsId() ?? null);
@@ -279,33 +303,73 @@ test('every method\'s largest legal request, in each worst form, stays within it
   expect(rows).toHaveLength(66);
 
   const FORMS = ['u8', 'two-byte', 'control', 'two-byte-control', 'values'];
-  const worst = {};
-  let overrun = { bytes: 0 };
+  const formsOf = (method) => (method === 'swarm_publishFiles' ? ['u8', 'two-byte', 'values'] : FORMS);
+  const groupOf = (method) => (method === 'swarm_publishFiles' || method === 'swarm_publishData' ? method : 'other');
+
+  // Each path once first, unmeasured: the first request down a path makes
+  // main compile its code (bytecode and feedback), which main keeps
+  // whatever the request.
+  const warmed = new Set();
   for (const { provider, method, size } of rows) {
-    const forms = method === 'swarm_publishFiles' ? ['u8', 'two-byte', 'values'] : FORMS;
-    for (const form of forms) {
-      await electronApp.evaluate(() => globalThis.__budgets.mark());
-      const answer = await ask(win, provider, method, form, size);
-      const copies = await electronApp.evaluate(() => globalThis.__budgets.copies.slice());
+    for (const form of formsOf(method)) {
+      const path = `${provider} ${groupOf(method)} ${form}`;
+      if (warmed.has(path)) continue;
+      warmed.add(path);
+      expect((await measured(electronApp, win, provider, method, form, size)).answer, path).toEqual({ result: expect.any(Number) });
+    }
+  }
+
+  const worst = {};
+  let closest = { spare: Infinity };
+  for (const { provider, method, size } of rows) {
+    for (const form of formsOf(method)) {
+      const { answer, copies, accounted } = await measured(electronApp, win, provider, method, form, size);
       const label = `${method} ${form}`;
       expect(answer, label).toEqual({ result: expect.any(Number) });
       expect(copies.length, label).toBeGreaterThan(0);
+      const charge = copies[0].charge;
+      // Accounted: the IPC value and each copy at its own size, within the
+      // charge exactly.
+      if (accounted.ipc !== null) {
+        const total = accounted.ipc + accounted.copies.reduce((sum, c) => sum + c.bytes, 0);
+        expect({ label, accounted: total, within: total <= charge }).toEqual({ label, accounted: total, within: true });
+      }
+      // Measured: main's heap and external memory at each copy, the IPC
+      // value, every live copy and main's own bookkeeping included, within
+      // the charge, with no tolerance.
       for (const copy of copies) {
         expect({ label, copy: copy.label, inPlace: copy.inPlace }).toEqual({ label, copy: copy.label, inPlace: true });
-        expect({ label, copy: copy.label, within: copy.used <= copy.charge + RESOLUTION, used: copy.used, charge: copy.charge })
-          .toEqual(expect.objectContaining({ label, copy: copy.label, within: true }));
-        if (copy.used - copy.charge > overrun.bytes) overrun = { bytes: copy.used - copy.charge, label, copy: copy.label };
+        expect({ label, copy: copy.label, used: copy.used, charge, within: copy.used <= charge })
+          .toEqual({ label, copy: copy.label, used: copy.used, charge, within: true });
+        if (charge - copy.used < closest.spare) closest = { spare: charge - copy.used, label, copy: copy.label };
       }
       const peak = Math.max(...copies.map((copy) => copy.used));
-      const ratio = peak / copies[0].charge;
-      const group = method === 'swarm_publishFiles' || method === 'swarm_publishData' ? method : 'other';
-      if (!worst[group] || ratio > worst[group].ratio) worst[group] = { form, method, peak, charge: copies[0].charge, ratio };
+      const group = groupOf(method);
+      if (!worst[group] || peak / charge > worst[group].ratio) worst[group] = { form, method, peak, charge, ratio: peak / charge };
     }
   }
-  // The worst case of each group, and how a Uint8Array reached main, for the
-  // record.
+
+  // The measurement sees an unpaid copy: the largest swarm_publishData with
+  // one more live copy, of 128 KiB and of 32 KiB, that its charge doesn't
+  // pay for, measures over its charge.
+  const unpaid = {};
+  for (const bytes of [128 * 1024, 32 * 1024]) {
+    await electronApp.evaluate((_electron, n) => {
+      globalThis.__budgets.unpaid = n;
+    }, bytes);
+    const { answer, copies } = await measured(electronApp, win, 'swarm', 'swarm_publishData', 'u8', 10 * MiB + REST);
+    await electronApp.evaluate(() => {
+      globalThis.__budgets.unpaid = 0;
+    });
+    expect(answer).toEqual({ result: 3 });
+    unpaid[bytes] = Math.max(...copies.map((copy) => copy.used - copy.charge));
+    expect({ bytes, over: unpaid[bytes] > 0 }).toEqual({ bytes, over: true });
+  }
+
+  // The worst case of each group, the least spare charge, the unpaid copies'
+  // overruns, and how a Uint8Array reached main, for the record.
   const served = (await state(electronApp)).served;
-  console.log(JSON.stringify({ worst, overrun, binary: [...new Set(served.map((s) => s.data))] }, null, 2));
+  console.log(JSON.stringify({ worst, closest, unpaid, binary: [...new Set(served.map((s) => s.data))] }, null, 2));
   // The two-byte string of control characters is the generic path's worst:
   // above the design's 16 copies of its size, within 24.
   expect(worst.other.form).toBe('two-byte-control');
