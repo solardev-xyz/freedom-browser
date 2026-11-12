@@ -24,6 +24,19 @@
  * `{ says: false }` the head leaves `body` out and opens the stream all the
  * same, as freedom-radicled 0.1.0's did.
  *
+ * **Network operations** (0008, Methods `rad.connect_seeds` and
+ * `rad.clone`): a script's `clone` handler runs the clone. `child.claim(id)`
+ * is the network start, as the service's `Ticket::claim`: null if main's
+ * cancel came first (the connection has answered it `cancelled`, and
+ * nothing starts), else the clone's token, `{ cancelled }`, which main's
+ * cancel flips from then on (`onCancel` runs), the connection answering
+ * nothing: the handler answers once its clone stops. `child.progress(id)`
+ * is the request's progress hub (fake-radicled-progress.js): the service's
+ * bounded queue, written one event at a time, which the handler flushes
+ * before it answers. With `stdoutHighWaterMark`, the child's stdout holds
+ * that many bytes before a write waits for main to read: a reader that
+ * pauses (`child.stdout.pause()`) holds the hub's next event back.
+ *
  * As the real service does:
  * - **it checks its environment first** (0008, "Spawn and lock"): with any
  *   `RAD_*`, `GIT_*`, `SSH_AUTH_SOCK`, `LISTEN_*` or `XDG_CONFIG_HOME`, or
@@ -37,7 +50,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { PassThrough } = require('stream');
 const { FakeIpfsdChild, networkOf } = require('./fake-ipfsd');
+const { ProgressHub } = require('./fake-radicled-progress');
 const { PINNED_RADICLED_VERSION } = require('../../src/main/radicle/radicled-pin');
 
 /** The confinement a fake process reports (freedom-core design 0010). */
@@ -127,6 +142,48 @@ class FakeRadicledChild extends FakeIpfsdChild {
     // then it exits 64 before it reads a frame.
     this.refused = envRefusal(env);
     this.methods = new Map(); // id -> method, for the start steps' errors
+    if (script.stdoutHighWaterMark) {
+      this.stdout = new PassThrough({ highWaterMark: script.stdoutHighWaterMark });
+    }
+    // The network requests past their start: id -> their token.
+    this.claimed = new Map();
+    // The clones' progress: id -> their hub.
+    this.hubs = new Map();
+  }
+
+  onFrame(frame) {
+    const id = frame.message?.type === 'cancel' ? frame.message.id : null;
+    const token = id === null ? null : this.claimed.get(id);
+    if (token) {
+      // Past the network start, main's cancel reaches the clone's token
+      // alone: the connection answers nothing.
+      this.cancels.push(id);
+      if (!token.cancelled) {
+        token.cancelled = true;
+        token.onCancel?.();
+      }
+      return;
+    }
+    super.onFrame(frame);
+  }
+
+  /** The network start of request `id`: its token, or null if main's cancel
+   * came first (answered `cancelled`; nothing starts). */
+  claim(id) {
+    if (this.cancels.includes(id)) return null;
+    const token = { cancelled: false, onCancel: null };
+    this.claimed.set(id, token);
+    return token;
+  }
+
+  /** Request `id`'s progress hub, made at its first use. */
+  progress(id) {
+    let hub = this.hubs.get(id);
+    if (!hub) {
+      hub = new ProgressHub(this, id);
+      this.hubs.set(id, hub);
+    }
+    return hub;
   }
 
   answer(message) {
