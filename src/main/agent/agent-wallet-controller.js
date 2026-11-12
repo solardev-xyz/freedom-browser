@@ -650,9 +650,10 @@ class AgentWalletController {
     const signature = personal
       ? await signer.signMessage(payload.params?.[0])
       : await signer.signTypedData(typedData);
-    // A grant held under the attested key is touched only while the page
-    // still holds it.
-    if (!context.attested || context.effectAllowed() === true) this.updateLastUsed(permissionKey, chain.chainId);
+    // A grant held under the attested key is touched only while main still
+    // holds the request after the signature's wait: the name checked again,
+    // and the page under its key in the same run as the write.
+    if (!context.attested || (await this.#mainStillAllows(context))) this.updateLastUsed(permissionKey, chain.chainId);
     return {
       providerResult: signature,
       receipt: {
@@ -669,10 +670,14 @@ class AgentWalletController {
   // For a request main attested: main's gates, just before the effect.
   async #mainAllows(context) {
     if (!context.attested) return;
-    const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
-    if (!ready || typeof context.effectAllowed !== 'function' || context.effectAllowed() !== true) {
+    if (!(await this.#mainStillAllows(context))) {
       throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
     }
+  }
+
+  async #mainStillAllows(context) {
+    const ready = typeof context.beforeEffect === 'function' && (await context.beforeEffect()) === true;
+    return ready && typeof context.effectAllowed === 'function' && context.effectAllowed() === true;
   }
 
   async #approve(context, request) {

@@ -930,6 +930,63 @@ describe('a DNS name over IPNS that moves off its key', () => {
     expect(env.minted()).toEqual([]);
   });
 
+  // A signature can wait (a Ledger, the phone bridge): what main writes
+  // under the name after it, it writes only once the name answers again.
+  const heldSignature = (env) => {
+    const device = deferred();
+    env.signer.signMessage.mockImplementationOnce(async (message) => {
+      await device.promise;
+      env.state.signed.push(['message', message]);
+      return '0xheldsig';
+    });
+    return device;
+  };
+
+  test('moved while an approved signature waits on its device: no "always allow" rule, no last use, no signature to the page', async () => {
+    const { env, page } = named();
+    const device = heldSignature(env);
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+    await flush();
+    expect(env.signer.signMessage).toHaveBeenCalledTimes(1);
+    env.names.set(NAME, OTHER_IPNS_KEY);
+    device.resolve();
+    expect(await answer).toEqual(NO_ADDRESS);
+    expect(env.state.rules).toEqual([]);
+    expect(env.deps.signing.setSigningAutoApprove).not.toHaveBeenCalled();
+    expect(env.state.lastUsed).toEqual([]);
+    expect(env.state.permissions.get(NAME).autoApprove).toBeUndefined();
+  });
+
+  test("moved while a rule-answered signature waits on its device: the name's last use untouched, no signature to the page", async () => {
+    const { env, page } = named({ rule: true });
+    const device = heldSignature(env);
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.signer.signMessage).toHaveBeenCalledTimes(1);
+    env.names.set(NAME, OTHER_IPNS_KEY);
+    device.resolve();
+    expect(await answer).toEqual(NO_ADDRESS);
+    expect(env.state.lastUsed).toEqual([]);
+    expect(env.deps.updateLastUsed).not.toHaveBeenCalled();
+  });
+
+  test('an honest name after a waiting signature: the rule and the last use written, under the name', async () => {
+    const { env, page } = named();
+    const device = heldSignature(env);
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+    await flush();
+    device.resolve();
+    expect(await answer).toEqual({ result: '0xheldsig' });
+    expect(env.state.rules).toEqual([[NAME, true]]);
+    const ruled = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    expect(await ruled).toEqual({ result: '0xmsgsig' });
+    expect(env.state.lastUsed).toEqual([[NAME]]);
+  });
+
   test("moved while the rule's unlock prompt is open: refused, nothing signed", async () => {
     const { env, page } = named({ rule: true });
     env.state.unlocked = false;

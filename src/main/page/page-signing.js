@@ -227,6 +227,14 @@ function createSigningDispatchers(shared, deps = {}) {
     return signer.signTypedData(prepared.payload, { expectedHash });
   }
 
+  // A write under the key after the signature's wait (a Ledger, the phone
+  // bridge, the core): the name resolved again, then, in the same run as the
+  // write, the document holding its key and the grant exposing the account.
+  async function writableAfterEffect(context, ctx) {
+    if (!(await context.nameHolds(ctx.keyless))) return false;
+    return context.holdsKey() && Boolean(grantExposes(context.requester.key, ctx.walletIndex));
+  }
+
   async function vaultUnlocked() {
     try {
       return (await isVaultUnlocked()) === true;
@@ -309,7 +317,7 @@ function createSigningDispatchers(shared, deps = {}) {
     if (!context.holdsKey()) return error(NO_ADDRESS);
     if (ctx.safe) {
       const out = await safeMessage(context, ctx);
-      if (!out.error && context.holdsKey()) updateLastUsed(requester.key);
+      if (!out.error && (await writableAfterEffect(context, ctx))) updateLastUsed(requester.key);
       return out;
     }
     let signature;
@@ -318,7 +326,9 @@ function createSigningDispatchers(shared, deps = {}) {
     } catch (err) {
       return failure(err);
     }
-    if (context.holdsKey()) updateLastUsed(requester.key);
+    // The site's last use, only while the name still answers: a name that
+    // moved meanwhile also gets no signature (`nameHolds`' keyless answer).
+    if (await writableAfterEffect(context, ctx)) updateLastUsed(requester.key);
     return { result: signature };
   }
 
@@ -379,8 +389,9 @@ function createSigningDispatchers(shared, deps = {}) {
       }
     }
     // "Always allow": the site's rule, for the requester's key, from the
-    // prompt the user just approved, once its signature is made.
-    if (!out.error && decision.choices?.alwaysAllow === true && context.holdsKey() && grantExposes(requester.key, ctx.walletIndex)) {
+    // prompt the user just approved, once its signature is made, and only
+    // while the name still answers after the signature's wait.
+    if (!out.error && decision.choices?.alwaysAllow === true && (await writableAfterEffect(context, ctx))) {
       try {
         setSigningAutoApprove(requester.key, true);
       } catch {
