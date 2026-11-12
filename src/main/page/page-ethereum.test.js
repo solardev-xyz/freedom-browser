@@ -164,7 +164,7 @@ function setup({ resolveEnsContent } = {}) {
 }
 
 describe('Ethereum reads through main (freedom-core design 0011, PRQ-3)', () => {
-  test('the dispatcher serves exactly the moved methods: the chrome\'s read-only list, eth_accounts, connecting and signing', () => {
+  test('the dispatcher serves exactly the moved methods: the chrome\'s read-only list, eth_accounts, connecting, signing and sends', () => {
     // The chrome's own list, read from the code that serves it.
     const source = fs.readFileSync(path.join(__dirname, '../../renderer/lib/dapp-provider.js'), 'utf-8');
     const readOnly = JSON.parse(
@@ -179,6 +179,7 @@ describe('Ethereum reads through main (freedom-core design 0011, PRQ-3)', () => 
         'wallet_switchEthereumChain',
         'personal_sign',
         'eth_signTypedData_v4',
+        'eth_sendTransaction',
       ].sort()
     );
     expect(Object.keys(createEthereumDispatchers(backends().deps)).sort()).toEqual(

@@ -46,7 +46,14 @@
  * read live, prompts otherwise (`eth.sign`), and mints and spends the
  * approval's token with its own issuer.
  *
- * A document with no key is refused both, as the chrome refused them:
+ * Sending (PRQ-5b, `page-sends.js`): `eth_sendTransaction`, from every
+ * account kind, a Safe account's included. Main reads the site's contract
+ * rule itself, with Agent custody read live and the fee check's verdict,
+ * prompts otherwise (`eth.send`, and a Safe's signing board after it), and
+ * mints and spends the approval's token (`dapp-send`, or a `safe-send` for
+ * the site) with its own issuer.
+ *
+ * A document with no key is refused all three, as the chrome refused them:
  * "This page has no address to connect from yet".
  *
  * Every method answers `4900` while the Identity & Wallet switch is off,
@@ -56,6 +63,7 @@
 
 const { ETHEREUM_RPC_READS } = require('./page-methods');
 const { SIGNING_METHODS, createSigningDispatchers } = require('./page-signing');
+const { SEND_METHODS, createSendDispatchers } = require('./page-sends');
 
 // What the chrome's getCurrentChainId falls back to: Gnosis.
 const FALLBACK_CHAIN_ID = 100;
@@ -83,11 +91,15 @@ const ETHEREUM_CONNECT_METHODS = Object.freeze(['eth_requestAccounts', 'wallet_s
 /** And PRQ-5a's: messages and typed data. */
 const ETHEREUM_SIGNING_METHODS = SIGNING_METHODS;
 
+/** And PRQ-5b's: sends. */
+const ETHEREUM_SEND_METHODS = SEND_METHODS;
+
 /** Every method main's Ethereum dispatcher serves, and so the preload routes to main. */
 const ETHEREUM_PAGE_METHODS = Object.freeze([
   ...ETHEREUM_READ_METHODS,
   ...ETHEREUM_CONNECT_METHODS,
   ...ETHEREUM_SIGNING_METHODS,
+  ...ETHEREUM_SEND_METHODS,
 ]);
 
 // How main reaches the agent service for a tab it holds (index.js sets it
@@ -157,6 +169,7 @@ function holdsBinary(params) {
  */
 function createEthereumDispatchers(deps = {}) {
   const signingDeps = deps.signing || {};
+  const sendDeps = deps.sends || {};
   const {
     identityWalletEnabled,
     selectedChainOf,
@@ -263,8 +276,9 @@ function createEthereumDispatchers(deps = {}) {
   // main: the request still open, the name checked again, and the document
   // still holding the key in the same run as the write. The agent acts
   // under the attested key, which for a DNS name over IPNS is the name.
-  async function agentAnswer(context, keyless) {
-    const { requester, method, params } = context;
+  // `params` are the request's own, or the dispatcher's checked form of them.
+  async function agentAnswer(context, keyless, params = context.params) {
+    const { requester, method } = context;
     const operation = await context.walletOperation(async ({ signal, open }) => {
       try {
         return await agentWalletRequest(
@@ -455,6 +469,11 @@ function createEthereumDispatchers(deps = {}) {
     signingDeps
   );
   for (const [route, dispatch] of Object.entries(signing)) dispatchers[route] = serve(dispatch);
+  const sends = createSendDispatchers(
+    { getPermission, updateLastUsed, walletList, chainIdOf, chainName, networks, agentAnswer },
+    sendDeps
+  );
+  for (const [route, dispatch] of Object.entries(sends)) dispatchers[route] = serve(dispatch);
   return dispatchers;
 }
 
@@ -462,6 +481,7 @@ module.exports = {
   ETHEREUM_READ_METHODS,
   ETHEREUM_CONNECT_METHODS,
   ETHEREUM_SIGNING_METHODS,
+  ETHEREUM_SEND_METHODS,
   ETHEREUM_PAGE_METHODS,
   FALLBACK_CHAIN_ID,
   createEthereumDispatchers,

@@ -8,6 +8,11 @@
 // Driven through the real renderer screen: the main-process IPC the screen
 // talks to is replaced for this app instance, and the send handler is left
 // hanging to hold the UI in the device-prompt state.
+//
+// This is the chrome's own screen path, kept for rollback until PRQ-9 of
+// freedom-core design 0011. From PRQ-5b main refuses the chrome a dApp
+// send's token, so its confirmation is replaced here with the rest of main.
+// A page's Ledger send through main's own prompt is page-sends.spec.js's.
 
 const { test, expect } = require('./fixtures');
 
@@ -51,6 +56,7 @@ function stubMainIpc(electronApp, ledger) {
     }));
     replace('dapp:add-transaction-auto-approve', () => ({ success: true }));
     replace('identity:get-status', () => ({ isUnlocked: true }));
+    replace('wallet:confirm-signing', () => ({ success: true, token: 'token-e2e', expiresAt: Date.now() + 60_000 }));
     // Never settles on its own: this is the window where the device prompt
     // is up and the user is deciding.
     globalThis.__resolveLedgerSend = null;

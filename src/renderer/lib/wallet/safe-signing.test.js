@@ -607,3 +607,112 @@ describe("safe signing board — main's prompt (0011 PRQ-5a)", () => {
     expect(decisions).toEqual([{ handle: 'h2', approve: false, choices: {} }]);
   });
 });
+
+// freedom-core design 0011, PRQ-5b: a page's Safe send is main's. Main starts
+// the SafeTx on the user's approval and shows the board as its prompt
+// (`eth.safe_send`); the board signs and executes as before, and main hears
+// the outcome itself. Leaving the board parks the SafeTx and answers the
+// handle; main keeps the page waiting.
+describe("safe signing board — a page's Safe send (0011 PRQ-5b)", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.CustomEvent = originalCustomEvent;
+    jest.restoreAllMocks();
+  });
+
+  const sendState = (overrides = {}) => ({
+    safeIndex: 5,
+    safeTxHash: '0xsafetx',
+    status: 'awaiting',
+    collected: 1,
+    threshold: 2,
+    createdAt: '2026-07-12T00:00:00.000Z',
+    display: { site: 'https://app.example', toAddress: '0xabc', amount: '0' },
+    executorIndex: 0,
+    owners: [
+      { index: 0, type: 'mnemonic', signed: true },
+      { index: 1, type: 'remote', signed: false },
+    ],
+    ...overrides,
+  });
+
+  async function loadSendBoard() {
+    const env = await loadBoard();
+    const decisions = [];
+    global.window.pagePrompts = {
+      decide: jest.fn(async (handle, approve, choices) => {
+        decisions.push({ handle, approve, choices });
+        return { ok: true };
+      }),
+    };
+    Object.assign(env.walletMocks, {
+      safeState: jest.fn(async () => ({ success: true, state: sendState() })),
+      safeSign: jest.fn(async () => ({ success: true, state: sendState() })),
+      safeCancelPending: jest.fn(async () => ({ success: true })),
+      safeExecute: jest.fn(),
+    });
+    const renderer = require('../page-prompt-renderers.js').pagePromptRenderer('eth.safe_send');
+    const show = (handle = 'h1', view = { safeIndex: 5, state: sendState() }) =>
+      renderer.show({ handle, guest: 3, kind: 'eth.safe_send', site: { key: 'https://app.example', label: 'https://app.example' }, view });
+    return { ...env, decisions, renderer, show };
+  }
+
+  test("it shows the SafeTx from main's state, and leaving it parks the SafeTx and answers the handle", async () => {
+    const { mod, walletMocks, screen, decisions, renderer, show } = await loadSendBoard();
+    show();
+    await flushMicrotasks();
+    expect(walletMocks.safeState).toHaveBeenCalledWith(5);
+    expect(screen.classList.contains('hidden')).toBe(false);
+    expect(renderer.isShowing()).toBe('h1');
+    expect(decisions).toEqual([]);
+    mod.closeSafeSigning();
+    await flushMicrotasks();
+    expect(decisions).toEqual([{ handle: 'h1', approve: false, choices: {} }]);
+    expect(walletMocks.safeCancelPending).not.toHaveBeenCalled();
+    expect(screen.classList.contains('hidden')).toBe(true);
+  });
+
+  test('at the threshold it executes as before; main closing the prompt meanwhile keeps the board to its summary', async () => {
+    const { walletMocks, screen, decisions, renderer, show } = await loadSendBoard();
+    const signed = sendState({ collected: 2, owners: [{ index: 0, type: 'mnemonic', signed: true }, { index: 1, type: 'mnemonic', signed: true }] });
+    walletMocks.safeState.mockResolvedValue({ success: true, state: signed });
+    const execution = deferred();
+    walletMocks.safeExecute.mockReturnValue(execution.promise);
+    show();
+    await flushMicrotasks();
+    expect(walletMocks.safeExecute).toHaveBeenCalledWith(5);
+    // Main heard the execution and answered the page: its prompt closes.
+    expect(renderer.close('h1')).toBe(true);
+    expect(screen.classList.contains('hidden')).toBe(false);
+    execution.resolve({ success: true, state: { ...signed, status: 'executed', executed: { hash: '0xexec' } } });
+    await flushMicrotasks();
+    expect(screen.classList.contains('hidden')).toBe(false);
+    expect(global.document.getElementById('safe-signing-content').innerHTML).toBeTruthy();
+    // No decision: main answered from the SafeTx's outcome.
+    expect(decisions).toEqual([]);
+  });
+
+  test("main hiding it takes the board down with the SafeTx kept, and shows it again from main's state", async () => {
+    const { walletMocks, screen, decisions, renderer, show } = await loadSendBoard();
+    show();
+    await flushMicrotasks();
+    expect(renderer.close('h1')).toBe(true);
+    expect(screen.classList.contains('hidden')).toBe(true);
+    expect(walletMocks.safeCancelPending).not.toHaveBeenCalled();
+    expect(decisions).toEqual([]);
+    walletMocks.safeState.mockClear();
+    show();
+    await flushMicrotasks();
+    expect(screen.classList.contains('hidden')).toBe(false);
+    expect(walletMocks.safeState).toHaveBeenCalledWith(5);
+  });
+
+  test('a view with no Safe is rejected', async () => {
+    const { decisions, renderer } = await loadSendBoard();
+    renderer.show({ handle: 'h2', guest: 3, kind: 'eth.safe_send', site: {}, view: {} });
+    await flushMicrotasks();
+    expect(decisions).toEqual([{ handle: 'h2', approve: false, choices: {} }]);
+  });
+});

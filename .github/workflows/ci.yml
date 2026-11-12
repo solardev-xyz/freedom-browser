@@ -1593,10 +1593,12 @@ jobs:
       # window.ethereum's reads, which main now answers as the chrome did
       # (`page-eth-reads`, PRQ-3), connecting, whose prompts main holds
       # for a background tab and shows only for the tab in front
-      # (`page-connect`, PRQ-4), and signing messages and typed data, whose
+      # (`page-connect`, PRQ-4), signing messages and typed data, whose
       # tokens only main mints and whose site rules only main reads
-      # (`page-signing`, PRQ-5a).
-      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing E2E
+      # (`page-signing`, PRQ-5a), and sends, whose fee main quotes and
+      # judges, whose tokens only main mints and whose contract rules only
+      # main reads and records (`page-sends`, PRQ-5b).
+      - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu + page-documents + page-requests + page-budgets + page-eth-reads + page-connect + page-signing + page-sends E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-chrome \
@@ -1615,7 +1617,8 @@ jobs:
             test-e2e/page-budgets.spec.js \
             test-e2e/page-eth-reads.spec.js \
             test-e2e/page-connect.spec.js \
-            test-e2e/page-signing.spec.js
+            test-e2e/page-signing.spec.js \
+            test-e2e/page-sends.spec.js
 
       - name: Upload software rendering profile
         if: always()

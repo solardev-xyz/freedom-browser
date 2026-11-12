@@ -162,7 +162,12 @@ async function heldDeployment(running, safeAddress = '0x' + '5a'.repeat(20)) {
   return { key, held };
 }
 
-function authorize(running, how, walletIndex, tx) {
+// A dApp send's confirmation binds the site it is for, as the approval's
+// does. From freedom-core design 0011 PRQ-5b a page's send is main's
+// (page/page-sends.js), which builds its record context itself and names no
+// intent key; the chrome's route, kept until PRQ-9, takes no rule claim, and
+// still drops a context key for a confirmation minted directly here.
+function authorize(running, walletIndex, tx) {
   mockPermission = {
     site: SITE,
     walletIndex,
@@ -170,15 +175,12 @@ function authorize(running, how, walletIndex, tx) {
     selector: tx.data.slice(0, 10),
     chainId: tx.chainId,
   };
-  // A dApp send's confirmation binds the site it is for, as the approval's does.
-  return how === 'confirmed'
-    ? {
-        confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, {
-          ...tx,
-          origin: SITE,
-        }).token,
-      }
-    : { autoApprove: SITE, webContentsId: 12 };
+  return {
+    confirmation: running.confirmations.issueConfirmation('dapp-send', walletIndex, {
+      ...tx,
+      origin: SITE,
+    }).token,
+  };
 }
 
 const call = (chainId) => ({
@@ -190,9 +192,9 @@ const call = (chainId) => ({
   gasPrice: '1000000000',
 });
 
-describe.each(['confirmed', 'auto-approved'])(
+describe.each(['confirmed'])(
   'a %s dApp send whose context names an intent key',
-  (how) => {
+  () => {
     test("another account's request sends its own transaction, not the held one", async () => {
       // The review's probe: Bob's call on chain 1, naming Alice's deployment.
       const running = start();
@@ -203,7 +205,7 @@ describe.each(['confirmed', 'auto-approved'])(
         tx,
         1,
         { intentKey: key, origin: SITE },
-        authorize(running, how, 1, tx)
+        authorize(running, 1, tx)
       );
 
       expect(reply).toMatchObject({ success: true, chainId: 1, from: BOB.address });
@@ -229,7 +231,7 @@ describe.each(['confirmed', 'auto-approved'])(
         tx,
         0,
         { intentKey: key, origin: SITE },
-        authorize(running, how, 0, tx)
+        authorize(running, 0, tx)
       );
 
       expect(reply).toMatchObject({ success: true, chainId: 1, from: ALICE.address });
@@ -249,7 +251,7 @@ describe.each(['confirmed', 'auto-approved'])(
           tx,
           1,
           { [name]: futureKey, origin: SITE },
-          authorize(running, how, 1, tx)
+          authorize(running, 1, tx)
         );
         expect(reply.success).toBe(true);
         expect(running.store.get(reply.intentId).context.key).toBeNull();
@@ -272,6 +274,47 @@ describe.each(['confirmed', 'auto-approved'])(
     });
   }
 );
+
+// freedom-core design 0011, PRQ-5b (Codex round 2 on #1191): a site's Safe
+// execution that was committed under the site and not sent, and that the
+// site then stops holding, is the wallet's own in every record: the held
+// intent loses its site (signed bytes kept), so the held-payments list
+// doesn't name it, the site's rules aren't paused by it, and sending it
+// again records no site.
+test("a site's Safe execution not sent, then withdrawn: its held intent is the wallet's, its bytes kept", async () => {
+  const running = start();
+  const recorder = require('./tx-recorder');
+  const pause = require('./auto-approve-pause');
+  const safeTxHash = '0x' + '5c'.repeat(32);
+  const intentKey = `safe-exec:100:${safeTxHash}`;
+  const params = { ...call(100), data: '0x6a761202' };
+  mockBroadcast.mockImplementationOnce(async () => {
+    throw Object.assign(new Error('Myotis is not ready'), { outcome: 'not_sent' });
+  });
+  await expect(
+    recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send', origin: SITE }, { intentKey })
+  ).rejects.toMatchObject({ outcome: 'not_sent' });
+  const held = running.store.byKey(intentKey);
+  expect(held.context.origin).toBe(SITE);
+  await expect(pause.sitePaymentWaiting(SITE)).resolves.toBe(true);
+
+  await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(true);
+  expect(running.store.byKey(intentKey)).toMatchObject({ intentId: held.intentId, context: { origin: null } });
+  expect(running.store.get(held.intentId).hashes).toEqual(held.hashes);
+  await expect(pause.sitePaymentWaiting(SITE)).resolves.toBe(false);
+  const waiting = await require('./intent-ipc').waitingIntents();
+  expect(waiting.filter((intent) => intent.intentId === held.intentId).map((intent) => intent.origin)).toEqual([null]);
+
+  // The user executes it as the wallet's: the same bytes again, no site.
+  const before = mockBroadcast.mock.calls.length;
+  const sent = await recorder.signAndRecord(params, mockSigners[0], { kind: 'safe-send' }, { intentKey });
+  expect(sent).toMatchObject({ intentId: held.intentId, resent: true });
+  expect(mockBroadcast).toHaveBeenCalledTimes(before + 1);
+  const row = require('../payment-history').getRecent({}).find((entry) => entry.txHash === sent.hash);
+  expect(row.origin).toBeNull();
+  // Nothing more to withdraw.
+  await expect(running.safe.withdrawExecutionSite(100, safeTxHash)).resolves.toBe(false);
+});
 
 test('the wallet send handler drops a renderer key too', async () => {
   const running = start();
@@ -514,7 +557,7 @@ describe('held payments over IPC (4b)', () => {
       tx,
       1,
       { origin: SITE },
-      authorize(running, 'confirmed', 1, tx)
+      authorize(running, 1, tx)
     );
     expect(failed).toMatchObject({
       success: false,

@@ -138,17 +138,20 @@ function metadataFor(metadata, response) {
  *                                      can find its signer. Main's own
  *                                      callers only, like `intentKey`.
  * @param {() => void} [options.onCommitted] see signAndSendTransaction
+ * @param {Function} [options.guardCommit] see signAndSendTransaction. Main's
+ *                                      own callers only, like `intentKey`.
  */
 async function signAndRecord(
   params,
   signer,
   context,
-  { intentKey = null, walletIndex = null, onCommitted = null } = {}
+  { intentKey = null, walletIndex = null, onCommitted = null, guardCommit = null } = {}
 ) {
   const response = await signAndSendTransaction(params, signer, {
     intentKey,
     context: { kind: context.kind, origin: context.origin, walletIndex },
     onCommitted,
+    guardCommit,
   });
   return recordSend(response, {
     kind: context.kind,

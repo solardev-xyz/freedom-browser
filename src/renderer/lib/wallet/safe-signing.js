@@ -30,6 +30,13 @@
  * handle, and main completes the session and answers the page. Closing the
  * board rejects the request. Main hiding the prompt (another tab in front)
  * takes the board down with the session kept, and shows it again later.
+ *
+ * From PRQ-5b a page's Safe send is main's too: main starts the SafeTx on
+ * the user's approval and shows its board as a prompt (`eth.safe_send`).
+ * The board signs and executes as before; main hears the SafeTx's outcome
+ * itself and answers the page with the execution's hash, or a rejection
+ * when it is discarded. Leaving the board parks the SafeTx, as before: it
+ * answers the handle, and main keeps the page waiting for the outcome.
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
@@ -66,7 +73,8 @@ let executeError = null; // {message, needsFunds}
 // {feeCheck, offer, busy}. Until the user confirms it, nothing is signed.
 let feeAsk = null;
 let signingIndex = null; // owner row with a live ceremony
-// Main's prompt the board shows (`eth.safe_message`): `{ handle }`, or null.
+// Main's prompt the board shows (`eth.safe_message` or `eth.safe_send`):
+// `{ handle, kind: 'message' | 'send' }`, or null.
 let pageBoard = null;
 // While the board paints a page prompt, or opens its own vault unlock, the
 // hider that runs is its own.
@@ -127,6 +135,37 @@ export function initSafeSigning() {
     close: closePageSafeBoard,
     isShowing: shownPageSafeBoard,
   });
+  registerPagePromptRenderer('eth.safe_send', {
+    show: showPageSafeSendBoard,
+    close: closePageSafeBoard,
+    isShowing: shownPageSafeBoard,
+  });
+}
+
+/**
+ * Render main's board prompt for a page's Safe send (`page:prompt`, kind
+ * `eth.safe_send`): the SafeTx main started, by its Safe, read fresh from
+ * main. The caller shows it only while nothing else holds the sidebar
+ * (`page-prompts.js`).
+ */
+export function showPageSafeSendBoard(prompt) {
+  const handle = prompt?.handle;
+  const safeIndex = prompt?.view?.safeIndex;
+  if (typeof handle !== 'string') return;
+  if (!Number.isInteger(safeIndex)) {
+    decidePageBoard(handle, false);
+    return;
+  }
+  abandonMessageSession();
+  boardKind = 'send';
+  pageBoard = { handle, kind: 'send' };
+  presentingPagePrompt = true;
+  try {
+    // From main's state: the board may have been shown before.
+    openBoard(safeIndex, null);
+  } finally {
+    presentingPagePrompt = false;
+  }
 }
 
 /**
@@ -146,7 +185,7 @@ export function showPageSafeBoard(prompt) {
   // A message board on the chrome's own path gives way, as before.
   abandonMessageSession();
   boardKind = 'message';
-  pageBoard = { handle };
+  pageBoard = { handle, kind: 'message' };
   messageResolver = {
     resolve: () => decidePageBoard(handle, true),
     reject: () => decidePageBoard(handle, false),
@@ -165,6 +204,12 @@ export function showPageSafeBoard(prompt) {
 /** Take down main's prompt `handle` (hidden, closed, or refused): the session stays main's. */
 export function closePageSafeBoard(handle) {
   if (!pageBoard || pageBoard.handle !== handle) return false;
+  // A send executing, or executed: main answered the page from the SafeTx's
+  // outcome. The board finishes, and shows its summary.
+  if (pageBoard.kind === 'send' && (phase === 'executing' || phase === 'success')) {
+    pageBoard = null;
+    return true;
+  }
   const wasVisible = isSafeSigningBoardOpen();
   leavePageBoard();
   if (wasVisible) {
@@ -308,6 +353,13 @@ async function openBoard(safeIndex, initialState) {
 export function closeSafeSigning() {
   if (!screen || screen.classList.contains('hidden')) return;
   if (signingIndex !== null || phase === 'executing') return; // busy — see render() note
+  if (pageBoard?.kind === 'send') {
+    // Leaving a page's send board parks the SafeTx: main keeps the page
+    // waiting for its outcome.
+    const { handle } = pageBoard;
+    pageBoard = null;
+    decidePageBoard(handle, false);
+  }
   if (boardKind === 'message' && messageResolver) {
     // Closing a message board abandons the dApp's request: drop the
     // session and answer the dApp with a rejection.
@@ -597,6 +649,8 @@ async function handleDiscard() {
     const epoch = boardEpoch;
     const result = await window.wallet.safeCancelPending(boardSafeIndex);
     if (isStale(epoch) || !result.success) return;
+    // A page's send: main heard the discard itself, and answers the page.
+    if (pageBoard?.kind === 'send') pageBoard = null;
     window.dispatchEvent(
       new CustomEvent('wallet:safe-discarded', {
         detail: { safeIndex: boardSafeIndex, safeTxHash: state?.safeTxHash },

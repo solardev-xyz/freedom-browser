@@ -87,6 +87,33 @@ test('a fee like today’s: the most it can cost, and how it compares', async ()
   expect(confirmation.confirmLabel('Confirm')).toBe('Confirm');
 });
 
+// freedom-core design 0011, PRQ-5b: a page's send comes with main's own
+// verdict, shown without asking main again.
+test("main's verdict with its prompt: shown as is, and asked again when main found it newly above", () => {
+  const { elements, confirmation } = screen();
+  confirmation.show(VERDICT, 'xDAI');
+  expect(window.wallet.feeCheck).not.toHaveBeenCalled();
+  expect(elements.maxEl.textContent).toBe('Up to 0.001050001 xDAI');
+  expect(confirmation.pending()).toBe(false);
+  expect(confirmation.proceed()).toBe(true);
+  const above = { ...VERDICT, ratio: '20', above: true, autoApprove: false };
+  // Shown above the threshold: the first press asks, the second confirms.
+  confirmation.show(above, 'xDAI');
+  expect(shown(elements.warningEl)).toBe(true);
+  expect(confirmation.proceed()).toBe(false);
+  expect(confirmation.proceed()).toBe(true);
+  expect(confirmation.options()).toEqual({ feeAcknowledged: true });
+  // Asked again by main at the press: the next press confirms it.
+  confirmation.show(above, 'xDAI', { askAgain: true });
+  expect(confirmation.confirmLabel('Confirm')).toBe('Send anyway');
+  expect(elements.warningTextEl.textContent).toContain('Send anyway');
+  expect(confirmation.proceed()).toBe(true);
+  expect(confirmation.options()).toEqual({ feeAcknowledged: true });
+  // None: nothing shown.
+  confirmation.show(null, 'xDAI');
+  expect(shown(elements.maxEl)).toBe(false);
+});
+
 test("one endpoint's reference says so", async () => {
   window.wallet.feeCheck.mockResolvedValue({
     success: true,

@@ -4,7 +4,7 @@
  * Registers IPC handlers for wallet operations.
  */
 
-const { ipcMain, webContents } = require('electron');
+const { ipcMain } = require('electron');
 const QRCode = require('qrcode');
 const { getAllBalances, getBalancesWithCache, clearBalanceCache } = require('./balance-service');
 const { getChain, getAllChains } = require('./chains');
@@ -39,22 +39,20 @@ const { vaultBackend } = require('../core/vault-backend');
 const {
   KINDS: CONFIRM_KINDS,
   NOT_CONFIRMED,
+  isPageKind,
   issueConfirmation,
   consumeConfirmation,
 } = require('./signing-confirmation');
-const dappPermissions = require('./dapp-permissions');
-const { sitePaymentWaiting, takeSiteTurn } = require('./auto-approve-pause');
+const { takeSiteTurn } = require('./auto-approve-pause');
 const {
   FEE_CHECK_ASK_AGAIN,
-  FEE_CHECK_NOT_AUTO_APPROVED,
   checkFees,
   checkAtApproval,
   feeCheckError,
   feeNotShownError,
 } = require('./fee-check');
-const { isAgentPage, guestHostedBy } = require('./agent-tab-custody');
-const { normalizeOrigin, isDwebNameHost, isPotentialEnsName } = require('../../shared/origin-utils');
-const { ipnsMhToCidV1Base36 } = require('../../shared/cid-utils');
+const { guestHostedBy } = require('./agent-tab-custody');
+const { normalizeOrigin } = require('../../shared/origin-utils');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -104,15 +102,18 @@ function feeAsk(err) {
   return err?.feeCheck && err?.offer ? { feeCheck: err.feeCheck, offer: err.offer } : {};
 }
 
-// The page kinds whose methods main serves now (freedom-core design 0011,
-// "Approval tokens"; PRQ-5): `personal_sign` and `eth_signTypedData_v4`, from
-// a Safe account too. Main's own issuer mints them for a page's request
-// (page/page-signing.js), so the chrome's `wallet:confirm-signing` refuses
-// them, and the signing handlers refuse the chrome's
-// `{ autoApprove, webContentsId }` claim for them: main reads the site's rule
-// itself, for the requester's attested key. A dApp's send, and a Safe send
-// that names a site, move in their own step.
+// The page kinds, whose methods main serves now (freedom-core design 0011,
+// "Approval tokens"; PRQ-5): `personal_sign` and `eth_signTypedData_v4`
+// (PRQ-5a) and `eth_sendTransaction` (PRQ-5b), from a Safe account too. Main's
+// own issuer mints their tokens for a page's request (page/page-signing.js,
+// page/page-sends.js), so the chrome's `wallet:confirm-signing` refuses them,
+// and a Safe send that names a site with them (`isPageKind`). The signing
+// handlers refuse the chrome's `{ autoApprove, webContentsId }` claim
+// outright: main reads a site's rules itself, for the requester's attested
+// key, and no other kind has a rule. The wallet's own six kinds stay the
+// chrome's to confirm until APS-3.
 const CHROME_REFUSED_KINDS = new Set([
+  CONFIRM_KINDS.DAPP_SEND,
   CONFIRM_KINDS.SIGN_MESSAGE,
   CONFIRM_KINDS.SIGN_TYPED_DATA,
   CONFIRM_KINDS.SAFE_MESSAGE,
@@ -125,65 +126,15 @@ function notAuthorized(reason) {
   return err;
 }
 
-/** The 4-byte function selector of `data`, or null for a plain transfer. */
-function selectorOf(data) {
-  return typeof data === 'string' && /^0x[0-9a-fA-F]{8}/.test(data)
-    ? data.slice(0, 10).toLowerCase()
-    : null;
-}
-
 /**
- * The dApp's stored grant, but only when it exposes exactly `walletIndex`
- * — an auto-approve rule authorises the account the site is connected
- * with, never another one.
+ * The site a dApp send is confirmed for and recorded under: the one its
+ * confirmation binds (signing-confirmation.js), which the token's check holds
+ * equal to the context's and which can't be empty. As a permission key
+ * (normalizeOrigin), or null when there is none, which no confirmation then
+ * accepts.
  */
-function permissionFor(permissionKey, walletIndex) {
-  if (typeof permissionKey !== 'string' || !permissionKey) return null;
-  const permission = dappPermissions.getPermission(permissionKey);
-  return permission && permission.walletIndex === walletIndex ? permission : null;
-}
-
-/**
- * Main's own evaluation of a dApp's transaction auto-approve rules, for
- * the transaction it is about to sign: its call, chain and value (a rule
- * covers no more value than the send it was recorded from).
- */
-function isDappTxAutoApproved(permissionKey, walletIndex, tx) {
-  if (!permissionFor(permissionKey, walletIndex)) return false;
-  const selector = selectorOf(tx.data);
-  if (!selector || !tx.to) return false;
-  return dappPermissions.isTransactionAutoApproved(
-    permissionKey,
-    tx.to,
-    selector,
-    Number(tx.chainId),
-    tx.value
-  );
-}
-
-/**
- * The site a dApp send is recorded under: the intent's and the history
- * row's origin, which "Always allow"'s pause reads (D12). It comes from
- * what authorized the send, never from the renderer's display context
- * alone:
- * - auto-approved: the auto-approve key main checked. A context naming
- *   another site is refused, so a site can't sign under its own rule and
- *   record the payment as another's;
- * - confirmed: the site the confirmation binds (signing-confirmation.js),
- *   which the token's check holds equal to the context's, and which can't
- *   be empty.
- * As a permission key (normalizeOrigin), or null when there is none, which
- * no authorization then accepts.
- */
-function dappSendSite(context, authorization) {
+function dappSendSite(context) {
   const shown = typeof context?.origin === 'string' ? normalizeOrigin(context.origin) : '';
-  if (!authorization?.confirmation && typeof authorization?.autoApprove === 'string') {
-    const site = normalizeOrigin(authorization.autoApprove);
-    if (context?.origin != null && shown !== site) {
-      throw notAuthorized("the request's site is not the one its auto-approve names");
-    }
-    return site || null;
-  }
   return shown || null;
 }
 
@@ -232,109 +183,27 @@ function messageViewFor(message) {
 }
 
 /**
- * True only when `webContentsId` names a live `<webview>` guest of the
- * chrome window that sent this IPC (`sender`) and that guest's committed
- * page belongs to `permissionKey` (#764).
+ * Gate every signing handler (security audit O-7). A request is signed only
+ * when the caller presents `{ confirmation }`: a token main issued through
+ * `wallet:confirm-signing` for exactly this request (single use,
+ * short-lived — see signing-confirmation.js). Anything else throws
+ * SIGNING_NOT_CONFIRMED before a key is touched.
  *
- * The renderer names the site whose auto-approve rules it wants applied,
- * but the site is a renderer-side derivation; a wrong one (the visible tab
- * answering for a background tab's request) must not borrow another
- * site's rules. The guest's own URL is the independent cross-check, the
- * same one swarm-provider-ipc.js uses: dweb pages keep their dweb URL
- * (`bzz://name.eth/…` keys to `name.eth`), and an onchain app's internal
- * `web3://0x….eip155-<chainId>/` form keys to the same `web3://0x…[:id]`
- * key its standard display form does. A DNS-named ENS site over IPNS is
- * the one case whose page URL does not carry its name (see
- * `dnsNameServesIpnsGuest`). Anything unattributable — no id, a destroyed
- * guest, another window's guest, a page that has since navigated to
- * another site — is refused.
- */
-async function requesterBelongsTo(sender, webContentsId, permissionKey) {
-  if (!Number.isInteger(webContentsId) || typeof permissionKey !== 'string' || !permissionKey) {
-    return false;
-  }
-  let contents;
-  try {
-    contents = webContents.fromId(webContentsId);
-  } catch {
-    return false;
-  }
-  const guestKey = () => {
-    if (!contents || contents.isDestroyed?.() || isAgentPage(contents)) return null;
-    if (!Number.isInteger(sender?.id) || contents.hostWebContents?.id !== sender.id) return null;
-    try {
-      return normalizeOrigin(contents.getURL()) || null;
-    } catch {
-      return null;
-    }
-  };
-  const key = guestKey();
-  if (!key) return false;
-  if (key === permissionKey) return true;
-  if (!(await dnsNameServesIpnsGuest(permissionKey, key))) return false;
-  // The resolution awaited; the guest must still be on the same page.
-  return guestKey() === key;
-}
-
-/**
- * A DNS name with an ENS contenthash (`example.com`, displayed
- * `ens://example.com`) cannot load as `ipns://example.com` — that form
- * means DNSLink — so its page loads as `ipns://<key>` while the renderer
- * keys it on the name, the same key the address bar always gave it. Main
- * accepts the name for that guest only when its own ENS resolution of the
- * name answers that exact IPNS key: the resolver's base58 form, or the
- * libp2p-key base36 form the renderer canonicalises it to before loading
- * (exact comparison — a case-folded base58 host is a different key).
- */
-async function dnsNameServesIpnsGuest(permissionKey, guestKey) {
-  const host = /^ipns:\/\/([^/?#]+)$/.exec(guestKey)?.[1];
-  if (!host) return false;
-  if (permissionKey.includes('://') || isDwebNameHost(permissionKey) || !isPotentialEnsName(permissionKey)) {
-    return false;
-  }
-  let result;
-  try {
-    result = await require('../ens-resolver').resolveEnsContent(permissionKey);
-  } catch {
-    return false;
-  }
-  if (result?.type !== 'ok' || result.protocol !== 'ipns' || !result.decoded) return false;
-  return host === result.decoded || host === ipnsMhToCidV1Base36(result.decoded);
-}
-
-/**
- * Gate every signing handler (security audit O-7). A request is signed
- * only when the caller presents
- *   - `{ confirmation }`: a token main issued through
- *     `wallet:confirm-signing` for exactly this request (single use,
- *     short-lived — see signing-confirmation.js), or
- *   - `{ autoApprove: permissionKey, webContentsId }`: the requesting
- *     page's guest webContents actually belongs to `permissionKey`
- *     (`requesterBelongsTo`, #764), and main's own reading of that dApp's
- *     stored auto-approve policy covers this request (`autoApproveCheck`,
- *     absent where auto-approve doesn't exist).
- * Anything else throws SIGNING_NOT_CONFIRMED before a key is touched.
+ * The chrome's `{ autoApprove, webContentsId }` claim of a site's rule is
+ * refused for every kind (freedom-core design 0011, PRQ-5): a page's rules,
+ * its signing rule and its contract rules, are main's to read for the
+ * request it holds (page/page-signing.js, page/page-sends.js), and the
+ * wallet's own kinds have none.
  *
- * @returns {Promise<'confirmed'|'auto-approved'>}
+ * @returns {Promise<'confirmed'>}
  */
-async function authorizeSigning(authorization, kind, accountIndex, payload, autoApproveCheck, sender = null) {
-  // A page kind's rule is main's to read, for the request it holds
-  // (page/page-signing.js), never the chrome's to claim.
-  if (authorization?.autoApprove !== undefined && CHROME_REFUSED_KINDS.has(kind)) {
+async function authorizeSigning(authorization, kind, accountIndex, payload) {
+  if (authorization?.autoApprove !== undefined) {
     throw notAuthorized("main reads a page's rules itself");
   }
   if (authorization?.confirmation) {
     consumeConfirmation(authorization.confirmation, kind, accountIndex, payload);
     return 'confirmed';
-  }
-  if (authorization?.autoApprove !== undefined && autoApproveCheck) {
-    if (!(await requesterBelongsTo(sender, authorization.webContentsId, authorization.autoApprove))) {
-      throw notAuthorized('the requesting page does not belong to the site whose auto-approve rules were named');
-    }
-    if (autoApproveCheck(authorization.autoApprove)) {
-      return 'auto-approved';
-    }
-    throw notAuthorized('this request is not covered by the site\'s auto-approve rules');
   }
   throw notAuthorized('no confirmation token');
 }
@@ -360,14 +229,7 @@ function phoneSigner(walletIndex) {
   }
 }
 
-async function handleSendTransaction(
-  walletIndex,
-  params,
-  kind,
-  context = {},
-  authorization = null,
-  sender = null
-) {
+async function handleSendTransaction(walletIndex, params, kind, context = {}, authorization = null) {
   // A dApp send's turn among its site's sends (auto-approve-pause.js), left
   // once its payment is committed, or here when it fails first.
   let release = null;
@@ -379,80 +241,30 @@ async function handleSendTransaction(
     const tx = { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId };
     const dapp = kind === PAYMENT_KINDS.DAPP_SEND;
     const confirmKind = dapp ? CONFIRM_KINDS.DAPP_SEND : CONFIRM_KINDS.WALLET_SEND;
-    // A dApp send is confirmed for, and recorded under, its site.
-    const site = dapp ? dappSendSite(context, authorization) : undefined;
-    const how = await authorizeSigning(
-      authorization,
-      confirmKind,
-      walletIndex,
-      dapp ? { ...tx, origin: site } : tx,
-      dapp ? (permissionKey) => isDappTxAutoApproved(permissionKey, walletIndex, tx) : null,
-      sender
-    );
-    // A send approved without the user is judged at this moment by the fee
-    // check (design 0005, A): one that can't be compared, is one endpoint's
-    // word, or is above the threshold goes to the user instead.
-    if (how === 'auto-approved' && !phoneSigner(walletIndex)) {
-      const verdict = await checkAtApproval(tx);
-      if (!verdict.autoApprove) throw feeCheckError(FEE_CHECK_NOT_AUTO_APPROVED, verdict);
-    }
+    // A dApp send is confirmed for, and recorded under, its site. Main's
+    // issuer alone mints a dApp send's token, for a page's request it holds
+    // (page/page-sends.js, PRQ-5b), and never for this route: the chrome's
+    // old path stays until PRQ-9, but sends nothing a page asked for.
+    const site = dapp ? dappSendSite(context) : undefined;
+    await authorizeSigning(authorization, confirmKind, walletIndex, dapp ? { ...tx, origin: site } : tx);
     // Main never signs fees the user didn't see: a send that doesn't name
     // its own would be given today's after its confirmation
     // (resolveFeeParams). It goes back to its screen instead, with nothing
     // signed. A phone picks its own fees.
     if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShownError();
-    if (dapp) {
-      // D12: the site's dApp sends take turns until each one's payment is
-      // committed (auto-approve-pause.js). A silent send doesn't wait for
-      // one: with another of the site's payments under way, it is paused.
-      // In its turn, it stops if one of the site's payments is waiting; a
-      // confirmed one goes on.
-      const silent = how === 'auto-approved';
-      const paused = () =>
-        notAuthorized('auto-approve is paused while a payment this site requested is waiting');
-      try {
-        release = await takeSiteTurn(site, { wait: !silent });
-      } catch (err) {
-        throw silent && err.code === 'SITE_TURN_BUSY' ? paused() : err;
-      }
-      if (silent && (await sitePaymentWaiting(site))) throw paused();
-    }
+    // D12: a confirmed dApp send waits for its site's turn
+    // (auto-approve-pause.js).
+    if (dapp) release = await takeSiteTurn(site, { wait: true });
     const result = await signAndRecord(
       tx,
       getSigner(walletIndex),
       buildTxRecordContext(kind, dapp ? { ...context, origin: site } : context),
       { walletIndex, onCommitted: release }
     );
-
-    // "Always allow" is recorded here, from the transaction the user just
-    // confirmed — never from a free-standing renderer call — so a rule can
-    // only ever cover a (contract, selector, chain) the user saw, with no
-    // more value than this send's. It is recorded for the site the
-    // confirmation was for (`site`, which the token binds): a flag naming
-    // another site adds no rule at all.
-    let autoApproveAdded;
-    if (how === 'confirmed' && confirmKind === CONFIRM_KINDS.DAPP_SEND && authorization?.rememberAutoApprove) {
-      const named =
-        typeof authorization.rememberAutoApprove === 'string'
-          ? normalizeOrigin(authorization.rememberAutoApprove)
-          : '';
-      const selector = selectorOf(data);
-      if (named !== site) {
-        console.warn('[WalletIPC] "Always allow" named another site than the one confirmed; no rule added');
-      }
-      autoApproveAdded = Boolean(
-        selector &&
-          site &&
-          named === site &&
-          permissionFor(site, walletIndex) &&
-          dappPermissions.addTransactionAutoApprove(site, to, selector, Number(chainId), value)
-      );
-    }
-    return {
-      success: true,
-      ...result,
-      ...(autoApproveAdded !== undefined ? { autoApproveAdded } : {}),
-    };
+    // A contract rule ("Always allow") is recorded by main from a send the
+    // user confirmed on main's own prompt, for the requester's key
+    // (page/page-sends.js), never here.
+    return { success: true, ...result };
   } catch (err) {
     console.error(`[WalletIPC] ${kind} transaction failed:`, err);
     // A send that got as far as an intent reports it (its id, outcome and a
@@ -662,9 +474,10 @@ function registerWalletIpc() {
   // verdict it gets back.
   handle('wallet:confirm-signing', async (event, kind, accountIndex, payload, options) => {
     try {
-      // A page's signature is confirmed by main's own issuer, on the user's
-      // decision of the prompt main showed (design 0011, PRQ-5).
-      if (CHROME_REFUSED_KINDS.has(kind)) {
+      // A page's signature or send is confirmed by main's own issuer, on the
+      // user's decision of the prompt main showed (design 0011, PRQ-5): a
+      // dApp send and a Safe send that names a site among them.
+      if (CHROME_REFUSED_KINDS.has(kind) || isPageKind(kind, payload)) {
         return { success: false, error: PAGE_KIND_REFUSED, code: NOT_CONFIRMED };
       }
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
@@ -759,8 +572,8 @@ function registerWalletIpc() {
 
   // Renderer threads the dapp's permissionKey through as context.origin
   // so payment-history rows match the x402 permission store's keying.
-  handle('wallet:dapp-send-transaction', (event, params, walletIndex, context, authorization) =>
-    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization, event?.sender));
+  handle('wallet:dapp-send-transaction', (_event, params, walletIndex, context, authorization) =>
+    handleSendTransaction(walletIndex, params, PAYMENT_KINDS.DAPP_SEND, context, authorization));
 
   // A dApp's personal_sign (EIP-191) and typed data (EIP-712): the chrome's
   // old path, kept for rollback until PRQ-9. A page's request is served by
@@ -768,12 +581,12 @@ function registerWalletIpc() {
   // user's decision, and the chrome gets none (`wallet:confirm-signing`) and
   // can claim no site's rule (`authorizeSigning`). So these sign nothing a
   // page asked for.
-  handle('wallet:sign-message', async (event, message, walletIndex, authorization) => {
+  handle('wallet:sign-message', async (_event, message, walletIndex, authorization) => {
     try {
       if (!message) {
         return { success: false, error: 'Message is required' };
       }
-      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message, null, event?.sender);
+      await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_MESSAGE, walletIndex, message);
 
       const signature = await getSigner(walletIndex).signMessage(message);
 
@@ -784,13 +597,13 @@ function registerWalletIpc() {
     }
   });
 
-  handle('wallet:sign-typed-data', async (event, typedData, walletIndex, authorization) => {
+  handle('wallet:sign-typed-data', async (_event, typedData, walletIndex, authorization) => {
     try {
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
       }
       if (!authorization?.confirmation) {
-        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData, null, event?.sender);
+        await authorizeSigning(authorization, CONFIRM_KINDS.SIGN_TYPED_DATA, walletIndex, typedData);
       }
       // The digest the user confirmed: the core signs nothing else.
       const { hash: expectedHash } = consumeConfirmation(
@@ -876,13 +689,7 @@ function registerWalletIpc() {
       // payment is recorded under that site and takes the site's turn
       // (D12), so the token binds it. A wallet's own SafeTx has none.
       const site = display?.site ?? undefined;
-      await authorizeSigning(
-        authorization,
-        CONFIRM_KINDS.SAFE_SEND,
-        safeIndex,
-        { tx, chainId, origin: site },
-        null
-      );
+      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId, origin: site });
       const bound = site === undefined ? display : { ...display, site: normalizeOrigin(site) };
       const { startSafeSend } = require('./safe/safe-transactions');
       return startSafeSend({ safeIndex, tx, display: bound, chainId });
@@ -942,12 +749,13 @@ function registerWalletIpc() {
   // PRQ-9: the chrome gets no token for it (`wallet:confirm-signing`) and
   // can claim no site's rule (`authorizeSigning`), so it opens nothing a
   // page asked for.
-  handle('wallet:safe-message-start', (event, ...args) =>
+  handle(
+    'wallet:safe-message-start',
     safeStateHandler(async (safeIndex, request, display, requester, authorization) => {
       const { startSafeMessage } = require('./safe/safe-messages');
-      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request, null, event?.sender);
+      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_MESSAGE, safeIndex, request);
       return startSafeMessage({ safeIndex, request, display, requester });
-    })(event, ...args)
+    })
   );
 
   handle(

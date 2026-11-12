@@ -5685,6 +5685,9 @@
   font-weight: 600;
   color: var(--foreground);
   margin-bottom: 4px;
+  /* Main's site is the key as the address bar shows it: a content hash can
+     be 64 characters with no break. */
+  word-break: break-all;
 }
 
 .dapp-tx-action {

@@ -43,12 +43,14 @@ const CHANNELS = Object.freeze({
   FOREGROUND: 'page:foreground',
 });
 
-// One per today's prompt (design 0011, "The prompt protocol").
+// One per today's prompt (design 0011, "The prompt protocol"), and a Safe
+// send's signing board (PRQ-5b), as a Safe message's has its own.
 const KINDS = Object.freeze([
   'eth.connect',
   'eth.send',
   'eth.sign',
   'eth.safe_message',
+  'eth.safe_send',
   'swarm.connect',
   'swarm.publish',
   'swarm.feed',
@@ -63,7 +65,14 @@ const KIND_SET = new Set(KINDS);
 
 // The kinds that count against a document's one pending wallet prompt.
 // Swarm and Radicle keep their own limits on their prompts.
-const WALLET_KINDS = new Set(['eth.connect', 'eth.send', 'eth.sign', 'eth.safe_message', 'vault.unlock']);
+const WALLET_KINDS = new Set([
+  'eth.connect',
+  'eth.send',
+  'eth.sign',
+  'eth.safe_message',
+  'eth.safe_send',
+  'vault.unlock',
+]);
 
 const DECIDE_KEYS = new Set(['handle', 'approve', 'choices']);
 
