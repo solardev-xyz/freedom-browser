@@ -53,6 +53,9 @@ const { performance } = require('perf_hooks');
 const { pathToFileURL, fileURLToPath } = require('url');
 
 const FLAG = 'FREEDOM_APPROVALS_DOCUMENT';
+// On the chrome's command line while the flag is on, so it makes room for
+// the panel beside the content (preload.js; keep the two in sync).
+const APPROVALS_RENDERER_ARG = '--freedom-approvals-document';
 
 const RENDERER_DIR = path.resolve(__dirname, '..', '..', 'renderer');
 const APPROVALS_DIR = path.join(RENDERER_DIR, 'approvals');
@@ -667,6 +670,7 @@ function enableApprovalsTestHooks() {
 
 module.exports = {
   FLAG,
+  APPROVALS_RENDERER_ARG,
   CHANNELS,
   DOCUMENT_CHANNELS,
   CSP,

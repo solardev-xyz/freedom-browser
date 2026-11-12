@@ -248,9 +248,12 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
    * `page:decide` from window `windowId`'s chrome. It counts only for the
    * handle that window shows at this moment.
    *
+   * `from` names the surface the decision came from (`chrome` or
+   * `approvals`), which main's issuer reads (`page-requests.js` `confirm`).
+   *
    * @returns {{ok: true, entry: object} | {ok: false, reason: string}}
    */
-  function decide(windowId, payload) {
+  function decide(windowId, payload, from = 'chrome') {
     if (!isPlainObject(payload) || !hasOnlyKeys(payload, DECIDE_KEYS)) return { ok: false, reason: 'invalid' };
     const { handle, approve } = payload;
     if (typeof handle !== 'string' || typeof approve !== 'boolean') return { ok: false, reason: 'invalid' };
@@ -271,7 +274,7 @@ function createPagePrompts({ send, markShown, decided, trace = () => {} }) {
       if (!checked) return { ok: false, reason: 'invalid' };
       choices = checked;
     }
-    entry.decided = Object.freeze({ approve, choices });
+    entry.decided = Object.freeze({ approve, choices, from });
     trace({ kind: 'decided', handle, approve });
     decided(entry);
     return { ok: true, entry };

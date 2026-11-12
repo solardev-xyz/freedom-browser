@@ -382,6 +382,9 @@ function createPageRequests({
       // The handle of the prompt the user last approved, until main's issuer
       // mints its one token (`confirm`), and the handle that token is for.
       approved: null,
+      // Where that approval came from: the chrome, or the window's approvals
+      // document (APS-2).
+      approvedFrom: null,
       tokenHandle: null,
     };
     record.reply = new Promise((resolve) => {
@@ -499,6 +502,7 @@ function createPageRequests({
     const { record } = entry;
     if (entry.decided?.approve === true && !record.answered) {
       record.approved = entry.handle;
+      record.approvedFrom = entry.decided.from;
       if (WALLET_KINDS.has(entry.kind) && !walletOperations.has(record.key)) walletOperations.set(record.key, record);
     }
     closeHandle(record, CLOSED.DECIDED);
@@ -702,6 +706,10 @@ function createPageRequests({
     if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
       throw notConfirmed('no live request approved by the user');
     }
+    // With the approvals document on, a page token only on its decision.
+    if (approvals && record.approvedFrom !== 'approvals') {
+      throw notConfirmed('not approved in the approvals document');
+    }
     const { token } = signingConfirmation.issuePageConfirmation(
       kind,
       accountIndex,
@@ -710,6 +718,7 @@ function createPageRequests({
       bound
     );
     record.approved = null;
+    record.approvedFrom = null;
     record.tokenHandle = handle;
     trace({ kind: 'token-minted', id: record.id, token: kind });
     return token;
@@ -853,7 +862,7 @@ function createPageRequests({
   }
 
   async function decideIn(windowId, payload, from) {
-    const outcome = prompts.decide(windowId, payload);
+    const outcome = prompts.decide(windowId, payload, from);
     trace({ kind: 'decide', window: windowId, from, ok: outcome.ok, reason: outcome.reason });
     if (!outcome.ok) return outcome;
     await outcome.entry.record.reply;

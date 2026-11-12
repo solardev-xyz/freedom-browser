@@ -101,6 +101,8 @@ const agentCustodyByTabId = new Map();
 // Open page prompts per guest webContents id (freedom-core design 0011,
 // PRQ-4): a tab whose request waits shows a badge (page-prompts.js).
 let walletPromptCounts = new Map();
+// The guest this window last reported in front (`reportForeground`).
+let frontGuest = null;
 
 // The guest webContents id of a tab's webview, or null while it isn't
 // attached (Electron throws until then).
@@ -118,11 +120,25 @@ const guestIdOf = (tab) => {
 // at every switch and when the tab in front gets its guest; a tab with no
 // page reports none.
 const reportForeground = (tab) => {
+  frontGuest = guestIdOf(tab);
   try {
-    window.pagePrompts?.foreground?.(guestIdOf(tab));
+    window.pagePrompts?.foreground?.(frontGuest);
   } catch {
     // Main keeps the last report.
   }
+  renderApprovalsSpace();
+};
+
+// With the approvals document on (freedom-core design 0011, APS-2), main
+// shows the oldest prompt of the guest this window last reported in front,
+// in a panel at the right of the content area: the page makes room for it
+// while that guest has an open prompt, as it does for the sidebar. Only the
+// layout follows this; which prompt shows, and its decision, are main's.
+const renderApprovalsSpace = () => {
+  if (window.pagePrompts?.approvalsDocument !== true) return;
+  const space = document.getElementById('approvals-space');
+  const open = frontGuest !== null && (walletPromptCounts.get(frontGuest) || 0) > 0;
+  space?.classList.toggle('open', open);
 };
 let onAgentTabClaim = null;
 const agentCustodyListeners = new Set();
@@ -411,6 +427,7 @@ export const getTabIdForWebview = (webview) => {
 export const setWalletPromptCounts = (counts) => {
   walletPromptCounts = counts instanceof Map ? new Map(counts) : new Map();
   renderTabs();
+  renderApprovalsSpace();
 };
 
 // The tab whose webview is guest webContents `guestId`, or null. Main names
