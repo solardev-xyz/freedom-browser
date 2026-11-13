@@ -577,6 +577,51 @@ describe('update state broadcast and IPC (#87)', () => {
     expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
   });
 
+  // #918: a manual check is made from, or opens, Settings → About Freedom →
+  // Updates, which shows the reason a check can't run and the result of one
+  // that does. No native dialog, no toast on top of it.
+  test('a manual check in a non-owner profile opens no dialog; the state keeps the reason', () => {
+    const tryAcquireUpdaterOwnerLock = jest.fn(() => null);
+    const { mod, autoUpdater, dialog } = loadUpdaterModule(DEFAULT_PROFILE, {
+      tryAcquireUpdaterOwnerLock,
+    });
+    mod.initUpdater(null, null, { profile: DEFAULT_PROFILE });
+
+    mod.checkForUpdates();
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(mod.getUpdateState()).toMatchObject({
+      status: 'unsupported',
+      reason: 'not-owner',
+      message: 'Another open Freedom profile is handling updates.',
+    });
+  });
+
+  test('a manual check in a dev checkout opens no dialog; the state keeps the reason', () => {
+    process.env.NODE_ENV = 'development';
+    const { mod, autoUpdater, dialog } = loadUpdaterModule(DEFAULT_PROFILE);
+    mod.initUpdater(null, null, { profile: DEFAULT_PROFILE });
+
+    mod.checkForUpdates();
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(dialog.showMessageBox).not.toHaveBeenCalled();
+    expect(mod.getUpdateState()).toMatchObject({ status: 'unsupported', reason: 'development' });
+  });
+
+  test('a manual check that finds nothing shows up-to-date without a toast', () => {
+    const window = { isDestroyed: () => false, webContents: { send: jest.fn() } };
+    const { mod, autoUpdater } = loadUpdaterModule(DEFAULT_PROFILE);
+    mod.initUpdater(window, null, { profile: DEFAULT_PROFILE });
+
+    mod.checkForUpdates();
+    autoUpdater.emit('update-not-available');
+    expect(mod.getUpdateState().status).toBe('up-to-date');
+    expect(window.webContents.send).not.toHaveBeenCalledWith(
+      'show-update-notification',
+      expect.anything()
+    );
+  });
+
   test('the E2E recorder intercepts check and install without touching electron-updater', () => {
     const record = jest.fn();
     globalThis.__FREEDOM_TEST_UPDATER__ = { record };

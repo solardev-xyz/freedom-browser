@@ -88,6 +88,23 @@ function openProfilesManager() {
   createMainWindow('freedom://profiles');
 }
 
+// "Check for Updates…" (#918), like the hamburger row: start the check and
+// show it on Settings → About Freedom → Updates, which has the progress, the
+// result and, when this process can't check, the reason. The check goes first
+// so a Settings tab opened by this already reads "Checking…". A Settings tab
+// that is open is reused (the renderer's internal-page singleton).
+const UPDATE_SETTINGS_URL = 'freedom://settings/about/updates';
+
+function checkForUpdatesInSettings() {
+  checkForUpdates();
+  const win = getTargetWindow();
+  if (win) {
+    win.webContents.send('tab:new-with-url', UPDATE_SETTINGS_URL);
+    return;
+  }
+  createMainWindow(UPDATE_SETTINGS_URL);
+}
+
 // Switch to another profile, mirroring the renderer's PROFILE_OPEN handler:
 // focus the profile's window if it's already running, otherwise launch it.
 async function switchToProfile(profileId) {
@@ -1007,10 +1024,9 @@ function setupApplicationMenu() {
       ]
     : [
         {
+          id: 'check-for-updates',
           label: 'Check for Updates…',
-          click: () => {
-            checkForUpdates();
-          },
+          click: checkForUpdatesInSettings,
         },
       ];
 

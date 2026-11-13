@@ -10,8 +10,9 @@ const CHECK_LABEL = 'Check for Updates…';
 
 /**
  * What the menu row shows for one snapshot.
- * `action`: 'check' (ask main to check), 'install' (restart to update),
- * 'settings' (open Settings → About Freedom → Updates, which says why updates are off), or
+ * `action`: 'check' (ask main to check and open Settings → About Freedom →
+ * Updates, where the check shows, #918), 'install' (restart to update),
+ * 'settings' (only open that panel, which says why updates are off), or
  * null for a row that is disabled while something is in flight.
  */
 export function describeUpdateMenuItem(state) {
@@ -90,9 +91,15 @@ export function initUpdateStatusUi({ electronAPI = window.electronAPI, closeMenu
     const action = describeUpdateMenuItem(latest).action;
     if (!action) return;
     closeMenus?.();
-    if (action === 'install') electronAPI?.restartAndInstallUpdate?.();
-    else if (action === 'settings') openSettings?.();
-    else electronAPI?.checkForUpdates?.();
+    if (action === 'install') {
+      electronAPI?.restartAndInstallUpdate?.();
+      return;
+    }
+    // The check first, so a Settings tab opened here already reads
+    // "Checking…"; the row's own "Up to date"/"Failed" is gone once the menu
+    // closes, the panel keeps the result in view.
+    if (action === 'check') electronAPI?.checkForUpdates?.();
+    openSettings?.();
   });
 
   electronAPI?.onUpdateState?.(paint);
