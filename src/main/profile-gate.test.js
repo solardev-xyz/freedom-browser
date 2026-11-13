@@ -46,6 +46,7 @@ function start(options = {}) {
     command: '/bin/freedom-cored',
     lockDir: '/data/Freedom/locks',
     exists: () => true,
+    mkdir: jest.fn(),
     ...options,
   });
 }
@@ -75,6 +76,38 @@ describe('profileGateArgs', () => {
 });
 
 describe('startProfileGate', () => {
+  // `hold-profile` fails with 74 (storage) without its lock directory, which
+  // nothing has created on a machine no new build has run on yet.
+  test('creates the lock directory, owner-only, before the holder starts', () => {
+    const order = [];
+    const mkdir = jest.fn(() => order.push('mkdir'));
+    const { spawn } = spawner();
+    spawn.mockImplementation(() => {
+      order.push('spawn');
+      return fakeHolder();
+    });
+    start({ spawn, mkdir });
+    expect(mkdir).toHaveBeenCalledWith('/data/Freedom/locks', { recursive: true, mode: 0o700 });
+    expect(order).toEqual(['mkdir', 'spawn']);
+  });
+
+  test("a lock directory that can't be created is left to the holder to report", async () => {
+    const { children, spawn } = spawner();
+    const mkdir = jest.fn(() => {
+      throw Object.assign(new Error('read-only'), { code: 'EROFS' });
+    });
+    const gate = start({ spawn, mkdir });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    children[0].emit('exit', 74, null);
+    await expect(gate.whenLocked()).rejects.toMatchObject({ code: 'storage' });
+  });
+
+  test('without the binary, a development build creates nothing', () => {
+    const mkdir = jest.fn();
+    start({ packaged: false, exists: () => false, mkdir });
+    expect(mkdir).not.toHaveBeenCalled();
+  });
+
   test('spawns hold-profile at once, and is held once it says locked', async () => {
     const { children, spawn } = spawner();
     const gate = start({ spawn });
