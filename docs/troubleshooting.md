@@ -28,12 +28,22 @@
 ## Radicle fails to start
 
 - Ensure Radicle is enabled for the profile under **Settings → Nodes**
-- Radicle runs in-process through the `libradicle` addon, so there are no managed ports and no daemons to conflict with
-- Ensure `libradicle.node` exists in `radicle-bin/<platform>-<arch>/` for source builds (packaged builds use `radicle-bin/` under the app's resources directory); rerun `npm run radicle:download` if it is missing
+- Radicle runs in `freedom-radicled`, a service process Freedom starts and restarts, and opens no ports of its own
+- For source builds, rerun `npm run radicled:download` and confirm `freedom-radicled-bin/` holds the binary for the current OS and architecture. Without it, Radicle reports `freedom-radicled binary not found`
+- On a profile with a vault, Radicle waits for the vault to be unlocked ("Waiting for the vault to be unlocked"), at launch and after a crash while it is locked. Unlock the vault and it starts
+- A profile without a vault runs Radicle with a new throwaway identity at each start: it reads, browses and seeds, but creating issues, commenting and GitHub imports need a vault
+- "The Radicle data is in use by another process": another Freedom, or another build of it, runs this profile's Radicle node. Close it and try again
+- Radicle doesn't start when its data is on a network drive
+- "Radicle is still repairing its data": the first start after an update, or after an interrupted write, checks the repositories, and a large store can run out of time. Use Retry in the Nodes menu; it continues where it left off
 - Ensure Git is installed and available on `PATH` — it is needed for GitHub repository imports
-- If starting for the first time, Freedom creates a Radicle identity automatically
 - Check terminal output for specific error messages
 - For a fresh Radicle identity and repository store, create a new browser profile
+- With `FREEDOM_RADICLE_BACKEND=addon`, a development build runs the `libradicle` addon instead, the rollback: it needs `npm run radicle:download` and `npm run radicled:download` (it runs under freedom-radicled's `hold-lock`), and it refuses a home without `keys/radicle`, such as one freedom-radicled has already run on, since it would start there as a new identity
+
+## The `rad` command line can't reach Freedom's Radicle node
+
+- Freedom's Radicle node binds no control socket (`node/control.sock`), so `rad` and other Radicle tools can't attach to it. A developer setting may reopen it later
+- Use the repository viewer and the Nodes panel, or run a Radicle node of your own beside Freedom with its own home
 
 ## Myotis fails to start or synchronize
 

@@ -1,0 +1,14 @@
+- Radicle runs in a process of its own instead of inside the browser ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - A Radicle fault no longer takes the browser down, and the node restarts by itself
+  - The Radicle key is no longer kept in a file on disk
+  - On a profile with a vault, Radicle waits for the vault to be unlocked before it starts
+  - A Radicle crash while the vault is locked keeps it down until the next unlock
+  - While the vault is locked and Radicle isn't running, no Radicle DID is shown
+  - A profile without a vault gets a new throwaway Radicle identity at each start, for reading, browsing and seeding
+  - Creating issues, commenting and importing from GitHub need a vault
+  - A Radicle identity Freedom generated at random, rather than from the vault, ends
+  - What that identity published stays signed, but can no longer be edited
+  - The `rad` command line can't attach to Freedom's Radicle node for now
+  - Repository files over 16 MiB and repository answers over 32 MiB are refused
+  - A Radicle write cut off partway is reported as possibly recorded, and isn't sent again
+  - Radicle doesn't start when its data is on a network drive

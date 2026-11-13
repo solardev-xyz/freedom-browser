@@ -89,7 +89,7 @@ Freedom Browser is distributed as:
   - Ant (`antd`, Swarm node)
   - `freedom-cored` (Rust identity core) — its license is pending; see below
   - `freedom-ipfsd` (IPFS service) — packaged builds' IPFS node; its license is pending; see below
-  - `freedom-radicled` (Radicle service) — shipped, not yet run; its license is pending; see below
+  - `freedom-radicled` (Radicle service) — packaged builds' Radicle node; its license is pending; see below
   - Arti (Tor client) — macOS, Linux and Windows x64; no Windows ARM64 package is built
   - `myotis-supervisor` — compiled from Freedom's own C sources (`src/main/myotis/native/`), not third-party
 - **Microsoft Visual C++ runtime DLLs** (Windows only): `vcruntime140.dll`, plus `msvcp140.dll` / `vcruntime140_1.dll` where a binary imports them. `scripts/after-pack.js` places unmodified copies beside each bundled binary that imports them (#563). These are "Distributable Code" under the Microsoft Visual Studio license terms, which permit app-local deployment. They're proprietary but freely redistributable with an application, and they're recorded in `NOTICES`.
@@ -135,7 +135,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 ### freedom-radicled (Radicle Service) — license pending
 
 - **Pin:** `radicled-v0.1.2` (an immutable release) in `scripts/fetch-freedom-radicled.js`, together with the sha256 of its `SHA256SUMS` (`PINNED_SHA256SUMS_DIGEST`).
-- **Integration:** a separate binary under `resources/freedom-radicled/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Main runs only its `hold-lock` subcommand, the Radicle home's gate: Radicle still runs on the libradicle add-on until main moves onto the service (freedom-core design 0008, step 6 on).
+- **Integration:** a separate binary under `resources/freedom-radicled/`, shipped on every platform; the Windows x64 binary is copied for Windows ARM64 emulation. Every build runs it as its Radicle node, the service, and as `hold-lock`, the Radicle home's gate (freedom-core design 0008, step 7). A development build can still select the libradicle add-on with `FREEDOM_RADICLE_BACKEND=addon`, and it then runs under `hold-lock` ("Rollback").
 - **License:** freedom-core's, which is not chosen yet; that is the maintainer's decision. No license is inferred from Freedom Browser's license.
 - **Linking (Linux):** the Linux binaries (x86_64 and aarch64) are dynamically linked against the system's GNU C Library, needing at most `GLIBC_2.17` (`libc`, `libm`, `libpthread`, `libdl` and the dynamic loader), and built with cargo-zigbuild, as freedom-ipfsd's are. glibc itself is the user's system library and is not distributed.
 - **Notices:** every release archive carries `THIRD-PARTY-NOTICES` (the statically linked crates, libradicle's and Radicle Heartwood's among them; the C libraries they bundle, libgit2 1.9.6, zlib 1.3.2 and SQLite 3.49.1; and the Rust toolchain runtime, with glibc's startup objects and LLVM's libunwind on Linux) and `THIRD-PARTY-NOTICES-rust-std.html` (the Rust project's notice file for the standard library). The notices are the same file in every archive. `scripts/fetch-freedom-radicled.js` installs both next to the binary, `package.json` ships them in `resources/freedom-radicled/`, and `scripts/check-binaries.js` requires them.
@@ -173,7 +173,7 @@ Versions here are the pinned values in the repo, not observed downloads; each ro
 - **Version:** `0.8.0` (pin: `src/shared/radicle-addon-version.js` `RADICLE_ADDON_VERSION`)
 - **License:** MIT OR Apache-2.0
 - **Risk:** Green
-- **Integration:** Native addon loaded by the Electron main process
+- **Integration:** Native addon, shipped in `resources/radicle-bin/`. Packaged builds no longer load it: their Radicle node is freedom-radicled. A development build loads it in the Electron main process with `FREEDOM_RADICLE_BACKEND=addon`, the rollback, until it is removed one stable release later (freedom-core design 0008, "Rollback", step 10)
 - **Notes:** Upstream commits **no** `LICENSE` file; the dual-license claim rests on `license = "MIT OR Apache-2.0"` in its `Cargo.toml`, verified at tag `v0.8.0`. It statically links Radicle Heartwood (`solardev-xyz/heartwood`), whose workspace `Cargo.toml` is also `MIT OR Apache-2.0` — no copyleft enters this way.
 - **Action Required:** MIT/Apache notice in `NOTICES` ✔; ask upstream to commit the license texts.
 
