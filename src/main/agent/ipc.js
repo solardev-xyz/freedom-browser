@@ -28,6 +28,8 @@ const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_OLLAMA_DISCOVERY_FAILED: 'Could not load models from Ollama. Make sure Ollama is running and check the local URL in connection settings.',
   AGENT_OLLAMA_NO_MODELS: 'Ollama is running, but no models are installed. Download a model in Ollama, then connect again.',
   AGENT_OLLAMA_MODEL_LIMIT: 'This Ollama server has more than the supported 128 models.',
+  AGENT_OLLAMA_TOOLS_UNSUPPORTED: 'This model does not support Agent actions in Ollama. Choose a compatible model.',
+  AGENT_OLLAMA_CHECK_FAILED: 'Tool support could not be verified. Retry the compatibility check or choose another model.',
   AGENT_MODEL_INVALID: 'Selected agent model is invalid',
   AGENT_MODEL_UNAVAILABLE: 'No configured agent model is available',
   AGENT_PROVIDER_AUTH_BUSY: 'A provider sign-in is already in progress',
@@ -435,7 +437,7 @@ function registerFreedomAgentIpc(options = {}) {
         } catch (error) {
           const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
           console.error('[agent] Model resolution failed:', errorCode);
-          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED'].includes(errorCode)) {
+          if (['AGENT_MODEL_POLICY', 'AGENT_CATALOG_EXPIRED', 'AGENT_OLLAMA_TOOLS_UNSUPPORTED'].includes(errorCode)) {
             return safeProviderError(error);
           }
           return errorEnvelope(
@@ -1141,7 +1143,10 @@ function registerFreedomAgentIpc(options = {}) {
   const handleProviderPreferences = (event, payload) =>
     handleProviderMutation(event, () => ({ status: providerResolver.setPreferences(payload) }));
   const handleTestConnection = (event, payload) =>
-    handleProviderMutation(event, async () => ({ result: await providerResolver.testConnection(payload) }));
+    handleProviderMutation(event, async () => ({
+      result: await providerResolver.testConnection(payload),
+      status: providerResolver.getStatus(),
+    }));
   const handleConfigureOllama = (event, payload) =>
     handleProviderMutation(event, async () => ({ status: await providerResolver.configureOllama(payload) }));
   const handleLoginSubscription = (event, payload) =>

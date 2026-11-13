@@ -10,6 +10,8 @@ const { CLAUDE_PROVIDER_ID, CLAUDE_MODELS, checkClaudeLogin, discoverClaudeModel
 const { createClaudeSession } = require('./claude-session');
 const { loadPiSdk } = require('./pi-sdk');
 const { loginChatGPT } = require('./chatgpt-login');
+const { describeOllamaModel, checkOllamaTools, toolsUnsupported } = require('./ollama-models');
+const { classifyProviderFailure, PROVIDER_FAILURE_CATEGORIES } = require('./provider-failure');
 const {
   PROVIDER_DEFINITIONS,
   CUSTOM_PROVIDERS,
@@ -260,9 +262,11 @@ class AgentProviderResolver {
     this.assertEnabled();
     const enabledSignal = this.featureSignal();
     const baseUrl = normalizeOllamaBaseUrl(input.baseUrl);
+    const previous = this.getStatus().connections?.find((connection) => connection.providerId === 'ollama');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     let modelIds;
+    let models;
     try {
       const response = await this.fetch(`${baseUrl.slice(0, -3)}/api/tags`, {
         method: 'GET',
@@ -283,10 +287,36 @@ class AgentProviderResolver {
       const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (!Array.isArray(data.models)) throw new Error('Missing models');
       modelIds = [...new Set(data.models.map((model) => requireIdentifier(model?.name, 'model name')))];
+      const digests = new Map(data.models.map(model => [model.name,
+        typeof model.digest === 'string' && /^[a-f\d]{64}$/i.test(model.digest) ? model.digest.toLowerCase() : undefined]));
       if (modelIds.length > 128) {
         throw new AgentProviderError('AGENT_OLLAMA_MODEL_LIMIT', 'Ollama model list exceeds the supported limit');
       }
+      // Bound concurrency so a large local library does not flood Ollama.
+      enabledSignal?.throwIfAborted();
+      models = new Array(modelIds.length);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, modelIds.length) }, async () => {
+        while (next < modelIds.length) {
+          const index = next++;
+          models[index] = await describeOllamaModel(this.fetch, baseUrl, modelIds[index],
+            AbortSignal.any([controller.signal, enabledSignal].filter(Boolean))).catch(() => {
+            enabledSignal?.throwIfAborted();
+            return { id: modelIds[index] };
+          });
+          const digest = digests.get(modelIds[index]);
+          if (digest) {
+            const old = previous?.baseUrl === baseUrl && previous.models?.find(model => model.id === modelIds[index]);
+            // Keep check results only for the identical installed model bytes.
+            if (models[index].tools === undefined && old?.digest === digest && typeof old.tools === 'boolean') {
+              models[index].tools = old.tools;
+            }
+            models[index].digest = digest;
+          }
+        }
+      }));
     } catch (error) {
+      enabledSignal?.throwIfAborted();
       if (error.code === 'AGENT_OLLAMA_MODEL_LIMIT') throw error;
       throw new AgentProviderError('AGENT_OLLAMA_DISCOVERY_FAILED', 'Could not discover Ollama models');
     } finally {
@@ -296,12 +326,13 @@ class AgentProviderResolver {
     if (!modelIds.length) {
       throw new AgentProviderError('AGENT_OLLAMA_NO_MODELS', 'No installed Ollama models');
     }
-    const previous = this.getStatus().connections?.find((connection) => connection.providerId === 'ollama');
     const preferred = input.modelId || (previous?.baseUrl === baseUrl ? previous.modelId : undefined);
-    const modelId = modelIds.includes(preferred) ? preferred : modelIds[0];
+    const eligible = models.filter(model => model.tools !== false);
+    const modelId = eligible.some(model => model.id === preferred) ? preferred :
+      eligible.find(model => model.tools === true)?.id || eligible[0]?.id || modelIds[0];
     enabledSignal?.throwIfAborted();
     this.assertEnabled();
-    this.store.saveOllama({ modelId, modelIds, baseUrl, activate });
+    this.store.saveOllama({ modelId, modelIds, models, baseUrl, activate: activate && eligible.length > 0 });
     return this.getStatus();
   }
 
@@ -375,6 +406,12 @@ class AgentProviderResolver {
     );
     if (!connection) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not configured');
+    }
+    if (providerId === 'ollama') {
+      if (!(connection.modelIds || [connection.modelId]).includes(modelId)) {
+        throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not installed');
+      }
+      await this.#checkOllamaModel(connection, modelId);
     }
     if (providerId === CLAUDE_PROVIDER_ID && !(await this.getClaudeModels()).some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
     if (connection.kind === 'compatible' && !connection.models.some(m => m.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a configured model');
@@ -558,11 +595,89 @@ class AgentProviderResolver {
     }
   }
 
+  async #checkOllamaModel(connection, modelId) {
+    const baseUrl = normalizeOllamaBaseUrl(connection.baseUrl);
+    requireIdentifier(modelId, 'modelId');
+    const enabledSignal = this.featureSignal();
+    let model = connection.models?.find(item => item.id === modelId);
+    let current;
+    try {
+      current = await describeOllamaModel(this.fetch, baseUrl, modelId,
+        AbortSignal.any([AbortSignal.timeout(5000), enabledSignal].filter(Boolean)));
+    } catch {
+      enabledSignal?.throwIfAborted();
+      // An unavailable metadata endpoint is not proof of incompatibility.
+    }
+    enabledSignal?.throwIfAborted();
+    this.assertEnabled();
+    if (typeof current?.tools === 'boolean') {
+      model = current;
+      this.store.updateOllamaModel(baseUrl, modelId, current.tools);
+    }
+    if (model?.tools === false) throw toolsUnsupported();
+  }
+
+  #trackOllamaRejections(runtime, selection) {
+    let recorded = false;
+    const record = value => {
+      if (recorded) return;
+      const error = value?.stopReason === 'error' ? value.errorMessage : value instanceof Error ? value : null;
+      if (!error || classifyProviderFailure(error).category !== PROVIDER_FAILURE_CATEGORIES.TOOLS_UNSUPPORTED) return;
+      try {
+        const current = this.store.getSelection('ollama');
+        const oldDigest = selection.models?.find(model => model.id === selection.modelId)?.digest;
+        const newDigest = current?.models?.find(model => model.id === selection.modelId)?.digest;
+        if (current?.baseUrl !== selection.baseUrl || oldDigest !== newDigest) return;
+        this.store.updateOllamaModel(selection.baseUrl, selection.modelId, false);
+        recorded = true;
+      } catch { /* Optional capability caching must not replace the provider's original failure. */ }
+    };
+    for (const method of ['stream', 'streamSimple', 'complete', 'completeSimple']) {
+      if (typeof runtime[method] !== 'function') continue;
+      const original = runtime[method].bind(runtime);
+      runtime[method] = (model, ...args) => {
+        if (model?.provider !== 'ollama' || model.id !== selection.modelId) return original(model, ...args);
+        try {
+          const output = original(model, ...args);
+          // Observing the final result does not consume or replace stream events.
+          if (typeof output?.result === 'function') void Promise.resolve(output.result()).then(record, record);
+          else if (typeof output?.then === 'function') return output.then(value => { record(value); return value; }, error => { record(error); throw error; });
+          return output;
+        } catch (error) { record(error); throw error; }
+      };
+    }
+  }
+
   async testConnection(input = {}) {
     this.assertEnabled();
     const enabledSignal = this.featureSignal();
     const providerId = requireIdentifier(input.providerId, 'providerId');
     const modelId = requireIdentifier(input.modelId, 'modelId');
+    if (providerId === 'ollama') {
+      const selection = this.store.getSelection(providerId);
+      const connection = this.getStatus().connections.find(item => item.providerId === providerId);
+      if (!selection || !(connection?.modelIds || [connection?.modelId]).includes(modelId)) {
+        throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not installed');
+      }
+      const baseUrl = normalizeOllamaBaseUrl(selection.baseUrl);
+      const signal = AbortSignal.any([AbortSignal.timeout(45_000), enabledSignal].filter(Boolean));
+      const startedAt = Date.now();
+      try {
+        const result = await checkOllamaTools(this.fetch, baseUrl, modelId, signal);
+        enabledSignal?.throwIfAborted();
+        this.assertEnabled();
+        this.store.updateOllamaModel(baseUrl, modelId, true);
+        return { elapsedMs: Date.now() - startedAt, ...result };
+      } catch (error) {
+        enabledSignal?.throwIfAborted();
+        this.assertEnabled();
+        if (error.code === 'AGENT_OLLAMA_TOOLS_UNSUPPORTED') {
+          this.store.updateOllamaModel(baseUrl, modelId, false);
+          throw error;
+        }
+        throw new AgentProviderError('AGENT_OLLAMA_CHECK_FAILED', 'Could not verify tool support. Retry the check or choose another model.');
+      }
+    }
     const { model, modelRuntime } = await this.resolveModel({ providerId, modelId });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), isCompatibleId(providerId) ? 45000 : 20_000);
@@ -649,6 +764,7 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_CATALOG_UNAVAILABLE',
         'Could not refresh this model’s encryption capabilities. Refresh the Venice models and try again. No messages were sent.');
     }
+    if (selection.kind === 'ollama') await this.#checkOllamaModel(selection, selection.modelId);
     const runtime = await this.#createRuntime(selection.providerId);
     if (selection.kind === 'hosted') {
       await runtime.setRuntimeApiKey(selection.providerId, selection.apiKey);
@@ -671,6 +787,7 @@ class AgentProviderResolver {
         ],
       });
       await runtime.setRuntimeApiKey('ollama', 'ollama');
+      this.#trackOllamaRejections(runtime, selection);
     } else if (selection.kind === 'subscription') {
       const credential = await this.credentials.read(selection.providerId);
       if (!credential) {

@@ -66,6 +66,7 @@ function createResolver(selection = null, options = {}) {
     getSelection: jest.fn(() => selection),
     saveHosted: jest.fn(),
     saveOllama: jest.fn(),
+    updateOllamaModel: jest.fn(),
     saveSubscription: jest.fn(),
     select: jest.fn(),
     remove: jest.fn(),
@@ -95,6 +96,7 @@ function createResolver(selection = null, options = {}) {
       dataDir: '/profile/agent',
       loadSdk: jest.fn(async () => sdk),
       discoverClaudeModels: jest.fn(async () => require('./claude-cli').CLAUDE_MODELS),
+      fetch: jest.fn(async () => new Response('{}', { status: 404 })),
       ...options,
     }),
   };
@@ -232,12 +234,13 @@ describe('AgentProviderResolver', () => {
     ] })));
     const { resolver, store } = createResolver(null, { fetch });
     await resolver.configureOllama();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:11434/api/tags', expect.objectContaining({
       method: 'GET', redirect: 'error', signal: expect.any(AbortSignal),
     }));
     expect(store.saveOllama).toHaveBeenCalledWith({
       modelId: 'qwen3:8b', modelIds: ['qwen3:8b', 'llama3.2:3b'], baseUrl: OLLAMA_DEFAULT_BASE_URL, activate: true,
+      models: [{ id: 'qwen3:8b' }, { id: 'llama3.2:3b' }],
     });
   });
 
@@ -252,6 +255,86 @@ describe('AgentProviderResolver', () => {
     expect(store.saveOllama).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'llama3.2:3b' }));
     await resolver.refreshModels({ providerId: 'ollama' });
     expect(store.saveOllama).toHaveBeenLastCalledWith(expect.objectContaining({ modelId: 'llama3.2:3b', activate: false }));
+  });
+
+  test('retains a checked capability on refresh only for the identical model digest and server', async () => {
+    const digest = 'a'.repeat(64);
+    const connection = { kind: 'ollama', providerId: 'ollama', modelId: 'local', modelIds: ['local'],
+      baseUrl: OLLAMA_DEFAULT_BASE_URL, models: [{ id: 'local', tools: true, digest }] };
+    let currentDigest = digest;
+    const fetch = jest.fn(async url => new Response(JSON.stringify(url.endsWith('/api/tags')
+      ? { models: [{ name: 'local', digest: currentDigest }] } : {})));
+    const { resolver, store } = createResolver(connection, { fetch });
+    store.getPublicStatus.mockReturnValue({ configured: true, connections: [connection] });
+    await resolver.configureOllama();
+    expect(store.saveOllama).toHaveBeenLastCalledWith(expect.objectContaining({ models: [{ id: 'local', tools: true, digest }] }));
+    currentDigest = 'b'.repeat(64);
+    await resolver.configureOllama();
+    expect(store.saveOllama).toHaveBeenLastCalledWith(expect.objectContaining({ models: [{ id: 'local', digest: currentDigest }] }));
+    currentDigest = undefined;
+    await resolver.configureOllama();
+    expect(store.saveOllama).toHaveBeenLastCalledWith(expect.objectContaining({ models: [{ id: 'local' }] }));
+  });
+
+  test('prefers a tool-capable installed model and keeps incompatible models for management', async () => {
+    const fetch = jest.fn(async (url, options) => new Response(JSON.stringify(url.endsWith('/api/tags')
+      ? { models: [{ name: 'gemma3:4b' }, { name: 'unreported' }, { name: 'qwen3:8b' }] }
+      : { capabilities: JSON.parse(options.body).model === 'qwen3:8b' ? ['tools', 'completion'] :
+        JSON.parse(options.body).model === 'gemma3:4b' ? ['completion', 'vision'] : undefined })));
+    const { resolver, store } = createResolver(null, { fetch });
+    await resolver.configureOllama();
+    expect(store.saveOllama).toHaveBeenCalledWith(expect.objectContaining({
+      modelId: 'qwen3:8b', activate: true,
+      models: [{ id: 'gemma3:4b', tools: false }, { id: 'unreported' }, { id: 'qwen3:8b', tools: true }],
+    }));
+    expect(fetch.mock.calls.every(([url]) => !url.includes('completions'))).toBe(true);
+  });
+
+  test('connects an incompatible library for management without making it active', async () => {
+    const fetch = jest.fn(async url => new Response(JSON.stringify(url.endsWith('/api/tags')
+      ? { models: [{ name: 'local' }] } : { capabilities: ['completion'] })));
+    const { resolver, store } = createResolver(null, { fetch });
+    await resolver.configureOllama();
+    expect(store.saveOllama).toHaveBeenCalledWith(expect.objectContaining({ activate: false, models: [{ id: 'local', tools: false }] }));
+  });
+
+  test('rechecks old saved connections before selecting or starting a model, without inference', async () => {
+    const fetch = jest.fn(async () => new Response('{"capabilities":["completion","vision"]}'));
+    const { resolver, store, runtime } = createResolver({
+      kind: 'ollama', providerId: 'ollama', modelId: 'local', baseUrl: OLLAMA_DEFAULT_BASE_URL,
+    }, { fetch });
+    await expect(resolver.selectModel({ providerId: 'ollama', modelId: 'local' }))
+      .rejects.toMatchObject({ code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' });
+    await expect(resolver.resolveModel()).rejects.toMatchObject({ code: 'AGENT_OLLAMA_TOOLS_UNSUPPORTED' });
+    expect(store.select).not.toHaveBeenCalled();
+    expect(runtime.registerProvider).not.toHaveBeenCalled();
+    expect(store.updateOllamaModel).toHaveBeenCalledWith(OLLAMA_DEFAULT_BASE_URL, 'local', false);
+  });
+
+  test('a failed compatibility check does not mark an unknown model incompatible', async () => {
+    const { resolver, store } = createResolver({
+      kind: 'ollama', providerId: 'ollama', modelId: 'local', baseUrl: OLLAMA_DEFAULT_BASE_URL,
+    }, { fetch: jest.fn(async () => new Response('{}', { status: 503 })) });
+    await expect(resolver.testConnection({ providerId: 'ollama', modelId: 'local' }))
+      .rejects.toMatchObject({ code: 'AGENT_OLLAMA_CHECK_FAILED' });
+    expect(store.updateOllamaModel).not.toHaveBeenCalled();
+  });
+
+  test('a successful synthetic check updates only that installed model', async () => {
+    const fetch = jest.fn(async (_url, options) => {
+      const value = JSON.parse(options.body).tools[0].function.parameters.properties.value.enum[0];
+      return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: {
+        name: 'freedom_compatibility_check', arguments: JSON.stringify({ value }),
+      } }] } }] }));
+    });
+    const { resolver, store } = createResolver({
+      kind: 'ollama', providerId: 'ollama', modelId: 'local', baseUrl: OLLAMA_DEFAULT_BASE_URL,
+    }, { fetch });
+    expect(await resolver.testConnection({ providerId: 'ollama', modelId: 'local' })).toMatchObject({ outcome: 'tools_verified' });
+    expect(store.updateOllamaModel).toHaveBeenCalledWith(OLLAMA_DEFAULT_BASE_URL, 'local', true);
+    await expect(resolver.testConnection({ providerId: 'ollama', modelId: 'not-installed' }))
+      .rejects.toMatchObject({ code: 'AGENT_MODEL_INVALID' });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   test.each([
@@ -469,6 +552,31 @@ describe('AgentProviderResolver', () => {
     );
     expect(ctx.runtime.setRuntimeApiKey).toHaveBeenCalledWith('ollama', 'ollama');
     expect(resolved.model).toMatchObject({ provider: 'ollama', id: 'qwen2.5:7b' });
+  });
+
+  test('records an explicit streamed tool rejection without consuming or replacing the stream', async () => {
+    const selection = { kind: 'ollama', providerId: 'ollama', modelId: 'local', baseUrl: OLLAMA_DEFAULT_BASE_URL };
+    const ctx = createResolver(selection);
+    const final = { stopReason: 'error', errorMessage: '400: local does not support tools' };
+    const stream = { result: jest.fn(async () => final) };
+    ctx.runtime.streamSimple = jest.fn(() => stream);
+    const resolved = await ctx.resolver.resolveModel();
+    expect(resolved.modelRuntime.streamSimple(resolved.model, {})).toBe(stream);
+    await stream.result();
+    expect(ctx.store.updateOllamaModel).toHaveBeenCalledWith(OLLAMA_DEFAULT_BASE_URL, 'local', false);
+  });
+
+  test('does not mark a changed Ollama destination from an old runtime failure', async () => {
+    const selection = { kind: 'ollama', providerId: 'ollama', modelId: 'local', baseUrl: OLLAMA_DEFAULT_BASE_URL };
+    const ctx = createResolver(selection);
+    let finish;
+    ctx.runtime.completeSimple = jest.fn(() => new Promise(resolve => { finish = resolve; }));
+    const resolved = await ctx.resolver.resolveModel();
+    const pending = resolved.modelRuntime.completeSimple(resolved.model, {});
+    ctx.store.getSelection.mockReturnValue({ ...selection, baseUrl: 'http://localhost:11435/v1' });
+    finish({ stopReason: 'error', errorMessage: '400: local does not support tools' });
+    await pending;
+    expect(ctx.store.updateOllamaModel).not.toHaveBeenCalled();
   });
 
   test('logs in and resolves ChatGPT subscription models through Pi OAuth', async () => {

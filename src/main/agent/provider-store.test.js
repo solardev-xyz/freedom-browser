@@ -34,6 +34,23 @@ function createStore(options = {}) {
 }
 
 describe('AgentProviderStore', () => {
+  test('Ollama capability updates preserve selection, favorites, other connections and legacy stores', () => {
+    const { store, dataDir, safeStorage } = createStore();
+    const baseUrl = 'http://127.0.0.1:11434/v1';
+    store.saveOllama({ baseUrl, modelId: 'old' });
+    expect(store.getPublicStatus().connections[0]).not.toHaveProperty('models');
+    store.saveOllama({ baseUrl, modelId: 'old', modelIds: ['old', 'unknown'], models: [{ id: 'old', tools: false }, { id: 'unknown' }] });
+    store.savePreferences('ollama', { favoriteModelIds: ['old'] });
+    store.saveHosted({ providerId: 'openai', modelId: 'other', apiKey: 'fixture-key' });
+    store.updateOllamaModel('http://localhost:1234/v1', 'unknown', true);
+    expect(store.getSelection('ollama').models[1]).toEqual({ id: 'unknown' });
+    store.updateOllamaModel(baseUrl, 'unknown', true);
+    const reloaded = createStore({ dataDir, safeStorage }).store;
+    expect(reloaded.getPublicStatus().providerId).toBe('openai');
+    expect(reloaded.getPublicStatus().connections.find(item => item.providerId === 'ollama')).toMatchObject({
+      modelId: 'old', favoriteModelIds: ['old'], models: [{ id: 'old', tools: false }, { id: 'unknown', tools: true }],
+    });
+  });
   test('keyless custom connections work without secure storage; keyed connections still require it', () => {
     const { store } = createStore({ safeStorage: createSafeStorage(false) });
     const config = { providerId: 'custom-11111111-1111-4111-8111-111111111111', name: 'Local',
