@@ -23,7 +23,7 @@ const {
   launchApp: launchTarget,
 } = require('./packaged-launch');
 const { closeApp } = require('./close-app');
-const { chromeWindow } = require('./chrome-window');
+const { chromeWindow, chromeStarted } = require('./chrome-window');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -69,13 +69,16 @@ function closeOptions() {
 }
 
 // First BrowserWindow's chrome (not its approvals document, a page of the
-// app too: chrome-window.js), waited until it has mounted. The address bar
-// is the last toolbar element initialized; presence here implies tab bar,
-// bookmarks bar, and menus are all live.
+// app too: chrome-window.js), waited until it has mounted and run its
+// start-up. The address bar is static markup, so its presence alone says
+// nothing of the modules behind it: the tab bar, the menus, the sidebar and
+// the wallet's screens are live only once the start-up has run
+// (chromeStarted).
 async function browserWindow(app) {
   const win = await chromeWindow(app);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
+  await chromeStarted(win);
   return win;
 }
 

@@ -1,0 +1,1 @@
+- The Identity & Wallet toolbar button stays dimmed while a window starts, rather than ignoring a click made then ([#1229](https://github.com/solardev-xyz/freedom-browser/pull/1229))
