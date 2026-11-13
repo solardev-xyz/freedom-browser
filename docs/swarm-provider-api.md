@@ -166,7 +166,7 @@ permission manifest", with a typographic apostrophe U+2019) the app's permission
 | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `invalid_params`                                                                                                | Any (generic shape error)                                                                                                |
 | `unsupported_option` (+ `data.option`)                                                                          | Methods that take `options`: it must be absent or `{}`                                                                   |
-| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk and message writes; `swarm_writeFeedEntry` (neither `limit` nor `actual`)                                 |
+| `payload_too_large` (+ `limit`, `actual`)                                                                       | Publish, chunk, feed-entry and message writes (an empty `swarm_writeFeedEntry` has neither `limit` nor `actual`)         |
 | `data_too_large` (+ `limit`, `actual`)                                                                          | `swarm_readData`, `swarm_readFeedEntry` (`actual` only when the node declared the size)                                  |
 | `missing_content_type`                                                                                          | `swarm_publishData`                                                                                                      |
 | `empty_files`, `too_many_files`, `invalid_path`, `duplicate_path`, `invalid_index_document`                     | `swarm_publishFiles`                                                                                                     |
@@ -389,7 +389,7 @@ Reported by `swarm_getCapabilities` under `limits`:
 
 | Limit                  | Value           | Applies to                                                                           |
 | ---------------------- | --------------- | ------------------------------------------------------------------------------------ |
-| `maxDataBytes`         | 10 MiB          | `swarm_publishData`                                                                  |
+| `maxDataBytes`         | 10 MiB          | `swarm_publishData`, `swarm_writeFeedEntry`                                          |
 | `maxFilesBytes`        | 50 MiB (total)  | `swarm_publishFiles`                                                                 |
 | `maxFileCount`         | 100             | `swarm_publishFiles`                                                                 |
 | `maxPathBytes`         | 100 UTF-8 bytes | each `swarm_publishFiles` path                                                       |
@@ -638,9 +638,10 @@ not the entry, whatever its error text) refuses the write with `-32603`, and
 it can be retried. The feed must exist (`feed_not_found`:
 call `swarm_createFeed` first). Payloads larger than one chunk are uploaded and
 wrapped by the node; if the node refuses the upload, that is the node's error
-(`-32603`). An empty `data` is `payload_too_large`: an entry carries at least
-one byte. Writes to one feed are serialized, so concurrent writes get distinct
-indexes.
+(`-32603`). `data` is at most `maxDataBytes`, as for `swarm_publishData`: a
+larger one is `payload_too_large` (+ `limit`, `actual`). An empty `data` is
+`payload_too_large` too: an entry carries at least one byte. Writes to one
+feed are serialized, so concurrent writes get distinct indexes.
 
 #### `swarm_readFeedEntry { name | topic, owner?, index? }` → `{ data, encoding: 'base64', index, nextIndex }` (public)
 

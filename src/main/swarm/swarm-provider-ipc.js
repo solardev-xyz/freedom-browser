@@ -1720,11 +1720,25 @@ async function handleWriteFeedEntry(params, origin) {
 
   // Accept string or binary
   let payload = data;
-  if (typeof payload !== 'string') {
+  const isString = typeof payload === 'string';
+  if (!isString) {
     payload = normalizeBytes(payload);
     if (!payload) {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
     }
+  }
+
+  // publishData's limit: a payload over one chunk goes up through /bytes, so
+  // without it a feed entry would upload any amount past that limit (#1053).
+  const size = isString ? Buffer.byteLength(payload, 'utf-8') : payload.length;
+  if (size > LIMITS.maxDataBytes) {
+    return {
+      error: {
+        ...ERRORS.INVALID_PARAMS,
+        message: `Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`,
+        data: { reason: 'payload_too_large', limit: LIMITS.maxDataBytes, actual: size },
+      },
+    };
   }
 
   if (index !== undefined && index !== null) {

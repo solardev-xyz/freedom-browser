@@ -2262,6 +2262,42 @@ describe('swarm-provider-ipc', () => {
 
       expect(result.result).toEqual({ index: 0 });
     });
+
+    // publishData's limit applies to feed entries too (#1053), counted in
+    // bytes: 'é' is two UTF-8 bytes.
+    test.each([
+      ['a string', 'x'.repeat(LIMITS.maxDataBytes - 1) + 'é'],
+      ['binary data', new Uint8Array(LIMITS.maxDataBytes + 1)],
+    ])('refuses %s one byte over maxDataBytes before anything is written', async (_label, data) => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data }, 'myapp.eth');
+
+      expect(result.error.code).toBe(-32602);
+      expect(result.error.message).toBe(`Payload exceeds maximum size of ${LIMITS.maxDataBytes} bytes`);
+      expect(result.error.data).toEqual({
+        reason: 'payload_too_large',
+        limit: LIMITS.maxDataBytes,
+        actual: LIMITS.maxDataBytes + 1,
+      });
+      expect(mockGetPublisherKey).not.toHaveBeenCalled();
+      expect(mockWriteFeedPayload).not.toHaveBeenCalled();
+    });
+
+    test('writes a payload of exactly maxDataBytes', async () => {
+      mockFeedCapability('myapp.eth');
+      mockGetFeed.mockReturnValue({ topic: 't', owner: '0xOwner', manifestReference: 'm' });
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      mockWriteFeedPayload.mockResolvedValue({ index: 0 });
+
+      const data = new Uint8Array(LIMITS.maxDataBytes);
+      const result = await invokeProvider('swarm_writeFeedEntry', { name: 'feed', data }, 'myapp.eth');
+
+      expect(result.result).toEqual({ index: 0 });
+      expect(mockWriteFeedPayload).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('swarm_readFeedEntry', () => {

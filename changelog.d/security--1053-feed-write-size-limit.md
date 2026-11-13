@@ -1,0 +1,3 @@
+- A page's `window.swarm` feed write is refused above 10 MiB, the limit `publishData` already has ([#1053](https://github.com/solardev-xyz/freedom-browser/issues/1053))
+  - A site allowed to write feeds could upload any amount in one entry, paid for with the user's postage
+  - A larger entry is refused with `payload_too_large`, as `publishData` refuses one
