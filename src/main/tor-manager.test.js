@@ -71,6 +71,10 @@ function loadTorManager(options = {}) {
         updateActiveProfileNodeConfigWhenIdle: jest.fn(async (...args) =>
           updateActiveProfileNodeConfig(...args)),
       }),
+      [require.resolve('./profile-manager')]: () => ({
+        getReservedPorts: jest.fn(async () => options.reservedPorts || new Set()),
+        updateNodeConfigWhenIdle: jest.fn(async (...args) => updateActiveProfileNodeConfig(...args)),
+      }),
       [require.resolve('./socks-probe')]: () => ({
         probeSocks5Endpoint: jest.fn().mockResolvedValue(options.socksProbeResult === true),
         probeTcpEndpoint: jest.fn().mockResolvedValue(options.tcpProbeResult ?? true),

@@ -575,6 +575,21 @@ function getActiveProfile() {
   return activeProfile;
 }
 
+/**
+ * A catalog change to the active profile, made through the core's
+ * subcommands (profile-manager.js): its new `profile.json` (`metadata`), and
+ * its display name with it.
+ */
+function updateActiveProfileMetadata(metadata) {
+  if (!activeProfile || !metadata) return activeProfile;
+  activeProfile = {
+    ...activeProfile,
+    ...(metadata.displayName ? { displayName: metadata.displayName } : {}),
+    metadata,
+  };
+  return activeProfile;
+}
+
 /** What opening the active profile reported (openProfile's `report`). */
 function getProfileLaunchReport() {
   return launchReport;
@@ -784,6 +799,7 @@ module.exports = {
   resolveFallbackProfileId,
   resolveLastOpenedProfileId,
   resolveProfile,
+  updateActiveProfileMetadata,
   updateActiveProfileNodeConfig,
   updateActiveProfileNodeConfigWhenIdle,
   validateProfileDeletionForActiveApp,
