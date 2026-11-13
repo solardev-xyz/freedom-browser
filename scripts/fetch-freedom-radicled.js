@@ -11,15 +11,15 @@ const { createReleaseFetcher } = require('./lib/freedom-core-release');
 // The known-good release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run); never float on `latest`. Override with
 // FREEDOM_RADICLED_RELEASE_TAG for local testing.
-const PINNED_RELEASE_TAG = 'radicled-v0.1.1';
+const PINNED_RELEASE_TAG = 'radicled-v0.1.2';
 // In-repo trust root: the sha256 of the pinned release's SHA256SUMS asset
 // (the freedom-core release workflow prints it). Without it, a compromised
 // release could swap binaries and checksums together. Update with the tag.
-// radicled-v0.1.1: published as an immutable release (run 43168736773, from
-// freedom-core 137ad83a); this digest matches the one its publish job
+// radicled-v0.1.2: published as an immutable release (run 43362387058, from
+// freedom-core cdd13a8d); this digest matches the one its publish job
 // printed and was re-checked against the downloaded assets (every archive
 // verified against it).
-const PINNED_SHA256SUMS_DIGEST = '69d10ad159f3e5acd1ae04343ee1f0d2835dde5d6b2c4dfd968b81e51a5b8dd9';
+const PINNED_SHA256SUMS_DIGEST = 'ff4dfa2fdbbe9a89ccfc50299d234e80b29fd8c34d0ce2fde8785602c5a12a21';
 
 // freedom-core tags the service's releases `radicled-vX.Y.Z`. Any other
 // family is refused, including a core or IPFS service release that `latest`

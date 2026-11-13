@@ -746,15 +746,10 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           note('imported');
           expect(rid).toMatch(RID_RE);
           expect(snapshotGitDir(workingCopy)).toEqual(before);
-          // The node, started again, serves it. Read before the unseed: on
-          // the macOS and Windows runners an unseed sent the moment the node
-          // is up stalled freedom-radicled 0.1.1's pools beside the start's
-          // background node_info read (reported with the import's PR).
-          expect(JSON.parse(await backend.readText('repo_info', { rid }))).toMatchObject({
-            rid,
-            name: 'contract-untouched',
-          });
-          note('read');
+          // Unseeded the moment the node is up again, beside the start's
+          // background node_info read: freedom-radicled 0.1.1 deadlocked
+          // there on the macOS and Windows runners (freedom-core #338, fixed
+          // in 0.1.2).
           await backend.embedded.unseedRepo(rid);
           note('unseeded');
         } finally {
