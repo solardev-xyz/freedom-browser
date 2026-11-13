@@ -39,7 +39,22 @@ jest.mock('../networks/chain-data', () => ({
 }));
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'ready' } }) }));
-jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
+// The identity core's approval tokens (design 0012, APB-1), simulated: main's
+// issuer mints through it, and each signer presents its confirmation to it.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    get approval() {
+      return mockApprovals.approval;
+    },
+  },
+}));
+jest.mock('./signers', () => ({
+  getSigner: (index, authorized) =>
+    mockSigners[index] &&
+    require('../../../test/helpers/simulated-approvals').coreCheckedSigner(mockApprovals, mockSigners[index], index, authorized),
+}));
+const pageOf = (site) => ({ origin: site, top_origin: site, frame: 1, navigation: 1, agent: false });
 jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
   getActiveWalletIndex: () => 0,
@@ -81,6 +96,7 @@ beforeEach(() => {
   jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
   mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-approve-pause-'));
   mockSigners = { 0: signerFor(ALICE), 1: signerFor(BOB) };
+  mockApprovals.reset();
   mined = new Set();
   mockRequest.mockReset().mockImplementation(async (_chainId, method, params) => {
     if (method === 'eth_getTransactionReceipt') {
@@ -188,10 +204,10 @@ function start() {
         approved = decision.approve ? handle(prompts.length) : null;
         return decision;
       },
+      pageContext: () => pageOf(site),
       confirm: (kind, accountIndex, payload) =>
-        confirmations.issuePageConfirmation(kind, accountIndex, payload, { handle: approved, key: site }).token,
-      spend: (token, kind, accountIndex, payload) =>
-        confirmations.consumePageConfirmation(token, kind, accountIndex, payload, { handle: approved, key: site }),
+        confirmations.issuePageConfirmation(kind, accountIndex, payload, { handle: approved, context: pageOf(site) }),
+      spend: (confirmation) => confirmation,
       signal: new AbortController().signal,
       leaveWalletSlot: () => {},
     };
@@ -336,9 +352,9 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     const running = start();
     const confirmations = require('./signing-confirmation');
     for (const origin of [undefined, null, '']) {
-      expect(() =>
-        confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin }, { handle: 'c'.repeat(64), key: SWAP })
-      ).toThrow('A dApp payment needs the site it is for');
+      await expect(
+        confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin }, { handle: 'c'.repeat(64), context: pageOf(SWAP) })
+      ).rejects.toThrow('A dApp payment needs the site it is for');
       const minted = await running.handlers['wallet:confirm-signing']({}, 'dapp-send', 0, {
         ...running.tx,
         origin,
@@ -535,11 +551,17 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     ).resolves.toMatchObject({ success: false });
     // A page token is for one site: minted for swap, it can't send for plain.
     const confirmations = require('./signing-confirmation');
-    const page = { handle: 'd'.repeat(64), key: SWAP };
-    const { token } = confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin: SWAP }, page);
-    expect(() =>
-      confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...running.tx, origin: PLAIN }, { ...page, key: PLAIN })
-    ).toThrow('Signing was not confirmed');
+    const confirmation = await confirmations.issuePageConfirmation('dapp-send', 0, { ...running.tx, origin: SWAP }, {
+      handle: 'd'.repeat(64),
+      context: pageOf(SWAP),
+    });
+    const { getSigner } = require('./signers');
+    const { buildTransaction } = require('./signing-utils');
+    await expect(
+      getSigner(0, { confirmation: { ...confirmation, page: pageOf(PLAIN) } }).signTransaction(
+        buildTransaction({ ...running.tx, nonce: 0 })
+      )
+    ).rejects.toThrow('Signing was not confirmed');
     expect(signed()).toBe(1);
   });
 

@@ -17,6 +17,8 @@ const {
   lookUp: lookUpPhoneTransaction,
 } = require('./phone-payments');
 const { reserve, withAccountLock, withIntentKeyLock } = require('./nonce-reservations');
+// Every send is built one way, which a confirmation binds (signing-confirmation.js).
+const { buildTransaction } = require('./signing-utils');
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -129,52 +131,6 @@ function formatAmount(amount, decimals = 18) {
   return formatUnits(amount, decimals);
 }
 
-/**
- * Build a transaction object
- * @param {Object} params - Transaction parameters
- * @returns {Object} Unsigned transaction
- */
-function buildTransaction({
-  to,
-  value,
-  data,
-  gasLimit,
-  maxFeePerGas,
-  maxPriorityFeePerGas,
-  gasPrice,
-  nonce,
-  chainId,
-}) {
-  const tx = {
-    to,
-    value: value || '0',
-    gasLimit,
-    chainId,
-  };
-
-  if (data) {
-    tx.data = data;
-  }
-
-  if (nonce !== undefined) {
-    tx.nonce = nonce;
-  }
-
-  // EIP-1559 or legacy
-  if (maxFeePerGas != null && maxPriorityFeePerGas != null) {
-    if (BigInt(maxPriorityFeePerGas) > BigInt(maxFeePerGas)) {
-      throw new Error('Invalid transaction fees: priority fee exceeds maximum fee');
-    }
-    tx.maxFeePerGas = maxFeePerGas;
-    tx.maxPriorityFeePerGas = maxPriorityFeePerGas;
-    tx.type = 2; // EIP-1559
-  } else if (gasPrice) {
-    tx.gasPrice = gasPrice;
-    tx.type = 0; // Legacy
-  }
-
-  return tx;
-}
 
 /**
  * Check of a device-broadcast tx at the answer: is it the one the job asked
@@ -276,7 +232,9 @@ function isPositiveFee(value) {
 // backends' errors and the intent records' own refusals carry a stable code
 // and a message meant for the user, so they pass through as they are.
 function toSendError(err) {
-  if (typeof err.code === 'string' && /^(LEDGER|REMOTE|INTENT|NONCE)_/.test(err.code)) {
+  // A confirmation the identity core refused at the signature (freedom-core
+  // design 0012) keeps its code: nothing was signed.
+  if (typeof err.code === 'string' && /^(LEDGER|REMOTE|INTENT|NONCE)_|^SIGNING_NOT_CONFIRMED$/.test(err.code)) {
     return err;
   }
 

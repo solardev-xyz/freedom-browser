@@ -43,7 +43,12 @@ const { resendAndRecord, replaceAndRecord, recordSettlement } = require('./tx-re
 const { replacementFees } = require('./transaction-service');
 const { getSigner } = require('./signers');
 const paymentHistory = require('../payment-history');
-const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('./signing-confirmation');
+const {
+  KINDS: CONFIRM_KINDS,
+  confirmationFor,
+  spendConfirmation,
+  withConfirmation,
+} = require('./signing-confirmation');
 const { getIntentTracker } = require('./intent-tracker');
 const { OBSERVED } = require('./intent-labels');
 const { withAccountLock } = require('./nonce-reservations');
@@ -266,11 +271,10 @@ async function resendHeldIntent(intentId, authorization) {
   const view = heldView(store, intentId);
   // The user confirmed this intent as main records it; nothing the caller
   // submits takes part.
-  consumeConfirmation(
-    authorization?.confirmation,
-    CONFIRM_KINDS.INTENT_RESEND,
-    null,
-    resendBinding(view)
+  // Nothing is signed: the identity core spends the token (design 0012,
+  // `approval.spend`, advised).
+  await spendConfirmation(
+    confirmationFor(authorization?.confirmation, CONFIRM_KINDS.INTENT_RESEND, null, resendBinding(view))
   );
   return resendAndRecord(view.intentId, { hash: view.hash });
 }
@@ -308,16 +312,20 @@ async function replaceHeldIntent(intentId, fees, authorization) {
     maxPriorityFeePerGas: fees?.maxPriorityFeePerGas,
     gasPrice: fees?.gasPrice,
   };
-  consumeConfirmation(
-    authorization?.confirmation,
-    CONFIRM_KINDS.INTENT_REPLACE,
-    null,
-    replaceBinding(view, submitted)
-  );
+  // The account that signs it again, the intent and its new transaction, as
+  // the identity core binds them: the signature presents the token with the
+  // intent's id, and the core spends it there (design 0012, "Replacing an
+  // intent"). Burnt once the replacement has ended, whatever became of it.
+  const confirmation = {
+    ...confirmationFor(authorization?.confirmation, CONFIRM_KINDS.INTENT_REPLACE, walletIndex, replaceBinding(view, submitted)),
+    intent: { id: view.intentId },
+  };
   const confirmed = Object.fromEntries(
     Object.entries(submitted).filter(([, value]) => value !== undefined && value !== null)
   );
-  return replaceAndRecord(view.intentId, confirmed, getSigner(walletIndex));
+  return withConfirmation(confirmation.token, () =>
+    replaceAndRecord(view.intentId, confirmed, getSigner(walletIndex, { confirmation }))
+  );
 }
 
 // What an intent-close confirmation of `view` binds: the intent, and every
@@ -345,7 +353,7 @@ async function closeHeldIntent(intentId, authorization) {
   await store.ready;
   const view = heldView(store, intentId);
   const binding = closeBinding(view);
-  consumeConfirmation(authorization?.confirmation, CONFIRM_KINDS.INTENT_CLOSE, null, binding);
+  await spendConfirmation(confirmationFor(authorization?.confirmation, CONFIRM_KINDS.INTENT_CLOSE, null, binding));
   const evidence = getIntentTracker().closeEvidence(view.intentId);
   if (!evidence) {
     const error = new Error(

@@ -67,6 +67,10 @@ const NO_ACCOUNT = Object.freeze({
 // held payment may keep after its account has left the wallet.
 const INDEX_BOUND = new Set(['wallet-send', 'safe-send', 'executor-send', 'x402-payment']);
 
+// The core's refusal of a mint for its fee check (`signing-confirmation.js`),
+// as fee-check.js codes it: the fee is asked again.
+const FEE_CHECK_ASK_AGAIN = 'FEE_CHECK_ASK_AGAIN';
+
 // ERC-20's transfer(address,uint256): the recipient and the amount, read
 // from the data main binds, so the panel says what a token send does.
 const TRANSFER = /^0xa9059cbb0{24}([0-9a-fA-F]{40})([0-9a-fA-F]{64})$/;
@@ -397,8 +401,10 @@ function createWalletApprovals({
    * @param {object} request `{ sender, kind, index, payload, feeChecked }`,
    *   or `windowId` in place of `sender` for a step main itself runs in a
    *   window (a Safe board's executor fee, `safe-boards.js`)
-   * @param {() => object} [onApproved] run on the approval, before it is
-   *   released; what it returns joins the answer.
+   * @param {(fee: {feeAcknowledged: boolean}) => object} [onApproved] run
+   *   on the approval, before it is released, told whether the user
+   *   confirmed a fee above the threshold again; what it returns joins the
+   *   answer.
    */
   async function confirm({ sender, windowId: inWindow, kind, index, payload, feeChecked }, onApproved = () => ({})) {
     const promptKind = PROMPT_KINDS[kind];
@@ -445,7 +451,20 @@ function createWalletApprovals({
             continue;
           }
         }
-        const minted = await onApproved();
+        let minted;
+        try {
+          // The core runs its own fee check as it mints (design 0012): a fee
+          // it finds above the threshold, not yet confirmed again, is asked
+          // again here, as main's own check asks.
+          minted = await onApproved({ feeAcknowledged: askAgain });
+        } catch (err) {
+          if (feeChecked && err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck && !askAgain) {
+            verdict = { ...err.feeCheck };
+            askAgain = true;
+            continue;
+          }
+          throw err;
+        }
         if (kind === 'intent-resend') rememberResend(payload);
         return { ...minted, approved: true };
       } finally {

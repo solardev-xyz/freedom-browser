@@ -12,6 +12,17 @@ const { createPageDocuments } = require('../page/page-documents');
 const { createPageRequests } = require('../page/page-requests');
 const { createWalletApprovals, REJECTED, LIMITED } = require('./wallet-approvals');
 
+// The identity core's approval tokens (design 0012, APB-1), simulated: main's
+// issuer mints through it.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    get approval() {
+      return mockApprovals.approval;
+    },
+  },
+}));
+
 const {
   createApprovalsDocuments,
   isApprovalsDocumentEnabled,
@@ -1304,13 +1315,13 @@ describe('APS-3b: the Safe boards show in the document, the chrome decides none,
 
   test('a board\'s approval in the document mints no page token: only the request\'s own approval does', async () => {
     const minted = [];
-    const mint = (context) => context.confirm('sign-message', 0, { method: 'personal_sign', params: ['0x00'] });
+    const mint = (context) => context.confirm('sign-message', 0, '0x00');
     const env = withPageRequests({
       dispatch: async (context) => {
         for (const kind of ['eth.safe_message', 'eth.safe_send', 'test.prompt']) {
           const decision = await context.prompt({ kind, view: kind === 'test.prompt' ? VIEW : { step: 'collect' } });
           try {
-            minted.push([kind, decision.approve, typeof mint(context)]);
+            minted.push([kind, decision.approve, typeof (await mint(context)).token]);
           } catch (err) {
             minted.push([kind, decision.approve, err.code]);
           }

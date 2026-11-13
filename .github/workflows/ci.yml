@@ -965,6 +965,20 @@ jobs:
         env:
           FREEDOM_CORED_PROFILE_TEST: '1'
 
+      # Approval tokens through the same binary (freedom-core design 0012,
+      # APB-1): main mints every kind but x402's with approval.issue, a
+      # wallet kind as shell and a page kind under page with its PageContext
+      # and handle; a signature the core makes presents its token to sign.*,
+      # which spends it, and the kinds that sign nothing here spend theirs
+      # with approval.spend. signing-confirmation.test.js's cases against
+      # the binary, with a spy on main's calls: none of the permission
+      # files' write methods.
+      - name: Approval tokens (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/wallet/signing-confirmation.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # ── was the `e2e-address-bar-clipboard` job ──
       # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
       - name: Run address-bar clipboard E2E

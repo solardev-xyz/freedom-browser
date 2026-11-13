@@ -79,7 +79,8 @@ const METHOD_CLASSES = Object.freeze({
   'naming.resolve_tezos': SESSION,
   'naming.invalidate_content': IMMEDIATE,
   'naming.invalidate_tezos': IMMEDIATE,
-  // Design 0012's approvals (cored-v0.14.0, APR-3); main calls none yet.
+  // Design 0012's approvals (cored-v0.14.0, APR-3): main mints and spends
+  // its tokens through the first four (APB-1).
   'approval.issue': IMMEDIATE,
   'approval.discard': IMMEDIATE,
   'approval.spend': IMMEDIATE,

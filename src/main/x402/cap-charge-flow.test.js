@@ -507,7 +507,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
       accept: REQUIREMENTS.accepts[0],
       grant,
     };
-    const { token } = confirmations.issueConfirmation(confirmations.KINDS.X402_PAYMENT, 0, payment);
+    const { token } = confirmations.issueMainConfirmation(confirmations.KINDS.X402_PAYMENT, 0, payment);
     await ipcHandlers['x402:approve']({ sender: CHROME }, {
       webContentsId: 42,
       detectionId: 'req-25',
@@ -526,7 +526,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
 describe('x402:update-permission needs a confirmation for the edit (#1023)', () => {
   const EDIT = { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '99000000' };
   const mint = (edit, windowId = CHROME.id) =>
-    confirmations.issueConfirmation(
+    confirmations.issueMainConfirmation(
       confirmations.KINDS.X402_CAP_UPDATE,
       null,
       permissions.capUpdateRequest(windowId, edit)

@@ -17,6 +17,22 @@ const { txOf } = require('./page-sends');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
 const confirmations = require('../wallet/signing-confirmation');
 
+// The identity core's approval tokens (design 0012, APB-1), simulated
+// (test/helpers/simulated-approvals.js): main's issuer mints through it.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    get approval() {
+      return mockApprovals.approval;
+    },
+  },
+}));
+jest.mock('../identity-manager', () => ({
+  ...jest.requireActual('../identity-manager'),
+  // The Safe whose address a safe-send token binds.
+  getWalletRecord: (index) => (index === 1000 ? { index, type: 'safe', address: '0x' + '33'.repeat(20) } : null),
+}));
+
 const CHROME_URL = 'file:///app/src/renderer/index.html';
 const KEY_A = `bzz://${'a'.repeat(64)}`;
 const KEY_B = `bzz://${'b'.repeat(64)}`;
@@ -393,6 +409,7 @@ function setup({ approvalsDocument = false } = {}) {
 
 beforeEach(() => {
   confirmations._reset();
+  mockApprovals.reset();
 });
 
 describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
@@ -444,7 +461,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     // One token, minted for this approval and spent by main, and none left.
     expect(env.minted()).toEqual([expect.objectContaining({ token: 'dapp-send' })]);
     expect(env.spent()).toHaveLength(1);
-    expect(confirmations._outstandingCount()).toBe(0);
+    expect(mockApprovals.outstanding()).toBe(0);
     // A confirmed send isn't a use of the rule: no last-used write; and no
     // rule without "always allow".
     expect(env.state.lastUsed).toEqual([]);
@@ -636,7 +653,11 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     await flush();
     await env.decide(env.lastPrompt().handle, true, {});
     expect(await answer).toEqual({ result: HASH });
-    expect(env.deps.sends.getSigner).toHaveBeenCalledWith(LEDGER_INDEX);
+    // A device spends the token through the core (design 0012) before it
+    // signs: its signer is handed the confirmation, the page's.
+    expect(env.deps.sends.getSigner).toHaveBeenCalledWith(LEDGER_INDEX, {
+      confirmation: expect.objectContaining({ kind: 'dapp-send', account: LEDGER_INDEX, page: expect.objectContaining({ origin: KEY_A }) }),
+    });
     env.state.sendFails = Object.assign(new Error('Rejected on device'), { code: 'LEDGER_USER_REJECTED' });
     answer = page.send(CALL);
     await flush();
@@ -743,37 +764,45 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
 describe("main's issuer: a dapp-send or a site's safe-send token only for its handle and key", () => {
   const TX = { to: CONTRACT, value: '0', data: DATA, chainId: 100, gasLimit: '60000', gasPrice: '1' };
 
-  test('a dapp-send token minted for handle A is refused for handle B, for another key, and spent twice', () => {
-    const a = { handle: 'a'.repeat(64), key: KEY_A };
-    const b = { handle: 'b'.repeat(64), key: KEY_A };
-    let { token } = confirmations.issuePageConfirmation('dapp-send', 0, { ...TX, origin: KEY_A }, a);
-    expect(() => confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...TX, origin: KEY_A }, b)).toThrow(
-      /differs from what was confirmed/
+  const PAGE_A = Object.freeze({ origin: KEY_A, top_origin: KEY_A, frame: 1, navigation: 1, agent: false });
+  // A send as main signs it, presented to the (simulated) core with its
+  // token: the core spends it there (design 0012).
+  const { buildTransaction, toCoreTransaction } = require('../wallet/signing-utils');
+  const present = (confirmation, tx, overrides = {}) =>
+    mockApprovals.authorize(
+      'sign.transaction',
+      0,
+      { tx: toCoreTransaction(buildTransaction({ ...tx, nonce: 3 })).tx },
+      { ...confirmations.signingAuthorization(confirmation), ...overrides }
     );
-    ({ token } = confirmations.issuePageConfirmation('dapp-send', 0, { ...TX, origin: KEY_A }, a));
-    expect(() =>
-      confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...TX, origin: KEY_B }, { ...a, key: KEY_B })
-    ).toThrow(/differs from what was confirmed/);
-    ({ token } = confirmations.issuePageConfirmation('dapp-send', 0, { ...TX, origin: KEY_A }, a));
-    expect(confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...TX, origin: KEY_A }, a)).toEqual({});
-    expect(() => confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...TX, origin: KEY_A }, a)).toThrow(
-      /unknown or already used/
+  const mint = (payload, handle = 'a'.repeat(64), kind = 'dapp-send', index = 0) =>
+    confirmations.issuePageConfirmation(kind, index, payload, { handle, context: PAGE_A });
+
+  test('a dapp-send token minted for handle A is refused for handle B, for another key, and spent twice', async () => {
+    let confirmation = await mint({ ...TX, origin: KEY_A });
+    expect(() => present(confirmation, TX, { authorization: { token: confirmation.token, handle: 'b'.repeat(64) } })).toThrow(
+      /mismatch/
     );
+    confirmation = await mint({ ...TX, origin: KEY_A });
+    expect(() => present(confirmation, TX, { page: { ...PAGE_A, origin: KEY_B } })).toThrow(/mismatch/);
+    confirmation = await mint({ ...TX, origin: KEY_A });
+    expect(() => present(confirmation, TX)).not.toThrow();
+    expect(() => present(confirmation, TX)).toThrow(/unknown_token/);
     // Another fee, recipient or value than the one confirmed: refused.
-    ({ token } = confirmations.issuePageConfirmation('dapp-send', 0, { ...TX, origin: KEY_A }, a));
-    expect(() =>
-      confirmations.consumePageConfirmation(token, 'dapp-send', 0, { ...TX, gasPrice: '2', origin: KEY_A }, a)
-    ).toThrow(/differs/);
+    confirmation = await mint({ ...TX, origin: KEY_A });
+    expect(() => present(confirmation, { ...TX, gasPrice: '2' })).toThrow(/mismatch/);
   });
 
-  test("a safe-send is a page kind only when it names a site, and its token binds the site", () => {
-    const page = { handle: 'c'.repeat(64), key: KEY_A };
+  test('a safe-send is a page kind only when it names a site, and its token binds the page', async () => {
     const safeTx = { tx: { to: CONTRACT, value: '0', data: DATA }, chainId: 100 };
-    expect(() => confirmations.issuePageConfirmation('safe-send', SAFE_INDEX, safeTx, page)).toThrow(/Not a page confirmation kind/);
-    const { token } = confirmations.issuePageConfirmation('safe-send', SAFE_INDEX, { ...safeTx, origin: KEY_A }, page);
-    expect(() =>
-      confirmations.consumePageConfirmation(token, 'safe-send', SAFE_INDEX, { ...safeTx, origin: KEY_B }, page)
-    ).toThrow(/differs/);
+    await expect(mint(safeTx, 'c'.repeat(64), 'safe-send', SAFE_INDEX)).rejects.toThrow(/Not a page confirmation kind/);
+    const confirmation = await mint({ ...safeTx, origin: KEY_A }, 'c'.repeat(64), 'safe-send', SAFE_INDEX);
+    await expect(confirmations.spendSafeConfirmation({ ...confirmation, page: { ...PAGE_A, origin: KEY_B } })).rejects.toThrow(
+      /differs/
+    );
+    const again = await mint({ ...safeTx, origin: KEY_A }, 'c'.repeat(64), 'safe-send', SAFE_INDEX);
+    await expect(confirmations.spendSafeConfirmation(again)).resolves.toEqual({ bound: true });
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.spend').at(-1).page).toEqual(PAGE_A);
   });
 
   test('the token for a send whose document navigated after the approval is never spent: nothing sent', async () => {
@@ -808,6 +837,11 @@ describe("the site's contract rule, read by main for the request it holds", () =
     expect(await page.send(CALL)).toEqual({ result: HASH });
     expect(env.prompts()).toEqual([]);
     expect(env.minted()).toEqual([]);
+    // A page's send, never main's own: under its PageContext (design 0012),
+    // with no token until `{ standing }` (APB-1b).
+    expect(env.deps.sends.getSigner).toHaveBeenCalledWith(0, {
+      page: expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false }),
+    });
     expect(env.state.lastUsed).toEqual([[KEY_A]]);
     // In its own turn, silently: a busy turn or a waiting payment pauses it (D12).
     expect(env.state.turns).toEqual([[KEY_A, false]]);
@@ -1213,6 +1247,20 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
       },
     ]);
     expect(env.minted()).toEqual([expect.objectContaining({ token: 'safe-send' })]);
+    // Minted and spent through the core under the page (design 0012); the
+    // Safe approval it gave ended until APB-1c carries it to the owners.
+    const page_ = expect.objectContaining({ origin: KEY_A, agent: false });
+    expect(mockApprovals.calls.map(({ method, page: under }) => [method, under])).toEqual([
+      ['approval.issue', page_],
+      ['approval.spend', page_],
+      ['approval.end', page_],
+      ['approval.discard', null],
+    ]);
+    expect(mockApprovals.calls[0].params).toMatchObject({
+      kind: 'safe-send',
+      account: SAFE_INDEX,
+      payload: { safe: '0x' + '33'.repeat(20), chain_id: '100', tx: { to: CONTRACT.toLowerCase(), value: '0' } },
+    });
     const board = env.lastPrompt();
     expect(board).toMatchObject({
       kind: 'eth.safe_send',

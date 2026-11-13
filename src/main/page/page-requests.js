@@ -245,6 +245,12 @@ function isLive(contents) {
   }
 }
 
+// Whether the agent holds guest `guestId`'s tab now (`agent-tab-custody.js`):
+// a PageContext's `agent` (design 0012), read as main sends the request.
+function defaultIsAgentGuest(guestId) {
+  return require('../wallet/agent-tab-custody').isAgentPageId(guestId);
+}
+
 // The chrome window `contents` is the chrome of, as main's own record: the
 // sender policy lets only a chrome window's top frame reach the prompt
 // channels, and this names its window.
@@ -299,6 +305,8 @@ function defaultWatchWindow(windowId, onClosed) {
  *   can unlock with Touch ID here (APS-3: macOS, quick unlock set up).
  * @param {() => Promise<{success: boolean}>} [options.unlockWithTouchId]
  *   main's own Touch ID unlock, whose password never leaves main.
+ * @param {(guestId: number) => boolean} [options.isAgentGuest] whether the
+ *   agent holds a guest's tab now: a PageContext's `agent`.
  */
 function createPageRequests({
   documents = createPageDocuments(),
@@ -320,6 +328,7 @@ function createPageRequests({
   },
   touchIdAvailable = async () => false,
   unlockWithTouchId = async () => ({ success: false }),
+  isAgentGuest = defaultIsAgentGuest,
 } = {}) {
   let lastId = 0;
   const records = new Map(); // id -> record
@@ -657,8 +666,11 @@ function createPageRequests({
       // The open prompt's content changed: it shows again with this view.
       updatePrompt: (view) =>
         Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
-      confirm: (kind, accountIndex, payload, bound) => confirm(record, kind, accountIndex, payload, bound),
-      spend: (token, kind, accountIndex, payload) => spend(record, token, kind, accountIndex, payload),
+      confirm: (kind, accountIndex, payload, options) => confirm(record, kind, accountIndex, payload, options),
+      spend: (confirmation) => spend(record, confirmation),
+      // The requesting document's PageContext, under which a page's request
+      // goes to the identity core (design 0012), never as main's own.
+      pageContext: () => pageContextOf(record),
       walletOperation: (run) => walletOperation(record, run),
       leaveWalletSlot: () => leaveWalletSlot(record),
       // Aborted when main answers the record: for a dispatcher that waits on
@@ -949,14 +961,44 @@ function createPageRequests({
   }
 
   /**
+   * The requesting document as the identity core knows a page (designs 0011
+   * and 0012, "PageContext"): its attested key, its top-level key, its frame
+   * and its number, and whether the agent holds its tab, read now.
+   */
+  function pageContextOf(record) {
+    const requester = record.requester;
+    let agent;
+    try {
+      agent = isAgentGuest(requester.guest) === true;
+    } catch {
+      // Unknown custody counts as the agent's: no standing rule answers it.
+      agent = true;
+    }
+    return {
+      origin: requester.key,
+      top_origin: requester.topKey || requester.key,
+      frame: requester.frame,
+      navigation: requester.navigation,
+      agent,
+    };
+  }
+
+  /**
    * Main's own issuer (design 0011, "Approval tokens"): a token of a page
    * kind, for this live record only, on the approval of the prompt the user
-   * just decided, bound to that prompt's handle and the requester's attested
-   * key. The account and payload are the dispatcher's, from the request main
-   * holds. One approval mints one token. Throws (`SIGNING_NOT_CONFIRMED`)
-   * with nothing minted otherwise. The token never leaves main.
+   * just decided, minted by the identity core under `page` for the
+   * requesting document (its PageContext) and that prompt's handle (design
+   * 0012, APB-1). The account and payload are the dispatcher's, from the
+   * request main holds. One approval mints one token. Rejects
+   * (`SIGNING_NOT_CONFIRMED`) with nothing minted otherwise. The token never
+   * leaves main: the dispatcher spends it (`spend`).
+   *
+   * @param {object} [options] as `issuePageConfirmation`'s: `chainId` for
+   *   typed data, `feeAcknowledged` and `phone` for a dApp send
+   * @returns {Promise<object>} the confirmation (`signing-confirmation.js`),
+   *   with the core's `hash` and `view` for typed data
    */
-  function confirm(record, kind, accountIndex, payload, bound) {
+  async function confirm(record, kind, accountIndex, payload, options = {}) {
     const handle = record.approved;
     if (record.answered || !handle || !documents.isCurrent(record.requester) || !record.requester.key) {
       throw notConfirmed('no live request approved by the user');
@@ -965,41 +1007,42 @@ function createPageRequests({
     if (approvals && record.approvedFrom !== 'approvals') {
       throw notConfirmed('not approved in the approvals document');
     }
-    const { token } = signingConfirmation.issuePageConfirmation(
+    if (!signingConfirmation.isPageKind(kind, payload)) throw new Error(`Not a page confirmation kind: ${kind}`);
+    record.approved = null;
+    record.approvedFrom = null;
+    const confirmation = await signingConfirmation.issuePageConfirmation(
       kind,
       accountIndex,
       payload,
-      { handle, key: record.requester.key },
-      bound
+      { handle, context: pageContextOf(record) },
+      options
     );
-    record.approved = null;
-    record.approvedFrom = null;
     record.tokenHandle = handle;
     trace({ kind: 'token-minted', id: record.id, token: kind });
-    return token;
+    return confirmation;
   }
 
   /**
-   * Spend the record's token for the request it is about to sign: the
-   * document checked again first, and the token refused and burnt if the
-   * document has gone or no longer holds its key. Returns what the token
-   * bound (`{ hash }` for typed data).
+   * The record's confirmation, for the signature it is about to present it
+   * to: the document checked again first, in the same run as the signature
+   * that follows, and the token burnt if the document has gone or no longer
+   * holds its key. The core spends it there, for this document and handle
+   * only. A device's signature spends it through the core instead
+   * (`signers.js`).
    */
-  function spend(record, token, kind, accountIndex, payload) {
+  function spend(record, confirmation) {
     if (record.answered || !documents.isCurrent(record.requester) || !documents.holdsKey(record.requester)) {
-      signingConfirmation.discardConfirmation(token);
+      signingConfirmation.discardConfirmation(confirmation?.token);
       throw notConfirmed('the document that asked has gone');
     }
     const handle = record.tokenHandle;
     record.tokenHandle = null;
-    try {
-      return signingConfirmation.consumePageConfirmation(token, kind, accountIndex, payload, {
-        handle,
-        key: record.requester.key,
-      });
-    } finally {
-      trace({ kind: 'token-spent', id: record.id, token: kind });
+    trace({ kind: 'token-spent', id: record.id, token: confirmation?.kind });
+    if (!confirmation || confirmation.handle !== handle) {
+      signingConfirmation.discardConfirmation(confirmation?.token);
+      throw notConfirmed('not the confirmation of this request');
     }
+    return confirmation;
   }
 
   // Whether a name-revalidated method may use its document's key now

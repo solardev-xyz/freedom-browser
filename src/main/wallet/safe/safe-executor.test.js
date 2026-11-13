@@ -724,6 +724,28 @@ describe("the fee check on the executor's fee", () => {
   const { issueConfirmation } = require('../signing-confirmation');
   const { FEE_CHECK_NEEDS_CONFIRMATION } = require('../fee-check');
 
+  // The executor's signature presents its confirmation to the (simulated)
+  // core, which spends it there (design 0012, APB-1).
+  beforeEach(() => {
+    const { coreCheckedSigner } = require('../../../../test/helpers/simulated-approvals');
+    const { buildTransaction } = require('../signing-utils');
+    mockGetSigner.mockImplementation((index, authorized) =>
+      coreCheckedSigner(mockCore.approvals, createTestSigner(index), index, authorized)
+    );
+    signedCount = 0;
+    mockSignAndSendTransaction.mockImplementation(async (params, signer) => {
+      await signer.signTransaction(buildTransaction({ ...params, nonce: 0 }));
+      signedCount += 1;
+      return { hash: '0x' + 'aa'.repeat(32) };
+    });
+  });
+  let signedCount = 0;
+
+  afterEach(() => {
+    mockGetSigner.mockImplementation(createTestSigner);
+    mockSignAndSendTransaction.mockImplementation(async () => ({ hash: '0x' + 'aa'.repeat(32) }));
+  });
+
   async function signedExecution(extra = {}) {
     const address = await predictSafeAddress({ ...INIT, chainId: 100, provider: gnosis() });
     const provider = createStubChain({
@@ -816,7 +838,7 @@ describe("the fee check on the executor's fee", () => {
     mockCheckAtApproval.mockClear();
 
     const { executorIndex, ...payload } = offer;
-    const { token } = issueConfirmation('executor-send', executorIndex, payload);
+    const { token } = await issueConfirmation('executor-send', executorIndex, payload);
     await execute({
       feeConfirmation: {
         confirmation: token,
@@ -839,7 +861,7 @@ describe("the fee check on the executor's fee", () => {
     const fees = { maxFeePerGas: offer.maxFeePerGas, maxPriorityFeePerGas: offer.maxPriorityFeePerGas };
 
     // Confirmed at one fee, sent with a higher one.
-    const shown = issueConfirmation('executor-send', executorIndex, payload).token;
+    const shown = (await issueConfirmation('executor-send', executorIndex, payload)).token;
     await expect(
       execute({
         feeConfirmation: {
@@ -850,20 +872,21 @@ describe("the fee check on the executor's fee", () => {
       })
     ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
     // Confirmed for another executor.
-    const other = issueConfirmation('executor-send', 2, payload).token;
+    const other = (await issueConfirmation('executor-send', 2, payload)).token;
     await expect(
       execute({ feeConfirmation: { confirmation: other, gasLimit: offer.gasLimit, fees } })
     ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
-    expect(mockSignAndSendTransaction).not.toHaveBeenCalled();
+    // Refused by the core at the executor's signature: nothing signed.
+    expect(signedCount).toBe(0);
 
     // Spent once, then refused.
-    const once = issueConfirmation('executor-send', executorIndex, payload).token;
+    const once = (await issueConfirmation('executor-send', executorIndex, payload)).token;
     const confirmed = { confirmation: once, gasLimit: offer.gasLimit, fees };
     await execute({ feeConfirmation: confirmed });
     await expect(execute({ feeConfirmation: confirmed })).rejects.toMatchObject({
       code: 'SIGNING_NOT_CONFIRMED',
     });
-    expect(mockSignAndSendTransaction).toHaveBeenCalledTimes(1);
+    expect(signedCount).toBe(1);
   });
 
   test('a confirmation of no fee signs nothing: it would be given today\'s', async () => {
@@ -871,7 +894,7 @@ describe("the fee check on the executor's fee", () => {
     const { execute } = await signedExecution();
     const { offer } = await stopped(execute);
     const { executorIndex, maxFeePerGas: _max, maxPriorityFeePerGas: _tip, ...payload } = offer;
-    const { token } = issueConfirmation('executor-send', executorIndex, payload);
+    const { token } = await issueConfirmation('executor-send', executorIndex, payload);
     await expect(
       execute({ feeConfirmation: { confirmation: token, gasLimit: offer.gasLimit, fees: {} } })
     ).rejects.toMatchObject({ code: 'FEE_NOT_SHOWN' });
@@ -896,7 +919,7 @@ describe("the fee check on the executor's fee", () => {
     expect(offer).toMatchObject({ executorIndex: 0, chainId: 100, to: factory, value: '0' });
 
     const { executorIndex, ...payload } = offer;
-    const { token } = issueConfirmation('executor-send', executorIndex, payload);
+    const { token } = await issueConfirmation('executor-send', executorIndex, payload);
     await deploy({
       feeConfirmation: {
         confirmation: token,

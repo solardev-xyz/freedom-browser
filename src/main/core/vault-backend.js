@@ -52,19 +52,34 @@ function client() {
   return core;
 }
 
-/** One core request, from main itself (caller `shell`), under its watchdog. */
-async function call(method, params = {}) {
+/**
+ * One core request under its watchdog: from main itself (caller `shell`), or
+ * for a page's request under `page` with its PageContext (freedom-core
+ * designs 0011 and 0012, "PageContext"): `{ origin, top_origin, frame,
+ * navigation, agent }`.
+ */
+async function call(method, params = {}, page = null) {
   try {
     return await client().request(
       method,
       params,
-      { caller: 'shell' },
+      page ? { caller: 'page', page } : { caller: 'shell' },
       { watchdogMs: watchdogMs(method) }
     );
   } catch (err) {
     if (err instanceof VaultBackendError) throw err;
     throw new VaultBackendError(err.code || CORE_UNAVAILABLE, err.message, err.data);
   }
+}
+
+/**
+ * `sign.*`'s caller and `authorization` (freedom-core design 0012, API):
+ * `{ token, handle? }`, or `{ token, intent: { id } }` for an
+ * intent-replace, checked by the core before any key is derived; a page's
+ * under `page` with its PageContext. None, from main itself, as before.
+ */
+function signed(params, { authorization = null } = {}) {
+  return authorization ? { ...params, authorization } : params;
 }
 
 // ---- lock tracking (for reconciliation's `install`) ----
@@ -356,26 +371,34 @@ const vaultBackend = {
    * `publisher`. Inputs are already in the core's wire form.
    */
   sign: {
-    /** @returns {{ raw: string, hash: string }} */
-    transaction(key, tx) {
-      return call('sign.transaction', { key, tx });
+    /**
+     * `options`: `{ authorization, page }`, the confirmation the core checks
+     * and the PageContext of a page's request (`signed`).
+     * @returns {{ raw: string, hash: string }}
+     */
+    transaction(key, tx, options = {}) {
+      return call('sign.transaction', signed({ key, tx }, options), options.page);
     },
     /** @param {Uint8Array} bytes @returns {string} 65-byte signature, v 27/28 */
-    async message(key, bytes) {
+    async message(key, bytes, options = {}) {
       const message = '0x' + Buffer.from(bytes).toString('hex');
-      return (await call('sign.message', { key, message })).signature;
+      return (await call('sign.message', signed({ key, message }, options), options.page)).signature;
     },
     /**
      * Signs only if the data's digest is `expectedHash`, the hash the user
      * confirmed (or, for main's own typed data, the one main just hashed);
      * any other is refused before a key is touched (freedom-core #88).
+     * `options.primaryType` and `options.chainId` are what the core was told
+     * beside the data when its token was minted (`typedDataView`): the view
+     * the token binds is built again from them.
      * @param {{domain, types, message}} typedData
      * @param {string} expectedHash - 0x and 64 hex digits
      */
-    async typedData(key, typedData, expectedHash) {
-      return (
-        await call('sign.typed_data', { key, typed_data: typedData, expected_hash: expectedHash })
-      ).signature;
+    async typedData(key, typedData, expectedHash, options = {}) {
+      const params = { key, typed_data: typedData, expected_hash: expectedHash };
+      if (options.primaryType !== undefined) params.primary_type = options.primaryType;
+      if (options.chainId !== undefined) params.chain_id = options.chainId;
+      return (await call('sign.typed_data', signed(params, options), options.page)).signature;
     },
     /**
      * A Swarm single-owner chunk; the core computes the chunk address from
@@ -390,6 +413,31 @@ const vaultBackend = {
         payload: '0x' + Buffer.from(payload).toString('hex'),
         ...(span !== undefined && span !== null ? { span: String(span) } : {}),
       });
+    },
+  },
+
+  /**
+   * Design 0012's approval tokens (cored 0.14.0, APR-3), which main mints
+   * and spends through the core instead of in JS: a wallet kind from main
+   * itself (`shell`), a page kind under `page` with the request's
+   * PageContext. The token is a bearer secret: never logged.
+   */
+  approval: {
+    /** `{ kind, account?, payload, handle?, fee_ack?, phone? }` → `{ token, expires_in_ms, hash?, view?, fee_check? }` */
+    issue(params, page = null) {
+      return call('approval.issue', params, page);
+    },
+    /** `{ token, kind, account?, payload, handle? }` → `{ bound, safe? }` */
+    spend(params, page = null) {
+      return call('approval.spend', params, page);
+    },
+    /** Burns a token whatever it was: `{}` for one spent or unknown too. */
+    discard(token) {
+      return call('approval.discard', { token });
+    },
+    /** Ends a Safe approval: `{}` whatever it was. */
+    end(safe, page = null) {
+      return call('approval.end', { safe }, page);
     },
   },
 

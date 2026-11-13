@@ -111,7 +111,10 @@ function defaultSigningDependencies() {
     messageView: (message) => require('../wallet/wallet-ipc').messageViewFor(message),
     typedDataView: (typedData, chainId) => require('../wallet/wallet-ipc').typedDataViewFor(typedData, chainId),
     signsRawHash: (message) => require('../wallet/signing-utils').signsRawHash(message),
-    getSigner: (walletIndex) => require('../wallet/signers').getSigner(walletIndex),
+    getSigner: (walletIndex, authorized) => require('../wallet/signers').getSigner(walletIndex, authorized),
+    // A Safe message's token, spent through the identity core (design 0012).
+    spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
+    discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
     setSigningAutoApprove: (key, enabled) => require('../wallet/dapp-permissions').setSigningAutoApprove(key, enabled),
     startSafeMessage: (options) => require('../wallet/safe/safe-messages').startSafeMessage(options),
     completeSafeMessage: (safeIndex, token) => require('../wallet/safe/safe-messages').completeSafeMessage(safeIndex, token),
@@ -138,6 +141,8 @@ function createSigningDispatchers(shared, deps = {}) {
     typedDataView,
     signsRawHash,
     getSigner,
+    spendSafe,
+    discardToken,
     setSigningAutoApprove,
     startSafeMessage,
     completeSafeMessage,
@@ -230,9 +235,11 @@ function createSigningDispatchers(shared, deps = {}) {
     type: typeof account.type === 'string' ? account.type : 'mnemonic',
   });
 
-  // The signature itself, for a vault, Ledger or phone account.
-  async function signWith(walletIndex, method, prepared, expectedHash) {
-    const signer = getSigner(walletIndex);
+  // The signature itself, for a vault, Ledger or phone account: with the
+  // request's confirmation, or, for a rule's answer, its page's PageContext
+  // (design 0012), so a page's signature never goes as main's own.
+  async function signWith(walletIndex, method, prepared, expectedHash, authorized) {
+    const signer = getSigner(walletIndex, authorized);
     if (method === 'personal_sign') return signer.signMessage(prepared.payload);
     return signer.signTypedData(prepared.payload, { expectedHash });
   }
@@ -352,7 +359,11 @@ function createSigningDispatchers(shared, deps = {}) {
       out = await safeMessage(context, ctx);
     } else {
       try {
-        out = { result: await signWith(ctx.walletIndex, method, ctx.prepared, ctx.prepared.typedData?.hash) };
+        out = {
+          result: await signWith(ctx.walletIndex, method, ctx.prepared, ctx.prepared.typedData?.hash, {
+            page: context.pageContext(),
+          }),
+        };
       } catch (err) {
         return failure(err);
       }
@@ -415,27 +426,43 @@ function createSigningDispatchers(shared, deps = {}) {
         ? CONFIRM_KINDS.SIGN_MESSAGE
         : CONFIRM_KINDS.SIGN_TYPED_DATA;
     const payload = ctx.safe ? { method, params: context.params } : ctx.prepared.payload;
-    let bound;
-    try {
-      const token = context.confirm(
-        kind,
-        ctx.walletIndex,
-        payload,
-        kind === CONFIRM_KINDS.SIGN_TYPED_DATA ? { hash: ctx.prepared.typedData.hash } : undefined
-      );
-      bound = context.spend(token, kind, ctx.walletIndex, payload);
-    } catch (err) {
-      return failure(err);
-    }
+    let confirmation = null;
     let out;
-    if (ctx.safe) {
-      out = await safeMessage(context, ctx);
-    } else {
+    try {
       try {
-        out = { result: await signWith(ctx.walletIndex, method, ctx.prepared, bound.hash) };
+        // Minted by the identity core for this document and prompt (design
+        // 0012), the typed data's against the page's chain, as it was viewed.
+        confirmation = await context.confirm(kind, ctx.walletIndex, payload, { chainId: ctx.chainId });
+        // What the core bound is what the user was shown.
+        if (kind === CONFIRM_KINDS.SIGN_TYPED_DATA && confirmation.hash !== ctx.prepared.typedData.hash) {
+          throw new Error('The typed data changed after it was shown');
+        }
       } catch (err) {
         return failure(err);
       }
+      // After the mint's wait, in the same run as the signature: the grant
+      // still exposing the account shown, and the document holding its key.
+      if (!grantExposes(requester.key, ctx.walletIndex)) return error(NOT_CONNECTED);
+      try {
+        context.spend(confirmation);
+        // A Safe's message signs nothing here: its token is spent through
+        // the core, and its owners sign on the board.
+        if (ctx.safe) await spendSafe(confirmation);
+      } catch (err) {
+        return failure(err);
+      }
+      if (ctx.safe) {
+        out = await safeMessage(context, ctx);
+      } else {
+        try {
+          out = { result: await signWith(ctx.walletIndex, method, ctx.prepared, confirmation.hash, { confirmation }) };
+        } catch (err) {
+          return failure(err);
+        }
+      }
+    } finally {
+      // Spent at its presentation; one a request ended before is burnt.
+      if (confirmation) discardToken(confirmation.token);
     }
     if (out.error) return out;
     // After the signature's wait, always: the name again. A name that moved

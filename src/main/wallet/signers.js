@@ -39,6 +39,7 @@ const {
   toCoreTransaction,
   assertBoundedTypeGraph,
 } = require('./signing-utils');
+const { signingAuthorization, spendConfirmation, confirmationError } = require('./signing-confirmation');
 
 /**
  * @typedef {Object} Signer
@@ -59,7 +60,23 @@ const {
  *   only); callers must prefer it over signTransaction+broadcast.
  */
 
-function createVaultBackend(walletIndex) {
+/**
+ * What a vault signature sends beside its request (freedom-core design
+ * 0012, API): the confirmation's `authorization`, which the core checks and
+ * spends before any key is derived, and a page's PageContext, under which a
+ * page's request is sent; none from main itself.
+ */
+function signOptions({ confirmation = null, page = null } = {}) {
+  return confirmation ? signingAuthorization(confirmation) : { page };
+}
+
+/** The core's refusal of a confirmation, in today's words, or null. */
+function refusal(err) {
+  const mapped = confirmationError(err);
+  return mapped === err ? null : mapped;
+}
+
+function createVaultBackend(walletIndex, authorized = {}) {
   // Public and immutable for the index; resolved through the core.
   let address = null;
   const ownAddress = async () => {
@@ -74,7 +91,8 @@ function createVaultBackend(walletIndex) {
   // for something else or from another key.
   const mismatch = () => new Error('The identity core returned a signature that does not match');
   const wrapped = (label, err) =>
-    err?.code === 'vault_locked' ? err : new Error(`${label}: ${err.message}`, { cause: err });
+    err?.code === 'vault_locked' ? err : refusal(err) || new Error(`${label}: ${err.message}`, { cause: err });
+  const options = signOptions(authorized);
   return {
     getAddress: () => withVaultAccount(walletIndex, () => ownAddress()),
     // The expected address is resolved before signing: a lock right after
@@ -87,7 +105,12 @@ function createVaultBackend(walletIndex) {
         if (from != null && getAddress(from) !== expected) {
           throw new Error('transaction from address mismatch');
         }
-        const { raw } = await vaultBackend.sign.transaction(key, tx);
+        let raw;
+        try {
+          ({ raw } = await vaultBackend.sign.transaction(key, tx, options));
+        } catch (err) {
+          throw refusal(err) || err;
+        }
         const signed = Transaction.from(raw);
         if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== expected) {
           throw mismatch();
@@ -101,7 +124,7 @@ function createVaultBackend(walletIndex) {
         const expected = await ownAddress();
         let signature;
         try {
-          signature = await vaultBackend.sign.message(key, bytes);
+          signature = await vaultBackend.sign.message(key, bytes, options);
         } catch (err) {
           throw wrapped('Message signing failed', err);
         }
@@ -121,7 +144,14 @@ function createVaultBackend(walletIndex) {
           // own hash of it, taken now. The core's bounded encoder, not
           // ethers' (whose type walk is exponential on some graphs).
           digest = expectedHash ?? (await vaultBackend.typedDataHash(data));
-          signature = await vaultBackend.sign.typedData(key, data, digest);
+          // The view a typed-data token binds is made again from what the
+          // core was told beside the data when it was minted.
+          const bound = authorized.confirmation?.payload ?? {};
+          signature = await vaultBackend.sign.typedData(key, data, digest, {
+            ...options,
+            ...(bound.primary_type !== undefined ? { primaryType: bound.primary_type } : {}),
+            ...(bound.chain_id !== undefined ? { chainId: bound.chain_id } : {}),
+          });
         } catch (err) {
           throw wrapped('Typed data signing failed', err);
         }
@@ -141,10 +171,19 @@ function createVaultBackend(walletIndex) {
  * and immutable for a given index, and callers like the send flow need it
  * (for the nonce) right before signing.
  *
+ * A signer for a confirmed request carries its confirmation (freedom-core
+ * design 0012, APB-1): a vault account's signature presents it to the core,
+ * which spends it there; a device's (Ledger, phone) spends it through the
+ * core first (`approval.spend`), and its device signs only after. A page's
+ * request without a token (a site's standing rule) carries the page's
+ * PageContext, so it is sent under `page`, never as main's own.
+ *
  * @param {number} walletIndex
+ * @param {{confirmation?: object, page?: object}} [authorized] the
+ *   confirmation (`signing-confirmation.js`) or a page's PageContext
  * @returns {Signer}
  */
-function getSigner(walletIndex) {
+function getSigner(walletIndex, authorized = {}) {
   if (!isValidWalletIndex(walletIndex)) {
     throw new Error('Invalid wallet index');
   }
@@ -184,9 +223,15 @@ function getSigner(walletIndex) {
       onAddressCheck: (matched) => recordRemoteAddressCheck(walletIndex, matched),
     });
   } else {
-    backend = createVaultBackend(walletIndex);
+    backend = createVaultBackend(walletIndex, authorized);
     vaultSigned = true;
   }
+  // A device signs what it shows, so the core can only advise: its
+  // confirmation is spent first, and the device asked only after.
+  const confirmation = vaultSigned ? null : authorized?.confirmation || null;
+  const spent = async () => {
+    if (confirmation) await spendConfirmation(confirmation);
+  };
 
   let address = null;
   const signer = {
@@ -196,9 +241,16 @@ function getSigner(walletIndex) {
       }
       return address;
     },
-    signTransaction: (tx) => backend.signTransaction(tx),
+    signTransaction: async (tx) => {
+      await spent();
+      return backend.signTransaction(tx);
+    },
     // async: a malformed input rejects like any other signing failure.
-    signMessage: async (message) => backend.signMessage(normalizeMessage(message)),
+    signMessage: async (message) => {
+      const normalized = normalizeMessage(message);
+      await spent();
+      return backend.signMessage(normalized);
+    },
     /**
      * `expectedHash`: the hash the user confirmed (#88). The core refuses a
      * vault signature over anything else. A device signs what it shows, so
@@ -218,6 +270,7 @@ function getSigner(walletIndex) {
       if (expectedHash !== undefined && hash !== expectedHash) {
         throw new Error('The typed data changed after it was confirmed');
       }
+      await spent();
       // `digest`: the hash a device's signature must recover over (#1063):
       // the one the user confirmed, or the core's own for main's typed
       // data, never one rebuilt from what the device was sent.
@@ -228,7 +281,10 @@ function getSigner(walletIndex) {
   // own channel (phone wallets only expose eth_sendTransaction). Callers
   // probe for it — see transaction-service's signAndSendTransaction.
   if (typeof backend.sendTransaction === 'function') {
-    signer.sendTransaction = (tx) => backend.sendTransaction(tx);
+    signer.sendTransaction = async (tx) => {
+      await spent();
+      return backend.sendTransaction(tx);
+    };
   }
   return signer;
 }

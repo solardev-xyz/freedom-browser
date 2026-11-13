@@ -255,7 +255,7 @@ function defaultPaymentDependencies() {
   return {
     takeSiteTurn: (site, options) => require('../wallet/auto-approve-pause').takeSiteTurn(site, options),
     sitePaymentWaiting: (site) => require('../wallet/auto-approve-pause').sitePaymentWaiting(site),
-    getSigner: (walletIndex) => require('../wallet/signers').getSigner(walletIndex),
+    getSigner: (walletIndex, authorized) => require('../wallet/signers').getSigner(walletIndex, authorized),
     signAndRecord: (tx, signer, context, options) =>
       require('../wallet/tx-recorder').signAndRecord(tx, signer, context, options),
   };
@@ -292,11 +292,15 @@ function withdrawn(answer) {
  *     (`signAndSendTransaction`'s `guardCommit`). A phone signs and
  *     broadcasts in one step: its payment has no such point.
  *
+ * `authorized()`, read as the send signs, gives what its signer presents
+ * to the identity core (design 0012): the request's confirmation, or the
+ * page's PageContext for a rule's answer (`signers.js`).
+ *
  * @returns {Promise<object>} what `signAndRecord` answered. Throws when the
  *   send fails or a guard withdraws it.
  */
 async function sendDappPayment(
-  { walletIndex, tx, site, silent = false, guard = null, afterSignature = null },
+  { walletIndex, tx, site, silent = false, guard = null, afterSignature = null, authorized = null },
   deps = {}
 ) {
   const { takeSiteTurn, sitePaymentWaiting, getSigner, signAndRecord } = { ...defaultPaymentDependencies(), ...deps };
@@ -312,7 +316,7 @@ async function sendDappPayment(
     const send = () =>
       signAndRecord(
         tx,
-        getSigner(walletIndex),
+        getSigner(walletIndex, authorized ? authorized() : undefined),
         { kind: 'dapp-send', origin: site, ...paymentContext(tx) },
         { walletIndex, onCommitted: release, guardCommit: afterSignature }
       );
@@ -346,6 +350,10 @@ function defaultSendDependencies() {
     },
     // The boards main runs in the approvals document (APS-3b).
     safeBoards: () => require('../approvals/safe-boards').getSafeBoards(),
+    // A Safe send's token, spent through the identity core (design 0012),
+    // and a token a request ended before presenting, burnt.
+    spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
+    discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
   };
 }
 
@@ -576,7 +584,16 @@ function createSendDispatchers(shared, deps = {}) {
     let sent;
     try {
       sent = await sendDappPayment(
-        { walletIndex: ctx.walletIndex, tx, site: requester.key, silent: true, guard: ruleStillAnswers, afterSignature: ruleStillAnswers },
+        {
+          walletIndex: ctx.walletIndex,
+          tx,
+          site: requester.key,
+          silent: true,
+          guard: ruleStillAnswers,
+          afterSignature: ruleStillAnswers,
+          // A page's send, never main's own (design 0012).
+          authorized: () => ({ page: context.pageContext() }),
+        },
         paymentDeps
       );
     } catch (err) {
@@ -602,12 +619,28 @@ function createSendDispatchers(shared, deps = {}) {
       effect?.();
       return run();
     };
-    // Just before the signature, main's issuer mints the token for this
-    // approval and the dispatcher spends it.
-    const spendToken = () => {
-      const token = context.confirm(CONFIRM_KINDS.DAPP_SEND, ctx.walletIndex, payload);
-      context.spend(token, CONFIRM_KINDS.DAPP_SEND, ctx.walletIndex, payload);
-    };
+    // Just before the signature, main's issuer has the identity core mint
+    // the token for this approval (design 0012), and the dispatcher hands
+    // it, in the same run as the last checks, to the signature, where the
+    // core spends it.
+    let confirmation = null;
+    const mintedAndHeld = (run) =>
+      stillHeld(null)(async () => {
+        // The core judges the fee as it mints (design 0012): a fee the user
+        // confirmed again above the threshold is minted as acknowledged,
+        // and a phone's, whose fee it picks, isn't judged.
+        confirmation = await context.confirm(CONFIRM_KINDS.DAPP_SEND, ctx.walletIndex, payload, {
+          feeAcknowledged: choices.feeAcknowledged === true,
+          phone: ctx.phone === true,
+        });
+        // After the mint's wait, in the same run as the signature: the grant
+        // and the document's key again (a name that moved meanwhile has
+        // ended the document's binding), and the token handed over.
+        if (!grantExposes(requester.key, ctx.walletIndex)) throw withdrawn(error(NOT_CONNECTED));
+        if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
+        context.spend(confirmation);
+        return run();
+      });
     let sent;
     try {
       sent = await sendDappPayment(
@@ -616,13 +649,17 @@ function createSendDispatchers(shared, deps = {}) {
           tx,
           site: requester.key,
           silent: false,
-          guard: stillHeld(spendToken),
+          guard: mintedAndHeld,
           afterSignature: stillHeld(null),
+          authorized: () => ({ confirmation }),
         },
         paymentDeps
       );
     } catch (err) {
       return err?.answer ?? failure(err);
+    } finally {
+      // Spent at its presentation; one a send ended before is burnt.
+      if (confirmation) d.discardToken(confirmation.token);
     }
     // "Always allow": the contract rule, for the requester's key, from the
     // transaction the user just confirmed, so it covers only a (contract,
@@ -676,11 +713,16 @@ function createSendDispatchers(shared, deps = {}) {
     if (!grantExposes(requester.key, ctx.walletIndex)) return error(NOT_CONNECTED);
     if (!context.holdsKey()) return error(NO_ADDRESS);
     let started;
+    let confirmation = null;
     try {
-      // In the same run as the checks: the token minted, spent, and the
-      // SafeTx started.
-      const token = context.confirm(CONFIRM_KINDS.SAFE_SEND, ctx.walletIndex, payload);
-      context.spend(token, CONFIRM_KINDS.SAFE_SEND, ctx.walletIndex, payload);
+      // The token minted by the identity core for this document and prompt
+      // (design 0012); after its wait, in the same run, the grant and the
+      // document checked again, the token spent through the core (the
+      // owners sign later), and the SafeTx started.
+      confirmation = await context.confirm(CONFIRM_KINDS.SAFE_SEND, ctx.walletIndex, payload);
+      if (!grantExposes(requester.key, ctx.walletIndex)) return error(NOT_CONNECTED);
+      context.spend(confirmation);
+      await d.spendSafe(confirmation);
       started = await d.startSafeSend({
         safeIndex: ctx.walletIndex,
         tx: safeTx,
@@ -689,6 +731,8 @@ function createSendDispatchers(shared, deps = {}) {
       });
     } catch (err) {
       return failure(err);
+    } finally {
+      if (confirmation) d.discardToken(confirmation.token);
     }
     const safeTxHash = started?.safeTxHash;
     const settled = settledOutcome(context, ctx.walletIndex, safeTxHash);

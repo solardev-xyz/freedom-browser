@@ -229,7 +229,7 @@ function paymentAsShown(tabId, { detectionId, acceptIndex = 0, grant } = {}) {
 
 // The token the card mints for `payment` (main binds the active account).
 function confirmationFor(payment, walletIndex = 0) {
-  return confirmations.issueConfirmation(confirmations.KINDS.X402_PAYMENT, walletIndex, payment).token;
+  return confirmations.issueMainConfirmation(confirmations.KINDS.X402_PAYMENT, walletIndex, payment).token;
 }
 
 // Press Pay the way the card does: mint for the payment shown, then
@@ -1034,7 +1034,7 @@ describe('x402:get-all-permissions + x402:revoke-permission', () => {
     // The token the cap editor mints in window `windowId` for `edit`, as
     // wallet:confirm-signing mints it (main adds the window and the cap).
     const mintFor = (edit, windowId = CHROME.id) =>
-      confirmations.issueConfirmation(
+      confirmations.issueMainConfirmation(
         confirmations.KINDS.X402_CAP_UPDATE, null, capUpdateRequest(windowId, edit)).token;
 
     beforeEach(() => {

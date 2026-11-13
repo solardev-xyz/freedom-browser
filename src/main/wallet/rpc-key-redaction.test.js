@@ -155,6 +155,11 @@ function loadWalletIpc(extraMocks = {}) {
     userDataDir,
     extraMocks: {
       [require.resolve('../identity-manager')]: identityMock,
+      // The identity core's approval tokens (design 0012), simulated: the
+      // wallet's own kinds are minted and spent through it.
+      [require.resolve('../core/vault-backend')]: () => ({
+        vaultBackend: { approval: require('../../../test/helpers/simulated-approvals').simulatedApprovals().approval },
+      }),
       ...extraMocks,
     },
   });
