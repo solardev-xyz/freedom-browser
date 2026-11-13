@@ -11,6 +11,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { chromeStarted } = require('./chrome-window');
 
 const repoRoot = path.resolve(__dirname, '..');
 const APPROVALS_URL = pathToFileURL(path.join(repoRoot, 'src', 'renderer', 'approvals', 'approvals.html')).href;
@@ -83,7 +84,9 @@ const test = base.extend({
     await closeApp(app);
     if (identityDir) fs.rmSync(identityDir, { recursive: true, force: true });
   },
-  // The chrome, not the approvals document.
+  // The chrome, not the approvals document, once its start-up has run: the
+  // specs drive the sidebar and the wallet's screens straight away
+  // (chrome-window.js).
   window: async ({ electronApp }, use) => {
     let win = null;
     await expect
@@ -93,6 +96,7 @@ const test = base.extend({
       }, { timeout: 20_000 })
       .toBe(true);
     await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
+    await chromeStarted(win);
     await use(win);
   },
 });
