@@ -131,6 +131,10 @@ const DEFAULT_SETTINGS = {
   // saveSettings stores only valid values, and only Settings may write them
   // (ipc-sender-policy.js).
   ...SECURE_DNS_DEFAULTS,
+  // Third-party cookies (#474, third-party-cookies.js): blocked unless this
+  // is false, from the next launch on. Booleans only, and only Settings may
+  // write it (ipc-sender-policy.js).
+  blockThirdPartyCookies: true,
   // Keyboard-shortcut remaps: shortcut id → accelerator string. Only ids
   // from the shared registry (src/shared/shortcuts.js) with valid, non-
   // reserved accelerators survive sanitization. The one non-primitive
@@ -348,6 +352,7 @@ function saveSettings(newSettings) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
 
         if (key === 'enableAi' && typeof newSettings[key] !== 'boolean') continue;
+        if (key === 'blockThirdPartyCookies' && typeof newSettings[key] !== 'boolean') continue;
         if (key === 'aiInvitationDismissed' && !isAiInvitationDismissed(newSettings[key])) continue;
 
         if (key === 'shortcutOverrides') {

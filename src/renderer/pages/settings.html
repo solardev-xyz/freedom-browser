@@ -1613,6 +1613,43 @@
           </p>
         </section>
 
+        <!-- Cookies (#474): third-party cookies, blocked through a launch-wide
+             Chromium switch (third-party-cookies.js), so a change takes effect
+             after a restart. Wired by scripts/settings-cookies.js; only this
+             page may write it. -->
+        <section class="section panel" id="cookies" data-nav="privacy">
+          <h3 class="panel-title">Cookies</h3>
+          <div class="card">
+            <div class="row" id="third-party-cookies-row">
+              <div class="row-body">
+                <p class="row-label">
+                  <label for="block-third-party-cookies">Block third-party cookies</label>
+                </p>
+                <p class="row-help" id="third-party-cookies-help">
+                  Content embedded from other sites, such as ads and social buttons, can't use
+                  cookies to follow you from site to site.
+                </p>
+                <p class="row-help" id="third-party-cookies-restart-help">
+                  Some embedded sign-ins may stop working. Takes effect after restart.
+                </p>
+              </div>
+              <div class="row-control">
+                <button type="button" id="third-party-cookies-restart" class="btn" hidden>
+                  Restart now
+                </button>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    id="block-third-party-cookies"
+                    aria-describedby="third-party-cookies-help third-party-cookies-restart-help"
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- Site Permissions -->
         <section class="section panel" id="permissions" data-nav="privacy">
           <div class="section-header">
@@ -2203,6 +2240,7 @@
     <script src="scripts/settings.js"></script>
     <script src="scripts/settings-updates.js"></script>
     <script src="scripts/settings-secure-dns.js"></script>
+    <script src="scripts/settings-cookies.js"></script>
     <script src="scripts/ai-invitation-step.js"></script>
     <script type="module" src="../lib/agent-settings.js"></script>
   </body>

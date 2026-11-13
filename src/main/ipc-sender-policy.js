@@ -153,6 +153,7 @@ const SETTINGS_CHANNELS = [
   'agent:dictation:install',
   'agent:dictation:cancel',
   'agent:webmcp:launch-state',
+  'cookies:third-party:launch-state',
   'agent:provider:get-status',
   'agent:provider:get-catalog',
   'agent:provider:refresh-models',
@@ -305,6 +306,7 @@ const SETTINGS_KEY_WRITERS = new Map([
   ['secureDnsMode', new Set([SETTINGS_FILE])],
   ['secureDnsProvider', new Set([SETTINGS_FILE])],
   ['secureDnsCustomTemplate', new Set([SETTINGS_FILE])],
+  ['blockThirdPartyCookies', new Set([SETTINGS_FILE])],
 ]);
 
 /**

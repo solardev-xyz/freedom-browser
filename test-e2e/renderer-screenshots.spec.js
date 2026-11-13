@@ -570,6 +570,18 @@ test.describe('renderer screenshots', () => {
         await shot('57-settings-dns-custom-invalid');
         await page.selectOption('#secure-dns-provider', 'quad9');
         await page.waitForTimeout(300);
+        // Cookies (#474): third-party cookie blocking turned off, which this
+        // launch still has on, so the row offers "Restart now". Turning it on
+        // again matches the launch and hides the button.
+        await page.evaluate(() => {
+          location.hash = 'privacy/cookies';
+        });
+        await page.waitForTimeout(1_500);
+        await page.evaluate(() => document.getElementById('block-third-party-cookies').click());
+        await page.waitForSelector('#third-party-cookies-restart:not([hidden])');
+        await shot('58-settings-cookies-restart');
+        await page.evaluate(() => document.getElementById('block-third-party-cookies').click());
+        await page.waitForSelector('#third-party-cookies-restart[hidden]', { state: 'attached' });
         // The page-wide search (#281): the sidebar field with a query, and
         // the result list that stands in for whichever section was open. The
         // query is deliberately one only static rows answer — the `[data-tor]`

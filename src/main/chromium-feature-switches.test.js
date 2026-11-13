@@ -22,6 +22,11 @@ function mainSources(dir = MAIN_DIR) {
   return out;
 }
 
+// Calls that re-append a launcher's own `--disable-features` list with one
+// feature taken out: third-party-cookies.js keeps storage partitioning on
+// (#474). They toggle no new feature, so there is no name to look up.
+const REAPPENDED_LISTS = [{ file: 'third-party-cookies.js', expression: "rest.join(',')" }];
+
 // [{ file, feature }] for every feature named in an enable/disable-features
 // switch. Anything the regex can't read as a literal list is reported as
 // `<dynamic>` so it can't slip past as "no features".
@@ -31,6 +36,14 @@ function toggledFeatures() {
   for (const file of mainSources()) {
     const code = fs.readFileSync(file, 'utf8');
     for (const match of code.matchAll(re)) {
+      const relative = path.relative(MAIN_DIR, file);
+      // Compared at the call itself: the capture above ends at the first `)`.
+      const reappended = REAPPENDED_LISTS.some(
+        (r) =>
+          r.file === relative &&
+          code.startsWith(`appendSwitch('disable-features', ${r.expression})`, match.index)
+      );
+      if (reappended) continue;
       const literal = match[2].trim().match(/^(['"`])([^'"`$]*)\1$/);
       const names = literal ? literal[2].split(',').map((s) => s.trim()) : ['<dynamic>'];
       for (const feature of names.filter(Boolean)) {
@@ -56,6 +69,14 @@ function electronFeatureBinary() {
 }
 
 describe('Chromium feature switches', () => {
+  test('every exempted re-append is still there', () => {
+    for (const { file, expression } of REAPPENDED_LISTS) {
+      expect(fs.readFileSync(path.join(MAIN_DIR, file), 'utf8')).toContain(
+        `appendSwitch('disable-features', ${expression})`
+      );
+    }
+  });
+
   test('VizDisplayCompositor is not toggled any more', () => {
     expect(toggledFeatures().map((f) => f.feature)).not.toContain('VizDisplayCompositor');
   });
@@ -98,6 +119,21 @@ describe('Chromium feature switches', () => {
     'the shipped Electron knows the dnsPrefetchingEnabled Blink setting',
     () => {
       expect(fs.readFileSync(binary).includes(Buffer.from('dnsPrefetchingEnabled'))).toBe(true);
+    },
+    30_000
+  );
+
+  // Third-party cookie blocking (#474) rests on a Chromium testing switch, and
+  // Chromium ignores a switch it doesn't know: an Electron bump that drops it
+  // would end the blocking without a word. test-e2e/third-party-cookies.spec.js
+  // checks the effect; this catches the name going missing first.
+  (binary ? test : test.skip)(
+    'the shipped Electron knows the third-party cookie switch',
+    () => {
+      const { BLOCK_THIRD_PARTY_COOKIES_SWITCH } = require('./third-party-cookies');
+      expect(fs.readFileSync(binary).includes(Buffer.from(BLOCK_THIRD_PARTY_COOKIES_SWITCH))).toBe(
+        true
+      );
     },
     30_000
   );

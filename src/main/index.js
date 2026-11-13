@@ -522,6 +522,10 @@ const {
   recordWebMcpLaunch,
   registerWebMcpLaunchIpc,
 } = require('./agent/webmcp-launch');
+const {
+  applyThirdPartyCookieBlocking,
+  registerThirdPartyCookiesIpc,
+} = require('./third-party-cookies');
 let agentPreviewNetwork;
 const { getAgentDataDir } = require('./profile-paths');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
@@ -552,6 +556,9 @@ function hasRuntimeNodeTransition() {
 const webMcpFeatures = webMcpBlinkFeatures(loadSettings());
 if (webMcpFeatures) app.commandLine.appendSwitch('enable-blink-features', webMcpFeatures);
 recordWebMcpLaunch(webMcpFeatures);
+// Third-party cookies (#474): a launch-wide switch, so the stored choice at
+// launch decides; see third-party-cookies.js.
+applyThirdPartyCookieBlocking(app, loadSettings(), { logger: log });
 // <link rel=dns-prefetch> asks the system resolver directly: no proxy, no Tor, no CSP,
 // and Chromium ignores X-DNS-Prefetch-Control for it. A workspace preview could
 // otherwise exfiltrate data in a hostname. Disabled for every renderer, because a
@@ -611,6 +618,7 @@ async function bootstrap() {
   });
   registerSettingsIpc();
   registerWebMcpLaunchIpc(ipcMain);
+  registerThirdPartyCookiesIpc(ipcMain);
   registerAdblockIpc();
   registerShortcutsIpc();
   registerBookmarksIpc();

@@ -443,6 +443,27 @@ describe('settings-store', () => {
     expect(persisted().secureDnsCustomTemplate).toBe(custom);
   });
 
+  // #474: third-party cookies are blocked unless the user turns it off, and
+  // only a boolean is stored, so a stray value can't read as "allow".
+  test('third-party cookies start blocked and store only a boolean', () => {
+    const { mod } = loadSettingsStore({ userDataDir });
+    const persisted = () =>
+      JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+
+    expect(mod.loadSettings().blockThirdPartyCookies).toBe(true);
+
+    expect(mod.saveSettings({ blockThirdPartyCookies: false })).toBe(true);
+    expect(persisted().blockThirdPartyCookies).toBe(false);
+
+    for (const value of ['true', 1, null, {}]) {
+      expect(mod.saveSettings({ blockThirdPartyCookies: value, theme: 'light' })).toBe(true);
+      expect(persisted()).toMatchObject({ blockThirdPartyCookies: false, theme: 'light' });
+    }
+
+    expect(mod.saveSettings({ blockThirdPartyCookies: true })).toBe(true);
+    expect(persisted().blockThirdPartyCookies).toBe(true);
+  });
+
   test('saveSettings rebuilds the adblock engine only when an adblock key changes', () => {
     const refreshEngine = jest.fn(() => Promise.resolve());
     const { mod } = loadSettingsStore({

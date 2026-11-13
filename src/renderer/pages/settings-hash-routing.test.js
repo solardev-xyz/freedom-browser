@@ -168,7 +168,7 @@ describe('settings hash routing', () => {
 
   it('drops a sub-route an entry does not have back to the entry', () => {
     for (const [hash, route] of [
-      ['#privacy/cookies', 'privacy'],
+      ['#privacy/trackers', 'privacy'],
       ['#nodes/rpc', 'nodes'],
       ['#appearance/x', 'appearance'],
     ]) {

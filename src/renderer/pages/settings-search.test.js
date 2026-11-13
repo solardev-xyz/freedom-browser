@@ -213,7 +213,7 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(22);
+    expect(sections).toHaveLength(23);
     expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
@@ -283,7 +283,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(21);
+    expect(sections).toHaveLength(22);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…
@@ -298,6 +298,10 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('dns')).toMatchObject({
       label: 'Secure DNS',
       section: 'Privacy and security › Secure DNS',
+    });
+    expect(named('cookies')).toMatchObject({
+      label: 'Cookies',
+      section: 'Privacy and security › Cookies',
     });
     // …and an entry's own heading is found by the entry's name alone.
     expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
@@ -767,6 +771,17 @@ describe('matchSettingsSearch', () => {
     expect(dns.find((entry) => entry.label === 'Use secure DNS')).toMatchObject({
       section: 'Privacy and security › Secure DNS',
     });
+  });
+
+  // #474.
+  test('finds third-party cookie blocking by its name and by what it does', () => {
+    for (const query of ['cookies', 'third-party', 'follow you']) {
+      expect(
+        search(query).find((entry) => entry.label === 'Block third-party cookies')
+      ).toMatchObject({
+        section: 'Privacy and security › Cookies',
+      });
+    }
   });
 });
 
