@@ -1,7 +1,8 @@
 // Sends through main, in real Electron (freedom-core design 0011, step
 // PRQ-5b): `eth_sendTransaction` goes from the app's preload to main on
 // `page:request`. Main quotes the fee and judges it, shows the send prompt as
-// a handle, the chrome renders it and answers it, and main's own issuer mints
+// a handle, the window's approvals panel renders it and answers it (design
+// 0011, APS-2; the chrome's decision is refused), and main's own issuer mints
 // the dapp-send token for that handle and the requester's key and spends it.
 // The chrome mints no dapp-send token, none for a site's Safe send, and
 // claims no site's rule: main reads the contract rule itself, records it for
@@ -19,6 +20,7 @@ const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -195,8 +197,13 @@ async function openIn(win, url) {
     .toBe(true);
 }
 
-const txScreen = (win) => win.locator('#sidebar-dapp-tx');
-const unlockScreen = (win) => win.locator('#sidebar-vault-unlock');
+// The window's approvals panel, and the handle main shows in it.
+const panelShows = async (electronApp, windowId) => (await approvalsState(electronApp))[windowId]?.shown ?? null;
+async function expectPanel(panel, title, site) {
+  await expect(panel.locator('#heading')).toHaveText(title, { timeout: 15_000 });
+  if (site) await expect(panel.locator('#site')).toHaveText(site);
+}
+const ALWAYS_ALLOW = 'Always allow this site to call this function without asking';
 
 /** Prompt messages main sent the chrome, of one kind. */
 const promptsOf = async (electronApp, kind) =>
@@ -242,12 +249,13 @@ test('sends through main: its prompt and fee check, its own token, the contract 
 
   // A contract call: main's prompt, rendered with main's site, transaction
   // and fee.
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
   await send(win, KEY_A, 'call', CALL);
-  await expect(txScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-tx-site')).toHaveText(KEY_A);
-  await expect(win.locator('#dapp-tx-to')).toHaveAttribute('title', CONTRACT);
-  await expect(win.locator('#dapp-tx-fee')).toHaveText('~0.000021 xDAI');
-  await expect(win.locator('#dapp-tx-fee-max')).toHaveText('Up to 0.000021 xDAI');
+  await expectPanel(panel, 'Confirm Transaction', KEY_A);
+  await expect(panel.locator('#body')).toContainText(`To${CONTRACT}`);
+  await expect(panel.locator('#body')).toContainText('Est. Fee~0.000021 xDAI');
+  await expect(panel.locator('#body')).toContainText('Most it can costUp to 0.000021 xDAI');
   const [shown] = await promptsOf(electronApp, 'eth.send');
   expect(shown).toMatchObject({
     guest,
@@ -261,17 +269,25 @@ test('sends through main: its prompt and fee check, its own token, the contract 
       alwaysAllow: true,
     },
   });
-  // A decision with a site is refused, and the prompt stays.
+  // The chrome's decision is refused; the panel's with a site is refused
+  // too, and the prompt stays.
+  expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { alwaysAllow: false }), shown.handle)).toEqual({
+    ok: false,
+    reason: 'approvals-document',
+  });
+  await panelArmed(electronApp, windowId);
   expect(
-    await win.evaluate((h) => window.pagePrompts.decide(h, true, { alwaysAllow: false, site: 'bzz://' + 'b'.repeat(64) }), shown.handle)
+    await panel.evaluate(
+      (h) => window.approvals.decide(h, true, { alwaysAllow: false, feeAcknowledged: false, site: 'bzz://' + 'b'.repeat(64) }),
+      shown.handle
+    )
   ).toEqual({ ok: false, reason: 'invalid' });
+  expect(await panelShows(electronApp, windowId)).toBe(shown.handle);
   expect(await outcome(win, KEY_A, 'call')).toEqual({ pending: true });
-  await expect(win.locator('#dapp-tx-reject')).toBeInViewport({ ratio: 1 });
-  await win.screenshot({ path: test.info().outputPath('page-sends-prompt.png') });
-  await win.locator('#dapp-tx-auto-approve').check();
-  await win.click('#dapp-tx-approve');
+  await panel.screenshot({ path: test.info().outputPath('page-sends-prompt.png') });
+  await decideInPanel(electronApp, { check: [ALWAYS_ALLOW], panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'call'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
-  await expect(txScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
   // Sent with the fee shown, for the requester's key; one token minted for
   // that record and spent; and the rule recorded for the requester's key.
   expect(await sends(electronApp)).toEqual([
@@ -300,9 +316,9 @@ test('sends through main: its prompt and fee check, its own token, the contract 
 
   // A plain transfer still needs its prompt, and "always allow" isn't offered.
   await send(win, KEY_A, 'transfer', TRANSFER);
-  await expect(txScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-tx-auto-approve-row')).toBeHidden();
-  await win.click('#dapp-tx-reject');
+  await expectPanel(panel, 'Confirm Transaction', KEY_A);
+  await expect(panel.getByLabel(ALWAYS_ALLOW)).toHaveCount(0);
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
   await expect.poll(() => outcome(win, KEY_A, 'transfer')).toEqual(REJECTED);
 
   // A fee far above today's (the fee check's reference a tenth of the quote):
@@ -313,12 +329,13 @@ test('sends through main: its prompt and fee check, its own token, the contract 
     quote: { type: 'legacy', gasPrice: '100000000', effectiveGasPrice: '100000000', source: 'direct', verified: false, answered: 2 },
   });
   await send(win, KEY_A, 'above', CALL);
-  await expect(txScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-tx-fee-warning')).toBeVisible();
-  await win.click('#dapp-tx-approve');
-  await expect(win.locator('#dapp-tx-approve')).toHaveText('Send anyway');
+  await expectPanel(panel, 'Confirm Transaction', KEY_A);
+  await expect(panel.locator('#body')).toContainText("× today's network fee.");
+  await expect(panel.locator('#approve')).toHaveText('Confirm');
+  await decideInPanel(electronApp, { panel, windowId });
+  await expect(panel.locator('#approve')).toHaveText('Send anyway');
   expect(await outcome(win, KEY_A, 'above')).toEqual({ pending: true });
-  await win.click('#dapp-tx-approve');
+  await decideInPanel(electronApp, { panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'above'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
   await feeReference(electronApp, null);
 
@@ -326,13 +343,11 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   // site it attested, and sends once the vault is open.
   await win.evaluate(() => window.identity.lock());
   await send(win, KEY_A, 'locked', CALL);
-  await expect(unlockScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#vault-unlock-site')).toHaveText(KEY_A);
+  await expectPanel(panel, 'Unlock Vault', KEY_A);
   expect(await outcome(win, KEY_A, 'locked')).toEqual({ pending: true });
-  await win.locator('#vault-unlock-password-input').fill(VAULT_PASSWORD);
-  await win.click('#vault-unlock-password-submit');
+  await decideInPanel(electronApp, { password: VAULT_PASSWORD, panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'locked'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
-  await expect(unlockScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
 
   // A site that isn't connected is refused, unprompted, and another site's
   // rule never answers for it.
@@ -344,8 +359,8 @@ test('sends through main: its prompt and fee check, its own token, the contract 
     message: 'Not connected. Call eth_requestAccounts first.',
   });
 
-  // A Ledger account: once confirmed, the device step holds the screen, and
-  // Reject and Back are no way out, until main has the device's answer.
+  // A Ledger account: once approved, the panel says where to confirm and
+  // Reject is no way out, until main has the device's answer.
   await grant(electronApp, KEY_C, LEDGER.index);
   await win.locator('[data-test="new-tab-btn"]').click();
   await openIn(win, `${KEY_C}/`);
@@ -355,23 +370,21 @@ test('sends through main: its prompt and fee check, its own token, the contract 
     });
   });
   await send(win, KEY_C, 'ledger', TRANSFER);
-  await expect(txScreen(win)).toBeVisible({ timeout: 15_000 });
-  await win.click('#dapp-tx-approve');
-  await expect(win.locator('#dapp-tx-approve')).toHaveText('Confirm on your Ledger…');
-  await expect(win.locator('#dapp-tx-reject')).toBeDisabled();
-  await expect(win.locator('#dapp-tx-back')).toBeDisabled();
-  await win.evaluate(() => {
-    document.getElementById('dapp-tx-reject').click();
-    document.getElementById('dapp-tx-back').click();
-  });
-  await expect(txScreen(win)).toBeVisible();
+  await expectPanel(panel, 'Confirm Transaction', KEY_C);
+  await decideInPanel(electronApp, { panel, windowId });
+  await expect(panel.locator('#waiting')).toHaveText('Confirm on your Ledger…');
+  await expect(panel.locator('#reject')).toBeDisabled();
+  await expect(panel.locator('#approve')).toBeDisabled();
+  await panel.evaluate(() => document.getElementById('reject').click());
+  expect((await approvalsState(electronApp))[windowId]).toMatchObject({ visible: true, waiting: 'ledger' });
+  await expect(panel.locator('#waiting')).toHaveText('Confirm on your Ledger…');
   expect(await outcome(win, KEY_C, 'ledger')).toEqual({ pending: true });
   await electronApp.evaluate(() => {
     globalThis.__holdDevice = null;
     globalThis.__releaseDevice();
   });
   await expect.poll(async () => (await outcome(win, KEY_C, 'ledger'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
-  await expect(txScreen(win)).toBeHidden();
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, waiting: null });
   expect((await sends(electronApp)).at(-1)).toMatchObject({ walletIndex: LEDGER.index, context: { origin: KEY_C } });
 
   // Every send went to main; none took the chrome's old path.

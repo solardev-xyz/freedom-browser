@@ -31,6 +31,7 @@ const os = require('os');
 const path = require('path');
 
 const { test: liveTest, expect, HAS_ANT_BINARY, ANT_BINARY_PATH } = require('../live-fixtures');
+const { chromeWindow } = require('../chrome-window');
 
 function positiveNumberFromEnv(name, fallback) {
   const raw = (process.env[name] || '').trim();
@@ -114,7 +115,8 @@ test.describe('startup responsiveness (real nodes)', () => {
     // Not vacuous: the app's own Ant must have been the one running. A node
     // already on the default port gets adopted ('reused') and the bundled one
     // — and its chain reads through the bridge — never start.
-    const window = await electronApp.firstWindow();
+    // The chrome by its URL: the approvals panel can be the first window.
+    const window = await chromeWindow(electronApp);
     const ant = await window.evaluate(async () => (await window.serviceRegistry.getRegistry()).ant);
 
     const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8') : '';

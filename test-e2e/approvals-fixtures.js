@@ -19,11 +19,52 @@ const DELAY_MS = 500;
 // Comfortably past the delay, on a loaded CI runner too.
 const PAST_DELAY_MS = 700;
 
+/**
+ * Seed a vault for a launch: the wallet on and the nodes off in
+ * `userDataDir`'s settings, and a fresh vault (VAULT_PASSWORD) whose wallet
+ * list is 'Main Wallet' (index 0) and then `wallets` (a Ledger or a phone
+ * account main's list should hold), with `activeWalletIndex` active.
+ * Resolves with the identity directory (FREEDOM_IDENTITY_DATA).
+ */
+async function seedVault(userDataDir, { wallets = [], activeWalletIndex = 0 } = {}) {
+  const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
+  const identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f-approvals-identity-'));
+  const settingsFile = path.join(userDataDir, 'settings.json');
+  const seeded = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) : {};
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({
+      ...seeded,
+      enableIdentityWallet: true,
+      startAntAtLaunch: false,
+      startIpfsAtLaunch: false,
+      startRadicleAtLaunch: false,
+      enableRadicleIntegration: false,
+    }),
+    'utf-8'
+  );
+  const mnemonic = await identity.createVault(identityDir, VAULT_PASSWORD);
+  const keys = identity.deriveAllKeys(mnemonic);
+  fs.writeFileSync(
+    path.join(identityDir, 'vault-meta.json'),
+    JSON.stringify({
+      addresses: { userWallet: keys.userWallet.address },
+      activeWalletIndex,
+      derivedWallets: [{ index: 0, name: 'Main Wallet', address: keys.userWallet.address }, ...wallets],
+    }),
+    'utf-8'
+  );
+  return identityDir;
+}
+
 const test = base.extend({
   // A vault with one account ('Main Wallet'), for the specs that connect,
   // sign or unlock; the settings turn the wallet on and the nodes off.
   withVault: [false, { option: true }],
-  electronApp: async ({ userDataDir, withVault }, use) => {
+  // More accounts for main's wallet list after it (a Ledger, a phone), and
+  // the active one: `seedVault`'s options. Implies a vault.
+  vaultWallets: [null, { option: true }],
+  electronApp: async ({ userDataDir, withVault, vaultWallets }, use) => {
     const env = {
       ...process.env,
       FREEDOM_TEST_MODE: '1',
@@ -33,34 +74,8 @@ const test = base.extend({
       LANG: 'en_US.UTF-8',
     };
     let identityDir = null;
-    if (withVault) {
-      const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
-      identityDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f-approvals-identity-'));
-      const settingsFile = path.join(userDataDir, 'settings.json');
-      const seeded = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) : {};
-      fs.writeFileSync(
-        settingsFile,
-        JSON.stringify({
-          ...seeded,
-          enableIdentityWallet: true,
-          startAntAtLaunch: false,
-          startIpfsAtLaunch: false,
-          startRadicleAtLaunch: false,
-          enableRadicleIntegration: false,
-        }),
-        'utf-8'
-      );
-      const mnemonic = await identity.createVault(identityDir, VAULT_PASSWORD);
-      const keys = identity.deriveAllKeys(mnemonic);
-      fs.writeFileSync(
-        path.join(identityDir, 'vault-meta.json'),
-        JSON.stringify({
-          addresses: { userWallet: keys.userWallet.address },
-          activeWalletIndex: 0,
-          derivedWallets: [{ index: 0, name: 'Main Wallet', address: keys.userWallet.address }],
-        }),
-        'utf-8'
-      );
+    if (withVault || vaultWallets) {
+      identityDir = await seedVault(userDataDir, vaultWallets || {});
       env.FREEDOM_IDENTITY_DATA = identityDir;
     }
     const app = await electron.launch({ args: ['.'], cwd: repoRoot, env, timeout: 20_000 });
@@ -244,6 +259,80 @@ async function decideTooSoon(electronApp, docPage, windowId, after) {
   });
 }
 
+/**
+ * Wait until window `windowId`'s panel shows a prompt whose report main
+ * holds, and main's input delay has passed for it: PAST_DELAY_MS on main's
+ * clock since the last report, with no move, new view or hide since. Resolves
+ * with the handle it shows.
+ */
+async function panelArmed(electronApp, windowId, { timeout = 30_000 } = {}) {
+  let handle = null;
+  await expect
+    .poll(
+      async () => {
+        handle = await electronApp.evaluate(
+          (_electron, args) => {
+            const hooks = globalThis.__FREEDOM_TEST_APPROVALS__;
+            const panel = hooks.state()[args.id];
+            if (!panel || !panel.visible || !panel.shown || panel.reported !== panel.shown) return null;
+            const last = hooks.trace
+              .filter((e) => e.window === args.id && ['shown', 'moved', 'prompt', 'hidden'].includes(e.kind))
+              .at(-1);
+            if (!last || last.kind !== 'shown' || last.handle !== panel.shown) return null;
+            return performance.now() - last.at >= args.past ? panel.shown : null;
+          },
+          { id: windowId, past: PAST_DELAY_MS }
+        );
+        return handle;
+      },
+      { timeout, message: `waiting for window ${windowId}'s panel to show a prompt past its delay` }
+    )
+    .not.toBeNull();
+  return handle;
+}
+
+/**
+ * Decide what the first window's panel shows, as a user does: once it shows
+ * `heading` (when given) and main's delay has passed, with the vault's
+ * password typed first for an unlock (`password`) and the boxes labelled in
+ * `check` ticked (the panel takes no input during its delay). Approves unless `approve`
+ * is false. A press main still counts as too soon (a slow host) is made
+ * again. Resolves with the handle decided.
+ */
+async function decideInPanel(electronApp, { approve = true, heading, password, check = [], windowId, panel } = {}) {
+  const id = windowId ?? (await chromeWindowId(electronApp));
+  const doc = panel ?? (await approvalsPage(electronApp));
+  if (heading) await expect(doc.locator('#heading')).toHaveText(heading, { timeout: 30_000 });
+  for (let attempt = 1; ; attempt += 1) {
+    const handle = await panelArmed(electronApp, id);
+    // The panel takes no input during its delay: its choices are made after.
+    if (password !== undefined) await doc.fill('#body input[type="password"]', password);
+    for (const label of check) await doc.getByLabel(label).check();
+    const before = (await decidesIn(electronApp, id)).length;
+    await doc.click(approve ? '#approve' : '#reject');
+    // Main's answer: the decision recorded, or (for one that waits on its
+    // request, a device's signature say) the prompt gone or waiting.
+    let seen = null;
+    await expect
+      .poll(
+        async () => {
+          const entry = (await decidesIn(electronApp, id))[before];
+          if (entry) {
+            seen = entry.ok ? 'decided' : entry.reason;
+            return seen;
+          }
+          const panel = (await approvalsState(electronApp))[id];
+          seen = !panel || panel.shown !== handle || panel.waiting ? 'decided' : null;
+          return seen;
+        },
+        { timeout: 15_000, message: `waiting for main's answer to the panel's ${approve ? 'approval' : 'rejection'}` }
+      )
+      .not.toBeNull();
+    if (seen === 'decided') return handle;
+    if (seen !== 'too-soon' || attempt >= 3) throw new Error(`the panel's decision was refused: ${seen}`);
+  }
+}
+
 module.exports = {
   test,
   expect,
@@ -269,4 +358,7 @@ module.exports = {
   reshow,
   clickTooSoon,
   decideTooSoon,
+  panelArmed,
+  decideInPanel,
+  seedVault,
 };

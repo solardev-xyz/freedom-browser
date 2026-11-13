@@ -221,17 +221,38 @@ function attached(env, id = 1) {
 }
 
 describe('the flag', () => {
-  test('FREEDOM_APPROVALS_DOCUMENT=1 turns it on; anything else leaves it off', () => {
-    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '1' })).toBe(true);
-    for (const value of [undefined, '', '0', 'true', 'yes', ' 1']) {
-      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value })).toBe(false);
+  test('on by default; FREEDOM_APPROVALS_DOCUMENT=0 turns it off in a development build, and nothing else does', () => {
+    const dev = { packaged: false };
+    expect(isApprovalsDocumentEnabled({}, dev)).toBe(true);
+    for (const value of [undefined, '', '1']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, dev)).toBe(true);
     }
-    expect(isApprovalsDocumentEnabled({})).toBe(false);
+    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '0' }, dev)).toBe(false);
+    // Any other value is a mistake: warned of, and the default runs.
+    for (const value of ['false', 'off', 'no', ' 0', '00']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, dev)).toBe(true);
+    }
   });
 
-  test('off by default: no document for a window, no handlers', () => {
+  test('a packaged build always runs it, whatever the environment says', () => {
+    for (const value of [undefined, '', '0', '1', 'off']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, { packaged: true })).toBe(true);
+    }
+  });
+
+  test('on with no variable set (a development build under jest)', () => {
     const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
     delete process.env.FREEDOM_APPROVALS_DOCUMENT;
+    try {
+      expect(isApprovalsDocumentEnabled()).toBe(true);
+    } finally {
+      if (saved !== undefined) process.env.FREEDOM_APPROVALS_DOCUMENT = saved;
+    }
+  });
+
+  test('turned off (=0): no document for a window, no handlers', () => {
+    const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
+    process.env.FREEDOM_APPROVALS_DOCUMENT = '0';
     try {
       expect(attachApprovalsDocument(new FakeWindow(9))).toBeNull();
       const ipc = { on: jest.fn(), handle: jest.fn() };
@@ -665,6 +686,40 @@ describe('main\'s prompts in the document', () => {
     expect(view.visible).toBe(false);
     expect(contents.sent.at(-1)).toEqual([CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' }]);
     expect(env.docs.state()[1]).toMatchObject({ visible: false, shown: null });
+  });
+
+  test('a hidden panel gives the keyboard back to the chrome; a shown one keeps it', () => {
+    const env = setup();
+    const { window, contents } = attached(env);
+    // The view holds the focus (it takes it as its document loads, before
+    // any prompt): on its focus, its load and the window's focus, the chrome
+    // gets it back.
+    for (const fire of [() => contents.emit('focus'), () => contents.emit('did-finish-load'), () => window.emit('focus')]) {
+      window.webContents.focused = false;
+      contents.focused = true;
+      fire();
+      expect(window.webContents.focused).toBe(true);
+    }
+    // A view without the focus takes nothing from the chrome.
+    window.webContents.focused = false;
+    contents.focused = false;
+    window.emit('focus');
+    expect(window.webContents.focused).toBe(false);
+
+    // Shown, the panel keeps it.
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    window.webContents.focused = false;
+    contents.emit('focus');
+    window.emit('focus');
+    expect(contents.focused).toBe(true);
+    expect(window.webContents.focused).toBe(false);
+
+    // Hidden again, it gives it back.
+    env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
+    window.webContents.focused = false;
+    contents.focused = true;
+    contents.emit('focus');
+    expect(window.webContents.focused).toBe(true);
   });
 
   test('a prompt sent before the document is ready reaches it when it is, after the theme', () => {

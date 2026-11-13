@@ -985,6 +985,63 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.resume).toHaveBeenCalledWith('run_test', undefined);
   });
 
+  test('a turn a start or a resume launches runs for the owning chrome\'s window, however many awaits later (0011, phone jobs)', async () => {
+    const { requestWindowId } = require('../windows/request-window');
+    const seen = [];
+    // What the bridge reads for a phone job: once the call returns, and
+    // from the turn it left running, after a timer and an immediate (an
+    // approval waited on, a fee read).
+    const launch = (label) => {
+      seen.push([label, requestWindowId()]);
+      void (async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        await new Promise((resolve) => setImmediate(resolve));
+        seen.push([`${label} turn`, requestWindowId()]);
+      })();
+    };
+    const service = createService({
+      start: jest.fn(async () => {
+        launch('start');
+        return { runId: 'run_test', conversationId: 'conversation_test' };
+      }),
+      resume: jest.fn(async () => {
+        launch('resume');
+        return true;
+      }),
+    });
+    const ctx = register({ service, windowIdOf: (sender) => (sender === ctx.sender ? 3 : null) });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Send 1 xDAI' });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_PAUSE)({ sender: ctx.sender }, { runId: 'run_test' });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_RESUME)({ sender: ctx.sender }, { runId: 'run_test' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(seen).toEqual(
+      expect.arrayContaining([
+        ['start', 3],
+        ['start turn', 3],
+        ['resume', 3],
+        ['resume turn', 3],
+      ])
+    );
+    expect(seen).toHaveLength(4);
+    // Outside the agent's handlers, no window.
+    expect(requestWindowId()).toBeNull();
+  });
+
+  test('a chrome that isn\'t a window\'s runs its turn for no window, as before', async () => {
+    const { requestWindowId } = require('../windows/request-window');
+    let seen;
+    const service = createService({
+      start: jest.fn(async () => {
+        seen = requestWindowId();
+        return { runId: 'run_test', conversationId: 'conversation_test' };
+      }),
+    });
+    const ctx = register({ service, windowIdOf: () => null });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    expect(service.start).toHaveBeenCalled();
+    expect(seen).toBeNull();
+  });
+
   test('routes steering only from the owning chrome and keeps it separate from approvals', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);

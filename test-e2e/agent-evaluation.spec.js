@@ -2,6 +2,7 @@ const { configureOllamaAgent } = require('./agent-provider-fixture');
 const http = require('http');
 const path = require('path');
 const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const MODEL_ID = 'freedom-evaluation-fixture';
 const PAGE_URL = 'https://agent-evaluation.test/registration';
@@ -1929,14 +1930,16 @@ test('Pi cannot sign a Radicle write on the site grant without the user', async 
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
   await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(1);
-  const consent = window.locator('#sidebar-radicle-consent');
-  await expect(consent).toBeVisible();
-  await expect(window.locator('#radicle-consent-title')).toHaveText('Open this issue as you?');
-  await expect(window.locator('#radicle-consent-site')).toHaveText(RADICLE_WRITE_ORIGIN);
-  await expect(window.locator('#radicle-consent-allows li')).toHaveText([
-    'Title: Agent-filed bug',
-    'Description: Steps to reproduce',
-  ]);
+  // The write asks the user in the window's approvals panel (freedom-core
+  // design 0011, APS-2), saying the Agent holds the tab and offering no rule.
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Open this issue as you?');
+  await expect(panel.locator('#site')).toHaveText(RADICLE_WRITE_ORIGIN);
+  await expect(panel.locator('#body')).toContainText('TitleAgent-filed bug');
+  await expect(panel.locator('#body')).toContainText('DescriptionSteps to reproduce');
+  await expect(panel.locator('#body')).toContainText('Freedom Agent is using this tab.');
+  await expect(panel.locator('#body input[type="checkbox"]')).toHaveCount(0);
   const pageStatus = () =>
     window.evaluate(() =>
       document
@@ -1945,8 +1948,8 @@ test('Pi cannot sign a Radicle write on the site grant without the user', async 
     );
   expect(await pageStatus()).toBe('pending');
 
-  await window.locator('#radicle-consent-reject').click();
-  await expect(consent).toBeHidden();
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]?.shown ?? null).toBeNull();
   await expect.poll(pageStatus).toBe('error 4001');
   // Main reads custody itself, and the chrome has no route to report a
   // write as answered by the grant (freedom-core design 0011, PRQ-8c).

@@ -39,7 +39,9 @@ async function launch(seed, { catalog = false } = {}) {
     },
     timeout: 30_000,
   });
-  const win = await app.firstWindow();
+  // The chrome by its URL: the approvals panel can be the first window.
+  const { chromeWindow } = require(path.join(ROOT, 'test-e2e', 'chrome-window'));
+  const win = await chromeWindow(app);
   win.setDefaultTimeout(8_000);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForSelector('[data-test="address-input"]', { state: 'visible', timeout: 30_000 });

@@ -27,6 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const identity = require(path.join(__dirname, '..', 'test', 'legacy-identity'));
 
@@ -179,12 +180,13 @@ test.describe('provider frame attribution (O-6)', () => {
     expect(ids.sub).not.toEqual(ids.main);
 
     // --- Forged requests from the iframe: nothing happens ---------------------
-    const dappConnect = win.locator('#sidebar-dapp-connect');
-    const swarmConnect = win.locator('#sidebar-swarm-connect');
-    const radicleConsent = win.locator('#sidebar-radicle-consent');
+    // The prompts show in the window's approvals panel (design 0011, APS-2):
+    // main shows none for a forged request.
+    const windowId = await chromeWindowId(electronApp);
+    const panel = await approvalsPage(electronApp);
+    const panelShows = async () => (await approvalsState(electronApp))[windowId]?.shown ?? null;
 
-    // One provider at a time: each prompt replaces the sidebar screen before
-    // it, so a batch would only ever show the last one.
+    // One provider at a time, as a prompt for each would be shown in turn.
     const forged = [
       ['dapp:provider-request', { id: 9001, method: 'eth_requestAccounts', params: [] }],
       ['swarm:provider-request', { id: 9002, method: 'swarm_requestAccess', params: {} }],
@@ -194,9 +196,7 @@ test.describe('provider frame attribution (O-6)', () => {
       await injectRequest(win, channel, ids.sub, request);
       // Give a (wrongly) accepted request ample time to raise its prompt.
       await win.waitForTimeout(1000);
-      await expect(dappConnect, channel).toBeHidden();
-      await expect(swarmConnect, channel).toBeHidden();
-      await expect(radicleConsent, channel).toBeHidden();
+      expect(await panelShows(), channel).toBeNull();
       expect(await executeCalls(electronApp), channel).toEqual([]);
     }
     await win.screenshot({ path: path.join(test.info().outputDir, 'subframe-ignored.png') });
@@ -206,9 +206,7 @@ test.describe('provider frame attribution (O-6)', () => {
     for (const [channel, request] of forged) {
       await injectRequest(win, channel, ids.main, { ...request, id: request.id + 100 });
       await win.waitForTimeout(1000);
-      await expect(dappConnect, channel).toBeHidden();
-      await expect(swarmConnect, channel).toBeHidden();
-      await expect(radicleConsent, channel).toBeHidden();
+      expect(await panelShows(), channel).toBeNull();
       expect(await executeCalls(electronApp), channel).toEqual([]);
     }
 
@@ -216,19 +214,19 @@ test.describe('provider frame attribution (O-6)', () => {
     // window.ethereum: request + connect.
     expect(await inPage(win, 'window.ethereum.request({ method: "eth_chainId" })')).toMatch(/^0x[0-9a-f]+$/);
     await inPage(win, `window.__accounts = window.ethereum.request({ method: 'eth_requestAccounts' }); 0`);
-    await expect(dappConnect).toBeVisible();
-    await win.screenshot({ path: path.join(test.info().outputDir, 'top-frame-dapp-connect.png') });
-    await win.click('#dapp-connect-approve');
+    await expect(panel.locator('#heading')).toHaveText('Connect', { timeout: 15_000 });
+    await panel.screenshot({ path: path.join(test.info().outputDir, 'top-frame-dapp-connect.png') });
+    await decideInPanel(electronApp, { panel, windowId });
     const accounts = await inPage(win, 'window.__accounts');
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatch(/^0x[0-9a-fA-F]{40}$/);
 
     // window.swarm: connect + publish. Both go to main, which shows its own
-    // prompts in the same screens, writes the grant (freedom-core design
-    // 0011, PRQ-7b) and publishes (PRQ-7c).
+    // prompts in the panel, writes the grant (freedom-core design 0011,
+    // PRQ-7b) and publishes (PRQ-7c).
     await inPage(win, `window.__swarm = window.swarm.requestAccess(); 0`);
-    await expect(swarmConnect).toBeVisible();
-    await win.click('#swarm-connect-approve');
+    await expect(panel.locator('#heading')).toHaveText('Swarm Access', { timeout: 15_000 });
+    await decideInPanel(electronApp, { panel, windowId });
     expect(await inPage(win, 'window.__swarm.then((r) => JSON.stringify(r))')).toContain('connected');
     const swarmRecorded = await electronApp.evaluate(() =>
       globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.filter((e) => e.kind === 'recorded' && e.provider === 'swarm').map((e) => e.method)
@@ -238,11 +236,9 @@ test.describe('provider frame attribution (O-6)', () => {
       win,
       `window.__published = window.swarm.request({ method: 'swarm_publishData', params: { data: 'hello', contentType: 'text/plain' } }); 0`
     );
-    const publishPrompt = win.locator('#sidebar-swarm-publish-approve');
-    await expect(publishPrompt).toBeVisible();
-    await win.screenshot({ path: path.join(test.info().outputDir, 'top-frame-swarm-publish.png') });
-    await win.waitForTimeout(600);
-    await win.click('#swarm-publish-confirm');
+    await expect(panel.locator('#heading')).toHaveText('Confirm Publish', { timeout: 15_000 });
+    await panel.screenshot({ path: path.join(test.info().outputDir, 'top-frame-swarm-publish.png') });
+    await decideInPanel(electronApp, { panel, windowId });
     expect(await inPage(win, 'window.__published.then((r) => JSON.stringify(r))')).toContain('abab');
     const swarmMain = await electronApp.evaluate(() =>
       globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.filter((e) => e.kind === 'recorded' && e.provider === 'swarm').map((e) => e.method)
@@ -251,8 +247,8 @@ test.describe('provider frame attribution (O-6)', () => {
 
     // window.radicle: connect.
     await inPage(win, `window.__radicle = window.radicle.requestAccess(); 0`);
-    await expect(radicleConsent).toBeVisible();
-    await win.click('#radicle-consent-approve');
+    await expect(panel.locator('#heading')).toHaveText('Connect Radicle node?', { timeout: 15_000 });
+    await decideInPanel(electronApp, { panel, windowId });
     expect(await inPage(win, 'window.__radicle.then((r) => JSON.stringify(r))')).toContain('connected');
 
     const calls = await executeCalls(electronApp);
@@ -278,7 +274,7 @@ test.describe('provider frame attribution (O-6)', () => {
       id: 9006, method: 'radicle_getNodeStatus', params: {},
     });
     await win.waitForTimeout(1500);
-    await expect(publishPrompt).toBeHidden();
+    expect(await panelShows()).toBeNull();
     expect(await executeCalls(electronApp)).toHaveLength(before);
   });
 });

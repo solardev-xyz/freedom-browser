@@ -2,8 +2,8 @@
 
 /**
  * The Safe signing boards in the approvals document (freedom-core design
- * 0011, "The approvals document"; step APS-3b), behind
- * FREEDOM_APPROVALS_DOCUMENT=1.
+ * 0011, "The approvals document"; step APS-3b), with the approvals
+ * document on (the default; FREEDOM_APPROVALS_DOCUMENT=0 turns it off).
  *
  * Three boards collect a Safe's owner signatures:
  *

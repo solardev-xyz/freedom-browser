@@ -1,4 +1,5 @@
 const { test, expect } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 const { _electron: electron } = require('@playwright/test');
 const { closeApp } = require('./close-app');
 const path = require('path');
@@ -471,7 +472,7 @@ test('software rendering profiles long-chat scrolling over a playing video', asy
     env: { ...process.env, FREEDOM_TEST_MODE: '1', FREEDOM_TEST_USER_DATA: userDataDir,
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true', LANG: 'en_US.UTF-8' } });
   try {
-    const win = await app.firstWindow();
+    const win = await chromeWindow(app);
     await win.waitForSelector('#agent-toggle-btn');
     await openConversation(app, win);
     await app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture('https://motion.test/', {

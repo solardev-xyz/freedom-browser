@@ -2,7 +2,8 @@
 // (freedom-core design 0011, step PRQ-7b): `swarm_requestAccess` and the
 // messaging methods go from the app's preload to main on `page:request`.
 // Main shows their prompts (`swarm.connect`, `swarm.messaging`), which the
-// chrome renders in its sidebar and answers by handle, writes the grants
+// window's approvals panel renders and answers by handle (design 0011,
+// APS-2), writes the grants
 // itself for the page's attested key, and sends `connect`, `disconnect` and
 // a subscription's `message` to the page's own document. The chrome's grant
 // writes are refused. A subscription ends with its document. The harness
@@ -11,6 +12,7 @@
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -155,11 +157,19 @@ async function openIn(win, url, ready = url) {
 
 // Past the prompt's input-protection window (and the sidebar's slide-in,
 // for the evidence shot), then the button.
-async function approve(win, selector, shot) {
-  await win.waitForTimeout(600);
-  if (shot) await win.screenshot({ path: test.info().outputPath(shot) });
-  await win.locator(selector).click();
+// The panel's prompt: its heading and main's site, then approved there.
+async function expectPrompt(electronApp, title, site) {
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText(title, { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(site);
+  return panel;
 }
+async function approve(electronApp, panel, shot) {
+  if (shot) await panel.screenshot({ path: test.info().outputPath(shot) });
+  await decideInPanel(electronApp, { panel });
+}
+const panelShows = async (electronApp) =>
+  (await approvalsState(electronApp))[await chromeWindowId(electronApp)]?.shown ?? null;
 
 test.afterEach(async ({ electronApp }) => {
   await stopFakeAnt(electronApp);
@@ -177,19 +187,17 @@ test('connecting through main: main\'s prompt in the sidebar, the grant written 
   await watchOldPath(win);
 
   await start(win, DAPP, 'access', 'swarm_requestAccess');
-  const connectScreen = win.locator('#sidebar-swarm-connect');
-  await expect(connectScreen).toBeVisible();
   // Main's site, as main attested it.
-  await expect(win.locator('#swarm-connect-site')).toHaveText(DAPP);
+  const panel = await expectPrompt(electronApp, 'Swarm Access', DAPP);
   expect(await swarmGrant(electronApp, DAPP)).toBeNull();
   const prompted = (await trace(electronApp)).filter((e) => e.kind === 'prompt-message' && e.channel === 'page:prompt');
   expect(prompted.map((e) => [e.payload.kind, e.payload.site])).toEqual([['swarm.connect', { key: DAPP, label: DAPP }]]);
-  await approve(win, '#swarm-connect-approve', 'page-swarm-connect-prompt.png');
+  await approve(electronApp, panel, 'page-swarm-connect-prompt.png');
 
   await expect.poll(() => outcome(win, DAPP, 'access')).toEqual({
     ok: { connected: true, origin: DAPP, capabilities: ['publish'] },
   });
-  await expect(connectScreen).toBeHidden();
+  await expect.poll(() => panelShows(electronApp)).toBeNull();
   expect(await swarmGrant(electronApp, DAPP)).toMatchObject({ messaging: false });
   await expect.poll(() => heard(win, DAPP)).toEqual([['connect', { origin: DAPP }]]);
 
@@ -228,12 +236,9 @@ test('messaging through main: the messaging prompt, a subscription\'s message to
   await watchOldPath(win);
 
   await start(win, DAPP, 'subscribe', 'swarm_subscribe', { kind: 'pss', topic: 'lobby' });
-  const messagingScreen = win.locator('#sidebar-swarm-messaging-approve');
-  await expect(messagingScreen).toBeVisible();
-  await expect(win.locator('#swarm-messaging-title')).toHaveText('Messaging Access');
-  await expect(win.locator('#swarm-messaging-site')).toHaveText(DAPP);
-  await expect(win.locator('#swarm-messaging-topic')).toHaveText('lobby');
-  await approve(win, '#swarm-messaging-confirm', 'page-swarm-messaging-prompt.png');
+  const panel = await expectPrompt(electronApp, 'Messaging Access', DAPP);
+  await expect(panel.locator('#body')).toContainText('Topiclobby');
+  await approve(electronApp, panel, 'page-swarm-messaging-prompt.png');
 
   await expect.poll(() => outcome(win, DAPP, 'subscribe'), { timeout: 15_000 }).toMatchObject({
     ok: { subscriptionId: expect.any(String), kind: 'pss' },

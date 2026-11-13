@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { chromeWindow } = require('./chrome-window');
 
 // Launch the app with FREEDOM_ADBLOCK_DIR pointed at an empty directory, so
 // the engine finds no filter lists at all (the state #274 is about). The
@@ -16,7 +17,7 @@ async function launchWithoutLists(relaunchApp) {
   process.env.FREEDOM_ADBLOCK_DIR = emptyDir;
   try {
     const app = await relaunchApp();
-    const window = await app.firstWindow();
+    const window = await chromeWindow(app);
     await window.waitForSelector('[data-test="address-input"]', { state: 'visible' });
     return { app, window };
   } finally {

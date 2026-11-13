@@ -4,8 +4,8 @@
 // the app's preload to main on `page:request`. Main unlocks a locked vault
 // on its own prompt (`vault.unlock`), then shows the feed prompt
 // (`swarm.feed`) with the site's publisher identities and their owners,
-// which the chrome renders in its sidebar and answers by handle with the
-// identity the user picked. Main makes that identity the site's, grants feed
+// which the window's approvals panel renders and answers by handle with the
+// identity the user picked (design 0011, APS-2). Main makes that identity the site's, grants feed
 // access and sets the rule itself, and the identity core signs. With 7d all
 // of window.swarm is main's: the chrome's route, its manifest check and
 // decide, and its rule and feed-grant writes are gone or refused.
@@ -18,6 +18,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 const { closeApp } = require('./close-app');
 
 const repoRoot = path.resolve(__dirname, '..');
@@ -227,21 +228,20 @@ test('feeds and signing through main: the vault unlocked on main\'s prompt, the 
   await watchOldPath(win);
 
   // The signing identity: the vault first, on main's own prompt.
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
   await start(win, DAPP, 'identity', 'swarm_getSigningIdentity');
-  await expect(win.locator('#sidebar-vault-unlock')).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#vault-unlock-site')).toHaveText(DAPP);
+  await expect(panel.locator('#heading')).toHaveText('Unlock Vault', { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(DAPP);
   expect((await promptsOf(electronApp, 'vault.unlock')).map((p) => [p.site, p.view])).toEqual([
     [{ key: DAPP, label: DAPP }, { reason: 'signing' }],
   ]);
-  await win.locator('#vault-unlock-password-input').fill(VAULT_PASSWORD);
-  await win.click('#vault-unlock-password-submit');
+  await decideInPanel(electronApp, { password: VAULT_PASSWORD, panel, windowId });
 
   // Then the feed prompt, with main's identities and their owners.
-  const feedScreen = win.locator('#sidebar-swarm-feed-approve');
-  await expect(feedScreen).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#swarm-feed-site')).toHaveText(DAPP);
-  await expect(win.locator('#swarm-feed-title')).toHaveText('Publisher Signing');
-  await expect(win.locator('#swarm-feed-unlock')).toBeHidden();
+  await expect(panel.locator('#heading')).toHaveText('Publisher Signing', { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(DAPP);
+  await expect(panel.locator('#body input[type="password"]')).toHaveCount(0);
   const [feedPrompt] = await promptsOf(electronApp, 'swarm.feed');
   const owner0 = await electronApp.evaluate(async (_electron, root) =>
     process.mainModule.require(`${root}/src/main/identity-manager`).getPublisherAddress(0), repoRoot);
@@ -253,15 +253,17 @@ test('feeds and signing through main: the vault unlocked on main\'s prompt, the 
   });
   expect(feedPrompt.view.identities.map((i) => [i.id, typeof i.owner])).toEqual([['bee-wallet', 'string']]);
   expect(await siteState(electronApp, DAPP)).toMatchObject({ feedGranted: false, activeIdentityId: null });
-  await win.locator('#swarm-feed-auto-approve').check();
-  await win.waitForTimeout(600);
-  await win.screenshot({ path: test.info().outputPath('page-swarm-feed-prompt.png') });
-  await win.click('#swarm-feed-approve');
+  await panel.screenshot({ path: test.info().outputPath('page-swarm-feed-prompt.png') });
+  await decideInPanel(electronApp, {
+    check: ['Always allow this site to use this publisher identity without asking'],
+    panel,
+    windowId,
+  });
 
   await expect.poll(() => outcome(win, DAPP, 'identity'), { timeout: 15_000 }).toEqual({
     ok: { owner: owner0, identityMode: 'app-scoped' },
   });
-  await expect(feedScreen).toBeHidden();
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]?.shown ?? null).toBeNull();
   expect(await siteState(electronApp, DAPP)).toMatchObject({
     feedGranted: true,
     activeIdentityId: 'app-scoped:0',

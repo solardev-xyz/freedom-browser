@@ -23,18 +23,23 @@ const {
   launchApp: launchTarget,
 } = require('./packaged-launch');
 const { closeApp } = require('./close-app');
+const { chromeWindow } = require('./chrome-window');
 
 const repoRoot = path.resolve(__dirname, '..');
 
 // Launch options for one app instance against `userDataDir`. Which binary is
 // launched (source tree vs FREEDOM_E2E_EXECUTABLE) and whether the sandbox is
 // opted out of is decided in packaged-launch.js, shared with live-fixtures.js.
-function launchOptions(userDataDir) {
+function launchOptions(userDataDir, { approvalsPanel = true } = {}) {
   return {
     ...packagedLaunchTarget(),
     cwd: repoRoot,
     env: {
       ...process.env,
+      // The approvals panel (freedom-core design 0011) is on by default; a
+      // spec that pins the chrome's own prompt screens turns it off, the
+      // rollback (`approvalsPanel: false`). Packaged builds ignore it.
+      ...(approvalsPanel ? {} : { FREEDOM_APPROVALS_DOCUMENT: '0' }),
       FREEDOM_TEST_MODE: '1',
       FREEDOM_TEST_USER_DATA: userDataDir,
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
@@ -52,8 +57,8 @@ function launchOptions(userDataDir) {
 // `relaunchApp` fixture rather than directly so every app a spec opens is
 // closed at teardown. A packaged run is driven over CDP rather than through
 // Playwright's Electron launcher; see packaged-launch.js.
-function launchApp(userDataDir) {
-  return launchTarget(launchOptions(userDataDir));
+function launchApp(userDataDir, options) {
+  return launchTarget(launchOptions(userDataDir, options));
 }
 
 // Teardown deadline for one instance (see close-app.js). A packaged app has
@@ -63,11 +68,12 @@ function closeOptions() {
   return isPackagedRun() ? { timeout: 100_000 } : {};
 }
 
-// First BrowserWindow, waited until the browser chrome has mounted. The
-// address bar is the last toolbar element initialized; presence here implies
-// tab bar, bookmarks bar, and menus are all live.
+// First BrowserWindow's chrome (not its approvals document, a page of the
+// app too: chrome-window.js), waited until it has mounted. The address bar
+// is the last toolbar element initialized; presence here implies tab bar,
+// bookmarks bar, and menus are all live.
 async function browserWindow(app) {
-  const win = await app.firstWindow();
+  const win = await chromeWindow(app);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForSelector('[data-test="address-input"]', { state: 'visible' });
   return win;
@@ -114,8 +120,12 @@ const test = base.extend({
     }
   },
 
-  electronApp: async ({ userDataDir }, use) => {
-    const app = await launchApp(userDataDir);
+  // Off only for the specs that pin the chrome's own prompt screens, which
+  // the rollback (FREEDOM_APPROVALS_DOCUMENT=0) renders; see launchOptions.
+  approvalsPanel: [true, { option: true }],
+
+  electronApp: async ({ userDataDir, approvalsPanel }, use) => {
+    const app = await launchApp(userDataDir, { approvalsPanel });
 
     await use(app);
 
@@ -127,11 +137,11 @@ const test = base.extend({
   // Close the running instance first (`await electronApp.close()`): Freedom
   // holds a per-profile lock, so a second instance on a live profile just
   // asks the first one to focus itself and exits.
-  relaunchApp: async ({ userDataDir }, use) => {
+  relaunchApp: async ({ userDataDir, approvalsPanel }, use) => {
     const started = [];
 
     await use(async () => {
-      const app = await launchApp(userDataDir);
+      const app = await launchApp(userDataDir, { approvalsPanel });
       started.push(app);
       return app;
     });

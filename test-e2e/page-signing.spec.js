@@ -1,7 +1,8 @@
 // Signing through main, in real Electron (freedom-core design 0011, step
 // PRQ-5a): `personal_sign` and `eth_signTypedData_v4` go from the app's
 // preload to main on `page:request`. Main shows the signing prompt as a
-// handle, the chrome renders it and answers it, and main's own issuer mints
+// handle, the window's approvals panel renders it and answers it (design
+// 0011, APS-2; the chrome's decision is refused), and main's own issuer mints
 // the approval's token for that handle and the requester's key and spends
 // it. The chrome mints no page token and claims no site's rule: main reads
 // the rule itself, and asks for the vault's unlock first when it is locked.
@@ -13,6 +14,7 @@ const os = require('os');
 const { verifyMessage, verifyTypedData } = require('ethers');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -159,8 +161,12 @@ async function openIn(win, url) {
     .toBe(true);
 }
 
-const signScreen = (win) => win.locator('#sidebar-dapp-sign');
-const unlockScreen = (win) => win.locator('#sidebar-vault-unlock');
+// The window's approvals panel, and the handle main shows in it.
+const panelShows = async (electronApp, windowId) => (await approvalsState(electronApp))[windowId]?.shown ?? null;
+async function expectPanel(panel, title, site) {
+  await expect(panel.locator('#heading')).toHaveText(title, { timeout: 15_000 });
+  if (site) await expect(panel.locator('#site')).toHaveText(site);
+}
 
 /** Prompt messages main sent the chrome, of one kind. */
 const promptsOf = async (electronApp, kind) =>
@@ -220,29 +226,38 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
   expect((await grantOf(win, KEY_A)).autoApprove?.signing).not.toBe(true);
 
   // personal_sign: main's prompt, rendered with main's site and message.
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
   await start(win, KEY_A, 'message', 'personal_sign', [MESSAGE, account]);
-  await expect(signScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-sign-site')).toHaveText(KEY_A);
-  await expect(win.locator('#dapp-sign-message')).toHaveText('Hello, Freedom');
+  await expectPanel(panel, 'Sign Message', KEY_A);
+  await expect(panel.locator('#body')).toContainText('Hello, Freedom');
   const [shown] = await promptsOf(electronApp, 'eth.sign');
   expect(shown).toMatchObject({
     guest,
     site: { key: KEY_A },
     view: { method: 'personal_sign', account: { index: 0, address: account }, message: { hex: MESSAGE, rawHash: false } },
   });
-  // A decision with a site is refused, and the prompt stays.
+  // The chrome's decision is refused; the panel's with a site is refused
+  // too, and the prompt stays.
+  expect(await win.evaluate((h) => window.pagePrompts.decide(h, true, { alwaysAllow: false }), shown.handle)).toEqual({
+    ok: false,
+    reason: 'approvals-document',
+  });
+  await panelArmed(electronApp, windowId);
   expect(
-    await win.evaluate((h) => window.pagePrompts.decide(h, true, { alwaysAllow: false, site: 'bzz://' + 'b'.repeat(64) }), shown.handle)
+    await panel.evaluate(
+      (h) => window.approvals.decide(h, true, { alwaysAllow: false, site: 'bzz://' + 'b'.repeat(64) }),
+      shown.handle
+    )
   ).toEqual({ ok: false, reason: 'invalid' });
-  await expect(signScreen(win)).toBeVisible();
+  expect(await panelShows(electronApp, windowId)).toBe(shown.handle);
   expect(await outcome(win, KEY_A, 'message')).toEqual({ pending: true });
-  await expect(win.locator('#dapp-sign-reject')).toBeInViewport({ ratio: 1 });
-  await win.screenshot({ path: test.info().outputPath('page-signing-prompt.png') });
-  await win.click('#dapp-sign-approve');
+  await panel.screenshot({ path: test.info().outputPath('page-signing-prompt.png') });
+  await decideInPanel(electronApp, { heading: 'Sign Message', panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'message'))?.ok || null, { timeout: 15_000 }).toMatch(/^0x[0-9a-f]{130}$/i);
   const messageSignature = (await outcome(win, KEY_A, 'message')).ok;
   expect(verifyMessage('Hello, Freedom', messageSignature)).toBe(account);
-  await expect(signScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
   // Main's issuer minted one token for that record and spent it.
   const recordOf = async (method) =>
     (await trace(electronApp)).filter((e) => e.kind === 'recorded' && e.guest === guest && e.method === method).at(-1).id;
@@ -256,10 +271,13 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
   // eth_signTypedData_v4, with "always allow": main sets the site's rule
   // for the requester's key once the signature is made.
   await start(win, KEY_A, 'typed', 'eth_signTypedData_v4', [account, JSON.stringify(TYPED)]);
-  await expect(signScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-sign-typed-data')).toContainText('Signed through main');
-  await win.locator('#dapp-sign-auto-approve').check();
-  await win.click('#dapp-sign-approve');
+  await expectPanel(panel, 'Sign Message', KEY_A);
+  await expect(panel.locator('#body')).toContainText('Signed through main');
+  await decideInPanel(electronApp, {
+    check: ['Always allow this site to request signatures without asking'],
+    panel,
+    windowId,
+  });
   await expect.poll(async () => (await outcome(win, KEY_A, 'typed'))?.ok || null, { timeout: 15_000 }).toMatch(/^0x[0-9a-f]{130}$/i);
   const { EIP712Domain: _domain, ...types } = TYPED.types;
   expect(verifyTypedData(TYPED.domain, types, TYPED.message, (await outcome(win, KEY_A, 'typed')).ok)).toBe(account);
@@ -275,23 +293,21 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
 
   // A 32-byte message still needs its prompt.
   await start(win, KEY_A, 'raw', 'personal_sign', [RAW_HASH, account]);
-  await expect(signScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-sign-raw-warning')).toBeVisible();
-  await win.click('#dapp-sign-reject');
+  await expectPanel(panel, 'Sign Message', KEY_A);
+  await expect(panel.locator('#body')).toContainText("You're signing a raw 32-byte value.");
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
   await expect.poll(() => outcome(win, KEY_A, 'raw')).toEqual(REJECTED);
 
   // A locked vault under the rule: main asks for the unlock first, for the
   // site it attested, and signs once the vault is open.
   await win.evaluate(() => window.identity.lock());
   await start(win, KEY_A, 'locked', 'personal_sign', [MESSAGE, account]);
-  await expect(unlockScreen(win)).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#vault-unlock-site')).toHaveText(KEY_A);
+  await expectPanel(panel, 'Unlock Vault', KEY_A);
   expect(await outcome(win, KEY_A, 'locked')).toEqual({ pending: true });
-  await win.locator('#vault-unlock-password-input').fill(VAULT_PASSWORD);
-  await win.click('#vault-unlock-password-submit');
+  await decideInPanel(electronApp, { password: VAULT_PASSWORD, panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'locked'))?.ok || null, { timeout: 15_000 }).toMatch(/^0x/);
   expect(verifyMessage('Hello, Freedom', (await outcome(win, KEY_A, 'locked')).ok)).toBe(account);
-  await expect(unlockScreen(win)).toBeHidden();
+  await expect.poll(() => panelShows(electronApp, windowId)).toBeNull();
 
   // A site that isn't connected is refused, unprompted, and another site's
   // rule never answers for it.
@@ -308,8 +324,8 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
   await win.evaluate((key) => window.dappPermissions.setSigningAutoApprove(key, false), KEY_A);
   await win.locator('[data-test="tab"][data-tab-id="1"]').click();
   await start(win, KEY_A, 'cleared', 'personal_sign', [MESSAGE, account]);
-  await expect(signScreen(win)).toBeVisible({ timeout: 15_000 });
-  await win.click('#dapp-sign-reject');
+  await expectPanel(panel, 'Sign Message', KEY_A);
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
   await expect.poll(() => outcome(win, KEY_A, 'cleared')).toEqual(REJECTED);
 
   // Every signing request went to main; none took the chrome's old path.
