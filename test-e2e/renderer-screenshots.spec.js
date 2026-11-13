@@ -546,13 +546,30 @@ test.describe('renderer screenshots', () => {
           await page.waitForTimeout(1_500);
           await shot(`${40 + i}-settings-${route.replace('/', '-')}`);
         }
-        // Secure DNS (#472), the last panel of Privacy and security: its
-        // route scrolls the page as far as it goes, which brings it up.
+        // Secure DNS (#472) at its defaults is already on screen in
+        // `40-settings-privacy-permissions`, the last panels of the same
+        // page. What only this panel has is Custom with an address it refuses:
+        // the address row, the error line and the field's danger border.
+        // Nothing is saved in that state, so choosing Quad9 again leaves the
+        // walk as it was.
         await page.evaluate(() => {
           location.hash = 'privacy/dns';
         });
         await page.waitForTimeout(1_500);
-        await shot('57-settings-privacy-dns');
+        await page.selectOption('#secure-dns-provider', 'custom');
+        // Set the value and fire the field's own change event: typed keys go
+        // to whichever frame has focus. Blurred after, so no focus ring
+        // depends on which frame that is.
+        await page.evaluate(() => {
+          const input = document.getElementById('secure-dns-custom');
+          input.value = 'http://dns.example/dns-query';
+          input.dispatchEvent(new Event('change'));
+          input.blur();
+        });
+        await page.waitForTimeout(1_500);
+        await shot('57-settings-dns-custom-invalid');
+        await page.selectOption('#secure-dns-provider', 'quad9');
+        await page.waitForTimeout(300);
         // The page-wide search (#281): the sidebar field with a query, and
         // the result list that stands in for whichever section was open. The
         // query is deliberately one only static rows answer — the `[data-tor]`
