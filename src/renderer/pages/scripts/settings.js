@@ -19,6 +19,8 @@ const fields = {
   startTor: $('start-tor-at-launch'),
   routeIpfsRow: $('route-ipfs-through-tor-row'),
   routeIpfs: $('route-ipfs-through-tor'),
+  routeRadicleRow: $('route-radicle-through-tor-row'),
+  routeRadicle: $('route-radicle-through-tor'),
   enableIdentity: $('enable-identity-wallet'),
   showIpfsProgressStatus: $('show-ipfs-progress-status'),
   autoUpdate: $('auto-update'),
@@ -1135,11 +1137,15 @@ const settingsSearchResets = [];
 // integration enabled keeps the rows either way — an external Tor SOCKS
 // proxy needs no bundled binary, and a setting nothing can switch off
 // again would be worse than a row that explains nothing.
-// The rows also stay while IPFS is routed through Tor, so that preference,
-// and Enable Tor with it, can always be reached and turned off again.
+// The rows also stay while IPFS or Radicle is routed through Tor, so that
+// preference, and Enable Tor with it, can always be reached and turned off
+// again.
 const applyTorRowVisibility = (settings = cachedSettings) => {
   const visible =
-    torBundled || settings?.enableTorIntegration === true || settings?.routeIpfsThroughTor === true;
+    torBundled ||
+    settings?.enableTorIntegration === true ||
+    settings?.routeIpfsThroughTor === true ||
+    settings?.routeRadicleThroughTor === true;
   document
     .querySelectorAll('[data-tor]')
     .forEach((el) => (el.style.display = visible ? '' : 'none'));
@@ -1214,7 +1220,36 @@ const applyRouteIpfsRowState = () => {
   );
 };
 
-// Tor's state, for that note: every 5 s while Advanced is shown, as the
+// "Route Radicle through Tor" (freedom-core design 0008, "The setting"; plan
+// B18) follows the IPFS row: it needs the Tor integration, and while that is
+// off it can't be switched on, and says where to turn Tor on. A row already
+// on stays switchable, so it can always be turned off again, and says that
+// Radicle doesn't connect meanwhile (nothing falls back to direct). With
+// Tor on but not running, a row that is on says so, unless the profile's
+// Radicle node is disabled.
+const routeRadicleHelp = $('route-radicle-through-tor-help');
+const defaultRouteRadicleHelp = routeRadicleHelp?.textContent || '';
+// The profile's Radicle backend ('managed' or 'disabled'), read with Tor's
+// state. Null until read.
+let radicleMode = null;
+const applyRouteRadicleRowState = () => {
+  const torOn = fields.enableTor?.checked === true;
+  const routed = fields.routeRadicle?.checked === true;
+  const usable = torOn || routed;
+  fields.routeRadicleRow?.classList.toggle('disabled', !usable);
+  if (fields.routeRadicle) fields.routeRadicle.disabled = !usable;
+  if (routeRadicleHelp) {
+    routeRadicleHelp.textContent = !torOn
+      ? routed
+        ? "Tor is off, so the built-in Radicle node doesn't connect. Turn this off to connect directly, or turn on Enable Tor (.onion access) above."
+        : 'Turn on Enable Tor (.onion access) above first.'
+      : routed && torRunning === false && radicleMode !== 'disabled'
+        ? "Tor isn't running, so the built-in Radicle node doesn't connect. Start Tor from the Nodes menu, or turn this off to connect directly."
+        : defaultRouteRadicleHelp;
+  }
+};
+
+// Tor's state, for those notes: every 5 s while Advanced is shown, as the
 // node rows' status is while Profile or Nodes is.
 let torStateTimer = null;
 const refreshTorState = async () => {
@@ -1224,7 +1259,9 @@ const refreshTorState = async () => {
   ]);
   torRunning = registry ? Boolean(registry.tor?.socks) : null;
   ipfsMode = profile?.nodes?.ipfs?.mode ?? null;
+  radicleMode = profile?.nodes?.radicle?.mode ?? null;
   applyRouteIpfsRowState();
+  applyRouteRadicleRowState();
 };
 setTorStateRefreshActive = (active) => {
   if (!active && torStateTimer) {
@@ -1872,6 +1909,7 @@ const currentFormState = () => ({
   enableTorIntegration: fields.enableTor.checked,
   startTorAtLaunch: fields.startTor.checked,
   routeIpfsThroughTor: fields.routeIpfs.checked,
+  routeRadicleThroughTor: fields.routeRadicle.checked,
   enableIdentityWallet: fields.enableIdentity.checked,
   showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
   autoUpdate: fields.autoUpdate.checked,
@@ -1899,6 +1937,7 @@ const applyFormState = (settings) => {
   fields.enableTor.checked = settings.enableTorIntegration === true;
   fields.startTor.checked = settings.startTorAtLaunch === true;
   fields.routeIpfs.checked = settings.routeIpfsThroughTor === true;
+  fields.routeRadicle.checked = settings.routeRadicleThroughTor === true;
   fields.enableIdentity.checked = settings.enableIdentityWallet === true;
   fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
   fields.autoUpdate.checked = settings.autoUpdate !== false;
@@ -1913,6 +1952,7 @@ const applyFormState = (settings) => {
   fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
   applyStartTorRowState();
   applyRouteIpfsRowState();
+  applyRouteRadicleRowState();
   // Re-evaluated whenever the form is repainted from a payload — first
   // load, and a broadcast that differs from what's on screen. Enabling
   // the integration is what keeps the rows on a build that bundles no
@@ -2387,6 +2427,7 @@ fields.startRadicle.addEventListener('change', save);
 fields.enableTor.addEventListener('change', () => {
   applyStartTorRowState();
   applyRouteIpfsRowState();
+  applyRouteRadicleRowState();
   // Enabling the integration only reveals the controls — it does not
   // start Tor. Starting is via the node-status menu toggle or
   // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
@@ -2396,6 +2437,12 @@ fields.startTor.addEventListener('change', save);
 // No restart: the IPFS instances restart under the new policy at once.
 fields.routeIpfs.addEventListener('change', () => {
   applyRouteIpfsRowState();
+  save();
+});
+// No restart either: the Radicle node's process restarts under the new
+// policy at once.
+fields.routeRadicle.addEventListener('change', () => {
+  applyRouteRadicleRowState();
   save();
 });
 fields.enableIdentity.addEventListener('change', save);

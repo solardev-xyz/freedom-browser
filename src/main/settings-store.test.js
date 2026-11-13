@@ -46,6 +46,7 @@ describe('settings-store', () => {
         enableTorIntegration: false,
         startTorAtLaunch: false,
         routeIpfsThroughTor: false,
+        routeRadicleThroughTor: false,
         autoUpdate: true,
         showBookmarkBar: false,
         searchProvider: 'duckduckgo',
@@ -523,6 +524,25 @@ describe('settings-store', () => {
 
     const reloaded = loadSettingsStore({ userDataDir });
     expect(reloaded.mod.loadSettings().routeIpfsThroughTor).toBe(true);
+  });
+
+  test('Route Radicle through Tor persists apart from IPFS, survives a reload, and its change reaches main-process listeners', () => {
+    const { mod } = loadSettingsStore({ userDataDir });
+    const listener = jest.fn();
+    mod.onSettingsChanged(listener);
+
+    expect(mod.saveSettings({ routeRadicleThroughTor: true })).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.routeRadicleThroughTor).toBe(true);
+    const [merged, previous] = listener.mock.calls[0];
+    expect(merged.routeRadicleThroughTor).toBe(true);
+    expect(previous.routeRadicleThroughTor).toBe(false);
+    // A switch of its own: IPFS's stays off.
+    expect(merged.routeIpfsThroughTor).toBe(false);
+
+    const reloaded = loadSettingsStore({ userDataDir });
+    expect(reloaded.mod.loadSettings().routeRadicleThroughTor).toBe(true);
+    expect(reloaded.mod.loadSettings().routeIpfsThroughTor).toBe(false);
   });
 
   test('sanitizes shortcut overrides already on disk at load time', () => {

@@ -807,6 +807,66 @@ describe('tor-manager SOCKS endpoint for IPFS (design 0007, B2)', () => {
     expect(other).toHaveBeenCalledTimes(2);
   });
 
+  // Plan B18 (design 0008, "Modes"): Radicle is offered the same endpoint,
+  // under the same rules, with listeners of its own.
+  test('Radicle is offered the same endpoint as IPFS, to listeners of its own, and a stop withdraws it', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    const radicle = [];
+    const ipfs = [];
+    mod.onRadicleSocksEndpointChange((change) => radicle.push(change));
+    const stopIpfs = mod.onIpfsSocksEndpointChange((change) => ipfs.push(change));
+    expect(mod.getRadicleSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+
+    await mod.startTor({ targetSession: createSessionMock() });
+    expect(mod.getRadicleSocksEndpoint()).toEqual({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      refused: null,
+    });
+    // A copy each time: a reader's change reaches nobody else.
+    mod.getRadicleSocksEndpoint().endpoint.port = 1;
+    expect(mod.getRadicleSocksEndpoint().endpoint.port).toBe(9150);
+    // IPFS's listener going changes nothing for Radicle's.
+    stopIpfs();
+
+    await mod.stopTor();
+    expect(mod.getRadicleSocksEndpoint()).toEqual({ endpoint: null, refused: null });
+    expect(radicle).toEqual([
+      { endpoint: { ip: '127.0.0.1', port: 9150 }, refused: null },
+      { endpoint: null, refused: null },
+    ]);
+    expect(ipfs).toEqual([{ endpoint: { ip: '127.0.0.1', port: 9150 }, refused: null }]);
+  });
+
+  test('an external endpoint at a host name is refused for Radicle too, saying so for Radicle', async () => {
+    const { mod } = externalAt('socks5://tor.lan:9050');
+    const changes = [];
+    mod.onRadicleSocksEndpointChange((change) => changes.push(change));
+    await mod.startTor({ targetSession: createSessionMock() });
+    expect(mod.getRadicleSocksEndpoint()).toEqual({
+      endpoint: null,
+      refused:
+        "Tor's SOCKS endpoint tor.lan is a host name: Radicle through Tor needs an IP address",
+    });
+    expect(mod.getIpfsSocksEndpoint().refused).toBe(
+      "Tor's SOCKS endpoint tor.lan is a host name: IPFS through Tor needs an IP address"
+    );
+    expect(changes).toEqual([mod.getRadicleSocksEndpoint()]);
+    await mod.stopTor();
+  });
+
+  test('a Radicle listener that throws keeps neither IPFS nor the start from going on', async () => {
+    const { mod } = externalAt('socks5://127.0.0.1:9150/');
+    mod.onRadicleSocksEndpointChange(() => {
+      throw new Error('a failing Radicle listener');
+    });
+    const ipfs = jest.fn();
+    mod.onIpfsSocksEndpointChange(ipfs);
+    await expect(mod.startTor({ targetSession: createSessionMock() })).resolves.toBeUndefined();
+    expect(ipfs).toHaveBeenCalledTimes(1);
+    expect(mod.getRadicleSocksEndpoint().endpoint).toEqual({ ip: '127.0.0.1', port: 9150 });
+    await expect(mod.stopTor()).resolves.toBeUndefined();
+  });
+
   test("a listener that throws on withdrawal doesn't keep managed Arti from being stopped", async () => {
     const realExistsSync = fs.existsSync;
     jest.spyOn(fs, 'existsSync').mockImplementation((target) => {

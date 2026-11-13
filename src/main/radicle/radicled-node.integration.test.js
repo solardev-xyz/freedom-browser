@@ -23,6 +23,9 @@
  *   nothing while a running service holds the home's gate; once the service
  *   has stopped, it wipes `node/`, `cobs/` and `storage/` and removes the key
  *   files, writes no key, and the next start runs with no switch;
+ * - **a change of policy** (plan B18): Tor's endpoint moving shuts the
+ *   process down and starts one under the new endpoint, which its hello
+ *   reports; Tor's withdrawal changes nothing;
  * - **a locked vault:** nothing is spawned until the core's
  *   `vault.unlocked`, then the node starts, with no switch;
  * - **no vault:** after the vault's deletion, a throwaway key, and no key
@@ -53,6 +56,8 @@ const { vaultBackend } = require('../core/vault-backend');
 const guard = require('../core/node-identity-guard');
 const { getLockDir } = require('../service-locks');
 const { RadicledNode } = require('./radicled-node');
+const { RadicleNetwork } = require('./radicle-network');
+const { fakeTorEndpoint } = require('../../../test/helpers/fake-tor-endpoint');
 
 const radicled = process.env.FREEDOM_RADICLED_PATH;
 const cored = process.env.FREEDOM_CORED_PATH;
@@ -63,6 +68,15 @@ const ABANDON =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const PASSWORD = 'testpass1';
 const ALIAS = 'FreedomTest';
+
+/** Resolves once `done()` holds, polling; rejects after `ms`. */
+async function until(done, ms = 60_000) {
+  const end = Date.now() + ms;
+  while (!done()) {
+    if (Date.now() > end) throw new Error('timed out');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
 
 /** A port nothing listens on: bound, then closed. */
 async function closedPort() {
@@ -160,7 +174,7 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
     return recordingSpawn(command, args, options);
   }
 
-  function newNode() {
+  function newNode(extra = {}) {
     const node = new RadicledNode({
       home: home(),
       lockDir: getLockDir(),
@@ -172,6 +186,7 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
       spawn: radicledSpawn,
       log,
       shellVersion: 'jest',
+      ...extra,
     });
     nodes.push(node);
     return node;
@@ -350,6 +365,40 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
       expect(radicledSpawns).toBe(before + 1);
       expect(next.activeIdentity()).toMatchObject({ did: derived.radicle.did, ephemeral: false });
       expect(fs.existsSync(path.join(keys, 'radicle'))).toBe(false);
+    },
+    TEST_MS
+  );
+
+  test(
+    "a change of policy: the process goes, and one starts under Tor's new endpoint, which its hello reports; Tor's withdrawal changes nothing",
+    async () => {
+      const tor = fakeTorEndpoint();
+      tor.offer({ ip: '127.0.0.1', port: socksPort });
+      const network = new RadicleNetwork({ routesThroughTor: () => true, tor });
+      const node = newNode({ network });
+      await expect(node.start()).resolves.toBe(true);
+      const before = radicledSpawns;
+      const first = node.generation;
+
+      const moved = await closedPort();
+      tor.offer({ ip: '127.0.0.1', port: moved });
+      expect(node.isUp()).toBe(false);
+      await until(() => node.state === 'running' && node.isUp());
+      expect(radicledSpawns).toBe(before + 1);
+      expect(node.buildInfo().service.network).toEqual({
+        mode: 'socks5',
+        ip: '127.0.0.1',
+        port: moved,
+      });
+      expect(node.generation).toBeGreaterThan(first);
+      const derived = await vaultBackend.addresses();
+      expect(node.activeIdentity()).toMatchObject({ did: derived.radicle.did, ephemeral: false });
+
+      // Tor going down is no change: the process stays, and fails closed.
+      tor.offer(null);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(radicledSpawns).toBe(before + 1);
+      expect(node.isUp()).toBe(true);
     },
     TEST_MS
   );

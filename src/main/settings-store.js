@@ -84,6 +84,14 @@ const DEFAULT_SETTINGS = {
   // routesIpfsThroughTor). It applies at once: the instances restart under
   // the new policy.
   routeIpfsThroughTor: false,
+  // Route Radicle through Tor (freedom-core design 0008, "The setting"):
+  // the freedom-radicled node's connections go through Arti's SOCKS
+  // endpoint, and nothing is spawned while there is none. Off by default,
+  // and a switch of its own, apart from IPFS's (0008, open question 9); a
+  // future "everything through Tor" mode would turn both on. It applies at
+  // once: the node's process restarts under the new policy. The add-on,
+  // development builds' rollback, ignores it and connects directly.
+  routeRadicleThroughTor: false,
   autoUpdate: true,
   showBookmarkBar: false,
   // When true, every download opens a native save dialog. Off by default:
