@@ -124,6 +124,7 @@ describe('settings.html section headings match their nav label (#276)', () => {
     // render theirs from a view template, pinned end-to-end in
     // `test-e2e/settings.spec.js`.
     expect(panelTitle('adblock')).toBe('Ad Blocking');
+    expect(panelTitle('cookies')).toBe('Cookies');
     expect(panelTitle('permissions')).toBe('Site Permissions');
     expect(panelTitle('ens')).toBe('Name Resolution');
     expect(panelTitle('startup')).toBe('Startup');

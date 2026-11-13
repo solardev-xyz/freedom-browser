@@ -96,6 +96,8 @@ const SURFACES = {
     '43-settings-nodes-startup',
     // Secure DNS (#472), numbered after the AI entry points.
     '57-settings-dns-custom-invalid',
+    // Cookies (#474), switched off with "Restart now" showing.
+    '58-settings-cookies-restart',
     '44-settings-search',
     '45-settings-shortcut-conflict',
   ],

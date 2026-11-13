@@ -148,6 +148,14 @@ The providers are Quad9 (`https://dns.quad9.net/dns-query`, which refuses known 
 
 It applies to everything Chromium's network stack looks up, in every window, private ones too: pages, internal pages, downloads, favicons, updates, an external IPFS gateway and ENS CCIP-Read gateways. The requests the main process makes with Node's own stack still use the system's DNS — Ethereum and Gnosis RPC providers (ENS lookups included), the chain list, Freedom Agent's AI providers and the GitHub bridge — and so do the bundled nodes. See [Features → Secure DNS](features.md#settings--ui) for what it does and doesn't hide.
 
+## Third-party cookies
+
+**Settings → Privacy and security → Cookies → Block third-party cookies** is on by default. The profile's `settings.json` keeps it as `blockThirdPartyCookies` (`true` or `false`; any other value counts as `true`), and only the Settings page may change it.
+
+Freedom blocks them with Chromium's `--test-third-party-cookie-phaseout` switch, which Electron reads once at launch, so a change takes effect after a restart. The switch only works while third-party storage is partitioned (Chromium's `ThirdPartyStoragePartitioning` feature, on by default): with blocking on, Freedom takes that feature out of a `--disable-features` list it was launched with, and logs that it did.
+
+Electron offers no per-site exception. A site's Storage Access API request (`document.requestStorageAccess()`) is refused, as before: granting it would tell the site it has access while its cookies stay blocked.
+
 ## Home Page
 
 Edit `src/renderer/pages/home.html` to customize the welcome view shown on startup or when clicking Home.

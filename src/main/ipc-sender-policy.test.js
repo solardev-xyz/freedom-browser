@@ -180,6 +180,23 @@ describe('isSenderAllowed', () => {
     expect(refusedSettingsKeys(web(), { secureDnsMode: 'off' })).toEqual(['secureDnsMode']);
   });
 
+  // #474: another internal page must not turn third-party cookie blocking off.
+  test('only Settings or the chrome may write blockThirdPartyCookies over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    const allow = { blockThirdPartyCookies: false };
+    expect(refusedSettingsKeys(page('settings.html'), allow)).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), allow)).toEqual([]);
+    for (const file of ['home.html', 'history.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { ...allow, theme: 'dark' })).toEqual([
+        'blockThirdPartyCookies',
+      ]);
+    }
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), allow)).toEqual([
+      'blockThirdPartyCookies',
+    ]);
+    expect(refusedSettingsKeys(web(), allow)).toEqual(['blockThirdPartyCookies']);
+  });
+
   test('a chrome sender must be the top frame of our index.html in a window', () => {
     expect(isSenderAllowed('wallet:send-transaction', chrome({ subFrame: true }))).toBe(false);
     expect(isSenderAllowed('wallet:send-transaction', chrome({ noFrame: true }))).toBe(false);

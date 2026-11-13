@@ -254,6 +254,9 @@ module.exports = {
   // Under an AGENT_ key the second registration threw during bootstrap and the
   // browser never opened (#803).
   WEBMCP_LAUNCH_STATE: 'agent:webmcp:launch-state',
+  // Whether this launch blocks third-party cookies (third-party-cookies.js):
+  // Settings offers a restart when the stored choice differs (#474).
+  THIRD_PARTY_COOKIES_LAUNCH_STATE: 'cookies:third-party:launch-state',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
   AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
   AGENT_PROVIDER_REFRESH_MODELS: 'agent:provider:refresh-models',

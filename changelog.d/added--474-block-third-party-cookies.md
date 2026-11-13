@@ -1,0 +1,3 @@
+- Third-party cookies are blocked by default, so ads, social buttons and other content embedded from another site can't use cookies to follow you from site to site ([#474](https://github.com/solardev-xyz/freedom-browser/issues/474))
+  - Turn it off under Settings → Privacy and security → Cookies; the change takes effect after a restart
+  - Cookies of the site you're on, and sign-ins that go to another site and back, keep working; an embedded sign-in that needs third-party cookies works only with blocking off

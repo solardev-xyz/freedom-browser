@@ -547,7 +547,7 @@ test('every nav item opens a section titled with its own label', async ({ window
   ]);
 
   const panelTitles = {
-    privacy: ['Ad Blocking', 'Site Permissions', 'Secure DNS'],
+    privacy: ['Ad Blocking', 'Cookies', 'Site Permissions', 'Secure DNS'],
     // Chains and RPC Providers render theirs from a view template, so only
     // the running page sees them.
     networks: ['Chains', 'RPC Providers', 'Name Resolution'],
