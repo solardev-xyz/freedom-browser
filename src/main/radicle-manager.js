@@ -19,13 +19,10 @@ const { redactForLog } = require('./private/private-log-context');
 const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle/radicle-service-backend');
 const seedStatus = require('./radicle/seed-status');
 const { QuarantineView } = require('./radicle/radicle-quarantine');
-// What runs the node (plan B6): the add-on, or the freedom-radicled service.
+// What runs the node (plan B6): the freedom-radicled service, the default
+// since plan B16, or the add-on, development builds' rollback.
 const { radicleBackendKind } = require('./radicle/radicle-backend-kind');
-const {
-  takeRadicleGate,
-  withRadicleGate,
-  switchedHomeRefusal,
-} = require('./radicle/radicled-gate');
+const { takeRadicleGate, withRadicleGate, addonHomeRefusal } = require('./radicle/radicled-gate');
 const {
   MODE,
   updateService,
@@ -111,8 +108,8 @@ function quarantineNames(rids) {
 // repairing its data" (radicled-node.js's REPAIRING), with Retry.
 const stillRepairing = (node) => node?.failureCode === 'deadline';
 
-// Required when the service runs, not before: the add-on's builds load none
-// of it.
+// Required when the service runs, not before: a run on the add-on (the
+// rollback) loads none of it.
 function radicledNodeModule() {
   return require('./radicle/radicled-node');
 }
@@ -300,11 +297,17 @@ function stopUnproved() {
 
 const UNPROVED_STOP_MESSAGE = 'The Radicle node did not stop; stop it again before starting it';
 
-/** Takes the home's gate for a node about to start; `signal` gives up the
- * wait. Rejects with a RadicleGateError. */
+/** Takes the home's gate for the add-on about to start; `signal` gives up
+ * the wait. The add-on, the rollback, runs only under it (0008, Rollback):
+ * a development build without freedom-radicled is refused too. Rejects
+ * with a RadicleGateError. */
 async function takeHomeGate(home, signal) {
   const gate = { hold: null, lost: false };
-  gate.hold = await takeRadicleGate(home, { signal, onLost: () => onHomeGateLost(gate) });
+  gate.hold = await takeRadicleGate(home, {
+    signal,
+    required: true,
+    onLost: () => onHomeGateLost(gate),
+  });
   homeGate = gate;
   return gate;
 }
@@ -375,24 +378,25 @@ async function startAddonInternal({ signal = null } = {}) {
     const radHome = await prepareRadicleDataDir();
     // The home's gate, before anything here reads or writes the home's
     // files (0008, Rollback): the add-on is a writer the gate excludes, as
-    // the service is. Held until a shutdown proves the node stopped
-    // (stopNode); a start that leaves no node lets it go (below).
+    // the service is, and runs only under it. Held until a shutdown proves
+    // the node stopped (stopNode); a start that leaves no node lets it go
+    // (below).
     const gate = await takeHomeGate(radHome, signal);
-    // Under the gate, so no service switches the home meanwhile.
-    const switched = switchedHomeRefusal(radHome);
-    if (switched) {
-      log.warn('[Radicle] Not starting the add-on: the service has switched its home');
+    // Under the gate, so no service switches the home meanwhile: without
+    // keys/radicle, the add-on would start as a new identity.
+    const refused = addonHomeRefusal(radHome);
+    if (refused) {
+      log.warn('[Radicle] Not starting the add-on: its home has no keys/radicle');
       clearService('radicle');
-      updateState(STATUS.ERROR, switched);
+      updateState(STATUS.ERROR, refused);
       return getCurrentStatus();
     }
     // The home is owner-only now (profile-paths). Its keys/ is opened
     // through the home's handle, never through a link. The node opens
-    // keys/radicle by its path, following a link there: missing is fine
-    // (the core writes it), but a key that is a link, not a regular file of
-    // ours, or not owner-only once narrowed stops the start, and so does
-    // such a home or keys/. Keys an older build left with the umask's modes
-    // are narrowed (K-3).
+    // keys/radicle by its path, following a link there: a key that is a
+    // link, not a regular file of ours, or not owner-only once narrowed
+    // stops the start, and so does such a home or keys/. Keys an older
+    // build left with the umask's modes are narrowed (K-3).
     withPrivateDir(radHome, (home) =>
       home.openDir('keys', { create: false })?.requirePrivate('radicle')
     );

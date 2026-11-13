@@ -30,9 +30,9 @@ const {
   holdRadicleGate,
   takeRadicleGate,
   withRadicleGate,
-  switchedHomeRefusal,
+  addonHomeRefusal,
   removeStaleControlSocket,
-  SWITCHED_HOME_MESSAGE,
+  ADDON_HOME_MESSAGE,
   LOCK_TIMEOUT_MS,
   RELEASE_KILL_MS,
 } = require('./radicled-gate');
@@ -368,6 +368,19 @@ describe("the build's rule for a missing binary", () => {
     expect(fn).toHaveBeenCalledWith({ gated: false, held: expect.any(Function) });
   });
 
+  // The add-on, the rollback, runs only under the gate (0008, Rollback;
+  // plan B16): `required` refuses a development build without the binary.
+  test("a development build without it doesn't start the add-on (`required`)", async () => {
+    mockBinaryPresent = false;
+    await expect(takeRadicleGate('home', { log, required: true })).rejects.toMatchObject({
+      name: 'RadicleGateError',
+      code: 'missing',
+      message:
+        "The Radicle add-on runs only under freedom-radicled's hold-lock: run npm run radicled:download",
+    });
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
   test('a packaged build requires it: nothing runs without the gate', async () => {
     mockBinaryPresent = false;
     app.isPackaged = true;
@@ -419,11 +432,11 @@ describe("the build's rule for a missing binary", () => {
   });
 });
 
-// freedom-core design 0008, "The switch" and Rollback: the service's first
-// start on a home removes keys/radicle, and the add-on would start such a
-// home as a new identity. Until the service is the default, a home counts
-// as switched only where the service has run.
-describe('switchedHomeRefusal', () => {
+// freedom-core design 0008, "The switch" and Rollback (plan B16): the
+// service's first start on a home removes keys/radicle, and the add-on's
+// start on a home without one generates a key, a new identity. So the
+// add-on, the rollback, starts only on a home that still has keys/radicle.
+describe('addonHomeRefusal', () => {
   const os = require('os');
   const fs = require('fs');
   let home;
@@ -442,23 +455,32 @@ describe('switchedHomeRefusal', () => {
   };
 
   test.each([
-    ['an empty home (a new profile)', []],
     ['a home the add-on has run, its key generated', ['keys/radicle', 'node/node.db']],
     ['a home the core wrote a key to', ['keys/radicle', 'keys/radicle.pub']],
-    ['a home without a key where the service never ran', ['storage/repo', 'node/node.db']],
     ['a home with keys/radicle where the service ran', ['keys/radicle', 'node/reconcile.db']],
   ])('%s: the add-on may start', (_what, files) => {
     for (const rel of files) put(rel);
-    expect(switchedHomeRefusal(home)).toBeNull();
+    expect(addonHomeRefusal(home)).toBeNull();
   });
 
   test.each([
+    ['an empty home (a new profile)', []],
+    [
+      'a home where the service never ran (no vault, nothing generated yet)',
+      ['storage/repo', 'node/node.db'],
+    ],
+    ['only keys/radicle.pub', ['keys/radicle.pub']],
     ['its reconciliation record', ['node/reconcile.db']],
     ["the switch's dirty marker", ['node/dirty']],
     ['both, and its storage', ['node/reconcile.db', 'node/dirty', 'storage/repo']],
-  ])('no keys/radicle, and %s: refused', (_what, files) => {
+  ])('no keys/radicle, %s: refused', (_what, files) => {
     for (const rel of files) put(rel);
-    expect(switchedHomeRefusal(home)).toBe(SWITCHED_HOME_MESSAGE);
+    expect(addonHomeRefusal(home)).toBe(ADDON_HOME_MESSAGE);
+  });
+
+  test('a keys path that is a file holds no key file: refused', () => {
+    fs.writeFileSync(path.join(home, 'keys'), '');
+    expect(addonHomeRefusal(home)).toBe(ADDON_HOME_MESSAGE);
   });
 
   const posixTest = process.platform === 'win32' ? test.skip : test;
@@ -469,14 +491,10 @@ describe('switchedHomeRefusal', () => {
       put('node/reconcile.db');
       fs.mkdirSync(path.join(home, 'keys'));
       fs.symlinkSync(path.join(home, 'nothing'), path.join(home, 'keys', 'radicle'));
-      expect(switchedHomeRefusal(home)).toBeNull();
+      // The start's own check then refuses the link (radicle-manager.js).
+      expect(addonHomeRefusal(home)).toBeNull();
     }
   );
-
-  test('a node path that is a file is no record of the service', () => {
-    fs.writeFileSync(path.join(home, 'node'), '');
-    expect(switchedHomeRefusal(home)).toBeNull();
-  });
 });
 
 // Plan B6 (from B5, #1183): heartwood in the add-on binds

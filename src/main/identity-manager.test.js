@@ -32,6 +32,19 @@ const ENV_KEYS = [
   'FREEDOM_RADICLE_BACKEND',
 ];
 
+// The add-on's tests select it (FREEDOM_RADICLE_BACKEND=addon, development
+// builds' rollback): freedom-radicled is the default (freedom-core design
+// 0008, step 7; the radicled step-5 plan's B16). The service's tests select
+// it themselves.
+const originalRadicleBackend = process.env.FREEDOM_RADICLE_BACKEND;
+beforeEach(() => {
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+});
+afterAll(() => {
+  if (originalRadicleBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = originalRadicleBackend;
+});
+
 function snapshotEnv() {
   return Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 }
@@ -1925,7 +1938,7 @@ describe('injectAllIdentities restart reporting (issue #90)', () => {
 });
 
 // freedom-core design 0008, "Identity changes" (the radicled step-5 plan's
-// B12): under FREEDOM_RADICLE_BACKEND=service, an identity change is the
+// B12): on the service, the default since B16, an identity change is the
 // core's journaled write with `custody: 'sealed'` and `wipe: true`, between
 // the service's stop and its start. Main removes nothing and writes no key;
 // the core's mock does what the core does (the wipe, the key files'
@@ -2691,6 +2704,8 @@ describe('node identities are written into owner-only roots (K-3)', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-roots-'));
     envSnapshot = snapshotEnv();
     for (const key of ENV_KEYS) delete process.env[key];
+    // The key file's write is the add-on's (the rollback).
+    process.env.FREEDOM_RADICLE_BACKEND = 'addon';
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'warn').mockImplementation(() => {});
   });

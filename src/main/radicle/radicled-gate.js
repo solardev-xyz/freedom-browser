@@ -23,21 +23,21 @@
  *   shared client's scrubbed environment.
  * - **Without the binary:** a packaged build ships it (check-binaries
  *   requires it), so its absence there is a broken installation, and what
- *   needs the gate fails. A development build without `npm run
- *   radicled:download` goes on ungated, with a warning: there, only a
- *   service run from the same checkout could share the home, and that needs
- *   the binary.
+ *   needs the gate fails. In a development build without `npm run
+ *   radicled:download`, the add-on, the rollback, doesn't start: it runs
+ *   only under the gate (0008, Rollback; `takeRadicleGate`'s `required`).
+ *   The other callers go on ungated there, with a warning: only a service
+ *   run from the same checkout could share the home, and that needs the
+ *   binary.
  *
- * **The add-on on a switched home** (0008, "The switch" and Rollback): the
- * service's first start on a home removes `keys/radicle`, and the add-on's
- * start on a home without one generates a key of its own, a new identity
- * with a key at rest again. So the add-on is refused on a home the service
- * has switched (`switchedHomeRefusal`). Until the service is the default,
- * only where the service has run: the switch leaves `node/dirty` naming the
- * old identity, and every start's reconciliation leaves its quarantine
- * record, `node/reconcile.db`. A home with neither is one the add-on has
- * always run, and a profile without a vault, whose key libradicle
- * generates at its first start, still starts.
+ * **The add-on on a home without its key file** (0008, "The switch" and
+ * Rollback): the service's first start on a home removes `keys/radicle`,
+ * and the add-on's start on a home without one generates a key of its own,
+ * a new identity with a key at rest again. So the add-on, the development
+ * builds' rollback since the service became the default (0008, step 7),
+ * starts only on a home that still has `keys/radicle` (`addonHomeRefusal`):
+ * one the service never switched, whose key the core wrote for a vault, or
+ * libradicle generated before the switch.
  */
 
 const fs = require('fs');
@@ -53,6 +53,9 @@ const MESSAGES = {
   storage: "The Radicle home's lock can't be taken on this storage",
   usage: 'freedom-radicled refused the hold-lock command',
   missing: 'freedom-radicled is missing from this installation. Reinstall Freedom.',
+  // A development build's add-on, which runs only under the gate.
+  addonMissing:
+    "The Radicle add-on runs only under freedom-radicled's hold-lock: run npm run radicled:download",
   cancelled: "Taking the Radicle home's lock was cancelled",
   failed: "freedom-radicled couldn't hold the Radicle home's lock",
 };
@@ -115,11 +118,17 @@ function holdRadicleGate({
 /**
  * The gate of `home` for a caller that must hold it, under this build's
  * rule for a missing binary: a hold, or null in a development build
- * without freedom-radicled (logged); a RadicleGateError otherwise.
+ * without freedom-radicled (logged); a RadicleGateError otherwise. With
+ * `required` (the add-on's start, 0008 Rollback), a development build
+ * without the binary rejects too, with `missing` and the download to run.
  */
-async function takeRadicleGate(home, { onLost = null, log = defaultLog, ...options } = {}) {
+async function takeRadicleGate(
+  home,
+  { onLost = null, log = defaultLog, required = false, ...options } = {}
+) {
   if (!isRadicledAvailable()) {
     if (app.isPackaged) throw new RadicleGateError('missing');
+    if (required) throw new RadicleGateError('missing', MESSAGES.addonMissing);
     log.warn(
       "[Radicle] freedom-radicled isn't downloaded (npm run radicled:download): going on without the Radicle home's gate"
     );
@@ -139,9 +148,10 @@ async function withRadicleGate(home, fn, { onLost = null, ...options } = {}) {
   return withHold((lost) => takeRadicleGate(home, { ...options, onLost: lost }), fn, onLost);
 }
 
-const SWITCHED_HOME_MESSAGE =
-  'This Radicle home has moved to the freedom-radicled service, which removed its key file. ' +
-  "The add-on would start it as a new identity, so it doesn't start on it.";
+const ADDON_HOME_MESSAGE =
+  'The Radicle add-on starts only on a home that still has its key file (keys/radicle): ' +
+  'without one it would start as a new identity. freedom-radicled removes the key file at its ' +
+  'first start on a home.';
 
 // Whether anything is at `target`, as lstat sees it: a link counts, even a
 // dangling one, as the service counts it (0008, "No fallback").
@@ -156,15 +166,12 @@ function isThere(target) {
 }
 
 /**
- * Why the add-on mustn't start on `home`, or null: the service has switched
- * it (see the module's doc). Read under the home's gate, so no service can
+ * Why the add-on mustn't start on `home`, or null: it has no `keys/radicle`
+ * (see the module's doc). Read under the home's gate, so no service can
  * switch it meanwhile.
  */
-function switchedHomeRefusal(home) {
-  if (isThere(path.join(home, 'keys', 'radicle'))) return null;
-  const serviceRan =
-    isThere(path.join(home, 'node', 'dirty')) || isThere(path.join(home, 'node', 'reconcile.db'));
-  return serviceRan ? SWITCHED_HOME_MESSAGE : null;
+function addonHomeRefusal(home) {
+  return isThere(path.join(home, 'keys', 'radicle')) ? null : ADDON_HOME_MESSAGE;
 }
 
 // Whether `target` is a socket, as lstat sees it: a link to one isn't.
@@ -246,9 +253,9 @@ module.exports = {
   isRadicledAvailable,
   takeRadicleGate,
   withRadicleGate,
-  switchedHomeRefusal,
+  addonHomeRefusal,
   removeStaleControlSocket,
-  SWITCHED_HOME_MESSAGE,
+  ADDON_HOME_MESSAGE,
   LOCK_TIMEOUT_MS,
   RELEASE_KILL_MS,
 };

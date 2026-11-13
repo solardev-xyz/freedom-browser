@@ -33,8 +33,9 @@
  *    per-requester queue, wait and run timeouts, abort when the page goes
  *    away), a read that has ended starts no further native call, and a
  *    response over MAX_RESPONSE_CHARS is refused.
- *  - On the freedom-radicled service (`FREEDOM_RADICLE_BACKEND=service`,
- *    development builds only; freedom-core design 0008, "Reads take
+ *  - On the freedom-radicled service (the default; the add-on with
+ *    `FREEDOM_RADICLE_BACKEND=addon` in development builds; freedom-core
+ *    design 0008, "Reads take
  *    admission and cancel", deviations `rad-admission`, `read-deadline` and
  *    `size-caps`): reads take main's dweb admission in place of
  *    rad-read-admission.js (radicle-api-protocol.js's `serveAdmitted`), for

@@ -1,0 +1,5 @@
+- Radicle runs in its own process, restarts by itself and keeps no key on disk ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Profiles without a vault can browse and seed, but not write or import
+  - Randomly generated Radicle identities end, and their work can no longer be edited
+  - The `rad` command line can't attach to Freedom's Radicle node
+  - Repository files over 16 MiB and answers over 32 MiB are refused

@@ -12,7 +12,8 @@
  * private log context.
  *
  * Runs main's real page path (executeRadicleForPage), radicle-manager,
- * seed-status tracker, cob-service and log context. The add-on and the
+ * seed-status tracker, cob-service and log context, on the add-on
+ * (FREEDOM_RADICLE_BACKEND=addon). The add-on, the home's gate and the
  * permission store are mocks.
  */
 const mockHandlers = new Map();
@@ -73,12 +74,12 @@ jest.mock('../radicle-embedded', () => ({
   identity: jest.fn(async () => ({ did: 'did:key:z6MkTest', nid: 'z6MkTest', alias: 'me' })),
   getVersion: jest.fn(() => '0.8.0'),
 }));
-// The home's gate (radicled-gate.js) stays out of it: a development build
-// without freedom-radicled, which goes on ungated.
+// The home's gate (radicled-gate.js) stays out of it: a hold taken at once,
+// on a home the add-on may start on.
 jest.mock('./radicled-gate', () => ({
-  takeRadicleGate: async () => null,
-  withRadicleGate: async (_home, fn) => fn({ gated: false, held: () => false }),
-  switchedHomeRefusal: () => null,
+  takeRadicleGate: async () => ({ release: async () => {} }),
+  withRadicleGate: async (_home, fn) => fn({ gated: true, held: () => true }),
+  addonHomeRefusal: () => null,
 }));
 jest.mock('./radicle-permissions', () => ({
   getPermission: jest.fn(),
@@ -298,7 +299,12 @@ async function run({ before, fail, after, text }, call) {
   return result;
 }
 
+// The add-on, mocked above, runs the node: development builds' rollback
+// (FREEDOM_RADICLE_BACKEND=addon), since freedom-radicled is the default.
+const originalBackend = process.env.FREEDOM_RADICLE_BACKEND;
+
 beforeAll(async () => {
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
   // A seed status carries its times; a fixed clock lets two replies compare.
   jest.spyOn(Date, 'now').mockReturnValue(1000);
   // The core has started and reported no pending node recovery.
@@ -308,6 +314,8 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  if (originalBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = originalBackend;
   fs.rmSync(mockDataDir, { recursive: true, force: true });
 });
 

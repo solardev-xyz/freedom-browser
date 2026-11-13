@@ -1,7 +1,7 @@
 /**
  * Radicle's repair as main shows it (freedom-core design 0008, "The
  * deadline" and "The escape", Main's view; the radicled step-5 plan's B13),
- * under `FREEDOM_RADICLE_BACKEND=service` only. radicle-manager.js feeds it
+ * on the service only, not on the add-on. radicle-manager.js feeds it
  * the service node and hands its snapshot to the chrome.
  *
  * - **The snapshot** is `{ repairing, count, entries }`:

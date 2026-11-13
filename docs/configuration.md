@@ -36,7 +36,7 @@ Freedom automatically manages node connections per profile. In a **packaged buil
 - **Swarm Ant**: `http://127.0.0.1:11633`
 - **IPFS**: embedded native `freedom-ipfs` handler; no desktop loopback gateway/API port is started
 - **Myotis**: embedded native Ethereum and Gnosis clients; no desktop loopback API port is started
-- **Radicle**: embedded native `libradicle` addon; no desktop loopback API or P2P port is started
+- **Radicle**: the `freedom-radicled` service process, reached over its pipes; no desktop loopback API or P2P port is started
 - **Tor**: profile-scoped Arti SOCKS5 proxy starting at `127.0.0.1:19150`
 
 Named profiles use the next profile slot for Ant and Tor (`11634`, `19151`, and so on). The ecosystem default Swarm and Tor ports (`1633`, `9150`) are treated as external/system-node endpoints, not Freedom-managed defaults. IPFS, Myotis, and Radicle are native-only and do not expose or reuse external daemon ports. When a Swarm node already answers on `1633`, Freedom asks once whether the profile should use it or keep its own node. That includes launches outside the profile catalog (`--profile-dir`, `FREEDOM_TEST_USER_DATA`), which keep the answer in `external-node-decisions.json` in their profile directory; delete that file to be asked again. If such a profile keeps its own node, it starts on the next free port beside the existing one each time (there is no catalog entry to save a port in). A node the profile itself started that outlived a crashed Freedom is recognised (`ant-process.json` in the profile directory records its pid, API port and overlay address; it must still answer on that port with that overlay) and reused, on whichever port it runs, rather than offered.

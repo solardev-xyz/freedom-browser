@@ -10,15 +10,19 @@
 //   4. Open a new issue through canopy's UI → signing consent → assert the
 //      issue lands (read back through the rad: scheme).
 //
-// Prereqs: the libradicle addon (npm run radicle:download) and a canopy build
-// (npm run build in ../canopy). Skips gracefully when either is missing.
+// Prereqs: the libradicle addon (npm run radicle:download), which the app
+// runs as the rollback (FREEDOM_RADICLE_BACKEND=addon), freedom-radicled for
+// its hold-lock (npm run radicled:download), and a canopy build (npm run
+// build in ../canopy). Skips gracefully when any is missing.
 
 const {
   test,
   expect,
   HAS_RADICLE_ADDON,
+  HAS_RADICLED,
   HAS_CANOPY_DIST,
   RADICLE_ADDON,
+  RADICLED_BINARY,
   CANOPY_DIST,
 } = require('../radicle-fixtures');
 
@@ -56,6 +60,10 @@ test.describe('radicle provider e2e', () => {
   test.skip(
     !HAS_RADICLE_ADDON,
     `Radicle E2E needs the addon at ${RADICLE_ADDON}. Run \`npm run radicle:download\`.`
+  );
+  test.skip(
+    !HAS_RADICLED,
+    `Radicle E2E runs the add-on under freedom-radicled's hold-lock, which needs ${RADICLED_BINARY}. Run \`npm run radicled:download\`.`
   );
   test.skip(
     !HAS_CANOPY_DIST,

@@ -32,8 +32,9 @@
  * Revisions are full commit object IDs only. Refs and arbitrary revspecs
  * are deliberately rejected at this boundary.
  *
- * **On the freedom-radicled service** (`FREEDOM_RADICLE_BACKEND=service`,
- * development builds only; freedom-core design 0008, Main's side, "Reads
+ * **On the freedom-radicled service** (the default; the add-on with
+ * `FREEDOM_RADICLE_BACKEND=addon` in development builds; freedom-core
+ * design 0008, Main's side, "Reads
  * take admission and cancel", and "JSON results"), the same endpoints, with
  * the same paths, statuses and headers, read the service instead:
  * - **Admission:** each request takes a slot of main's dweb admission

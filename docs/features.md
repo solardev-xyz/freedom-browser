@@ -4,19 +4,19 @@
 
 Freedom runs Swarm, IPFS, and Radicle nodes, an experimental Myotis Ethereum light client, and optional Tor routing, giving you access to decentralized and onion networks from a single interface.
 
-|                          | Swarm                                         | IPFS                                 | Radicle                                         |
-| ------------------------ | --------------------------------------------- | ------------------------------------ | ----------------------------------------------- |
-| **Protocol**             | `bzz://`                                      | `ipfs://`, `ipns://`                 | `rad://`                                        |
-| **Node Software**        | Ant (antd, bee-compatible)                    | freedom-ipfs native                  | libradicle native addon                         |
-| **Hash Format**          | 64 or 128-char hex (encrypted refs supported) | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)                          |
-| **Managed Gateway Port** | 11633+ (packaged)                             | internal native handler              | internal native handler                         |
-| **Managed API Port**     | 11633+ (packaged)                             | internal native handler              | internal native handler                         |
-| **Managed P2P Port**     | 12633+ (packaged)                             | internal native handler              | in-process                                      |
-| **Route Prefix**         | `/bzz/{hash}/`                                | `/ipfs/{cid}/`, `/ipns/{name}/`      | `/api/v1/repos/{rid}/`                          |
-| **Data Directory**       | `<profile>/ant-data/`                         | `<profile>/ipfs-data/freedom-ipfs/`  | profile-scoped short Radicle home               |
-| **Binary Directory**     | `ant-bin/<platform>-<arch>/`                  | `native/freedom-ipfs-node/`          | `radicle-bin/<platform>-<arch>/libradicle.node` |
+|                          | Swarm                                         | IPFS                                 | Radicle                             |
+| ------------------------ | --------------------------------------------- | ------------------------------------ | ----------------------------------- |
+| **Protocol**             | `bzz://`                                      | `ipfs://`, `ipns://`                 | `rad://`                            |
+| **Node Software**        | Ant (antd, bee-compatible)                    | freedom-ipfs native                  | freedom-radicled service process    |
+| **Hash Format**          | 64 or 128-char hex (encrypted refs supported) | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)              |
+| **Managed Gateway Port** | 11633+ (packaged)                             | internal native handler              | internal native handler             |
+| **Managed API Port**     | 11633+ (packaged)                             | internal native handler              | internal native handler             |
+| **Managed P2P Port**     | 12633+ (packaged)                             | internal native handler              | none (the service's pipes)          |
+| **Route Prefix**         | `/bzz/{hash}/`                                | `/ipfs/{cid}/`, `/ipns/{name}/`      | `/api/v1/repos/{rid}/`              |
+| **Data Directory**       | `<profile>/ant-data/`                         | `<profile>/ipfs-data/freedom-ipfs/`  | profile-scoped short Radicle home   |
+| **Binary Directory**     | `ant-bin/<platform>-<arch>/`                  | `native/freedom-ipfs-node/`          | `freedom-radicled-bin/<os>-<arch>/` |
 
-The Ant and Radicle binary paths above are the source-build layout that `npm run ant:download` and `npm run radicle:download` write; packaged builds flatten both to `<resources>/ant-bin/` and `<resources>/radicle-bin/`.
+The Ant and Radicle binary paths above are the source-build layout that `npm run ant:download` and `npm run radicled:download` write; packaged builds flatten them to `<resources>/ant-bin/` and `<resources>/freedom-radicled/`.
 
 Source builds (`npm start`) use a different, per-checkout port range; see [Configuration](configuration.md#node-endpoints).
 
@@ -95,14 +95,14 @@ explicitly allows multiple bundle instances so profile launching can use
 
 ## Integrated Radicle Node
 
-- **Embedded Native Node**: Runs Radicle in the Electron main process through the `libradicle` addon — no `radicle-node`/`radicle-httpd` daemons, no CLI, and no loopback HTTP API.
-- **Native Provider Actions**: `window.radicle` seeding, identity, repository listing, COB writes, and GitHub imports all call the addon directly.
-- **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
+- **Service Process**: Runs Radicle in `freedom-radicled`, a process of its own that Freedom starts, restarts and talks to over its pipes (freedom-core design 0008) — no `radicle-node`/`radicle-httpd` daemons, no loopback HTTP API, and no control socket, so the `rad` CLI can't attach to it.
+- **Provider Actions**: `window.radicle` seeding, identity, repository listing, COB writes, and GitHub imports all go to that node.
+- **Identity from the Vault**: On a profile with a vault, the node's identity is derived from it, and its key reaches the node sealed at each start, never stored in a file; the node starts once the vault is unlocked. A profile without a vault gets a throwaway identity at each start, for reading, browsing and seeding.
 - **Profile Control**: Enable or disable Radicle per profile under **Settings → Nodes**.
 - **Node Toggle**: Start and stop Radicle from the Nodes panel; automatic startup is opt-in under **Settings → Nodes → Startup → Start Radicle node**.
-- **Live Statistics**: View connected peers, seeded repos, addon version, and Node ID.
+- **Live Statistics**: View connected peers, seeded repos, the node's version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
-- **Windows**: The embedded node ships in the Windows x64 and ARM64 builds.
+- **Windows**: The node ships in the Windows x64 and ARM64 builds (the x64 binary, emulated on ARM64).
 
 ## Universal Address Bar
 

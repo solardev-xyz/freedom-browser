@@ -109,7 +109,7 @@ with `agent_custody` (the tab entered Agent custody meanwhile),
 `not_auto_approved` (the rule was turned off meanwhile), `not_connected` or
 `signing_not_granted` (the grant was revoked meanwhile). Past the rule's
 rate limit Freedom shows the per-write prompt itself. On Freedom's Radicle
-service (in development builds, behind `FREEDOM_RADICLE_BACKEND=service`), a
+service, the node every build runs, a
 COB write while the node runs with a throwaway key, as it does when its
 profile had no vault at its start, is refused before its write prompt with
 `4900` and `needs_vault`, until the node restarts with the profile's
@@ -303,10 +303,13 @@ The user's Radicle identity. Bootstrap path for the signing grant, like
 
 ## Backend mapping (implementation note)
 
-Every method calls the `libradicle` napi addon. Repository reads and lists,
-seed policy changes, network fetches, identity disclosure, and COB writes all
-operate against the profile's in-process node and storage. No Radicle CLI,
-HTTP daemon, loopback port, output parsing, or executable fallback is involved.
+Every method calls the profile's Radicle node: freedom-radicled, a service
+process speaking framed calls over its pipes (freedom-core design 0008), or,
+in a development build with `FREEDOM_RADICLE_BACKEND=addon`, the `libradicle`
+napi addon in the main process. Repository reads and lists, seed policy
+changes, network fetches, identity disclosure, and COB writes all operate
+against that node and the profile's storage. No Radicle CLI, HTTP daemon,
+loopback port, output parsing, or executable fallback is involved.
 Successful COB mutations announce their updated refs before returning.
 
 ## Design decisions (v1)

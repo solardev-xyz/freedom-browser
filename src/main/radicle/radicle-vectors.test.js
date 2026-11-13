@@ -209,14 +209,23 @@ const REPLAYS = {
   }),
 };
 
+// The vectors' add-on replays run main on the add-on, development builds'
+// rollback (FREEDOM_RADICLE_BACKEND=addon): freedom-radicled is the default
+// since the radicled step-5 plan's B16. The service's describes below select
+// it themselves, and restore this.
 let previousAddon;
+let previousKind;
 beforeAll(() => {
   previousAddon = process.env.FREEDOM_RADICLE_ADDON;
+  previousKind = process.env.FREEDOM_RADICLE_BACKEND;
   process.env.FREEDOM_RADICLE_ADDON = harness.ADDON;
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
 });
 afterAll(() => {
   if (previousAddon === undefined) delete process.env.FREEDOM_RADICLE_ADDON;
   else process.env.FREEDOM_RADICLE_ADDON = previousAddon;
+  if (previousKind === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = previousKind;
 });
 
 for (const name of FILES) {

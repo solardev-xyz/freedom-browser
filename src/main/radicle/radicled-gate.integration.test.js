@@ -175,6 +175,10 @@ describeIfBinary("the Radicle home's gate with the real freedom-radicled", () =>
         }),
         [path.join(SRC, 'service-locks.js')]: () => ({ getLockDir: () => lockDir }),
         [path.join(SRC, 'radicle-embedded.js')]: () => embedded,
+        // The add-on, development builds' rollback (FREEDOM_RADICLE_BACKEND=addon).
+        [path.join(SRC, 'radicle', 'radicle-backend-kind.js')]: () => ({
+          radicleBackendKind: () => 'addon',
+        }),
       },
     });
     cleanups.push(() => manager.stopRadicle());
@@ -283,13 +287,18 @@ describeIfBinary("the Radicle home's gate with the real freedom-radicled", () =>
 
   /** The production identity-manager, its gate the real binary's, on `home`
    * (FREEDOM_RADICLE_DATA), with a fake for the core's vault: unlocked, and
-   * writing a key as the core would. */
+   * writing a key as the core would for the add-on (the rollback,
+   * FREEDOM_RADICLE_BACKEND=addon). */
   function identityManager() {
     const radicleBefore = process.env.FREEDOM_RADICLE_DATA;
+    const backendBefore = process.env.FREEDOM_RADICLE_BACKEND;
     process.env.FREEDOM_RADICLE_DATA = home;
+    process.env.FREEDOM_RADICLE_BACKEND = 'addon';
     cleanups.push(() => {
       if (radicleBefore === undefined) delete process.env.FREEDOM_RADICLE_DATA;
       else process.env.FREEDOM_RADICLE_DATA = radicleBefore;
+      if (backendBefore === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+      else process.env.FREEDOM_RADICLE_BACKEND = backendBefore;
     });
     const vaultBackend = {
       status: async () => ({ exists: true, unlocked: true, epoch: null, fingerprint: null }),

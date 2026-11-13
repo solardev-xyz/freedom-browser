@@ -20,8 +20,19 @@ links there rather than restating it.
   process instead of running a loopback Kubo daemon. Fetch script
   `scripts/fetch-freedom-ipfs-native.js`; pin = `releaseTag` plus the
   per-asset `sha256` entries in `prebuiltAssets` in that script.
-- **Radicle / libradicle** — the native Radicle addon (`libradicle.node`) from
-  <https://github.com/solardev-xyz/libradicle>; since
+- **Radicle / freedom-radicled** — the Radicle node, a service process
+  released from <https://github.com/solardev-xyz/freedom-core> (design 0008),
+  which every build runs (`radicle-backend-kind.js`). It binds no control
+  socket, so the `rad` CLI can't attach to it. Fetch script
+  `scripts/fetch-freedom-radicled.js` (`npm run radicled:download`); pin
+  `PINNED_RELEASE_TAG` + `PINNED_SHA256SUMS_DIGEST` in that script, and
+  `PINNED_RADICLED_VERSION` (below).
+- **libradicle** — the native Radicle addon (`libradicle.node`) from
+  <https://github.com/solardev-xyz/libradicle>, development builds' rollback
+  (`FREEDOM_RADICLE_BACKEND=addon`, run under freedom-radicled's `hold-lock`
+  and only on a home that still has `keys/radicle`). Packaged builds still
+  ship it, unloaded, until it is removed one stable release after the
+  service ships (design 0008, Rollback). Since
   [#194](https://github.com/solardev-xyz/freedom-browser/pull/194) there is no
   `radicle-node`/`radicle-httpd`/CLI path at all. Fetch script
   `scripts/fetch-radicle-addon.js`; pin = `RADICLE_ADDON_VERSION` in
@@ -56,12 +67,13 @@ same shape and is covered by `npm run check-binaries` too.
 
 ## Where each binary lands, and how to fetch it
 
-| Binary       | Lands at (source build)                                                                                                                            | Fetch command              |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| Ant          | `ant-bin/<os>-<arch>/antd` (`antd.exe` on Windows)                                                                                                 | `npm run ant:download`     |
-| freedom-ipfs | `native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node` (prebuilds cached under `native/freedom-ipfs-node/prebuilds/<platform>-<arch>/`) | `npm run ipfs:download`    |
-| Radicle      | `radicle-bin/<platform>-<arch>/libradicle.node`                                                                                                    | `npm run radicle:download` |
-| Arti         | `arti-bin/<platform>-<arch>/arti` (`arti.exe` on Windows)                                                                                          | `npm run tor:download`     |
+| Binary           | Lands at (source build)                                                                                                                            | Fetch command               |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| Ant              | `ant-bin/<os>-<arch>/antd` (`antd.exe` on Windows)                                                                                                 | `npm run ant:download`      |
+| freedom-ipfs     | `native/freedom-ipfs-node/build/Release/freedom_ipfs_native.node` (prebuilds cached under `native/freedom-ipfs-node/prebuilds/<platform>-<arch>/`) | `npm run ipfs:download`     |
+| freedom-radicled | `freedom-radicled-bin/<os>-<arch>/freedom-radicled` (`freedom-radicled.exe` on Windows)                                                            | `npm run radicled:download` |
+| libradicle       | `radicle-bin/<platform>-<arch>/libradicle.node` (the rollback)                                                                                     | `npm run radicle:download`  |
+| Arti             | `arti-bin/<platform>-<arch>/arti` (`arti.exe` on Windows)                                                                                          | `npm run tor:download`      |
 
 `os`/`arch` are this repo's own names (`mac`/`linux`/`win` × `arm64`/`x64`), not
 Node's. Packaged builds drop the `<os>-<arch>/` level (only the target's own
@@ -323,7 +335,7 @@ Same shape, different pin location:
   any release before v0.4.5 — fails the node's start rather than blocking the
   main thread; `FREEDOM_IPFS_BACKEND=addon npm run ipfs:native:smoke`
   exercises a real start/stop.
-- **Radicle** — bump `RADICLE_ADDON_VERSION` in
+- **libradicle** (the rollback) — bump `RADICLE_ADDON_VERSION` in
   `src/shared/radicle-addon-version.js` **and** the `tag`/`digest` pair in
   `PINNED_SHA256SUMS` in `scripts/fetch-radicle-addon.js`, then
   `npm run radicle:download`. CI's `native-addons` matrix then loads the

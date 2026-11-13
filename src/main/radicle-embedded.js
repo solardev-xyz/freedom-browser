@@ -16,8 +16,9 @@
  * `*Raw` reads are the exception: they hand back the addon's JSON text
  * unparsed, for responses the main process only forwards (see `callRaw`).
  *
- * **Under the freedom-radicled service** (`FREEDOM_RADICLE_BACKEND=service`,
- * development builds only; freedom-core design 0008, "Main's side"), the
+ * **Under the freedom-radicled service** (the default; the add-on with
+ * `FREEDOM_RADICLE_BACKEND=addon` in development builds; freedom-core
+ * design 0008, "Main's side"), the
  * exports keep their shapes, and the reads go to the service node
  * radicle-manager.js runs, through radicle/radicle-service-backend.js:
  * - **`callStream`, `callScoped`**, `collectionBudget` and `streamStats`

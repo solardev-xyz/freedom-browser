@@ -5,16 +5,17 @@
  * (`src/main/radicle-backend.contract.test.js`, freedom-core design 0008,
  * "Tests first") runs against, chosen by `FREEDOM_RADICLE_CONTRACT_BACKEND`:
  *
- * - `addon`: today's libradicle v0.8.0 N-API add-on (`npm run
- *   radicle:download`), loaded by the production `radicle-embedded.js` from
- *   `radicle-bin/<platform>/`, and driven through the production
- *   `radicle-manager.js`, `radicle-api-protocol.js` and
- *   `radicle/rad-protocol.js`. With freedom-radicled downloaded too (`npm
- *   run radicled:download`, or `FREEDOM_RADICLED_PATH`), it runs under the
- *   binary's `hold-lock` on its home (design 0008, Rollback), as a
- *   development build does, its gate in a lock directory of the run's own;
- *   without it, ungated, with the warning such a build logs.
- * - `radicled` (design 0008 step 7): the freedom-radicled service (`npm run
+ * - `addon`: development builds' rollback, the libradicle v0.8.0 N-API
+ *   add-on (`npm run radicle:download`), loaded by the production
+ *   `radicle-embedded.js` from `radicle-bin/<platform>/`, and driven through
+ *   the production `radicle-manager.js`, `radicle-api-protocol.js` and
+ *   `radicle/rad-protocol.js` as `FREEDOM_RADICLE_BACKEND=addon` runs it.
+ *   It needs freedom-radicled downloaded too (`npm run radicled:download`,
+ *   or `FREEDOM_RADICLED_PATH`): the rollback runs only under the binary's
+ *   `hold-lock` on its home (design 0008, Rollback), its gate here in a
+ *   lock directory of the run's own, and its start is refused without it.
+ * - `radicled` (design 0008 step 7), the default: the freedom-radicled
+ *   service (`npm run
  *   radicled:download`, or `FREEDOM_RADICLED_PATH`), driven through the
  *   production `radicle-manager.js` and `radicle-embedded.js` under
  *   `FREEDOM_RADICLE_BACKEND=service`: the real node on the real binary,

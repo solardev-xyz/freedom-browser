@@ -7,7 +7,8 @@
 // under its guard, and sends `seedStatus` to the site's page. The chrome
 // can't turn the node rule on, and its route refuses these methods. The
 // harness runs no Radicle node: main's real manager runs over the add-on's
-// calls stubbed in main, whose clone a test finishes by hand.
+// calls stubbed in main (the rollback, FREEDOM_RADICLE_BACKEND=addon, under
+// freedom-radicled's hold-lock), whose clone a test finishes by hand.
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
@@ -86,6 +87,19 @@ const startFakeRadicle = (electronApp) =>
     patch('listRepos', async () => []);
     patch('identity', async () => ({ did: 'did:key:z6MkE2e', nid: 'z6MkE2e', alias: 'e2e' }));
     globalThis.__fakeRadicle = { state, saved, embedded };
+    // The add-on, development builds' rollback (FREEDOM_RADICLE_BACKEND=addon),
+    // runs the stubbed node: under freedom-radicled's hold-lock (the job
+    // downloads it), on a home with the key file the core writes for a vault
+    // (radicle/radicled-gate.js, addonHomeRefusal).
+    process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+    const fs = load('fs');
+    const path = load('path');
+    const home = await load(`${root}/src/main/profile-paths`).prepareRadicleDataDir();
+    const keys = path.join(home, 'keys');
+    if (!fs.existsSync(path.join(keys, 'radicle'))) {
+      fs.mkdirSync(keys, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(keys, 'radicle'), 'e2e key', { mode: 0o600 });
+    }
     return load(`${root}/src/main/radicle-manager`).startRadicle();
   }, repoRoot);
 
@@ -96,6 +110,7 @@ const stopFakeRadicle = (electronApp) =>
     for (const finish of fake.state.finish) finish();
     await process.mainModule.require(`${root}/src/main/radicle-manager`).stopRadicle();
     Object.assign(fake.embedded, fake.saved);
+    delete process.env.FREEDOM_RADICLE_BACKEND;
     globalThis.__fakeRadicle = null;
   }, repoRoot);
 
