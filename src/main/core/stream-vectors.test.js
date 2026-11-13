@@ -22,6 +22,15 @@
  *   `StreamDuplex`, which is main's (see `Core` below for how the core's
  *   side maps onto it).
  *
+ * From freedom-core #334 (design 0014, COL-3) it also has a service
+ * connection that takes main's bodies as well as sending its own:
+ * - `frames` cases read as `service_streams`: through `FrameDecoder` with
+ *   `serviceKinds('both')`, all four stream kinds both ways and no
+ *   fragments;
+ * - `service_duplex`: the service's side of that connection, through the
+ *   same `StreamDuplex` with a service's codes out and a piece's in, and
+ *   every `sender` case replayed on it as well (see `Core`).
+ *
  * **Which file.** The vectors aren't copied into this repository: the file
  * is read from a freedom-core checkout. 0009's fifth amendment (abort codes
  * by connection and direction, freedom-core #247) came after 0.9.1, so that
@@ -129,6 +138,7 @@ const KINDS = {
   sender: serviceKinds('sender'),
   core: CORE_KINDS,
   core_streams: CORE_STREAM_KINDS,
+  service_streams: serviceKinds('both'),
 };
 
 /** A decoded frame as the vectors write it. */
@@ -427,6 +437,12 @@ class Main {
  * CORE_BODY_ABORT_CODES` and `takes: PIECE_ABORT_CODES`. Main's own
  * connection has the two the other way round (core-client-streams.test.js).
  *
+ * The same class plays a service's side of a connection that takes main's
+ * bodies (`service_duplex`, design 0014): the duplex is then made with
+ * `sends: SERVICE_ABORT_CODES` and `takes: PIECE_ABORT_CODES`, and every
+ * frame is read as `service_streams` (no fragments). Its steps are
+ * `duplex`'s, and `sender`'s cases hold on it as they are.
+ *
  * Where main differs from the core by design:
  * - **`release n`:** the core's consumer lets go of bytes it was handed;
  *   main's consumer pulls them from the stream's ring (0007's, which 0009
@@ -443,20 +459,22 @@ class Main {
  *   against the drops.
  */
 class Core {
-  constructor() {
-    this.duplex = new StreamDuplex({ sends: CORE_BODY_ABORT_CODES, takes: PIECE_ABORT_CODES });
-    this.service = new Service({
-      sender: this.duplex.sender,
-      link: this.duplex,
-      side: 'core_streams',
-    });
+  constructor({
+    dataCap = WRITER_DATA_CAP,
+    sends = CORE_BODY_ABORT_CODES,
+    takes = PIECE_ABORT_CODES,
+    side = 'core_streams',
+  } = {}) {
+    this.duplex = new StreamDuplex({ dataCap, sends, takes });
+    this.side = side;
+    this.service = new Service({ sender: this.duplex.sender, link: this.duplex, side });
     this.sent = new Map(); // what the other side sent of the core's streams
     this.pulled = new Map();
     this.cancels = []; // drops whose cancel is still to be written
   }
 
   feed(bytes) {
-    return this.duplex.receive(decodeOne(bytes, 'core_streams'));
+    return this.duplex.receive(decodeOne(bytes, this.side));
   }
 
   arrived(delivery, id) {
@@ -535,7 +553,7 @@ class Core {
       const next = this.duplex.nextFrame();
       if (next?.wrote.type !== 'cancel') return next;
       expect([at, next.wrote.id]).toEqual([at, this.cancels.shift()]);
-      const { message } = decodeOne(next.bytes, 'core_streams');
+      const { message } = decodeOne(next.bytes, this.side);
       expect([at, message]).toEqual([at, { type: 'cancel', id: next.wrote.id }]);
     }
   }
@@ -550,7 +568,7 @@ class Core {
       }
       const [, id, credit] = expected;
       expect([at, next.wrote]).toEqual([at, { type: 'credit', id, credit }]);
-      expect(decodeOne(next.bytes, 'core_streams')).toEqual({
+      expect(decodeOne(next.bytes, this.side)).toEqual({
         kind: KIND_STREAM_CREDIT,
         id,
         credit,
@@ -569,6 +587,28 @@ class Core {
     }
     if (check.owed !== undefined) expect([at, this.duplex.owed()]).toEqual([at, check.owed]);
   }
+}
+
+/** A `duplex` or `service_duplex` case, or a `sender` case on a service
+ * connection that takes main's bodies, through `Core` made with `options`. */
+function replayDuplex(entry, options) {
+  const core = new Core(options);
+  entry.steps.forEach((step, i) => {
+    const at = `${entry.id} step ${i}`;
+    if (step.write || step.write_some) {
+      core.write(step, at);
+    } else if (step.check) {
+      core.check(step.check, at);
+    } else {
+      for (let n = 0; n < (step.repeat ?? 1); n++) {
+        expect([at, core.act(step.do)]).toEqual([at, step.expect]);
+      }
+    }
+    const s = core.duplex.sender;
+    expect(s.controlEntries()).toBeLessThanOrEqual(3 * s.live());
+    expect(s.rotationEntries()).toBeLessThanOrEqual(s.live());
+    expect(core.duplex.owed()).toBeLessThanOrEqual(core.duplex.receiver.outstanding());
+  });
 }
 
 describeIfVectors("design 0007's stream vectors through main's frame.js", () => {
@@ -596,6 +636,9 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
   describe('frames', () => {
     for (const entry of vectors?.frames || []) {
       test(`${entry.id} (${entry.side})`, () => {
+        // A side this suite doesn't know would decode as FrameDecoder's
+        // default: name it instead.
+        expect([entry.side, Object.hasOwn(KINDS, entry.side)]).toEqual([entry.side, true]);
         const input = bytesOf(entry.input);
         for (const chunk of [1, 2, 5, 9, 13, 4096, Math.max(1, input.length)]) {
           const got = decode(input, KINDS[entry.side], chunk);
@@ -681,25 +724,23 @@ describeIfVectors("design 0007's stream vectors through main's frame.js", () => 
         test.todo(`${entry.id} (before freedom-core #247)`);
         continue;
       }
-      test(entry.id, () => {
-        const core = new Core();
-        entry.steps.forEach((step, i) => {
-          const at = `${entry.id} step ${i}`;
-          if (step.write || step.write_some) {
-            core.write(step, at);
-          } else if (step.check) {
-            core.check(step.check, at);
-          } else {
-            for (let n = 0; n < (step.repeat ?? 1); n++) {
-              expect([at, core.act(step.do)]).toEqual([at, step.expect]);
-            }
-          }
-          const s = core.duplex.sender;
-          expect(s.controlEntries()).toBeLessThanOrEqual(3 * s.live());
-          expect(s.rotationEntries()).toBeLessThanOrEqual(s.live());
-          expect(core.duplex.owed()).toBeLessThanOrEqual(core.duplex.receiver.outstanding());
-        });
-      });
+      test(entry.id, () => replayDuplex(entry));
+    }
+  });
+
+  describe("a service connection that takes main's bodies (service_duplex)", () => {
+    const service = {
+      sends: SERVICE_ABORT_CODES,
+      takes: PIECE_ABORT_CODES,
+      side: 'service_streams',
+    };
+    for (const entry of vectors?.service_duplex || []) {
+      test(entry.id, () => replayDuplex(entry, service));
+    }
+    // Every `sender` case holds on this side as it is (formats.service_duplex).
+    for (const entry of vectors?.service_duplex ? vectors.sender : []) {
+      test(`sender's ${entry.id}`, () =>
+        replayDuplex(entry, { ...service, dataCap: entry.config?.data_cap ?? WRITER_DATA_CAP }));
     }
   });
 

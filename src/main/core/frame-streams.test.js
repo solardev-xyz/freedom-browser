@@ -2,12 +2,15 @@
  * frame.js's stream frames beyond freedom-core's `vectors/streams.json`
  * (`stream-vectors.test.js`, which runs only with a freedom-core checkout):
  * the abort JSON's edges as serde reads them, main's outbox, a failure that
- * sticks, the abort codes by connection and direction (design 0009), and
- * the core's connection at protocol 2 (`StreamDuplex`).
+ * sticks, the abort codes by connection and direction (design 0009), the
+ * core's connection at protocol 2 (`StreamDuplex`), and the kinds of a
+ * service connection that takes main's bodies (design 0014).
  */
 
 const {
   encodeAbort,
+  encodeBegin,
+  encodeCredit,
   encodeData,
   encodeEnd,
   encodeFrame,
@@ -28,6 +31,7 @@ const {
   KIND_ABORT,
   KIND_DATA,
   KIND_END,
+  KIND_JSON,
   KIND_STREAM_CREDIT,
 } = require('./frame');
 
@@ -501,5 +505,21 @@ describe("the core's connection at protocol 2", () => {
       { type: 'data', id: 1, length: 10 },
       { type: 'end', id: 1 },
     ]);
+  });
+});
+
+describe("a service connection that takes main's bodies (design 0014, COL-3)", () => {
+  test('either end takes all four stream frames, both ways, and still no fragments', () => {
+    const kinds = serviceKinds('both');
+    expect(kinds).toEqual({ fragments: false, streams: 'both' });
+    const frames = [encodeData(7, Buffer.from([1])), encodeEnd(7), encodeAbort(7, 'busy', 'm')];
+    frames.push(encodeStreamCredit(7, 5), encodeFrame({}));
+    expect(
+      new FrameDecoder({ kinds }).push(Buffer.concat(frames)).map((frame) => frame.kind)
+    ).toEqual([KIND_DATA, KIND_END, KIND_ABORT, KIND_STREAM_CREDIT, KIND_JSON]);
+    for (const frame of [encodeBegin(7, 10), encodeCredit()]) {
+      expect(category(() => new FrameDecoder({ kinds }).push(frame))).toBe('unknown_kind');
+    }
+    expect(() => serviceKinds('main')).toThrow(TypeError);
   });
 });
