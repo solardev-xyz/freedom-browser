@@ -722,8 +722,8 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       'import-in-process',
       "an import leaves the working copy's configuration and refs untouched",
       async () => {
-        // Main's log, printed if the import hasn't ended by 55 s, and again
-        // at the suite's end (diagnostics for the macOS and Windows runners).
+        // Main's log, the service's among it, printed if the case hasn't
+        // ended by 55 s, and again at the suite's end.
         const started = Date.now();
         const note = (text) => backend.note?.(`import test +${Date.now() - started} ms: ${text}`);
         const watch = setTimeout(() => {
@@ -746,7 +746,17 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           note('imported');
           expect(rid).toMatch(RID_RE);
           expect(snapshotGitDir(workingCopy)).toEqual(before);
+          // The node, started again, serves it. Read before the unseed: on
+          // the macOS and Windows runners an unseed sent the moment the node
+          // is up stalled freedom-radicled 0.1.1's pools beside the start's
+          // background node_info read (reported with the import's PR).
+          expect(JSON.parse(await backend.readText('repo_info', { rid }))).toMatchObject({
+            rid,
+            name: 'contract-untouched',
+          });
+          note('read');
           await backend.embedded.unseedRepo(rid);
+          note('unseeded');
         } finally {
           clearTimeout(watch);
           removeDir(workingCopy);
