@@ -1425,7 +1425,10 @@ jobs:
       # can't be recalled once the device prompt is up, so these pin that nothing
       # else can hide or cancel it: a send (`send-ledger-confirm`), an x402
       # payment (`x402-payment-in-flight`) and the sidebar chrome above them
-      # (`sidebar-in-flight-chrome`). A page's dApp transaction on a Ledger is
+      # (`sidebar-in-flight-chrome`). `wallet-toggle-early-start.spec.js` clicks
+      # the sidebar's toolbar toggle while the window starts, without the
+      # fixtures' start-up barrier, and keeps that click from being dropped
+      # unseen. A page's dApp transaction on a Ledger is
       # `page-sends.spec.js`'s, through main's prompt (freedom-core 0011).
       # `safe-send-chain.spec.js` keeps a Safe's send screen on the one chain it
       # is deployed on, and `publisher-identity-selector.spec.js` renders
@@ -1453,6 +1456,7 @@ jobs:
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \
+            test-e2e/wallet-toggle-early-start.spec.js \
             test-e2e/safe-send-chain.spec.js \
             test-e2e/publisher-identity-selector.spec.js \
             test-e2e/browsing-credit.spec.js \

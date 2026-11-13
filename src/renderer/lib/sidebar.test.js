@@ -8,16 +8,21 @@
  * coordinator's closeAllSubscreens() cascade over the live confirmation.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-async function loadSidebar() {
+// Starts the sidebar module the way index.js does, with `getSettings` as the
+// settings read, and hands it back before that read is in.
+async function startSidebar(getSettings) {
   jest.resetModules();
 
   const elements = {
     sidebar: createElement('aside', { classes: ['sidebar', 'collapsed'] }),
-    'wallet-toggle-btn': createElement('button'),
+    // Disabled, as index.html ships it.
+    'wallet-toggle-btn': createElement('button', { disabled: true }),
     'sidebar-close': createElement('button'),
     // The panel opens on its home view; a test hides it to put a request's
     // screen up (showHome(false)).
@@ -46,7 +51,7 @@ async function loadSidebar() {
   document.dispatchEvent = jest.fn();
   global.document = document;
   global.window = {
-    electronAPI: { getSettings: jest.fn().mockResolvedValue({ enableIdentityWallet: true }) },
+    electronAPI: { getSettings },
     addEventListener: jest.fn(),
   };
   global.CustomEvent = class {
@@ -61,10 +66,15 @@ async function loadSidebar() {
   const flight = await import('./wallet/signature-flight.js');
   const sidebar = await import('./sidebar.js');
   sidebar.initSidebar();
+  return { sidebar, flight, elements, document, showHome };
+}
+
+async function loadSidebar() {
+  const started = await startSidebar(jest.fn().mockResolvedValue({ enableIdentityWallet: true }));
   await flush(); // the feature flag resolves asynchronously
 
-  sidebar.open();
-  return { sidebar, flight, elements, document, showHome };
+  started.sidebar.open();
+  return started;
 }
 
 const closedEvents = (document) =>
@@ -388,5 +398,122 @@ describe('sidebar concealed by browser full screen', () => {
     flight.beginSignatureFlight({ id: 'ledger-send' });
     showHome(true);
     expect(elements.sidebar.classList.contains('fullscreen-concealed')).toBe(false);
+  });
+});
+
+// The window is shown at once and the toggle is static markup, so it can be
+// clicked before the sidebar has read the Identity & Wallet setting. Until
+// then a click cannot do what it asks (toggle() refuses while the flag reads
+// off); it used to be dropped without a sign. The toggle is disabled instead
+// until the setting is known, then enabled, or hidden with the wallet off.
+describe('the toolbar toggle while the window starts', () => {
+  afterEach(() => {
+    delete global.document;
+    delete global.window;
+    delete global.CustomEvent;
+    delete global.MutationObserver;
+  });
+
+  const deferred = () => {
+    let resolve;
+    let reject;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject, getSettings: jest.fn(() => promise) };
+  };
+
+  const settingsUpdated = (detail) => {
+    const [, listener] = global.window.addEventListener.mock.calls.find(
+      ([type]) => type === 'settings:updated'
+    );
+    listener({ detail });
+  };
+
+  const openedEvents = (document) =>
+    document.dispatchEvent.mock.calls.filter(([event]) => event.type === 'sidebar-opened').length;
+
+  test('index.html ships the toggle disabled', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    const tag = /<button\b[^>]*\bid="wallet-toggle-btn"[^>]*>/.exec(html)?.[0];
+    expect(tag).toBeDefined();
+    expect(tag).toMatch(/\sdisabled(?=[\s>=])/);
+  });
+
+  test('stays disabled until the setting is read, then works', async () => {
+    const settings = deferred();
+    const { sidebar, elements, document } = await startSidebar(settings.getSettings);
+    const toggle = elements['wallet-toggle-btn'];
+
+    // initSidebar() has run and its listener is on, but the read is not in.
+    expect(toggle.disabled).toBe(true);
+    // The fake DOM delivers a click to a disabled button; a real one does
+    // not. Either way the panel stays shut.
+    toggle.dispatch('click');
+    expect(sidebar.isVisible()).toBe(false);
+    expect(openedEvents(document)).toBe(0);
+
+    settings.resolve({ enableIdentityWallet: true });
+    await flush();
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.classList.contains('hidden')).toBe(false);
+
+    toggle.dispatch('click');
+    expect(sidebar.isVisible()).toBe(true);
+    expect(openedEvents(document)).toBe(1);
+  });
+
+  test('with the wallet off it is hidden once the setting is read, and works when turned on', async () => {
+    const settings = deferred();
+    const { sidebar, elements } = await startSidebar(settings.getSettings);
+    const toggle = elements['wallet-toggle-btn'];
+
+    settings.resolve({ enableIdentityWallet: false });
+    await flush();
+    expect(toggle.classList.contains('hidden')).toBe(true);
+
+    settingsUpdated({ enableIdentityWallet: true });
+    expect(toggle.classList.contains('hidden')).toBe(false);
+    expect(toggle.disabled).toBe(false);
+    toggle.dispatch('click');
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('a failed settings read hides it rather than leaving it disabled', async () => {
+    const settings = deferred();
+    const { elements } = await startSidebar(settings.getSettings);
+    const toggle = elements['wallet-toggle-btn'];
+
+    settings.reject(new Error('settings unavailable'));
+    await flush();
+    expect(toggle.classList.contains('hidden')).toBe(true);
+    expect(toggle.disabled).toBe(false);
+  });
+
+  test('a settings update that arrives before the read makes the setting known', async () => {
+    const settings = deferred();
+    const { sidebar, elements } = await startSidebar(settings.getSettings);
+    const toggle = elements['wallet-toggle-btn'];
+
+    settingsUpdated({ enableIdentityWallet: true });
+    expect(toggle.disabled).toBe(false);
+    toggle.dispatch('click');
+    expect(sidebar.isVisible()).toBe(true);
+  });
+
+  test('the signature lock still disables it once the setting is known', async () => {
+    const { flight, elements } = await loadSidebar();
+    const request = { id: 'ledger-send' };
+
+    flight.beginSignatureFlight(request);
+    expect(elements['wallet-toggle-btn'].disabled).toBe(true);
+
+    // A settings update during the flight must not enable it again.
+    settingsUpdated({ enableIdentityWallet: true });
+    expect(elements['wallet-toggle-btn'].disabled).toBe(true);
+
+    flight.endSignatureFlight(request);
+    expect(elements['wallet-toggle-btn'].disabled).toBe(false);
   });
 });

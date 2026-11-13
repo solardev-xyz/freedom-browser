@@ -14,6 +14,12 @@ const IN_FLIGHT_TITLE = 'Finish the confirmation on your device first';
 // State
 let isOpen = false;
 let featureEnabled = false;
+// Whether the Identity & Wallet setting has been read yet (or pushed by a
+// settings update). Until it has, the toggle cannot do what a click asks:
+// featureEnabled still reads off and toggle() refuses. So the toggle ships
+// disabled in index.html and stays so until then, and a click made while a
+// window starts is visibly refused rather than silently dropped.
+let featureKnown = false;
 // Browser full screen hides an open sidebar without closing it (#78): a close
 // fires 'sidebar-closed', whose cascade tears down any screen the panel holds.
 let concealed = false;
@@ -56,10 +62,12 @@ export function initSidebar() {
   window.electronAPI
     .getSettings()
     .then((settings) => {
+      featureKnown = true;
       featureEnabled = settings?.enableIdentityWallet === true;
       applyFeatureVisibility();
     })
     .catch(() => {
+      featureKnown = true;
       featureEnabled = false;
       applyFeatureVisibility();
     });
@@ -67,6 +75,7 @@ export function initSidebar() {
   // React to settings changes
   window.addEventListener('settings:updated', (event) => {
     const wasEnabled = featureEnabled;
+    featureKnown = true;
     featureEnabled = event.detail?.enableIdentityWallet === true;
     applyFeatureVisibility();
     // Close sidebar if feature was just disabled while open
@@ -105,11 +114,13 @@ export function initSidebar() {
 }
 
 /**
- * Show/hide the toolbar toggle button based on feature flag
+ * Show/hide the toolbar toggle button based on feature flag, and enable it
+ * now that the flag is known (see featureKnown).
  */
 function applyFeatureVisibility() {
   if (!toggleBtn) return;
   toggleBtn.classList.toggle('hidden', !featureEnabled);
+  applyFlightLock();
 }
 
 /**
@@ -294,7 +305,8 @@ export function isFeatureEnabled() {
 /**
  * Disable the chrome that would collapse the panel while a signature is in
  * flight. Only while the panel is open: if it is closed the toggle is the
- * user's way back to the confirmation and must keep working.
+ * user's way back to the confirmation and must keep working. The toggle is
+ * also disabled until the feature flag is known (see featureKnown).
  */
 function applyFlightLock() {
   const locked = isOpen && isSignatureInFlight();
@@ -304,7 +316,7 @@ function applyFlightLock() {
     closeBtn.title = locked ? IN_FLIGHT_TITLE : '';
   }
   if (toggleBtn) {
-    toggleBtn.disabled = locked;
+    toggleBtn.disabled = locked || !featureKnown;
     toggleBtn.title = locked ? IN_FLIGHT_TITLE : '';
   }
 }

@@ -1210,12 +1210,15 @@
         <p>Explore what you can do with Freedom Agent.</p>
         <button type="button" class="agent-page-actions-explore" data-page-actions-explore>Explore actions</button>
       </div>
+      <!-- Disabled until the sidebar has read the Identity & Wallet setting,
+           so a click while the window starts is refused visibly (sidebar.js). -->
       <button
         id="wallet-toggle-btn"
         class="wallet-toggle-btn"
         type="button"
         aria-label="Toggle Identity & Wallet"
         aria-expanded="false"
+        disabled
       >
         <svg
           viewBox="-4 -1 81 80"
