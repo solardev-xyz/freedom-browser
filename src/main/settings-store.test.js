@@ -215,6 +215,43 @@ describe('settings-store', () => {
     expect(persisted.startRadicleAtLaunch).toBe(true);
   });
 
+  // Main peeks before it holds the profile gate (index.js): nothing may be
+  // written to the profile before the holder says `locked` (freedom-core
+  // design 0013).
+  test('peekSettings gives the migrated settings without writing them back or caching them', () => {
+    const settingsPath = path.join(userDataDir, 'settings.json');
+    const stored = JSON.stringify({ theme: 'dark', enableAi: true, startBeeAtLaunch: false, antNodeMode: 'light' });
+    fs.writeFileSync(settingsPath, stored, 'utf-8');
+
+    const { mod, nativeTheme } = loadSettingsStore({ userDataDir });
+
+    const peeked = mod.peekSettings();
+    expect(peeked).toEqual(expect.objectContaining({ theme: 'dark', enableAi: true, startAntAtLaunch: false }));
+    expect(peeked).not.toHaveProperty('antNodeMode');
+    expect(peeked).not.toHaveProperty('startBeeAtLaunch');
+    expect(fs.readFileSync(settingsPath, 'utf-8')).toBe(stored);
+    expect(nativeTheme.themeSource).toBe('system');
+
+    // The first load writes the migrations back.
+    expect(mod.loadSettings()).toEqual(expect.objectContaining({ theme: 'dark', startAntAtLaunch: false }));
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))).toEqual({
+      theme: 'dark',
+      enableAi: true,
+      startAntAtLaunch: false,
+    });
+    expect(nativeTheme.themeSource).toBe('dark');
+  });
+
+  test('peekSettings falls back to defaults on an invalid file and leaves it alone', () => {
+    const settingsPath = path.join(userDataDir, 'settings.json');
+    fs.writeFileSync(settingsPath, '{not-valid-json', 'utf-8');
+
+    const { mod } = loadSettingsStore({ userDataDir });
+
+    expect(mod.peekSettings()).toEqual(expect.objectContaining({ theme: 'system', enableAi: false }));
+    expect(fs.readFileSync(settingsPath, 'utf-8')).toBe('{not-valid-json');
+  });
+
   test('falls back to defaults when the settings file is invalid', () => {
     fs.writeFileSync(path.join(userDataDir, 'settings.json'), '{not-valid-json', 'utf-8');
 

@@ -12,7 +12,7 @@
  *   recovery couldn't finish.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
- *   (0.12.2) speaks only 2: it answers a hello at any other protocol,
+ *   (0.13.0) speaks only 2: it answers a hello at any other protocol,
  *   1 included, with `protocol_mismatch` and exits 76. A core that answers
  *   another protocol is a mismatch too: main fails, and doesn't restart it.
  *   Protocol 1 is gone (design 0009, Streams in the core), and a client

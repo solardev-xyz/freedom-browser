@@ -14,7 +14,6 @@
  * fallback, unit tests) it uses Electron's userData and the main logger.
  */
 
-const path = require('node:path');
 const fs = require('node:fs');
 
 const CATALOG_URL = 'https://chainlist.org/rpcs.json';
@@ -30,7 +29,7 @@ let configuredLog = null;
 // configured: neither is usable from a worker thread.
 function cachePath() {
   if (configuredCachePath) return configuredCachePath;
-  return path.join(require('electron').app.getPath('userData'), CACHE_FILE);
+  return require('../freedom-root').getFreedomDataPath(CACHE_FILE);
 }
 
 function logError(message) {

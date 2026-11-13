@@ -1,4 +1,5 @@
 const { app } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const path = require('node:path');
 const fs = require('node:fs');
 const net = require('node:net');
@@ -21,7 +22,7 @@ function builtinPath(name) {
 }
 
 function userDataPath(name) {
-  return path.join(app.getPath('userData'), name);
+  return getFreedomDataPath(name);
 }
 
 // An absent file is an expected state — user-layer files don't exist until

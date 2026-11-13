@@ -5,7 +5,7 @@
  * from the core and end only with its verified bodies' codes; the bodies
  * main sends in answer to the core's requests (`StreamedReply`) go under
  * the core's credit and end only with a piece's codes. Protocol 2 is the
- * only one CoreClient speaks: the pinned core (0.12.2) refuses 1.
+ * only one CoreClient speaks: the pinned core (0.13.0) refuses 1.
  */
 
 const { EventEmitter } = require('events');
@@ -165,7 +165,7 @@ class FakeCore extends EventEmitter {
 }
 
 function hello(protocol, capabilities = ['vault.status', 'fragments', 'streams']) {
-  return { protocol, core_version: '0.12.2', capabilities };
+  return { protocol, core_version: '0.13.0', capabilities };
 }
 
 /** Answers the hello at `protocol` (with `result` if given), shutdown, and
@@ -304,7 +304,7 @@ describe('the hello at protocol 2', () => {
     const ready = await client.start();
     expect(ready).toEqual({
       protocol: 2,
-      core_version: '0.12.2',
+      core_version: '0.13.0',
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
     });

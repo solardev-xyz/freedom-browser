@@ -19,6 +19,7 @@ const { app } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsOffload = require('./fs-offload');
+const { getFreedomDataDir } = require('./freedom-root');
 
 const OLD_APP_NAME = 'Freedom Browser';
 const MIGRATION_MARKER = '.migrated-from-freedom-browser';
@@ -256,11 +257,12 @@ async function purgeSetAsideBeeData(options = {}) {
 }
 
 function getNodeDataBaseDir() {
-  // The Bee -> Ant migration must operate on the active profile's userData
-  // directory. In profile-aware dev builds that is
+  // The Bee -> Ant migration must operate on the active profile's node data:
+  // its Freedom root (freedom-root.js), which is its userData directory
+  // until a move. In profile-aware dev builds that is
   // `Freedom Dev/<checkout>/Profiles/<profile>/`, not the repository root.
   // We intentionally do not revive/migrate legacy repo-root dev node data here.
-  return app.getPath('userData');
+  return getFreedomDataDir();
 }
 
 /**

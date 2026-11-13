@@ -19,6 +19,8 @@ const {
 } = require('./profile-catalog');
 const { isProfileLocked } = require('./profile-lock');
 const { parseProfileSwitchArgv } = require('./profile-switch-scheme');
+const { profileLayout } = require('./freedom-root');
+const subcommands = require('./profile-subcommands');
 
 // A launch carrying an `x-freedom-profile:` switch (profile-switch-scheme.js)
 // that names no registered profile. index.js exits quietly on it: whatever
@@ -47,6 +49,7 @@ const LEGACY_DEV_DATA_WARNING_FILE = 'legacy-dev-data-warning.json';
 const AUTOMATION_PROFILE_ID = 'automation';
 
 let activeProfile = null;
+let launchReport = null;
 
 function getArgValue(argv, name) {
   const prefix = `--${name}=`;
@@ -284,6 +287,214 @@ function resolveProfile(app, options = {}) {
   };
 }
 
+/**
+ * Which implementation opens the profile (freedom-core design 0013, 5.1):
+ * `core`, `freedom-cored profile open`, or `js`, `resolveProfile` above, the
+ * reference. The JS path stays where 0013 keeps it:
+ *
+ * - **Windows,** until the Defender first-scan qualification (0013, "The
+ *   latency gate") has been run: `profile open` is the one call made
+ *   before any window, and an unsigned binary's first scan counts there.
+ *   Every other catalog operation goes through the core on Windows too.
+ * - **A development build without freedom-cored** (`npm run
+ *   core:download` not run), as core-gate.js goes on without the core's
+ *   gate there. No core runs from such a checkout either.
+ *
+ * There is no switch back to the JS path otherwise: the catalog keeps one
+ * writer per build, and older builds coexist through its format and its
+ * write lock.
+ */
+function profileOpenBackend(app, { platform = process.platform, coredPresent } = {}) {
+  if (platform === 'win32') return 'js';
+  return profileCatalogBackend(app, { coredPresent });
+}
+
+/** The catalog operations' implementation: the core's subcommands, but in
+ * a development build without freedom-cored. */
+function profileCatalogBackend(app, { coredPresent } = {}) {
+  if (app.isPackaged) return 'core';
+  const present = coredPresent ?? fs.existsSync(getCoredBinaryPath());
+  return present ? 'core' : 'js';
+}
+
+function getCoredBinaryPath() {
+  return require('./core/cored-binary').getCoredBinaryPath();
+}
+
+function getLockDir() {
+  return require('./service-locks').getLockDir();
+}
+
+/**
+ * `freedom-cored profile open`'s arguments for this launch: main parses argv,
+ * the `x-freedom-profile:` URL and the environment (0013, 5.1, "What stays
+ * in main") and passes what they name.
+ */
+function buildProfileOpenArgs({ appRoot, lockDir, isDev, checkoutHash, argv, env, platform }) {
+  const args = ['profile', 'open', '--app-root', appRoot, '--lock-dir', lockDir];
+  if (isDev) args.push('--dev', '--checkout-hash', checkoutHash);
+  args.push(
+    '--default-profile-dir',
+    isDev ? path.join(appRoot, 'Profiles', DEFAULT_PROFILE_ID) : appRoot
+  );
+  // An explicit --profile wins over an `x-freedom-profile:` switch, as in
+  // resolveProfile.
+  const explicitProfile = getArgValue(argv, 'profile');
+  if (explicitProfile) {
+    args.push('--profile', explicitProfile);
+  } else {
+    const profileSwitch = parseProfileSwitchArgv(argv, { platform });
+    if (profileSwitch) args.push('--switch', profileSwitch.id || '');
+  }
+  if (env.FREEDOM_PROFILE) args.push('--env-profile', env.FREEDOM_PROFILE);
+  if (argv.includes('--runtime')) args.push('--runtime');
+  return args;
+}
+
+/**
+ * The profile this launch opens, through `freedom-cored profile open`
+ * (0013, 5.1): `{ profile, report }`, `profile` in resolveProfile's shape
+ * and `report` what the core says of it: `lockFresh`, `gateHeld` (another
+ * new build's main holds the profile), `layout` (`root`, `freedom` or
+ * `pending`, a move's journal to settle) and `forgetPending`, with `ms`, the
+ * wall time 0013's latency gate measures.
+ *
+ * `--profile-dir` and `FREEDOM_TEST_USER_DATA` are path arithmetic without a
+ * catalog, and stay in main; so does the whole choice where
+ * profileOpenBackend says `js`. A refused `x-freedom-profile:` switch throws
+ * PROFILE_SWITCH_REJECTED, as resolveProfile does; any other failure throws,
+ * and index.js shows today's "Freedom profile could not open" dialog.
+ */
+function openProfile(app, options = {}) {
+  const env = options.env || process.env;
+  const argv = options.argv || process.argv;
+  const platform = options.platform || process.platform;
+  const backend = options.backend
+    || (env.FREEDOM_TEST_USER_DATA || getArgValue(argv, 'profile-dir')
+      ? 'js'
+      : profileOpenBackend(app, { platform }));
+  if (backend !== 'core') {
+    const profile = resolveProfile(app, options);
+    return {
+      profile,
+      report: {
+        backend: 'js',
+        lockFresh: null,
+        gateHeld: null,
+        layout: profileLayout(profile.userDataDir),
+        forgetPending: null,
+        ms: null,
+      },
+    };
+  }
+
+  const isDev = !app.isPackaged;
+  const repoRoot = options.repoRoot
+    ? fs.realpathSync(options.repoRoot)
+    : isDev
+      ? getDefaultRepoRoot()
+      : null;
+  const checkoutHash = repoRoot ? hashPath(repoRoot) : null;
+  const appRoot = isDev ? resolveDevAppRoot(app, env, repoRoot) : app.getPath('userData');
+  const args = buildProfileOpenArgs({
+    appRoot,
+    lockDir: options.lockDir || getLockDir(),
+    isDev,
+    checkoutHash,
+    argv,
+    env,
+    platform,
+  });
+  const { result, ms } = subcommands.runSync(options.command || getCoredBinaryPath(), args, {
+    spawnSync: options.spawnSync,
+  });
+  if (result?.outcome === 'switch_refused') {
+    const error = new Error(result.message || 'Refused an x-freedom-profile switch');
+    error.code = PROFILE_SWITCH_REJECTED;
+    throw error;
+  }
+  if (result?.outcome !== 'opened' || typeof result.user_data_dir !== 'string') {
+    throw new Error('freedom-cored gave no profile');
+  }
+  return {
+    profile: {
+      ...(result.switch_only ? { switchOnly: true } : {}),
+      id: result.id,
+      displayName: result.display_name,
+      source: 'catalog',
+      appRoot,
+      userDataDir: result.user_data_dir,
+      isDev,
+      repoRoot,
+      checkoutHash,
+      catalogPath: result.catalog_path,
+      metadata: result.metadata,
+    },
+    report: {
+      backend: 'core',
+      lockFresh: result.lock_fresh === true,
+      gateHeld: result.gate_held === true,
+      layout: result.layout,
+      forgetPending: Number.isInteger(result.forget_pending) ? result.forget_pending : 0,
+      ms,
+    },
+  };
+}
+
+/** `profile migrate --finish-only`'s bound: a rollback or a roll-forward is
+ * renames and removals, but the run first waits up to a second on each
+ * gate. */
+const FINISH_MOVE_TIMEOUT_MS = 120_000;
+
+const MOVE_FAILURES = {
+  lock_lost:
+    "Another Freedom took this profile over while its data was being moved back into place. Open it again to finish.",
+  corrupt:
+    "This profile's data was left half moved, and Freedom can't tell which entries moved. Nothing was changed.",
+};
+
+/**
+ * Settles a move's journal before anything reads the profile (0013,
+ * "Readers, and the downgrade"; the reader release): `freedom-cored profile
+ * migrate --profile-dir <dir> --lock-dir <dir> [--dev] --finish-only`, with
+ * spawnSync, after app.setPath and before hold-profile and the profile lock,
+ * under the move's own exclusion. It completes or rolls back the move it
+ * finds, and starts none.
+ *
+ * Returns its outcome: `migrated`, `nothing`, `rolled_back`, or `busy`
+ * (another process holds the profile: hand over or report it busy, as for
+ * a fresh lock). Throws for `lock_lost`, `corrupt` and any other failure:
+ * the profile doesn't open, and nothing is guessed.
+ */
+function finishProfileMove(profile, options = {}) {
+  const args = [
+    'profile',
+    'migrate',
+    '--profile-dir',
+    profile.userDataDir,
+    '--lock-dir',
+    options.lockDir || getLockDir(),
+  ];
+  if (profile.isDev) args.push('--dev');
+  args.push('--finish-only');
+  try {
+    const { raw } = subcommands.runSync(options.command || getCoredBinaryPath(), args, {
+      timeoutMs: options.timeoutMs ?? FINISH_MOVE_TIMEOUT_MS,
+      spawnSync: options.spawnSync,
+    });
+    if (['migrated', 'nothing', 'rolled_back'].includes(raw)) return raw;
+    throw new Error(`freedom-cored gave an unknown answer to profile migrate: ${raw.slice(0, 32)}`);
+  } catch (error) {
+    if (error.code === 'busy' || error.raw === 'busy') return 'busy';
+    if (MOVE_FAILURES[error.raw]) {
+      const failure = new Error(MOVE_FAILURES[error.raw]);
+      failure.code = error.raw;
+      throw failure;
+    }
+    throw error;
+  }
+}
+
 function applyProfile(app, profile) {
   if (app.setPath) {
     app.setPath('userData', profile.userDataDir);
@@ -341,14 +552,32 @@ function warnAboutLegacyDevData(profile, options = {}) {
   return { warned: true, paths: legacyDirs, markerPath };
 }
 
-function initializeProfile(app, options = {}) {
-  activeProfile = resolveProfile(app, options);
+/**
+ * Opens this launch's profile (openProfile: through `freedom-cored profile
+ * open` where profileOpenBackend says so) and points userData at it.
+ */
+function openActiveProfile(app, options = {}) {
+  const opened = openProfile(app, options);
+  activeProfile = opened.profile;
+  launchReport = opened.report;
   applyProfile(app, activeProfile);
   return activeProfile;
 }
 
+/** openActiveProfile through the JS reference, resolveProfile: the path
+ * Windows takes until its qualification, and the one the migration suite
+ * pins. */
+function initializeProfile(app, options = {}) {
+  return openActiveProfile(app, { ...options, backend: 'js' });
+}
+
 function getActiveProfile() {
   return activeProfile;
+}
+
+/** What opening the active profile reported (openProfile's `report`). */
+function getProfileLaunchReport() {
+  return launchReport;
 }
 
 function updateActiveProfileNodeConfig(protocol, updates) {
@@ -535,15 +764,22 @@ module.exports = {
   createProfileForActiveApp,
   deleteProfileForActiveApp,
   findRepoRoot,
+  finishProfileMove,
   getActiveProfile,
   getArgValue,
   getDefaultRepoRoot,
+  buildProfileOpenArgs,
   getLegacyDevDataDirs,
   getProfileFocusTargetForActiveApp,
+  getProfileLaunchReport,
   getReservedProfilePorts,
   importProfileForActiveApp,
   initializeProfile,
   listProfilesForActiveApp,
+  openActiveProfile,
+  openProfile,
+  profileCatalogBackend,
+  profileOpenBackend,
   renameProfileForActiveApp,
   resolveFallbackProfileId,
   resolveLastOpenedProfileId,

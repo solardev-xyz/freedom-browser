@@ -8,6 +8,7 @@
 
 const log = require('../logger');
 const { app, ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
@@ -25,7 +26,7 @@ let statements = null;
 function getDb() {
   if (db) return db;
 
-  const dbPath = path.join(app.getPath('userData'), 'publish-history.sqlite');
+  const dbPath = getFreedomDataPath('publish-history.sqlite');
   log.info('[PublishHistory] Opening database:', dbPath);
 
   db = new Database(dbPath);
