@@ -192,7 +192,8 @@ jobs:
       - name: Warm the Electron binary download
         run: node -e "require('electron')"
 
-      # freedom-core's stream vectors (design 0009, amendment 5), which
+      # freedom-core's stream vectors (design 0009, amendment 5, and design
+      # 0014's service connections that take main's bodies), which
       # `stream-vectors.test.js` replays, its method table
       # (`protocol/schema.json`, with amendment 3's protocol-2 rows), which
       # `core-deadlines.test.js` checks main's deadline table against, and
@@ -200,16 +201,13 @@ jobs:
       # replays through today's main, at one reviewed commit: moved on
       # purpose when the protocol's vectors, method table or Radicle vectors
       # change, never with freedom-core's main. It is the commit
-      # `cored-v0.12.2` was built from. The pinned core, `cored-v0.13.0`
-      # (9068ba68), carries newer stream and Radicle vectors (freedom-core
-      # #312, #334) that today's main doesn't replay yet: the ref moves with
-      # the main side that does. Each suite fails if a file it is pointed at
-      # is missing.
+      # `cored-v0.13.0` was built from. Each suite fails if a file it is
+      # pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: 2c262aef82f46ca79ac15f9f13f30dd97b70ac15
+          ref: 9068ba688a6bd764dd8de74db7fc8bc30afac40d
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |
