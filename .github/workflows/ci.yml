@@ -794,7 +794,7 @@ jobs:
           echo "$changed"
           # No `-q`, as in the gates above: a >64 KiB path list would kill
           # the `echo` with SIGPIPE, which `pipefail` turns into `radicle=false`.
-          if echo "$changed" | grep -E '^(src/main/radicle/|src/main/radicle-(embedded|manager|api-protocol)\.js|src/main/core/(service-client|frame)\.js|src/main/dweb/(fetch-admission|plan-executor)\.js|src/shared/radicle-addon-version\.js|test/helpers/(radicle-contract-backends|radicle-cost-report|ipfs-cost-report|radicle-fixture|radicle-seal|main-process-test-utils)\.js|test/fixtures/radicle-contract/|scripts/(fetch-freedom-radicled|fetch-radicle-addon)\.js|scripts/lib/(freedom-core-release|fetch-with-retry)\.js|package(-lock)?\.json|\.github/workflows/ci\.yml)' >/dev/null; then
+          if echo "$changed" | grep -E '^(src/main/radicle/|src/main/radicle-(embedded|manager|api-protocol)\.js|src/main/core/(service-client|frame)\.js|src/main/private/private-log-context\.js|src/main/dweb/(fetch-admission|plan-executor)\.js|src/shared/radicle-addon-version\.js|test/helpers/(radicle-contract-backends|radicle-cost-report|ipfs-cost-report|radicle-fixture|radicle-seal|main-process-test-utils)\.js|test/fixtures/radicle-contract/|scripts/(fetch-freedom-radicled|fetch-radicle-addon)\.js|scripts/lib/(freedom-core-release|fetch-with-retry)\.js|package(-lock)?\.json|\.github/workflows/ci\.yml)' >/dev/null; then
             echo "radicle=true" >> "$GITHUB_OUTPUT"
           else
             echo "radicle=false" >> "$GITHUB_OUTPUT"
