@@ -108,6 +108,7 @@ describeIfCore('verified page loads with the real freedom-cored at protocol 2', 
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     const config = new NamingConfig({ client, sources: sources(), log: quietLog });
     registerNamingShell(client, config, {

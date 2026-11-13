@@ -218,6 +218,7 @@ describeIfBinaries('the Radicle node on the real freedom-radicled and freedom-co
       log,
       shellVersion: 'jest',
       protocol: PROTOCOL_VERSION_STREAMS,
+      grantRoot: userData,
     });
     mockCore.on('ready', (hello) => guard.setStartupRecovery(hello.node_recovery));
     await mockCore.start();

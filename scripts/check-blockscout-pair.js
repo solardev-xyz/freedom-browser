@@ -157,6 +157,7 @@ async function startCore(userData) {
       error: (...args) => stopping || console.error('[core]', ...args),
     },
     shellVersion: 'blockscout-canary',
+    grantRoot: userData,
   });
   const config = new ChainConfig({
     client,

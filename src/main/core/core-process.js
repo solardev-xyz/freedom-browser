@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 const { app } = require('electron');
 const log = require('../logger');
 const { getIdentityDataDir } = require('../profile-paths');
+const { getFreedomDataDir } = require('../freedom-root');
 const { getLockDir } = require('../service-locks');
 const { getCoredBinaryPath } = require('./cored-binary');
 const { CoreClient, PROTOCOL_VERSION_STREAMS } = require('./core-client');
@@ -53,9 +54,13 @@ async function startCore() {
     shellVersion: app.getVersion(),
     // Protocol 2 (design 0009): streams both ways, `dweb.verify` and
     // `dweb.forget`. It's the client's only protocol, and the only one the
-    // pinned core (0.13.0) takes; a core that answers another is a
+    // pinned core (0.14.0) takes; a core that answers another is a
     // mismatch, not restarted.
     protocol: PROTOCOL_VERSION_STREAMS,
+    // The hello's `grant_root` (design 0012, APR-3): where the four
+    // permission files are, the profile's Freedom root (its userData until
+    // 0013's move, freedom-root.js), which the stores write them under.
+    grantRoot: getFreedomDataDir(),
   });
   client.on('failed', (reason) => log.error('[Core] not available', { reason }));
   // Every (re)start reports node identity writes recovery couldn't finish;

@@ -18,6 +18,7 @@
 const { ipcMain } = require('electron');
 const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { withOriginLock } = require('./origin-mutation-lock');
@@ -71,12 +72,14 @@ function loadPermissions() {
   return permissionsCache;
 }
 
+// By a temp file and a rename: freedom-cored reads the file at its checks
+// (design 0012, "The files (Q10)").
 function savePermissions() {
-  const filePath = getPermissionsPath();
-  const tempPath = `${filePath}.tmp`;
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(permissionsCache, null, 2), 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    const { durable } = writeFileAtomicSync(getPermissionsPath(), JSON.stringify(permissionsCache, null, 2));
+    if (!durable) {
+      console.warn('[SwarmPermissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
+    }
   } catch (err) {
     permissionsCache = null;
     throw err;

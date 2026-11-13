@@ -1,6 +1,6 @@
 /**
  * The app's core client speaks protocol 2 (freedom-core design 0009, step
- * 6), the only one the pinned core (0.13.0) takes, so `shell.dweb_get` is
+ * 6), the only one the pinned core (0.14.0) takes, so `shell.dweb_get` is
  * registered and the `dweb.verify` verifier attaches.
  * Every 0009 feature in main waits for that verifier: the captured
  * backends' `verify`, `unsupported` and `strict`, the error page, and
@@ -14,12 +14,18 @@ jest.mock('electron', () => ({ app: { isPackaged: false, getVersion: () => '0.0.
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../profile-paths', () => ({ getIdentityDataDir: () => '/nonexistent/identity' }));
 jest.mock('../service-locks', () => ({ getLockDir: () => '/nonexistent/locks' }));
+// The profile's Freedom root, where the permission files are (freedom-root.js).
+jest.mock('../freedom-root', () => ({
+  getFreedomDataDir: () => require('path').join(require('os').tmpdir(), 'freedom-profile'),
+}));
 jest.mock('./naming', () => ({
   attachNaming: jest.fn(() => ({ running: () => false })),
   detachNaming: jest.fn(),
 }));
 jest.mock('./chain', () => ({ attachChain: jest.fn(), detachChain: jest.fn() }));
 
+const os = require('os');
+const path = require('path');
 const { CoreClient, PROTOCOL_VERSION_STREAMS } = require('./core-client');
 const { DwebShell } = require('./dweb-shell');
 const { DwebVerifier, dwebVerifier } = require('./dweb-verify');
@@ -27,7 +33,7 @@ const core = require('./core-process');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
-  core_version: '0.13.0',
+  core_version: '0.14.0',
   capabilities: ['streams', 'fragments'],
   node_recovery: null,
 };
@@ -35,6 +41,8 @@ const HELLO = {
 afterEach(() => jest.restoreAllMocks());
 
 test('the app speaks protocol 2 to the core, and the dweb shell and verifier attach', async () => {
+  // startCore() runs once per process: once stopCore() has run, nothing
+  // starts the core again, so one test covers the app's client.
   const start = jest.spyOn(CoreClient.prototype, 'start').mockResolvedValue(HELLO);
   const stop = jest.spyOn(CoreClient.prototype, 'stop').mockResolvedValue();
   const handle = jest.spyOn(CoreClient.prototype, 'handle');
@@ -42,6 +50,14 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   const client = await core.startCore();
   expect(client).toBeInstanceOf(CoreClient);
   expect(client.protocol).toBe(PROTOCOL_VERSION_STREAMS);
+  // freedom-core design 0012, "The APR-3 pin": the hello carries grant_root,
+  // the directory the stores write the four permission files in, and no
+  // grant_moved.
+  const root = path.join(os.tmpdir(), 'freedom-profile');
+  expect(client.grantRoot).toBe(root);
+  const params = client.service.helloParams(client);
+  expect(params.grant_root).toBe(root);
+  expect(params).not.toHaveProperty('grant_moved');
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,

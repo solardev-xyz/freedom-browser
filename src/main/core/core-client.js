@@ -4,15 +4,23 @@
  * configured for the core.
  *
  * - **The handshake** is `core.hello`: the protocol, the shell's version,
- *   the vault's auto-lock and `frames: ["fragment", "stream"]` (`fragment`:
+ *   the vault's auto-lock, `frames: ["fragment", "stream"]` (`fragment`:
  *   main takes fragmented responses, so the handshake grants the core main's
- *   bulk credit; `stream`: see Streams below). A
+ *   bulk credit; `stream`: see Streams below) and `grant_root`. A
  *   valid result has protocol 2, and names the core's version, its
  *   capabilities (with `streams`) and any node identity write its startup
  *   recovery couldn't finish.
+ * - **`grant_root`** (design 0012, "The files (Q10)") is the directory of
+ *   the profile's four permission files, as an absolute, normalized path:
+ *   the core reads them there at its checks. The pinned core (0.14.0, APR-3)
+ *   requires it, and answers a hello without it, or with a relative path,
+ *   with `invalid_argument` and exits 76, so a client can't be made without
+ *   one. Main sends no `grant_moved`: it still writes all four files itself
+ *   (by a temp file and a rename, lib/atomic-file.js), and the core only
+ *   reads them.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
- *   (0.13.0) speaks only 2: it answers a hello at any other protocol,
+ *   (0.14.0) speaks only 2: it answers a hello at any other protocol,
  *   1 included, with `protocol_mismatch` and exits 76. A core that answers
  *   another protocol is a mismatch too: main fails, and doesn't restart it.
  *   Protocol 1 is gone (design 0009, Streams in the core), and a client
@@ -51,6 +59,7 @@ const {
   POOL_BYTES,
   POOL_EXEMPT_BYTES,
 } = require('./service-client');
+const path = require('path');
 
 // Protocol 2, streams in both directions (design 0009): the only one the
 // core speaks from 0.11.0, which refuses protocol 1 (design 0001's). Both
@@ -123,6 +132,9 @@ const CORE_SERVICE = Object.freeze({
     // Main takes fragmented responses (the handshake grants the core
     // main's bulk credit) and stream frames, which the core requires.
     frames: ['fragment', 'stream'],
+    // Where the permission files are (design 0012, APR-3); none has moved
+    // to the core, so no `grant_moved`.
+    grant_root: client.grantRoot,
   }),
   validHello,
   shutdownMethod: 'core.shutdown',
@@ -137,6 +149,10 @@ class CoreClient extends ServiceClient {
    * @param {object} options - ServiceClient's, without `service`, and:
    * @param {number} [options.autoLockMs] - the vault's auto-lock, sent in
    *   the handshake (15 minutes)
+   * @param {string} options.grantRoot - the directory of the profile's
+   *   permission files, sent as the hello's `grant_root`: an absolute path,
+   *   sent normalized (no `.` or `..`, no trailing separator, and on Windows
+   *   with its drive)
    * @param {number} [options.protocol] - the protocol main asks for: only
    *   2 (the default), so a caller still asking for 1 fails here rather
    *   than at the core's `protocol_mismatch`
@@ -144,8 +160,13 @@ class CoreClient extends ServiceClient {
   constructor(options) {
     const protocol = options.protocol ?? PROTOCOL_VERSION;
     if (protocol !== PROTOCOL_VERSION) throw new TypeError(`unknown core protocol ${protocol}`);
+    const { grantRoot } = options;
+    if (typeof grantRoot !== 'string' || !path.isAbsolute(grantRoot)) {
+      throw new TypeError('the core client needs grantRoot, an absolute path');
+    }
     super({ ...options, service: CORE_SERVICE });
     this.autoLockMs = options.autoLockMs ?? 15 * 60 * 1000;
+    this.grantRoot = path.resolve(grantRoot);
   }
 
   /** The protocol main asks for, and every ready hello settled. */

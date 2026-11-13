@@ -118,6 +118,7 @@ describeIfChain('finality labels over a real core quorum (#712 review)', () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     const config = new ChainConfig({
       client,

@@ -41,6 +41,7 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     jest.resetModules();
     jest.doMock('./core-process', () => ({ getCoreClient: () => core }));

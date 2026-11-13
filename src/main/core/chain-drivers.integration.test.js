@@ -104,6 +104,7 @@ describeIfChain("chain data's drivers with the real freedom-cored", () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     const config = new ChainConfig({
       client,

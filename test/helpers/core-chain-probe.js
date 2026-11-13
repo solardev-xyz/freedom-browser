@@ -46,8 +46,15 @@ function serves(binary, method, params, refusedBy = ['unknown_method']) {
     });
     core.on('exit', () => done('no'));
     // Protocol 2, the only one the core speaks from 0.11.0, whose hello
-    // must offer stream frames. A hello the core refuses ends it: 'no'.
-    request(1, 'core.hello', { protocol: 2, shell_version: 'jest', auto_lock_ms: 60000, frames: ['stream'] });
+    // must offer stream frames, and from 0.14.0 name the permission files'
+    // directory (grant_root, absolute). A hello the core refuses ends it: 'no'.
+    request(1, 'core.hello', {
+      protocol: 2,
+      shell_version: 'jest',
+      auto_lock_ms: 60000,
+      frames: ['stream'],
+      grant_root: root,
+    });
   `;
   try {
     const run = spawnSync(

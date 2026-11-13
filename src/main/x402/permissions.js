@@ -33,6 +33,7 @@
 
 const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 const PERMISSIONS_FILE = 'x402-permissions.json';
@@ -113,9 +114,14 @@ function load() {
   return cache;
 }
 
+// By a temp file and a rename: freedom-cored reads the file at its checks
+// (design 0012, "The files (Q10)").
 function save() {
   try {
-    fs.writeFileSync(permissionsPath(), JSON.stringify(cache, null, 2), 'utf-8');
+    const { durable } = writeFileAtomicSync(permissionsPath(), JSON.stringify(cache, null, 2));
+    if (!durable) {
+      console.warn('[x402:permissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
+    }
   } catch (err) {
     console.error('[x402:permissions] failed to save:', err.message);
   }

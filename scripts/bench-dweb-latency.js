@@ -281,6 +281,7 @@ async function worker(opts) {
     ],
     log: { info: noop, warn: noop, error: noop },
     shellVersion: 'dweb-bench',
+    grantRoot: userData,
   });
   const config = new NamingConfig({
     client,
