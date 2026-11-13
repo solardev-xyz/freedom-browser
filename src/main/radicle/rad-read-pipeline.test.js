@@ -31,6 +31,19 @@ let dir;
 let rad;
 let fake;
 
+// The add-on's tests select it (FREEDOM_RADICLE_BACKEND=addon, development
+// builds' rollback): freedom-radicled is the default (freedom-core design
+// 0008, step 7; the radicled step-5 plan's B16). The service's own tests are
+// radicle-service-*.test.js.
+const originalRadicleBackend = process.env.FREEDOM_RADICLE_BACKEND;
+beforeEach(() => {
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+});
+afterAll(() => {
+  if (originalRadicleBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = originalRadicleBackend;
+});
+
 beforeEach(() => {
   // The add-on's reads come from `global.__radicleFake`.
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rad-pipeline-'));

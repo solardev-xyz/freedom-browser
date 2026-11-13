@@ -1,7 +1,7 @@
 /**
  * The reads of the Radicle node on freedom-radicled (freedom-core design
  * 0008, "JSON results" and Main's side, "Other callers"), for
- * radicle-embedded.js under `FREEDOM_RADICLE_BACKEND=service`. The node is
+ * radicle-embedded.js on the service, the default backend. The node is
  * radicled-node.js's; each read is a `rad.read { op, args }` on its running
  * generation, answered with a head, `{ content_type: "application/json",
  * bytes, body: true }`, and the JSON as a body stream.

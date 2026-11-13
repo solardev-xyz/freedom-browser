@@ -32,6 +32,20 @@ function radicleBinDir() {
 const RADICLE_ADDON = path.join(radicleBinDir(), 'libradicle.node');
 const HAS_RADICLE_ADDON = fs.existsSync(RADICLE_ADDON);
 
+// The app runs the baked home on the add-on, development builds' rollback
+// (FREEDOM_RADICLE_BACKEND=addon, below), which runs only under
+// freedom-radicled's hold-lock (src/main/radicle/radicled-gate.js): the
+// binary main would take it with (radicled-binary.js).
+const RADICLED_BINARY =
+  process.env.FREEDOM_RADICLED_PATH ||
+  path.join(
+    repoRoot,
+    'freedom-radicled-bin',
+    `${{ darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform]}-${process.arch}`,
+    process.platform === 'win32' ? 'freedom-radicled.exe' : 'freedom-radicled'
+  );
+const HAS_RADICLED = fs.existsSync(RADICLED_BINARY);
+
 const CANOPY_DIST = path.resolve(repoRoot, '..', 'canopy', 'dist');
 const HAS_CANOPY_DIST = fs.existsSync(path.join(CANOPY_DIST, 'index.html'));
 
@@ -172,6 +186,10 @@ const test = base.extend({
         ...process.env,
         FREEDOM_TEST_USER_DATA: userDataDir,
         FREEDOM_RADICLE_DATA: radHome,
+        // The home libradicle baked, with its key file: the add-on runs it
+        // (freedom-radicled, the default, would switch it to a throwaway
+        // key, which can't write).
+        FREEDOM_RADICLE_BACKEND: 'addon',
         ...dirs,
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
@@ -193,4 +211,13 @@ const test = base.extend({
   },
 });
 
-module.exports = { test, expect, HAS_RADICLE_ADDON, HAS_CANOPY_DIST, RADICLE_ADDON, CANOPY_DIST };
+module.exports = {
+  test,
+  expect,
+  HAS_RADICLE_ADDON,
+  HAS_RADICLED,
+  HAS_CANOPY_DIST,
+  RADICLE_ADDON,
+  RADICLED_BINARY,
+  CANOPY_DIST,
+};

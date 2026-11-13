@@ -60,6 +60,19 @@ const settle = async () => {
   for (let i = 0; i < 10; i += 1) await Promise.resolve();
 };
 
+// The add-on's tests select it (FREEDOM_RADICLE_BACKEND=addon, development
+// builds' rollback): freedom-radicled is the default (freedom-core design
+// 0008, step 7; the radicled step-5 plan's B16). The service's own tests are
+// radicle-service-*.test.js.
+const originalRadicleBackend = process.env.FREEDOM_RADICLE_BACKEND;
+beforeEach(() => {
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+});
+afterAll(() => {
+  if (originalRadicleBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = originalRadicleBackend;
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
   isDisabledForProfile.mockReturnValue(false);

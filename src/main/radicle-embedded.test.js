@@ -8,6 +8,19 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
+// The add-on's tests select it (FREEDOM_RADICLE_BACKEND=addon, development
+// builds' rollback): freedom-radicled is the default (freedom-core design
+// 0008, step 7; the radicled step-5 plan's B16). The service's tests select
+// it themselves.
+const originalBackend = process.env.FREEDOM_RADICLE_BACKEND;
+beforeEach(() => {
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+});
+afterAll(() => {
+  if (originalBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = originalBackend;
+});
+
 const REQUIRED_FAKE_EXPORTS = [
   'start', 'shutdown', 'connectSeeds', 'cloneRepo', 'cloneRepoWithProgress',
   'cancelClone', 'unseedRepo', 'listRepos', 'listSeededRepos',
@@ -523,8 +536,8 @@ describe('shutdown proof (R-8)', () => {
   });
 });
 
-// Under FREEDOM_RADICLE_BACKEND=service (freedom-core design 0008, "Main's
-// side"; plan B7): the exports keep their shapes; identity and status are
+// On the freedom-radicled service, the default since plan B16 (freedom-core
+// design 0008, "Main's side"; plan B7): the exports keep their shapes; identity and status are
 // collected and kept under 4 KiB, callScoped and callStream are the service
 // node's reads (radicle/radicle-service-backend.js), the rest say they
 // aren't on the service yet, and the add-on is never loaded.
@@ -903,7 +916,7 @@ describe('on the freedom-radicled service', () => {
   });
 
   test('the add-on has no streams: callStream and callScoped refuse there', async () => {
-    delete process.env.FREEDOM_RADICLE_BACKEND;
+    process.env.FREEDOM_RADICLE_BACKEND = 'addon';
     await expect(embedded.callStream('status', {})).rejects.toThrow(/the add-on has no streams/);
     await expect(embedded.callScoped('status', {}, async () => {})).rejects.toThrow(
       /the add-on has no streams/

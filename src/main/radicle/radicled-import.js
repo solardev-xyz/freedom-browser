@@ -1,7 +1,7 @@
 /**
  * The import on freedom-radicled's one-shot import process (freedom-core
  * design 0010, D5; design 0008, Writes "Import"; the radicled step-5 plan's
- * B14), for radicle-manager.js under `FREEDOM_RADICLE_BACKEND=service`. The
+ * B14), for radicle-manager.js on the service, the default backend. The
  * manager stops the service before it and starts it again after it: the
  * process takes the Radicle home's gate the service let go.
  *

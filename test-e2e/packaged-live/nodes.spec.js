@@ -4,8 +4,8 @@
 // The specs in test-e2e/packaged/ drive the packaged binary with
 // FREEDOM_TEST_MODE, which stubs every node away. These ones go through the
 // live fixtures instead: no test mode, so the artifact's *own* bundled antd,
-// freedom-ipfsd binary, libradicle addon (freedom-radicled once Radicle's
-// default switches) and Arti binary are what start. That
+// freedom-ipfsd binary, freedom-radicled binary and Arti binary are what
+// start. That
 // is the packaging bug this catches — an extraResources rule that only
 // resolves in a source tree, or an addon built for the wrong arch, launches
 // fine and only fails when its manager tries to use it.
@@ -85,11 +85,12 @@ const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
 const QUIT_TIMEOUT_MS = 60_000;
 
 // What a packaged build runs Radicle on (src/main/radicle/radicle-backend-kind.js):
-// the libradicle add-on in main until the default switches to the
-// freedom-radicled service (freedom-core design 0008, step 7), when this and
-// that module change together. The Radicle leg asserts the service's own
-// answers wherever the build runs it, and fails on the other backend.
-const PACKAGED_RADICLE_BACKEND = 'addon';
+// the freedom-radicled service, since the default switched (freedom-core
+// design 0008, step 7); the add-on, still bundled, is development builds'
+// rollback only. This and that module change together. The Radicle leg
+// asserts the service's own answers wherever the build runs it, and fails on
+// the other backend.
+const PACKAGED_RADICLE_BACKEND = 'service';
 
 // Every node off. Each test turns exactly one back on.
 const NODES_OFF = {

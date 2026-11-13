@@ -482,9 +482,12 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
       # ── was the `radicle-addon-load` job ──
-      # libradicle is the ONLY Radicle runtime — there is no executable fallback —
-      # so every release asset has to download, verify against the in-repo pinned
-      # checksums, load, and answer a native call on the platform it ships for.
+      # freedom-radicled runs Radicle (freedom-core design 0008, step 7); the
+      # libradicle add-on is development builds' rollback
+      # (FREEDOM_RADICLE_BACKEND=addon), and packaged builds still ship it,
+      # unloaded, until it is removed (0008, Rollback). So every release asset
+      # still has to download, verify against the in-repo pinned checksums,
+      # load, and answer a native call on the platform it ships for.
       # Modelled on the Myotis addon section below. win-arm64 has no hosted runner: it is
       # downloaded and checksum-verified on windows-latest (a foreign-arch library
       # cannot be dlopen'ed), which is what catches a missing or re-published asset.
@@ -496,9 +499,9 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: node scripts/check-radicle-addon.js radicle-bin/${{ matrix.radicle }}/libradicle.node
 
-      # A development build runs the add-on under freedom-radicled's
-      # hold-lock on its home (design 0008, Rollback): with the binary here,
-      # the contract suite below runs the add-on under the real gate.
+      # The rollback runs the add-on only under freedom-radicled's hold-lock
+      # on its home (design 0008, Rollback): with the binary here, the
+      # rollback's contract suite below runs the add-on under the real gate.
       - name: Download freedom-radicled binaries
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         timeout-minutes: 7
@@ -508,15 +511,17 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       # The Radicle backend contract (freedom-core design 0008, "Tests
-      # first"): the golden vectors and the exports' contract, against this
-      # runner's add-on and the fixture's snapshot, with no network
-      # connection. The freedom-radicled service must later pass the same
-      # suite. It needs the add-on downloaded above, so it runs here and not in
-      # `test`, where it is skipped.
-      - name: Radicle backend contract suite (add-on)
+      # first") on the rollback: the golden vectors and the exports'
+      # contract, against this runner's add-on (FREEDOM_RADICLE_BACKEND=addon,
+      # which the contract helper selects itself) and the fixture's snapshot,
+      # with no network connection. freedom-radicled, the default, passes the
+      # same suite below. It needs the add-on downloaded above, so it runs here
+      # and not in `test`, where it is skipped.
+      - name: Radicle backend contract suite (the add-on, the rollback)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: npx jest src/main/radicle-backend.contract.test.js
         env:
+          FREEDOM_RADICLE_BACKEND: addon
           FREEDOM_RADICLE_CONTRACT_BACKEND: addon
 
       # The Radicle home's gate against the same binary (design 0008, "Spawn
@@ -566,10 +571,10 @@ jobs:
           FREEDOM_RADICLED_PATH: ${{ github.workspace }}/freedom-radicled-bin/${{ matrix.radicled }}
           FREEDOM_CORED_PATH: ${{ github.workspace }}/freedom-cored-bin/${{ matrix.target }}/freedom-cored
 
-      # The same Radicle backend contract on the service (design 0008,
-      # "Tests first" and "JSON results"): the suite against the downloaded
-      # freedom-radicled, through main's manager and radicle-embedded.js
-      # under FREEDOM_RADICLE_BACKEND=service. The golden read vectors byte
+      # The same Radicle backend contract on the service, the default
+      # (design 0008, "Tests first" and "JSON results"): the suite against
+      # the downloaded freedom-radicled, through main's manager and
+      # radicle-embedded.js. The golden read vectors byte
       # for byte, the design's deviations asserted as such; callStream and
       # callScoped; node_info; the dirty marker; the quarantine's calls; and
       # the writes, rad.write and rad.unseed, with a write libradicle refuses
@@ -1053,11 +1058,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      # Main runs only freedom-radicled's hold-lock, the Radicle home's gate
-      # (freedom-core design 0008, "Spawn and lock"), which a development
-      # build takes where the binary is: this is the per-PR run of its real
-      # fetch on all three OSes, Windows' ZIP path included, with the pinned
-      # digest and build provenance checked as release.yml checks them.
+      # freedom-radicled runs Radicle (freedom-core design 0008, step 7),
+      # and its hold-lock is the Radicle home's gate ("Spawn and lock"):
+      # this is the per-PR run of its real fetch on all three OSes, Windows'
+      # ZIP path included, with the pinned digest and build provenance
+      # checked as release.yml checks them.
       - name: Download freedom-radicled binaries
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         timeout-minutes: 7
@@ -1679,6 +1684,18 @@ jobs:
         timeout-minutes: 7
         shell: bash
         run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-cored.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # `page-radicle-seed` and `page-radicle-sign` run main's manager over
+      # the add-on's calls stubbed in main: the rollback
+      # (FREEDOM_RADICLE_BACKEND=addon), which runs only under
+      # freedom-radicled's hold-lock (freedom-core design 0008, Rollback).
+      - name: Download freedom-radicled binaries
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-radicled.js
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

@@ -1,7 +1,7 @@
 /**
  * The profile's Radicle node on the freedom-radicled service process
  * (freedom-core design 0008, step 6), in place of the add-on's in-process
- * node, for radicle-manager.js under `FREEDOM_RADICLE_BACKEND=service`. The
+ * node, for radicle-manager.js on the service, the default backend. The
  * process is radicled-client.js's; this is the node's life on it.
  *
  * - **The start** (0008, "Start, stop and reconciliation" and "The sealed

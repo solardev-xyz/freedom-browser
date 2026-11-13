@@ -3,6 +3,34 @@ const os = require('os');
 const path = require('path');
 const { createPrivateWindowFixture } = require('../../test/helpers/private-window-fixture');
 
+// The add-on's tests select it (FREEDOM_RADICLE_BACKEND=addon, development
+// builds' rollback): freedom-radicled is the default (freedom-core design
+// 0008, step 7; the radicled step-5 plan's B16). The service's tests select
+// it themselves.
+const originalBackend = process.env.FREEDOM_RADICLE_BACKEND;
+beforeEach(() => {
+  process.env.FREEDOM_RADICLE_BACKEND = 'addon';
+});
+afterAll(() => {
+  if (originalBackend === undefined) delete process.env.FREEDOM_RADICLE_BACKEND;
+  else process.env.FREEDOM_RADICLE_BACKEND = originalBackend;
+});
+
+// The key file the core writes for a vault, which the add-on needs on its
+// home (radicle/radicled-gate.js, addonHomeRefusal): owner-only, in an
+// owner-only keys/, unless the test made keys/ itself.
+function writeKeyFile(home) {
+  const keysDir = path.join(home, 'keys');
+  try {
+    fs.lstatSync(keysDir);
+    return;
+  } catch {
+    // None yet.
+  }
+  fs.mkdirSync(keysDir, { mode: 0o700 });
+  fs.writeFileSync(path.join(keysDir, 'radicle'), 'core-written key', { mode: 0o600 });
+}
+
 function loadManager(options = {}) {
   jest.resetModules();
   const handlers = new Map();
@@ -111,6 +139,11 @@ function loadManager(options = {}) {
     getRadicledHomeDir: jest.fn(() => path.join(dataDir, 'radicled-home')),
     prepareRadicleDataDir: jest.fn(async () => {
       if (options.prepare) await options.prepare();
+      // Under the add-on, the home has the key file the core wrote, unless
+      // the test says it has none (`keyFile: false`).
+      if (options.keyFile !== false && process.env.FREEDOM_RADICLE_BACKEND === 'addon') {
+        writeKeyFile(dataDir);
+      }
       return dataDir;
     }),
   }));
@@ -1208,52 +1241,89 @@ describe("the Radicle home's gate", () => {
     fs.rmSync(ctx.dataDir, { recursive: true, force: true });
   });
 
-  describe('a home the service has switched', () => {
-    const { SWITCHED_HOME_MESSAGE } = jest.requireActual('./radicle/radicled-gate');
+  // The rollback starts only on a home that still has keys/radicle (0008,
+  // Rollback; plan B16): without one, the add-on would generate a key, a
+  // new identity, whether the service switched the home or never ran there.
+  describe('a home without keys/radicle', () => {
+    const { ADDON_HOME_MESSAGE } = jest.requireActual('./radicle/radicled-gate');
     const write = (home, rel, content = '') => {
       fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true });
       fs.writeFileSync(path.join(home, rel), content);
     };
 
     test.each([
-      ['its reconciliation record', 'node/reconcile.db'],
-      ['the dirty marker the switch leaves', 'node/dirty'],
-    ])('without keys/radicle, and with %s: the add-on is refused, under the gate', async (_what, rel) => {
-      const ctx = loadManager();
+      ['its reconciliation record (the service ran there)', ['node/reconcile.db']],
+      ['the dirty marker the switch leaves', ['node/dirty']],
+      ['nothing (a profile without a vault, the service never ran)', []],
+      ['only keys/radicle.pub', ['keys/radicle.pub']],
+    ])('and with %s: the add-on is refused, under the gate', async (_what, files) => {
+      const ctx = loadManager({ keyFile: false });
       modelNode(ctx);
-      write(ctx.dataDir, rel);
+      for (const rel of files) write(ctx.dataDir, rel);
 
       await expect(ctx.mod.startRadicle()).resolves.toEqual({
         status: 'error',
-        error: SWITCHED_HOME_MESSAGE,
+        error: ADDON_HOME_MESSAGE,
       });
       expect(ctx.embedded.start).not.toHaveBeenCalled();
       expect(ctx.gate.events).toEqual(['take', 'release']);
+      expect(fs.existsSync(path.join(ctx.dataDir, 'keys', 'radicle'))).toBe(false);
       fs.rmSync(ctx.dataDir, { recursive: true, force: true });
     });
 
-    test.each([
-      ['a home the service never ran (a profile without a vault)', []],
-      ['a home with keys/radicle, where the service has run', ['keys/radicle', 'node/reconcile.db']],
-    ])('%s: the add-on starts', async (_what, files) => {
+    test('the key file read under the gate: one removed while the gate is awaited refuses the start', async () => {
+      const ctx = loadManager({
+        // The service's switch, by another holder, before this one gets it.
+        gateTake: async ({ home }) => fs.rmSync(path.join(home, 'keys', 'radicle')),
+      });
+      modelNode(ctx);
+
+      await expect(ctx.mod.startRadicle()).resolves.toEqual({
+        status: 'error',
+        error: ADDON_HOME_MESSAGE,
+      });
+      expect(ctx.embedded.start).not.toHaveBeenCalled();
+      fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+    });
+
+    test('a home with keys/radicle, where the service has run: the add-on starts', async () => {
       const ctx = loadManager();
       modelNode(ctx);
-      for (const rel of files) write(ctx.dataDir, rel, 'x');
-      if (files.includes('keys/radicle')) {
-        fs.chmodSync(path.join(ctx.dataDir, 'keys'), 0o700);
-        fs.chmodSync(path.join(ctx.dataDir, 'keys', 'radicle'), 0o600);
-      }
+      write(ctx.dataDir, 'node/reconcile.db', 'x');
 
       await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
       await ctx.mod.stopRadicle();
       fs.rmSync(ctx.dataDir, { recursive: true, force: true });
     });
   });
+
+  // The rollback runs only under the gate (0008, Rollback; plan B16): a
+  // development build without freedom-radicled doesn't start the add-on.
+  test("without freedom-radicled, the add-on doesn't start, ungated or otherwise", async () => {
+    const ctx = loadManager();
+    modelNode(ctx);
+    const actual = jest.requireActual('./radicle/radicled-gate');
+    ctx.takeRadicleGate.mockImplementationOnce(async (_home, options) => {
+      expect(options.required).toBe(true);
+      throw new actual.RadicleGateError(
+        'missing',
+        "The Radicle add-on runs only under freedom-radicled's hold-lock: run npm run radicled:download"
+      );
+    });
+
+    await expect(ctx.mod.startRadicle()).resolves.toEqual({
+      status: 'error',
+      error:
+        "The Radicle add-on runs only under freedom-radicled's hold-lock: run npm run radicled:download",
+    });
+    expect(ctx.embedded.start).not.toHaveBeenCalled();
+    fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
 });
 
-// Plan B6 (freedom-core design 0008, step 6): FREEDOM_RADICLE_BACKEND=service
-// runs the node on freedom-radicled (radicle/radicled-node.js, faked here:
-// radicled-node.test.js runs the real one against a fake service).
+// Plan B6 (freedom-core design 0008, step 6), the default since plan B16
+// (step 7): the node on freedom-radicled (radicle/radicled-node.js, faked
+// here: radicled-node.test.js runs the real one against a fake service).
 describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
   const FREEDOM_BROWSER_RID = 'rad:z3QXuMvMmSeEX3ZgoUidZC1v5MkKE';
   const CONFINEMENT = {
@@ -1378,39 +1448,64 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
       .filter(([channel]) => channel === 'radicle:statusUpdate')
       .map(([, s]) => s.status);
 
+  // Plan B16 (0008, step 7 and Rollback): packaged builds always run the
+  // service; development builds run it unless FREEDOM_RADICLE_BACKEND=addon
+  // selects the add-on, the rollback.
   describe('radicleBackendKind', () => {
-    test('development builds: the add-on by default, the service with =service', () => {
-      const { mod } = load();
-      expect(mod.radicleBackendKind({ packaged: false, env: {} })).toBe('addon');
-      expect(
-        mod.radicleBackendKind({ packaged: false, env: { FREEDOM_RADICLE_BACKEND: 'addon' } })
-      ).toBe('addon');
-      expect(
-        mod.radicleBackendKind({ packaged: false, env: { FREEDOM_RADICLE_BACKEND: 'service' } })
-      ).toBe('service');
-    });
-
-    test('an unknown value is warned of, once, and runs the add-on', () => {
+    test.each([
+      ['a development build, by default', 'service', false, undefined],
+      ['a development build, the service named', 'service', false, 'service'],
+      ['a development build, the add-on named', 'addon', false, 'addon'],
+      ['a development build, an unknown value', 'service', false, 'radicled'],
+      ['a packaged build, by default', 'service', true, undefined],
+      ['a packaged build, the add-on named', 'service', true, 'addon'],
+    ])('%s: runs the %s', (_label, runs, packaged, value) => {
       const { mod } = load();
       const log = require('./logger');
-      const env = { FREEDOM_RADICLE_BACKEND: 'radicled' };
-      expect(mod.radicleBackendKind({ packaged: false, env })).toBe('addon');
-      expect(mod.radicleBackendKind({ packaged: false, env })).toBe('addon');
-      expect(log.warn).toHaveBeenCalledTimes(1);
-      expect(log.warn).toHaveBeenCalledWith(
-        '[Radicle] Unknown FREEDOM_RADICLE_BACKEND=radicled; using the add-on'
-      );
+      const env = value === undefined ? {} : { FREEDOM_RADICLE_BACKEND: value };
+      expect(mod.radicleBackendKind({ packaged, env })).toBe(runs);
+      if (value === 'radicled') {
+        expect(log.warn).toHaveBeenCalledWith(
+          '[Radicle] Unknown FREEDOM_RADICLE_BACKEND=radicled; using freedom-radicled'
+        );
+      } else {
+        expect(log.warn).not.toHaveBeenCalled();
+      }
     });
 
-    test('packaged builds ignore the flag: always the add-on', async () => {
+    test('an unknown value is warned of once', () => {
+      const { mod } = load();
+      const log = require('./logger');
+      const env = { FREEDOM_RADICLE_BACKEND: 'libradicle' };
+      expect(mod.radicleBackendKind({ packaged: false, env })).toBe('service');
+      expect(mod.radicleBackendKind({ packaged: false, env })).toBe('service');
+      expect(log.warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('the variable unset: a development build starts the node on the service', async () => {
+      delete process.env.FREEDOM_RADICLE_BACKEND;
+      const ctx = load();
+      expect(ctx.mod.radicleBackendKind()).toBe('service');
+      const started = ctx.mod.startRadicle();
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+      ctx.node().resolveStart(true);
+      await expect(started).resolves.toEqual({ status: 'running', error: null });
+      expect(ctx.embedded.start).not.toHaveBeenCalled();
+      await ctx.mod.stopRadicle();
+    });
+
+    test('packaged builds ignore the variable: the add-on named, the node starts on the service', async () => {
+      process.env.FREEDOM_RADICLE_BACKEND = 'addon';
       const ctx = load({ app: { isPackaged: true, getVersion: () => '1.0.0' } });
-      expect(ctx.mod.radicleBackendKind()).toBe('addon');
-      expect(
-        ctx.mod.radicleBackendKind({ packaged: true, env: { FREEDOM_RADICLE_BACKEND: 'service' } })
-      ).toBe('addon');
-      await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
-      expect(ctx.embedded.start).toHaveBeenCalledTimes(1);
-      expect(ctx.radicledNode.nodes).toHaveLength(0);
+      expect(ctx.mod.radicleBackendKind()).toBe('service');
+      const started = ctx.mod.startRadicle();
+      await flush();
+      expect(ctx.radicledNode.nodes).toHaveLength(1);
+      ctx.node().resolveStart(true);
+      await expect(started).resolves.toEqual({ status: 'running', error: null });
+      expect(ctx.embedded.start).not.toHaveBeenCalled();
+      expect(ctx.takeRadicleGate).not.toHaveBeenCalled();
       await ctx.mod.stopRadicle();
     });
   });
@@ -2361,7 +2456,7 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     });
 
     test("the add-on's leg is today's stop, with no bound of its own", async () => {
-      delete process.env.FREEDOM_RADICLE_BACKEND;
+      process.env.FREEDOM_RADICLE_BACKEND = 'addon';
       const ctx = load();
       await ctx.mod.startRadicle();
       const clock = timers();
