@@ -118,6 +118,61 @@ function radicledImportModule() {
   return require('./radicle/radicled-import');
 }
 
+/** Whether the profile routes Radicle through Tor: its "Route Radicle
+ * through Tor" setting (freedom-core design 0008, "The setting"), a switch
+ * of its own, apart from IPFS's. */
+function routesRadicleThroughTor(settings = require('./settings-store').loadSettings()) {
+  return require('./radicle/radicle-network').routesRadicleThroughTor(settings);
+}
+
+// The add-on, the rollback, has no network policy: it connects directly,
+// as it always has, whatever Route Radicle through Tor says (plan B18: the
+// setting is the service's). This says so in the log, and is only that: a
+// settings read that fails leaves the line out, and changes nothing.
+function warnAddonConnectsDirectly() {
+  let routed;
+  try {
+    routed = routesRadicleThroughTor();
+  } catch {
+    return;
+  }
+  if (routed) {
+    log.warn(
+      '[Radicle] The add-on backend connects directly: Route Radicle through Tor applies to freedom-radicled only'
+    );
+  }
+}
+
+// The network policy the service's process runs under (freedom-core design
+// 0008, "Modes"; plan B18): `direct`, or `socks5` through the endpoint
+// tor-manager offers Radicle when the profile routes Radicle through Tor
+// (radicle/radicle-network.js). Made at the service's first start, with
+// the setting's hook: a run on the add-on makes none of it, and tor-manager
+// is required when first asked, so a `direct` profile never loads it.
+let radicleNetwork = null;
+
+function profileRadicleNetwork() {
+  if (radicleNetwork) return radicleNetwork;
+  const { onSettingsChanged } = require('./settings-store');
+  const { RadicleNetwork } = require('./radicle/radicle-network');
+  const network = new RadicleNetwork({
+    routesThroughTor: () => routesRadicleThroughTor(),
+    tor: {
+      getRadicleSocksEndpoint: () => require('./tor-manager').getRadicleSocksEndpoint(),
+      onRadicleSocksEndpointChange: (listener) =>
+        require('./tor-manager').onRadicleSocksEndpointChange(listener),
+    },
+    log,
+  });
+  // The setting moving is a change of policy: the process restarts under
+  // the new one (0008, "Changing the policy restarts the process").
+  onSettingsChanged((merged, previous) => {
+    if (routesRadicleThroughTor(merged) !== routesRadicleThroughTor(previous)) network.changed();
+  });
+  radicleNetwork = network;
+  return network;
+}
+
 // The imports asked for on the service and not yet over (plan B14): the
 // node is stopped for each, and the GitHub bridge's check doesn't require
 // it running meanwhile.
@@ -408,6 +463,7 @@ async function startAddonInternal({ signal = null } = {}) {
       return getCurrentStatus();
     }
     if (gate.lost) throw new Error(GATE_LOST);
+    warnAddonConnectsDirectly();
     const result = await embedded.start(radHome, 'FreedomBrowser');
     // The gate went while the node started: it never runs ungated.
     if (gate.lost) {
@@ -512,6 +568,8 @@ async function startServiceInternal({ signal = null } = {}) {
     switchAlias: () => getNodeAlias() || DEFAULT_ALIAS,
     shellVersion: app?.getVersion?.(),
     log,
+    // Its policy (plan B18): a change of it is a new process.
+    network: profileRadicleNetwork(),
     onFailure: (reason, failed) => handleServiceNodeFailure(reason, failed),
     onChange: (state, changed) => handleServiceNodeChange(state, changed),
     onQuarantine: (_count, changed) => {
@@ -578,12 +636,15 @@ function handleServiceNodeFailure(reason, node) {
 }
 
 // The service node went down for a restart, or came back; or its spawn
-// waits for the vault's unlock (0008, "When the node can start"), which
-// the status says while the node stays STARTING.
+// waits for the vault's unlock (0008, "When the node can start"), or for
+// Tor's endpoint while the profile routes Radicle through Tor (plan B18),
+// which the status says while the node stays STARTING.
 function handleServiceNodeChange(state, node) {
   if (node !== serviceNode) return;
   if (state === 'waiting') {
     setStatusMessage('radicle', 'Waiting for the vault to be unlocked');
+  } else if (state === 'waiting-tor') {
+    setStatusMessage('radicle', 'Waiting for Tor');
   } else if (state === 'restarting' && currentState === STATUS.RUNNING) {
     setStatusMessage('radicle', 'Node restarting');
     updateState(STATUS.STARTING);

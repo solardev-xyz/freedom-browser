@@ -72,6 +72,26 @@
  *   the request waits for its answer; an event for any other request is
  *   dropped. Its `signal` is its cancel: main's `cancel` goes at once, and
  *   the answer comes when the clone stops (radicled-client.js's `clone`).
+ * - **The network policy** (0008, "Modes" and "The setting"; plan B18):
+ *   `network` is the policy's source (radicle-network.js), and each
+ *   process is spawned under the policy it says then, as `--network`,
+ *   which `rad.hello` must report back (radicled-client.js). With none (the
+ *   profile routes Radicle through Tor, and Tor offers no endpoint yet),
+ *   nothing is spawned and nothing falls back to `direct`: the node stays
+ *   as it is, `starting` or `restarting`, and tells the manager it waits
+ *   (`onChange('waiting-tor')`) until the policy says one.
+ * - **A change of policy is a new process** (0008, "Changing the policy
+ *   restarts the process"): the setting, or Tor's endpoint moving. The
+ *   generation is retired at once, so nothing more is sent to it, the
+ *   process is shut down (`rad.shutdown`, and the kill 10 s after it), and
+ *   once it has exited a new one is spawned under the policy then in
+ *   force, with the whole start again: on a vault profile, the new process
+ *   waits for an unlock, as every start does. The respawn has no back-off
+ *   and counts as no crash. The setting turned on while Tor offers no
+ *   endpoint ends a `direct` process too, and nothing is spawned until Tor
+ *   offers one. Tor going down under `socks5` is no change: the process
+ *   stays, and fails closed. Generation numbers go on across processes, so
+ *   a new policy's process is never taken for an older one.
  * - **Before the first spawn of each start**, a control socket the add-on
  *   left at `<home>/node/control.sock` is removed under the home's gate
  *   (`removeStaleControlSocket`), so the grant check doesn't refuse a home
@@ -100,6 +120,7 @@ const { RadicledClient } = require('./radicled-client');
 const { getRadicledBinaryPath } = require('./radicled-binary');
 const { removeStaleControlSocket } = require('./radicled-gate');
 const { OUTCOME_UNKNOWN_MESSAGE } = require('./radicle-service-backend');
+const { policySource, supersedes } = require('./radicle-network');
 
 const HEALTH_INTERVAL_MS = 5_000;
 const STATS_FRESH_MS = 15_000;
@@ -237,6 +258,12 @@ function identityGuard() {
   };
 }
 
+/** The node's number for generation `number` of `client`: its own, after
+ * the generations of the clients before it. */
+function generationNumber(client, number) {
+  return (client?.generationBase ?? 0) + number;
+}
+
 class RadicledNode {
   /**
    * @param {object} options
@@ -254,11 +281,14 @@ class RadicledNode {
    *   (`identityGuard()`): `blockReason()`, `block(status)`, `unblock()`
    * @param {Function} [options.removeStaleSocket] - (home, { signal, log })
    *   (`removeStaleControlSocket`)
-   * @param {object} [options.network] - the process's policy; `direct`
+   * @param {object} [options.network] - the policy's source
+   *   (radicle-network.js): `current()` and `subscribe(listener)`; or a
+   *   fixed policy, `{ mode, … }`; `direct` by default
    * @param {Function} [options.onFailure] - (reason, node) once it gives up
    *   after it was running
    * @param {Function} [options.onChange] - (state, node): `restarting`,
-   *   `running` again, and `waiting` (for the vault's unlock)
+   *   `running` again, `waiting` (for the vault's unlock) and
+   *   `waiting-tor` (for Tor's endpoint)
    * @param {Function} [options.onQuarantine] - (count, node) when the
    *   running generation's stats count another number of quarantined
    *   repositories than it last did
@@ -302,7 +332,7 @@ class RadicledNode {
     this.keys = keys ?? coreKeys();
     this.guard = guard ?? identityGuard();
     this.removeStaleSocket = removeStaleSocket;
-    this.network = network;
+    this.network = policySource(network);
     this.onFailure = onFailure;
     this.onChange = onChange;
     this.onQuarantine = onQuarantine;
@@ -316,6 +346,15 @@ class RadicledNode {
     this.clearTimer = clearTimer;
 
     this.client = null;
+    // The subscription to the policy's changes; whether nothing is spawned
+    // for want of a policy; a policy change's stop of the old process, and
+    // the respawn after it: its promise, or null.
+    this.unsubscribeNetwork = null;
+    this.waitingForNetwork = false;
+    this.changing = null;
+    // The generations of the processes before this one's client, so the
+    // node's generation numbers go on across a change of policy.
+    this.generationsBefore = 0;
     // stopped → starting → running ⇄ restarting; failed, or stopping → stopped.
     this.state = 'stopped';
     this.failureReason = null;
@@ -385,8 +424,8 @@ class RadicledNode {
 
   /**
    * Starts the node. Resolves true once it is up, through any unlock wait,
-   * switch and restarts on the way; false if it gave up (`failureReason`
-   * says why) or was stopped first.
+   * wait for Tor, switch, restarts and policy changes on the way; false if
+   * it gave up (`failureReason` says why) or was stopped first.
    */
   start() {
     if (this.started) return this.started;
@@ -396,6 +435,7 @@ class RadicledNode {
     this.started = new Promise((resolve) => {
       this.resolveStart = resolve;
     });
+    this.unsubscribeNetwork = this.network.subscribe(() => this.onNetworkChange());
     this.prepareAbort = new AbortController();
     this.prepared = this.removeStaleSocket(this.home, {
       signal: this.prepareAbort.signal,
@@ -403,17 +443,33 @@ class RadicledNode {
     })
       .catch(() => {})
       .then(() => {
-        if (!this.stopping && this.state !== 'failed') this.spawnClient();
+        if (!this.stopping && this.state !== 'failed') this.spawnUnder(this.network.current());
       });
     return this.started;
   }
 
-  spawnClient() {
+  /**
+   * Spawns a process under `policy`, on a client of its own (0008: the
+   * policy is the process's). With no policy (Radicle through Tor, and no
+   * endpoint from Tor yet), nothing is spawned, and nothing falls back to
+   * `direct`: the node waits for one.
+   */
+  spawnUnder(policy) {
+    if (!policy) {
+      this.waitForNetwork();
+      return;
+    }
+    this.waitingForNetwork = false;
+    this.spawnClient(policy);
+  }
+
+  spawnClient(policy) {
+    this.spawnCleared = false;
     const client = new RadicledClient({
       home: this.home,
       lockDir: this.lockDir,
       ownHome: this.ownHome,
-      network: this.network,
+      network: policy,
       ...(this.command ? { command: this.command } : {}),
       ...(this.serviceVersion !== undefined ? { serviceVersion: this.serviceVersion } : {}),
       spawn: this.spawn,
@@ -424,8 +480,10 @@ class RadicledNode {
       clearTimer: this.clearTimer,
       // Before every spawn, a crash's restart's too: none while the vault
       // is locked (0008, "When the node can start").
-      deferSpawn: () => this.deferSpawn(),
+      deferSpawn: () => this.deferSpawn(client),
     });
+    // Its generations' numbers go on from the processes before it.
+    client.generationBase = this.generationsBefore;
     this.client = client;
     client.on('ready', (hello) => this.onReady(client, hello));
     client.on('exit', () => this.onExit(client));
@@ -445,7 +503,9 @@ class RadicledNode {
   async stopNode() {
     this.state = 'stopping';
     const cycling = this.cycling;
+    const changing = this.changing;
     this.cycling = null;
+    this.stopWatchingNetwork();
     this.prepareAbort?.abort();
     this.cancelTimers();
     this.wakeWaits();
@@ -456,8 +516,9 @@ class RadicledNode {
     const stopped = this.client?.stop();
     await this.prepared;
     // A switch's write in flight too: the core holds the home's gate for
-    // it, so a later start waits for it.
-    await Promise.all([stopped, cycling]);
+    // it, so a later start waits for it. And a policy change's stop of the
+    // old process: the node is stopped once no process of it is left.
+    await Promise.all([stopped, cycling, changing]);
     this.state = 'stopped';
   }
 
@@ -476,7 +537,7 @@ class RadicledNode {
   /** The number of the process whose `rad.start` succeeded, while it
    * serves, or null: each crash's restart is a new one. */
   get generation() {
-    return this.liveActive()?.gen.number ?? null;
+    return this.liveActive()?.number ?? null;
   }
 
   /** The running generation's identity, `{ did, nid, alias, ephemeral }`,
@@ -556,10 +617,11 @@ class RadicledNode {
     const active = this.liveActive();
     if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
     const progress = typeof onProgress === 'function';
+    const client = this.client;
     let key = null;
     const onSent = progress
       ? (id, generation) => {
-          key = `${generation}:${id}`;
+          key = `${generationNumber(client, generation)}:${id}`;
           this.progress.set(key, onProgress);
         }
       : null;
@@ -622,7 +684,10 @@ class RadicledNode {
   /** A write on `target`'s generation, `send(gen, onSent)`, its outcome as
    * `write` says. */
   mutate(target, send) {
-    if (!target?.gen) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    // No client: a change of policy is replacing the process.
+    if (!target?.gen || !this.client) {
+      return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    }
     let sent = false;
     let request;
     try {
@@ -660,7 +725,7 @@ class RadicledNode {
     // Progress stops at the answer (0008, Progress): the request is no
     // longer pending once its answer is read, before its caller hears it.
     if (!gen.pending?.has(id)) return;
-    const onProgress = this.progress.get(`${gen.number}:${id}`);
+    const onProgress = this.progress.get(`${generationNumber(client, gen.number)}:${id}`);
     if (!onProgress) return;
     try {
       onProgress(event);
@@ -671,33 +736,107 @@ class RadicledNode {
     }
   }
 
+  // ---- the network policy ----
+
+  /**
+   * Nothing is spawned for want of a policy: Radicle routes through Tor,
+   * which offers no endpoint yet. The manager hears it once
+   * (`onChange('waiting-tor')`), and nothing falls back to `direct`.
+   */
+  waitForNetwork() {
+    if (this.waitingForNetwork) return;
+    this.waitingForNetwork = true;
+    // An unlock wait, if one was told, ended with its client.
+    this.waitingForUnlock = false;
+    this.log.info("[Radicle] freedom-radicled waits for Tor's SOCKS endpoint");
+    this.notify('waiting-tor');
+  }
+
+  /**
+   * The policy may have changed: a node waiting for one spawns, and a
+   * process the policy now supersedes (`supersedes`) is replaced by one
+   * under it, or by none while there is none. Tor going down under
+   * `socks5` changes nothing: the policy stays, and Radicle fails closed. A
+   * change already replacing the process, or a cycle of it (the unlock, the
+   * switch), spawns under the policy in force once the old one has exited.
+   */
+  onNetworkChange() {
+    if (this.stopping || this.state === 'failed' || this.changing || this.cycling) return;
+    const next = this.network.current();
+    if (!this.client) {
+      if (next && this.waitingForNetwork) this.spawnUnder(next);
+      return;
+    }
+    if (supersedes(next, this.client.network)) this.changePolicy();
+  }
+
+  /**
+   * 0008, "Changing the policy restarts the process": the generation is
+   * retired at once, so nothing more is sent to it; the process is shut
+   * down (`rad.shutdown`, the kill 10 s later), which also ends its spawn's
+   * wait for an unlock; and once it has exited, a new one is spawned under
+   * the policy then in force, with no back-off and no crash counted. The
+   * old client's events reach nothing from here on.
+   */
+  changePolicy() {
+    const old = this.client;
+    this.log.info('[Radicle] The network policy changed: freedom-radicled restarts');
+    this.retireGeneration();
+    this.goDown();
+    this.client = null;
+    this.waitingForUnlock = false;
+    const change = old.stop().then(() => {
+      if (this.changing !== change) return;
+      this.changing = null;
+      if (this.stopping || this.state === 'failed') return;
+      this.replaceClient(old);
+    });
+    this.changing = change;
+    // The old client's unlock wait, if any, ends with it.
+    this.wakeWaits();
+  }
+
+  /** A new client under the policy in force, in place of `old`, which has
+   * exited. Its generations' numbers go on from `old`'s. */
+  replaceClient(old) {
+    if (this.client === old) this.client = null;
+    this.generationsBefore = old.generationBase + old.generations;
+    this.spawnUnder(this.network.current());
+  }
+
+  stopWatchingNetwork() {
+    this.unsubscribeNetwork?.();
+    this.unsubscribeNetwork = null;
+  }
+
   // ---- the vault's unlock ----
 
   /**
-   * The client's deferred spawn: none while the vault is locked. A wait
+   * `client`'s deferred spawn: none while the vault is locked. A wait
    * that ends lets the client ask again, which spawns.
    */
-  deferSpawn() {
-    if (this.spawnCleared) {
+  deferSpawn(client) {
+    if (this.spawnCleared && client === this.client) {
       this.spawnCleared = false;
       return null;
     }
-    return this.untilVaultUsable().then((usable) => {
-      if (usable) this.spawnCleared = true;
+    return this.untilVaultUsable(client).then((usable) => {
+      if (usable && client === this.client) this.spawnCleared = true;
     });
   }
 
   /**
-   * Resolves true once a spawn may go ahead: the vault is unlocked, or there
-   * is none (the seal then answers `no_vault`). While it is locked, waits
-   * for the core's next vault event, then asks again. False once the node
-   * stops or gives up, whose client's stop has ended the wait. Rejects if
-   * the core can't say, which fails the start: nothing falls back to a
-   * throwaway key.
+   * Resolves true once `client`'s spawn may go ahead: the vault is
+   * unlocked, or there is none (the seal then answers `no_vault`). While it
+   * is locked, waits for the core's next vault event, then asks again.
+   * False once the node stops or gives up, or a change of policy replaces
+   * the client, whose stop has ended the wait. Rejects if the core can't
+   * say, which fails the start: nothing falls back to a throwaway key.
    */
-  async untilVaultUsable() {
+  async untilVaultUsable(client) {
+    const ended = () => this.stopping || this.state === 'failed' || client !== this.client;
     for (;;) {
-      if (this.stopping || this.state === 'failed') return false;
+      if (ended()) return false;
       // Subscribed before asking, so an unlock meanwhile isn't missed.
       const woken = this.nextVaultEvent();
       let status;
@@ -710,7 +849,7 @@ class RadicledNode {
         });
         throw err;
       }
-      if (this.stopping || this.state === 'failed') {
+      if (ended()) {
         woken.cancel();
         return false;
       }
@@ -853,6 +992,8 @@ class RadicledNode {
     // `ephemeral` alone decides write admission. `rad.start` adds the alias.
     this.active = {
       gen,
+      // The node's number for it, which goes on across processes.
+      number: generationNumber(client, gen.number),
       identity: Object.freeze({
         did: identity.did,
         nid: identity.nid,
@@ -906,6 +1047,11 @@ class RadicledNode {
       if (why === 'switch' && !(await this.switchHome())) return;
       if (this.cycling !== run) return;
       this.cycling = null;
+      // A change of policy meanwhile is a new process under it.
+      if (supersedes(this.network.current(), client.network)) {
+        this.replaceClient(client);
+        return;
+      }
       // The deferred spawn asks the vault again.
       client.start().catch(() => {});
     })();
@@ -1088,6 +1234,7 @@ class RadicledNode {
     this.failureReason = reason;
     this.failureCode = code;
     this.cycling = null;
+    this.stopWatchingNetwork();
     this.retireGeneration();
     this.cancelTimers();
     this.wakeWaits();

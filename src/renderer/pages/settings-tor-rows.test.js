@@ -87,6 +87,18 @@ describe('applyTorRowVisibility', () => {
     expect(displays(dom)).toEqual(['', '', '']);
   });
 
+  // Route Radicle through Tor, its own switch (plan B18), keeps them too.
+  test('keeps the rows while Radicle is routed through Tor, on a build that bundles none', () => {
+    const dom = fakeRows(4);
+    loadApply({
+      torBundled: false,
+      cachedSettings: { enableTorIntegration: false, routeRadicleThroughTor: true },
+      ...dom,
+    })();
+
+    expect(displays(dom)).toEqual(['', '', '', '']);
+  });
+
   test('hides the rows before any settings payload has arrived', () => {
     const dom = fakeRows();
     loadApply({ torBundled: false, cachedSettings: null, ...dom })();

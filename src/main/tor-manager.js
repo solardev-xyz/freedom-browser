@@ -79,16 +79,19 @@ const proxySessions = new Map();
 let appliedSocksEndpoint = null;
 let artiBootstrapped = false;
 let artiOutputBuffer = '';
-// The SOCKS endpoint offered to the IPFS service, for a profile that routes
-// IPFS through Tor (freedom-core design 0007, "Where the proxy comes from"):
-// `{ ip, port }` while Tor is RUNNING at an endpoint it can take, otherwise
-// null, with `ipfsEndpointRefusal` saying why when Tor runs at one it can't.
-// Each of `ipfsEndpointListeners` is called with getIpfsSocksEndpoint() each
+// The SOCKS endpoint offered to each service process that a profile can
+// route through Tor: IPFS (freedom-core design 0007, "Where the proxy comes
+// from") and Radicle (design 0008, "Modes"), each a switch of its own.
+// Each offer's `endpoint` is `{ ip, port }` while Tor is RUNNING at an
+// endpoint the service can take, otherwise null, with `refused` saying why
+// when Tor runs at one it can't. Each of an offer's `listeners` is called
+// with that offer (getIpfsSocksEndpoint(), getRadicleSocksEndpoint()) each
 // time either changes, on its own: one that throws is logged, and neither
 // stops the others nor Tor's start or stop.
-let ipfsEndpoint = null;
-let ipfsEndpointRefusal = null;
-const ipfsEndpointListeners = new Set();
+const serviceOffers = Object.freeze({
+  ipfs: { noun: 'IPFS', endpoint: null, refused: null, listeners: new Set() },
+  radicle: { noun: 'Radicle', endpoint: null, refused: null, listeners: new Set() },
+});
 // Bumped by every start attempt and by every stop, so a start that is awaiting
 // something (external-candidate prompt, port probe, SOCKS probe) can tell that
 // it has been superseded and must not spawn/commit anything.
@@ -238,7 +241,7 @@ function updateState(newState, error = null) {
   log.info('[Tor] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
   currentState = newState;
   lastError = error;
-  publishIpfsEndpoint();
+  publishServiceEndpoints();
   const windows = require('electron').BrowserWindow.getAllWindows();
   for (const win of windows) {
     try {
@@ -890,14 +893,15 @@ function getActivePort() {
 }
 
 /**
- * The SOCKS endpoint `raw` ('host:port') names, as the IPFS service takes it
- * (design 0007, decision D8): an IP literal and a port, `{ endpoint: { ip,
- * port } }`. `localhost` is 127.0.0.1. Any other host name is refused,
- * `{ refused: reason }`: the service would need a resolver outside the proxy
- * to reach it. The service checks the address itself too (no unspecified,
+ * The SOCKS endpoint `raw` ('host:port') names, as a service process takes
+ * it (design 0007, decision D8; design 0008, "Modes"): an IP literal and a
+ * port, `{ endpoint: { ip, port } }`. `localhost` is 127.0.0.1. Any other
+ * host name is refused, `{ refused: reason }`, the reason naming the
+ * service (`noun`): the service would need a resolver outside the proxy to
+ * reach it. The service checks the address itself too (no unspecified,
  * multicast or broadcast proxy).
  */
-function ipfsSocksEndpointFor(raw) {
+function serviceSocksEndpointFor(raw, noun) {
   const parsed = parseSocksEndpoint(raw);
   if (!parsed) return { refused: 'Tor has no SOCKS endpoint' };
   if (parsed.host.toLowerCase() === 'localhost') {
@@ -907,31 +911,51 @@ function ipfsSocksEndpointFor(raw) {
     return { endpoint: { ip: parsed.host, port: parsed.port } };
   }
   return {
-    refused: `Tor's SOCKS endpoint ${parsed.host} is a host name: IPFS through Tor needs an IP address`,
+    refused: `Tor's SOCKS endpoint ${parsed.host} is a host name: ${noun} through Tor needs an IP address`,
   };
 }
 
-/** Recomputes the endpoint offered to the IPFS service; emits a change. */
-function publishIpfsEndpoint() {
+/** Recomputes the endpoint offered to each service; emits its changes. */
+function publishServiceEndpoints() {
+  for (const offer of Object.values(serviceOffers)) publishServiceEndpoint(offer);
+}
+
+function publishServiceEndpoint(offer) {
   const { endpoint = null, refused = null } =
-    currentState === STATUS.RUNNING ? ipfsSocksEndpointFor(currentSocksEndpoint) : {};
+    currentState === STATUS.RUNNING
+      ? serviceSocksEndpointFor(currentSocksEndpoint, offer.noun)
+      : {};
   const same =
-    endpoint === ipfsEndpoint ||
+    endpoint === offer.endpoint ||
     (endpoint &&
-      ipfsEndpoint &&
-      endpoint.ip === ipfsEndpoint.ip &&
-      endpoint.port === ipfsEndpoint.port);
-  if (same && refused === ipfsEndpointRefusal) return;
-  ipfsEndpoint = endpoint;
-  ipfsEndpointRefusal = refused;
-  if (refused) log.warn('[Tor] Not offered to IPFS:', refused);
-  for (const listener of ipfsEndpointListeners) {
+      offer.endpoint &&
+      endpoint.ip === offer.endpoint.ip &&
+      endpoint.port === offer.endpoint.port);
+  if (same && refused === offer.refused) return;
+  offer.endpoint = endpoint;
+  offer.refused = refused;
+  if (refused) log.warn(`[Tor] Not offered to ${offer.noun}:`, refused);
+  for (const listener of offer.listeners) {
     try {
-      listener(getIpfsSocksEndpoint());
+      listener(offered(offer));
     } catch (err) {
-      log.error('[Tor] IPFS endpoint listener failed:', err);
+      log.error(`[Tor] ${offer.noun} endpoint listener failed:`, err);
     }
   }
+}
+
+/** An offer as its readers see it: `{ endpoint, refused }`, a copy. */
+function offered(offer) {
+  return {
+    endpoint: offer.endpoint && { ...offer.endpoint },
+    refused: offer.refused,
+  };
+}
+
+/** Adds `listener` to `offer`'s; returns the function that removes it. */
+function listenTo(offer, listener) {
+  offer.listeners.add(listener);
+  return () => offer.listeners.delete(listener);
 }
 
 /**
@@ -942,10 +966,7 @@ function publishIpfsEndpoint() {
  * it: the service fails closed anyway, without a proxy that answers.
  */
 function getIpfsSocksEndpoint() {
-  return {
-    endpoint: ipfsEndpoint && { ...ipfsEndpoint },
-    refused: ipfsEndpointRefusal,
-  };
+  return offered(serviceOffers.ipfs);
 }
 
 /**
@@ -954,8 +975,23 @@ function getIpfsSocksEndpoint() {
  * own, a throw logged and dropped. Returns the function that stops it.
  */
 function onIpfsSocksEndpointChange(listener) {
-  ipfsEndpointListeners.add(listener);
-  return () => ipfsEndpointListeners.delete(listener);
+  return listenTo(serviceOffers.ipfs, listener);
+}
+
+/**
+ * The SOCKS endpoint offered to the Radicle service (freedom-core design
+ * 0008, "Modes": `socks5 { ip, port }`, an IP literal), as
+ * getIpfsSocksEndpoint() offers IPFS its own: the same endpoint, under the
+ * same rules, and withdrawn alike.
+ */
+function getRadicleSocksEndpoint() {
+  return offered(serviceOffers.radicle);
+}
+
+/** Calls `listener` with getRadicleSocksEndpoint() each time it changes, as
+ * onIpfsSocksEndpointChange() does. Returns the function that stops it. */
+function onRadicleSocksEndpointChange(listener) {
+  return listenTo(serviceOffers.radicle, listener);
 }
 
 function registerTorIpc() {
@@ -1022,6 +1058,8 @@ module.exports = {
   getActivePort,
   getIpfsSocksEndpoint,
   onIpfsSocksEndpointChange,
+  getRadicleSocksEndpoint,
+  onRadicleSocksEndpointChange,
   getArtiVersion,
   getArtiBinaryPath,
   getTorDataPath,

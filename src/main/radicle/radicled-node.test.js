@@ -5,7 +5,8 @@
  * manual clock: the start's order, the sealed key and the throwaway one,
  * the unlock wait (at the start and for a crash's restart), the lock
  * boundary, the switch, the other start steps' errors and the Retry,
- * readiness, the restarts, the stop, and what main's log never holds. The
+ * readiness, the restarts, the stop, the network policy and its changes
+ * (plan B18), and what main's log never holds. The
  * process's supervision is radicled-client.js's (radicled-client.test.js);
  * the real binaries run in radicled-node.integration.test.js.
  */
@@ -41,6 +42,8 @@ const {
   DID,
   NID,
 } = require('../../../test/helpers/fake-radicled');
+const { fakeTorEndpoint } = require('../../../test/helpers/fake-tor-endpoint');
+const { RadicleNetwork } = require('./radicle-network');
 
 const HOME = path.join('app-data', 'Freedom', 'R', '1');
 const LOCK_DIR = path.join('app-data', 'Freedom', 'locks');
@@ -1057,5 +1060,376 @@ describe('diagnostics (design 0010, step 5)', () => {
         confinement: CONFINEMENT,
       },
     });
+  });
+});
+
+/** The `--network` value `c` was spawned with. */
+const networkOf = (c) => c.args[c.args.indexOf('--network') + 1];
+/** The states the manager heard, in order. */
+const changes = (node) => node.onChange.mock.calls.map(([state]) => state);
+const SOCKS = Object.freeze({ mode: 'socks5', ip: '127.0.0.1', port: 9150 });
+
+describe('the network policy (0008, "Modes"; plan B18)', () => {
+  /** A node of a profile whose setting (`setting.routes`) says whether
+   * Radicle goes through Tor, and `tor` what Tor offers. */
+  function profile({ routes = true, endpoint = null, script = {}, extra = {} } = {}) {
+    const tor = fakeTorEndpoint();
+    if (endpoint) tor.offer(endpoint);
+    const setting = { routes };
+    const network = new RadicleNetwork({ routesThroughTor: () => setting.routes, tor });
+    const node = newNode(script, { network, ...extra });
+    return { node, tor, setting, network };
+  }
+
+  test('direct by default: spawned with --network direct', async () => {
+    await running();
+    expect(networkOf(child(0))).toBe('direct');
+  });
+
+  test("through Tor, the process is spawned under Tor's endpoint, which hello reports and the nodes panel shows", async () => {
+    const { node } = profile({ endpoint: { ip: '127.0.0.1', port: 9150 } });
+    const started = node.start();
+    await settle();
+    await expect(started).resolves.toBe(true);
+    expect(networkOf(child(0))).toBe('socks5:127.0.0.1:9150');
+    expect(node.buildInfo().service.network).toEqual(SOCKS);
+    // The whole start ran under it: the policy changes nothing else.
+    expect(methods(child(0))).toEqual([
+      'rad.hello',
+      'rad.identity',
+      'rad.reconcile',
+      'rad.start',
+      'rad.stats',
+    ]);
+  });
+
+  test('an IPv6 endpoint goes in brackets', async () => {
+    const { node } = profile({ endpoint: { ip: '::1', port: 9050 } });
+    const started = node.start();
+    await settle();
+    await expect(started).resolves.toBe(true);
+    expect(networkOf(child(0))).toBe('socks5:[::1]:9050');
+  });
+
+  test('a hello that reports another policy than main passed is a fault: the start never goes on', async () => {
+    const { node } = profile({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      script: { hello: (m, c) => c.result(m.id, { ...HELLO, network: { mode: 'direct' } }) },
+    });
+    const started = node.start();
+    await settle();
+    await clock.advance(120_000);
+    await expect(started).resolves.toBe(false);
+    expect(keys.seal).not.toHaveBeenCalled();
+    expect(service.children.flatMap((c) => c.sent('rad.identity'))).toEqual([]);
+  });
+
+  test('through Tor with no endpoint yet, nothing is spawned, nothing falls back, until Tor offers one', async () => {
+    const { node, tor } = profile();
+    let result = null;
+    node.start().then((value) => (result = value));
+    await settle();
+    await clock.advance(120_000);
+
+    // No process at all: the node stays starting, and says it waits.
+    expect(service.children).toHaveLength(0);
+    expect(node.state).toBe('starting');
+    expect(result).toBeNull();
+    expect(changes(node)).toEqual(['waiting-tor']);
+    expect(keys.status).not.toHaveBeenCalled();
+
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.children).toHaveLength(1);
+    expect(networkOf(child(0))).toBe('socks5:127.0.0.1:9150');
+    expect(result).toBe(true);
+    expect(node.state).toBe('running');
+  });
+
+  test('a stop while it waits for Tor ends the wait and its subscription', async () => {
+    const { node, tor } = profile();
+    const started = node.start();
+    await settle();
+    expect(tor.listeners.size).toBe(1);
+    await node.stop();
+    await expect(started).resolves.toBe(false);
+    expect(tor.listeners.size).toBe(0);
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.children).toHaveLength(0);
+  });
+
+  test('the setting turned off while it waits for Tor spawns a direct process', async () => {
+    const { node, setting, network } = profile();
+    const started = node.start();
+    await settle();
+    setting.routes = false;
+    network.changed();
+    await settle();
+    await expect(started).resolves.toBe(true);
+    expect(service.children.map(networkOf)).toEqual(['direct']);
+  });
+
+  test('a crash is restarted under the same policy', async () => {
+    const { node } = profile({ endpoint: { ip: '127.0.0.1', port: 9150 } });
+    const started = node.start();
+    await settle();
+    await expect(started).resolves.toBe(true);
+    child(0).exit(70);
+    await settle();
+    await clock.advance(500);
+    expect(service.children.map(networkOf)).toEqual([
+      'socks5:127.0.0.1:9150',
+      'socks5:127.0.0.1:9150',
+    ]);
+    expect(node.state).toBe('running');
+  });
+
+  test('a node that gave up stops listening', async () => {
+    const { node, tor } = profile({
+      endpoint: { ip: '127.0.0.1', port: 9150 },
+      script: { reconcile: (m, c) => c.error(m.id, 'recovery_failed', 'repair failed') },
+    });
+    await expect(node.start()).resolves.toBe(false);
+    expect(node.state).toBe('failed');
+    expect(tor.listeners.size).toBe(0);
+  });
+});
+
+describe('a change of network policy (0008, "Changing the policy restarts the process")', () => {
+  /** A running node through Tor at `endpoint`; `setting.routes` and
+   * `tor.offer()` change its policy. */
+  async function routed({ script = {}, endpoint = { ip: '127.0.0.1', port: 9150 } } = {}) {
+    const tor = fakeTorEndpoint();
+    tor.offer(endpoint);
+    const setting = { routes: true };
+    const network = new RadicleNetwork({ routesThroughTor: () => setting.routes, tor });
+    const node = await running(script, { network });
+    return { node, tor, setting, network };
+  }
+
+  test("Tor's endpoint moving retires the generation, shuts the process down, and spawns one under the new policy, its start whole again", async () => {
+    const { node, tor } = await routed();
+    const before = node.writeTarget();
+    const first = node.generation;
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    // Retired at once: nothing more goes to it, and it is down meanwhile.
+    expect(node.writeTarget()).toBeNull();
+    expect(node.isUp()).toBe(false);
+    expect(node.state).toBe('restarting');
+    await settle();
+
+    const [old, next] = service.children;
+    expect(old.sent('rad.shutdown')).toHaveLength(1);
+    expect(old.exited).toBe(true);
+    expect(service.children.map(networkOf)).toEqual([
+      'socks5:127.0.0.1:9150',
+      'socks5:127.0.0.1:9151',
+    ]);
+    // The new process's start is the whole start: its key sealed anew.
+    expect(methods(next)).toEqual([
+      'rad.hello',
+      'rad.identity',
+      'rad.reconcile',
+      'rad.start',
+      'rad.stats',
+    ]);
+    expect(keys.seal).toHaveBeenCalledTimes(2);
+    expect(node.state).toBe('running');
+    expect(changes(node)).toEqual(['restarting', 'running']);
+    // Its generation is the node's next: never taken for the old one.
+    expect(node.generation).toBeGreaterThan(first);
+    // A write picked for the old process isn't sent to the new one.
+    await expect(node.write(before, 'seed', { rid: 'rad:z1' })).rejects.toMatchObject({
+      code: 'stopped',
+    });
+    expect(next.sent('rad.write')).toEqual([]);
+    expect(log.info).toHaveBeenCalledWith(
+      '[Radicle] The network policy changed: freedom-radicled restarts'
+    );
+  });
+
+  test('the setting turning off or on is a change too', async () => {
+    const { node, setting, network } = await routed();
+    setting.routes = false;
+    network.changed();
+    await settle();
+    setting.routes = true;
+    network.changed();
+    await settle();
+    expect(service.children.map(networkOf)).toEqual([
+      'socks5:127.0.0.1:9150',
+      'direct',
+      'socks5:127.0.0.1:9150',
+    ]);
+    expect(service.children.slice(0, 2).every((c) => c.exited)).toBe(true);
+    expect(node.state).toBe('running');
+  });
+
+  test('the setting turned on while Tor offers no endpoint: the direct process goes, and nothing runs until Tor offers one', async () => {
+    const tor = fakeTorEndpoint();
+    const setting = { routes: false };
+    const network = new RadicleNetwork({ routesThroughTor: () => setting.routes, tor });
+    const node = await running({}, { network });
+
+    setting.routes = true;
+    network.changed();
+    await settle();
+    await clock.advance(120_000);
+    expect(child(0).sent('rad.shutdown')).toHaveLength(1);
+    expect(child(0).exited).toBe(true);
+    expect(service.children).toHaveLength(1);
+    expect(node.state).toBe('restarting');
+    expect(changes(node)).toEqual(['restarting', 'waiting-tor']);
+
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.children.map(networkOf)).toEqual(['direct', 'socks5:127.0.0.1:9150']);
+    expect(node.state).toBe('running');
+    expect(changes(node)).toEqual(['restarting', 'waiting-tor', 'running']);
+  });
+
+  test('Tor going down, or offering the same endpoint again, changes nothing: the process stays, and fails closed', async () => {
+    const { node, tor } = await routed();
+    tor.offer(null);
+    await settle();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    await settle();
+    expect(service.children).toHaveLength(1);
+    expect(child(0).sent('rad.shutdown')).toEqual([]);
+    expect(node.state).toBe('running');
+  });
+
+  test('the respawn has no back-off and counts as no crash', async () => {
+    const { node, tor } = await routed();
+    for (const port of [9151, 9152, 9153]) {
+      tor.offer({ ip: '127.0.0.1', port });
+      await settle();
+    }
+    expect(service.children).toHaveLength(4);
+    expect(networkOf(child())).toBe('socks5:127.0.0.1:9153');
+    expect(node.state).toBe('running');
+    // A crash after them is the first: 0.5 s, and restarted.
+    child().exit(70);
+    await settle();
+    await clock.advance(499);
+    expect(service.children).toHaveLength(4);
+    await clock.advance(1);
+    expect(service.children).toHaveLength(5);
+    expect(node.onFailure).not.toHaveBeenCalled();
+  });
+
+  test("changes during the old process's shutdown: one new process, under the policy in force once it has exited", async () => {
+    // The old process ignores rad.shutdown: it is killed 10 s on.
+    const { node, tor } = await routed({ script: { shutdown: hang } });
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    tor.offer({ ip: '127.0.0.1', port: 9152 });
+    await settle();
+    expect(service.children).toHaveLength(1);
+    await clock.advance(SHUTDOWN_GRACE_MS);
+    expect(service.children.map(networkOf)).toEqual([
+      'socks5:127.0.0.1:9150',
+      'socks5:127.0.0.1:9152',
+    ]);
+    expect(node.state).toBe('running');
+  });
+
+  test('a stop during the change ends it: no new process', async () => {
+    const { node, tor } = await routed({ script: { shutdown: hang } });
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    const stopping = node.stop();
+    await settle();
+    await clock.advance(SHUTDOWN_GRACE_MS);
+    await stopping;
+    expect(service.children).toHaveLength(1);
+    expect(node.state).toBe('stopped');
+  });
+
+  test("on a vault profile, the new policy's process starts only once the vault is unlocked", async () => {
+    const { node, tor } = await routed();
+    // A lock stops nothing while the node runs (0008)…
+    keys.lock();
+    await settle();
+    expect(node.state).toBe('running');
+    // …but a change of policy takes it down until the next unlock.
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    await clock.advance(120_000);
+    expect(child(0).exited).toBe(true);
+    expect(service.children).toHaveLength(1);
+    expect(node.state).toBe('restarting');
+    expect(changes(node)).toEqual(['restarting', 'waiting']);
+
+    keys.unlock();
+    await settle();
+    expect(service.children.map(networkOf)).toEqual([
+      'socks5:127.0.0.1:9150',
+      'socks5:127.0.0.1:9151',
+    ]);
+    expect(identityParams()).toEqual([{ sealed: SEALED }, { sealed: SEALED }]);
+    expect(node.state).toBe('running');
+  });
+
+  test("a change while the start waits for the unlock: the old wait ends with its client, and the new one's spawns once, under the new policy", async () => {
+    keys.vault.unlocked = false;
+    const tor = fakeTorEndpoint();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    const network = new RadicleNetwork({ routesThroughTor: () => true, tor });
+    const node = newNode({}, { network });
+    const started = node.start();
+    await settle();
+    expect(changes(node)).toEqual(['waiting']);
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    expect(service.children).toHaveLength(0);
+
+    keys.unlock();
+    await settle();
+    await expect(started).resolves.toBe(true);
+    expect(service.children.map(networkOf)).toEqual(['socks5:127.0.0.1:9151']);
+    // Each wait for the unlock was told: the new client's too.
+    expect(changes(node)).toEqual(['waiting', 'waiting']);
+  });
+
+  test('a change during the switch: the switch runs, then the process starts under the new policy', async () => {
+    let switched;
+    keys.switchHome.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          switched = () => resolve({ status: 'installed' });
+        })
+    );
+    const tor = fakeTorEndpoint();
+    tor.offer({ ip: '127.0.0.1', port: 9150 });
+    const network = new RadicleNetwork({ routesThroughTor: () => true, tor });
+    const node = newNode(
+      {
+        identity: (m, c) => {
+          if (service.children.indexOf(c) === 0) {
+            c.error(m.id, 'key_file_present', 'keys/radicle exists');
+          } else {
+            c.result(m.id, { did: DID, nid: NID, ephemeral: false });
+          }
+        },
+      },
+      { network }
+    );
+    const started = node.start();
+    await settle();
+    expect(keys.switchHome).toHaveBeenCalledTimes(1);
+    tor.offer({ ip: '127.0.0.1', port: 9151 });
+    await settle();
+    expect(service.children).toHaveLength(1);
+
+    switched();
+    await settle();
+    await expect(started).resolves.toBe(true);
+    expect(service.children.map(networkOf)).toEqual([
+      'socks5:127.0.0.1:9150',
+      'socks5:127.0.0.1:9151',
+    ]);
+    expect(keys.switchHome).toHaveBeenCalledTimes(1);
   });
 });

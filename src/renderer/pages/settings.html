@@ -2130,6 +2130,30 @@
                 </label>
               </div>
             </div>
+            <div class="row" id="route-radicle-through-tor-row" data-tor>
+              <div class="row-body">
+                <p class="row-label">
+                  <span id="route-radicle-through-tor-label">Route Radicle through Tor</span>
+                  <span class="resolver-badge">Beta</span>
+                </p>
+                <p class="row-help" id="route-radicle-through-tor-help">
+                  Sends the built-in Radicle node's traffic through Tor instead of connecting
+                  directly. Cloning and syncing are slower. If Tor isn't running, the node doesn't
+                  connect rather than going direct.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    id="route-radicle-through-tor"
+                    aria-labelledby="route-radicle-through-tor-label"
+                    aria-describedby="route-radicle-through-tor-help"
+                  />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 

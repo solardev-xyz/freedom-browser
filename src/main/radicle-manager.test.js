@@ -2,6 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createPrivateWindowFixture } = require('../../test/helpers/private-window-fixture');
+const { fakeTorEndpoint } = require('../../test/helpers/fake-tor-endpoint');
 
 // The add-on's tests select it (FREEDOM_RADICLE_BACKEND=addon, development
 // builds' rollback): freedom-radicled is the default (freedom-core design
@@ -154,6 +155,25 @@ function loadManager(options = {}) {
   jest.doMock('./service-locks', () => ({ getLockDir: () => path.join(dataDir, 'locks') }));
   if (options.radicledNode) jest.doMock('./radicle/radicled-node', () => options.radicledNode);
   jest.doMock('./service-registry', () => registry);
+  // The profile's settings (settings-store.js), faked: `options.settings`,
+  // and `changeSettings(next)`, which tells the change listeners as a save
+  // does. And Tor's endpoint, as tor-manager offers it to Radicle.
+  let settings = { routeRadicleThroughTor: false, ...options.settings };
+  const settingsListeners = new Set();
+  jest.doMock('./settings-store', () => ({
+    loadSettings: () => settings,
+    onSettingsChanged: (listener) => {
+      settingsListeners.add(listener);
+      return () => settingsListeners.delete(listener);
+    },
+  }));
+  const changeSettings = (next) => {
+    const previous = settings;
+    settings = { ...settings, ...next };
+    for (const listener of [...settingsListeners]) listener(settings, previous);
+  };
+  const tor = fakeTorEndpoint();
+  jest.doMock('./tor-manager', () => tor);
   jest.doMock('./radicle/radicled-gate', () => ({
     ...jest.requireActual('./radicle/radicled-gate'),
     takeRadicleGate,
@@ -175,6 +195,8 @@ function loadManager(options = {}) {
     gate,
     takeRadicleGate,
     withRadicleGate,
+    changeSettings,
+    tor,
     lookup: windowFixture.lookup,
     publicSender: windowFixture.publicSender,
     privateSender: () => windowFixture.privateSender(privateWindows),
@@ -191,6 +213,27 @@ test('normalizes Radicle IDs without changing base58 case', () => {
     'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5'
   );
   expect(ctx.mod.validateAndNormalizeRid('rad:z0bad')).toBeNull();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+test('the add-on, the rollback, ignores Route Radicle through Tor: it connects directly, and says so', async () => {
+  const ctx = loadManager({ settings: { routeRadicleThroughTor: true } });
+  await expect(ctx.mod.startRadicle()).resolves.toEqual({ status: 'running', error: null });
+  expect(ctx.embedded.start).toHaveBeenCalledWith(ctx.dataDir, 'FreedomBrowser');
+  expect(require('./logger').warn).toHaveBeenCalledWith(
+    '[Radicle] The add-on backend connects directly: Route Radicle through Tor applies to freedom-radicled only'
+  );
+  await ctx.mod.stopRadicle();
+  fs.rmSync(ctx.dataDir, { recursive: true, force: true });
+});
+
+test('the add-on with the setting off says nothing of it', async () => {
+  const ctx = loadManager();
+  await ctx.mod.startRadicle();
+  expect(require('./logger').warn).not.toHaveBeenCalledWith(
+    expect.stringContaining('Route Radicle through Tor')
+  );
+  await ctx.mod.stopRadicle();
   fs.rmSync(ctx.dataDir, { recursive: true, force: true });
 });
 
@@ -1960,6 +2003,58 @@ describe('the freedom-radicled backend (FREEDOM_RADICLE_BACKEND)', () => {
     // A stale node's callbacks change nothing.
     node.options.onChange('running', node);
     expect(ctx.mod.getCurrentStatus().status).toBe('error');
+    await ctx.mod.stopRadicle();
+  });
+
+  // Plan B18 (0008, "Modes" and "The setting").
+  test("the node runs under the profile's network policy: direct by default, the same source for every node", async () => {
+    const ctx = load();
+    const started = ctx.mod.startRadicle();
+    await flush();
+    const network = ctx.node().options.network;
+    expect(network.current()).toEqual({ mode: 'direct' });
+    ctx.node().resolveStart(true);
+    await started;
+    await ctx.mod.stopRadicle();
+    ctx.mod.startRadicle();
+    await flush();
+    expect(ctx.radicledNode.nodes).toHaveLength(2);
+    expect(ctx.node().options.network).toBe(network);
+    await ctx.mod.stopRadicle();
+  });
+
+  test("Route Radicle through Tor: the policy is Tor's endpoint offered Radicle, and the setting moving is a change", async () => {
+    const ctx = load({ settings: { routeRadicleThroughTor: true } });
+    const started = ctx.mod.startRadicle();
+    await flush();
+    const network = ctx.node().options.network;
+    // No endpoint yet: no policy, so the node spawns nothing.
+    expect(network.current()).toBeNull();
+    const heard = [];
+    const stop = network.subscribe((policy) => heard.push(policy));
+    ctx.tor.offer({ ip: '127.0.0.1', port: 9150 });
+    expect(heard).toEqual([{ mode: 'socks5', ip: '127.0.0.1', port: 9150 }]);
+    // IPFS's setting is another switch: no change of Radicle's policy.
+    ctx.changeSettings({ routeIpfsThroughTor: true });
+    expect(heard).toHaveLength(1);
+    ctx.changeSettings({ routeRadicleThroughTor: false });
+    expect(heard.at(-1)).toEqual({ mode: 'direct' });
+    // Direct: Tor is no longer watched.
+    expect(ctx.tor.listeners.size).toBe(0);
+    stop();
+    ctx.node().resolveStart(true);
+    await started;
+    await ctx.mod.stopRadicle();
+  });
+
+  test('a node waiting for Tor says so, and stays starting', async () => {
+    const ctx = load({ settings: { routeRadicleThroughTor: true } });
+    ctx.mod.startRadicle();
+    await flush();
+    const node = ctx.node();
+    node.options.onChange('waiting-tor', node);
+    expect(ctx.registry.setStatusMessage).toHaveBeenLastCalledWith('radicle', 'Waiting for Tor');
+    expect(ctx.mod.getCurrentStatus()).toEqual({ status: 'starting', error: null });
     await ctx.mod.stopRadicle();
   });
 
