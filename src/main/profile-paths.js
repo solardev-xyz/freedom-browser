@@ -2,6 +2,7 @@ const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { getActiveProfile } = require('./profile-resolver');
+const { getFreedomDataDir, getFreedomDataPath, resolveFreedomRoot } = require('./freedom-root');
 const fsOffload = require('./fs-offload');
 const { ensurePrivateDir } = require('./private-files');
 
@@ -37,7 +38,7 @@ function resolveDir(envName, fallbackName, { owned = false } = {}) {
   if (override) {
     return ensure(override);
   }
-  return ensure(path.join(app.getPath('userData'), fallbackName));
+  return ensure(getFreedomDataPath(fallbackName));
 }
 
 async function hasEntriesAsync(dirPath) {
@@ -320,7 +321,8 @@ function getRadicledHomeDir() {
 }
 
 // Each managed component's data directory: its default name under a
-// profile's userData directory, and the variable that overrides it.
+// profile's Freedom root (radicle-data: under its userData directory, which
+// the move leaves it in), and the variable that overrides it.
 const COMPONENT_DATA_DIRS = Object.freeze({
   identity: ['identity', 'FREEDOM_IDENTITY_DATA'],
   bee: ['bee-data', 'FREEDOM_BEE_DATA'],
@@ -330,6 +332,9 @@ const COMPONENT_DATA_DIRS = Object.freeze({
   tor: ['tor-data', 'FREEDOM_TOR_DATA'],
   radicle: ['radicle-data', 'FREEDOM_RADICLE_DATA'],
 });
+// A non-catalog `radicle-data/` stays at the profile's root: `freedom/` would
+// push its control socket past the 100-byte limit (0013, "What moves").
+const STAYS_AT_ROOT = new Set(['radicle']);
 
 /**
  * Where each managed component keeps its data, as the getters above resolve
@@ -350,9 +355,11 @@ const COMPONENT_DATA_DIRS = Object.freeze({
  */
 function getComponentDataDirs(userDataDir = null, { slot = null } = {}) {
   const root = userDataDir ?? app.getPath('userData');
+  const freedom = userDataDir ? resolveFreedomRoot(userDataDir) : getFreedomDataDir();
   const dirs = {};
   for (const [component, [name, override]] of Object.entries(COMPONENT_DATA_DIRS)) {
-    dirs[component] = (!userDataDir && overrideDir(override)) || path.join(root, name);
+    const base = STAYS_AT_ROOT.has(component) ? root : freedom;
+    dirs[component] = (!userDataDir && overrideDir(override)) || path.join(base, name);
   }
   const activeProfile = getActiveProfile();
   dirs.radicleHome = getCatalogRadicleDataDir(
@@ -408,6 +415,8 @@ module.exports = {
   getBeeDataDir,
   getComponentDataDirs,
   getDataDirOverrides,
+  getFreedomDataDir,
+  getFreedomDataPath,
   getIdentityDataDir,
   getIpfsDataDir,
   getMyotisDataDir,

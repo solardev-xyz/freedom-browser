@@ -9,8 +9,7 @@
  * bytes — safe to persist, useless without the Safe and its chain state.
  */
 
-const { app } = require('electron');
-const path = require('path');
+const { getFreedomDataPath } = require('../../freedom-root');
 const fs = require('fs');
 
 const PENDING_FILE = 'safe-pending.json';
@@ -18,7 +17,7 @@ const PENDING_FILE = 'safe-pending.json';
 let cache = null;
 
 function getFilePath() {
-  return path.join(app.getPath('userData'), PENDING_FILE);
+  return getFreedomDataPath(PENDING_FILE);
 }
 
 function load() {

@@ -24,12 +24,12 @@ describe('webMcpBlinkFeatures', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
     const switches = [...source.matchAll(/appendSwitch\(\s*'enable-blink-features'\s*,\s*([^)]*)\)/g)];
     expect(switches.map((m) => m[1].trim())).toEqual(['webMcpFeatures']);
-    expect(source).toMatch(/const webMcpFeatures = webMcpBlinkFeatures\(loadSettings\(\)\);\nif \(webMcpFeatures\) app\.commandLine\.appendSwitch/);
+    expect(source).toMatch(/const webMcpFeatures = webMcpBlinkFeatures\(peekSettings\(\)\);\nif \(webMcpFeatures\) app\.commandLine\.appendSwitch/);
     // The same decision is recorded for page-tool discovery's restart hint.
     expect(source).toMatch(/appendSwitch\('enable-blink-features', webMcpFeatures\);\nrecordWebMcpLaunch\(webMcpFeatures\);/);
     expect(source).not.toMatch(/WebMCPTesting/);
     // Set before the app is ready, i.e. before any renderer exists.
-    expect(source.indexOf('webMcpBlinkFeatures(loadSettings())')).toBeLessThan(source.indexOf('app.whenReady().then(bootstrap)'));
+    expect(source.indexOf('webMcpBlinkFeatures(peekSettings())')).toBeLessThan(source.indexOf('app.whenReady().then(bootstrap)'));
   });
 
   test('records whether this launch enabled WebMCP', () => {

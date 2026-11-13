@@ -11,14 +11,14 @@ const registry = require('./networks/network-registry');
 const { nodeBlockReason } = require('./core/node-identity-guard');
 const { startAntChainBridge } = require('./swarm/ant-chain-bridge');
 const { getAntDataDir } = require('./profile-paths');
+const { getFreedomDataDir } = require('./freedom-root');
 const { openPrivateDir } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { readConfigPassword, yamlPasswordScalar } = require('./swarm/ant-config-password');
-const {
-  getActiveProfile,
-  getReservedProfilePorts,
-  updateActiveProfileNodeConfigWhenIdle,
-} = require('./profile-resolver');
+const { getActiveProfile } = require('./profile-resolver');
+// The profile's catalog, through freedom-cored's subcommands (freedom-core
+// design 0013, PRF-4).
+const { getReservedPorts, updateNodeConfigWhenIdle } = require('./profile-manager');
 const {
   MODE,
   DEFAULTS,
@@ -114,11 +114,12 @@ function getAntDataPath() {
   return getAntDataDir();
 }
 
-// The profile directory that owns this node's --password-file handoffs
-// (swarm/ant-keystore-password.js handoffRoot): the active profile's, or
-// the one the Ant data directory sits in.
+// The directory that owns this node's --password-file handoffs
+// (swarm/ant-keystore-password.js handoffRoot, `run/`): the active
+// profile's Freedom root (freedom-root.js), or the directory the Ant data
+// directory sits in.
 function getHandoffBaseDir() {
-  return getActiveProfile()?.userDataDir || path.dirname(getAntDataPath());
+  return getActiveProfile() ? getFreedomDataDir() : path.dirname(getAntDataPath());
 }
 
 function getProfileAntConfig() {
@@ -200,7 +201,7 @@ function getHttpClient(rawUrl) {
 }
 
 async function persistManagedAntPorts(updates) {
-  const result = await updateActiveProfileNodeConfigWhenIdle('bee', updates);
+  const result = await updateNodeConfigWhenIdle('bee', updates);
   if (result) {
     log.info('[Ant] Persisted managed profile ports:', updates);
   }
@@ -938,7 +939,7 @@ async function startAnt() {
   const configuredApiPort = apiPort;
   const configuredP2pPort = p2pPort;
   let usingFallbackPort = false;
-  const reservedProfilePorts = managedProfileNode ? getReservedProfilePorts() : new Set();
+  const reservedProfilePorts = managedProfileNode ? await getReservedPorts() : new Set();
 
   const managedApiPortBusy = managedProfileNode ? await isPortOpen(apiPort) : false;
   if (existing.conflict || managedApiPortBusy) {

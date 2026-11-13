@@ -25,17 +25,10 @@ const {
   startProbe: startSwarmProbe,
   cancelProbe: cancelSwarmProbe,
 } = require('./swarm/swarm-probe');
-const {
-  createProfileForActiveApp,
-  deleteProfileForActiveApp,
-  getActiveProfile,
-  getProfileFocusTargetForActiveApp,
-  importProfileForActiveApp,
-  listProfilesForActiveApp,
-  renameProfileForActiveApp,
-  updateActiveProfileNodeConfig,
-  validateProfileDeletionForActiveApp,
-} = require('./profile-resolver');
+const { getActiveProfile, validateProfileDeletionForActiveApp } = require('./profile-resolver');
+// The catalog's operations, through freedom-cored's subcommands (freedom-core
+// design 0013, PRF-4; profile-manager.js).
+const profileManager = require('./profile-manager');
 const { openOrFocusProfile } = require('./profile-launcher');
 const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
@@ -317,7 +310,7 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
 
   let profile;
   try {
-    const result = updateActiveProfileNodeConfig(protocol, validation.sanitized);
+    const result = await profileManager.updateNodeConfig(protocol, validation.sanitized);
     if (!result) {
       return failure('PROFILE_UPDATE_FAILED', 'Profile node config was not updated');
     }
@@ -379,8 +372,14 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
   return success({ profile });
 }
 
-function listProfilesFromIpc() {
-  const profiles = listProfilesForActiveApp();
+async function listProfilesFromIpc() {
+  let profiles;
+  try {
+    profiles = await profileManager.listProfiles();
+  } catch (err) {
+    log.error('[profile] Failed to list profiles:', err);
+    return failure('PROFILE_LIST_FAILED', err.message || 'Profiles could not be listed');
+  }
   if (!profiles) {
     return failure(
       'PROFILE_CATALOG_UNAVAILABLE',
@@ -390,9 +389,9 @@ function listProfilesFromIpc() {
   return success({ profiles: profiles.map(serializeProfileSummary) });
 }
 
-function createProfileFromIpc(payload = {}) {
+async function createProfileFromIpc(payload = {}) {
   try {
-    const result = createProfileForActiveApp({
+    const result = await profileManager.createProfile({
       displayName: payload.displayName,
       id: payload.id,
     });
@@ -412,9 +411,9 @@ function createProfileFromIpc(payload = {}) {
   }
 }
 
-function importProfileFromIpc(payload = {}) {
+async function importProfileFromIpc(payload = {}) {
   try {
-    const result = importProfileForActiveApp(payload.id);
+    const result = await profileManager.importProfile(payload.id);
     if (!result) {
       return failure(
         'PROFILE_CATALOG_UNAVAILABLE',
@@ -427,9 +426,9 @@ function importProfileFromIpc(payload = {}) {
   }
 }
 
-function renameProfileFromIpc(payload = {}) {
+async function renameProfileFromIpc(payload = {}) {
   try {
-    const result = renameProfileForActiveApp(payload.id, payload.displayName);
+    const result = await profileManager.renameProfile(payload.id, payload.displayName);
     if (!result) {
       return failure(
         'PROFILE_CATALOG_UNAVAILABLE',
@@ -470,7 +469,12 @@ async function openProfileFromIpc(payload = {}) {
     return failure('PROFILE_ALREADY_OPEN', 'This profile is already open');
   }
 
-  const profiles = listProfilesForActiveApp();
+  let profiles;
+  try {
+    profiles = await profileManager.listProfiles();
+  } catch (err) {
+    return failure('PROFILE_OPEN_FAILED', err.message || 'Profile could not be opened');
+  }
   const target = profiles?.find((profile) => profile.id === profileId);
   if (!target) {
     return failure('PROFILE_NOT_FOUND', 'Profile not found', { id: profileId });
@@ -529,10 +533,16 @@ async function ensureProfileClosedForDelete(profileId, options = {}) {
   const processAlive = options.isProcessAlive || isProcessAlive;
   const readAck = options.readProfileFocusAck || readProfileFocusAck;
 
-  const target = getProfileFocusTargetForActiveApp(profileId);
+  // "Open": its lock fresh, or stale with its profile gate held
+  // (profile-manager.js).
+  const target = await profileManager.getProfileFocusTarget(profileId);
   if (!target || !target.isLocked) {
     return true;
   }
+  // A profile that has quit lets its profile gate go a moment after its
+  // lock and its process: the delete takes that gate, so it waits for it.
+  const gateFree = () =>
+    profileManager.waitForProfileGateFree(target, { deadline, intervalMs });
 
   const quit = requestProfileQuitAsync(target);
 
@@ -550,7 +560,7 @@ async function ensureProfileClosedForDelete(profileId, options = {}) {
     const holderPid =
       ack && ack.nonce === quit?.nonce && Number.isInteger(ack.pid) ? ack.pid : null;
     if (holderPid != null) {
-      if (!processAlive(holderPid)) return true;
+      if (!processAlive(holderPid)) return gateFree();
       continue;
     }
 
@@ -570,7 +580,7 @@ async function ensureProfileClosedForDelete(profileId, options = {}) {
       stillLocked = false;
     }
     if (!stillLocked) {
-      return true;
+      return gateFree();
     }
   }
   return false;
@@ -617,7 +627,7 @@ async function deleteProfileFromIpc(payload = {}, options = {}) {
     // design 0001, "Lifetime lock"; core/core-gate.js), and so does a writer
     // holding its IPFS data directory's gate (design 0007; ipfs/ipfsd-gate.js)
     // or its Radicle home's (design 0008; radicle/radicled-gate.js).
-    const result = await deleteProfileForActiveApp(payload.id, payload.confirmDisplayName, {
+    const result = await profileManager.deleteProfile(payload.id, payload.confirmDisplayName, {
       withCoreGate,
       withIpfsGate,
       withRadicleGate,

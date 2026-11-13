@@ -15,8 +15,8 @@
  * per-send prompt for granted origins.
  */
 
-const { app, ipcMain } = require('electron');
-const path = require('path');
+const { ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
@@ -47,7 +47,7 @@ const RULES_ONLY_FROM_MAIN = Object.freeze({
 let permissionsCache = null;
 
 function getPermissionsPath() {
-  return path.join(app.getPath('userData'), PERMISSIONS_FILE);
+  return getFreedomDataPath(PERMISSIONS_FILE);
 }
 
 function loadPermissions() {

@@ -16,8 +16,7 @@
  * live in the permissions manager's in-memory map.
  */
 
-const { app } = require('electron');
-const path = require('path');
+const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
@@ -28,7 +27,7 @@ const VALID_DECISIONS = new Set(['allow', 'deny']);
 let permissionsCache = null;
 
 function getPermissionsPath() {
-  return path.join(app.getPath('userData'), PERMISSIONS_FILE);
+  return getFreedomDataPath(PERMISSIONS_FILE);
 }
 
 /**

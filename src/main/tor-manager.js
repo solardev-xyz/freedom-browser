@@ -24,11 +24,10 @@ const { normalizeSocksEndpoint, parseSocksEndpoint } = require('../shared/socks-
 const { success, failure } = require('./ipc-contract');
 const { loadSettings } = require('./settings-store');
 const { getTorDataDir } = require('./profile-paths');
-const {
-  getActiveProfile,
-  getReservedProfilePorts,
-  updateActiveProfileNodeConfigWhenIdle,
-} = require('./profile-resolver');
+const { getActiveProfile } = require('./profile-resolver');
+// The profile's catalog, through freedom-cored's subcommands (freedom-core
+// design 0013, PRF-4).
+const { getReservedPorts, updateNodeConfigWhenIdle } = require('./profile-manager');
 const {
   promptForDefaultExternalCandidateProtocol,
 } = require('./profile-external-candidates');
@@ -166,7 +165,7 @@ function getConfiguredTorSocksPort(config = getProfileTorConfig()) {
 }
 
 async function persistManagedTorPort(socksPort) {
-  const result = await updateActiveProfileNodeConfigWhenIdle('tor', { socksPort });
+  const result = await updateNodeConfigWhenIdle('tor', { socksPort });
   if (result) {
     log.info('[Tor] Persisted managed profile SOCKS port:', socksPort);
   }
@@ -648,7 +647,7 @@ async function startTor(opts = {}) {
   // Resolve a free SOCKS port (profile default, fall back if busy/reserved).
   let socksPort = getConfiguredTorSocksPort(profileConfig);
   const configuredSocksPort = socksPort;
-  const reservedProfilePorts = managedProfileNode ? getReservedProfilePorts() : new Set();
+  const reservedProfilePorts = managedProfileNode ? await getReservedPorts() : new Set();
   const configuredPortUnavailable =
     reservedProfilePorts.has(socksPort) || (await isPortOpen(socksPort));
 

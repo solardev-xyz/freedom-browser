@@ -39,8 +39,8 @@
  * with 0007's codes, which the amendment refuses. The test tells the two
  * apart by the amendment's `abort_code` category. Against 0.9.1's file it
  * runs every case as before and its `core_streams` frames, and lists its
- * duplex cases as to do; against later ones (from #247 on, the pinned
- * core's, 0.12.2's, included), it runs every case.
+ * duplex cases as to do; against later ones (from #247 on, cored-v0.12.2's
+ * included), it runs every case.
  *
  * Skipped unless the vectors are found: FREEDOM_CORE_STREAM_VECTORS names
  * the file, or it sits beside FREEDOM_CORE_VECTORS, or in the freedom-core

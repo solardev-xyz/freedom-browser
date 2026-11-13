@@ -39,8 +39,8 @@
  */
 
 const fs = require('fs');
-const path = require('path');
-const { ipcMain, app } = require('electron');
+const { ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
 const antStorageApi = require('./ant-storage-api');
@@ -592,7 +592,7 @@ function getBrowsingCreditService() {
       isManaged: antManager.isManagedAntNode,
       isSwapEnabled: () => loadSettings().antSwapEnable !== false,
       setSwapEnabled: (enabled) => saveSettings({ antSwapEnable: enabled }),
-      store: createSpendStore(path.join(app.getPath('userData'), STORE_FILE)),
+      store: createSpendStore(getFreedomDataPath(STORE_FILE)),
     });
     antManager.onStatusChange(() => service.handleNodeStatus());
     service.handleNodeStatus();

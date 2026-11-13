@@ -64,6 +64,20 @@ function isProfileLocked(profile, options = {}) {
   });
 }
 
+// A lock directory whose mtime is past the stale time: a crashed process's,
+// an older build's that stalled, or a new build's whose main has stalled
+// (freedom-core design 0013, "What 'open' means"), which only the profile
+// gate tells apart (profile-gate.js).
+function hasStaleProfileLock(profile, options = {}) {
+  const paths = getProfileLockPaths(profile);
+  if (!fs.existsSync(paths.lockDir)) return false;
+  try {
+    return !isProfileLocked(profile, options);
+  } catch {
+    return false;
+  }
+}
+
 function acquireProfileLock(profile, options = {}) {
   const paths = ensureLockTarget(profile);
   const logger = options.logger || console;
@@ -134,6 +148,7 @@ module.exports = {
   getActiveProfileLock,
   getProfileLockTiming,
   getProfileLockPaths,
+  hasStaleProfileLock,
   isProfileLocked,
   isLockUnavailableError,
   releaseProfileLock,

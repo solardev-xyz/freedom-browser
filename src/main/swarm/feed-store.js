@@ -27,7 +27,8 @@
  * forget publisher identities. Switching identity is an explicit user action.
  */
 
-const { app, ipcMain } = require('electron');
+const { ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const path = require('path');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
@@ -93,7 +94,7 @@ function assertAvailableMode(identityMode) {
 }
 
 function getFeedsPath() {
-  return path.join(app.getPath('userData'), FEEDS_FILE);
+  return getFreedomDataPath(FEEDS_FILE);
 }
 
 function createEmptyStore() {
