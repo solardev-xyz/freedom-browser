@@ -37,10 +37,19 @@ const subcommands = require('./profile-subcommands');
 /** How long main waits for `locked` (0013, "The lock"). */
 const LOCKED_TIMEOUT_MS = 10_000;
 
+/** `hold-profile`'s exits beyond `hold-lock`'s (64, 74, 75): 65, a catalog
+ * profile no longer listed at its directory, and 77, confinement refused
+ * (freedom-core's profile subcommands). */
+const HOLD_PROFILE_EXITS = new Map([
+  [65, 'refused'],
+  [77, 'confinement'],
+]);
+
 const MESSAGES = {
   lock_held: 'This profile is open in another Freedom window.',
   refused: 'This profile was deleted while Freedom was opening it.',
   storage: "The profile's lock can't be taken on this storage",
+  confinement: "freedom-cored couldn't confine itself on this system",
   usage: 'freedom-cored refused the hold-profile command',
   missing: 'freedom-cored is missing from this installation. Reinstall Freedom.',
   cancelled: "Taking the profile's lock was cancelled",
@@ -49,8 +58,8 @@ const MESSAGES = {
 
 /** The gate couldn't be had: `code` is `lock_held` (75: another new build
  * holds the profile), `refused` (65: a catalog profile no longer listed at
- * its directory), `storage` (74), `usage` (64), `missing`, `cancelled` or
- * `failed`. */
+ * its directory), `storage` (74), `confinement` (77), `usage` (64),
+ * `missing`, `cancelled` or `failed`. */
 class ProfileGateError extends Error {
   constructor(code, message = MESSAGES[code] || MESSAGES.failed) {
     super(message);
@@ -141,6 +150,7 @@ function startProfileGate(
       lockDir,
       args,
       lockTimeoutMs: LOCKED_TIMEOUT_MS,
+      exitCodes: HOLD_PROFILE_EXITS,
       gateError: (code) => new ProfileGateError(code),
       logPrefix: '[profile] freedom-cored',
       onLost,

@@ -30,9 +30,6 @@ const MAX_STDERR = 4096;
 
 const EXIT_CODES = new Map([
   [64, 'usage'],
-  // freedom-cored's `hold-profile` only: a catalog profile no longer listed
-  // at its directory (freedom-core design 0013, "The lock").
-  [65, 'refused'],
   [74, 'storage'],
   [75, 'lock_held'],
 ]);
@@ -61,6 +58,8 @@ const EXIT_CODES = new Map([
  *   `hold-lock <dataDirFlag> <dataDir> --lock-dir <lockDir>`: freedom-cored's
  *   `hold-profile` (profile-gate.js)
  * @param {number} [options.lockTimeoutMs] - how long to wait for `locked`
+ * @param {Map<number, string>} [options.exitCodes] - the holder's own exits
+ *   beyond 64, 74 and 75, each with the code it rejects with
  * @param {AbortSignal} [options.signal] - cancels the wait for `locked`
  * @param {Function} [options.spawn]
  * @param {object} options.log
@@ -77,6 +76,7 @@ function holdLock({
   onLost = null,
   args = null,
   lockTimeoutMs = LOCK_TIMEOUT_MS,
+  exitCodes = null,
   signal = null,
   spawn = spawnProcess,
   log,
@@ -182,7 +182,11 @@ function holdLock({
         } catch {
           // Not one of its JSON lines.
         }
-        fail(gateError(EXIT_CODES.get(code) || 'failed'), { exit: code, signal, cause });
+        fail(gateError(EXIT_CODES.get(code) || exitCodes?.get(code) || 'failed'), {
+          exit: code,
+          signal,
+          cause,
+        });
         return;
       }
       if (state === 'locked' && !releasing) {

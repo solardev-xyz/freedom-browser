@@ -95,7 +95,9 @@ describe('startProfileGate', () => {
       [75, 'lock_held'],
       [65, 'refused'],
       [74, 'storage'],
+      [77, 'confinement'],
       [64, 'usage'],
+      [70, 'failed'],
     ]) {
       const { children, spawn } = spawner();
       const gate = start({ spawn });
