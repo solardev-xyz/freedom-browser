@@ -490,6 +490,53 @@ function adblockEngineLandingGate() {
   });
 }
 
+// The chrome window's settings reads, held for a launch with
+// FREEDOM_TEST_CHROME_SETTINGS_GATE=1 (wallet-toggle-early-start.spec.js).
+// index.js initializes the chrome's modules only once its own read is back,
+// and the sidebar reads the settings again before it knows whether the
+// wallet is on; until then its toolbar toggle is static markup. Holding the
+// reads lets the spec look at the toggle in each of those states, rather
+// than hope its first look lands in one. Only the chrome's top frame is held
+// (its approvals document, internal pages and webviews answer at once), and
+// each held read answers with the settings as they are when it is let go.
+const chromeSettingsGate = { holding: false, seen: 0, held: [] };
+
+function installChromeSettingsGate() {
+  if (process.env.FREEDOM_TEST_CHROME_SETTINGS_GATE !== '1') return;
+  const { loadSettings } = require('./settings-store');
+  const { isChromeSender } = require('./ipc-sender-policy');
+  chromeSettingsGate.holding = true;
+  log.info('[test-harness] the chrome window settings reads wait for the spec');
+  replaceHandler(IPC.SETTINGS_GET, (event) => {
+    if (!chromeSettingsGate.holding || !isChromeSender(event)) return loadSettings();
+    chromeSettingsGate.seen += 1;
+    return new Promise((resolve) => {
+      chromeSettingsGate.held.push(() => resolve(loadSettings()));
+    });
+  });
+}
+
+function chromeSettingsReads() {
+  return {
+    holding: chromeSettingsGate.holding,
+    seen: chromeSettingsGate.seen,
+    held: chromeSettingsGate.held.length,
+  };
+}
+
+// Lets the oldest held read go; the gate keeps holding the rest, and new ones.
+function releaseChromeSettingsRead() {
+  const release = chromeSettingsGate.held.shift();
+  release?.();
+  return Boolean(release);
+}
+
+// Lets every held read go and stops holding.
+function openChromeSettingsGate() {
+  chromeSettingsGate.holding = false;
+  for (const release of chromeSettingsGate.held.splice(0)) release();
+}
+
 function resetFixtures() {
   contentFixtures.clear();
   contentFixtureActivity.clear();
@@ -1257,6 +1304,12 @@ function exposeGlobalShim(agentRuntime) {
       release?.();
       return Boolean(release);
     },
+    // The chrome window's settings reads (see installChromeSettingsGate):
+    // how many it has made and how many wait, the call that lets the oldest
+    // one go, and the one that lets them all go and stops holding.
+    chromeSettingsReads,
+    releaseChromeSettingsRead,
+    openChromeSettingsGate,
     updaterRequests: () => [...updaterRequests],
     clearUpdaterRequests: () => {
       updaterRequests.length = 0;
@@ -1284,6 +1337,7 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   overrideEnsIpc();
   overrideProbeIpc();
   overrideNodeIpc();
+  installChromeSettingsGate();
   registerTestOps();
   seedRegistry();
   installProfileLaunchRecorder();
