@@ -10,7 +10,7 @@
  * out of step.
  */
 
-const path = require('path');
+const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
 const log = require('../logger');
 const { normalizeHost } = require('./request-classifier');
@@ -20,8 +20,7 @@ const ALLOWLIST_FILE = 'adblock-allowlist.json';
 let cachedHosts = null;
 
 function getAllowlistPath() {
-  const { app } = require('electron');
-  return path.join(app.getPath('userData'), ALLOWLIST_FILE);
+  return getFreedomDataPath(ALLOWLIST_FILE);
 }
 
 function loadHosts() {

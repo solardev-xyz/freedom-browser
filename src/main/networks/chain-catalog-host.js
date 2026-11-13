@@ -5,7 +5,7 @@
 // crashes while serving a request (see task-worker-host.js), is the catalog
 // loaded on the main thread for that request, as it was before.
 const path = require('node:path');
-const { app } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const { createTaskWorkerHost, TaskWorkerUnavailable } = require('../task-worker-host');
 const catalog = require('./chain-catalog');
 
@@ -25,7 +25,7 @@ const REQUEST_TIMEOUT_MS = 45_000;
 const catalogWorker = createTaskWorkerHost({
   name: 'ChainCatalog',
   workerPath: path.join(__dirname, 'chain-catalog-worker.js'),
-  workerData: () => ({ cachePath: path.join(app.getPath('userData'), catalog.CACHE_FILE) }),
+  workerData: () => ({ cachePath: getFreedomDataPath(catalog.CACHE_FILE) }),
   timeoutMs: REQUEST_TIMEOUT_MS,
   resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16 },
 });

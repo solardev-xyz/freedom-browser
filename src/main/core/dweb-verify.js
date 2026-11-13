@@ -4,7 +4,7 @@
  * verify-executor.js) sends through, and the private partitions' end.
  *
  * - **Protocol 2.** `attachDwebVerify` attaches a verifier to the core
- *   client, which speaks only protocol 2 (the pinned core, 0.12.2, refuses
+ *   client, which speaks only protocol 2 (the pinned core, 0.13.0, refuses
  *   1), beside dweb-shell.js's `shell.dweb_get`, so the app's client has
  *   it. Without one (no core, or no dweb shell) `dwebVerifier()` is null:
  *   a `{ verify }` plan is refused, and nothing is sent when a partition

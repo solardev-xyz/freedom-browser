@@ -7,11 +7,13 @@
  */
 
 const fs = require('fs');
-const path = require('path');
-const { app } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 
-// Cache file path
-const CACHE_FILE = path.join(app.getPath('userData'), 'balance-cache.json');
+// The cache file, under the profile's Freedom root: resolved at first use,
+// once main has settled the profile's layout.
+function cacheFile() {
+  return getFreedomDataPath('balance-cache.json');
+}
 
 // Current cache version (bumped to 2 for new token key format)
 const CACHE_VERSION = 2;
@@ -32,8 +34,8 @@ function loadCache() {
   if (cacheLoaded) return;
 
   try {
-    if (fs.existsSync(CACHE_FILE)) {
-      const data = fs.readFileSync(CACHE_FILE, 'utf8');
+    if (fs.existsSync(cacheFile())) {
+      const data = fs.readFileSync(cacheFile(), 'utf8');
       const parsed = JSON.parse(data);
 
       // Version check - discard old format caches
@@ -58,7 +60,7 @@ function loadCache() {
  */
 function saveCache() {
   try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2));
+    fs.writeFileSync(cacheFile(), JSON.stringify(cache, null, 2));
   } catch (err) {
     console.error('[BalanceCache] Failed to save cache:', err.message);
   }
