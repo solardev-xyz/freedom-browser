@@ -138,7 +138,16 @@ describe.each(STORES)('%s', (name, _store, writes) => {
     for (const spy of inPlace) {
       for (const [file] of spy.mock.calls) expect(file).not.toBe(target);
     }
-    for (const [file] of opens.mock.calls) expect(file).not.toBe(target);
+    // Only the flush after a rename opens the target itself (on Windows,
+    // FlushFileBuffers needs the file), never before one, never to write.
+    const renamedAt = renames.mock.calls
+      .map(([, to], i) => (to === target ? renames.mock.invocationCallOrder[i] : null))
+      .filter((order) => order !== null);
+    opens.mock.calls.forEach(([file, flags], i) => {
+      if (file !== target) return;
+      expect(flags).toBe('r+');
+      expect(renamedAt.some((order) => order < opens.mock.invocationCallOrder[i])).toBe(true);
+    });
     expect(fs.readdirSync(tmpDir).filter((entry) => entry.endsWith('.tmp'))).toEqual([]);
     // The file is whole JSON, as JSON.stringify(…, null, 2) wrote it.
     const text = fs.readFileSync(target, 'utf-8');

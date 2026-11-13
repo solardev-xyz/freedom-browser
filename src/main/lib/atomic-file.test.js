@@ -44,7 +44,16 @@ describe('writeFileAtomicSync', () => {
     expect(path.basename(from)).toMatch(/^store\.json\.\d+\.[0-9a-f]{12}\.tmp$/);
     // Made exclusively, so a name already there fails instead of being written through.
     expect(opens).toHaveBeenCalledWith(from, 'wx', 0o600);
-    for (const [file] of opens.mock.calls) expect(file).not.toBe(target);
+    // The target itself is opened only by the flush after the rename, on
+    // Windows (FlushFileBuffers needs the file): never before it, never to
+    // write data.
+    opens.mock.calls.forEach(([file, flags], i) => {
+      if (file !== target) return;
+      expect(flags).toBe('r+');
+      expect(opens.mock.invocationCallOrder[i]).toBeGreaterThan(
+        renames.mock.invocationCallOrder[0]
+      );
+    });
     for (const [file] of writes.mock.calls) expect(file).not.toBe(target);
     // The temp file's data reached the disk before the rename.
     expect(syncs.mock.invocationCallOrder[0]).toBeLessThan(renames.mock.invocationCallOrder[0]);
