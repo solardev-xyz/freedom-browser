@@ -10,6 +10,6 @@
  * guard (`radicled-pin.test.js`) fails when they differ.
  */
 
-const PINNED_RADICLED_VERSION = '0.1.1';
+const PINNED_RADICLED_VERSION = '0.1.2';
 
 module.exports = { PINNED_RADICLED_VERSION };
