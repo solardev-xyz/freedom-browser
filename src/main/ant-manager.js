@@ -15,11 +15,10 @@ const { getFreedomDataDir } = require('./freedom-root');
 const { openPrivateDir } = require('./private-files');
 const keystorePassword = require('./swarm/ant-keystore-password');
 const { readConfigPassword, yamlPasswordScalar } = require('./swarm/ant-config-password');
-const {
-  getActiveProfile,
-  getReservedProfilePorts,
-  updateActiveProfileNodeConfigWhenIdle,
-} = require('./profile-resolver');
+const { getActiveProfile } = require('./profile-resolver');
+// The profile's catalog, through freedom-cored's subcommands (freedom-core
+// design 0013, PRF-4).
+const { getReservedPorts, updateNodeConfigWhenIdle } = require('./profile-manager');
 const {
   MODE,
   DEFAULTS,
@@ -202,7 +201,7 @@ function getHttpClient(rawUrl) {
 }
 
 async function persistManagedAntPorts(updates) {
-  const result = await updateActiveProfileNodeConfigWhenIdle('bee', updates);
+  const result = await updateNodeConfigWhenIdle('bee', updates);
   if (result) {
     log.info('[Ant] Persisted managed profile ports:', updates);
   }
@@ -940,7 +939,7 @@ async function startAnt() {
   const configuredApiPort = apiPort;
   const configuredP2pPort = p2pPort;
   let usingFallbackPort = false;
-  const reservedProfilePorts = managedProfileNode ? getReservedProfilePorts() : new Set();
+  const reservedProfilePorts = managedProfileNode ? await getReservedPorts() : new Set();
 
   const managedApiPortBusy = managedProfileNode ? await isPortOpen(apiPort) : false;
   if (existing.conflict || managedApiPortBusy) {

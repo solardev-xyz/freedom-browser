@@ -105,12 +105,14 @@ async function openOrFocusProfile(activeProfile, profileId, options = {}) {
 
   // Lazy-required so this module stays loadable in isolation (and to avoid any
   // load-order coupling with profile-resolver).
+  // "Open" is a fresh lock, or a stale one with its profile gate held
+  // (profile-manager.js; freedom-core design 0013).
   const resolveFocusTarget =
-    options.getFocusTarget || require('./profile-resolver').getProfileFocusTargetForActiveApp;
+    options.getFocusTarget || require('./profile-manager').getProfileFocusTarget;
   const requestFocus =
     options.requestFocus || require('./profile-focus-handoff').requestProfileFocusAsyncAwait;
 
-  const target = resolveFocusTarget(profileId);
+  const target = await resolveFocusTarget(profileId);
   // GNOME on Wayland raises the running profile's window only with an XDG
   // activation token, which this process can mint for it only through
   // shell.openExternal: xdg-open launches `freedom x-freedom-profile:<id>`

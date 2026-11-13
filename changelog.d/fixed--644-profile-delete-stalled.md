@@ -1,0 +1,2 @@
+- Deleting a profile whose window has stopped responding is refused, instead of removing its data while it is in use ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The profile manager could delete a profile open in another Freedom once that window had not responded for 30 seconds; it now reads such a profile as open

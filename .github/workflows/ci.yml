@@ -951,10 +951,14 @@ jobs:
       # reading the catalog it wrote, the moved layout and a move's journal
       # settled before and after its marker, and `hold-profile`: a launch
       # held 45 s before its core starts still reads open to a second launch
-      # past the lock's 30 s, and a killed holder is replaced.
-      - name: freedom-cored profile open (real binary)
+      # past the lock's 30 s, and a killed holder is replaced. The profile
+      # manager on its subcommands: the reference reads what they wrote, and
+      # a profile launched under each data-directory override, or held
+      # before its core, reads open to another profile's manager past its
+      # lock's 30 s, which can't delete it.
+      - name: freedom-cored profiles (real binary)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: npx jest src/main/profile-open.integration.test.js
+        run: npx jest src/main/profile-open.integration.test.js src/main/profile-manager.integration.test.js
         env:
           FREEDOM_CORED_PROFILE_TEST: '1'
 

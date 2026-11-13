@@ -271,6 +271,16 @@ function loadIpcHandlersModule(options = {}) {
         updateActiveProfileNodeConfig,
         validateProfileDeletionForActiveApp,
       }),
+      [require.resolve('./profile-manager')]: () => ({
+        createProfile: createProfileForActiveApp,
+        deleteProfile: deleteProfileForActiveApp,
+        getProfileFocusTarget: getProfileFocusTargetForActiveApp,
+        importProfile: importProfileForActiveApp,
+        listProfiles: listProfilesForActiveApp,
+        renameProfile: renameProfileForActiveApp,
+        updateNodeConfig: updateActiveProfileNodeConfig,
+        waitForProfileGateFree: jest.fn(async () => true),
+      }),
       [require.resolve('./profile-launcher')]: () => ({
         openOrFocusProfile,
       }),
