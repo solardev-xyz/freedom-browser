@@ -371,7 +371,7 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
     );
   }
   // Main's log, the service's lines among them, kept for a test that has
-  // to say what happened (`recentLog`): the last 400 lines.
+  // to say what happened (`recentLog`, `note`): the last 2000 lines.
   const logged = [];
   const keep =
     (level) =>
@@ -380,7 +380,7 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
         .map((part) => (typeof part === 'string' ? part : JSON.stringify(part)))
         .join(' ');
       logged.push(`${new Date().toISOString()} ${level} ${text}`);
-      if (logged.length > 400) logged.shift();
+      if (logged.length > 2000) logged.shift();
     };
   const log = {
     info: jest.fn(keep('info')),
@@ -523,6 +523,8 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
     home,
     /** Main's last log lines, the service's among them. */
     recentLog: () => [...logged],
+    /** A line of the test's own among them. */
+    note: (text) => keep('note')(text),
     lockDir,
     manager,
     embedded,
