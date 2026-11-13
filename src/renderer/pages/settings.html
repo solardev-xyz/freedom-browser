@@ -964,8 +964,19 @@
         display: none;
       }
 
-      .profile-node-field .rpc-input[aria-invalid='true'] {
+      .profile-node-field .rpc-input[aria-invalid='true'],
+      #secure-dns-custom[aria-invalid='true'] {
         border-color: var(--danger);
+      }
+
+      /* Secure DNS (#472): the address row shows only for a custom provider;
+         `.row`'s display would otherwise beat the attribute. */
+      #secure-dns-custom-row[hidden] {
+        display: none;
+      }
+
+      .secure-dns-custom-field {
+        margin-top: 8px;
       }
 
       .btn.danger {
@@ -1613,6 +1624,85 @@
           <div id="permissions-view"></div>
         </section>
 
+        <!-- Secure DNS (#472): DNS over HTTPS for what Chromium looks up, applied
+             by the main process (secure-dns.js) as soon as it is saved. Wired
+             by scripts/settings-secure-dns.js; only this page may write it. -->
+        <section class="section panel" id="dns" data-nav="privacy">
+          <h3 class="panel-title">Secure DNS</h3>
+          <div class="card">
+            <div class="row" id="secure-dns-mode-row">
+              <div class="row-body">
+                <p class="row-label"><label for="secure-dns-mode">Use secure DNS</label></p>
+                <p class="row-help" id="secure-dns-help">
+                  Looks up the sites you visit over an encrypted connection, so your network
+                  provider can't see them.
+                </p>
+                <p class="row-help" id="secure-dns-mode-help" aria-live="polite">
+                  If the provider can't be reached, Freedom uses your network's DNS, so Wi-Fi
+                  sign-in pages keep working.
+                </p>
+              </div>
+              <div class="row-control">
+                <select
+                  id="secure-dns-mode"
+                  aria-describedby="secure-dns-help secure-dns-mode-help"
+                >
+                  <option value="automatic">Automatic</option>
+                  <option value="secure">Strict</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+            </div>
+            <div class="row sub" id="secure-dns-provider-row">
+              <div class="row-body">
+                <p class="row-label"><label for="secure-dns-provider">Provider</label></p>
+                <p class="row-help" id="secure-dns-provider-help">
+                  Answers the lookups, so it sees the sites you visit instead.
+                </p>
+              </div>
+              <div class="row-control">
+                <select id="secure-dns-provider" aria-describedby="secure-dns-provider-help">
+                  <option value="quad9">Quad9</option>
+                  <option value="cloudflare">Cloudflare</option>
+                  <option value="mullvad">Mullvad</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+            </div>
+            <div class="row sub" id="secure-dns-custom-row" hidden>
+              <div class="row-body">
+                <p class="row-label"><label for="secure-dns-custom">Custom provider</label></p>
+                <p class="row-help" id="secure-dns-custom-help">
+                  Its DNS-over-HTTPS address, starting with https://.
+                </p>
+                <!-- Full width, as the RPC provider URLs are: an address is
+                     longer than the row-control column holds. -->
+                <div class="rpc-row secure-dns-custom-field">
+                  <input
+                    type="url"
+                    id="secure-dns-custom"
+                    class="rpc-input"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="https://dns.example/dns-query"
+                    aria-describedby="secure-dns-custom-help secure-dns-custom-status"
+                  />
+                </div>
+                <p
+                  class="rpc-status"
+                  id="secure-dns-custom-status"
+                  role="status"
+                  aria-live="polite"
+                ></p>
+              </div>
+            </div>
+          </div>
+          <p class="row-help" style="margin-top: 12px">
+            Covers pages, downloads and updates. Freedom's own requests to blockchain RPC providers
+            and AI providers, and the bundled nodes, still use your network's DNS.
+          </p>
+        </section>
+
         <!-- Networks (#268): Chains + RPC Providers + Name Resolution, which all
              read and write the same network configuration. -->
         <section class="section page-head" id="networks" data-nav="networks">
@@ -2112,6 +2202,7 @@
 
     <script src="scripts/settings.js"></script>
     <script src="scripts/settings-updates.js"></script>
+    <script src="scripts/settings-secure-dns.js"></script>
     <script src="scripts/ai-invitation-step.js"></script>
     <script type="module" src="../lib/agent-settings.js"></script>
   </body>

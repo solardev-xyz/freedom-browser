@@ -439,10 +439,21 @@ test.afterAll(() => {
  * the pre-#268 names, which still resolve — `ens` to Networks with Name
  * Resolution brought up, `permissions` to Privacy and security with Site
  * Permissions brought up, `chains` to the top of Networks — so the surface
- * labels in the baseline did not have to move. Since #268 the `permissions`
- * view also has Ad Blocking's panel on screen above Site Permissions.
+ * labels in the baseline did not have to move. `privacy` is the top of Privacy
+ * and security, Ad Blocking's panel in the no-lists state pinned below. The
+ * `permissions` view used to show that panel too, until Secure DNS (#472)
+ * below Site Permissions let it scroll past.
  */
-const SETTINGS_SECTIONS = ['appearance', 'nodes', 'ens', 'permissions', 'shortcuts', 'chains', 'ai'];
+const SETTINGS_SECTIONS = [
+  'appearance',
+  'nodes',
+  'ens',
+  'privacy',
+  'permissions',
+  'shortcuts',
+  'chains',
+  'ai',
+];
 
 /** Internal pages, by the URL that reaches them and the file they render in. */
 const INTERNAL_PAGES = [

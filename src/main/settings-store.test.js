@@ -393,6 +393,56 @@ describe('settings-store', () => {
     }
   });
 
+  // #472: Secure DNS defaults to Automatic with Quad9; a save stores only a
+  // known mode or provider and a usable https:// address, and "custom" only
+  // with one.
+  test('Secure DNS starts on Automatic with Quad9 and stores only valid values', () => {
+    const { mod } = loadSettingsStore({ userDataDir });
+    const persisted = () =>
+      JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    const custom = 'https://doh.example.org/dns-query';
+
+    expect(mod.loadSettings()).toMatchObject({
+      secureDnsMode: 'automatic',
+      secureDnsProvider: 'quad9',
+      secureDnsCustomTemplate: '',
+    });
+
+    expect(mod.saveSettings({ secureDnsMode: 'secure', secureDnsProvider: 'mullvad' })).toBe(true);
+    expect(persisted()).toMatchObject({ secureDnsMode: 'secure', secureDnsProvider: 'mullvad' });
+
+    // Refused values leave the stored ones, and the rest of the save lands.
+    expect(
+      mod.saveSettings({
+        secureDnsMode: 'strict',
+        secureDnsProvider: 'google',
+        secureDnsCustomTemplate: 'http://doh.example.org/dns-query',
+        theme: 'light',
+      })
+    ).toBe(true);
+    expect(persisted()).toMatchObject({
+      secureDnsMode: 'secure',
+      secureDnsProvider: 'mullvad',
+      secureDnsCustomTemplate: '',
+      theme: 'light',
+    });
+
+    // "custom" waits for its address...
+    expect(mod.saveSettings({ secureDnsProvider: 'custom' })).toBe(true);
+    expect(persisted().secureDnsProvider).toBe('mullvad');
+    // ...and takes it in the same save, trimmed.
+    expect(
+      mod.saveSettings({ secureDnsProvider: 'custom', secureDnsCustomTemplate: ` ${custom} ` })
+    ).toBe(true);
+    expect(persisted()).toMatchObject({
+      secureDnsProvider: 'custom',
+      secureDnsCustomTemplate: custom,
+    });
+    // The address in use can't be cleared out from under it.
+    expect(mod.saveSettings({ secureDnsCustomTemplate: '' })).toBe(true);
+    expect(persisted().secureDnsCustomTemplate).toBe(custom);
+  });
+
   test('saveSettings rebuilds the adblock engine only when an adblock key changes', () => {
     const refreshEngine = jest.fn(() => Promise.resolve());
     const { mod } = loadSettingsStore({
