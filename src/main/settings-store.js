@@ -258,34 +258,47 @@ function migrateRemovedKeys(parsed) {
   return migrated;
 }
 
+// The file's settings, its migrations applied to the parsed object in
+// memory: `changed` says whether the file needs writing back. `parsed` is
+// null when there is no file. Throws on an unreadable or malformed file.
+function readStoredSettings() {
+  const filePath = getSettingsPath();
+  if (!fs.existsSync(filePath)) return { filePath, parsed: null, changed: false };
+  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const keysMigrated = migrateRenamedKeys(parsed);
+  const removedKeysMigrated = migrateRemovedKeys(parsed);
+  const structuredSettingsChanged = normalizeStructuredSettings(parsed);
+  return {
+    filePath,
+    parsed,
+    changed: keysMigrated || removedKeysMigrated || structuredSettingsChanged,
+  };
+}
+
+function withDefaults(parsed) {
+  if (!parsed) return { ...DEFAULT_SETTINGS };
+  const settings = { ...DEFAULT_SETTINGS, ...parsed };
+  settings.enableAi = parsed.enableAi === true;
+  settings.loadOnlyVerifiedContent = parsed.loadOnlyVerifiedContent === true;
+  settings.aiInvitationDismissed = normalizeAiInvitationDismissed(parsed.aiInvitationDismissed);
+  return settings;
+}
+
 function loadSettings() {
   if (cachedSettings) {
     return cachedSettings;
   }
 
   try {
-    const filePath = getSettingsPath();
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(data);
-      const keysMigrated = migrateRenamedKeys(parsed);
-      const removedKeysMigrated = migrateRemovedKeys(parsed);
-      const structuredSettingsChanged = normalizeStructuredSettings(parsed);
-      const settingsChanged = keysMigrated || removedKeysMigrated || structuredSettingsChanged;
-      if (settingsChanged) {
-        try {
-          fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), 'utf-8');
-        } catch (err) {
-          log.error('Failed to persist migrated settings:', err);
-        }
+    const { filePath, parsed, changed } = readStoredSettings();
+    if (changed) {
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), 'utf-8');
+      } catch (err) {
+        log.error('Failed to persist migrated settings:', err);
       }
-      cachedSettings = { ...DEFAULT_SETTINGS, ...parsed };
-      cachedSettings.enableAi = parsed.enableAi === true;
-      cachedSettings.loadOnlyVerifiedContent = parsed.loadOnlyVerifiedContent === true;
-      cachedSettings.aiInvitationDismissed = normalizeAiInvitationDismissed(parsed.aiInvitationDismissed);
-    } else {
-      cachedSettings = { ...DEFAULT_SETTINGS };
     }
+    cachedSettings = withDefaults(parsed);
   } catch (err) {
     log.error('Failed to load settings:', err);
     cachedSettings = { ...DEFAULT_SETTINGS };
@@ -310,6 +323,32 @@ function loadSettings() {
   applyNativeTheme(cachedSettings.theme);
 
   return cachedSettings;
+}
+
+/**
+ * The settings loadSettings() would give, without its side effects: the
+ * file's migrations are applied in memory only, nothing is written back or
+ * cached, and the native theme and the reverted-remap notices are left alone.
+ * For main's lookup before it holds the profile gate (index.js, the WebMCP
+ * switch before `ready`): main writes nothing to the profile before the
+ * gate's holder says `locked` (freedom-core design 0013, "The lock"). The
+ * first loadSettings() after that writes the migrations back.
+ */
+function peekSettings() {
+  if (cachedSettings) {
+    return cachedSettings;
+  }
+  let settings;
+  try {
+    settings = withDefaults(readStoredSettings().parsed);
+  } catch (err) {
+    log.error('Failed to read settings:', err);
+    settings = { ...DEFAULT_SETTINGS };
+  }
+  settings.shortcutOverrides = sanitizeOverrides(settings.shortcutOverrides, process.platform, {
+    aiEnabled: settings.enableAi === true,
+  });
+  return settings;
 }
 
 function broadcastSettingsUpdated(merged) {
@@ -498,6 +537,7 @@ function registerSettingsIpc() {
 
 module.exports = {
   loadSettings,
+  peekSettings,
   saveSettings,
   registerSettingsIpc,
   // Exported for the parity test against the renderer copy in search-utils.js.

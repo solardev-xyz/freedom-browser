@@ -1009,15 +1009,18 @@ jobs:
       # ── was the `e2e-profiles` job ──
       # Profile lifecycle (create / use / manage / delete) across all desktop
       # platforms. Runs the in-process harness in catalog mode (no real nodes, no
-      # second-process spawn — see test-e2e/profiles-fixtures.js).
+      # second-process spawn — see test-e2e/profiles-fixtures.js). With it, the
+      # startup order around the profile gate (freedom-core design 0013): no
+      # settings write and no hand-off taken before `hold-profile` says
+      # `locked` (Linux and macOS: its stand-in holder is a shell script).
       - name: Run profile lifecycle E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js
+            xvfb-run -a npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js test-e2e/profile-gate-startup.spec.js
           else
-            npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js
+            npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js test-e2e/profile-gate-startup.spec.js
           fi
 
       # ── was the `e2e-onboarding-identity` job ──
