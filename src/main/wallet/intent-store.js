@@ -85,8 +85,7 @@
  */
 
 const crypto = require('crypto');
-const path = require('path');
-const { app } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const { Transaction, keccak256 } = require('ethers');
 const log = require('../logger');
 const { createJournal, encodeLine } = require('../lib/durable-journal');
@@ -1672,11 +1671,11 @@ function createIntentStore({ filePath, now = Date.now, limits: overrides = {} })
 
 let defaultStore = null;
 
-/** The profile's intent store, at userData/wallet-intents.jsonl. */
+/** The profile's intent store, at wallet-intents.jsonl under its Freedom root. */
 function getIntentStore() {
   if (!defaultStore) {
     defaultStore = createIntentStore({
-      filePath: path.join(app.getPath('userData'), FILE_NAME),
+      filePath: getFreedomDataPath(FILE_NAME),
     });
   }
   return defaultStore;

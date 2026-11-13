@@ -1,0 +1,2 @@
+- A profile that is open but not responding is no longer opened a second time ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Launching a profile whose window had stopped responding for more than 30 seconds could open it in a second Freedom; the launch now brings the open window forward, or says the profile is already open

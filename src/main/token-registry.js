@@ -7,6 +7,7 @@
  */
 
 const { app, ipcMain } = require('electron');
+const { getFreedomDataPath } = require('./freedom-root');
 const path = require('path');
 const fs = require('fs');
 
@@ -24,7 +25,7 @@ function getBuiltinTokensPath() {
 }
 
 function getCustomTokensPath() {
-  return path.join(app.getPath('userData'), 'custom-tokens.json');
+  return getFreedomDataPath('custom-tokens.json');
 }
 
 // An absent file is expected (custom-tokens.json until the user adds one);

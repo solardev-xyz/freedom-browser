@@ -20,7 +20,10 @@
  * - 0x05 credit: the ID, then a u32 above zero (main to the service).
  * A stream frame's payload length is checked against its kind at the
  * header, before anything else, its direction included: no payload byte is
- * read for a frame that is refused. Kinds 0x06–0x0F stay reserved.
+ * read for a frame that is refused. Kinds 0x06–0x0F stay reserved. A
+ * service connection that takes main's bodies (design 0014, COL-3:
+ * `serviceKinds('both')`) takes all four stream frames at either end, both
+ * ways, and still no fragments.
  *
  * A freedom-cored connection at protocol 2 (design 0009, Streams in the
  * core; `CORE_STREAM_KINDS`) takes all four stream frames as well as the
@@ -249,10 +252,14 @@ const JSON_KINDS = Object.freeze({ fragments: false, streams: null });
 /**
  * A service connection whose handshake granted `stream`, as `side` reads
  * it: JSON and the stream frames the other side sends. `receiver` (main)
- * takes data, end and abort; `sender` (the service) takes credit.
+ * takes data, end and abort; `sender` (the service) takes credit. `both`
+ * is either end of a service connection that takes main's bodies as well
+ * as sending its own (design 0014, COL-3): all four, in both directions.
  */
 function serviceKinds(side) {
-  if (side !== 'receiver' && side !== 'sender') throw new TypeError(`unknown stream side ${side}`);
+  if (side !== 'receiver' && side !== 'sender' && side !== 'both') {
+    throw new TypeError(`unknown stream side ${side}`);
+  }
   return Object.freeze({ fragments: false, streams: side });
 }
 

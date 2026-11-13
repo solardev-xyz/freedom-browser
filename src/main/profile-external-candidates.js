@@ -5,8 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
-const { updateActiveProfileNodeConfigWhenIdle } = require('./profile-resolver');
 const { findOwnLiveAntd } = require('./ant-process-marker');
+const { resolveFreedomRoot } = require('./freedom-root');
 const { probeSocks5Endpoint } = require('./socks-probe');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -175,7 +175,7 @@ function isLegacyProfile(profile) {
 }
 
 function getLegacyDecisionsPath(profile) {
-  return path.join(profile.userDataDir, LEGACY_DECISIONS_FILE);
+  return path.join(resolveFreedomRoot(profile.userDataDir), LEGACY_DECISIONS_FILE);
 }
 
 function readLegacyDecisions(profile) {
@@ -281,7 +281,9 @@ function normalizeChoice(choice) {
 // off-thread rm. Waiting it out (rather than failing fast with ELOCKED) keeps
 // a Tor start that asked for this decision from wedging in STARTING.
 async function applyExternalCandidateDecisions(candidates, choices = {}, options = {}) {
-  const updateNodeConfig = options.updateNodeConfig || updateActiveProfileNodeConfigWhenIdle;
+  // Lazy: profile-manager loads the logger and the catalog's modules.
+  const updateNodeConfig =
+    options.updateNodeConfig || require('./profile-manager').updateNodeConfigWhenIdle;
   const logger = options.logger || console;
   const decisions = [];
 

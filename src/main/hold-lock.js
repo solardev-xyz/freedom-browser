@@ -54,6 +54,12 @@ const EXIT_CODES = new Map([
  *   `[IPFS] freedom-ipfsd`
  * @param {Function} [options.onLost] - ({ code, signal }) once a held gate is
  *   lost
+ * @param {string[]} [options.args] - the holder's arguments, in place of
+ *   `hold-lock <dataDirFlag> <dataDir> --lock-dir <lockDir>`: freedom-cored's
+ *   `hold-profile` (profile-gate.js)
+ * @param {number} [options.lockTimeoutMs] - how long to wait for `locked`
+ * @param {Map<number, string>} [options.exitCodes] - the holder's own exits
+ *   beyond 64, 74 and 75, each with the code it rejects with
  * @param {AbortSignal} [options.signal] - cancels the wait for `locked`
  * @param {Function} [options.spawn]
  * @param {object} options.log
@@ -68,6 +74,9 @@ function holdLock({
   gateError,
   logPrefix,
   onLost = null,
+  args = null,
+  lockTimeoutMs = LOCK_TIMEOUT_MS,
+  exitCodes = null,
   signal = null,
   spawn = spawnProcess,
   log,
@@ -81,7 +90,7 @@ function holdLock({
     }
     let child;
     try {
-      child = spawn(command, ['hold-lock', dataDirFlag, dataDir, '--lock-dir', lockDir], {
+      child = spawn(command, args || ['hold-lock', dataDirFlag, dataDir, '--lock-dir', lockDir], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: scrubbedEnv(),
         windowsHide: true,
@@ -118,7 +127,7 @@ function holdLock({
       if (state !== 'pending') return;
       fail(gateError('failed'), { reason: 'no answer' });
       child.kill('SIGKILL');
-    }, LOCK_TIMEOUT_MS);
+    }, lockTimeoutMs);
 
     const hold = {
       /** Closes the holder's stdin; resolves once it has exited. */
@@ -173,7 +182,11 @@ function holdLock({
         } catch {
           // Not one of its JSON lines.
         }
-        fail(gateError(EXIT_CODES.get(code) || 'failed'), { exit: code, signal, cause });
+        fail(gateError(EXIT_CODES.get(code) || exitCodes?.get(code) || 'failed'), {
+          exit: code,
+          signal,
+          cause,
+        });
         return;
       }
       if (state === 'locked' && !releasing) {

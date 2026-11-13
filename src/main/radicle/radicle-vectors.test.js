@@ -86,33 +86,15 @@ const required = Boolean(process.env.FREEDOM_CORE_RADICLE_VECTORS);
   expect(FILES.filter((name) => !vectors[name])).toEqual([]);
 });
 
-/** Calls as an unordered list: what they are, not when. */
-const callSet = (calls) => calls.map((call) => JSON.stringify(call)).sort();
-
 /**
  * Cases whose recorded `main` main has changed on purpose since the
  * vectors' reference, by file and case: why, the freedom-core PR that
  * regenerates them, and `onlyDifference(now, recorded)`, which holds when
- * main's answer differs from the vector in that way and no other.
+ * main's answer differs from the vector in that way and no other. None
+ * today: freedom-core #312 recorded radicle-network.json's
+ * `progress/every-phase-then-done` with R-3's read bounds (#948).
  */
-const KNOWN_STALE = {
-  'radicle-network.json': {
-    'progress/every-phase-then-done': {
-      core: 'solardev-xyz/freedom-core#312',
-      reason:
-        "R-3's read bounds (#948) put every add-on call behind one more await " +
-        "(radicle-embedded.js's addonCall), so after a clone succeeds the seed count's " +
-        "`seeders` and the node info's `status` and `listRepos`, which run concurrently, " +
-        'reach the add-on in another order. The statuses main publishes are the same.',
-      onlyDifference: (now, recorded) =>
-        !isDeepStrictEqual(now.calls, recorded.calls) &&
-        isDeepStrictEqual(
-          { ...now, calls: callSet(now.calls) },
-          { ...recorded, calls: callSet(recorded.calls) }
-        ),
-    },
-  },
-};
+const KNOWN_STALE = {};
 
 test('every known-stale case names a vector case and a freedom-core PR', () => {
   for (const [name, cases] of Object.entries(KNOWN_STALE)) {
@@ -534,7 +516,7 @@ const mainLines = (lines) => lines.filter((line) => !line.startsWith('[RadicleEm
         // The same calls, as the service routes them. The node info the
         // fetch's steps push is one read at a time, joined while one is in
         // flight: how many there are follows how long each takes, which the
-        // service's reads and the add-on's don't share (see KNOWN_STALE).
+        // service's reads and the add-on's don't share.
         const expected = serviceCalls(c.main.calls);
         const isInfo = (call) => call.op === 'node_info';
         expect(replay.main.calls.filter((call) => !isInfo(call))).toEqual(

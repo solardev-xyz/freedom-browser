@@ -10,14 +10,13 @@
  * file belongs to the Rust core's profile secrets store (#644).
  */
 
-const path = require('path');
-const { app } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const { readPrivateFile, repairPrivateFile, writePrivateFileSync } = require('../private-files');
 
 const API_KEYS_FILE = 'rpc-api-keys.json';
 
 function getApiKeysPath() {
-  return path.join(app.getPath('userData'), API_KEYS_FILE);
+  return getFreedomDataPath(API_KEYS_FILE);
 }
 
 /**

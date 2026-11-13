@@ -56,7 +56,7 @@ npm start
 
 ## Command-Line Flags
 
-Freedom reads a few launch options that choose the profile, plus links to open. They are resolved in `src/main/profile-resolver.js` (`resolveProfile`) and `src/main/launch-urls.js`. Both `--flag value` and `--flag=value` work.
+Freedom reads a few launch options that choose the profile, plus links to open. Main parses them (`src/main/profile-resolver.js`, `src/main/launch-urls.js`), and on Linux and macOS the core's `freedom-cored profile open` picks the profile from what they name, before any window; on Windows, and in a source build without `npm run core:download`, `resolveProfile` still does. Both `--flag value` and `--flag=value` work.
 
 | Input                  | Effect                                                                    |
 | ---------------------- | ------------------------------------------------------------------------- |
@@ -73,7 +73,7 @@ The links accepted on the command line are `http`, `https`, `freedom`, `bzz`, `i
 
 Which profile opens, first match wins: `--profile-dir`, then `--profile`, then `FREEDOM_PROFILE`, then the most recently opened profile, then `default` (or, if `default` was deleted, the first remaining profile). `FREEDOM_TEST_USER_DATA` overrides all of these, but it is for the automated test suites only: it points the launch at a throwaway scratch profile. Electron's own `--user-data-dir` does not choose the profile; Freedom sets its data directory itself.
 
-Each profile runs in its own process and can only be open once. Launching a profile that is already open focuses its window instead, and any links on that command line open as new tabs there. A launch for a different profile starts a second process with its own window.
+Each profile runs in its own process and can only be open once. Launching a profile that is already open focuses its window instead, and any links on that command line open as new tabs there; a profile whose window has stopped responding still counts as open. A launch for a different profile starts a second process with its own window.
 
 Examples, opening the `work` profile with a link:
 
