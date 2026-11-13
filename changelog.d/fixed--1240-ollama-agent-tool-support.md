@@ -1,0 +1,1 @@
+- Ollama models without tool support are identified before starting an Agent chat, with compatibility checks for unreported support and a model choice instead of retry advice when tools are rejected ([#1240](https://github.com/solardev-xyz/freedom-browser/pull/1240))
