@@ -106,6 +106,16 @@ const { sealRadicleKey } = require('./radicle-seal');
 const SRC = path.join(__dirname, '..', '..', 'src', 'main');
 
 /**
+ * Where main asks which backend runs (`radicleBackendKind`). Each loader
+ * fixes the answer for the modules it loads, its own kind whatever
+ * FREEDOM_RADICLE_BACKEND says later: main reads the switch at every call,
+ * so two backends loaded in one process (the cost measurement,
+ * `radicle-backend.cost.test.js`) would otherwise both follow the last
+ * value set.
+ */
+const KIND_MODULE = path.join(SRC, 'radicle', 'radicle-backend-kind.js');
+
+/**
  * The design's features beyond today's contract (0008), each pending until
  * a backend honours it:
  * - `dirty-marker`: `node/dirty` is present for a whole run and cleared by a
@@ -219,6 +229,7 @@ async function loadAddonBackend({ home }) {
         setStatusMessage: jest.fn(),
         clearService: jest.fn(),
       }),
+      [KIND_MODULE]: () => ({ radicleBackendKind: () => 'addon' }),
     },
   });
   const embedded = require(path.join(SRC, 'radicle-embedded.js'));
@@ -435,6 +446,7 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
         setStatusMessage: jest.fn(),
         clearService: jest.fn(),
       }),
+      [KIND_MODULE]: () => ({ radicleBackendKind: () => 'service' }),
       [path.join(SRC, 'radicle', 'radicled-node.js')]: () => {
         const actual = jest.requireActual(path.join(SRC, 'radicle', 'radicled-node.js'));
         class ContractNode extends actual.RadicledNode {
