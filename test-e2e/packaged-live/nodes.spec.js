@@ -4,7 +4,8 @@
 // The specs in test-e2e/packaged/ drive the packaged binary with
 // FREEDOM_TEST_MODE, which stubs every node away. These ones go through the
 // live fixtures instead: no test mode, so the artifact's *own* bundled antd,
-// freedom-ipfsd binary, libradicle addon and Arti binary are what start. That
+// freedom-ipfsd binary, libradicle addon (freedom-radicled once Radicle's
+// default switches) and Arti binary are what start. That
 // is the packaging bug this catches — an extraResources rule that only
 // resolves in a source tree, or an addon built for the wrong arch, launches
 // fine and only fails when its manager tries to use it.
@@ -82,6 +83,13 @@ const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
 // past that is wedged, not slow — 60s is the same budget
 // live/ipfs-quit.spec.js uses, with room for a cold packaged teardown.
 const QUIT_TIMEOUT_MS = 60_000;
+
+// What a packaged build runs Radicle on (src/main/radicle/radicle-backend-kind.js):
+// the libradicle add-on in main until the default switches to the
+// freedom-radicled service (freedom-core design 0008, step 7), when this and
+// that module change together. The Radicle leg asserts the service's own
+// answers wherever the build runs it, and fails on the other backend.
+const PACKAGED_RADICLE_BACKEND = 'addon';
 
 // Every node off. Each test turns exactly one back on.
 const NODES_OFF = {
@@ -252,17 +260,41 @@ test.describe('packaged bundled nodes', () => {
   test.describe('Radicle', () => {
     test.use({ seedSettings: { ...NODES_OFF, startRadicleAtLaunch: true } });
 
-    test('the bundled Radicle node starts', async ({ window }) => {
+    test('the bundled Radicle node starts, on the backend a packaged build runs', async ({
+      window,
+    }) => {
       await expectNodeRunning(window, 'radicle', {
         label: 'Radicle',
         timeout: NODE_START_TIMEOUT_MS,
       });
 
-      // 'embedded' is the mode that means the libradicle addon in this
-      // artifact loaded and is serving radapi:.
+      // 'embedded' is the mode either backend publishes once its node in
+      // this artifact runs and serves radapi:.
       const radicle = await registryEntry(window, 'radicle');
       expect(radicle.mode).toBe('embedded');
       expect(radicle.api).toBe('radapi://local');
+
+      // Which one: only freedom-radicled answers with its build and the
+      // confinement it got (radicle-manager.js, getServiceConnections), and
+      // a packaged build runs it from the artifact's resources/freedom-radicled/
+      // (radicled-binary.js), never from FREEDOM_RADICLED_PATH.
+      const connections = await window.evaluate(() => window.radicle.getConnections());
+      const runs = typeof connections.service === 'string' ? 'service' : 'addon';
+      expect(
+        runs,
+        `expected the packaged build's Radicle on the ${PACKAGED_RADICLE_BACKEND}, got the ${runs}: ` +
+          JSON.stringify(connections)
+      ).toBe(PACKAGED_RADICLE_BACKEND);
+      expect(connections.success).toBe(true);
+      if (runs === 'service') {
+        // freedom-core design 0008, Tests first, "Live": the service, its
+        // version and its confinement (design 0010, "Reporting") reported.
+        expect(connections.service).toMatch(/^\d+\.\d+\.\d+/);
+        expect(connections.confinement?.mechanism).toEqual(expect.any(String));
+      } else {
+        // The libradicle add-on in this artifact, in main: no service build.
+        expect(connections).not.toHaveProperty('confinement');
+      }
     });
   });
 
