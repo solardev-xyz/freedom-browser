@@ -1,5 +1,5 @@
 - Radicle runs in its own process, restarts by itself and keeps no key on disk ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
   - Profiles with a vault start Radicle once the vault is unlocked
-  - Profiles without one get a new identity each start; writes and imports need a vault
+  - Without a vault, Radicle is read-only and its old identity's work can't be edited
   - The `rad` command line can't attach to Freedom's Radicle node
   - Repository files over 16 MiB and answers over 32 MiB are refused
