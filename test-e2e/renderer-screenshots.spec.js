@@ -546,6 +546,13 @@ test.describe('renderer screenshots', () => {
           await page.waitForTimeout(1_500);
           await shot(`${40 + i}-settings-${route.replace('/', '-')}`);
         }
+        // Secure DNS (#472), the last panel of Privacy and security: its
+        // route scrolls the page as far as it goes, which brings it up.
+        await page.evaluate(() => {
+          location.hash = 'privacy/dns';
+        });
+        await page.waitForTimeout(1_500);
+        await shot('57-settings-privacy-dns');
         // The page-wide search (#281): the sidebar field with a query, and
         // the result list that stands in for whichever section was open. The
         // query is deliberately one only static rows answer — the `[data-tor]`

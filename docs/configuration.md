@@ -132,6 +132,22 @@ npm start
 
 Never commit provider keys or put them directly in documentation, issue reports, or command history.
 
+## Secure DNS
+
+**Settings → Privacy and security → Secure DNS** chooses how the sites you visit are looked up. It is on by default, in Automatic mode with Quad9:
+
+| Mode      | What it does                                                                                       |
+| --------- | -------------------------------------------------------------------------------------------------- |
+| Automatic | DNS over HTTPS to the chosen provider; your network's DNS when the provider can't be reached       |
+| Strict    | DNS over HTTPS only; sites don't load while the provider can't be reached, Wi-Fi sign-in pages too |
+| Off       | Your network's DNS                                                                                 |
+
+Strict has two exceptions: the provider's own hostname is looked up through the system's DNS, because Chromium has to find the provider before it can use it; and when Chromium's network service crashes and is replaced, a lookup made before Freedom hands the setting to the new one (at once, on the next turn of the event loop) uses Electron's defaults.
+
+The providers are Quad9 (`https://dns.quad9.net/dns-query`, which refuses known malware and phishing domains), Cloudflare (`https://cloudflare-dns.com/dns-query`) and Mullvad (`https://dns.mullvad.net/dns-query`), or **Custom**: any `https://` DNS-over-HTTPS address, optionally with the RFC 8484 `{?dns}` variable. A change applies at once, with no restart. The profile's `settings.json` keeps the choice as `secureDnsMode` (`automatic`, `secure` or `off`), `secureDnsProvider` and `secureDnsCustomTemplate`; only the Settings page may change them.
+
+It applies to everything Chromium's network stack looks up, in every window, private ones too: pages, internal pages, downloads, favicons, updates, an external IPFS gateway and ENS CCIP-Read gateways. The requests the main process makes with Node's own stack still use the system's DNS — Ethereum and Gnosis RPC providers (ENS lookups included), the chain list, Freedom Agent's AI providers and the GitHub bridge — and so do the bundled nodes. See [Features → Secure DNS](features.md#settings--ui) for what it does and doesn't hide.
+
 ## Home Page
 
 Edit `src/renderer/pages/home.html` to customize the welcome view shown on startup or when clicking Home.

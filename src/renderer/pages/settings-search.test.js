@@ -213,7 +213,7 @@ describe('the markup reader these tests are built on', () => {
     expect(new Set(sections.map((section) => section.id))).toEqual(
       new Set([RESULTS_PANEL, ...Object.keys(PANEL_NAV)])
     );
-    expect(sections).toHaveLength(21);
+    expect(sections).toHaveLength(22);
     expect(Object.keys(NAV_LABELS)).toHaveLength(11);
     // Every panel names a real entry, and every entry has a panel.
     expect(new Set(Object.values(PANEL_NAV))).toEqual(new Set(Object.keys(NAV_LABELS)));
@@ -283,7 +283,7 @@ describe('buildSettingsSearchIndex', () => {
     expect(new Set(sections.map((entry) => entry.sectionId))).toEqual(
       new Set(Object.keys(PANEL_NAV))
     );
-    expect(sections).toHaveLength(20);
+    expect(sections).toHaveLength(21);
     const named = (id) => sections.find((entry) => entry.sectionId === id);
     // A panel that shares its entry is named by its own heading, listed under
     // the entry that holds it (#268)…
@@ -294,6 +294,10 @@ describe('buildSettingsSearchIndex', () => {
     expect(named('adblock')).toMatchObject({
       label: 'Ad Blocking',
       section: 'Privacy and security › Ad Blocking',
+    });
+    expect(named('dns')).toMatchObject({
+      label: 'Secure DNS',
+      section: 'Privacy and security › Secure DNS',
     });
     // …and an entry's own heading is found by the entry's name alone.
     expect(named('networks')).toMatchObject({ label: 'Networks', section: 'Networks' });
@@ -752,6 +756,17 @@ describe('matchSettingsSearch', () => {
     expect(results.length).toBeGreaterThan(0);
     expect(results.every((result) => result.rank === 2)).toBe(true);
     expect(labelsOf(results)).toContain('Tabs in title bar');
+  });
+
+  // #472. The custom-address row is hidden until "Custom" is picked, and a
+  // hidden row answers no search, like every other one on the page.
+  test('finds Secure DNS by "dns"', () => {
+    const dns = search('dns');
+    expect(labelsOf(dns)).toEqual(expect.arrayContaining(['Secure DNS', 'Use secure DNS']));
+    expect(labelsOf(dns)).not.toContain('Custom provider');
+    expect(dns.find((entry) => entry.label === 'Use secure DNS')).toMatchObject({
+      section: 'Privacy and security › Secure DNS',
+    });
   });
 });
 

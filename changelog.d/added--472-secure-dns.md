@@ -1,0 +1,4 @@
+- Secure DNS: look up the sites you visit over DNS over HTTPS, so your network provider can't see them ([#472](https://github.com/solardev-xyz/freedom-browser/issues/472))
+  - On by default in Automatic mode with Quad9, which falls back to your network's DNS when Quad9 can't be reached
+  - Strict mode never falls back; Cloudflare, Mullvad or a custom provider can be chosen under Settings → Privacy and security → Secure DNS
+  - Covers pages, downloads and updates; Freedom's own requests to RPC and AI providers, and the bundled nodes, still use your system's DNS

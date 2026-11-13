@@ -160,6 +160,26 @@ describe('isSenderAllowed', () => {
     expect(refusedSettingsKeys(web(), { enableAi: true })).toEqual(['enableAi']);
   });
 
+  // #472: another internal page must not switch Secure DNS off or send every
+  // lookup to a resolver it picked.
+  test('only Settings or the chrome may write Secure DNS over settings:save', () => {
+    const { refusedSettingsKeys } = policy;
+    const dns = {
+      secureDnsMode: 'off',
+      secureDnsProvider: 'custom',
+      secureDnsCustomTemplate: 'https://doh.attacker.example/dns-query',
+    };
+    expect(refusedSettingsKeys(page('settings.html'), dns)).toEqual([]);
+    expect(refusedSettingsKeys(chrome(), dns)).toEqual([]);
+    for (const file of ['home.html', 'history.html', 'private.html', 'error.html']) {
+      expect(refusedSettingsKeys(page(file), { ...dns, theme: 'dark' })).toEqual(Object.keys(dns));
+    }
+    expect(refusedSettingsKeys(page('settings.html', { subFrame: true }), dns)).toEqual(
+      Object.keys(dns)
+    );
+    expect(refusedSettingsKeys(web(), { secureDnsMode: 'off' })).toEqual(['secureDnsMode']);
+  });
+
   test('a chrome sender must be the top frame of our index.html in a window', () => {
     expect(isSenderAllowed('wallet:send-transaction', chrome({ subFrame: true }))).toBe(false);
     expect(isSenderAllowed('wallet:send-transaction', chrome({ noFrame: true }))).toBe(false);

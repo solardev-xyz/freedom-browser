@@ -96,6 +96,8 @@ const SURFACES = {
     '43-settings-nodes-startup',
     '44-settings-search',
     '45-settings-shortcut-conflict',
+    // Secure DNS (#472), numbered after the AI entry points.
+    '57-settings-privacy-dns',
   ],
   // Settings → Updates and the hamburger row in the states the settings walk
   // can't reach on its own (#87): the harness drives the update state.
