@@ -1,5 +1,5 @@
 const { autoUpdater } = require('electron-updater');
-const { app, dialog, ipcMain } = require('electron');
+const { app, ipcMain } = require('electron');
 const log = require('./logger');
 const path = require('path');
 const { loadSettings, onSettingsChanged } = require('./settings-store');
@@ -127,7 +127,6 @@ let updateCheckInProgress = false;
 let mainWindow = null;
 let updateDownloaded = false;
 let menuUpdateCallback = null;
-let isManualCheck = false;
 let updaterOwnerLock = null;
 // Set by initUpdater when this copy can't update at all (dev checkout,
 // unpacked, a Linux package electron-updater can't replace).
@@ -352,7 +351,6 @@ function checkForUpdates({ manual = false } = {}) {
       // "Checking…" forever.
       if (result == null) {
         updateCheckInProgress = false;
-        isManualCheck = false;
         dispatchUpdateEvent({ type: 'unsupported', reason: UNSUPPORTED_REASON.BUILD });
       }
     })
@@ -368,7 +366,6 @@ autoUpdater.on('checking-for-update', () => {
 // Event: Update available
 autoUpdater.on('update-available', (info) => {
   updateCheckInProgress = false;
-  isManualCheck = false;
   log.info('[updater] Update available:', info.version);
   dispatchUpdateEvent({ type: 'available', version: info?.version });
   // Download happens automatically (autoDownload = true)
@@ -379,16 +376,9 @@ autoUpdater.on('update-available', (info) => {
 autoUpdater.on('update-not-available', () => {
   updateCheckInProgress = false;
   log.info('[updater] No updates available');
+  // A manual check is made from Settings → About Freedom → Updates, or opens
+  // it (#918), and that panel says "up to date"; no toast on top of it.
   dispatchUpdateEvent({ type: 'not-available' });
-
-  // Only show notification for manual checks
-  if (isManualCheck && mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('show-update-notification', {
-      type: 'up-to-date',
-      message: 'Freedom is up to date',
-    });
-  }
-  isManualCheck = false;
 });
 
 // Event: Download progress
@@ -434,7 +424,6 @@ autoUpdater.on('update-downloaded', (info) => {
 // Event: Error
 autoUpdater.on('error', (error) => {
   updateCheckInProgress = false;
-  isManualCheck = false;
   log.error('[updater] Error:', error);
   dispatchUpdateEvent(classifyUpdaterError(error));
 
@@ -499,34 +488,30 @@ function isDevModeWithoutUpdater() {
   return process.env.NODE_ENV === 'development' && !devUpdaterSetting();
 }
 
-// Manual update check (from menu)
+// Manual update check: Settings' "Check now", and the menus' "Check for
+// Updates…", which also open Settings → About Freedom → Updates (#918). That
+// panel shows the result and, when this process can't check, the reason (the
+// update state's `unsupported` copy), so nothing here opens a dialog.
 function checkForUpdatesManually() {
-  // E2E: record the request instead of reaching for the network or a native
-  // dialog (installed by test-harness.js in test mode only).
+  // E2E: record the request instead of reaching for the network (installed
+  // by test-harness.js in test mode only).
   if (typeof globalThis.__FREEDOM_TEST_UPDATER__?.record === 'function') {
     globalThis.__FREEDOM_TEST_UPDATER__.record('check');
     return;
   }
 
   if (!hasUpdaterOwnership()) {
-    dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: 'Updates Managed Elsewhere',
-      message: 'Another open Freedom profile is already handling update checks.',
-    });
+    log.info('[updater] Manual check skipped; another profile owns updater');
     return;
   }
 
   if (isDevModeWithoutUpdater()) {
-    dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: 'Updates Disabled',
-      message: 'Auto-update is disabled in development mode. Set ENABLE_DEV_UPDATER=true to test.',
-    });
+    log.info(
+      '[updater] Manual check skipped in development mode; set ENABLE_DEV_UPDATER=true to test'
+    );
     return;
   }
 
-  isManualCheck = true;
   checkForUpdates({ manual: true });
 }
 
