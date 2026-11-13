@@ -1,0 +1,2 @@
+- Updated bundled nodes:
+  - [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.7.0 to 2.8.0
