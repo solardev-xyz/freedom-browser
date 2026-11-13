@@ -9,6 +9,7 @@
  */
 
 const { EventEmitter } = require('events');
+const os = require('os');
 const { PassThrough, Writable } = require('stream');
 const { CoreClient, ShellError } = require('./core-client');
 const {
@@ -861,7 +862,7 @@ class FakeCore extends EventEmitter {
       this.send({
         type: 'response',
         id: message.id,
-        result: { protocol: 2, core_version: '0.13.0', capabilities: ['fragments', 'streams'] },
+        result: { protocol: 2, core_version: '0.14.0', capabilities: ['fragments', 'streams'] },
       });
       this.decoder.setKinds(CORE_STREAM_KINDS);
     } else if (message.method === 'core.shutdown') {
@@ -943,6 +944,7 @@ describe('through the core client at protocol 2', () => {
       args: ['serve'],
       log,
       shellVersion: 'test',
+      grantRoot: os.tmpdir(),
       setTimer: (fn, ms) => ({ fn, ms }),
       clearTimer: () => {},
     });

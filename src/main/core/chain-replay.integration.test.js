@@ -956,6 +956,7 @@ async function replay(scenario, { tap } = {}) {
     ],
     log: quietLog,
     shellVersion: 'jest',
+    grantRoot: root,
   });
   const config = new ChainConfig({
     client,

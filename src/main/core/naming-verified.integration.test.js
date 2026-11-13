@@ -61,6 +61,7 @@ describeIfBinary('shell.verified with the real freedom-cored', () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
   }
 

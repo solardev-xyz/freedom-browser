@@ -17,6 +17,7 @@
 const { ipcMain } = require('electron');
 const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
@@ -87,12 +88,13 @@ function loadPermissions() {
 }
 
 /**
- * Save permissions to disk
+ * Save permissions to disk, by a temp file and a rename: freedom-cored reads
+ * the file at its checks (design 0012, "The files (Q10)").
  */
 function savePermissions() {
   try {
     const filePath = getPermissionsPath();
-    fs.writeFileSync(filePath, JSON.stringify(permissionsCache, null, 2), 'utf-8');
+    writeFileAtomicSync(filePath, JSON.stringify(permissionsCache, null, 2));
   } catch (err) {
     console.error('[DAppPermissions] Failed to save permissions:', err);
   }

@@ -198,6 +198,7 @@ function makeClient(handlers, options = {}) {
     command: '/bin/freedom-cored',
     args: ['serve'],
     log,
+    grantRoot: options.grantRoot ?? os.tmpdir(),
     setTimer: (fn, ms) => {
       const timer = { fn, ms, cleared: false };
       timers.push(timer);
@@ -261,6 +262,30 @@ describe('CoreClient', () => {
     expect(error).toBeInstanceOf(CoreError);
     expect(error.code).toBe('vault_locked');
     expect(error.message).toBe('Vault is locked');
+  });
+
+  // freedom-core design 0012, APR-3: the pinned core (0.14.0) requires
+  // `grant_root`, the permission files' directory, and main has moved none
+  // of them to the core.
+  test('the hello names grant_root, absolute and normalized, and no grant_moved', async () => {
+    const profile = path.join(os.tmpdir(), 'freedom-profile');
+    const given = `${profile}${path.sep}.${path.sep}x${path.sep}..${path.sep}`;
+    const { client, children } = makeClient([helloHandler()], { grantRoot: given });
+    expect(client.grantRoot).toBe(path.resolve(profile));
+    await client.start();
+    const hello = children[0].requests[0];
+    expect(hello.method).toBe('core.hello');
+    expect(hello.params.grant_root).toBe(path.resolve(profile));
+    expect(hello.params).not.toHaveProperty('grant_moved');
+  });
+
+  test('a client is never made without an absolute grantRoot', () => {
+    const options = { spawn: jest.fn(), command: '/bin/freedom-cored', args: ['serve'] };
+    for (const grantRoot of [undefined, null, '', 'profile', `.${path.sep}profile`, 7]) {
+      expect(() => new CoreClient({ ...options, grantRoot })).toThrow(
+        'the core client needs grantRoot, an absolute path'
+      );
+    }
   });
 
   test('scrubs the environment', () => {
@@ -1071,6 +1096,7 @@ describe('CoreClient', () => {
         command: process.execPath,
         args: ['-e', script],
         log: quietLog(),
+        grantRoot: os.tmpdir(),
       });
       try {
         await client.start();

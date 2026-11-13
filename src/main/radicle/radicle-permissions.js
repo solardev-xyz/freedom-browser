@@ -14,6 +14,7 @@
 const { ipcMain } = require('electron');
 const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
+const { writeFileAtomicSync } = require('../lib/atomic-file');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { isPrivateSender } = require('../private/private-sender');
@@ -46,9 +47,11 @@ function loadPermissions() {
   return permissionsCache;
 }
 
+// By a temp file and a rename: freedom-cored reads the file at its checks
+// (design 0012, "The files (Q10)").
 function savePermissions() {
   try {
-    fs.writeFileSync(getPermissionsPath(), JSON.stringify(permissionsCache, null, 2), 'utf-8');
+    writeFileAtomicSync(getPermissionsPath(), JSON.stringify(permissionsCache, null, 2));
   } catch (err) {
     console.error('[RadiclePermissions] Failed to save permissions:', err);
   }

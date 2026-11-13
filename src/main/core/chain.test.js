@@ -1,3 +1,4 @@
+const os = require('os');
 const { CoreClient, ShellError } = require('./core-client');
 const { registerNamingShell } = require('./naming-shell');
 const { registerNamingVerified } = require('./naming-verified');
@@ -30,7 +31,12 @@ afterEach(() => detachChain());
 
 /** A client with naming's executors, then chain data's, attached. */
 function attached() {
-  const client = new CoreClient({ spawn: jest.fn(), command: 'freedom-cored', args: [] });
+  const client = new CoreClient({
+    spawn: jest.fn(),
+    command: 'freedom-cored',
+    args: [],
+    grantRoot: os.tmpdir(),
+  });
   const config = {
     endpointUrl: () => 'https://a.rpc.example',
     generations: { ens: 1, tezos: 1, lifecycle: 1 },

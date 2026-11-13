@@ -124,6 +124,7 @@ describeIfHtml('the web3: handler through the real core (design 0006, chain.html
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     const config = new ChainConfig({
       client,

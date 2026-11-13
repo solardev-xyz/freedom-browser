@@ -59,6 +59,7 @@ async function startNamingCore() {
     ],
     log: quiet,
     shellVersion: 'jest',
+    grantRoot: root,
   });
   const { config } = attachNaming(client);
   await client.start();

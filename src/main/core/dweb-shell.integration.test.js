@@ -67,6 +67,7 @@ describeIfCore('dweb-shell.js with the real freedom-cored at protocol 2', () => 
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     shell = registerDwebShell(core, { log: quietLog });
     const hello = await core.start();

@@ -157,6 +157,7 @@ describeIfChain("chain data's executors with the real freedom-cored", () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     const main = { refs: new Map(), chainId: 1, generation: 0, ahead: null };
     const config = {

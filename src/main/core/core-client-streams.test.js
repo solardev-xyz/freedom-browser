@@ -5,10 +5,12 @@
  * from the core and end only with its verified bodies' codes; the bodies
  * main sends in answer to the core's requests (`StreamedReply`) go under
  * the core's credit and end only with a piece's codes. Protocol 2 is the
- * only one CoreClient speaks: the pinned core (0.13.0) refuses 1.
+ * only one CoreClient speaks: the pinned core (0.14.0) refuses 1.
  */
 
 const { EventEmitter } = require('events');
+const os = require('os');
+const path = require('path');
 const { PassThrough, Writable } = require('stream');
 const {
   CoreClient,
@@ -165,7 +167,7 @@ class FakeCore extends EventEmitter {
 }
 
 function hello(protocol, capabilities = ['vault.status', 'fragments', 'streams']) {
-  return { protocol, core_version: '0.13.0', capabilities };
+  return { protocol, core_version: '0.14.0', capabilities };
 }
 
 /** Answers the hello at `protocol` (with `result` if given), shutdown, and
@@ -201,6 +203,7 @@ function makeClient(handler, options = {}) {
     args: ['serve'],
     log,
     shellVersion: 'test',
+    grantRoot: os.tmpdir(),
     setTimer: (fn, ms) => ({ fn, ms }),
     clearTimer: () => {},
     ...options,
@@ -304,7 +307,7 @@ describe('the hello at protocol 2', () => {
     const ready = await client.start();
     expect(ready).toEqual({
       protocol: 2,
-      core_version: '0.13.0',
+      core_version: '0.14.0',
       capabilities: ['vault.status', 'fragments', 'streams'],
       node_recovery: null,
     });
@@ -313,6 +316,7 @@ describe('the hello at protocol 2', () => {
       shell_version: 'test',
       auto_lock_ms: 900000,
       frames: ['fragment', 'stream'],
+      grant_root: path.resolve(os.tmpdir()),
     });
     expect(client.streamStats()).toEqual({
       outstanding: 0,

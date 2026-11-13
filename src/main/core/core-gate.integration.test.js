@@ -59,6 +59,7 @@ function core(identityDir, lockDir) {
     ],
     log: quietLog,
     shellVersion: 'jest',
+    grantRoot: path.dirname(identityDir),
   });
 }
 

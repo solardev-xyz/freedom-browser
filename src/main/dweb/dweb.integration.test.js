@@ -134,6 +134,7 @@ describeIfDweb('the dweb handlers with the real freedom-cored', () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     const config = new NamingConfig({ client, sources: sources(), log: quietLog });
     registerNamingShell(client, config, { hop });
@@ -364,6 +365,7 @@ describeIfResolving('dweb requests over names the real core resolves', () => {
       ],
       log: quietLog,
       shellVersion: 'jest',
+      grantRoot: root,
     });
     endpoints = RPC;
     config = new NamingConfig({ client, sources: sources(), log: quietLog });

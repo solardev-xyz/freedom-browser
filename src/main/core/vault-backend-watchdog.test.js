@@ -8,6 +8,7 @@
  */
 
 const { EventEmitter } = require('events');
+const os = require('os');
 const { PassThrough, Writable } = require('stream');
 const { CoreClient, RESTART_DELAYS_MS } = require('./core-client');
 const { encodeFrame, FrameDecoder, KIND_JSON } = require('./frame');
@@ -102,6 +103,7 @@ async function setup(handlers) {
     command: '/bin/freedom-cored',
     args: ['serve'],
     log,
+    grantRoot: os.tmpdir(),
   });
   jest.resetModules();
   jest.doMock('./core-process', () => ({ getCoreClient: () => client }));

@@ -40,6 +40,8 @@ function client(dataDir, lockDir, spawnFn = spawn) {
     ],
     log: quietLog,
     shellVersion: 'jest',
+    // The profile's directory: the identity's parent, as in the app.
+    grantRoot: path.dirname(dataDir),
   });
 }
 
@@ -75,7 +77,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
   });
 
   test('protocol 1 is refused: protocol_mismatch naming 2, then exit 76', async () => {
-    // From 0.11.0 (freedom-core #265), so the pinned 0.13.0 too: only protocol 2.
+    // From 0.11.0 (freedom-core #265), so the pinned 0.14.0 too: only protocol 2.
     // CoreClient can't ask for 1, so this is a raw hello, as main's was.
     const child = spawn(
       binary,
@@ -108,6 +110,54 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
     ]);
   });
 
+  // From 0.14.0 (freedom-core design 0012, APR-3): the hello must name the
+  // permission files' directory, which CoreClient always sends; a raw hello
+  // shows what a main without it would get.
+  test.each([
+    ['without grant_root', {}],
+    ['with a relative grant_root', { grant_root: 'profile' }],
+    ['with a grant_root that has ..', { grant_root: `${path.resolve('profile')}${path.sep}..` }],
+  ])('a hello %s is refused: invalid_argument, then exit 76', async (_, grant) => {
+    const child = spawn(
+      binary,
+      ['serve', '--data-dir', path.join(root, 'identity'), '--lock-dir', path.join(root, 'locks')],
+      { stdio: ['pipe', 'pipe', 'ignore'] }
+    );
+    const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
+    const decoder = new FrameDecoder();
+    const messages = [];
+    child.stdout.on('data', (chunk) => {
+      for (const { message } of decoder.push(chunk)) messages.push(message);
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.write(
+      encodeFrame({
+        type: 'request',
+        id: 1,
+        method: 'core.hello',
+        params: {
+          protocol: 2,
+          shell_version: 'jest',
+          auto_lock_ms: 60000,
+          frames: ['fragment', 'stream'],
+          ...grant,
+        },
+        context: { caller: 'shell' },
+      })
+    );
+    expect(await exited).toBe(76);
+    expect(messages).toEqual([
+      {
+        type: 'response',
+        id: 1,
+        error: {
+          code: 'invalid_argument',
+          message: 'core.hello needs grant_root, an absolute path',
+        },
+      },
+    ]);
+  });
+
   test('stop() racing the handshake settles without a restart', async () => {
     let spawned = 0;
     const core = new CoreClient({
@@ -124,6 +174,7 @@ describeIfBinary('CoreClient with the real freedom-cored', () => {
         path.join(root, 'locks'),
       ],
       log: quietLog,
+      grantRoot: root,
     });
     const started = core.start().catch((e) => e);
     await core.stop();
