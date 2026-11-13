@@ -759,6 +759,130 @@ jobs:
           path: ipfs-cost-${{ matrix.target }}.json
           if-no-files-found: warn
 
+  # Whether a pull request touches what the Radicle cost measurement
+  # measures: the Radicle backends, their manager and handlers, the service
+  # client and its frames, main's dweb admission the service's reads take,
+  # the measurement, its helpers and its fixture, the pinned add-on's and
+  # binary's fetch, the dependencies, and this workflow. As `ipfs-changed`:
+  # anything else can't move the numbers.
+  radicle-changed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      radicle: ${{ steps.filter.outputs.radicle }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether the Radicle backends changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "not a pull request — measuring"
+            echo "radicle=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE"
+          changed=$(git diff --no-renames --name-only "origin/$BASE...HEAD")
+          echo "$changed"
+          # No `-q`, as in the gates above: a >64 KiB path list would kill
+          # the `echo` with SIGPIPE, which `pipefail` turns into `radicle=false`.
+          if echo "$changed" | grep -E '^(src/main/radicle/|src/main/radicle-(embedded|manager|api-protocol)\.js|src/main/core/(service-client|frame)\.js|src/main/private/private-log-context\.js|src/main/dweb/(fetch-admission|plan-executor)\.js|src/shared/radicle-addon-version\.js|test/helpers/(radicle-contract-backends|radicle-cost-report|ipfs-cost-report|radicle-fixture|radicle-seal|main-process-test-utils)\.js|test/fixtures/radicle-contract/|scripts/(fetch-freedom-radicled|fetch-radicle-addon)\.js|scripts/lib/(freedom-core-release|fetch-with-retry)\.js|package(-lock)?\.json|\.github/workflows/ci\.yml)' >/dev/null; then
+            echo "radicle=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "radicle=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # What serving Radicle from freedom-radicled costs against the add-on
+  # (freedom-core design 0008, "Gates"), on the same runner, through `rad:`'s
+  # own handler: the metadata read (`repo_info` + `tree_at` on the contract
+  # fixture) and the time to the last byte of a 1 MiB text blob through
+  # `/blob/`, with 0008's gates enforced: the service's median at most 5 ms
+  # and 10 ms slower than the add-on's. Medians of hundreds of interleaved
+  # rounds after a discarded warm-up, and a gate that misses is measured
+  # once more and judged on both runs' samples pooled, as `ipfs-cost`'s are:
+  # a noisy run doesn't fail the job alone, and a luckier one doesn't pass
+  # it alone. A miss names both medians. The table goes to the step summary,
+  # and the numbers to an artifact. Both backends are this runner's: the
+  # add-on and freedom-radicled for mac-arm64, linux-x64 and win-x64.
+  radicle-cost:
+    needs: radicle-changed
+    if: ${{ !cancelled() && needs.radicle-changed.outputs.radicle != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            node_target: linux-x64
+            radicle_flags: --linux --x64
+          - os: macos-15
+            target: mac-arm64
+            node_target: darwin-arm64
+            radicle_flags: --mac --arm64
+          - os: windows-latest
+            target: win-x64
+            node_target: win32-x64
+            radicle_flags: --win --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        uses: ./.github/actions/install-node-deps
+        with:
+          ignore-scripts: 'true'
+
+      - name: Assert the runner's target
+        run: node -e "const target = process.platform + '-' + process.arch; if (target !== process.env.EXPECTED_TARGET) { console.error('Expected ' + process.env.EXPECTED_TARGET + ' runner, got ' + target); process.exit(1); } console.log(target);"
+        env:
+          EXPECTED_TARGET: ${{ matrix.node_target }}
+
+      - name: Download this runner's libradicle addon
+        run: npm run radicle:download -- ${{ matrix.radicle_flags }}
+
+      - name: Download freedom-radicled binaries
+        timeout-minutes: 7
+        shell: bash
+        run: bash scripts/ci/hang-watchdog.sh 300 node scripts/fetch-freedom-radicled.js
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Measure freedom-radicled against the add-on
+        run: npx jest src/main/radicle/radicle-backend.cost.test.js
+        env:
+          FREEDOM_RADICLE_COST: '1'
+          # 0008's Gates guard freedom-radicled before it becomes the
+          # default: a miss fails the job.
+          FREEDOM_RADICLE_COST_ENFORCE: '1'
+          FREEDOM_RADICLE_COST_OUT: radicle-cost-${{ matrix.target }}.json
+
+      - name: Upload the cost numbers
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: radicle-cost-${{ matrix.target }}
+          path: radicle-cost-${{ matrix.target }}.json
+          if-no-files-found: warn
+
   # Grouped job; see the note above `native-addons`.
   #
   # The suites that must hold on all three desktop operating systems. The
@@ -2406,6 +2530,8 @@ jobs:
         myotis-native-e2e,
         native-addons,
         packed-asar-contents,
+        radicle-changed,
+        radicle-cost,
         renderer-changed,
         test,
         zizmor,
