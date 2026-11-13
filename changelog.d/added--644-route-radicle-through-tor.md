@@ -1,4 +1,5 @@
 - Route Radicle through Tor ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644)):
   - Off by default under Settings > Advanced, and needs Tor enabled
-  - While Tor isn't running, Radicle stays stopped instead of connecting directly
-  - Switching it restarts the node, and cloning and syncing get slower
+  - Without Tor, Radicle stays stopped or offline instead of connecting directly
+  - Switching it restarts the node
+  - Cloning and syncing get slower
