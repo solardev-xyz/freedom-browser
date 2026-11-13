@@ -38,7 +38,11 @@
  * `rad.connect_seeds` and `rad.clone` answer what each `radicle-network.json`
  * case scripts, the clone's progress as the texts of its `rad.progress`
  * events (B9: `runServiceReport`, `runServiceProgress`, `runServiceQueue`
- * and `runServiceResult`).
+ * and `runServiceResult`); and `runServiceImport`, the GitHub bridge's
+ * import whole over main's import on the one-shot import process
+ * (radicle/radicled-import.js), a fake freedom-radicled
+ * (`test/helpers/fake-radicled.js`) answering `rad.import_repo` with each
+ * `radicle-import.json` case's `expect` (B14).
  *
  * Lives under `test/helpers/` (outside `src/**`) so electron-builder never
  * packages it.
@@ -827,11 +831,14 @@ function runServiceResult(main, c, ending = null) {
 // ---- radicle-import.json (radicle-import.js) ----
 
 /** Main's GitHub bridge over its own embedded module and a scripted add-on,
- * `git`, GitHub and profile; loaded afresh for each case. */
-function loadBridge(world, constants) {
+ * `git`, GitHub and profile; loaded afresh for each case. With `service`,
+ * main's import on the service (`serviceImporter`), and the OS's temporary
+ * directory the bridge clones into there, scripted as the profile's is. */
+function loadBridge(world, constants, { service = null } = {}) {
   const addon = scriptedAddon(world);
   const log = { debug() {}, error() {}, log() {}, info() {}, warn() {} };
   const embedded = loadEmbedded(log, addon);
+  if (service) embedded.setServiceImport(service);
   // `execFileAsync = promisify(execFile)`: the scripted git, in order.
   const execFile = () => {
     throw new Error('the callback form of execFile is not used');
@@ -874,10 +881,18 @@ function loadBridge(world, constants) {
       ...fs,
       existsSync: () => false,
       writeFileSync: (p, data) => world.writes.push({ path: p, data: String(data) }),
+      // The service's clone directory: the case's, as the profile's is.
+      mkdtempSync: (prefix) => {
+        world.mkdtemp.push(path.basename(prefix));
+        return constants.temp;
+      },
+      realpathSync: Object.assign((p) => p, { native: (p) => p }),
     },
     './radicle-manager': {
+      checkBinary: () => true,
       getCurrentStatus: () => ({ status: 'running' }),
       isDisabledForProfile: () => false,
+      radicleImportPending: () => false,
       // The vectors are the add-on's, which never refuses with needs_vault.
       radicleWriteRefusal: () => null,
       STATUS: { RUNNING: 'running' },
@@ -953,6 +968,129 @@ async function runImport(c, constants) {
   };
 }
 
+/**
+ * Main's import on the one-shot import process (radicle/radicled-import.js)
+ * over `service`, a fake freedom-radicled: loaded with main's checks before
+ * the spawn stubbed (the vectors' paths are the generator's, not this
+ * machine's: service-grant.test.js checks them on real directories), and the
+ * core's seal scripted.
+ */
+function serviceImporter(service, ownHome) {
+  const pass = { radicleGrantRefusal: () => null };
+  const client = loadWithInternals('src/main/radicle/radicled-client.js', [], {
+    electron: { app: { isPackaged: false } },
+    '../service-grant': pass,
+  });
+  const { runRadicledImport } = loadWithInternals('src/main/radicle/radicled-import.js', [], {
+    './radicled-client': client,
+    '../service-grant': pass,
+  });
+  const silent = { debug() {}, error() {}, info() {}, warn() {} };
+  const keys = {
+    status: async () => ({ exists: true, unlocked: true }),
+    seal: async () => ({
+      enc: Buffer.alloc(32, 0xa5).toString('base64'),
+      ciphertext: Buffer.alloc(48, 0x5a).toString('base64'),
+    }),
+    onVaultEvent: () => () => {},
+  };
+  return (source, name, description, defaultBranch) =>
+    runRadicledImport({
+      home: '/profile/radicle-data',
+      lockDir: '/profile/locks',
+      ownHome,
+      source,
+      name,
+      description,
+      defaultBranch,
+      keys,
+      checks: { roots: () => [], source: () => null },
+      command: 'freedom-radicled',
+      spawn: service.spawn,
+      serviceVersion: null,
+      log: silent,
+      shellVersion: 'vectors',
+    });
+}
+
+/**
+ * A `radicle-import.json` import on main's service path (the radicled
+ * plan's B14): `importGitHubRepo(url)` whole under
+ * `FREEDOM_RADICLE_BACKEND=service`, its import on the one-shot import
+ * process, whose `rad.import_repo` answers the case's `expect`. What main did
+ * (`main`, as `runImport` gives it), the import processes' arguments and
+ * `rad.import_repo` params, and the temporary directories it made.
+ */
+async function runServiceImport(c, constants) {
+  const { fakeRadicled } = require('./fake-radicled');
+  const service = fakeRadicled({
+    import_repo: (message, child) => {
+      if (c.expect.error) child.error(message.id, c.expect.error.code, c.expect.error.message);
+      else child.result(message.id, JSON.parse(c.expect.result_text));
+    },
+  });
+  const ownHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'radicle-vectors-'));
+  const world = {
+    script: [],
+    gitScript: [
+      { command: '--version', stdout: 'git version 2.43.0\n' },
+      { command: 'clone' },
+      c.default_branch === null
+        ? { command: 'symbolic-ref', error: 'fatal: ref HEAD is not a symbolic ref' }
+        : { command: 'symbolic-ref', stdout: `${c.default_branch}\n` },
+    ],
+    description: c.description_body,
+    calls: [],
+    unscripted: [],
+    git: [],
+    https: [],
+    temp: [],
+    mkdtemp: [],
+    writes: [],
+    removed: [],
+    progress: [],
+    console: [],
+  };
+  const bridge = loadBridge(world, constants, {
+    service: serviceImporter(service, ownHome),
+  });
+  const sender = {
+    isDestroyed: () => false,
+    send: (channel, data) => world.progress.push({ channel, data }),
+  };
+  const saved = { log: console.log, warn: console.warn, error: console.error };
+  for (const level of Object.keys(saved)) {
+    console[level] = (...parts) => world.console.push({ level, line: parts.map(String).join(' ') });
+  }
+  let result;
+  try {
+    result = await bridge.importGitHubRepo(c.url, sender);
+  } finally {
+    Object.assign(console, saved);
+    fs.rmSync(ownHome, { recursive: true, force: true });
+  }
+  return {
+    main: asJson({
+      result,
+      calls: world.calls,
+      git: world.git,
+      https: world.https,
+      temp: world.temp,
+      progress: world.progress,
+      writes: world.writes,
+      removed: world.removed,
+      console: world.console,
+    }),
+    spawned: service.spawned.map(({ args }) => args),
+    imports: service.children
+      .flatMap((child) => child.sent('rad.import_repo'))
+      .map((m) => m.params),
+    mkdtemp: world.mkdtemp,
+    ...leftovers(world),
+    gitLeft: world.gitScript.length,
+  };
+}
+
 module.exports = {
   ADDON,
   RID,
@@ -981,4 +1119,5 @@ module.exports = {
   runServiceResult,
   SERVICE_ENDINGS,
   runImport,
+  runServiceImport,
 };

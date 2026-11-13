@@ -19,7 +19,9 @@
  *   production `radicle-manager.js` and `radicle-embedded.js` under
  *   `FREEDOM_RADICLE_BACKEND=service`: the real node on the real binary,
  *   its reads through `callStream` and `callScoped`, its writes `rad.write`
- *   and `rad.unseed`. Its key is the
+ *   and `rad.unseed`, its import the one-shot import process (`importRepo`:
+ *   the node stopped, the binary's `import` on the working copy, the node
+ *   started again; plan B14). Its key is the
  *   fixture's, sealed to the process as the core's `nodes.seal_radicle_key`
  *   would seal it (`radicle-seal.js`), so the home holds no key file (the
  *   service refuses one: 0008, "The switch"). It runs under a SOCKS policy
@@ -368,7 +370,24 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
         'radicled:download, or set FREEDOM_RADICLED_PATH'
     );
   }
-  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  // Main's log, the service's lines among them, kept for a test that has
+  // to say what happened (`recentLog`, `note`): the last 2000 lines.
+  const logged = [];
+  const keep =
+    (level) =>
+    (...parts) => {
+      const text = parts
+        .map((part) => (typeof part === 'string' ? part : JSON.stringify(part)))
+        .join(' ');
+      logged.push(`${new Date().toISOString()} ${level} ${text}`);
+      if (logged.length > 2000) logged.shift();
+    };
+  const log = {
+    info: jest.fn(keep('info')),
+    warn: jest.fn(keep('warn')),
+    error: jest.fn(keep('error')),
+    debug: jest.fn(),
+  };
   // The service refuses a home with a key file: the key reaches the node
   // sealed instead, as from the core, and the home is as a switched one.
   fs.rmSync(path.join(home, 'keys'), { recursive: true, force: true });
@@ -470,6 +489,22 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
         }
         return { ...actual, RadicledNode: ContractNode };
       },
+      // The import process takes the same key, sealed to its own recipient.
+      [path.join(SRC, 'radicle', 'radicled-import.js')]: () => {
+        const actual = jest.requireActual(path.join(SRC, 'radicle', 'radicled-import.js'));
+        return {
+          ...actual,
+          runRadicledImport: (options) =>
+            actual.runRadicledImport({
+              ...options,
+              keys: {
+                status: async () => ({ exists: true, unlocked: true }),
+                seal: async (recipient) => sealRadicleKey(recipient, seed),
+                onVaultEvent: () => () => {},
+              },
+            }),
+        };
+      },
     },
   });
   const embedded = require(path.join(SRC, 'radicle-embedded.js'));
@@ -486,6 +521,10 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
   return {
     name: 'radicled',
     home,
+    /** Main's last log lines, the service's among them. */
+    recentLog: () => [...logged],
+    /** A line of the test's own among them. */
+    note: (text) => keep('note')(text),
     lockDir,
     manager,
     embedded,
@@ -655,8 +694,9 @@ const BACKENDS = {
       'size-caps',
       // Its test needs the scriptedClone hook (plan C4), which no release has.
       'progress-summary',
+      'import-in-process',
     ],
-    lacks: ['parsed-reads', 'import'],
+    lacks: ['parsed-reads'],
     hooks: [],
     deviations: RADICLED_DEVIATIONS,
     handlerDeviations: radicledHandlerDeviations,

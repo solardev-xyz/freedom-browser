@@ -14,6 +14,11 @@
  *   gate in the core's lock directory for its whole life, and exits 75
  *   while another owner holds it (after 5 s of retries) or 74 on a
  *   filesystem it refuses. The policy is fixed for its life (0008, Modes).
+ *   With `source`, it is the one-shot import process instead (design 0010,
+ *   D5; radicled-import.js): `import --home … --lock-dir … --source <path>
+ *   --protected <root>… --parent-pid <pid>`, offline (its hello reports `{
+ *   mode: "offline" }`), which answers `rad.hello`, `rad.identity`,
+ *   `rad.reconcile` and `rad.import_repo`, then exits.
  * - **Its environment** is the shared client's scrubbed one, with `HOME` an
  *   empty directory of the service's own (`radicledEnv`; 0008, "Spawn and
  *   lock"), made before each spawn: the user's home directory, as `HOME`
@@ -37,7 +42,8 @@
  *   deadline and always replies, so main only watches, each deadline + 15
  *   s: `rad.identity` until 30 s after the handshake, `rad.reconcile` 300 s,
  *   `rad.start` 30 s, reads 60 s to the head, network calls their
- *   `timeout_ms` + 30 s, writes 60 s; and `rad.stats` 20 s. A request with
+ *   `timeout_ms` + 30 s, writes 60 s, `rad.import_repo` 300 s; and
+ *   `rad.stats` 20 s. A request with
  *   no reply by then means the service is hung: it is killed, and the
  *   restart rules apply.
  * - **Exit codes and restarts** are the shared client's: 0.5 s, 2 s, then
@@ -68,6 +74,9 @@ const GIT_COMMIT = /^[0-9a-f]{7,64}$/;
 const RECIPIENT = /^[A-Za-z0-9+/]{43}=$/;
 const RECIPIENT_BYTES = 32;
 const DIRECT = Object.freeze({ mode: 'direct' });
+/** The import process's network (design 0010, D5): none. It takes no
+ * `--network`, and its hello reports this. */
+const OFFLINE = Object.freeze({ mode: 'offline' });
 // A service's requests are main's own: no caller context reaches it.
 const CONTEXT = Object.freeze({ caller: 'shell' });
 
@@ -83,6 +92,9 @@ const START_DEADLINE_MS = 30_000;
 const READ_DEADLINE_MS = 60_000;
 /** A write's deadline in the service. */
 const WRITE_DEADLINE_MS = 60_000;
+/** `rad.import_repo`'s time from its admission in the import process
+ * (0008, Deadlines; 0010, D5), past which the process exits 70. */
+const IMPORT_DEADLINE_MS = 300_000;
 /** What the service adds to a network call's `timeout_ms`. */
 const NETWORK_EXTRA_MS = 30_000;
 /** No `rad.stats` reply within this means the service is hung. */
@@ -109,6 +121,7 @@ const WATCHDOG_MS = Object.freeze({
   'rad.write': WRITE_DEADLINE_MS + HANG_GRACE_MS,
   'rad.unseed': WRITE_DEADLINE_MS + HANG_GRACE_MS,
   'rad.remove_repo': WRITE_DEADLINE_MS + HANG_GRACE_MS,
+  'rad.import_repo': IMPORT_DEADLINE_MS + HANG_GRACE_MS,
   'rad.stats': STATS_WATCHDOG_MS,
 });
 
@@ -141,6 +154,30 @@ function serveArgs({ home, lockDir, network = DIRECT, parentPid = process.pid })
     '--parent-pid',
     String(parentPid),
   ];
+}
+
+/**
+ * The import process's arguments (design 0010, D5): the profile's Radicle
+ * home, the working copy main names (`source`, exactly as `rad.import_repo`'s
+ * `path` will name it), and each of main's protected roots, which none of
+ * the working copy's roots may be, contain or lie inside. No `--network`:
+ * the process has none.
+ */
+function importArgs({ home, lockDir, source, protectedRoots = [], parentPid = process.pid }) {
+  const args = ['import', '--home', home, '--lock-dir', lockDir, '--source', source];
+  for (const root of protectedRoots) args.push('--protected', root);
+  args.push('--parent-pid', String(parentPid));
+  return args;
+}
+
+/** Whether hello's `reported` network is the policy main spawned the
+ * process under: the serve process's (`reportsPolicy`), or the import
+ * process's `{ mode: "offline" }`, exactly. */
+function reportsNetwork(reported, network) {
+  if (network?.mode === 'offline') {
+    return isObject(reported) && reported.mode === 'offline' && Object.keys(reported).length === 1;
+  }
+  return reportsPolicy(reported, network);
 }
 
 /**
@@ -184,7 +221,7 @@ function validHello(result, network, version = null) {
     return null;
   }
   if (!validRecipient(recipient)) return null;
-  if (!reportsPolicy(result.network, network)) return null;
+  if (!reportsNetwork(result.network, network)) return null;
   const confinement = validConfinement(result.confinement);
   if (!confinement) return null;
   return {
@@ -251,21 +288,35 @@ class RadicledClient extends ServiceClient {
    *   report (`expectedServiceVersion()`), or null for any
    * @param {Function} [options.beforeSpawn] - ServiceClient's, asked after
    *   the grant check passes
+   * @param {string} [options.source] - the working copy to import: the
+   *   process is then the one-shot import process (`importArgs`), offline,
+   *   and `network` is ignored
+   * @param {string[]} [options.protectedRoots] - with `source`, main's
+   *   protected roots, resolved, for `--protected`
    */
   constructor(options) {
-    const network = options.network ?? DIRECT;
+    const importing = typeof options.source === 'string';
+    const network = importing ? OFFLINE : (options.network ?? DIRECT);
     const serviceVersion =
       options.serviceVersion === undefined ? expectedServiceVersion() : options.serviceVersion;
     const { ownHome } = options;
     super({
       ...options,
       command: options.command ?? getRadicledBinaryPath(),
-      args: serveArgs({
-        home: options.home,
-        lockDir: options.lockDir,
-        network,
-        parentPid: options.parentPid,
-      }),
+      args: importing
+        ? importArgs({
+            home: options.home,
+            lockDir: options.lockDir,
+            source: options.source,
+            protectedRoots: options.protectedRoots,
+            parentPid: options.parentPid,
+          })
+        : serveArgs({
+            home: options.home,
+            lockDir: options.lockDir,
+            network,
+            parentPid: options.parentPid,
+          }),
       env: () => radicledEnv(ensurePrivateDir(ownHome)),
       service: radicledService({ network, serviceVersion }),
     });
@@ -438,6 +489,22 @@ class RadicledClient extends ServiceClient {
       onSent,
     });
   }
+
+  /**
+   * `rad.import_repo { path, name, description, default_branch }` on the
+   * import process's `gen`, watched for 300 s + 15 s: the process's own
+   * deadline runs from its admission. No cancel: past its start only a
+   * success is proven (0008, Writes), so main waits for its answer. `fence`
+   * and `onSent` are requestTo's: the caller tells an import the process
+   * may have taken from one it never got.
+   */
+  importRepo(gen, params, { fence = null, onSent = null } = {}) {
+    return this.requestTo(gen, 'rad.import_repo', params, CONTEXT, {
+      watchdogMs: WATCHDOG_MS['rad.import_repo'],
+      fence,
+      onSent,
+    });
+  }
 }
 
 function badTimeout() {
@@ -448,6 +515,8 @@ module.exports = {
   RadicledClient,
   expectedServiceVersion,
   serveArgs,
+  importArgs,
+  reportsNetwork,
   radicledEnv,
   radicledService,
   validHello,
@@ -460,10 +529,12 @@ module.exports = {
   START_DEADLINE_MS,
   READ_DEADLINE_MS,
   WRITE_DEADLINE_MS,
+  IMPORT_DEADLINE_MS,
   NETWORK_EXTRA_MS,
   STATS_WATCHDOG_MS,
   SHUTDOWN_GRACE_MS,
   MAX_OUTSTANDING,
   MAX_TIMER_MS,
   WATCHDOG_MS,
+  OFFLINE,
 };

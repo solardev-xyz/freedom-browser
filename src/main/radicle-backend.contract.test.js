@@ -210,6 +210,9 @@ describeRecord('Radicle backend contract: recording the fixture (addon)', () => 
 
 describeContract(`Radicle backend contract (${BACKEND})`, () => {
   let backend;
+  // The import-in-process case passed 55 s: main's log is printed again at
+  // the end.
+  let importStalled = false;
   let home;
   const fx = VECTORS?.fixture;
   const cases = fx ? vectorCases(fx) : new Map();
@@ -223,6 +226,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
   }, 120_000);
 
   afterAll(async () => {
+    if (importStalled) printLog(backend, "the suite's end");
     await backend?.close();
     if (home) removeDir(home);
   }, 60_000);
@@ -718,20 +722,43 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       'import-in-process',
       "an import leaves the working copy's configuration and refs untouched",
       async () => {
-        const workingCopy = tempDir('rad-contract-wc-');
+        // Main's log, the service's among it, printed if the case hasn't
+        // ended by 55 s, and again at the suite's end.
+        const started = Date.now();
+        const note = (text) => backend.note?.(`import test +${Date.now() - started} ms: ${text}`);
+        const watch = setTimeout(() => {
+          importStalled = true;
+          printLog(backend, 'the import test, 55 s in');
+        }, 55_000);
+        // Named by its real path, as the GitHub bridge names its clone.
+        const workingCopy = fs.realpathSync.native(tempDir('rad-contract-wc-'));
         try {
+          note('the working copy');
           buildSmallWorkingCopy(workingCopy);
           const before = snapshotGitDir(workingCopy);
+          note('importing');
           const { rid } = await backend.embedded.importRepo(
             workingCopy,
             'contract-untouched',
             'Imported in process.',
             'main'
           );
+          note('imported');
           expect(rid).toMatch(RID_RE);
           expect(snapshotGitDir(workingCopy)).toEqual(before);
+          // The node, started again, serves it. Read before the unseed: on
+          // the macOS and Windows runners an unseed sent the moment the node
+          // is up stalled freedom-radicled 0.1.1's pools beside the start's
+          // background node_info read (reported with the import's PR).
+          expect(JSON.parse(await backend.readText('repo_info', { rid }))).toMatchObject({
+            rid,
+            name: 'contract-untouched',
+          });
+          note('read');
           await backend.embedded.unseedRepo(rid);
+          note('unseeded');
         } finally {
+          clearTimeout(watch);
           removeDir(workingCopy);
         }
       },
@@ -1028,15 +1055,18 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
       'import',
       'an imported repository is listed and seeded, then unseeded',
       async () => {
-        const workingCopy = tempDir('rad-contract-wc-');
+        // Named by its real path, as the GitHub bridge names its clone.
+        const workingCopy = fs.realpathSync.native(tempDir('rad-contract-wc-'));
         try {
           buildSmallWorkingCopy(workingCopy);
           const e = backend.embedded;
           const { rid } = await e.importRepo(workingCopy, 'contract-import', 'Imported.', 'main');
           expect(rid).toMatch(RID_RE);
-          expect((await e.listRepos()).map((repo) => repo.rid)).toContain(rid);
-          expect((await e.listSeededRepos()).map((repo) => repo.rid)).toContain(rid);
-          expect(await e.repoInfo(rid)).toMatchObject({
+          // Read as every backend serves them: the text of each op.
+          const rids = async (op) => JSON.parse(await backend.readText(op)).map((repo) => repo.rid);
+          expect(await rids('list_repos')).toContain(rid);
+          expect(await rids('list_seeded_repos')).toContain(rid);
+          expect(JSON.parse(await backend.readText('repo_info', { rid }))).toMatchObject({
             rid,
             name: 'contract-import',
             defaultBranch: 'main',
@@ -1044,7 +1074,7 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
           });
 
           await e.unseedRepo(rid);
-          expect((await e.listSeededRepos()).map((repo) => repo.rid)).not.toContain(rid);
+          expect(await rids('list_seeded_repos')).not.toContain(rid);
         } finally {
           removeDir(workingCopy);
         }
@@ -1062,6 +1092,14 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
     }, 60_000);
   });
 });
+
+/** Prints main's last log lines, the service's among them, where the
+ * backend keeps them: what an import that doesn't end was waiting for. */
+function printLog(backend, when) {
+  const lines = backend?.recentLog?.();
+  if (lines)
+    console.error(`main's log at ${when}, last ${lines.length} lines:\n${lines.join('\n')}`);
+}
 
 /** A small working copy for imports: one commit with one file. Returns the
  * commit. */

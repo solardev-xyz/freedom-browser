@@ -627,7 +627,6 @@ describe('on the freedom-radicled service', () => {
     'listRepos',
     'start',
     'shutdown',
-    'importRepo',
     'issues',
     'issue',
     'patches',
@@ -657,6 +656,24 @@ describe('on the freedom-radicled service', () => {
       export: name,
     });
     expect(reads).toEqual([]);
+  });
+
+  // The import (plan B14): radicle-manager.js's, which runs the one-shot
+  // import process; today's arguments and result.
+  test("importRepo is the manager's import on the service, with today's arguments and result", async () => {
+    // No manager has named one: not on the service, and nothing runs.
+    await expect(embedded.importRepo('/wc', 'name', 'desc', 'main')).rejects.toMatchObject({
+      code: 'RADICLE_SERVICE_UNSUPPORTED',
+      export: 'importRepo',
+    });
+    const run = jest.fn(async () => ({ rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5' }));
+    embedded.setServiceImport(run);
+    await expect(embedded.importRepo('/wc', 'name', 'desc', 'main')).resolves.toEqual({
+      rid: 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5',
+    });
+    expect(run).toHaveBeenCalledWith('/wc', 'name', 'desc', 'main');
+    expect(reads).toEqual([]);
+    embedded.setServiceImport(null);
   });
 
   describe("the writes: the service node's rad.write and rad.unseed (plan B11)", () => {

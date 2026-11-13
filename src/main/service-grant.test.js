@@ -1032,6 +1032,51 @@ describe('freedom-radicled: the Radicle home with its HOME', () => {
         "the grant is this profile's identity directory"
       );
     });
+
+    // The import's working copy (design 0010, D5; plan B14): read only,
+    // beside the two grants, and checked against the same roots and them.
+    test("the import's working copy: one outside every root passes; one in a protected root, the home or the HOME is refused", () => {
+      const home = path.join(homes, String(me.slot));
+      const grants = { home, ownHome: ownHome(me.dir) };
+      populate(home, grants.ownHome);
+      const clone = path.join(tempRoot, 'tmp', 'freedom-github-bridge-x', 'repo');
+      fs.mkdirSync(path.join(clone, '.git'), { recursive: true });
+      expect(grant.radicleSourceRefusal(clone, grants)).toBeNull();
+      // Where the add-on's import clones today: inside this profile's
+      // directory, which the working copy, cloned, exists in.
+      const inProfile = path.join(me.dir, 'tmp', 'github-bridge-x', 'repo');
+      fs.mkdirSync(path.join(inProfile, '.git'), { recursive: true });
+      expect(grant.radicleSourceRefusal(inProfile, grants)).toBe(
+        "the working copy lies inside this profile's data"
+      );
+      expect(grant.radicleSourceRefusal(path.join(home, 'storage'), grants)).toBe(
+        "the working copy lies inside this profile's Radicle home"
+      );
+      expect(grant.radicleSourceRefusal(grants.ownHome, grants)).toBe(
+        'the working copy is the Radicle service home'
+      );
+      const other = records[id === 'work' ? 'home' : 'work'];
+      expect(grant.radicleSourceRefusal(path.join(other.dir, 'repo'), grants)).toBe(
+        "the working copy lies inside another profile's directory"
+      );
+      // A repository holding Freedom's data, as one at the user's home would.
+      expect(grant.radicleSourceRefusal(tempRoot, grants)).toMatch(/^the working copy contains /);
+      expect(grant.radicleSourceRefusal('repo', grants)).toMatch(/isn't an absolute path/);
+    });
+
+    test("the import's protected roots: resolved, without this profile's Radicle home and HOME, which the process adds", () => {
+      const roots = grant.radicleImportRoots();
+      const real = (p) => path.join(fs.realpathSync.native(path.dirname(p)), path.basename(p));
+      expect(roots).toEqual([...new Set(roots)]);
+      expect(roots).toContain(path.join(tempRoot, 'AppData', 'Freedom', 'locks'));
+      expect(roots).toContain(real(path.join(me.dir, 'identity')));
+      const other = records[id === 'work' ? 'home' : 'work'];
+      expect(roots).toContain(path.join(homes, String(other.slot)));
+      expect(roots).not.toContain(path.join(homes, String(me.slot)));
+      expect(roots).not.toContain(ownHome(me.dir));
+      expect(roots).not.toContain(path.join(me.dir, 'radicle-data'));
+      for (const root of roots) expect(path.isAbsolute(root)).toBe(true);
+    });
   });
 
   describe('a packaged build, a named profile in use', () => {
