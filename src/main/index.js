@@ -217,7 +217,10 @@ if (
 }
 // The profile gate, from before the lock to after its release
 // (profile-gate.js): bootstrap() waits for it before the core, any node, any
-// store write and the first window.
+// store write and the first window. Until then startup writes none of the
+// profile's stores and takes no hand-off: the settings are only peeked at
+// (peekSettings, below) and the focus-request watcher starts in bootstrap()
+// (startProfileFocusWatcher), so a refused gate leaves both as they were.
 const profileGate = startProfileGate(activeProfile, {
   packaged: app.isPackaged,
   log: console,
@@ -256,39 +259,47 @@ let focusCurrentProfileWindow = null;
 const firstWindowLinks = createFirstWindowLinkQueue();
 // Set once this process holds its single-instance lock (Linux, #142, below).
 let listeningOnInstanceLock = false;
-const profileFocusWatcher = startProfileFocusRequestWatcher(
-  activeProfile,
-  (request) => {
-    // The request file is only a transport: re-check the URLs it carries.
-    const urls = request?.openSettings
-      ? [PROFILE_SETTINGS_DEEPLINK]
-      : sanitizeLaunchUrls(request?.urls);
-    // A handoff that lands while this process is still cold-starting goes to
-    // the first window bootstrap() is about to open (which comes up focused),
-    // not to a window of its own racing it. The ack can go out right away:
-    // the queue is drained into that window when it is created.
-    if (firstWindowLinks.queue(urls)) return Promise.resolve();
-    return app.whenReady().then(() => focusCurrentProfileWindow(urls));
-  },
-  {
-    logger: console,
-    allowFocus: !RUNTIME_MODE,
-    // Another Freedom process asked us to close — e.g. it is deleting this
-    // profile and needs our lock released first. Quit on the next tick so the
-    // ack is written before shutdown begins.
-    onQuit: () => {
-      setTimeout(() => app.quit(), 0);
-      return Promise.resolve();
+// Second launches' focus requests (profile-focus-handoff.js). The watcher's
+// checks remove request files and write acknowledgements, so it starts only
+// once main holds the profile gate (bootstrap()): a launch refused the gate
+// consumes no hand-off. Requests written meanwhile wait in their files.
+let profileFocusWatcher = null;
+function startProfileFocusWatcher() {
+  profileFocusWatcher = startProfileFocusRequestWatcher(
+    activeProfile,
+    (request) => {
+      // The request file is only a transport: re-check the URLs it carries.
+      const urls = request?.openSettings
+        ? [PROFILE_SETTINGS_DEEPLINK]
+        : sanitizeLaunchUrls(request?.urls);
+      // A handoff that lands while this process is still cold-starting goes to
+      // the first window bootstrap() is about to open (which comes up focused),
+      // not to a window of its own racing it. The ack can go out right away:
+      // the queue is drained into that window when it is created.
+      if (firstWindowLinks.queue(urls)) return Promise.resolve();
+      return app.whenReady().then(() => focusCurrentProfileWindow(urls));
     },
-    // The answer to a second launch's instance-lock probe (#142).
-    isListeningOnInstanceLock: () => listeningOnInstanceLock,
-  }
-);
+    {
+      logger: console,
+      allowFocus: !RUNTIME_MODE,
+      // Another Freedom process asked us to close — e.g. it is deleting this
+      // profile and needs our lock released first. Quit on the next tick so the
+      // ack is written before shutdown begins.
+      onQuit: () => {
+        setTimeout(() => app.quit(), 0);
+        return Promise.resolve();
+      },
+      // The answer to a second launch's instance-lock probe (#142).
+      isListeningOnInstanceLock: () => listeningOnInstanceLock,
+    }
+  );
+}
 
 // Linux: later launches of this profile arrive as 'second-instance' with the
 // launch's XDG activation token (profile-instance-handoff.js, #142). The
-// focus-request watcher above stays the fallback for launches that cannot
-// reach this lock, or that this process does not answer the probe for.
+// focus-request watcher (startProfileFocusWatcher, above) stays the fallback
+// for launches that cannot reach this lock, or that this process does not
+// answer the probe for.
 listeningOnInstanceLock = listenForProfileRelaunches(app, {
   runtimeMode: RUNTIME_MODE,
   settingsUrl: PROFILE_SETTINGS_DEEPLINK,
@@ -439,7 +450,7 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-const { registerSettingsIpc, loadSettings } = require('./settings-store');
+const { registerSettingsIpc, loadSettings, peekSettings } = require('./settings-store');
 const { registerShortcutsIpc } = require('./shortcuts-ipc');
 const { registerBookmarksIpc } = require('./bookmarks-store');
 const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
@@ -616,7 +627,10 @@ function hasRuntimeNodeTransition() {
 }
 
 // Native WebMCP only for a launch with AI on; see agent/webmcp-launch.js.
-const webMcpFeatures = webMcpBlinkFeatures(loadSettings());
+// Peeked at, not loaded: main doesn't hold the profile gate yet, and
+// loadSettings() writes the file's migrations back (0013: `locked` before any
+// store write). bootstrap()'s first load writes them.
+const webMcpFeatures = webMcpBlinkFeatures(peekSettings());
 if (webMcpFeatures) app.commandLine.appendSwitch('enable-blink-features', webMcpFeatures);
 recordWebMcpLaunch(webMcpFeatures);
 // <link rel=dns-prefetch> asks the system resolver directly: no proxy, no Tor, no CSP,
@@ -640,7 +654,7 @@ app.on('will-quit', () => {
   // Writes out any stalls still folded into the watchdog's pending summary.
   eventLoopWatchdog.stop();
   unregisterShutdownSignalHandlers();
-  profileFocusWatcher.stop();
+  profileFocusWatcher?.stop();
   if (activeProfileLock) {
     releaseProfileLock(activeProfileLock, { logger: log });
     activeProfileLock = null;
@@ -663,6 +677,8 @@ async function bootstrap() {
     if (error.code === 'lock_held') exitProfileLocked();
     exitProfileOpenFailed(error);
   }
+  // Main holds the profile from here: hand-offs may be taken.
+  startProfileFocusWatcher();
 
   // A suspended machine is not a blocked loop: don't report the sleep.
   // 'suspend' opens the window before the machine sleeps, so the sleep gap is
