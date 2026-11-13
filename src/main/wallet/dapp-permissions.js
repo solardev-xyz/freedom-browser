@@ -94,7 +94,10 @@ function loadPermissions() {
 function savePermissions() {
   try {
     const filePath = getPermissionsPath();
-    writeFileAtomicSync(filePath, JSON.stringify(permissionsCache, null, 2));
+    const { durable } = writeFileAtomicSync(filePath, JSON.stringify(permissionsCache, null, 2));
+    if (!durable) {
+      console.warn('[DAppPermissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
+    }
   } catch (err) {
     console.error('[DAppPermissions] Failed to save permissions:', err);
   }

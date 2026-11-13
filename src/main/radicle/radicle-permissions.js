@@ -51,7 +51,10 @@ function loadPermissions() {
 // (design 0012, "The files (Q10)").
 function savePermissions() {
   try {
-    writeFileAtomicSync(getPermissionsPath(), JSON.stringify(permissionsCache, null, 2));
+    const { durable } = writeFileAtomicSync(getPermissionsPath(), JSON.stringify(permissionsCache, null, 2));
+    if (!durable) {
+      console.warn('[RadiclePermissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
+    }
   } catch (err) {
     console.error('[RadiclePermissions] Failed to save permissions:', err);
   }

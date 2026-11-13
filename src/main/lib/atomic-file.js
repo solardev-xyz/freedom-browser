@@ -16,9 +16,14 @@
  *   the target, then flush the directory. A rename replaces the target's
  *   link itself, never what it points at.
  * - **A failure before the rename** leaves the target as it was, removes the
- *   temp file and throws. The directory flush after the rename is best
- *   effort: the new file is in place either way (0001's `durable: false`).
- *   Windows has no directory flush.
+ *   temp file and throws.
+ * - **After the rename, the flush** makes the rename durable: on POSIX an
+ *   fsync of the directory; on Windows, which has no directory flush, the
+ *   renamed file reopened and flushed (`FlushFileBuffers`, which Node's
+ *   fsync calls), as 0001 does. Its failure isn't ignored, and isn't thrown
+ *   either, since the new file is already in place: the write returns
+ *   `{ durable: false }` (0001's committed-but-not-durable outcome), and the
+ *   caller reports it.
  *
  * Synchronous, as the stores that use it are.
  */
@@ -35,17 +40,29 @@ function tempPathFor(filePath) {
   return path.join(path.dirname(filePath), `${path.basename(filePath)}.${unique}.tmp`);
 }
 
-/** Flushes `directory`'s entries (POSIX); a failure is ignored. */
-function syncDirectory(directory) {
-  if (process.platform === 'win32') return;
+/**
+ * Makes the rename of `filePath` durable: the directory's entries flushed
+ * (POSIX), or the renamed file reopened and flushed (Windows).
+ * @returns {boolean} whether the flush succeeded
+ */
+function flushAfterRename(filePath) {
+  const windows = process.platform === 'win32';
   let fd;
   try {
-    fd = fs.openSync(directory, 'r');
+    // FlushFileBuffers needs a handle open for writing.
+    fd = windows ? fs.openSync(filePath, 'r+') : fs.openSync(path.dirname(filePath), 'r');
     fs.fsyncSync(fd);
+    return true;
   } catch {
-    // The rename is done: the file is in place, only maybe not durable yet.
+    return false;
   } finally {
-    if (fd !== undefined) fs.closeSync(fd);
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // The flush's outcome is already decided.
+      }
+    }
   }
 }
 
@@ -53,6 +70,9 @@ function syncDirectory(directory) {
  * Replaces `filePath` with `data` by a temp file and a rename.
  * @param {string} filePath
  * @param {string} data - written as UTF-8
+ * @returns {{ durable: boolean }} `durable: false` when the rename is done but
+ *   its flush failed: the new file is in place, and a power loss before the
+ *   system writes it back could restore the old one.
  */
 function writeFileAtomicSync(filePath, data) {
   const tempPath = tempPathFor(filePath);
@@ -70,7 +90,7 @@ function writeFileAtomicSync(filePath, data) {
   } finally {
     if (!renamed) fs.rmSync(tempPath, { force: true });
   }
-  syncDirectory(path.dirname(filePath));
+  return { durable: flushAfterRename(filePath) };
 }
 
 module.exports = { writeFileAtomicSync };

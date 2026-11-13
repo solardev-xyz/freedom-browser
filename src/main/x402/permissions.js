@@ -118,7 +118,10 @@ function load() {
 // (design 0012, "The files (Q10)").
 function save() {
   try {
-    writeFileAtomicSync(permissionsPath(), JSON.stringify(cache, null, 2));
+    const { durable } = writeFileAtomicSync(permissionsPath(), JSON.stringify(cache, null, 2));
+    if (!durable) {
+      console.warn('[x402:permissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
+    }
   } catch (err) {
     console.error('[x402:permissions] failed to save:', err.message);
   }

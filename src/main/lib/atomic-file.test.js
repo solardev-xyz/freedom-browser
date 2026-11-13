@@ -77,6 +77,57 @@ describe('writeFileAtomicSync', () => {
     expect(temps()).toEqual([]);
   });
 
+  test('after the rename, the flush makes it durable: the directory (POSIX), or the renamed file (Windows)', () => {
+    const opens = jest.spyOn(fs, 'openSync');
+    const syncs = jest.spyOn(fs, 'fsyncSync');
+    const renames = jest.spyOn(fs, 'renameSync');
+    expect(writeFileAtomicSync(target, 'new')).toEqual({ durable: true });
+    // Two fsyncs: the temp file's before the rename, then the flush after it.
+    expect(syncs).toHaveBeenCalledTimes(2);
+    expect(syncs.mock.invocationCallOrder[1]).toBeGreaterThan(renames.mock.invocationCallOrder[0]);
+    const flushOpen = opens.mock.calls[opens.mock.calls.length - 1];
+    if (process.platform === 'win32') expect(flushOpen).toEqual([target, 'r+']);
+    else expect(flushOpen).toEqual([dir, 'r']);
+  });
+
+  test('on Windows the flush reopens the renamed file for writing and flushes it', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const opens = jest.spyOn(fs, 'openSync');
+      const syncs = jest.spyOn(fs, 'fsyncSync');
+      expect(writeFileAtomicSync(target, 'new')).toEqual({ durable: true });
+      expect(opens.mock.calls[opens.mock.calls.length - 1]).toEqual([target, 'r+']);
+      expect(syncs).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  test('a failed flush after the rename leaves the new file in place and answers durable: false', () => {
+    fs.writeFileSync(target, 'old');
+    const realSync = fs.fsyncSync;
+    let calls = 0;
+    jest.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      calls += 1;
+      if (calls === 2) throw Object.assign(new Error('EIO'), { code: 'EIO' });
+      return realSync(fd);
+    });
+    expect(writeFileAtomicSync(target, 'new')).toEqual({ durable: false });
+    expect(fs.readFileSync(target, 'utf-8')).toBe('new');
+    expect(temps()).toEqual([]);
+  });
+
+  test('a flush that cannot open what it flushes answers durable: false too', () => {
+    const realOpen = fs.openSync;
+    jest.spyOn(fs, 'openSync').mockImplementation((file, flags, mode) => {
+      if (flags !== 'wx') throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      return realOpen(file, flags, mode);
+    });
+    expect(writeFileAtomicSync(target, 'new')).toEqual({ durable: false });
+    expect(fs.readFileSync(target, 'utf-8')).toBe('new');
+  });
+
   test('a missing directory fails the write, with nothing made', () => {
     const missing = path.join(dir, 'gone', 'store.json');
     expect(() => writeFileAtomicSync(missing, '{}')).toThrow();
