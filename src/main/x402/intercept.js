@@ -46,6 +46,7 @@ const { charge: chargeCap, refund: refundCharge, chargeStands } = require('./per
 const { isVaultLockedError } = require('../wallet/vault-errors');
 const { isUserPageId } = require('../wallet/agent-tab-custody');
 const { normalizeOrigin } = require('../../shared/origin-utils');
+const { chromeWindowIdOf } = require('../windows/request-window');
 
 // Header names used on the wire. V2 uses the un-prefixed names; V1 (Coinbase
 // original) ships with the `X-` prefix. Centralised so WP4 callers reference
@@ -657,6 +658,7 @@ function cleanupWebContents(webContentsId) {
   // still on the device keeps its own reference to the bound sender, so
   // its result event survives this.
   hostSenders.delete(webContentsId);
+  hostWindows.delete(webContentsId);
 }
 
 // === Header parsing ======================================================
@@ -770,6 +772,8 @@ function resolveHost(webviewWebContentsId) {
 function hostSenderFor(webviewWebContentsId) {
   let remembered = resolveHost(webviewWebContentsId) ?? hostSenders.get(webviewWebContentsId);
   if (remembered) hostSenders.set(webviewWebContentsId, remembered);
+  // And its window, for a payment signed after the tab has gone.
+  hostWindowIdOf(webviewWebContentsId);
   return (channel, payload) => {
     // Live lookup wins — the remembered host is only a fallback for a
     // webview that has since gone away.
@@ -791,8 +795,28 @@ function sendToHost(webviewWebContentsId, channel, payload) {
   hostSenderFor(webviewWebContentsId)(channel, payload);
 }
 
+// The chrome window each tab was last seen in, by the tab's webContents id:
+// the window a payment for it runs for (`hostWindowIdOf`).
+const hostWindows = new Map();
+
+/**
+ * The id of the chrome window that hosts this tab, or null when main has
+ * never seen it in one (freedom-core design 0011, APS-5). A phone
+ * account's job for an x402 payment goes to that window, as a wallet
+ * handler's goes to the window that called it (`windows/request-window.js`).
+ * The id is remembered, so a window that has closed since is still the one
+ * named, and its job fails rather than going to another window.
+ */
+function hostWindowIdOf(webviewWebContentsId) {
+  const live = resolveHost(webviewWebContentsId);
+  const windowId = live ? chromeWindowIdOf(live) : null;
+  if (windowId !== null) hostWindows.set(webviewWebContentsId, windowId);
+  return windowId ?? hostWindows.get(webviewWebContentsId) ?? null;
+}
+
 function clearAllHostSenders() {
   hostSenders.clear();
+  hostWindows.clear();
 }
 
 // === Dispatcher handlers =================================================
@@ -1408,5 +1432,7 @@ module.exports = {
   releaseApprovalClaim,
   clearAllApprovalClaims,
   clearAllHostSenders,
+  hostWindowIdOf,
+  originKeyForUrl,
   cleanupWebContents,
 };

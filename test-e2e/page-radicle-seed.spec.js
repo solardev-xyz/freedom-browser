@@ -2,7 +2,8 @@
 // design 0011, step PRQ-8b): `radicle_seed`, `radicle_unseed`, `radicle_sync`
 // and `radicle_getSeedStatus` go from the app's preload to main on
 // `page:request`. Main shows the node prompt (`radicle.node`), which the
-// chrome renders in its sidebar and answers by handle, runs each node action
+// window's approvals panel renders and answers by handle (design 0011,
+// APS-2), runs each node action
 // under its guard, and sends `seedStatus` to the site's page. The chrome
 // can't turn the node rule on, and its route refuses these methods. The
 // harness runs no Radicle node: main's real manager runs over the add-on's
@@ -10,6 +11,7 @@
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -170,11 +172,15 @@ async function openIn(win, url, ready = url) {
 
 // Past the prompt's input-protection window (and the sidebar's slide-in,
 // for the evidence shot), then the button.
-async function approve(win, shot) {
-  await win.waitForTimeout(600);
-  if (shot) await win.screenshot({ path: test.info().outputPath(shot) });
-  await win.locator('#radicle-consent-approve').click();
+// The window's approvals panel: its prompt approved there, once main's
+// delay has passed.
+async function approve(electronApp, shot) {
+  const panel = await approvalsPage(electronApp);
+  if (shot) await panel.screenshot({ path: test.info().outputPath(shot) });
+  await decideInPanel(electronApp, { panel });
 }
+const panelShows = async (electronApp) =>
+  (await approvalsState(electronApp))[await chromeWindowId(electronApp)]?.shown ?? null;
 
 test.afterEach(async ({ electronApp }) => {
   await stopFakeRadicle(electronApp);
@@ -197,20 +203,20 @@ test('seeding through main: main\'s node prompt in the sidebar, each node action
 
   // A seed: main's prompt, with the repository main checked.
   await start(win, DAPP, 'seed', 'radicle_seed', { rid: RID.slice(4) });
-  const consent = win.locator('#sidebar-radicle-consent');
-  await expect(consent).toBeVisible();
-  await expect(win.locator('#radicle-consent-title')).toHaveText('Seed this repository?');
-  await expect(win.locator('#radicle-consent-site')).toHaveText(DAPP);
-  await expect(win.locator('#radicle-consent-wants')).toHaveText(`asks your node to seed ${RID}`);
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Seed this repository?', { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(DAPP);
+  await expect(panel.locator('#body')).toContainText('asks your node to seed this repository');
+  await expect(panel.locator('#body')).toContainText(`Repository${RID}`);
   const prompted = (await trace(electronApp)).filter((e) => e.kind === 'prompt-message' && e.channel === 'page:prompt');
   expect(prompted.map((e) => [e.payload.kind, e.payload.view])).toEqual([['radicle.node', { method: 'radicle_seed', rid: RID }]]);
   expect((await radicleState(electronApp)).clones).toEqual([]);
-  await approve(win, 'page-radicle-seed-prompt.png');
+  await approve(electronApp, 'page-radicle-seed-prompt.png');
 
   await expect.poll(() => outcome(win, DAPP, 'seed')).toMatchObject({
     ok: { rid: RID, seeded: true, status: { rid: RID, state: 'fetching' } },
   });
-  await expect(consent).toBeHidden();
+  await expect.poll(() => panelShows(electronApp)).toBeNull();
   expect((await radicleState(electronApp)).clones).toEqual([RID]);
   // The fetch's statuses reach the page from main; then the clone finishes.
   await expect.poll(() => seedStates(win, DAPP)).toContain(`${RID} fetching`);
@@ -227,9 +233,8 @@ test('seeding through main: main\'s node prompt in the sidebar, each node action
 
   // An unseed: main's prompt again.
   await start(win, DAPP, 'unseed', 'radicle_unseed', { rid: RID });
-  await expect(consent).toBeVisible();
-  await expect(win.locator('#radicle-consent-title')).toHaveText('Stop seeding this repository?');
-  await approve(win);
+  await expect(panel.locator('#heading')).toHaveText('Stop seeding this repository?', { timeout: 15_000 });
+  await approve(electronApp);
   await expect.poll(() => outcome(win, DAPP, 'unseed')).toEqual({ ok: { rid: RID, seeded: false } });
   expect((await radicleState(electronApp)).unseeded).toContain(RID);
 

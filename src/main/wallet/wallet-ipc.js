@@ -462,9 +462,14 @@ function registerWalletIpc() {
       // approvals document, which shows main's view of exactly the request
       // the token binds, checked first, and asks again for a fee above the
       // threshold itself: the chrome's acknowledgement counts for nothing.
+      // x402's two kinds too (APS-5): a payment, as main's record of its
+      // detection has it, not as the chrome's card says, and a cap's edit.
       const walletApprovals = require('../approvals/wallet-approvals');
       const approvals = walletApprovals.PROMPT_KINDS[kind] ? walletApprovals.getWalletApprovals() : null;
       if (approvals) {
+        if (kind === CONFIRM_KINDS.X402_PAYMENT) {
+          payload = require('../x402/ipc').paymentApprovalRequest(event?.sender, payload);
+        }
         bindingFor(kind, index, payload);
         // Minted on the approval, before the panel's decision is answered.
         const outcome = await approvals.confirm(

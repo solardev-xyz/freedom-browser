@@ -1,14 +1,15 @@
 // window.radicle's reads, connecting and disconnecting through main, in real
 // Electron (freedom-core design 0011, step PRQ-8a): the five methods go from
 // the app's preload to main on `page:request`. Main shows the connection
-// prompt (`radicle.connect`), which the chrome renders in its sidebar and
-// answers by handle, writes the grant itself for the page's attested key,
+// prompt (`radicle.connect`), which the window's approvals panel renders and
+// answers by handle (design 0011, APS-2), writes the grant itself for the page's attested key,
 // and sends `connect` and `disconnect` to the site's pages. The chrome's
 // connection grant and its route for these methods are refused. The harness
 // runs no Radicle node: the methods answer as they do while it is stopped.
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -124,24 +125,21 @@ test('reads, connecting and disconnecting through main: main\'s prompt in the si
   });
 
   await start(win, DAPP, 'access', 'radicle_requestAccess');
-  const consent = win.locator('#sidebar-radicle-consent');
-  await expect(consent).toBeVisible();
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Connect Radicle node?', { timeout: 15_000 });
   // Main's site, as main attested it.
-  await expect(win.locator('#radicle-consent-site')).toHaveText(DAPP);
-  await expect(win.locator('#radicle-consent-title')).toHaveText('Connect Radicle node?');
+  await expect(panel.locator('#site')).toHaveText(DAPP);
   expect(await radicleGrant(electronApp, DAPP)).toBeNull();
   const prompted = (await trace(electronApp)).filter((e) => e.kind === 'prompt-message' && e.channel === 'page:prompt');
   expect(prompted.map((e) => [e.payload.kind, e.payload.site])).toEqual([['radicle.connect', { key: DAPP, label: DAPP }]]);
-  // Past the prompt's input-protection window (and the sidebar's slide-in,
-  // for the evidence shot), then the button.
-  await win.waitForTimeout(600);
-  await win.screenshot({ path: test.info().outputPath('page-radicle-connect-prompt.png') });
-  await win.locator('#radicle-consent-approve').click();
+  await panel.screenshot({ path: test.info().outputPath('page-radicle-connect-prompt.png') });
+  await decideInPanel(electronApp, { panel, windowId });
 
   await expect.poll(() => outcome(win, DAPP, 'access')).toMatchObject({
     ok: { connected: true, origin: DAPP, capabilities: { specVersion: '0.2', canUseNode: false } },
   });
-  await expect(consent).toBeHidden();
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]?.shown ?? null).toBeNull();
   expect(await radicleGrant(electronApp, DAPP)).toEqual({ origin: DAPP, signing: false });
   await expect.poll(() => heard(win, DAPP)).toEqual([['connect', { origin: DAPP }]]);
 

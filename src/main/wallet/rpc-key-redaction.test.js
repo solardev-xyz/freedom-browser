@@ -10,6 +10,12 @@
  * - The handlers' redaction alone: a service that throws ethers' own
  *   error, URL, key and all.
  */
+// These run the handlers with the chrome's confirmation (`wallet:confirm-
+// signing` minting on its own): the approvals panel off, its rollback
+// (freedom-core design 0011). The panel's path has its own tests
+// (wallet-ipc.test.js, approvals/).
+process.env.FREEDOM_APPROVALS_DOCUMENT = '0';
+
 const fs = require('fs');
 const http = require('http');
 const path = require('path');

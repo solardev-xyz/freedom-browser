@@ -1296,7 +1296,7 @@ function installTestHarness({ defaultSession, agentRuntime }) {
   // provider method takes yet: specs route methods through it and serve
   // them here.
   globalThis.__FREEDOM_TEST_PAGE_REQUESTS__ = enablePageRequestTestHooks();
-  // The approvals documents (0011 APS-1), when FREEDOM_APPROVALS_DOCUMENT=1:
+  // The approvals documents (0011 APS-1), on unless FREEDOM_APPROVALS_DOCUMENT=0:
   // each window's panel and what main did with it.
   globalThis.__FREEDOM_TEST_APPROVALS__ = enableApprovalsTestHooks();
   exposeGlobalShim(agentRuntime);

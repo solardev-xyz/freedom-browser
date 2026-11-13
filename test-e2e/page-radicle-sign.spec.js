@@ -2,8 +2,8 @@
 // design 0011, step PRQ-8c): `radicle_getIdentity` and the COB writes go
 // from the app's preload to main on `page:request`, with every other
 // window.radicle method. Main asks for the signing grant and for each write
-// (`radicle.sign`), which the chrome renders in its sidebar and answers by
-// handle, writes the grant and the "always allow writes" rule itself, and
+// (`radicle.sign`), which the window's approvals panel renders and answers
+// by handle (design 0011, APS-2), writes the grant and the "always allow writes" rule itself, and
 // runs each write under its guard. The chrome has no Radicle route left,
 // and its signing grant and rule writes are refused. The harness runs no
 // Radicle node: main's real manager runs over the add-on's calls stubbed in
@@ -11,6 +11,7 @@
 
 const path = require('path');
 const { test, expect } = require('./fixtures');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -178,10 +179,12 @@ async function openIn(win, url, ready = url) {
 
 // Past the prompt's input-protection window (and the sidebar's slide-in,
 // for the evidence shot), then the button.
-async function approve(win, shot) {
-  await win.waitForTimeout(600);
-  if (shot) await win.screenshot({ path: test.info().outputPath(shot) });
-  await win.locator('#radicle-consent-approve').click();
+// The window's approvals panel: its prompt approved there, once main's
+// delay has passed.
+async function approve(electronApp, shot, check = []) {
+  const panel = await approvalsPage(electronApp);
+  if (shot) await panel.screenshot({ path: test.info().outputPath(shot) });
+  await decideInPanel(electronApp, { check, panel });
 }
 
 test.afterEach(async ({ electronApp }) => {
@@ -202,34 +205,32 @@ test('signing through main: main\'s grant and per-write prompts in the sidebar, 
   }, { root: repoRoot, key: DAPP });
   await openIn(win, `${DAPP}/`);
   await watchOldPath(win);
-  const consent = win.locator('#sidebar-radicle-consent');
+  const windowId = await chromeWindowId(electronApp);
+  const panel = await approvalsPage(electronApp);
+  const panelShows = async () => (await approvalsState(electronApp))[windowId]?.shown ?? null;
 
   // The identity: main asks for the signing grant first.
   await start(win, DAPP, 'identity', 'radicle_getIdentity');
-  await expect(consent).toBeVisible();
-  await expect(win.locator('#radicle-consent-title')).toHaveText('Act as your Radicle identity?');
-  await expect(win.locator('#radicle-consent-site')).toHaveText(DAPP);
+  await expect(panel.locator('#heading')).toHaveText('Act as your Radicle identity?', { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(DAPP);
   expect(await radicleGrant(electronApp, DAPP)).toEqual({ signing: false, rule: false });
-  await approve(win);
+  await approve(electronApp);
   await expect.poll(() => outcome(win, DAPP, 'identity')).toEqual({ ok: { did: 'did:key:z6MkE2e', nid: 'z6MkE2e', alias: 'e2e' } });
   expect(await radicleGrant(electronApp, DAPP)).toEqual({ signing: true, rule: false });
 
   // A write: main's prompt shows exactly what it signs, and offers the rule.
   await start(win, DAPP, 'issue', 'radicle_createIssue', { rid: RID.slice(4), title: 'Bug', description: 'Steps', labels: ['ui'] });
-  await expect(consent).toBeVisible();
-  await expect(win.locator('#radicle-consent-title')).toHaveText('Open this issue as you?');
-  await expect(win.locator('#radicle-consent-allows li')).toHaveText(['Title: Bug', 'Description: Steps', 'Label: ui']);
-  await expect(win.locator('#radicle-consent-always-row')).toBeVisible();
+  await expect(panel.locator('#heading')).toHaveText('Open this issue as you?', { timeout: 15_000 });
+  for (const line of ['TitleBug', 'DescriptionSteps', 'Labelui']) await expect(panel.locator('#body')).toContainText(line);
+  const ALWAYS = 'Always allow this site to write as you without asking (at most 50 writes a day)';
+  await expect(panel.getByLabel(ALWAYS)).toBeVisible();
   const prompted = (await trace(electronApp)).filter((e) => e.kind === 'prompt-message' && e.channel === 'page:prompt');
   expect(prompted.map((e) => [e.payload.kind, e.payload.view])).toEqual([
     ['radicle.sign', { mode: 'grant', method: 'radicle_getIdentity' }],
     ['radicle.sign', { mode: 'write', method: 'radicle_createIssue', rid: RID, title: 'Bug', description: 'Steps', labels: ['ui'], agentHeld: false, alwaysAllow: false }],
   ]);
   expect(await signedWrites(electronApp)).toEqual([]);
-  await win.waitForTimeout(600);
-  await win.locator('#radicle-consent-always').check();
-  await win.screenshot({ path: test.info().outputPath('page-radicle-sign-prompt.png') });
-  await win.locator('#radicle-consent-approve').click();
+  await approve(electronApp, 'page-radicle-sign-prompt.png', [ALWAYS]);
   await expect.poll(() => outcome(win, DAPP, 'issue')).toEqual({ ok: { id: 'c'.repeat(40) } });
   expect(await signedWrites(electronApp)).toEqual([['createIssue', RID, 'Bug', 'Steps', ['ui']]]);
   expect(await radicleGrant(electronApp, DAPP)).toEqual({ signing: true, rule: true });
@@ -237,7 +238,7 @@ test('signing through main: main\'s grant and per-write prompts in the sidebar, 
   // The rule, written by main, answers the next write with no prompt.
   await start(win, DAPP, 'comment', 'radicle_commentIssue', { rid: RID, issueId: 'a'.repeat(40), body: 'Same here' });
   await expect.poll(() => outcome(win, DAPP, 'comment')).toEqual({ ok: { id: 'c'.repeat(40) } });
-  await expect(consent).toBeHidden();
+  await expect.poll(panelShows).toBeNull();
   expect((await signedWrites(electronApp)).map(([name]) => name)).toEqual(['createIssue', 'commentIssue']);
 
   const served = (await trace(electronApp)).filter((e) => e.kind === 'recorded' && e.provider === 'radicle');

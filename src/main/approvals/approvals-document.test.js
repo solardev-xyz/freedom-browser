@@ -221,17 +221,38 @@ function attached(env, id = 1) {
 }
 
 describe('the flag', () => {
-  test('FREEDOM_APPROVALS_DOCUMENT=1 turns it on; anything else leaves it off', () => {
-    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '1' })).toBe(true);
-    for (const value of [undefined, '', '0', 'true', 'yes', ' 1']) {
-      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value })).toBe(false);
+  test('on by default; FREEDOM_APPROVALS_DOCUMENT=0 turns it off in a development build, and nothing else does', () => {
+    const dev = { packaged: false };
+    expect(isApprovalsDocumentEnabled({}, dev)).toBe(true);
+    for (const value of [undefined, '', '1']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, dev)).toBe(true);
     }
-    expect(isApprovalsDocumentEnabled({})).toBe(false);
+    expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: '0' }, dev)).toBe(false);
+    // Any other value is a mistake: warned of, and the default runs.
+    for (const value of ['false', 'off', 'no', ' 0', '00']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, dev)).toBe(true);
+    }
   });
 
-  test('off by default: no document for a window, no handlers', () => {
+  test('a packaged build always runs it, whatever the environment says', () => {
+    for (const value of [undefined, '', '0', '1', 'off']) {
+      expect(isApprovalsDocumentEnabled({ FREEDOM_APPROVALS_DOCUMENT: value }, { packaged: true })).toBe(true);
+    }
+  });
+
+  test('on with no variable set (a development build under jest)', () => {
     const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
     delete process.env.FREEDOM_APPROVALS_DOCUMENT;
+    try {
+      expect(isApprovalsDocumentEnabled()).toBe(true);
+    } finally {
+      if (saved !== undefined) process.env.FREEDOM_APPROVALS_DOCUMENT = saved;
+    }
+  });
+
+  test('turned off (=0): no document for a window, no handlers', () => {
+    const saved = process.env.FREEDOM_APPROVALS_DOCUMENT;
+    process.env.FREEDOM_APPROVALS_DOCUMENT = '0';
     try {
       expect(attachApprovalsDocument(new FakeWindow(9))).toBeNull();
       const ipc = { on: jest.fn(), handle: jest.fn() };
@@ -665,6 +686,40 @@ describe('main\'s prompts in the document', () => {
     expect(view.visible).toBe(false);
     expect(contents.sent.at(-1)).toEqual([CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' }]);
     expect(env.docs.state()[1]).toMatchObject({ visible: false, shown: null });
+  });
+
+  test('a hidden panel gives the keyboard back to the chrome; a shown one keeps it', () => {
+    const env = setup();
+    const { window, contents } = attached(env);
+    // The view holds the focus (it takes it as its document loads, before
+    // any prompt): on its focus, its load and the window's focus, the chrome
+    // gets it back.
+    for (const fire of [() => contents.emit('focus'), () => contents.emit('did-finish-load'), () => window.emit('focus')]) {
+      window.webContents.focused = false;
+      contents.focused = true;
+      fire();
+      expect(window.webContents.focused).toBe(true);
+    }
+    // A view without the focus takes nothing from the chrome.
+    window.webContents.focused = false;
+    contents.focused = false;
+    window.emit('focus');
+    expect(window.webContents.focused).toBe(false);
+
+    // Shown, the panel keeps it.
+    env.docs.send(1, CHANNELS.PROMPT, prompt());
+    window.webContents.focused = false;
+    contents.emit('focus');
+    window.emit('focus');
+    expect(contents.focused).toBe(true);
+    expect(window.webContents.focused).toBe(false);
+
+    // Hidden again, it gives it back.
+    env.docs.send(1, CHANNELS.CLOSED, { handle: HANDLE, reason: 'decided' });
+    window.webContents.focused = false;
+    contents.focused = true;
+    contents.emit('focus');
+    expect(window.webContents.focused).toBe(true);
   });
 
   test('a prompt sent before the document is ready reaches it when it is, after the theme', () => {
@@ -1474,6 +1529,55 @@ describe('APS-3: the wallet\'s own approvals, through walletPrompt to the docume
     expect(await decided).toEqual({ ok: true });
     expect(order).toEqual(['mint', 'minted', 'answered']);
     expect(await confirmed).toEqual({ token: 'token', approved: true });
+  });
+
+  // APS-5: x402's payment and an auto-pay cap's edit, the same way.
+  test.each([
+    [
+      'x402-payment',
+      0,
+      {
+        webContentsId: 42,
+        detectionId: 'req-1',
+        url: 'https://pay.example/a',
+        acceptIndex: 0,
+        accept: { scheme: 'exact', network: 'eip155:8453', amount: '2500000', asset: TO, payTo: TO },
+        grant: null,
+      },
+    ],
+    [
+      'x402-cap-update',
+      null,
+      { window: 501, origin: 'https://pay.example', chainId: 8453, asset: TO, capAmount: '9', current: { capAmount: '5', createdAt: 1, expiresAt: 2, generation: 1 } },
+    ],
+  ])('%s: the chrome can\'t decide it; the document\'s approval mints once, its rejection never', async (kind, index, payload) => {
+    const env = withPageRequests();
+    const { contents } = attached(env);
+    const approvals = createWalletApprovals({
+      walletPrompt: (windowId, spec) => env.requests.walletPrompt(windowId, spec),
+      chromeWindowOf: (sent) => (sent?.id === 501 ? 1 : null),
+      getDerivedWallets: async () => WALLETS,
+      checkFees: async () => BELOW,
+      checkAtApproval: async () => ({ ...BELOW, askAgain: false }),
+      x402Cap: () => ({ origin: 'https://pay.example', capAmount: '5', spentAmount: '0', createdAt: 1, expiresAt: 2 }),
+    });
+    const mint = jest.fn(() => ({ token: 'token' }));
+    const rejected = approvals.confirm({ sender: chrome, kind, index, payload }, mint);
+    let shown = await onScreen(env, contents);
+    expect(shown).toMatchObject({ guest: null, kind: `wallet.${kind.replace(/-/g, '_')}` });
+    expect(await env.requests.decide({ sender: chrome }, { handle: shown.handle, approve: true })).toEqual({
+      ok: false,
+      reason: 'approvals-document',
+    });
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: false })).toEqual({ ok: true });
+    expect(await rejected).toMatchObject({ approved: false, code: 'USER_REJECTED' });
+    expect(mint).not.toHaveBeenCalled();
+
+    const approved = approvals.confirm({ sender: chrome, kind, index, payload }, mint);
+    shown = await onScreen(env, contents);
+    expect(await env.docs.decide(eventFrom(contents), { handle: shown.handle, approve: true })).toEqual({ ok: true });
+    expect(await approved).toEqual({ token: 'token', approved: true });
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 
   test('a rejection is answered, and mints nothing; a fee asked again is answered as it asks, and its second press mints', async () => {

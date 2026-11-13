@@ -7,7 +7,8 @@
 // and the real main-process wallet handlers. From freedom-core design 0011
 // PRQ-5a main attests the requester and reads the site's rule itself, so
 // the chrome's claim of a site's rule is refused outright, and a background
-// tab's signing prompt waits for its tab.
+// tab's signing prompt waits for its tab. The prompt shows in the window's
+// approvals panel (design 0011, APS-2), which names the site that asked.
 
 const { _electron: electron } = require('@playwright/test');
 const path = require('path');
@@ -15,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
+const { approvalsPage, approvalsState, chromeWindowId, decideInPanel } = require('./approvals-fixtures');
 
 const repoRoot = path.resolve(__dirname, '..');
 // The JS identity stack is the core's now; its frozen reference writes the
@@ -191,7 +193,9 @@ test('a background tab is attributed to its own site, never the visible one', as
   await expect
     .poll(async () => (await outcome(win, OTHER_URL, 'sig'))?.code)
     .toBe(4100);
-  await expect(win.locator('#sidebar-dapp-sign')).toBeHidden();
+  const windowId = await chromeWindowId(electronApp);
+  const panelShows = async () => (await approvalsState(electronApp))[windowId]?.shown ?? null;
+  expect(await panelShows()).toBeNull();
 
   // Main does not take the renderer's word for the site either: since PRQ-9
   // the chrome has no signing call of its own to claim the trusted dApp's
@@ -204,16 +208,15 @@ test('a background tab is attributed to its own site, never the visible one', as
   await grant(electronApp, OTHER_KEY);
   await request(win, OTHER_URL, 'sig2', 'personal_sign', [MESSAGE, account]);
   await expect(win.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/has-wallet-prompt/, { timeout: 15_000 });
-  await expect(win.locator('#sidebar-dapp-sign')).toBeHidden();
+  expect(await panelShows()).toBeNull();
   await expect(win.locator('[data-test="address-input"]')).toHaveValue(TRUSTED_URL);
   // The connection banner keeps describing the visible tab.
   await expect(win.locator('#dapp-connection-site')).toHaveText(TRUSTED_KEY);
   await win.locator('[data-test="tab"][data-tab-id="2"]').click();
-  await expect(win.locator('#sidebar-dapp-sign')).toBeVisible({ timeout: 15_000 });
-  await expect(win.locator('#dapp-sign-site')).toHaveText(OTHER_KEY);
-  // Let the sidebar finish sliding in before the evidence shot.
-  await expect(win.locator('#dapp-sign-reject')).toBeInViewport({ ratio: 1 });
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Sign Message', { timeout: 15_000 });
+  await expect(panel.locator('#site')).toHaveText(OTHER_KEY);
   await win.screenshot({ path: 'test-results/dapp-background-tab-prompt.png' });
-  await win.click('#dapp-sign-reject');
+  await decideInPanel(electronApp, { approve: false, panel, windowId });
   await expect.poll(async () => (await outcome(win, OTHER_URL, 'sig2'))?.code).toBe(4001);
 });

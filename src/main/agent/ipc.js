@@ -3,6 +3,7 @@
 const IPC = require('../../shared/ipc-channels');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
 const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
+const { runInWindow, chromeWindowIdOf } = require('../windows/request-window');
 
 const AGENT_IPC_ERROR_CODES = Object.freeze({
   TAB_NOT_BOUND: 'AGENT_TAB_NOT_BOUND',
@@ -225,6 +226,9 @@ function registerFreedomAgentIpc(options = {}) {
     attachmentStore,
     getOwnerWindow,
     dialog,
+    // The id of the chrome window whose webContents sent a message
+    // (`windows/request-window.js`); a test passes its own.
+    windowIdOf = chromeWindowIdOf,
   } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
@@ -1456,10 +1460,19 @@ function registerFreedomAgentIpc(options = {}) {
       return safeProviderError(error);
     }
   });
-  handle(IPC.AGENT_START, handleStart);
+  // A turn runs for the window whose chrome owns the conversation
+  // (freedom-core design 0011, "Phone jobs"): the turn a start or a resume
+  // launches carries that window (`runInWindow`), however many awaits lie
+  // between, so a phone account's job from the agent's own transfer shows
+  // its QR in the agent's window, not the focused one, and a closed window
+  // gets nothing (REMOTE_NO_UI). A page's request in custody already runs
+  // for the window that hosts its tab (`page-requests.js`).
+  const forOwnerWindow = (handler) => (event, payload) =>
+    runInWindow(windowIdOf(event?.sender), () => handler(event, payload));
+  handle(IPC.AGENT_START, forOwnerWindow(handleStart));
   handle(IPC.AGENT_STEER, handleSteer);
   handle(IPC.AGENT_PAUSE, handlePause);
-  handle(IPC.AGENT_RESUME, handleResume);
+  handle(IPC.AGENT_RESUME, forOwnerWindow(handleResume));
   handle(IPC.AGENT_STOP, handleStop);
   handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
   handle(IPC.AGENT_GET_STATE, handleGetState);

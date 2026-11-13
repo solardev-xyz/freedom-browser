@@ -9,10 +9,15 @@
 //
 // Driven through the real renderer card: the main-process IPC it talks to is
 // replaced for this app instance, and the approve handler is left hanging to
-// hold the UI in the device-prompt state. The confirmation Pay mints
-// (`wallet:confirm-signing`) is main's real one.
+// hold the UI in the device-prompt state. The 402 is main's real detection,
+// and the confirmation Pay mints (`wallet:confirm-signing`) is main's real
+// one, approved in the window's approvals panel (freedom-core design 0011,
+// APS-5) from main's record of the 402 and main's active account, the
+// Ledger. The page prompts below are sent to the chrome's own screens,
+// which main uses only with the panel off (the rollback): they still must
+// not cancel a payment on the device.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
 const LEDGER = {
   index: 1000000,
@@ -83,8 +88,65 @@ const DAI_ACCEPT = {
   fundable: true,
 };
 
-function stubMainIpc(electronApp, ledger, accepts = [USDC_ACCEPT]) {
-  return electronApp.evaluate(({ ipcMain }, { ledger, accepts }) => {
+// The 402's own entries, as the seller sends them and main records them;
+// the card's view of each is the stub's (USDC_ACCEPT, DAI_ACCEPT).
+const PAY_TO = '0x1111111111111111111111111111111111111111';
+const USDC_ENTRY = {
+  scheme: 'exact',
+  network: 'eip155:8453',
+  amount: '2500000',
+  asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  payTo: PAY_TO,
+  maxTimeoutSeconds: 60,
+  extra: { name: 'USD Coin', version: '2' },
+};
+const DAI_ENTRY = {
+  scheme: 'exact',
+  network: 'eip155:8453',
+  amount: '3000000000000000000',
+  asset: '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb',
+  payTo: PAY_TO,
+  maxTimeoutSeconds: 60,
+  extra: { name: 'Dai Stablecoin', version: '1' },
+};
+const PAYWALL_URL = 'https://pay.example/article';
+// The id main's detector mints for a 402 on request `id`.
+const detectionOf = (id) => `req-${id}`;
+
+/** Main's real detector, on a 402 for `url` from tab `guestId` (request `id`). */
+function detect402(electronApp, { guestId, id, url = PAYWALL_URL, entries = [USDC_ENTRY], resourceType = 'mainFrame' }) {
+  return electronApp.evaluate(({ app }, args) => {
+    // `require` isn't in scope inside evaluate; go through the main
+    // module so we get the SAME intercept instance the app is running.
+    const nodeRequire = process.mainModule.require.bind(process.mainModule);
+    const intercept = nodeRequire(nodeRequire('path').join(app.getAppPath(), 'src/main/x402/intercept.js'));
+    const requirements = { x402Version: 2, resource: { url: args.url }, accepts: args.entries };
+    // Not awaited: for a subresource the detector holds the response open
+    // until the user decides, exactly as it does in production.
+    intercept.detectPaymentRequiredHandler({
+      id: args.id,
+      webContentsId: args.guestId,
+      url: args.url,
+      statusLine: 'HTTP/1.1 402 Payment Required',
+      responseHeaders: {
+        'PAYMENT-REQUIRED': [Buffer.from(JSON.stringify(requirements)).toString('base64')],
+      },
+      resourceType: args.resourceType,
+    });
+  }, { guestId, id, url, entries, resourceType });
+}
+
+/** Pay's confirmation, approved in the panel with main's view of the 402. */
+async function approvePayInPanel(electronApp, amount = '2.5 USDC') {
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Payment Required');
+  await expect(panel.locator('#body')).toContainText(amount);
+  await expect(panel.locator('#body')).toContainText(LEDGER.address);
+  await decideInPanel(electronApp, { panel });
+}
+
+function stubMainIpc(electronApp, ledger, accepts = [USDC_ACCEPT], detectionId = detectionOf(4101)) {
+  return electronApp.evaluate(({ ipcMain }, { ledger, accepts, detectionId }) => {
     const replace = (channel, handler) => {
       ipcMain.removeHandler(channel);
       ipcMain.handle(channel, handler);
@@ -98,7 +160,7 @@ function stubMainIpc(electronApp, ledger, accepts = [USDC_ACCEPT]) {
     }));
     replace('x402:get-details', () => ({
       success: true,
-      detectionId: 'det-1',
+      detectionId,
       url: 'https://pay.example/article',
       accepts,
       initialSelectionIndex: 0,
@@ -124,34 +186,39 @@ function stubMainIpc(electronApp, ledger, accepts = [USDC_ACCEPT]) {
       globalThis.__x402ApproveCalls.push(payload);
       globalThis.__resolveX402Approve = resolve;
     }));
-  }, { ledger, accepts });
+  }, { ledger, accepts, detectionId });
 }
 
-// Put the app on the Ledger account and raise a 402 the way main does, on
-// the window's own tab: main mints a payment's confirmation only for the
-// window that hosts its tab. Returns that tab's webContents id.
-async function openPaymentCard(electronApp, window, ledger) {
+// Put the app on the Ledger account and raise a 402 through main's real
+// detector, on the window's own tab: main mints a payment's confirmation
+// only for the window that hosts its tab, from its own record of the 402.
+// Returns that tab's webContents id.
+async function openPaymentCard(electronApp, window, ledger, { id = 4101, entries = [USDC_ENTRY] } = {}) {
   await window.evaluate(async (ledger) => {
     const { walletState } = await import('./lib/wallet/wallet-state.js');
     walletState.derivedWallets = [ledger];
     walletState.activeWalletIndex = ledger.index;
   }, ledger);
-  const guestId = await window.evaluate(async () => {
-    const tabs = await import('./lib/tabs.js');
-    return tabs.getActiveWebview()?.getWebContentsId() ?? null;
-  });
-  expect(typeof guestId).toBe('number');
-
-  await electronApp.evaluate(({ BrowserWindow }, guestId) => {
-    BrowserWindow.getAllWindows()[0].webContents.send('x402:approval-needed', {
-      webContentsId: guestId,
-      detectionId: 'det-1',
-      url: 'https://pay.example/article',
-      resourceType: 'mainFrame',
-    });
-  }, guestId);
+  // The tab's webview has an id once it is attached and its DOM is ready.
+  let guestId = null;
+  await expect
+    .poll(async () => {
+      guestId = await window
+        .evaluate(async () => {
+          const tabs = await import('./lib/tabs.js');
+          return tabs.getActiveWebview()?.getWebContentsId() ?? null;
+        })
+        .catch(() => null);
+      return typeof guestId;
+    })
+    .toBe('number');
+  await detect402(electronApp, { guestId, id, entries });
   return guestId;
 }
+
+// Main's active account is the Ledger, in its own wallet list: the panel
+// shows the payment for it.
+test.use({ vaultWallets: { wallets: [LEDGER], activeWalletIndex: LEDGER.index } });
 
 function cancelCounts(electronApp) {
   return electronApp.evaluate(() => globalThis.__x402Cancels);
@@ -170,6 +237,7 @@ test('a dApp request mid-payment cannot cancel an in-flight Ledger payment', asy
   await window.screenshot({ path: 'test-results/x402-ledger-before-pay.png' });
 
   await window.click('#x402-approval-approve');
+  await approvePayInPanel(electronApp);
 
   // Device prompt is up: both ways out of the card are closed.
   await expect(window.locator('#x402-approval-approve')).toHaveText('Confirm on your Ledger…');
@@ -213,8 +281,8 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   electronApp,
   window,
 }) => {
-  await stubMainIpc(electronApp, LEDGER, [USDC_ACCEPT, DAI_ACCEPT]);
-  const guestId = await openPaymentCard(electronApp, window, LEDGER);
+  await stubMainIpc(electronApp, LEDGER, [USDC_ACCEPT, DAI_ACCEPT], detectionOf(4102));
+  const guestId = await openPaymentCard(electronApp, window, LEDGER, { id: 4102, entries: [USDC_ENTRY, DAI_ENTRY] });
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await expect(window.locator('#x402-approval-chooser')).toBeVisible();
@@ -222,6 +290,7 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   await expect(window.locator('#x402-approval-approve')).toBeEnabled();
 
   await window.click('#x402-approval-approve');
+  await approvePayInPanel(electronApp);
   await expect(window.locator('#x402-approval-approve')).toHaveText('Confirm on your Ledger…');
 
   // The user pokes the other option while the device prompt is up.
@@ -246,9 +315,9 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   expect(approveCalls).toHaveLength(1);
   expect(approveCalls[0].selectedAcceptIndex).toBe(0);
 
-  // The one approval carries main's token for exactly that payment: the
-  // entry on the device, not the one the radio was flipped to, and only
-  // once. Checked with main's own confirmation store.
+  // The one approval carries main's token for exactly that payment, as main
+  // recorded it: the entry on the device, not the one the radio was flipped
+  // to, and only once. Checked with main's own confirmation store.
   const spend = (payment) => electronApp.evaluate(({ app }, { confirmation, payment }) => {
     const nodeRequire = process.mainModule.require.bind(process.mainModule);
     const path = nodeRequire('path');
@@ -263,10 +332,10 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   }, { confirmation: approveCalls[0].confirmation, payment });
   const shown = {
     webContentsId: guestId,
-    detectionId: 'det-1',
-    url: 'https://pay.example/article',
+    detectionId: detectionOf(4102),
+    url: PAYWALL_URL,
     acceptIndex: 0,
-    accept: USDC_ACCEPT.accept,
+    accept: USDC_ENTRY,
     grant: null,
   };
   expect(typeof approveCalls[0].confirmation).toBe('string');
@@ -306,6 +375,7 @@ test('a blind-signing refusal tells the user which device setting to enable', as
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await window.click('#x402-approval-approve');
+  await approvePayInPanel(electronApp);
 
   await expect(window.locator('#x402-approval-error')).toBeVisible();
   await expect(window.locator('#x402-approval-error')).toContainText('Blind signing');
@@ -409,6 +479,7 @@ test('closing the paying tab mid-payment releases the sidebar instead of brickin
 
   await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
   await window.click('#x402-approval-approve');
+  await approvePayInPanel(electronApp);
 
   // Device prompt is up and the sidebar is locked to it.
   await expect(window.locator('#x402-approval-approve')).toHaveText('Confirm on your Ledger…');

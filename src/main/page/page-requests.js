@@ -64,7 +64,7 @@
  * prompt carries main's `site`, the request's attested key, and whatever the
  * user decides, the dispatcher acts on its own record.
  *
- * With the approvals document's flag on (APS-1, APS-2, `FREEDOM_APPROVALS_DOCUMENT=1`,
+ * With the approvals document on (APS-1, APS-2; the default, `FREEDOM_APPROVALS_DOCUMENT=0` its rollback,
  * `approvals/approvals-document.js`), `page:prompt`, `page:prompt-hidden`
  * and `page:prompt-closed` go to the window's approvals document instead,
  * the chrome keeps `page:prompt-pending` and `page:prompt-closed` for its
@@ -140,7 +140,8 @@ const PASSWORD_KEYS = new Set(['password']);
 // that the board was left, and main acts on it.
 const BOARD_KINDS = new Set(['eth.safe_message', 'eth.safe_send']);
 // The wallet's own prompts (APS-3): the window's, not a page's. From
-// APS-3b, its Safe board and the vault unlock a board's step needs.
+// APS-3b, its Safe board and the vault unlock a board's step needs; from
+// APS-5, x402's payment and an auto-pay cap's edit.
 const WALLET_PROMPT_KINDS = new Set([
   'wallet.send',
   'wallet.safe_send',
@@ -150,6 +151,8 @@ const WALLET_PROMPT_KINDS = new Set([
   'wallet.executor_send',
   'wallet.safe_board',
   'wallet.vault_unlock',
+  'wallet.x402_payment',
+  'wallet.x402_cap_update',
 ]);
 // What a wallet prompt shows where a page's shows its site.
 const WALLET_SITE = Object.freeze({ key: 'freedom:wallet', label: 'Your wallet' });

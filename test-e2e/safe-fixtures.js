@@ -21,6 +21,7 @@ const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
 const BUILTIN_TOKENS = require(path.join(repoRoot, 'src', 'shared', 'tokens.json'));
 const safeDeployments = require('@safe-global/safe-deployments');
 const { closeApp } = require('./close-app');
+const { chromeWindow } = require('./chrome-window');
 const { startRpcForwarder } = require('./rpc-forwarder');
 
 const VAULT_PASSWORD = 'Freedom-E2E-Safe-2026!';
@@ -262,9 +263,10 @@ const test = base.extend({
     proc.kill();
   },
 
-  // The approvals document on (freedom-core design 0011, APS-3b): the Safe
-  // boards in the window's panel (approvals-safe.spec.js).
-  approvalsDocument: [false, { option: true }],
+  // The approvals document (freedom-core design 0011): on by default, so
+  // the Safe boards and every approval show in the window's panel; false
+  // runs the rollback, the chrome's own screens (FREEDOM_APPROVALS_DOCUMENT=0).
+  approvalsDocument: [true, { option: true }],
 
   electronApp: async ({ anvil, diagnostics, approvalsDocument }, use) => {
     // /tmp, not os.tmpdir() — see remote-signing-fixtures for why.
@@ -374,7 +376,7 @@ const test = base.extend({
         FREEDOM_TEST_HIDE_WINDOW: '0',
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
-        ...(approvalsDocument ? { FREEDOM_APPROVALS_DOCUMENT: '1' } : {}),
+        FREEDOM_APPROVALS_DOCUMENT: approvalsDocument ? '1' : '0',
       },
       timeout: 20_000,
     });
@@ -388,17 +390,9 @@ const test = base.extend({
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 
-  window: async ({ electronApp, diagnostics, approvalsDocument }, use) => {
-    let window = await electronApp.firstWindow();
-    if (approvalsDocument) {
-      // The chrome, not the window's approvals document (a page too).
-      await expect
-        .poll(() => {
-          window = electronApp.windows().find((p) => p.url().includes('/renderer/index.html')) || null;
-          return Boolean(window);
-        }, { timeout: 20_000 })
-        .toBe(true);
-    }
+  window: async ({ electronApp, diagnostics }, use) => {
+    // The chrome, not the window's approvals document (a page too).
+    const window = await chromeWindow(electronApp);
     window.on('console', (message) =>
       diagnostics.add('renderer', `${message.type()}: ${message.text()}`)
     );

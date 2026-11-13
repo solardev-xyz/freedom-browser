@@ -11,9 +11,11 @@
 //
 // Driven through the real renderer, with the main-process IPC replaced for
 // this app instance and the send handler left hanging to hold the UI in the
-// device-prompt state.
+// device-prompt state. The send's confirmation is decided in the window's
+// approvals panel (freedom-core design 0011), which needs the Ledger
+// account in main's own wallet list.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
 const LEDGER = {
   index: 1000000,
@@ -100,6 +102,8 @@ async function openSendOnLedger(window) {
   await expect(window.locator('#send-review-view')).toBeVisible();
 }
 
+test.use({ vaultWallets: { wallets: [LEDGER], activeWalletIndex: LEDGER.index } });
+
 test('sidebar chrome cannot collapse or repaint over a live device confirmation', async ({
   electronApp,
   window,
@@ -108,6 +112,9 @@ test('sidebar chrome cannot collapse or repaint over a live device confirmation'
   await openSendOnLedger(window);
 
   await window.click('#send-confirm-btn');
+  const panel = await approvalsPage(electronApp);
+  await expect(panel.locator('#heading')).toHaveText('Confirm Send');
+  await decideInPanel(electronApp, { panel });
 
   // The device prompt is up. The chrome above it is dead too, not just Back.
   await expect(window.locator('#send-pending-view')).toBeVisible();

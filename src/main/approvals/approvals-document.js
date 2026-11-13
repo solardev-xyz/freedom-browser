@@ -75,11 +75,13 @@
  * minimum) is closed as rejected rather than left pending, since the
  * chrome's decision is refused.
  *
- * The flag: `FREEDOM_APPROVALS_DOCUMENT=1` in the environment. It only
- * narrows what the chrome can do, so packaged builds honour it too. It
- * stays off by default until the page and wallet specs drive it; the
- * default flips in its own pull request. The Safe signing boards show here
- * from APS-3b, and views over 256 KiB in parts from APS-4.
+ * The flag: on by default (0011's step after APS-5, with the page and
+ * wallet specs driving the panel). A development build turns it off with
+ * `FREEDOM_APPROVALS_DOCUMENT=0`, the rollback to the chrome's own prompt
+ * screens, as the other backend switches are development only; any other
+ * value is warned of, once, and runs the default. Packaged builds always
+ * run it. The Safe signing boards show here from APS-3b, and views over
+ * 256 KiB in parts from APS-4.
  */
 
 const fs = require('fs');
@@ -208,8 +210,34 @@ const WEB_PREFERENCES = Object.freeze({
   transparent: false,
 });
 
-function isApprovalsDocumentEnabled(env = process.env) {
-  return env?.[FLAG] === '1';
+let warnedFlag = null;
+
+function isPackagedBuild() {
+  try {
+    return Boolean(require('electron').app?.isPackaged);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the approvals document runs: always in a packaged build; in a
+ * development build unless `FREEDOM_APPROVALS_DOCUMENT=0`.
+ */
+function isApprovalsDocumentEnabled(env = process.env, { packaged = isPackagedBuild() } = {}) {
+  if (packaged) return true;
+  const value = env?.[FLAG];
+  if (value === undefined || value === '' || value === '1') return true;
+  if (value === '0') return false;
+  if (warnedFlag !== value) {
+    warnedFlag = value;
+    try {
+      require('../logger').warn(`[Approvals] Unknown ${FLAG}=${String(value).slice(0, 40)}; the approvals panel stays on`);
+    } catch {
+      // No logger (a unit test's environment): the default still holds.
+    }
+  }
+  return true;
 }
 
 function isPlainObject(value) {
@@ -581,6 +609,16 @@ function createApprovalsDocuments({
       record.ready = false;
       record.report = null;
     });
+    // A hidden panel never keeps the keyboard: a view takes focus as its
+    // document loads, and the chrome's keys (its shortcuts, the address
+    // bar) would go to a panel nobody sees. Focus goes back to the chrome,
+    // as when the panel hides.
+    const releaseFocus = () => {
+      if (!record.visible && safely(() => contents.isFocused(), false)) safely(() => record.window.webContents.focus());
+    };
+    contents.on('focus', releaseFocus);
+    contents.on('did-finish-load', releaseFocus);
+    window.on('focus', releaseFocus);
     contents.once('destroyed', () => forget(record));
     window.once('closed', () => {
       forget(record);

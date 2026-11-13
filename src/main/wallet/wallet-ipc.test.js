@@ -81,6 +81,13 @@ jest.mock('../x402/permissions', () => ({
     current: mockCapHeld.current,
   }),
 }));
+// x402's payment as main's record of its detection holds it (APS-5),
+// replaced per test: the panel's prompt and its token bind this, not the
+// chrome's copy.
+const mockX402Record = { build: null };
+jest.mock('../x402/ipc', () => ({
+  paymentApprovalRequest: (sender, payload) => mockX402Record.build(sender, payload),
+}));
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
   takeSiteTurn: jest.fn(async () => () => {}),
@@ -848,6 +855,95 @@ describe('signing handlers require a main-side confirmation', () => {
     } finally {
       mockCapHeld.current = saved;
     }
+  });
+
+  // freedom-core design 0011, APS-5: with the approvals document on, the
+  // chrome mints no x402 token on its own word either.
+  describe('x402\'s kinds, with the approvals document on', () => {
+    const MAIN_ACCEPT = { ...X402_PAYMENT.accept, amount: '25000' };
+    let asked;
+    let answer;
+    beforeEach(() => {
+      asked = [];
+      answer = { approved: true };
+      mockWalletApprovals = {
+        confirm: jest.fn(async (request, onApproved) => {
+          asked.push(request);
+          if (!answer.approved) return answer;
+          return { ...(await onApproved()), approved: true };
+        }),
+      };
+      // Main's record: its own entry at the index, whatever the chrome sent.
+      mockX402Record.build = (_sender, payload) => ({ ...X402_PAYMENT, accept: MAIN_ACCEPT, grant: payload.grant ?? null });
+      guest(42, 'https://api.example/article');
+      getActiveWalletIndex.mockReturnValue(0);
+    });
+    afterEach(() => {
+      mockWalletApprovals = null;
+      mockX402Record.build = null;
+    });
+
+    test('a payment asks the panel with main\'s record, and only its approval mints', async () => {
+      const chrome = { ...X402_PAYMENT, accept: { ...X402_PAYMENT.accept, amount: '1' } };
+      const result = await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 9, chrome);
+      expect(result).toMatchObject({ success: true, token: expect.any(String) });
+      expect(asked).toEqual([
+        { sender: CHROME, kind: 'x402-payment', index: 0, payload: { ...X402_PAYMENT, accept: MAIN_ACCEPT }, feeChecked: false },
+      ]);
+      // The token binds main's entry, which x402:approve rebuilds; not the chrome's.
+      expect(() => confirmations.consumeConfirmation(result.token, 'x402-payment', 0, chrome)).toThrow(/differs/);
+      const again = await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, chrome);
+      expect(() => confirmations.consumeConfirmation(again.token, 'x402-payment', 0, { ...X402_PAYMENT, accept: MAIN_ACCEPT }))
+        .not.toThrow();
+
+      // Rejected in the panel: no token.
+      answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
+      const outstanding = confirmations._outstandingCount();
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toEqual({
+        success: false,
+        error: 'User rejected the request',
+        code: 'USER_REJECTED',
+      });
+      expect(confirmations._outstandingCount()).toBe(outstanding);
+    });
+
+    test('a payment main can\'t find as asked, or on another window\'s tab, asks nothing', async () => {
+      mockX402Record.build = () => {
+        throw new Error('Approval is stale — the detection has been superseded');
+      };
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toEqual({
+        success: false,
+        error: 'Approval is stale — the detection has been superseded',
+      });
+      guest(42, 'https://api.example/article', { host: { id: 2 } });
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toMatchObject({ success: false });
+      expect(asked).toEqual([]);
+      expect(confirmations._outstandingCount()).toBe(0);
+    });
+
+    test('a cap\'s edit asks the panel with the cap main holds, and only its approval mints', async () => {
+      const edit = { origin: 'https://pay.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
+      const held = { ...edit, window: CHROME.id, windowSeconds: undefined, current: mockCapHeld.current };
+      const result = await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit);
+      expect(result).toMatchObject({ success: true, token: expect.any(String) });
+      expect(asked).toEqual([{ sender: CHROME, kind: 'x402-cap-update', index: null, payload: held, feeChecked: false }]);
+      expect(() => confirmations.consumeConfirmation(result.token, 'x402-cap-update', null, held)).not.toThrow();
+
+      answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit)).toMatchObject({ success: false, code: 'USER_REJECTED' });
+      expect(confirmations._outstandingCount()).toBe(0);
+
+      // A cap main doesn't hold: refused before anyone is asked.
+      const saved = mockCapHeld.current;
+      mockCapHeld.current = null;
+      try {
+        expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit))
+          .toMatchObject({ success: false, error: expect.stringMatching(/No such auto-pay cap/) });
+      } finally {
+        mockCapHeld.current = saved;
+      }
+      expect(asked).toHaveLength(2);
+    });
   });
 
   test('wallet:confirm-signing refuses a malformed request', async () => {
