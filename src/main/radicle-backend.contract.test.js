@@ -723,11 +723,16 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
         try {
           buildSmallWorkingCopy(workingCopy);
           const before = snapshotGitDir(workingCopy);
-          const { rid } = await backend.embedded.importRepo(
-            workingCopy,
-            'contract-untouched',
-            'Imported in process.',
-            'main'
+          const { rid } = await withLogOnTimeout(
+            backend,
+            () =>
+              backend.embedded.importRepo(
+                workingCopy,
+                'contract-untouched',
+                'Imported in process.',
+                'main'
+              ),
+            50_000
           );
           expect(rid).toMatch(RID_RE);
           expect(snapshotGitDir(workingCopy)).toEqual(before);
@@ -1066,6 +1071,27 @@ describeContract(`Radicle backend contract (${BACKEND})`, () => {
     }, 60_000);
   });
 });
+
+/**
+ * `run()`'s result, or, past `ms`, main's last log lines printed (the
+ * service's among them, where the backend keeps them) and an error: what an
+ * import that doesn't end was waiting for.
+ */
+async function withLogOnTimeout(backend, run, ms) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const lines = backend.recentLog?.();
+      if (lines) console.error(`main's log, last ${lines.length} lines:\n${lines.join('\n')}`);
+      reject(new Error(`not settled within ${ms} ms`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([run(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** A small working copy for imports: one commit with one file. Returns the
  * commit. */

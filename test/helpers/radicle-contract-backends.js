@@ -370,7 +370,24 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
         'radicled:download, or set FREEDOM_RADICLED_PATH'
     );
   }
-  const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  // Main's log, the service's lines among them, kept for a test that has
+  // to say what happened (`recentLog`): the last 400 lines.
+  const logged = [];
+  const keep =
+    (level) =>
+    (...parts) => {
+      const text = parts
+        .map((part) => (typeof part === 'string' ? part : JSON.stringify(part)))
+        .join(' ');
+      logged.push(`${new Date().toISOString()} ${level} ${text}`);
+      if (logged.length > 400) logged.shift();
+    };
+  const log = {
+    info: jest.fn(keep('info')),
+    warn: jest.fn(keep('warn')),
+    error: jest.fn(keep('error')),
+    debug: jest.fn(),
+  };
   // The service refuses a home with a key file: the key reaches the node
   // sealed instead, as from the core, and the home is as a switched one.
   fs.rmSync(path.join(home, 'keys'), { recursive: true, force: true });
@@ -504,6 +521,8 @@ async function loadRadicledBackend({ home, networkOnBinary = false }) {
   return {
     name: 'radicled',
     home,
+    /** Main's last log lines, the service's among them. */
+    recentLog: () => [...logged],
     lockDir,
     manager,
     embedded,
