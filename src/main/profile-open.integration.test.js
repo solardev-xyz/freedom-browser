@@ -352,6 +352,31 @@ describeIfBinary('opening a profile through the real freedom-cored (0013, PRF-4)
     expect(isProfileGateHeldSync(profile, { command: binary, lockDir, log: quietLog })).toBe(false);
   }, 60_000);
 
+  // A machine no new build has run on: nothing has created the lock directory
+  // yet, and `hold-profile` alone fails with 74 (storage) without it. Every
+  // CI runner's first launch is one.
+  test('the first launch on a machine without the lock directory takes the gate', async () => {
+    const appRoot = path.join(root, 'Freedom');
+    const app = packagedApp(appRoot);
+    const freshLockDir = path.join(root, 'fresh', 'locks');
+    const { profile } = open(app, { argv: ['freedom', '--profile', 'first'], lockDir: freshLockDir });
+    const gate = startProfileGate(profile, {
+      packaged: true,
+      log: quietLog,
+      command: binary,
+      lockDir: freshLockDir,
+    });
+    try {
+      await gate.whenLocked();
+      expect(gate.held()).toBe(true);
+      if (process.platform !== 'win32') {
+        expect(fs.statSync(freshLockDir).mode & 0o777).toBe(0o700);
+      }
+    } finally {
+      await gate.release();
+    }
+  });
+
   test('hold-profile refuses a catalog profile no longer listed at its directory', async () => {
     const appRoot = path.join(root, 'Freedom');
     const app = packagedApp(appRoot);

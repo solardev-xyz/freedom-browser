@@ -23,6 +23,10 @@
  * - **The holder dies while main runs:** another starts at once; the lock,
  *   still fresh, covers the moment. One that can't take the gate within its
  *   own 5 s of retries ends main (`onFatal`), as a compromised lock does.
+ * - **The lock directory** is created (0700) before the holder starts:
+ *   `hold-profile` (cored-v0.13.0) fails with 74 (storage) where it doesn't
+ *   exist yet, unlike `hold-lock`, which creates it. On a machine no new
+ *   build has run on, nothing has made it before the first launch's gate.
  * - **Without the binary:** a packaged build ships it, so its absence there
  *   is a broken installation and the profile doesn't open. A development
  *   build without `npm run core:download` goes on ungated, with a warning,
@@ -109,6 +113,7 @@ function defaultLockDir() {
  * @param {string} [options.lockDir]
  * @param {Function} [options.spawn]
  * @param {Function} [options.exists]
+ * @param {Function} [options.mkdir]
  * @param {Function} [options.setTimer]
  * @param {Function} [options.clearTimer]
  */
@@ -122,6 +127,7 @@ function startProfileGate(
     lockDir = defaultLockDir(),
     spawn,
     exists = fs.existsSync,
+    mkdir = fs.mkdirSync,
     setTimer,
     clearTimer,
   }
@@ -136,6 +142,13 @@ function startProfileGate(
       "[profile] freedom-cored isn't downloaded (npm run core:download): going on without the profile gate"
     );
     return { gated: false, whenLocked: async () => {}, held: () => false, release: async () => {} };
+  }
+
+  try {
+    mkdir(lockDir, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    // The holder then fails with `storage`, which says what is wrong.
+    log.warn("[profile] Couldn't create the lock directory", { code: error.code });
   }
 
   let current = null;
