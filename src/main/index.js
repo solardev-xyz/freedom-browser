@@ -82,21 +82,13 @@ if (app.isPackaged && !process.env.FREEDOM_TEST_USER_DATA) {
   migrateUserData({ logger: console });
 }
 const {
-  initializeProfile,
+  finishProfileMove,
+  getProfileLaunchReport,
+  openActiveProfile,
   PROFILE_SWITCH_REJECTED,
   warnAboutLegacyDevData,
 } = require('./profile-resolver');
-let activeProfile = null;
-try {
-  activeProfile = initializeProfile(app);
-} catch (error) {
-  // An `x-freedom-profile:` switch (Linux, profile-switch-scheme.js) naming no
-  // registered profile: do nothing at all rather than open some other one.
-  if (error?.code === PROFILE_SWITCH_REJECTED) {
-    console.warn(`[profile] ${error.message}`);
-    app.exit(0);
-    process.exit(0);
-  }
+function exitProfileOpenFailed(error) {
   if (RUNTIME_MODE) {
     reportRuntimeLaunchError(
       'PROFILE_INITIALIZATION_FAILED',
@@ -112,11 +104,34 @@ try {
   app.exit(exitCode);
   process.exit(exitCode);
 }
+// The profile, through `freedom-cored profile open` (freedom-core design
+// 0013, 5.1; in JS on Windows until its qualification, see
+// profile-resolver.js), and app.setPath on it.
+let activeProfile = null;
+try {
+  activeProfile = openActiveProfile(app);
+} catch (error) {
+  // An `x-freedom-profile:` switch (Linux, profile-switch-scheme.js) naming no
+  // registered profile: do nothing at all rather than open some other one.
+  if (error?.code === PROFILE_SWITCH_REJECTED) {
+    console.warn(`[profile] ${error.message}`);
+    app.exit(0);
+    process.exit(0);
+  }
+  exitProfileOpenFailed(error);
+}
+const profileLaunch = getProfileLaunchReport();
 const {
   acquireProfileLock,
+  hasStaleProfileLock,
   isLockUnavailableError,
   releaseProfileLock,
 } = require('./profile-lock');
+const {
+  isProfileGateHeldSync,
+  isProfileHeldElsewhere,
+  startProfileGate,
+} = require('./profile-gate');
 const {
   requestInstanceLockProbeSync,
   requestProfileFocusSync,
@@ -140,39 +155,82 @@ const launchUrls = extractLaunchUrls(process.argv);
 // An in-app switch in another profile is waiting on this `x-freedom-profile:`
 // launch; tell it the launch arrived (profile-switch-scheme.js).
 recordProfileSwitch(activeProfile, 'received', { logger: console });
+// The profile is open elsewhere: hand this launch over to it, or report it
+// busy, and exit.
+function exitProfileLocked() {
+  if (RUNTIME_MODE) {
+    const discovery = inspectRuntimeDiscovery(activeProfile);
+    reportRuntimeLaunchError('PROFILE_LOCKED', 'The selected Freedom profile is already open', {
+      profile: { id: activeProfile.id, displayName: activeProfile.displayName },
+      discovery: {
+        state: discovery.state,
+        path: discovery.discoveryPath,
+        ...(discovery.advertisedState && { advertisedState: discovery.advertisedState }),
+      },
+    });
+  } else {
+    // Linux: through the running profile's single-instance lock when it
+    // answers a probe saying it listens on one, which carries this launch's
+    // XDG activation token along (#142); otherwise through the focus-request
+    // file. Never the lock without the probe: see profile-instance-handoff.js.
+    handleLockedProfileLaunch({
+      app,
+      profile: activeProfile,
+      launchUrls,
+      probe: () => requestInstanceLockProbeSync(activeProfile),
+      requestFocus: requestProfileFocusSync,
+      showError: (title, message) => dialog.showErrorBox(title, message),
+      logger: console,
+    });
+  }
+  const exitCode = RUNTIME_MODE ? RUNTIME_PROCESS_EXIT_CODES.PROFILE_LOCKED : 0;
+  app.exit(exitCode);
+  process.exit(exitCode);
+}
+// The reader release (0013, "Readers, and the downgrade"): a move's journal
+// is completed or rolled back before anything reads the profile, under the
+// move's own exclusion, before the gate's holder starts and before main
+// takes its lock. Every path getter then resolves the profile's Freedom root
+// once (freedom-root.js).
+if (profileLaunch.layout === 'pending') {
+  let settled;
+  try {
+    settled = finishProfileMove(activeProfile);
+  } catch (error) {
+    exitProfileOpenFailed(error);
+  }
+  console.info(`[profile] A move's journal was found and settled: ${settled}`);
+  if (settled === 'busy') exitProfileLocked();
+}
+// "Open" means a fresh lock or a held profile gate (0013, "The lock"): a
+// stale lock whose gate another new build holds is a live profile whose main
+// has stalled, handed over to or reported busy, never taken over.
+// `profile open` asked the gate; where it didn't run, it is asked here, and
+// only for a lock that reads stale.
+if (
+  isProfileHeldElsewhere(profileLaunch, activeProfile, {
+    hasStaleLock: hasStaleProfileLock,
+    askGate: (profile) => isProfileGateHeldSync(profile, { log: console }),
+  })
+) {
+  exitProfileLocked();
+}
+// The profile gate, from before the lock to after its release
+// (profile-gate.js): bootstrap() waits for it before the core, any node, any
+// store write and the first window.
+const profileGate = startProfileGate(activeProfile, {
+  packaged: app.isPackaged,
+  log: console,
+  // Another new build holds the profile now: stop, as on a compromised lock.
+  onFatal: () => app.quit(),
+});
 let activeProfileLock = null;
 try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
-    if (RUNTIME_MODE) {
-      const discovery = inspectRuntimeDiscovery(activeProfile);
-      reportRuntimeLaunchError('PROFILE_LOCKED', 'The selected Freedom profile is already open', {
-        profile: { id: activeProfile.id, displayName: activeProfile.displayName },
-        discovery: {
-          state: discovery.state,
-          path: discovery.discoveryPath,
-          ...(discovery.advertisedState && { advertisedState: discovery.advertisedState }),
-        },
-      });
-    } else {
-      // Linux: through the running profile's single-instance lock when it
-      // answers a probe saying it listens on one, which carries this launch's
-      // XDG activation token along (#142); otherwise through the focus-request
-      // file. Never the lock without the probe: see profile-instance-handoff.js.
-      handleLockedProfileLaunch({
-        app,
-        profile: activeProfile,
-        launchUrls,
-        probe: () => requestInstanceLockProbeSync(activeProfile),
-        requestFocus: requestProfileFocusSync,
-        showError: (title, message) => dialog.showErrorBox(title, message),
-        logger: console,
-      });
-    }
-    const exitCode = RUNTIME_MODE ? RUNTIME_PROCESS_EXIT_CODES.PROFILE_LOCKED : 0;
-    app.exit(exitCode);
-    process.exit(exitCode);
+    profileGate.release();
+    exitProfileLocked();
   }
   throw error;
 }
@@ -183,6 +241,7 @@ if (activeProfile.switchOnly) {
   console.warn(`[profile] Refused an x-freedom-profile switch to "${activeProfile.id}": not open`);
   recordProfileSwitch(activeProfile, 'failed', { logger: console });
   releaseProfileLock(activeProfileLock, { logger: console });
+  profileGate.release();
   app.exit(0);
   process.exit(0);
 }
@@ -570,6 +629,11 @@ log.info('[profile] Active profile:', {
   source: activeProfile.source,
   userDataDir: activeProfile.userDataDir,
   appRoot: activeProfile.appRoot,
+  // `profile open`'s wall time, which 0013's latency gate bounds.
+  openedBy: profileLaunch.backend,
+  ...(profileLaunch.ms !== null && { openMs: Math.round(profileLaunch.ms) }),
+  layout: profileLaunch.layout,
+  gated: profileGate.gated,
 });
 warnAboutLegacyDevData(activeProfile, { logger: log });
 app.on('will-quit', () => {
@@ -581,9 +645,25 @@ app.on('will-quit', () => {
     releaseProfileLock(activeProfileLock, { logger: log });
     activeProfileLock = null;
   }
+  // Only after the lock's release: whenever the lock is held, the gate is.
+  profileGate.release();
 });
 
 async function bootstrap() {
+  // The profile gate's holder says `locked` before the core, any node, any
+  // store write or the first window (freedom-core design 0013, "The lock"):
+  // main never starts the core for a profile it doesn't hold.
+  try {
+    await profileGate.whenLocked();
+  } catch (error) {
+    log.error('[profile] The profile gate could not be taken', { code: error.code });
+    releaseProfileLock(activeProfileLock, { logger: log });
+    activeProfileLock = null;
+    // Another new build holds the profile: as for a fresh lock.
+    if (error.code === 'lock_held') exitProfileLocked();
+    exitProfileOpenFailed(error);
+  }
+
   // A suspended machine is not a blocked loop: don't report the sleep.
   // 'suspend' opens the window before the machine sleeps, so the sleep gap is
   // recognised even when the overdue tick beats 'resume' on wake (Windows),

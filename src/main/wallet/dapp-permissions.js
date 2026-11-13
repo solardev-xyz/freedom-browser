@@ -14,8 +14,8 @@
  * own dispatcher (`page/page-ethereum.js`).
  */
 
-const { app, ipcMain } = require('electron');
-const path = require('path');
+const { ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
@@ -58,7 +58,7 @@ function grantChanged(key, walletIndex) {
  * Get the path to the permissions file
  */
 function getPermissionsPath() {
-  return path.join(app.getPath('userData'), PERMISSIONS_FILE);
+  return getFreedomDataPath(PERMISSIONS_FILE);
 }
 
 /**

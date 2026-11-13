@@ -31,8 +31,7 @@
  * past Number.MAX_SAFE_INTEGER. Better to bite the bigint bullet now.
  */
 
-const { app } = require('electron');
-const path = require('path');
+const { getFreedomDataPath } = require('../freedom-root');
 const fs = require('fs');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
@@ -77,7 +76,7 @@ function dropGeneration(origin, key) {
 }
 
 function permissionsPath() {
-  return path.join(app.getPath('userData'), PERMISSIONS_FILE);
+  return getFreedomDataPath(PERMISSIONS_FILE);
 }
 
 // Drop already-expired records on load so the file doesn't accumulate

@@ -1,6 +1,6 @@
 const log = require('./logger');
-const { app, ipcMain, nativeTheme } = require('electron');
-const path = require('path');
+const { ipcMain, nativeTheme } = require('electron');
+const { getFreedomDataPath } = require('./freedom-root');
 const fs = require('fs');
 const IPC = require('../shared/ipc-channels');
 const { broadcastToAllWebContents } = require('./lib/broadcast-to-all-webcontents');
@@ -230,7 +230,7 @@ function normalizeStructuredSettings(parsed) {
 }
 
 function getSettingsPath() {
-  return path.join(app.getPath('userData'), SETTINGS_FILE);
+  return getFreedomDataPath(SETTINGS_FILE);
 }
 
 // Rewrites bee-era keys to their ant-named replacements in place. Returns true

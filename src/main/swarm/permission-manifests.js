@@ -5,10 +5,10 @@
  * Manifest bytes, persisted decisions, grant projection, and pruning stay here.
  */
 
-const { app, ipcMain } = require('electron');
+const { ipcMain } = require('electron');
+const { getFreedomDataPath } = require('../freedom-root');
 const crypto = require('crypto');
 const fs = require('fs');
-const path = require('path');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { handleBzzRequest } = require('./bzz-protocol');
@@ -79,7 +79,7 @@ function releasePageManifest(token) {
 const unresolvedBackoff = new Map();
 
 function getStorePath() {
-  return path.join(app.getPath('userData'), STORE_FILE);
+  return getFreedomDataPath(STORE_FILE);
 }
 
 function emptyStore() {

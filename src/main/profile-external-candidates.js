@@ -7,6 +7,7 @@ const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { updateActiveProfileNodeConfigWhenIdle } = require('./profile-resolver');
 const { findOwnLiveAntd } = require('./ant-process-marker');
+const { resolveFreedomRoot } = require('./freedom-root');
 const { probeSocks5Endpoint } = require('./socks-probe');
 const {
   IPFS_GATEWAY_PROBE_PATH,
@@ -175,7 +176,7 @@ function isLegacyProfile(profile) {
 }
 
 function getLegacyDecisionsPath(profile) {
-  return path.join(profile.userDataDir, LEGACY_DECISIONS_FILE);
+  return path.join(resolveFreedomRoot(profile.userDataDir), LEGACY_DECISIONS_FILE);
 }
 
 function readLegacyDecisions(profile) {
