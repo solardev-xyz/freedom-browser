@@ -13,6 +13,11 @@
  *   serialization, and the composed `readme_at`, `repo_meta`, `repos_meta`,
  *   `issues_page` and `patches_page`. `signal`, or the body's `cancel()`,
  *   cancels it.
+ * - **`callBlob(params, { signal })`** passes a `rad.blob` through the same
+ *   way, for the raw endpoint (0008, "The blob API"): its head, checked
+ *   (the blob's ID, its size within 64 MiB, the range served), and its
+ *   bytes, a stream held to the head's length, or none for a `head_only`
+ *   read or an empty one.
  * - **`callScoped(op, args, scope, { signal })`** is for callers that need
  *   a parsed value, and only for the closed list of small results, each
  *   with its cap (`COLLECTED_CAPS`): 64 KiB for `status`, `identity`,
@@ -395,6 +400,68 @@ function releasingBody(body, release) {
   );
 }
 
+/**
+ * `body`, a byte stream, errored `internal` if it carries more or fewer than
+ * `length` bytes: the raw endpoint's Content-Length is the head's.
+ */
+function exactBody(body, length) {
+  const reader = body.getReader();
+  let seen = 0;
+  const mismatch = () => badReply(`with ${seen} bytes of a blob body of ${length}`);
+  return new ReadableStream(
+    {
+      async pull(controller) {
+        const next = await reader.read();
+        if (next.done) {
+          if (seen === length) controller.close();
+          else controller.error(mismatch());
+          return;
+        }
+        seen += next.value.byteLength;
+        if (seen > length) {
+          reader.cancel().catch(() => {});
+          controller.error(mismatch());
+          return;
+        }
+        controller.enqueue(next.value);
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 }
+  );
+}
+
+/** The longest blob `rad.blob` serves (0008, deviation `size-caps`). */
+const BLOB_CAP_BYTES = 64 * MIB;
+const BLOB_OID_RE = /^[0-9a-f]{40}$/;
+
+/**
+ * A `rad.blob` head as main uses it, `{ oid, size, range, length }`, or
+ * null for one that isn't as the design writes it (0008, "The blob API"):
+ * the blob's ID, its size within the cap, the range served inside it or
+ * null, and `body` true exactly when bytes follow, which a `head_only` read
+ * never has.
+ */
+function blobHead(result, headOnly) {
+  if (!isObject(result)) return null;
+  const { oid, size, range, body } = result;
+  if (typeof oid !== 'string' || !BLOB_OID_RE.test(oid)) return null;
+  if (!Number.isSafeInteger(size) || size < 0 || size > BLOB_CAP_BYTES) return null;
+  let served = null;
+  if (range !== null) {
+    if (!isObject(range)) return null;
+    const { start, end } = range;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+    if (start < 0 || start > end || end >= size) return null;
+    served = { start, end };
+  }
+  const length = served ? served.end - served.start + 1 : size;
+  if (body !== (!headOnly && length > 0)) return null;
+  return { oid, size, range: served, length };
+}
+
 class RadicleServiceBackend {
   /**
    * @param {object} options
@@ -443,14 +510,36 @@ class RadicleServiceBackend {
    * holds a slot of main's dweb admission instead.
    */
   async callStream(op, args = {}, { signal = null, admitted = false } = {}) {
-    if (admitted) return this.read(op, args, signal);
+    return this.passThrough(() => this.read(op, args, signal), { signal, admitted });
+  }
+
+  /**
+   * `rad.blob { rid, revision, path, range?, head_only? }` passed through
+   * (0008, "The blob API"), for the raw endpoint: `{ head: { oid, size,
+   * range, length }, body }`. `range` is the range served, `{ start, end }`
+   * inclusive, or null for the whole blob, and `length` its bytes; `body` a
+   * byte stream of exactly `length` bytes, or null when the head says none
+   * follow (`head_only`, or nothing to send). Slots as callStream's.
+   */
+  async callBlob(params, { signal = null, admitted = false } = {}) {
+    return this.passThrough(() => this.readBlob(params, signal), { signal, admitted });
+  }
+
+  /** `read()`'s head and body, holding one of the other callers' slots
+   * until the body is over, unless `admitted` (see callStream). */
+  async passThrough(read, { signal, admitted }) {
+    if (admitted) return read();
     const release = await this.slots.take({ signal });
-    let read;
+    let answer;
     try {
-      read = await this.read(op, args, signal);
+      answer = await read();
     } catch (err) {
       release();
       throw err;
+    }
+    if (!answer.body) {
+      release();
+      return answer;
     }
     // An abort errors the body: the slot goes back then, read or not.
     const over = once(() => {
@@ -459,7 +548,7 @@ class RadicleServiceBackend {
     });
     signal?.addEventListener('abort', over, { once: true });
     if (signal?.aborted) over();
-    return { head: read.head, body: releasingBody(read.body, over) };
+    return { head: answer.head, body: releasingBody(answer.body, over) };
   }
 
   /** `rad.read` on the running node: its head, checked, and its body. */
@@ -478,6 +567,20 @@ class RadicleServiceBackend {
       throw badReply('without a JSON head');
     }
     return { head: { content_type: result.content_type, bytes: result.bytes }, body };
+  }
+
+  /** `rad.blob` on the running node: its head, checked against what was
+   * asked, and its body, held to the head's length. */
+  async readBlob(params, signal) {
+    const node = this.node();
+    if (!node) throw new CoreError('stopped', NOT_RUNNING);
+    const { result, body } = await node.blob(params, { signal });
+    const head = blobHead(result, params?.head_only === true);
+    if (!head || (body !== null && body !== undefined) !== result.body) {
+      await body?.cancel().catch(() => {});
+      throw badReply('without a blob head');
+    }
+    return { head, body: body ? exactBody(body, head.length) : null };
   }
 
   /**

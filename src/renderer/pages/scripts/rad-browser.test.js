@@ -12,8 +12,9 @@ const path = require('path');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'rad-browser.js'), 'utf8');
 
-/** Pull a top-level `const NAME = ...` / `function NAME(...)` out of the source. */
-function loadHelpers(names) {
+/** Pull a top-level `const NAME = ...` / `function NAME(...)` out of the source,
+ * after `prelude` (the page globals they read). */
+function loadHelpers(names, prelude = '') {
   const chunks = names.map((name) => {
     const constStart = SOURCE.indexOf(`const ${name} =`);
     const fnStart = SOURCE.indexOf(`function ${name}(`);
@@ -23,7 +24,7 @@ function loadHelpers(names) {
     const end = SOURCE.indexOf('\n\n', start);
     return SOURCE.slice(start, end === -1 ? undefined : end);
   });
-  return new Function(`${chunks.join('\n')}\nreturn { ${names.join(', ')} };`)();
+  return new Function(`${prelude}\n${chunks.join('\n')}\nreturn { ${names.join(', ')} };`)();
 }
 
 const { escapeHtml } = loadHelpers(['HTML_ESCAPES', 'escapeHtml']);
@@ -154,8 +155,12 @@ describe('rad-browser.html CSP (#661)', () => {
     expect(literal).not.toBeNull();
     const allowedUri = new RegExp(literal[1], 'i');
     const keeps = (scheme) => allowedUri.test(`${scheme}//host/logo.png`);
-    // data: is let through for <img> separately (DATA_URI_TAGS).
-    const listed = directives['img-src'].filter((s) => s.endsWith(':') && s !== 'data:');
+    // data: is let through for <img> separately (DATA_URI_TAGS); blob: is
+    // the file view's own object URLs, never README markup's.
+    const listed = directives['img-src'].filter(
+      (s) => s.endsWith(':') && s !== 'data:' && s !== 'blob:'
+    );
+    expect(keeps('blob:')).toBe(false);
     for (const scheme of listed) expect([scheme, keeps(scheme)]).toEqual([scheme, true]);
     // Every dweb scheme Freedom serves that DOMPurify keeps must be listed.
     for (const scheme of ['web3:', 'ipfs:', 'ipns:', 'bzz:', 'rad:']) {
@@ -293,5 +298,53 @@ describe('seedProgressText', () => {
     expect(seedProgressText({ progress: { phase: 'peer-failed', count: 1, reason: 'x' } })).toBe(
       '1 seed failed; trying another…'
     );
+  });
+});
+
+// freedom-core design 0008, "The raw endpoint": the file view shows images
+// and offers every file as a download, from radapi:'s /raw/.
+describe('raw files: images and downloads', () => {
+  const ROOT = 'radapi://local/api/v1/repos/rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+  const { rawFileUrl } = loadHelpers(
+    ['encodePathSegments', 'rawFileUrl'],
+    `const repoApiRoot = '${ROOT}';`
+  );
+  const { isImageFile } = loadHelpers(['IMAGE_EXTENSIONS', 'isImageFile']);
+  const { downloadLink } = loadHelpers(['HTML_ESCAPES', 'escapeHtml', 'downloadLink']);
+
+  test("a file's raw URL is at its commit, each segment encoded", () => {
+    expect(rawFileUrl(REVISION, 'docs/100%/logo #1.png')).toBe(
+      `${ROOT}/raw/${REVISION}/docs/100%25/logo%20%231.png`
+    );
+  });
+
+  test("the images it shows are the raw endpoint's image types", () => {
+    for (const name of ['a.png', 'b.JPG', 'c.jpeg', 'd.gif', 'e.webp', 'f.avif', 'favicon.ico']) {
+      expect([name, isImageFile(name)]).toEqual([name, true]);
+    }
+    for (const name of ['logo.svg', 'photo.bmp', 'page.html', 'png.txt', 'link']) {
+      expect([name, isImageFile(name)]).toEqual([name, false]);
+    }
+  });
+
+  test('the download link escapes the URL and the name', () => {
+    const link = downloadLink(`${ROOT}/raw/${REVISION}/x"y.bin`, 'x" onclick="alert(1)');
+    expect(link).toBe(
+      `<a class="file-download" href="${ROOT}/raw/${REVISION}/x&quot;y.bin" ` +
+        'download="x&quot; onclick=&quot;alert(1)">Download</a>'
+    );
+  });
+
+  test('"Binary file not shown." is gone: every file view offers the download', () => {
+    expect(SOURCE).not.toContain('Binary file not shown');
+    expect(SOURCE.match(/\$\{downloadLink\(rawUrl, name\)\}/g)).toHaveLength(2);
+    expect(SOURCE).toContain('renderBlob(blob, rawFileUrl(headSha, viewPath));');
+  });
+
+  test('img-src allows the object URLs the file view shows images from', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'rad-browser.html'), 'utf8');
+    const policy = html.match(/http-equiv="Content-Security-Policy"\s+content="([^"]+)"/)[1];
+    expect(policy).toMatch(/img-src [^;]*\bblob:/);
+    expect(policy).not.toMatch(/img-src [^;]*radapi:/);
   });
 });

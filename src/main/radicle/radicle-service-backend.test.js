@@ -143,10 +143,11 @@ afterEach(async () => {
 
 /**
  * A running node whose service answers each `rad.read` through `read(message,
- * child)`, and a backend on it with a manual clock.
+ * child)`, and the script's other methods (`{ blob }`) as it says, and a
+ * backend on it with a manual clock.
  */
-async function running(read = () => {}, options = {}) {
-  const service = fakeRadicled({ read: (message, child) => read(message, child) });
+async function running(read = () => {}, { script = {}, ...options } = {}) {
+  const service = fakeRadicled({ ...script, read: (message, child) => read(message, child) });
   const node = new RadicledNode({
     home: path.join(root, 'home'),
     lockDir: path.join(root, 'locks'),
@@ -302,6 +303,96 @@ describe('callStream: a read passed through', () => {
     const idle = new RadicledNode({ home: root, lockDir: root, ownHome: root });
     const before = new RadicleServiceBackend({ node: () => idle });
     await expect(before.callStream('status', {})).rejects.toMatchObject({ code: 'stopped' });
+  });
+});
+
+describe('callBlob: a rad.blob passed through', () => {
+  const OID = 'e81bcde11d78341d64424c9269816bd85772d234';
+  const PARAMS = { rid: 'rad:z1', revision: 'a'.repeat(40), path: 'README.md' };
+  const blobs = (child) => child.sent('rad.blob');
+  const serving = (head, bytes) => ({ script: { blob: (m, c) => c.blobReply(m.id, head, bytes) } });
+
+  test('its head checked, the params as main sent them; its slot held until the body ends', async () => {
+    const bytes = Buffer.from('0123456789');
+    const { child, backend } = await running(
+      () => {},
+      serving({ oid: OID, size: 58, range: { start: 0, end: 9 } }, bytes)
+    );
+    const params = { ...PARAMS, range: { start: 0, end: 9 }, head_only: false };
+    const { head, body } = await backend.callBlob(params);
+    expect(head).toEqual({ oid: OID, size: 58, range: { start: 0, end: 9 }, length: 10 });
+    expect(blobs(child).map((m) => m.params)).toEqual([params]);
+    expect(backend.callers()).toEqual({ outstanding: 1, waiting: 0 });
+    expect(Buffer.from(await new Response(body).arrayBuffer())).toEqual(bytes);
+    expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
+    expect(backend.streamStats()).toEqual({ streams: 0, buffered: 0 });
+  });
+
+  test('a head with no body (head_only, or an empty blob): no stream, the slot back at once', async () => {
+    const { backend } = await running(() => {}, serving({ oid: OID, size: 58, range: null }));
+    const { head, body } = await backend.callBlob({ ...PARAMS, head_only: true });
+    expect(head).toEqual({ oid: OID, size: 58, range: null, length: 58 });
+    expect(body).toBeNull();
+    expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
+  });
+
+  test("the handlers' admitted reads take no slot", async () => {
+    const { backend } = await running(
+      () => {},
+      serving({ oid: OID, size: 3, range: null }, Buffer.from('abc'))
+    );
+    const { body } = await backend.callBlob(PARAMS, { admitted: true });
+    expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
+    expect(await new Response(body).text()).toBe('abc');
+  });
+
+  test.each([
+    ['an ID that is not a blob ID', { oid: 'HEAD', size: 3, range: null }, 'abc'],
+    ['a size past 64 MiB', { oid: OID, size: 64 * MIB + 1, range: null, body: false }, ''],
+    ['a range past the size', { oid: OID, size: 3, range: { start: 1, end: 3 } }, 'bc'],
+    ['a range backwards', { oid: OID, size: 3, range: { start: 2, end: 1 }, body: false }, ''],
+    ['no range member', { oid: OID, size: 3, range: undefined }, 'abc'],
+    ['a body it says is absent', { oid: OID, size: 3, range: null, body: false }, ''],
+    ['bytes it says follow, for an empty blob', { oid: OID, size: 0, range: null, body: true }, ''],
+  ])('a head unlike the design (%s): internal, and the slot back', async (_name, head, text) => {
+    const { backend } = await running(() => {}, serving(head, Buffer.from(text)));
+    await expect(backend.callBlob(PARAMS)).rejects.toMatchObject({
+      code: 'internal',
+      message: 'freedom-radicled answered a read without a blob head',
+    });
+    await settle();
+    expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
+    expect(backend.streamStats()).toEqual({ streams: 0, buffered: 0 });
+  });
+
+  test('a body other than its head says: errored internal', async () => {
+    for (const [size, text] of [
+      [5, 'abc'],
+      [3, 'abcdef'],
+    ]) {
+      const { backend } = await running(
+        () => {},
+        serving({ oid: OID, size, range: null, body: true }, Buffer.from(text))
+      );
+      const { body } = await backend.callBlob(PARAMS);
+      await expect(new Response(body).arrayBuffer()).rejects.toMatchObject({ code: 'internal' });
+      await settle();
+      expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
+    }
+  });
+
+  test("a refusal is the service's, its data kept: range_not_satisfiable's size", async () => {
+    const { backend } = await running(() => {}, {
+      script: {
+        blob: (m, c) =>
+          c.errorWithData(m.id, 'range_not_satisfiable', 'range not satisfiable', { size: 58 }),
+      },
+    });
+    await expect(backend.callBlob({ ...PARAMS, range: { start: 58 } })).rejects.toMatchObject({
+      code: 'range_not_satisfiable',
+      data: { size: 58 },
+    });
+    expect(backend.callers()).toEqual({ outstanding: 0, waiting: 0 });
   });
 });
 

@@ -24,7 +24,8 @@
  * `{ content_type: "application/json", bytes, body: true }`, then the JSON
  * as the window allows (`readHead` and `body` for the two apart). With
  * `{ says: false }` the head leaves `body` out and opens the stream all the
- * same, as freedom-radicled 0.1.0's did.
+ * same, as freedom-radicled 0.1.0's did. A `rad.blob` is answered with
+ * `blobReply`: its head, and its bytes when the head says they follow.
  *
  * **Network operations** (0008, Methods `rad.connect_seeds` and
  * `rad.clone`): a script's `clone` handler runs the clone. `child.claim(id)`
@@ -255,6 +256,28 @@ class FakeRadicledChild extends FakeIpfsdChild {
     const bytes = Buffer.isBuffer(text) ? text : Buffer.from(text);
     this.readHead(id, bytes.length, options);
     this.body(id, bytes);
+  }
+
+  /** `rad.blob`'s reply (0008, "The blob API"): the head `{ oid, size,
+   * binary, range, body }` (`binary` false and `range` null unless given),
+   * whose `body` (by default, whether `bytes` has any) opens the stream, then
+   * `bytes` as the window allows. */
+  blobReply(id, head, bytes = Buffer.alloc(0)) {
+    const opens = head.body ?? bytes.length > 0;
+    const result = { binary: false, range: null, ...head, body: opens };
+    this.sender.head(id, Buffer.from(JSON.stringify({ type: 'response', id, result })), opens);
+    this.pump();
+    if (opens) this.body(id, bytes);
+  }
+
+  /** An error reply with `data` (0008, Errors: `range_not_satisfiable`'s
+   * `{ size }`). */
+  errorWithData(id, code, message, data) {
+    this.sender.reply(
+      id,
+      Buffer.from(JSON.stringify({ type: 'response', id, error: { code, message, data } }))
+    );
+    this.pump();
   }
 
   /** A result; after the import's, the import process ends (exit 0). */

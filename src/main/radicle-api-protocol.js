@@ -21,6 +21,7 @@
  *   (root)              → repo metadata used by the viewer
  *   /tree/SHA[/path]    → tree entries at the requested commit
  *   /blob/SHA/path      → blob content at the requested commit
+ *   /raw/SHA/path       → the blob's bytes, with Range (the service only)
  *   /readme/SHA         → root readme blob
  *   /commits?parent=SHA → paginated commit history
  *   /commits/SHA        → commit metadata and structured diff
@@ -61,6 +62,21 @@
  * - **Texts:** `rad:` answers main's fixed text for each failure, never the
  *   service's message, as it does the add-on's (#1050); `radapi:` keeps the
  *   message for the internal viewer. Logs redact as before.
+ * - **The raw endpoint** (0008, "The blob API", "Ranges" and "The raw
+ *   endpoint"; deviation `blob-api`): `/raw/<commit>/<path>` is one
+ *   `rad.blob`, on `rad:` for pages and on `radapi:` for the viewer, after
+ *   the same checks as every other path. One `bytes=` range is sent as
+ *   `range`; several, or one that doesn't parse, are ignored, and the whole
+ *   blob is served. A `HEAD` sends `head_only` and answers as its `GET`
+ *   would, with no body, its failures included. The answer is 200, 206 with
+ *   `Content-Range`, or 416 with a `Content-Range` that gives the blob's
+ *   size; a blob over 64 MiB is 413 (deviation `size-caps`). Its bytes are
+ *   served under `nosniff` and `Content-Security-Policy: sandbox`, typed
+ *   from the path's extension by an allowlist of inert types
+ *   (RAW_MEDIA_TYPES and RAW_TEXT_EXTENSIONS), anything else
+ *   `application/octet-stream`: never HTML, SVG, XML or JavaScript. The
+ *   add-on has no `rad.blob`, so on it `/raw/` is an unsupported endpoint
+ *   (404), as before.
  */
 
 const log = require('./logger');
@@ -358,6 +374,8 @@ function pageParams(searchParams) {
  * @param {object|null} [options.admitted] - on the service, the request's
  *   admission (`serveAdmitted`'s `{ signal, stream }`), when its handler
  *   took it; without it, the read takes its own
+ * @param {string|null} [options.range] - the request's Range header, which
+ *   `/raw/` reads on the service
  * @returns {Promise<Response>}
  */
 async function serveRepoApi(
@@ -371,13 +389,14 @@ async function serveRepoApi(
     signal = null,
     partition = null,
     admitted = null,
+    range = null,
   } = {}
 ) {
   if (onService()) {
     // The service streams what it serves, and caps it itself (deviation
     // `size-caps`): `maxResponseChars` is the add-on's bound.
     const serve = (life) =>
-      serveServiceRepoApi(rid, apiPath, { method, search, allowPrivate, ...life });
+      serveServiceRepoApi(rid, apiPath, { method, search, allowPrivate, range, ...life });
     if (admitted) return serve(admitted);
     return serveAdmitted({ partition, signal }, serve, (status, message) =>
       json({ error: message }, status, { cors: !allowPrivate })
@@ -578,6 +597,7 @@ const SERVICE_PUBLIC_ERRORS = Object.freeze({
     error: "the repository is quarantined: Radicle couldn't repair it",
   }),
   timedOut: Object.freeze({ error: READ_TIMED_OUT }),
+  unsatisfiable: Object.freeze({ error: 'range not satisfiable' }),
 });
 
 /**
@@ -646,8 +666,10 @@ async function serveAdmitted(
 /**
  * The `rad.read` behind a repository path (0008, "JSON results": every
  * export's route), as serveBoundedRepoApi reads the add-on for it:
- * `{ op, args }`, or the refusal main answers itself, `{ refusal: { status,
- * body }, early }` (`early`: answered as is, even to a HEAD, as today).
+ * `{ op, args }`; for `/raw/`, the `rad.blob` target, `{ blob: { rid,
+ * revision, path } }`; or the refusal main answers itself, `{ refusal: {
+ * status, body }, early }` (`early`: answered as is, even to a HEAD, as
+ * today).
  */
 function serviceRoute(rid, parts, search) {
   const section = parts[0] || null;
@@ -674,6 +696,12 @@ function serviceRoute(rid, parts, search) {
       const blobPath = parts.slice(2).join('/');
       return REVISION_RE.test(revision || '') && blobPath
         ? { op: 'blob_at', args: { rid, revision, path: blobPath } }
+        : refuse('missing path');
+    }
+    case 'raw': {
+      const blobPath = parts.slice(2).join('/');
+      return REVISION_RE.test(revision || '') && blobPath
+        ? { blob: { rid, revision, path: blobPath } }
         : refuse('missing path');
     }
     case 'readme':
@@ -720,7 +748,8 @@ function serviceRoute(rid, parts, search) {
  * service's codes: `radicle_unavailable` and `stale_generation`, the
  * service not there to read from or its generation ended under the read
  * (radicled-client.js), are 503; `timeout`, main's watchdog past the read's
- * deadline to its head (0008, Deadlines), is 504.
+ * deadline to its head (0008, Deadlines), is 504. `rad.blob`'s
+ * `range_not_satisfiable` is 416 (0008, Ranges).
  */
 function serviceStatus(err) {
   switch (err?.code) {
@@ -730,6 +759,8 @@ function serviceStatus(err) {
       return 400;
     case 'too_large':
       return 413;
+    case 'range_not_satisfiable':
+      return 416;
     case 'busy':
     case 'stopped':
     case 'quarantined':
@@ -759,6 +790,8 @@ function servicePublicError(err, status, op) {
         : PUBLIC_READ_ERRORS.missing;
     case 413:
       return PUBLIC_READ_ERRORS.tooLarge;
+    case 416:
+      return SERVICE_PUBLIC_ERRORS.unsatisfiable;
     case 503:
       if (err?.code === 'busy') return SERVICE_PUBLIC_ERRORS.busy;
       if (err?.code === 'cancelled') return PUBLIC_READ_ERRORS.cancelled;
@@ -772,14 +805,26 @@ function servicePublicError(err, status, op) {
   }
 }
 
-/** serveRepoApi on the service: one `rad.read`, streamed (see the module's
- * doc). `signal` and `stream` are the request's admission's. */
-async function serveServiceRepoApi(rid, apiPath, { method, search, allowPrivate, signal, stream }) {
+/** serveRepoApi on the service: one `rad.read`, streamed, or for `/raw/`
+ * one `rad.blob` (see the module's doc). `signal` and `stream` are the
+ * request's admission's. */
+async function serveServiceRepoApi(
+  rid,
+  apiPath,
+  { method, search, allowPrivate, range = null, signal, stream }
+) {
   const cors = !allowPrivate;
-  const reply = (payload, status = 200) => json(payload, status, { cors });
+  // `/raw/`'s HEAD answers as its GET would, with no body: its refusals too.
+  let bodiless = false;
+  const reply = (payload, status = 200, headers = {}) => {
+    const response = json(payload, status, { cors });
+    for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+    return bodiless ? withoutBody(response) : response;
+  };
   if (!RID_RE.test(rid)) return reply({ error: 'invalid RID' }, 400);
   const parts = decodeRepoApiPath(apiPath);
   if (!parts) return reply({ error: 'invalid repository path' }, 400);
+  bodiless = method === 'HEAD' && parts[0] === 'raw';
   const route = serviceRoute(rid, parts, search);
   const read = { signal, admitted: true };
   // The op being read, for its failure's text.
@@ -805,6 +850,10 @@ async function serveServiceRepoApi(rid, apiPath, { method, search, allowPrivate,
       const refused = reply(route.refusal.body, route.refusal.status);
       return method === 'HEAD' && !route.early ? withoutBody(refused) : refused;
     }
+    if (route.blob) {
+      reading = 'rad.blob';
+      return await serveServiceRaw(route.blob, { method, range, cors, signal, stream, reply });
+    }
     reading = route.op;
     const { body } = await embedded.callStream(route.op, route.args, read);
     // The page has gone, or its session closed, as the head came.
@@ -816,7 +865,8 @@ async function serveServiceRepoApi(rid, apiPath, { method, search, allowPrivate,
     return new Response(stream(body), { status: 200, headers: jsonHeaders(cors) });
   } catch (err) {
     const status = serviceStatus(err);
-    if (status !== 404 && err?.code !== 'cancelled') {
+    // A range past the blob is the page's to ask, not a failure to log.
+    if (status !== 404 && status !== 416 && err?.code !== 'cancelled') {
       // PRIVATE MODE GUARD: as on the add-on — the RID, the repo path and
       // the error text never reach main.log for a private window.
       log.warn(
@@ -833,8 +883,187 @@ async function serveServiceRepoApi(rid, apiPath, { method, search, allowPrivate,
     if (err?.code === 'cancelled') body = PUBLIC_READ_ERRORS.cancelled;
     else if (allowPrivate) body = { error: err?.message };
     else body = servicePublicError(err, status, reading);
-    return reply(body, status);
+    // 0008, Ranges: an unsatisfiable range names the blob's size.
+    const size = err?.data?.size;
+    const unsatisfiable =
+      status === 416 && Number.isSafeInteger(size) && size >= 0
+        ? { 'Content-Range': `bytes */${size}` }
+        : {};
+    return reply(body, status, unsatisfiable);
   }
+}
+
+/**
+ * The inert media types the raw endpoint serves as themselves, by
+ * extension (0008, "The raw endpoint"): PNG, JPEG, GIF, WebP, AVIF and ICO
+ * images, and MP4, WebM and Ogg media.
+ */
+const RAW_MEDIA_TYPES = Object.freeze({
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  avif: 'image/avif',
+  ico: 'image/x-icon',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  ogv: 'video/ogg',
+});
+
+/**
+ * The extensions the raw endpoint serves as `text/plain; charset=utf-8`:
+ * those the viewer highlights (rad-browser.js's `getLanguage`), and `txt`,
+ * which it shows as text. HTML, SVG, XML and JavaScript among them are
+ * served as plain text, never as themselves.
+ */
+const RAW_TEXT_EXTENSIONS = new Set([
+  'txt',
+  'rs',
+  'js',
+  'ts',
+  'jsx',
+  'tsx',
+  'py',
+  'rb',
+  'go',
+  'c',
+  'h',
+  'cpp',
+  'hpp',
+  'cc',
+  'cs',
+  'java',
+  'kt',
+  'swift',
+  'sh',
+  'bash',
+  'zsh',
+  'fish',
+  'ps1',
+  'html',
+  'htm',
+  'xml',
+  'svg',
+  'css',
+  'scss',
+  'less',
+  'sass',
+  'json',
+  'yaml',
+  'yml',
+  'toml',
+  'ini',
+  'cfg',
+  'conf',
+  'md',
+  'markdown',
+  'sql',
+  'graphql',
+  'gql',
+  'dockerfile',
+  'makefile',
+  'r',
+  'lua',
+  'perl',
+  'pl',
+  'php',
+  'ex',
+  'exs',
+  'erl',
+  'hs',
+  'ml',
+  'mli',
+  'clj',
+  'vim',
+  'diff',
+  'patch',
+  'tf',
+  'nix',
+  'zig',
+  'proto',
+  'cmake',
+]);
+
+const RAW_TEXT_TYPE = 'text/plain; charset=utf-8';
+const RAW_OTHER_TYPE = 'application/octet-stream';
+
+/** A raw blob's Content-Type, from its file name's extension as the viewer
+ * reads it (the text after the last dot, or the whole name). */
+function rawContentType(blobPath) {
+  const extension = String(blobPath).split('/').pop().split('.').pop().toLowerCase();
+  if (Object.hasOwn(RAW_MEDIA_TYPES, extension)) return RAW_MEDIA_TYPES[extension];
+  return RAW_TEXT_EXTENSIONS.has(extension) ? RAW_TEXT_TYPE : RAW_OTHER_TYPE;
+}
+
+const RANGE_HEADER_RE = /^bytes=([0-9]*)-([0-9]*)$/i;
+const MAX_POSITION = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * `rad.blob`'s `range` for a Range header (0008, Ranges): one `bytes=`
+ * range, `{ start, end }`, `{ start }` or `{ suffix }`, or null for none,
+ * several, or one that doesn't parse (`bytes=5-2` among them), which are
+ * ignored and served as the whole blob. A position past 2^53 - 1 is
+ * clamped to it: no blob is that long, so the answer is the same.
+ */
+function rangeParam(header) {
+  if (typeof header !== 'string') return null;
+  const match = RANGE_HEADER_RE.exec(header.trim());
+  if (!match) return null;
+  const [, first, last] = match;
+  const position = (digits) => {
+    const value = BigInt(digits);
+    return Number(value > MAX_POSITION ? MAX_POSITION : value);
+  };
+  if (first === '') return last === '' ? null : { suffix: position(last) };
+  if (last === '') return { start: position(first) };
+  if (BigInt(first) > BigInt(last)) return null;
+  return { start: position(first), end: position(last) };
+}
+
+/** The raw endpoint's headers for a `rad.blob` head (0008, "The raw
+ * endpoint"); `rad:`'s are readable by any page, as its other answers. */
+function rawHeaders(head, blobPath, cors) {
+  const headers = {
+    'Content-Type': rawContentType(blobPath),
+    'Content-Length': String(head.length),
+    'Accept-Ranges': 'bytes',
+    ETag: `"${head.oid}"`,
+    // The URL pins a commit, so its bytes never change.
+    'Cache-Control': 'public, max-age=31536000, immutable',
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': 'sandbox',
+  };
+  if (head.range) {
+    headers['Content-Range'] = `bytes ${head.range.start}-${head.range.end}/${head.size}`;
+  }
+  if (cors) {
+    headers['Access-Control-Allow-Origin'] = '*';
+    headers['Access-Control-Expose-Headers'] = 'Accept-Ranges, Content-Range, ETag';
+  }
+  return headers;
+}
+
+/**
+ * `/raw/<commit>/<path>` on the service: one `rad.blob` for `target`, its
+ * range from the request's Range header, `head_only` for a HEAD; 200, or
+ * 206 for a range, with the blob's bytes (see the module's doc). Its
+ * failures are serveServiceRepoApi's to answer.
+ */
+async function serveServiceRaw(target, { method, range, cors, signal, stream, reply }) {
+  const params = { ...target, range: rangeParam(range), head_only: method === 'HEAD' };
+  const { head, body } = await embedded.callBlob(params, { signal, admitted: true });
+  // The page has gone, or its session closed, as the head came.
+  if (signal?.aborted) {
+    body?.cancel().catch(() => {});
+    return reply(PUBLIC_READ_ERRORS.cancelled, 503);
+  }
+  return new Response(body ? stream(body) : null, {
+    status: head.range ? 206 : 200,
+    headers: rawHeaders(head, target.path, cors),
+  });
 }
 
 /** serveNodeApi on the service: `/` from the collected `status`, and
@@ -993,7 +1222,7 @@ async function handleRadicleApiRequest(request, { partition = null } = {}) {
     search: url.searchParams,
     allowPrivate: true,
     // The add-on's reads take no admission and no abort here, as before.
-    ...(onService() ? { signal, partition } : {}),
+    ...(onService() ? { signal, partition, range: request.headers?.get?.('range') ?? null } : {}),
   });
 }
 
@@ -1045,4 +1274,9 @@ module.exports = {
   serveAdmitted,
   serviceRoute,
   BODY_IDLE_MS,
+  // The raw endpoint's.
+  rangeParam,
+  rawContentType,
+  RAW_MEDIA_TYPES,
+  RAW_TEXT_EXTENSIONS,
 };

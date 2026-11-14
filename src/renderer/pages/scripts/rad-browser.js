@@ -16,6 +16,7 @@ let pinnedRevision = false; // true when the URL selects a historical commit
 let projectName = ''; // Repo name
 let currentView = null; // 'root' | 'tree' | 'blob'
 let currentPath = ''; // Current path within repo
+let previewUrl = null; // The object URL of the image the file view shows
 
 // DOM elements
 const displayRid = document.getElementById('display-rid');
@@ -361,8 +362,42 @@ async function fetchTree(sha, path) {
 
 async function fetchBlob(sha, path) {
   const res = await fetch(`${repoApiRoot}/blob/${sha}/${encodePathSegments(path)}`);
+  // Too large to show as text: its raw bytes can still be downloaded.
+  if (res.status === 413) return { name: path.split('/').pop(), tooLarge: true };
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
+}
+
+// A file's bytes at a commit, from the raw endpoint.
+function rawFileUrl(sha, path) {
+  return `${repoApiRoot}/raw/${sha}/${encodePathSegments(path)}`;
+}
+
+// The extensions the raw endpoint serves as images, which the file view
+// shows; every other binary file is offered as a download only.
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'ico']);
+
+function isImageFile(name) {
+  return IMAGE_EXTENSIONS.has(String(name).split('.').pop().toLowerCase());
+}
+
+async function fetchRawFile(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.blob();
+}
+
+// The viewer saves a file from its own bytes, fetched here: a radapi: URL
+// is served only to this page's requests.
+async function downloadRawFile(url, name) {
+  const objectUrl = URL.createObjectURL(await fetchRawFile(url));
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 async function fetchReadme(sha) {
@@ -674,25 +709,73 @@ function renderReadme(blob) {
   }
 }
 
-function renderBlob(blob) {
+function downloadLink(url, name) {
+  return `<a class="file-download" href="${escapeHtml(url)}" download="${escapeHtml(name)}">Download</a>`;
+}
+
+function wireDownloadLink() {
+  const link = fileViewerEl.querySelector('.file-download');
+  if (!link) return;
+  let busy = false;
+  link.addEventListener('click', async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    link.textContent = 'Downloading…';
+    try {
+      await downloadRawFile(link.getAttribute('href'), link.getAttribute('download'));
+      link.textContent = 'Download';
+    } catch (err) {
+      console.error('Error downloading file:', err);
+      link.textContent = 'Download failed';
+    } finally {
+      busy = false;
+    }
+  });
+}
+
+async function showImage(url, name) {
+  const holder = fileViewerEl.querySelector('.file-viewer-image');
+  try {
+    const bytes = await fetchRawFile(url);
+    // The view moved on while the image loaded.
+    if (!holder.isConnected) return;
+    previewUrl = URL.createObjectURL(bytes);
+    const image = document.createElement('img');
+    image.alt = name;
+    image.src = previewUrl;
+    holder.replaceChildren(image);
+  } catch (err) {
+    console.error('Error loading image:', err);
+    if (holder.isConnected) holder.textContent = 'Could not load image';
+  }
+}
+
+function renderBlob(blob, rawUrl) {
   if (!blob) {
     fileViewerEl.innerHTML = '<div class="empty-state"><p>Could not load file</p></div>';
     return;
   }
 
-  if (blob.binary) {
+  const name = blob.name || '';
+  if (blob.binary || blob.tooLarge) {
+    const image = !blob.tooLarge && isImageFile(name);
+    let body = '<div class="file-viewer-image"></div>';
+    if (blob.tooLarge) body = '<div class="file-viewer-binary">Too large to show here</div>';
+    else if (!image) body = '<div class="file-viewer-binary">Binary file</div>';
     fileViewerEl.innerHTML = `
         <div class="file-viewer">
           <div class="file-viewer-header">
             <div class="file-info">
-              <span>${escapeHtml(blob.name || '')}</span>
+              <span>${escapeHtml(name)}</span>
             </div>
+            ${downloadLink(rawUrl, name)}
           </div>
-          <div class="file-viewer-binary">
-            Binary file not shown.
-          </div>
+          ${body}
         </div>
       `;
+    wireDownloadLink();
+    if (image) showImage(rawUrl, name);
     return;
   }
 
@@ -704,16 +787,17 @@ function renderBlob(blob) {
   }
   const lineCount = lines.length;
   const byteSize = new TextEncoder().encode(content).length;
-  const lang = getLanguage(blob.name || '');
+  const lang = getLanguage(name);
 
   let html = `
       <div class="file-viewer">
         <div class="file-viewer-header">
           <div class="file-info">
-            <span>${escapeHtml(blob.name || '')}</span>
+            <span>${escapeHtml(name)}</span>
             <span>${lineCount} line${lineCount !== 1 ? 's' : ''}</span>
             <span>${formatBytes(byteSize)}</span>
           </div>
+          ${downloadLink(rawUrl, name)}
         </div>
     `;
 
@@ -744,6 +828,7 @@ function renderBlob(blob) {
 
   html += '</div>';
   fileViewerEl.innerHTML = html;
+  wireDownloadLink();
 }
 
 // =============================================
@@ -790,6 +875,10 @@ async function renderView(viewType, viewPath) {
   fileViewerEl.innerHTML = '';
   readmeEl.innerHTML = '';
   lastCommitEl.classList.add('hidden');
+  if (previewUrl) {
+    URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
 
   if (viewType === 'root') {
     // Root view: stats + tree + readme
@@ -836,7 +925,7 @@ async function renderView(viewType, viewPath) {
         '<div class="loading-inline"><div class="spinner"></div><span>Loading file…</span></div>';
 
       const blob = await fetchBlob(headSha, viewPath);
-      renderBlob(blob);
+      renderBlob(blob, rawFileUrl(headSha, viewPath));
     } catch (err) {
       console.error('Error loading blob:', err);
       fileViewerEl.innerHTML = '<div class="empty-state"><p>Failed to load file</p></div>';

@@ -44,6 +44,11 @@
  *    the service `cancel`, before the head or during the body. The service
  *    bounds each read (60 s to its head, its caps), so main's
  *    MAX_RESPONSE_CHARS and run timeout are the add-on's only.
+ *  - Raw files (0008, "The raw endpoint"; the service only):
+ *    `rad://<rid>/raw/<commit>/<path>` serves a blob's bytes, with one
+ *    `bytes=` Range, under `nosniff` and `Content-Security-Policy:
+ *    sandbox`, typed by an allowlist of inert types
+ *    (radicle-api-protocol.js's `rawContentType`).
  */
 
 const { randomUUID } = require('node:crypto');
@@ -282,7 +287,13 @@ async function handleRadRequest(
       return await serveAdmitted(
         { partition, signal, onEnd: release },
         (admitted) =>
-          serveRepoApi(built.rid, built.path, { method, search: built.search, admitted }),
+          serveRepoApi(built.rid, built.path, {
+            method,
+            search: built.search,
+            admitted,
+            // `/raw/` reads one `bytes=` range (0008, Ranges).
+            range: request.headers?.get?.('range') ?? null,
+          }),
         jsonErrorResponse
       );
     } catch (err) {

@@ -1,0 +1,2 @@
+- Images and file downloads in the Radicle repository viewer ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Radicle pages can load raw repository files up to 64 MiB, never as runnable content

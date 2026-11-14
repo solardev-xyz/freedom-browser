@@ -34,7 +34,9 @@
  * or the reference's body for the other ops): `loadServiceReadsMain`, with
  * `runServiceNodeInfo` for `node_info`'s `connections` (B7), and
  * `runServiceRead` and `runServiceBlob` for the radapi handlers' answers
- * (B8); and `loadServiceNetworkMain`, a fake service node whose
+ * (B8), and `runServiceRaw` for the raw endpoint's, over the same node's
+ * `rad.blob` answering each `radicle-blob.json` case's `expect` (B17); and
+ * `loadServiceNetworkMain`, a fake service node whose
  * `rad.connect_seeds` and `rad.clone` answer what each `radicle-network.json`
  * case scripts, the clone's progress as the texts of its `rad.progress`
  * events (B9: `runServiceReport`, `runServiceProgress`, `runServiceQueue`
@@ -319,7 +321,16 @@ function readReply(text) {
  * FREEDOM_RADICLE_BACKEND=service.
  */
 function loadServiceReadsMain() {
-  const world = { script: [], calls: [], warnings: [], infos: [], unscripted: [], reads: {} };
+  const world = {
+    script: [],
+    calls: [],
+    warnings: [],
+    infos: [],
+    unscripted: [],
+    reads: {},
+    blob: null,
+    blobs: [],
+  };
   const addon = scriptedAddon(world, { reuse: true });
   const log = {
     info() {},
@@ -345,6 +356,20 @@ function loadServiceReadsMain() {
       }
       if (answer.error) throw new CoreError(answer.error.code ?? 'failed', answer.error.message);
       return readReply(answer.body);
+    },
+    async blob(params) {
+      world.blobs.push(params);
+      const answer = world.blob;
+      if (!answer) {
+        world.unscripted.push({ method: 'rad.blob', params });
+        throw new CoreError('failed', 'unscripted rad.blob');
+      }
+      const { error } = answer;
+      if (error) throw new CoreError(error.code, error.message ?? error.code, error.data);
+      return {
+        result: answer.head,
+        body: answer.head.body ? chunkedStream(blobBody(answer.body)) : null,
+      };
     },
   };
   const manager = loadWithInternals(
@@ -439,6 +464,61 @@ async function runServiceBlob(main, answer, filePath) {
     warnings: world.warnings,
     unscripted: world.unscripted,
   });
+}
+
+/** A `radicle-blob.json` body's bytes: `hex`, or `fill` (one byte, in hex)
+ * repeated `len` times. */
+function blobBody(body) {
+  if (typeof body?.hex === 'string') return Buffer.from(body.hex, 'hex');
+  return Buffer.alloc(body.len, Number.parseInt(body.fill, 16));
+}
+
+/** `bytes` as a byte stream in the service's 64 KiB frames. */
+function chunkedStream(bytes, chunk = 64 * 1024) {
+  let offset = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (offset >= bytes.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.subarray(offset, offset + chunk));
+      offset += chunk;
+    },
+  });
+}
+
+/**
+ * A `radicle-blob.json` case's or error's raw answer on the service (B17):
+ * main's `/raw/<rev>/<path>` for the case's method and Range header, over
+ * the fake node's `rad.blob` answering the case's `expect`. Its `http` as
+ * the vectors write it (status, Content-Length and Content-Range), its
+ * body's bytes (null for none), the `rad.blob` params main sent, and what it
+ * logged.
+ */
+async function runServiceRaw(main, c) {
+  const { world, protocol } = main;
+  resetWorld(world, []);
+  world.blob = c.expect;
+  world.blobs = [];
+  const response = await protocol.serveRepoApi(RID, `/raw/${REV}/${c.path}`, {
+    method: c.method,
+    allowPrivate: true,
+    range: c.header,
+  });
+  const headers = {};
+  for (const name of ['content-length', 'content-range']) {
+    const value = response.headers.get(name);
+    if (value !== null) headers[name] = value;
+  }
+  const body = response.body ? Buffer.from(await response.arrayBuffer()) : null;
+  return {
+    http: { status: response.status, headers },
+    body,
+    blobs: asJson(world.blobs),
+    warnings: world.warnings,
+    unscripted: world.unscripted,
+  };
 }
 
 /** The add-on's `blobAt` text for a `radicle-blob.json` file (libradicle's
@@ -1102,6 +1182,8 @@ module.exports = {
   runServiceNodeInfo,
   runServiceRead,
   runServiceBlob,
+  runServiceRaw,
+  blobBody,
   serviceAnswer,
   TOO_LARGE_TEXT,
   SERVICE_LIBRADICLE,

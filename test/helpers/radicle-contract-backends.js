@@ -708,6 +708,8 @@ const BACKENDS = {
       // Its test needs the scriptedClone hook (plan C4), which no release has.
       'progress-summary',
       'import-in-process',
+      // `/raw/` on rad.blob (plan B17; freedom-radicled 0.1.3, core #277).
+      'blob-api',
     ],
     lacks: ['parsed-reads'],
     hooks: [],
