@@ -172,17 +172,23 @@ const guestOf = (win, url) =>
   }, url);
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 
-// A connection, written in main as main writes one (PRQ-4).
+// A connection, written as main writes one (PRQ-4): by the identity core,
+// under the page's PageContext (design 0012, APB-2).
 const grant = (electronApp, key, walletIndex = 0) =>
-  electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, args.walletIndex, 100);
-  }, { root: repoRoot, key, walletIndex });
-const ruleCovers = (electronApp, key) =>
   electronApp.evaluate((_electron, args) =>
     process.mainModule
       .require(`${args.root}/src/main/wallet/dapp-permissions`)
-      .isTransactionAutoApproved(args.key, args.to, args.selector, 100, '0'),
-  { root: repoRoot, key, to: CONTRACT, selector: SELECTOR });
+      .grantPermission(args.key, args.walletIndex, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
+  { root: repoRoot, key, walletIndex });
+// Whether the site holds Q9's limited contract rule for the call, as the
+// core, which writes it as it signs a flagged send (APB-2), holds it.
+const ruleCovers = (electronApp, key) =>
+  electronApp.evaluate(async (_electron, args) => {
+    const { vaultBackend } = process.mainModule.require(`${args.root}/src/main/core/vault-backend`);
+    const { records } = await vaultBackend.approval.grants({ store: 'dapp', key: args.key });
+    const rules = records[0]?.autoApprove?.limited?.transactions || [];
+    return rules.some((rule) => rule.to === args.to.toLowerCase() && rule.selector === args.selector && rule.chainId === 100);
+  }, { root: repoRoot, key, to: CONTRACT, selector: SELECTOR });
 
 // No chain: main's quote, and what main hands its signer, replaced in main.
 // The stub runs main's guard after the "signature", as the transaction
@@ -334,7 +340,7 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   ]);
   expect(await ruleCovers(electronApp, KEY_A)).toBe(true);
 
-  // The rule, which main wrote and the core reads: the same call sends with
+  // The rule, which the core wrote as it signed: the same call sends with
   // no prompt and no token, its fee judged on the core's own evidence.
   await feeReference(electronApp, 'core');
   const promptsBefore = (await promptsOf(electronApp, 'eth.send')).length;

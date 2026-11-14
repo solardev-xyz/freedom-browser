@@ -29,9 +29,10 @@
  *      endpoint's word, or is above the threshold goes to the prompt
  *      instead. The identity core reads the rule (design 0012, APB-1,
  *      `approval.check`), for the requester's key under the request's
- *      PageContext, from the file main still writes, and judges the fee on
- *      its own evidence, so main quotes the send first and asks the core
- *      about the send it would sign.
+ *      PageContext, from the dApp file the core writes (APB-2: only Q9's
+ *      limited rule answers, never today's), and judges the fee on its own
+ *      evidence, so main quotes the send first and asks the core about the
+ *      send it would sign.
  *   5. The rule answers with no prompt, but a locked vault's unlock
  *      (`vault.unlock`), after which the send is quoted and judged again.
  *      Just before the send, after every other wait main makes (the quote,
@@ -57,10 +58,11 @@
  *      approval, bound to the prompt's handle and the requester's key, with
  *      the transaction main holds, and the dispatcher spends it in the same
  *      run as the last checks, just before the send. "Always allow", one of
- *      the prompt's choices, is minted into the token (`remember`), and main
- *      records the contract rule for the requester's key once the payment is
- *      sent: the core, which signs a vault account's send, writes no rule
- *      until the dApp file moves to it (APB-2), and says so (`not_moved`).
+ *      the prompt's choices, is minted into the token (`remember`), and the
+ *      core writes the contract rule for the requester's key as it signs
+ *      (Q9's limited rule, which clears today's for the same call in the
+ *      same write), and says so in its reply; main writes none (APB-2). It
+ *      is offered only for a vault account's send, the one the core signs.
  *
  * After the signer's wait (a Ledger, the core), and before the signed bytes
  * are recorded or sent, main checks the name, the grant (or the rule and
@@ -95,7 +97,7 @@
  * page gets the keyless answer.
  */
 
-const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED, mainWritesRule } = require('../wallet/signing-confirmation');
+const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED } = require('../wallet/signing-confirmation');
 const { guestInCustody } = require('./page-signing');
 
 // The core's refusal of a mint for its fee check (`signing-confirmation.js`),
@@ -173,6 +175,33 @@ function notConfirmed(reason) {
 /** The 4-byte function selector of `data`, or null for a plain transfer. */
 function selectorOf(data) {
   return typeof data === 'string' && /^0x[0-9a-fA-F]{8}/.test(data) ? data.slice(0, 10).toLowerCase() : null;
+}
+
+/**
+ * Whether "Always allow" can be offered for a send: a contract call a vault
+ * account sends, the one the identity core signs and writes the rule for as
+ * it signs (design 0012, APB-2). A device's send (a Ledger, a phone) is
+ * signed outside the core, which writes no rule for it, and main writes the
+ * dApp file nowhere; a Safe's goes to its board.
+ */
+function rememberable(ctx) {
+  return !ctx.safe && ctx.account?.type === 'mnemonic' && Boolean(selectorOf(ctx.tx?.data));
+}
+
+/**
+ * What the core said of the contract rule a flagged send asked for (the
+ * `sign.transaction` reply's `rule`, design 0012, API), logged as today's
+ * rule writes are: written; written but not durable; or not written, with
+ * the core's reason.
+ */
+function reportRule(key, rule) {
+  if (rule?.added === true) {
+    if (rule.durable === false) {
+      console.warn(`[PageSends] contract rule saved for ${key}, but it may not survive a power loss yet`);
+    }
+    return;
+  }
+  console.error(`[PageSends] contract rule not saved for ${key}: ${rule?.reason || 'no reply'}`);
 }
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -354,8 +383,6 @@ function defaultSendDependencies() {
     // The site's standing rule, as the identity core reads it (design 0012).
     checkStanding: (page, request) => require('../wallet/signing-confirmation').checkStanding(page, request),
     rulePaused: (key) => require('../wallet/auto-approve-pause').transactionAutoApprovePaused(key),
-    addTransactionAutoApprove: (key, to, selector, chainId, value) =>
-      require('../wallet/dapp-permissions').addTransactionAutoApprove(key, to, selector, chainId, value),
     estimateGas: (request) => require('../wallet/transaction-service').estimateGas(request),
     getGasPrices: (chainId) => require('../wallet/transaction-service').getGasPrices(chainId),
     checkFees: (tx) => require('../wallet/fee-check').checkFees(tx),
@@ -380,8 +407,9 @@ function defaultSendDependencies() {
 
 /**
  * @param {object} shared from page-ethereum.js: `getPermission`,
- *   `updateLastUsed`, `walletList`, `chainIdOf`, `chainName`, `networks` and
- *   `agentAnswer`.
+ *   `updateLastUsed` (`(context, chainId?)`: the request's last use, written
+ *   by the core under its PageContext), `walletList`, `chainIdOf`,
+ *   `chainName`, `networks` and `agentAnswer`.
  * @param {object} [deps] injected for tests; each defaults to main's own.
  * @returns {Record<string, (context: object) => Promise<object>>} keyed
  *   `ethereum:<method>`.
@@ -534,8 +562,10 @@ function createSendDispatchers(shared, deps = {}) {
       feeCheck: verdict ? { ...verdict } : null,
       // Main asked again at the press: the fee is newly above the threshold.
       feeAskAgain: askAgain === true,
-      // "Always allow" is offered for a contract call, never a Safe's.
-      alwaysAllow: !ctx.safe && Boolean(selectorOf(ctx.tx.data)),
+      // "Always allow" is offered for a contract call a vault account sends:
+      // the core writes its rule as it signs (design 0012, APB-2), and it
+      // signs no device's send and no Safe's.
+      alwaysAllow: rememberable(ctx),
     };
   }
 
@@ -562,8 +592,10 @@ function createSendDispatchers(shared, deps = {}) {
     // From here to the write, one run: no other check can end the binding.
     if (!context.holdsKey()) return false;
     if (write && grantExposes(context.requester.key, ctx.walletIndex)) {
+      // Sent to the identity core in this run; the payment stands whatever
+      // becomes of it (a failed write is logged where it is made).
       try {
-        write();
+        Promise.resolve(write()).catch(() => {});
       } catch {
         // The payment stands; the write didn't happen.
       }
@@ -698,7 +730,7 @@ function createSendDispatchers(shared, deps = {}) {
     }
     // The site's last use, only while the name still answers. The hash is
     // the page's: the payment has gone out.
-    await recheckThen(context, ctx, () => updateLastUsed(requester.key));
+    await recheckThen(context, ctx, () => updateLastUsed(context));
     return { result: sent.hash };
   }
 
@@ -725,11 +757,10 @@ function createSendDispatchers(shared, deps = {}) {
     // evidence moved past main's check at the press (another request
     // refreshed it, or it aged), and the user is asked again with it.
     let feeAskAgain = null;
-    // "Always allow" for a contract call: minted into the token, and what
-    // the core said of the rule as it signed (a vault account's send).
-    const selector = selectorOf(tx.data);
-    const remember = choices.alwaysAllow === true && Boolean(selector);
-    let ruleHeard = false;
+    // "Always allow" for a contract call a vault account sends: minted into
+    // the token, and the core writes the rule as it signs (design 0012,
+    // APB-2), saying what became of it.
+    const remember = choices.alwaysAllow === true && rememberable(ctx);
     let coreRule = null;
     const mintedAndHeld = (run) =>
       stillHeld(null)(async () => {
@@ -767,7 +798,6 @@ function createSendDispatchers(shared, deps = {}) {
           authorized: () => ({
             confirmation,
             onRule: (rule) => {
-              ruleHeard = true;
               coreRule = rule;
             },
           }),
@@ -782,20 +812,13 @@ function createSendDispatchers(shared, deps = {}) {
       // Spent at its presentation; one a send ended before is burnt.
       if (confirmation) d.discardToken(confirmation.token);
     }
-    // "Always allow": the contract rule, for the requester's key, from the
-    // transaction the user just confirmed, so it covers only a (contract,
-    // selector, chain) the user saw, with no more value than this send's;
-    // written only while the name still answers after the send's wait. The
-    // hash is the page's either way: the payment has gone out. Main writes
-    // it, as today, when the core that signed a vault account's send wrote
-    // none because the dApp file hasn't moved to it (`not_moved`), or when a
-    // device signed (design 0012, The model).
-    const coreSigned = ruleHeard || ctx.account?.type === 'mnemonic';
-    if (remember && mainWritesRule(coreSigned, coreRule)) {
-      await recheckThen(context, ctx, () =>
-        d.addTransactionAutoApprove(requester.key, tx.to, selector, ctx.chainId, tx.value)
-      );
-    }
+    // "Always allow": the core wrote the contract rule as it signed, for the
+    // requester's key, from the transaction the user just confirmed, so it
+    // covers only a (contract, selector, chain) the user saw, with no more
+    // value than this send's (design 0012, APB-2). Main writes none; it
+    // reports what the core said. The hash is the page's either way: the
+    // payment has gone out.
+    if (remember) reportRule(requester.key, coreRule);
     return { result: sent.hash };
   }
 

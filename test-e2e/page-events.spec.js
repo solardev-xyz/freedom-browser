@@ -334,11 +334,14 @@ const mainModule = (electronApp, file, method, ...args) =>
   electronApp.evaluate((_electron, a) => {
     return process.mainModule.require(`${a.root}/${a.file}`)[a.method](...a.args);
   }, { root: repoRoot, file, method, args });
+// Written by the identity core, under the page's PageContext (design 0012,
+// APB-2).
+const pageOf = (key) => ({ origin: key, top_origin: key, frame: 1, navigation: 1, agent: false });
 const grant = (electronApp, key, walletIndex = 0) =>
-  mainModule(electronApp, 'src/main/wallet/dapp-permissions', 'grantPermission', key, walletIndex, 100);
+  mainModule(electronApp, 'src/main/wallet/dapp-permissions', 'grantPermission', key, walletIndex, 100, pageOf(key));
 // The agent's connect changes a grant's account this way.
 const changeAccount = (electronApp, key, walletIndex) =>
-  mainModule(electronApp, 'src/main/wallet/dapp-permissions', 'updateWalletIndex', key, walletIndex);
+  mainModule(electronApp, 'src/main/wallet/dapp-permissions', 'updateWalletIndex', key, walletIndex, pageOf(key));
 // The chrome's own disconnect, as the banner and the permissions screen run it.
 const disconnect = (win, key) =>
   win.evaluate(async (k) => (await import('./lib/wallet/dapp-connect.js')).disconnectDapp(k), key);

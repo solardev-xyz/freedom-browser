@@ -3039,6 +3039,7 @@ describe('FreedomAgentService', () => {
       beforeEffect: jest.fn(async () => true),
       effectAllowed: jest.fn(() => true),
       grantWritten: jest.fn(),
+      pageContext: jest.fn(() => ({ origin: 'https://app.example' })),
     };
     const response = service.handleWalletRequest(
       'tab_assigned',
@@ -3053,6 +3054,7 @@ describe('FreedomAgentService', () => {
       beforeEffect: pageRequest.beforeEffect,
       effectAllowed: pageRequest.effectAllowed,
       grantWritten: pageRequest.grantWritten,
+      pageContext: pageRequest.pageContext,
     });
     // Main answers the request (its deadline): the approval is withdrawn.
     answered.abort();

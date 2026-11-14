@@ -1,6 +1,7 @@
-// D12 through main's real paths: main's own reading of a site's contract rule
-// (the rule's match, then the pause, as the identity core reads it for
-// page/page-sends.js, simulated here from main's file), a page's
+// D12 through main's real paths: the identity core's reading of a site's
+// contract rule (Q9's limited rule, then the pause main reads, for
+// page/page-sends.js, simulated here from the dApp store the core holds
+// from APB-2), a page's
 // send as main makes it (page/page-sends.js: the silent send a rule answers,
 // and one the user confirmed), and main's dispatcher with its prompt, with
 // the real permissions store, intent store, payment history and transaction
@@ -144,7 +145,7 @@ async function asHandler(sending) {
   }
 }
 
-function start() {
+async function start() {
   jest.resetModules();
   const { ipcMain } = require('electron');
   ipcMain.handle.mockClear();
@@ -155,24 +156,20 @@ function start() {
   const { sendDappPayment, createSendDispatchers } = require('../page/page-sends');
   const confirmations = require('./signing-confirmation');
 
-  // The site's contract rule, as the identity core reads it from the file
-  // main writes (design 0012, APB-1b): the grant exposing the account, the
-  // rule's match, and main's D12 reading (`paused`). Fees aren't judged here.
-  mockApprovals.setStanding((page, { request, paused }) => {
-    if (page.agent !== false) return { covered: false, reason: 'custody' };
-    if (request.kind !== 'transaction') return { covered: false, reason: 'no_rule' };
-    const { tx } = request;
-    const exposed = permissions.getPermission(page.origin)?.walletIndex === request.account;
-    const ruled =
-      exposed && permissions.isTransactionAutoApproved(page.origin, tx.to, tx.data.slice(0, 10), Number(tx.chain_id), tx.value);
-    if (!ruled) return { covered: false, reason: 'no_rule' };
-    return paused === false ? { covered: true } : { covered: false, reason: 'paused' };
-  });
-  permissions.grantPermission(SWAP, 0, CHAIN);
-  permissions.addTransactionAutoApprove(SWAP, CONTRACT, SELECTOR, CHAIN);
-  permissions.grantPermission(OTHER, 1, CHAIN);
-  permissions.addTransactionAutoApprove(OTHER, CONTRACT, SELECTOR, CHAIN);
-  permissions.grantPermission(PLAIN, 0, CHAIN);
+  // The site's contract rule, as the identity core judges it from the dApp
+  // store it holds (design 0012, APB-2): the grant exposing the account,
+  // Q9's limited rule for the call, and main's D12 reading (`paused`). Fees
+  // and Q9's rate aren't judged here (the real core's, in
+  // signing-confirmation.integration.test.js).
+  mockApprovals.setStanding(null);
+  // The grants, and the limited rules "Always allow" gave on each site's
+  // prompt, as the core holds them; main's copy read from it.
+  mockApprovals.dapp.connect(SWAP, 0, CHAIN);
+  mockApprovals.dapp.allowTransaction(SWAP, CONTRACT, SELECTOR, CHAIN, '0');
+  mockApprovals.dapp.connect(OTHER, 1, CHAIN);
+  mockApprovals.dapp.allowTransaction(OTHER, CONTRACT, SELECTOR, CHAIN, '0');
+  mockApprovals.dapp.connect(PLAIN, 0, CHAIN);
+  await permissions.refreshPermissions();
 
   const tx = {
     chainId: CHAIN,
@@ -194,7 +191,8 @@ function start() {
   const dispatch = createSendDispatchers(
     {
       getPermission: permissions.getPermission,
-      updateLastUsed: permissions.updateLastUsed,
+      updateLastUsed: (context, chainId) =>
+        permissions.updateLastUsed(context.requester.key, chainId, context.pageContext()),
       walletList: async () => wallets,
       chainIdOf: () => CHAIN,
       chainName: () => 'Ethereum',
@@ -239,8 +237,10 @@ function start() {
     // Main's own reading of the site's rule (page/page-sends.js: its match,
     // then the pause): true sends silently, false shows the prompt.
     autoApproves: async (site, { to = CONTRACT, value } = {}) =>
-      permissions.isTransactionAutoApproved(site, to, SELECTOR, CHAIN, value) &&
+      mockApprovals.dapp.transactionRule(site, to, SELECTOR, CHAIN, value) &&
       !(await transactionAutoApprovePaused(site)),
+    // The site's limited contract rule for a call, as the core holds it.
+    ruled: (site, to, value = '0') => mockApprovals.dapp.transactionRule(site, to, SELECTOR, CHAIN, value),
     // A send the site's rule answered, as main makes it.
     autoSend: (site) =>
       asHandler(sendDappPayment({ walletIndex: index[site], tx, site, silent: true })),
@@ -274,7 +274,7 @@ async function mine(hash) {
 
 describe('"Always allow" while a payment of the site is in Payments waiting (D12)', () => {
   test('the prompt shows while it waits, and the rule applies again once it settles', async () => {
-    const running = start();
+    const running = await start();
     await expect(running.autoApproves(SWAP)).resolves.toBe(true);
 
     // The site's auto-approved payment is refused: it waits, held at its nonce.
@@ -319,7 +319,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('a payment sent and not yet mined waits too; once mined, the rule applies again', async () => {
-    const running = start();
+    const running = await start();
     const sent = await running.autoSend(SWAP);
     expect(sent).toMatchObject({ success: true, outcome: 'sent' });
 
@@ -333,7 +333,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('other sites are unaffected', async () => {
-    const running = start();
+    const running = await start();
     refusedOnce();
     await running.autoSend(SWAP);
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
@@ -346,7 +346,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('a site without "Always allow" is unchanged: the prompt, waiting or not', async () => {
-    const running = start();
+    const running = await start();
     await expect(running.autoApproves(PLAIN)).resolves.toBe(false);
     await expect(running.pageAsks(PLAIN, PAGE_TX, { approve: false })).resolves.toEqual(REJECTED);
     expect(running.prompts.map((prompt) => prompt.kind)).toEqual(['eth.send']);
@@ -364,7 +364,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   // From freedom-core design 0011 PRQ-5b, main's own issuer mints it, for
   // the requester's key; the chrome gets none at all.
   test('codex r2: a dapp confirmation without a site is refused', async () => {
-    const running = start();
+    const running = await start();
     const confirmations = require('./signing-confirmation');
     for (const origin of [undefined, null, '']) {
       await expect(
@@ -419,7 +419,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   };
 
   test('codex r2: a confirmed payment cannot cross a silent send between its read and its commit', async () => {
-    const running = start();
+    const running = await start();
     const read = await holdRecordsRead();
     const silent = running.autoSend(SWAP);
     await read.started;
@@ -440,7 +440,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('codex r2: a silent send waiting behind a confirmed one is refused once it commits', async () => {
-    const running = start();
+    const running = await start();
     const device = holdSigner(0, ALICE);
     const confirmed = running.confirmedSend(SWAP);
     await device.atSigner;
@@ -460,7 +460,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('the turn is left at the commit: a slow broadcast holds no one up', async () => {
-    const running = start();
+    const running = await start();
     let broadcast;
     const atBroadcast = new Promise((reached) => {
       mockBroadcast.mockImplementationOnce((_chainId, raw) => {
@@ -480,7 +480,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test("codex r2: the turn is the site's, across accounts and chains", async () => {
-    const running = start();
+    const running = await start();
     // Confirmed on account 1 (Bob) on chain 100; silent on account 0 (Alice)
     // on chain 1. Their account locks are separate; the site's turn is not.
     const device = holdSigner(1, BOB);
@@ -496,7 +496,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('codex: concurrent silent sends of one site: one signs, the other is refused', async () => {
-    const running = start();
+    const running = await start();
     const [first, second] = await Promise.all([running.autoSend(SWAP), running.autoSend(SWAP)]);
     expect([first.success, second.success].filter(Boolean)).toHaveLength(1);
     expect(first.success ? second : first).toMatchObject({
@@ -508,7 +508,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('a send in flight pauses its site until it settles; other sites go on', async () => {
-    const running = start();
+    const running = await start();
     // Admitted, and waiting on its signature: nothing is in the records yet.
     let sign;
     const atSigner = new Promise((reached) => {
@@ -538,7 +538,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   });
 
   test('a send that fails before it signs leaves its site free', async () => {
-    const running = start();
+    const running = await start();
     mockSigners[0].signTransaction.mockRejectedValueOnce(new Error('The vault is locked'));
     await expect(running.autoSend(SWAP)).resolves.toMatchObject({ success: false });
     await expect(running.autoApproves(SWAP)).resolves.toBe(true);
@@ -549,7 +549,7 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
   // recorded under, so that is the site that authorized it: from freedom-core
   // design 0011 PRQ-5b, the requester's attested key, which main sends for.
   test('codex: main binds a payment to the site that authorized it', async () => {
-    const running = start();
+    const running = await start();
     // Swap's refused payment, sent under swap's rule, is swap's, and pauses
     // swap alone.
     refusedOnce();
@@ -580,16 +580,48 @@ describe('"Always allow" while a payment of the site is in Payments waiting (D12
     expect(signed()).toBe(1);
   });
 
-  // Main reads a page's signing rule itself now (freedom-core design 0011,
-  // PRQ-5a: page/page-signing.js), from the site's signing flag alone, which
-  // the pause never touches.
+  // The core reads a page's signing rule (design 0012, APB-2: Q9's limited
+  // rule, page/page-signing.js), which the pause never touches.
   test("message signing isn't paused: it pays nothing", async () => {
-    const running = start();
-    running.permissions.setSigningAutoApprove(SWAP, true);
+    const running = await start();
+    await running.permissions.setSigningAutoApprove(SWAP, true, pageOf(SWAP));
     refusedOnce();
     await running.autoSend(SWAP);
     await expect(running.autoApproves(SWAP)).resolves.toBe(false);
+    expect(mockApprovals.dapp.signingRule(SWAP)).toBe(true);
     expect(running.permissions.getSigningAutoApprove(SWAP)).toBe(true);
+  });
+
+  // Q9 (design 0012, APB-2): today's rule, with no time, answers nothing
+  // once the core writes the dApp file; "Always allow" at the prompt it
+  // shows writes the limited rule, which answers, and the pause still holds.
+  test("today's unlimited rule prompts; the limited rule its prompt gives answers, paused as any", async () => {
+    const running = await start();
+    const TODAY = 'https://today.example';
+    mockApprovals.dapp.seed(TODAY, {
+      origin: TODAY,
+      connectedAt: 1,
+      lastUsed: 1,
+      walletIndex: 0,
+      chainId: CHAIN,
+      autoApprove: { signing: false, transactions: [{ to: CONTRACT, selector: SELECTOR, chainId: CHAIN, maxValue: '0' }] },
+    });
+    await running.permissions.refreshPermissions();
+    await expect(running.autoApproves(TODAY)).resolves.toBe(false);
+    const confirmed = await running.pageAsks(TODAY, PAGE_TX, { approve: true, choices: { alwaysAllow: true } });
+    expect(confirmed).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
+    expect(running.prompts).toHaveLength(1);
+    // The limited rule, and today's for the same call cleared in the same write.
+    expect(mockApprovals.dapp.entry(TODAY).autoApprove.transactions).toEqual([]);
+    expect(mockApprovals.dapp.entry(TODAY).autoApprove.limited.transactions).toEqual([
+      { to: CONTRACT, selector: SELECTOR, chainId: CHAIN, maxValue: '0', grantedAt: expect.any(Number) },
+    ]);
+    // Its own payment waits: paused until it is mined; then the rule answers.
+    await expect(running.autoApproves(TODAY)).resolves.toBe(false);
+    await mine(confirmed.result);
+    await expect(running.autoApproves(TODAY)).resolves.toBe(true);
+    await expect(running.pageAsks(TODAY, PAGE_TX)).resolves.toEqual({ result: expect.stringMatching(/^0x[0-9a-f]{64}$/) });
+    expect(running.prompts).toHaveLength(1);
   });
 });
 
@@ -604,7 +636,7 @@ describe('"Always allow" binds the confirmed send\'s value and site', () => {
   const ALWAYS = { approve: true, choices: { alwaysAllow: true, feeAcknowledged: false } };
 
   test('a rule from a send of 0.01 ETH signs that call for 0.01 ETH, and asks for more', async () => {
-    const running = start();
+    const running = await start();
     const payment = { to: PAYABLE, value: CENT, data: SELECTOR };
     // PLAIN has no rule: main prompts, and "always allow" records one.
     const confirmed = await running.pageAsks(PLAIN, payment, ALWAYS);
@@ -628,16 +660,16 @@ describe('"Always allow" binds the confirmed send\'s value and site', () => {
   });
 
   test("a confirmed send for one site records no rule for another site", async () => {
-    const running = start();
+    const running = await start();
     const payment = { to: PAYABLE, data: SELECTOR };
     await expect(running.pageAsks(PLAIN, payment, ALWAYS)).resolves.toEqual({ result: expect.any(String) });
     // The rule is the requester's: PLAIN's, never SWAP's, on the same account.
-    expect(running.permissions.isTransactionAutoApproved(PLAIN, PAYABLE, SELECTOR, CHAIN, '0')).toBe(true);
-    expect(running.permissions.isTransactionAutoApproved(SWAP, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
+    expect(running.ruled(PLAIN, PAYABLE)).toBe(true);
+    expect(running.ruled(SWAP, PAYABLE)).toBe(false);
     // Without "always allow", none.
     await expect(running.pageAsks(SWAP, payment, { approve: true, choices: { alwaysAllow: false } })).resolves.toEqual({
       result: expect.any(String),
     });
-    expect(running.permissions.isTransactionAutoApproved(SWAP, PAYABLE, SELECTOR, CHAIN, '0')).toBe(false);
+    expect(running.ruled(SWAP, PAYABLE)).toBe(false);
   });
 });

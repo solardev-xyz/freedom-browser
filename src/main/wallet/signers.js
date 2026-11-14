@@ -149,8 +149,8 @@ function createVaultBackend(walletIndex, authorized = {}) {
           throw mismatch();
         }
         // What became of a flagged dApp send's "Always allow" (design 0012):
-        // its reply's `rule`, for the dispatcher, which writes today's rule
-        // itself on `not_moved`.
+        // its reply's `rule`, the rule the core wrote as it signed (APB-2), or
+        // why it wrote none, for the dispatcher to report.
         if (typeof authorized.onRule === 'function') authorized.onRule(reply.rule ?? null);
         return raw;
       }),

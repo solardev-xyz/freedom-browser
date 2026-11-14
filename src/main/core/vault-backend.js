@@ -56,16 +56,15 @@ function client() {
  * One core request under its watchdog: from main itself (caller `shell`), or
  * for a page's request under `page` with its PageContext (freedom-core
  * designs 0011 and 0012, "PageContext"): `{ origin, top_origin, frame,
- * navigation, agent }`.
+ * navigation, agent }`. `'chrome'` relays the chrome's own request (a
+ * grant's narrowing from its settings: design 0012, "The model").
  */
 async function call(method, params = {}, page = null) {
+  let context;
+  if (page === 'chrome') context = { caller: 'chrome' };
+  else context = page ? { caller: 'page', page } : { caller: 'shell' };
   try {
-    return await client().request(
-      method,
-      params,
-      page ? { caller: 'page', page } : { caller: 'shell' },
-      { watchdogMs: watchdogMs(method) }
-    );
+    return await client().request(method, params, context, { watchdogMs: watchdogMs(method) });
   } catch (err) {
     if (err instanceof VaultBackendError) throw err;
     throw new VaultBackendError(err.code || CORE_UNAVAILABLE, err.message, err.data);
@@ -449,6 +448,33 @@ const vaultBackend = {
      */
     check(params, page) {
       return call('approval.check', params, page);
+    },
+    /**
+     * The permission files' writes, for a file that has moved to the core
+     * (design 0012, "The files (Q10)": `dapp` from APB-2). A page's change
+     * goes under `page` with its PageContext, for its own key; a revoke from
+     * the chrome's settings as `'chrome'` (it only narrows); main's own (an
+     * account deleted) as `shell`.
+     */
+    /** `{ store, change }` → `{ grant, durable? }` */
+    grant(params, page = null) {
+      return call('approval.grant', params, page);
+    },
+    /** `{ store, key, what }` → `{ revoked, durable? }`; `caller`: a PageContext, `'chrome'`, or null (`shell`) */
+    revoke(params, caller = null) {
+      return call('approval.revoke', params, caller);
+    },
+    /** `{ store, chain_id? }` → `{ durable? }`, always under `page` */
+    touch(params, page) {
+      return call('approval.touch', params, page);
+    },
+    /** `{ wallet_index }` → `{ keys, durable? }`, main's own */
+    forgetAccount(walletIndex) {
+      return call('approval.forget_account', { wallet_index: walletIndex });
+    },
+    /** `{ store, key? }` → `{ records }`, the store as the core holds it */
+    grants(params) {
+      return call('approval.grants', params);
     },
   },
 

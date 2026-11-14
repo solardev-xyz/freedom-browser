@@ -51,13 +51,13 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(client).toBeInstanceOf(CoreClient);
   expect(client.protocol).toBe(PROTOCOL_VERSION_STREAMS);
   // freedom-core design 0012, "The APR-3 pin": the hello carries grant_root,
-  // the directory the stores write the four permission files in, and no
-  // grant_moved.
+  // the directory of the four permission files; and APB-2 names the dApp
+  // file in grant_moved, which the core writes from then on.
   const root = path.join(os.tmpdir(), 'freedom-profile');
   expect(client.grantRoot).toBe(root);
   const params = client.service.helloParams(client);
   expect(params.grant_root).toBe(root);
-  expect(params).not.toHaveProperty('grant_moved');
+  expect(params.grant_moved).toEqual(['dapp']);
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,
