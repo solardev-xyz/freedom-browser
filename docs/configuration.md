@@ -29,6 +29,10 @@ The built-in start page offers a dismissible AI invitation while AI is off.
 Dismissal is saved for that profile and survives restart; Settings remains
 available. Private windows and custom homepages do not show this invitation.
 
+The “What can AI see?” link beside **Enable AI features** opens the
+[Agent privacy guide](user/ai-what-it-sees.md); the start-page setup banner links
+to the same explanation.
+
 ## Node Endpoints
 
 Freedom automatically manages node connections per profile. In a **packaged build**, the default profile's managed endpoints start at:

@@ -200,6 +200,10 @@ enabled, open Agent from the toolbar or with `Cmd+K` / `Ctrl+K`, then ask it to 
 or work on a project. Conversations appear over the page; Agent-first mode gives
 the conversation the full window.
 
+The [Agent privacy guide](user/ai-what-it-sees.md), linked beside
+**Settings → AI → Enable AI features** and from every start-page setup step,
+explains shared pages, signed-in websites, files, providers and dictation.
+
 A new chat offers starting prompts below the composer for a game, personal
 website, source comparison or project review. Choosing one starts that task
 immediately with any attached files. You can also write your own prompt. Publishing

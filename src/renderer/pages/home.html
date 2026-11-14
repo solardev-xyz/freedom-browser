@@ -153,6 +153,11 @@
         margin: 2px 0 0;
         color: var(--text-muted);
       }
+      .setup-banner-byline a {
+        color: var(--text);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
       .setup-banner-actions {
         display: flex;
         flex: none;
@@ -200,6 +205,7 @@
         cursor: default;
         opacity: 0.5;
       }
+      .setup-banner-byline a:focus-visible,
       .setup-banner-action:focus-visible,
       .setup-banner-dismiss:focus-visible {
         outline: 2px solid var(--accent);

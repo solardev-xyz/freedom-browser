@@ -1,6 +1,7 @@
 const http = require('http');
 const { test, expect } = require('./fixtures');
 const { configureOllamaAgent } = require('./agent-provider-fixture');
+const { AI_PRIVACY_GUIDE_URL } = require('../src/renderer/pages/scripts/ai-invitation-step');
 
 // An absent choice must remain off even when the rest of the harness opts in.
 test.use({ aiEnabled: null });
@@ -54,6 +55,8 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   const home = await guest(electronApp, 'home');
   await expect(window.locator('#agent-toggle-btn')).toBeHidden();
   await expect(home.locator('#ai-invitation')).toBeVisible();
+  await expect(home.locator('#ai-privacy-guide-home')).toHaveAttribute('href', AI_PRIVACY_GUIDE_URL);
+  await expect(home.locator('#ai-privacy-guide-home')).toHaveAttribute('rel', 'noreferrer');
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => window.electronAPI.saveSettings({ theme }), theme);
     await expect(home.locator('html')).toHaveAttribute('data-theme', theme);
@@ -66,6 +69,9 @@ test('fresh profile discovers AI, explicitly enables it, connects in Settings an
   await home.locator('#ai-invitation-open').click();
   const page = await guest(electronApp, 'settings');
   await expect(page.locator('#enable-ai')).not.toBeChecked();
+  await expect(page.locator('#ai-privacy-guide-settings')).toHaveAttribute('href', AI_PRIVACY_GUIDE_URL);
+  await page.locator('#ai-privacy-guide-settings').focus();
+  await expect(page.locator('#ai-privacy-guide-settings')).toBeFocused();
   await expect(page.locator('#ai-provider-settings')).toBeHidden();
   // A fresh profile has nothing saved, so it is not told its saved chats,
   // connections and projects are kept, and with AI off there is no restart
@@ -341,6 +347,9 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   test.setTimeout(60_000);
   const home = await guest(electronApp, 'home');
   const open = home.locator('#ai-invitation-open');
+  const guide = home.locator('#ai-privacy-guide-home');
+  await expect(guide).toHaveAttribute('href', AI_PRIVACY_GUIDE_URL);
+  await expect(guide).toBeVisible();
   await expect(home.locator('#ai-invitation-heading')).toHaveText('Meet Freedom Agent');
   await expect(open).toHaveText('Set up');
   await expect(open).toHaveAttribute('href', 'freedom://settings/ai');
@@ -348,6 +357,8 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: true }));
   await expect(home.locator('#ai-invitation-heading')).toHaveText('Finish setting up Freedom Agent');
   await expect(open).toHaveText('Connect a model');
+  await expect(guide).toHaveCount(1);
+  await expect(guide).toBeVisible();
   await expect(open).toHaveAttribute('href', 'freedom://settings/ai/providers/add');
   await expect(window.locator('#agent-toggle-btn')).toBeVisible();
   // #861: the pill reads "Beta" as rendered, like Settings' .resolver-badge.
@@ -380,6 +391,9 @@ test('the start-page banner follows setup and fits both themes at narrow widths'
   await window.evaluate(() => window.electronAPI.saveSettings({ enableAi: false }));
   await expect(home.locator('#ai-invitation-heading')).toHaveText('Freedom Agent is off');
   await expect(open).toHaveText('Turn on');
+  await expect(guide).toHaveCount(1);
+  await expect(guide).toBeVisible();
+  await expect(guide).toHaveAttribute('href', AI_PRIVACY_GUIDE_URL);
   await expect(open).toHaveAttribute('href', 'freedom://settings/ai');
 });
 
