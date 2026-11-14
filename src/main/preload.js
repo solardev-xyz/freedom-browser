@@ -130,6 +130,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   x402RevokePermission: (args) => ipcRenderer.invoke('x402:revoke-permission', args),
   x402RevokeAllForOrigin: (args) => ipcRenderer.invoke('x402:revoke-all-for-origin', args),
   x402UpdatePermission: (args) => ipcRenderer.invoke('x402:update-permission', args),
+  // Sign-In with Ethereum over HTTP auth (#1152): the sidebar's sign-in card.
+  siweGetChallenge: (args) => ipcRenderer.invoke('siwe:get-challenge', args),
+  siwePrepare: (args) => ipcRenderer.invoke('siwe:prepare', args),
+  siweComplete: (args) => ipcRenderer.invoke('siwe:complete', args),
+  siweCancel: (args) => ipcRenderer.invoke('siwe:cancel', args),
+  onSiweChallenge: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('siwe:challenge', handler);
+    return () => ipcRenderer.removeListener('siwe:challenge', handler);
+  },
+  onSiweChallengeClosed: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('siwe:challenge-closed', handler);
+    return () => ipcRenderer.removeListener('siwe:challenge-closed', handler);
+  },
   // Main fires this when an unsupervised 402 needs approval (no active
   // cap covers the charge). Returns a disposer.
   onX402ApprovalNeeded: (callback) => {

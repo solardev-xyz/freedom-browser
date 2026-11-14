@@ -888,14 +888,17 @@ jobs:
       # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
       # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
       # tab's wallet requests attributed to its own site, with a real vault and
-      # the real main-side signing check. The anvil-backed Safe specs run in
-      # `e2e-safe` below.
+      # the real main-side signing check. `siwe-http-auth.spec.js` (#1152) signs
+      # in to the SIWE reference server on localhost through the sign-in card,
+      # with a real vault and the real webRequest hooks. The anvil-backed Safe
+      # specs run in `e2e-safe` below.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
           xvfb-run -a npm run test:e2e -- --output=test-results/e2e-wallet \
             test-e2e/dapp-tx-ledger-confirm.spec.js \
             test-e2e/dapp-background-tab.spec.js \
+            test-e2e/siwe-http-auth.spec.js \
             test-e2e/send-ledger-confirm.spec.js \
             test-e2e/x402-payment-in-flight.spec.js \
             test-e2e/sidebar-in-flight-chrome.spec.js \

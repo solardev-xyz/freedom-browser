@@ -1,0 +1,3 @@
+- Sites can ask you to sign in with your Ethereum account using HTTP authentication headers: when a page answers with a Sign-In with Ethereum challenge, the wallet sidebar shows the site, the account to sign in with and the exact message, and loads the page signed in once you confirm ([#1152](https://github.com/solardev-xyz/freedom-browser/issues/1152))
+  - Works with recovery-phrase, Ledger and phone accounts; the account you used last on a site is preselected, and Freedom asks every time
+  - Works on HTTPS sites, and on Tor onion services without HTTPS while Tor is on in Freedom
