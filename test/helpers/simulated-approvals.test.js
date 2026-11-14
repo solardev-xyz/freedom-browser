@@ -65,6 +65,16 @@ describe('the simulated core tells a page from the chrome and from main', () => 
   test('the chrome mints no token, spends none of main\'s, and presents no Safe approval', async () => {
     const send = { kind: 'wallet-send', account: 0, payload: { tx: { to: '0x' + '22'.repeat(20), chain_id: 100 } } };
     await expect(approvals.approval.issue(send, 'chrome')).rejects.toMatchObject({ code: 'forbidden' });
+    // Nor a page kind, with the handle and payload a page's would carry:
+    // the chrome isn't a page (cored 0.16.0, `Minter::Chrome` mints none).
+    const HANDLE = 'c'.repeat(64);
+    for (const pageKind of [
+      { kind: 'sign-message', account: 0, payload: MESSAGE, handle: HANDLE },
+      { kind: 'dapp-send', account: 0, payload: { tx: send.payload.tx }, handle: HANDLE },
+    ]) {
+      await expect(approvals.approval.issue(pageKind, 'chrome')).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(approvals.approval.issue(pageKind, PAGE)).resolves.toHaveProperty('token');
+    }
     const { token } = await approvals.approval.issue(send);
     await expect(approvals.approval.spend({ token, ...send }, 'chrome')).rejects.toMatchObject({
       code: 'not_authorized',
