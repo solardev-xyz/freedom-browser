@@ -458,7 +458,7 @@ async function getUserWalletKey(walletIndex) {
   if (!record) {
     throw new Error(`Wallet with index ${walletIndex} does not exist`);
   }
-  if (record.type !== WALLET_TYPES.MNEMONIC) {
+  if (!hasVaultKey(walletIndex, record)) {
     throw new Error('This account has no derivable private key — the key never leaves its device');
   }
 
@@ -468,7 +468,7 @@ async function getUserWalletKey(walletIndex) {
     throw new Error('Vault must be unlocked to derive wallet keys');
   }
 
-  return identity.deriveUserWallet(mnemonic, walletIndex);
+  return deriveWalletForRecord(identity, mnemonic, record);
 }
 
 /**
@@ -1256,13 +1256,11 @@ async function exportMnemonic() {
 
 /**
  * Throw unless `accountIndex` holds a vault-derived key that can be
- * exported. Same two-part guard as withVaultPrivateKey: the index range
- * alone is decisive, so a deleted device account (no record) cannot
- * export a phantom mnemonic key derived at its index.
+ * exported. Same guard as withVaultPrivateKey, so a deleted device account
+ * (no record) cannot export a phantom mnemonic key derived at its index.
  */
 function assertPrivateKeyExportable(accountIndex) {
-  const record = getWalletRecord(accountIndex);
-  if (isHardwareWalletIndex(accountIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
+  if (!hasVaultKey(accountIndex, getWalletRecord(accountIndex))) {
     throw new Error('This account has no exportable private key — the key never leaves its device');
   }
 }
@@ -1274,7 +1272,7 @@ function assertPrivateKeyExportable(accountIndex) {
 async function exportPrivateKeyForAccount(accountIndex) {
   assertPrivateKeyExportable(accountIndex);
   const identity = await loadIdentityModule();
-  return identity.exportPrivateKey(accountIndex);
+  return identity.exportPrivateKey(accountIndex, getWalletRecord(accountIndex)?.path);
 }
 
 // ============================================
@@ -1291,6 +1289,21 @@ const WALLET_TYPES = {
   REMOTE: 'remote', // phone / other device signing over openlv
   SAFE: 'safe', // Safe smart account owned by other wallet records
 };
+
+/**
+ * The key behind a mnemonic wallet record: at its stored path when it has
+ * one, otherwise at the path its index implies.
+ *
+ * @param {Object} identity - The identity module
+ * @param {string} mnemonic
+ * @param {{index: number, path?: string}} record
+ * @returns {{privateKey: string, publicKey: string, address: string, path: string}}
+ */
+function deriveWalletForRecord(identity, mnemonic, record) {
+  return record.path
+    ? identity.deriveWalletAtPath(mnemonic, record.path)
+    : identity.deriveUserWallet(mnemonic, record.index);
+}
 
 /** User-facing labels for non-mnemonic account types (auto-names, error text). */
 const DEVICE_LABELS = {
@@ -1367,12 +1380,36 @@ function extraRecordFields(record) {
  * and every persisted reference to that index silently rebinds to a
  * different address and signing backend.
  *
+ * Mnemonic accounts at an explicit path share this slice for the same
+ * reason: their index is only an account id, so it must not take a slot
+ * from the default scheme or ever be reused.
+ *
  * @see nextHardwareWalletIndex
  */
 const HARDWARE_INDEX_BASE = 1000000;
 
 function isHardwareWalletIndex(index) {
   return Number.isInteger(index) && index >= HARDWARE_INDEX_BASE;
+}
+
+/**
+ * Whether the vault holds the key for this index, the check every key
+ * derivation for signing or export goes through.
+ *
+ * The high range is refused unless a mnemonic record there names its path:
+ * a deleted device account has no record, and a stale reference to it (dApp
+ * permission, publisher identity, an index from untrusted renderer code)
+ * would otherwise derive a phantom key at m/44'/60'/<index>'/0/0.
+ *
+ * @param {number} walletIndex
+ * @param {Object|null} record - The index's record from getWalletRecord
+ * @returns {boolean}
+ */
+function hasVaultKey(walletIndex, record) {
+  if (record && record.type !== WALLET_TYPES.MNEMONIC) {
+    return false;
+  }
+  return !isHardwareWalletIndex(walletIndex) || Boolean(record?.path);
 }
 
 /**
@@ -1493,6 +1530,15 @@ async function getDerivedWallets() {
       // Device accounts (Ledger, phone): the address was read from the
       // device when the account was added; nothing to derive locally.
       address = wallet.address || null;
+    } else if (mnemonic && wallet.path) {
+      // A path this build refuses (a hand-edited vault-meta) can't sign, but
+      // must not take the rest of the wallet list down with it.
+      try {
+        address = identity.deriveWalletAtPath(mnemonic, wallet.path).address;
+      } catch (err) {
+        console.warn(`[IdentityManager] Wallet ${wallet.index}: ${err.message}`);
+        address = wallet.address || null;
+      }
     } else if (mnemonic) {
       // Derive address from mnemonic
       const derived = identity.deriveUserWallet(mnemonic, wallet.index);
@@ -1961,13 +2007,15 @@ async function createDerivedWallet(name) {
     (max, w) => (isHardwareWalletIndex(w.index) ? max : Math.max(max, w.index)),
     -1
   );
+  // The address check covers an account already added at this same key by
+  // its explicit path.
+  const takenAddresses = listedWalletAddresses(identity, mnemonic, wallets, meta);
   let newIndex = maxIndex + 1;
-  while (taken.has(newIndex)) {
+  let derived = identity.deriveUserWallet(mnemonic, newIndex);
+  while (taken.has(newIndex) || takenAddresses.has(derived.address.toLowerCase())) {
     newIndex += 1;
+    derived = identity.deriveUserWallet(mnemonic, newIndex);
   }
-
-  // Derive the new wallet
-  const derived = identity.deriveUserWallet(mnemonic, newIndex);
 
   // Add to list (include address so it persists when vault is locked)
   const newWallet = {
@@ -1988,6 +2036,105 @@ async function createDerivedWallet(name) {
     name: newWallet.name,
     address: derived.address,
   };
+}
+
+/**
+ * Lowercased address -> wallet record for everything in the wallet list.
+ * Records written before addresses were stored fall back to derivation, and
+ * index 0 to the main wallet address in vault-meta.
+ *
+ * @param {Object} identity - The identity module
+ * @param {string} mnemonic
+ * @param {Array<Object>} wallets - Raw derivedWallets entries
+ * @param {Object} meta - Parsed vault-meta
+ * @returns {Map<string, Object>}
+ */
+function listedWalletAddresses(identity, mnemonic, wallets, meta) {
+  const listed = new Map();
+  for (const wallet of wallets) {
+    let address = wallet.address || (wallet.index === 0 ? meta.addresses?.userWallet : null);
+    if (!address && (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC) {
+      address = deriveWalletForRecord(identity, mnemonic, wallet).address;
+    }
+    if (address) {
+      listed.set(address.toLowerCase(), wallet);
+    }
+  }
+  return listed;
+}
+
+/**
+ * Add a mnemonic account at an explicit derivation path, for wallets that
+ * came from elsewhere (MetaMask, MEW, Ledger Live, or the user's own scheme).
+ *
+ * @param {string} name - Display name ('' → auto "Wallet N")
+ * @param {string} path - Derivation path; invalid or reserved paths throw
+ * @returns {Promise<{index: number, name: string, address: string, type: string, path: string}>}
+ */
+async function addWalletAtPath(name, path) {
+  const identity = await loadIdentityModule();
+  const mnemonic = identity.getMnemonic();
+  if (!mnemonic) {
+    throw new Error('Vault must be unlocked to create a new wallet');
+  }
+
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+
+  const derived = identity.deriveWalletAtPath(mnemonic, path);
+  const wallets = getWalletList(meta);
+  const duplicate = listedWalletAddresses(identity, mnemonic, wallets, meta).get(
+    derived.address.toLowerCase()
+  );
+  if (duplicate) {
+    throw new Error(`This account is already in your wallet list as "${duplicate.name}"`);
+  }
+
+  const newIndex = nextHardwareWalletIndex(meta, wallets);
+  const newWallet = {
+    index: newIndex,
+    name: (name || '').trim() || `Wallet ${wallets.length + 1}`,
+    address: derived.address,
+    type: WALLET_TYPES.MNEMONIC,
+    path: derived.path,
+  };
+  wallets.push(newWallet);
+
+  saveVaultMeta({
+    ...meta,
+    derivedWallets: wallets,
+    nextHardwareWalletIndex: newIndex + 1,
+  });
+
+  return { ...newWallet };
+}
+
+/**
+ * The address a derivation path gives, shown before the user adds the
+ * account. Public data only; the key stays in the main process.
+ *
+ * @param {string} path - Derivation path; invalid or reserved paths throw
+ * @returns {Promise<{path: string, address: string, existingName: string|null}>}
+ */
+async function previewWalletAtPath(path) {
+  const identity = await loadIdentityModule();
+  const mnemonic = identity.getMnemonic();
+  if (!mnemonic) {
+    throw new Error('Vault must be unlocked to preview a wallet');
+  }
+
+  const meta = getVaultMeta();
+  if (!meta) {
+    throw new Error('No vault found');
+  }
+
+  const derived = identity.deriveWalletAtPath(mnemonic, path);
+  const existing = listedWalletAddresses(identity, mnemonic, getWalletList(meta), meta).get(
+    derived.address.toLowerCase()
+  );
+  return { path: derived.path, address: derived.address, existingName: existing?.name ?? null };
 }
 
 /**
@@ -2130,7 +2277,7 @@ async function getActiveWalletAddress() {
   const mnemonic = identity.getMnemonic();
 
   if (mnemonic) {
-    const derived = identity.deriveUserWallet(mnemonic, activeIndex);
+    const derived = deriveWalletForRecord(identity, mnemonic, record || { index: activeIndex });
     return derived.address;
   }
 
@@ -2410,6 +2557,26 @@ function registerIdentityIpc() {
     }
   });
 
+  // Preview the address of a derivation path before adding it
+  ipcMain.handle('wallet:preview-wallet-at-path', async (_event, path) => {
+    try {
+      const preview = await previewWalletAtPath(path);
+      return { success: true, ...preview };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Add a mnemonic account at an explicit derivation path
+  ipcMain.handle('wallet:add-wallet-at-path', async (_event, name, path) => {
+    try {
+      const wallet = await addWalletAtPath(name, path);
+      return { success: true, wallet };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
   // Add a Ledger hardware-wallet account (address read from the device)
   ipcMain.handle('wallet:add-ledger-wallet', async (_event, name, address, path) => {
     try {
@@ -2500,12 +2667,15 @@ module.exports = {
   WALLET_TYPES,
   HARDWARE_INDEX_BASE,
   isHardwareWalletIndex,
+  hasVaultKey,
   getWalletRecord,
   getDerivedWallets,
   getFreedomSigningAddresses,
   getActiveWalletIndex,
   setActiveWalletIndex,
   createDerivedWallet,
+  addWalletAtPath,
+  previewWalletAtPath,
   addLedgerWallet,
   getLedgerRecordsToCheck,
   recordLedgerAddressCheck,

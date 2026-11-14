@@ -3824,6 +3824,42 @@
   color: var(--muted);
 }
 
+.create-wallet-path {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.create-wallet-path summary {
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.create-wallet-path-index {
+  width: 96px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.create-wallet-path-input {
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.create-wallet-path .create-wallet-result {
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.create-wallet-path .unlock-error {
+  margin-bottom: 10px;
+}
+
+.create-wallet-path-note {
+  margin: 0;
+}
+
 .create-wallet-submit-btn {
   display: block;
   width: 100%;
@@ -3894,6 +3930,7 @@
 .create-wallet-result-address {
   font-size: 12px;
   color: var(--muted);
+  text-align: center;
   word-break: break-all;
 }
 

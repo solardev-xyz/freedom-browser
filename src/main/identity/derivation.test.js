@@ -9,6 +9,9 @@ const {
   deriveEthereumKey,
   deriveEd25519Key,
   derivePublisherKey,
+  deriveUserWallet,
+  deriveWalletAtPath,
+  normalizeWalletPath,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -266,6 +269,97 @@ describe('derivation', () => {
 
     test('throws on invalid mnemonic', () => {
       expect(() => getSeed('invalid')).toThrow('Invalid mnemonic');
+    });
+  });
+
+  describe('normalizeWalletPath', () => {
+    test.each([
+      ["m/44'/60'/0'/0/2", "m/44'/60'/0'/0/2"],
+      ["44'/60'/0'/0/2", "m/44'/60'/0'/0/2"],
+      ["  m/44'/60'/0'/2  ", "m/44'/60'/0'/2"],
+      ["m/044'/060'/00'/0/02", "m/44'/60'/0'/0/2"],
+      ['m/0', 'm/0'],
+      ["m/2147483647'", "m/2147483647'"],
+    ])('%s becomes %s', (input, expected) => {
+      expect(normalizeWalletPath(input)).toBe(expected);
+    });
+
+    test.each([
+      [''],
+      ['m'],
+      ['m/'],
+      ['/44'],
+      ['m//44'],
+      ['m/44/'],
+      ['m/-1'],
+      ["m/44''"],
+      ['m/44h'],
+      ['m/1.5'],
+      ['m/0x10'],
+      ['n/44'],
+      ['m/2147483648'],
+      ['m/00000000000000000044'],
+      ['m/1/2/3/4/5/6/7/8/9/10/11'],
+      [null],
+      [44],
+    ])('rejects %j', (input) => {
+      expect(() => normalizeWalletPath(input)).toThrow('Enter a path like');
+    });
+  });
+
+  describe('deriveWalletAtPath', () => {
+    // Hardhat's default seed: its published accounts are MetaMask's scheme,
+    // so these pin the preset against addresses nothing here computed.
+    const HARDHAT_MNEMONIC = 'test test test test test test test test test test test junk';
+
+    test.each([
+      [0, '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'],
+      [2, '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC'],
+      [3, '0x90F79bf6EB2c4f870365E785982E1f101E93b906'],
+    ])('reaches MetaMask account index %i', (index, address) => {
+      const wallet = deriveWalletAtPath(HARDHAT_MNEMONIC, `m/44'/60'/0'/0/${index}`);
+      expect(wallet.address).toBe(address);
+    });
+
+    test("matches Freedom's own scheme at the same path", () => {
+      expect(deriveWalletAtPath(HARDHAT_MNEMONIC, "m/44'/60'/4'/0/0").address).toBe(
+        deriveUserWallet(HARDHAT_MNEMONIC, 4).address
+      );
+    });
+
+    test('returns the canonical path and the key', () => {
+      const wallet = deriveWalletAtPath(HARDHAT_MNEMONIC, "044'/60'/0'/0/2");
+      expect(wallet.path).toBe("m/44'/60'/0'/0/2");
+      expect(wallet.privateKey).toBe(deriveEthereumKey(HARDHAT_MNEMONIC, wallet.path).privateKey);
+    });
+
+    test.each([[PATHS.BEE_WALLET], ["44'/60'/0'/0/1"], ["m/044'/060'/00'/00/01"]])(
+      'refuses the Swarm node wallet at %s',
+      (path) => {
+        expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, path)).toThrow('Swarm node');
+      }
+    );
+
+    test.each([
+      [PATHS.RADICLE],
+      [PATHS.IPFS],
+      [PATHS.SWARM_PUBLISHER],
+      [derivePublisherKey(TEST_MNEMONIC, 0).path],
+      ["m/44'/73406'/7'/0/0"],
+      ["m/044'/073406'/7'/0/0"],
+    ])('refuses the reserved path %s', (path) => {
+      expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, path)).toThrow('reserved');
+    });
+
+    test('does not refuse a coin type that only starts with a reserved number', () => {
+      expect(deriveWalletAtPath(HARDHAT_MNEMONIC, "m/44'/734060'/0'").path).toBe(
+        "m/44'/734060'/0'"
+      );
+    });
+
+    test('throws on an invalid mnemonic or path', () => {
+      expect(() => deriveWalletAtPath('invalid', "m/44'/60'/0'/0/2")).toThrow('Invalid mnemonic');
+      expect(() => deriveWalletAtPath(HARDHAT_MNEMONIC, 'nope')).toThrow('Enter a path like');
     });
   });
 });

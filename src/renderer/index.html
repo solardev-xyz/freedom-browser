@@ -3143,6 +3143,58 @@
                   autocomplete="off"
                 />
 
+                <details id="create-wallet-path" class="create-wallet-path">
+                  <summary>Advanced</summary>
+
+                  <div class="connect-ledger-scheme-row">
+                    <label for="create-wallet-path-scheme">Derivation path</label>
+                    <select id="create-wallet-path-scheme" class="connect-ledger-scheme-select">
+                      <option value="next">Next account</option>
+                      <option value="live">Ledger Live</option>
+                      <option value="metamask">MetaMask</option>
+                      <option value="legacy">Legacy (MEW / MyCrypto)</option>
+                      <option value="custom">Custom path</option>
+                    </select>
+                  </div>
+
+                  <div id="create-wallet-path-index-row" class="connect-ledger-scheme-row hidden">
+                    <label for="create-wallet-path-index">Account index</label>
+                    <input
+                      type="number"
+                      id="create-wallet-path-index"
+                      class="create-wallet-input create-wallet-path-index"
+                      min="0"
+                      step="1"
+                      value="0"
+                    />
+                  </div>
+
+                  <input
+                    type="text"
+                    id="create-wallet-path-input"
+                    class="create-wallet-input create-wallet-path-input hidden"
+                    aria-label="Custom derivation path"
+                    placeholder="m/44'/60'/0'/0/0"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+
+                  <div id="create-wallet-path-preview" class="create-wallet-result hidden">
+                    <code id="create-wallet-path-preview-path" class="create-wallet-result-address"></code>
+                    <code
+                      id="create-wallet-path-preview-address"
+                      class="create-wallet-result-address"
+                    ></code>
+                  </div>
+
+                  <div id="create-wallet-path-error" class="unlock-error hidden"></div>
+
+                  <p id="create-wallet-path-note" class="create-wallet-path-note hidden">
+                    Each path gives a different address from the same seed. Check this is the
+                    address you expect before relying on it.
+                  </p>
+                </details>
+
                 <button type="button" id="create-wallet-submit" class="create-wallet-submit-btn">
                   Create Wallet
                 </button>
@@ -3165,6 +3217,10 @@
                   <code
                     class="create-wallet-result-address"
                     id="create-wallet-result-address"
+                  ></code>
+                  <code
+                    class="create-wallet-result-address hidden"
+                    id="create-wallet-result-path"
                   ></code>
                 </div>
 

@@ -888,7 +888,9 @@ jobs:
       # `publish-text-shortcut.spec.js` (#720) pins the page's Cmd/Ctrl+Enter
       # text publish. `dapp-background-tab.spec.js` (#764) keeps a background
       # tab's wallet requests attributed to its own site, with a real vault and
-      # the real main-side signing check. The anvil-backed Safe specs run in
+      # the real main-side signing check. `wallet-derivation-path.spec.js` (#1039)
+      # adds accounts at preset and custom derivation paths with a real vault, and
+      # keeps reserved paths refused. The anvil-backed Safe specs run in
       # `e2e-safe` below.
       - name: Run wallet approval E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
@@ -904,7 +906,8 @@ jobs:
             test-e2e/browsing-credit.spec.js \
             test-e2e/publish-setup-rediscovery.spec.js \
             test-e2e/publish-page-setup.spec.js \
-            test-e2e/publish-text-shortcut.spec.js
+            test-e2e/publish-text-shortcut.spec.js \
+            test-e2e/wallet-derivation-path.spec.js
 
       # ── was the `e2e-safe` job ──
       # Safe (multi-owner account) lifecycle through the real UI against an anvil

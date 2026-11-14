@@ -282,6 +282,7 @@ and purchases keep their normal approval steps.
 ## Wallet and dApp Integration
 
 - **Multiple Accounts**: Create and manage software wallets per profile.
+- **Derivation Paths**: Add an account at a Ledger Live, MetaMask or Legacy (MEW / MyCrypto) path, or a custom one, to reach addresses from a seed used in another wallet. Paths holding Freedom's own node and publishing keys can't be added, which includes MetaMask's second account (`m/44'/60'/0'/0/1`), the Swarm node wallet.
 - **Ledger Support**: Connect Ledger Ethereum accounts over USB and confirm signatures and transactions on the device.
 - **Phone Signing**: Pair your phone by QR code and approve signatures and transactions there — wallet requests are relayed to the phone over an end-to-end encrypted OpenLV channel via the hosted bridge, and every returned signature is verified before use.
 - **Ethereum Provider**: Sites can request wallet access, signatures, and transactions through the permissioned `window.ethereum` provider.
