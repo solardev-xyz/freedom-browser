@@ -82,11 +82,27 @@ function ownersView(ownerIndexes, signatures) {
  * home of the "which signatures are free" policy; runs at creation and
  * again when the board (re)opens (covers a vault that was locked the
  * first time). With `expectedId`, only that entry is signed.
+ *
+ * `beforeSign`, the caller's last check (a page's standing rule for the
+ * Safe message it answers), is awaited inside each owner's signer right
+ * before it signs; its refusal stops the sweep and is the caller's to hear.
  */
-async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId = null) {
+async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId = null, { beforeSign = null } = {}) {
   if (!(await isVaultUnlocked())) {
     return;
   }
+  const refusals = new WeakSet();
+  const lastCheck = beforeSign
+    ? async () => {
+        try {
+          await beforeSign();
+        } catch (err) {
+          const refusal = err && typeof err === 'object' ? err : new Error(String(err));
+          refusals.add(refusal);
+          throw refusal;
+        }
+      }
+    : null;
   for (const ownerIndex of ownerIndexes) {
     const entry = store.get(safeIndex);
     if (!entry || entry.superseded || entry.signatures.length >= entry.threshold) break;
@@ -101,8 +117,14 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     if (!approval) break;
     let signature;
     try {
-      signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex, approval });
+      signature = await collectOwnerSignature({
+        typedData: entry.typedData,
+        ownerIndex,
+        approval,
+        ...(lastCheck ? { beforeSign: lastCheck } : {}),
+      });
     } catch (err) {
+      if (refusals.has(err)) throw err;
       if (approvalGone(err)) {
         store.forgetApproval(safeIndex, entry);
         break;

@@ -470,6 +470,84 @@ describe('getSigner (vault-backed)', () => {
   });
 });
 
+// A site's standing rule (freedom-core design 0012, APB-1b): the page's
+// signature presents `{ standing }` under its PageContext, and the core
+// judges it; a flagged dApp send's `rule` reply reaches the dispatcher.
+describe('getSigner: a standing rule, and "Always allow"', () => {
+  const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+  const approvals = () => mockCore.approvals;
+  const signed = (method) => approvals().calls.filter((call) => call.method === method).at(-1);
+  const TYPED = {
+    domain: { name: 'Permit', chainId: 100, verifyingContract: '0x' + '11'.repeat(20) },
+    types: { Permit: [{ name: 'value', type: 'uint256' }] },
+    primaryType: 'Permit',
+    message: { value: '1' },
+  };
+
+  beforeEach(() => {
+    mockCore.approvals?.reset();
+  });
+
+  test('a rule\'s signature goes under its page with `{ standing }`, its typed data viewed on the page\'s chain', async () => {
+    approvals().setStanding(() => ({ covered: true }));
+    const signer = getSigner(0, { page: PAGE, standing: {}, chainId: 100 });
+    const signature = await signer.signMessage('hello');
+    expect(verifyMessage('hello', signature)).toBe(testWallet.address);
+    expect(signed('sign.message')).toMatchObject({ page: PAGE, params: { authorization: { standing: {} } } });
+    const hash = TypedDataEncoder.hash(TYPED.domain, TYPED.types, TYPED.message);
+    await signer.signTypedData(TYPED, { expectedHash: hash });
+    expect(signed('sign.typed_data')).toMatchObject({
+      page: PAGE,
+      params: { primary_type: 'Permit', chain_id: '100', authorization: { standing: {} } },
+    });
+    // A send's pause rides with it.
+    await getSigner(0, { page: PAGE, standing: { paused: false } }).signTransaction({
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '0',
+      data: '0x095ea7b3',
+      gasLimit: '50000',
+      gasPrice: '7',
+      nonce: 1,
+      chainId: 100,
+      type: 0,
+    });
+    expect(signed('sign.transaction')).toMatchObject({ page: PAGE, params: { authorization: { standing: { paused: false } } } });
+  });
+
+  test('a rule the core refuses is a confirmation refused, with its reason; no page, no rule', async () => {
+    approvals().setStanding(() => ({ covered: false, reason: 'custody' }));
+    const refused = await getSigner(0, { page: PAGE, standing: {} })
+      .signMessage('hello')
+      .catch((err) => err);
+    expect(refused).toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'custody' });
+    expect(refused.message).toBe('Signing was not confirmed: the agent holds this tab');
+    // `{ standing }` without a page is never sent: a rule answers only a page.
+    await getSigner(0, { standing: {} }).signMessage('hello');
+    expect(signed('sign.message')).toMatchObject({ page: null, params: { account: 0 } });
+    expect(signed('sign.message').params).not.toHaveProperty('authorization');
+  });
+
+  test('a flagged dApp send: the core\'s `rule` reply reaches `onRule` once signed', async () => {
+    const confirmations = require('./signing-confirmation');
+    const send = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '0',
+      data: '0x095ea7b3',
+      gasLimit: '50000',
+      gasPrice: '7',
+      chainId: 100,
+      origin: PAGE.origin,
+    };
+    const page = { handle: 'c'.repeat(64), context: PAGE };
+    const heard = [];
+    for (const remember of [true, false]) {
+      const confirmation = await confirmations.issuePageConfirmation('dapp-send', 0, send, page, { remember });
+      await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction({ ...send, nonce: 1, type: 0 });
+    }
+    expect(heard).toEqual([{ added: false, reason: 'not_moved' }, null]);
+  });
+});
+
 describe('getSigner (ledger-backed dispatch)', () => {
   const LEDGER_RECORD = {
     index: 2,
@@ -723,5 +801,158 @@ describe("getSigner: main's own typed data on a device", () => {
       );
       expect(backend.signTypedData).not.toHaveBeenCalled();
     });
+  });
+});
+
+// The caller's last check (`beforeSign`, design 0012: a page's standing
+// rule, read again): awaited after every other wait of a signer the core
+// doesn't judge, right before the device is asked or the core signs.
+describe("getSigner: the caller's last check, right before the signature", () => {
+  const { vaultBackend } = require('../core/vault-backend');
+  const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+  const TYPED = {
+    domain: { name: 'Permit', chainId: 100, verifyingContract: '0x' + '11'.repeat(20) },
+    types: { Permit: [{ name: 'value', type: 'uint256' }] },
+    primaryType: 'Permit',
+    message: { value: '1' },
+  };
+  const HASH = TypedDataEncoder.hash(TYPED.domain, TYPED.types, TYPED.message);
+  const TX = {
+    to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+    value: '0',
+    data: '0x095ea7b3',
+    gasLimit: '50000',
+    gasPrice: '7',
+    nonce: 1,
+    chainId: 100,
+    type: 0,
+  };
+  const DEVICES = {
+    ledger: [{ index: 1000000, name: 'My Stax', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'ledger' }, mockLedgerBackend],
+    phone: [{ index: 1000001, name: 'My Phone', address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', type: 'remote' }, mockRemoteBackend],
+  };
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  describe.each(Object.keys(DEVICES))('on a %s', (device) => {
+    const [record, backend] = DEVICES[device];
+    let order;
+    let refusal;
+    const beforeSign = jest.fn(async () => {
+      order.push('check');
+      if (refusal) throw refusal;
+    });
+    const authorized = () => ({ page: PAGE, standing: {}, chainId: 100, beforeSign });
+
+    beforeEach(() => {
+      order = [];
+      refusal = null;
+      beforeSign.mockClear();
+      mockGetWalletRecord.mockReturnValue(record);
+      for (const method of ['signTransaction', 'signMessage', 'signTypedData', 'sendTransaction']) {
+        backend[method]?.mockReset().mockImplementation(async () => {
+          order.push(method);
+          return '0xsig';
+        });
+      }
+    });
+
+    test('typed data: the check waits for the core\'s hash and is the last step before the device', async () => {
+      const hashed = deferred();
+      const real = vaultBackend.typedDataHash.bind(vaultBackend);
+      jest.spyOn(vaultBackend, 'typedDataHash').mockImplementationOnce(async (data) => {
+        order.push('hash');
+        await hashed.promise;
+        return real(data);
+      });
+      const signing = getSigner(record.index, authorized()).signTypedData(TYPED, { expectedHash: HASH });
+      await tick();
+      expect(beforeSign).not.toHaveBeenCalled();
+      expect(backend.signTypedData).not.toHaveBeenCalled();
+      hashed.resolve();
+      await expect(signing).resolves.toBe('0xsig');
+      expect(order).toEqual(['hash', 'check', 'signTypedData']);
+    });
+
+    test('typed data: a check that refuses after the hash: the device is never asked, the refusal is the caller\'s', async () => {
+      refusal = Object.assign(new Error('rule gone'), { code: 'STANDING_WITHDRAWN' });
+      await expect(getSigner(record.index, authorized()).signTypedData(TYPED, { expectedHash: HASH })).rejects.toBe(refusal);
+      expect(backend.signTypedData).not.toHaveBeenCalled();
+    });
+
+    test('typed data that changed after its confirmation fails before the check', async () => {
+      await expect(
+        getSigner(record.index, authorized()).signTypedData(TYPED, { expectedHash: '0x' + '00'.repeat(32) })
+      ).rejects.toThrow('The typed data changed after it was confirmed');
+      expect(beforeSign).not.toHaveBeenCalled();
+      expect(backend.signTypedData).not.toHaveBeenCalled();
+    });
+
+    test('a message, a transaction and a phone\'s send: the check right before the device, and its refusal stops it', async () => {
+      const signer = getSigner(record.index, authorized());
+      await signer.signMessage('hello');
+      await signer.signTransaction(TX);
+      if (signer.sendTransaction) await signer.sendTransaction(TX);
+      expect(order).toEqual(['check', 'signMessage', 'check', 'signTransaction', ...(signer.sendTransaction ? ['check', 'sendTransaction'] : [])]);
+      refusal = new Error('custody');
+      order = [];
+      await expect(signer.signMessage('hello')).rejects.toBe(refusal);
+      await expect(signer.signTransaction(TX)).rejects.toBe(refusal);
+      if (signer.sendTransaction) await expect(signer.sendTransaction(TX)).rejects.toBe(refusal);
+      expect(order.filter((step) => step !== 'check')).toEqual([]);
+    });
+  });
+
+  test("a vault's own signature (no authorization, as a Safe owner's): the check after the core's hash, right before the core signs", async () => {
+    const order = [];
+    let refusal = null;
+    const beforeSign = jest.fn(async () => {
+      order.push(['check', coreCalls('typed_data.hash').length, coreCalls('sign.typed_data').length]);
+      if (refusal) throw refusal;
+    });
+    const signer = getSigner(0, { beforeSign });
+    const signature = await signer.signTypedData(TYPED);
+    expect(verifyTypedData(TYPED.domain, TYPED.types, TYPED.message, signature)).toBe(testWallet.address);
+    // Hashed by the core, not yet signed, when the check ran.
+    expect(order).toEqual([['check', 1, 0]]);
+    expect(coreCalls('sign.typed_data')).toHaveLength(1);
+    refusal = Object.assign(new Error('rule gone'), { code: 'STANDING_WITHDRAWN' });
+    await expect(signer.signTypedData(TYPED)).rejects.toBe(refusal);
+    await expect(signer.signMessage('hello')).rejects.toBe(refusal);
+    await expect(signer.signTransaction({ ...TX, from: testWallet.address })).rejects.toBe(refusal);
+    expect(coreCalls('sign.typed_data')).toHaveLength(1);
+    expect(coreCalls('sign.message')).toEqual([]);
+    expect(coreCalls('sign.transaction')).toEqual([]);
+  });
+
+  test("a standing rule's vault signature: the check after the address, right before the core signs", async () => {
+    mockCore.approvals?.reset();
+    mockCore.approvals.setStanding(() => ({ covered: true }));
+    const order = [];
+    const beforeSign = jest.fn(async () => {
+      order.push(['check', coreCalls('keys.addresses').length, coreCalls('sign.typed_data').length]);
+    });
+    await getSigner(0, { page: PAGE, standing: {}, chainId: 100, beforeSign }).signTypedData(TYPED, { expectedHash: HASH });
+    expect(order).toEqual([['check', 1, 0]]);
+    expect(coreCalls('sign.typed_data')).toHaveLength(1);
+    // A refusal there: the core is never asked to sign.
+    const refusal = new Error('custody');
+    await expect(
+      getSigner(0, { page: PAGE, standing: { paused: false }, beforeSign: async () => { throw refusal; } }).signTransaction({
+        ...TX,
+        from: testWallet.address,
+      })
+    ).rejects.toBe(refusal);
+    expect(coreCalls('sign.transaction')).toEqual([]);
   });
 });

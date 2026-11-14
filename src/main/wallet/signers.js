@@ -37,6 +37,7 @@ const {
   normalizeTypedData,
   toCoreTypedData,
   toCoreTransaction,
+  typedDataViewOptions,
   assertBoundedTypeGraph,
 } = require('./signing-utils');
 const {
@@ -68,16 +69,32 @@ const {
 /**
  * What a vault signature sends beside its request (freedom-core design
  * 0012, API): the confirmation's `authorization`, which the core checks and
- * spends before any key is derived, and a page's PageContext, under which a
- * page's request is sent; for a Safe's vault owner or its executor, the Safe
- * approval (`{ safe }`) under the caller it was recorded for; none from main
- * itself.
+ * spends before any key is derived; for a page's request a standing rule
+ * answers, `{ standing: { paused? } }`, which the core judges against the
+ * site's rule; for a Safe's vault owner or its executor, the Safe approval
+ * (`{ safe }`) under the caller it was recorded for; and a page's
+ * PageContext, under which a page's request is sent. None from main itself.
  */
-function signOptions({ confirmation = null, page = null, safe = null } = {}) {
+function signOptions({ confirmation = null, page = null, standing = null, safe = null } = {}) {
   if (confirmation) return signingAuthorization(confirmation);
   // A Safe's owner or executor: the Safe approval, under its own caller.
   if (safe) return safeAuthorization(safe);
+  if (page && standing) return { authorization: { standing: { ...standing } }, page };
   return { page };
+}
+
+/**
+ * For a standing rule's typed data: what the core is told beside it, the
+ * page's `primaryType` and chain (`typedDataViewOptions`), in the form a
+ * minted token's payload carries them.
+ */
+function standingView(typedData, { standing = null, chainId } = {}) {
+  if (!standing) return {};
+  const options = typedDataViewOptions(typedData, chainId);
+  return {
+    ...(options.primaryType !== undefined ? { primary_type: options.primaryType } : {}),
+    ...(options.chainId !== undefined ? { chain_id: String(options.chainId) } : {}),
+  };
 }
 
 /** The core's refusal of a confirmation, in today's words, or null. */
@@ -103,6 +120,10 @@ function createVaultBackend(walletIndex, authorized = {}) {
   const wrapped = (label, err) =>
     err?.code === 'vault_locked' ? err : refusal(err) || new Error(`${label}: ${err.message}`, { cause: err });
   const options = signOptions(authorized);
+  // The caller's last check, for a signature no token answers: main's own
+  // (a Safe owner's), or a standing rule's, whose PageContext (custody)
+  // main read before this signer's own waits.
+  const lastCheck = authorized.confirmation ? null : authorized.beforeSign || null;
   return {
     getAddress: () => withVaultAccount(walletIndex, () => ownAddress()),
     // The expected address is resolved before signing: a lock right after
@@ -115,16 +136,22 @@ function createVaultBackend(walletIndex, authorized = {}) {
         if (from != null && getAddress(from) !== expected) {
           throw new Error('transaction from address mismatch');
         }
-        let raw;
+        if (lastCheck) await lastCheck();
+        let reply;
         try {
-          ({ raw } = await vaultBackend.sign.transaction(key, tx, options));
+          reply = await vaultBackend.sign.transaction(key, tx, options);
         } catch (err) {
           throw refusal(err) || err;
         }
+        const { raw } = reply;
         const signed = Transaction.from(raw);
         if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== expected) {
           throw mismatch();
         }
+        // What became of a flagged dApp send's "Always allow" (design 0012):
+        // its reply's `rule`, for the dispatcher, which writes today's rule
+        // itself on `not_moved`.
+        if (typeof authorized.onRule === 'function') authorized.onRule(reply.rule ?? null);
         return raw;
       }),
     signMessage: (message) =>
@@ -132,6 +159,7 @@ function createVaultBackend(walletIndex, authorized = {}) {
         // Strings sign as UTF-8, as ethers' signMessage does.
         const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
         const expected = await ownAddress();
+        if (lastCheck) await lastCheck();
         let signature;
         try {
           signature = await vaultBackend.sign.message(key, bytes, options);
@@ -146,7 +174,6 @@ function createVaultBackend(walletIndex, authorized = {}) {
         const data = toCoreTypedData(typedData);
         const expected = await ownAddress();
         let digest;
-        let signature;
         try {
           // The digest the core signs only if the data hashes to it
           // (freedom-core #88): the hash the user confirmed, or, for
@@ -154,9 +181,18 @@ function createVaultBackend(walletIndex, authorized = {}) {
           // own hash of it, taken now. The core's bounded encoder, not
           // ethers' (whose type walk is exponential on some graphs).
           digest = expectedHash ?? (await vaultBackend.typedDataHash(data));
+        } catch (err) {
+          throw wrapped('Typed data signing failed', err);
+        }
+        // After the core's hash, right before the signature.
+        if (lastCheck) await lastCheck();
+        let signature;
+        try {
           // The view a typed-data token binds is made again from what the
-          // core was told beside the data when it was minted.
-          const bound = authorized.confirmation?.payload ?? {};
+          // core was told beside the data when it was minted; a standing
+          // rule's is the page's view, on the page's chain, which the core
+          // judges for warnings as it did for `approval.check`.
+          const bound = authorized.confirmation?.payload ?? standingView(typedData, authorized);
           signature = await vaultBackend.sign.typedData(key, data, digest, {
             ...options,
             ...(bound.primary_type !== undefined ? { primaryType: bound.primary_type } : {}),
@@ -185,8 +221,19 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * design 0012, APB-1): a vault account's signature presents it to the core,
  * which spends it there; a device's (Ledger, phone) spends it through the
  * core first (`approval.spend`), and its device signs only after. A page's
- * request without a token (a site's standing rule) carries the page's
- * PageContext, so it is sent under `page`, never as main's own.
+ * request a site's standing rule answers carries the page's PageContext and
+ * `{ standing }`, so it is sent under `page`, never as main's own, and a
+ * vault signature is judged by the core against the site's rule; a device
+ * signs it as today (the core's `approval.check` advised the choice).
+ *
+ * `beforeSign`, the caller's last check (a page's standing rule read again,
+ * with custody), is for a signature no token answers: a device's, which the
+ * core never judges, and a vault's under `{ standing }` (whose PageContext
+ * main read before the signer's own waits) or main's own (a Safe owner's).
+ * It is awaited after every other wait of the signer's (the address, the
+ * core's hash, a token's spend), right before the device is asked or the
+ * core signs, and throws to refuse: nothing is signed, and the caller hears
+ * its own error.
  *
  * @param {number} walletIndex
  * A Safe's owner or executor carries the Safe approval (`safe`: `{ id,
@@ -195,9 +242,13 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * doesn't make its signature, and has no check of a Safe approval for it
  * (advised until 0016).
  *
- * @param {{confirmation?: object, page?: object, safe?: object}} [authorized]
- *   the confirmation (`signing-confirmation.js`), a page's PageContext, or a
- *   Safe approval
+ * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
+ *   chainId?: number, onRule?: (rule: object|null) => void,
+ *   beforeSign?: () => Promise<void>, safe?: object}} [authorized]
+ *   the confirmation (`signing-confirmation.js`), or a page's PageContext
+ *   with, for a rule's answer, `standing` and the page's chain (typed
+ *   data's view); `onRule` hears a vault send's `rule` reply; or a Safe
+ *   approval
  * @returns {Signer}
  */
 function getSigner(walletIndex, authorized = {}) {
@@ -246,8 +297,13 @@ function getSigner(walletIndex, authorized = {}) {
   // A device signs what it shows, so the core can only advise: its
   // confirmation is spent first, and the device asked only after.
   const confirmation = vaultSigned ? null : authorized?.confirmation || null;
-  const spent = async () => {
+  // The caller's last check (`beforeSign`), after the token's spend: a
+  // device's signature is never judged by the core, so it is awaited right
+  // before the device is asked, after every other wait of the signer's.
+  const beforeSign = vaultSigned ? null : authorized?.beforeSign || null;
+  const spendAndCheck = async () => {
     if (confirmation) await spendConfirmation(confirmation);
+    if (beforeSign) await beforeSign();
   };
 
   let address = null;
@@ -259,13 +315,13 @@ function getSigner(walletIndex, authorized = {}) {
       return address;
     },
     signTransaction: async (tx) => {
-      await spent();
+      await spendAndCheck();
       return backend.signTransaction(tx);
     },
     // async: a malformed input rejects like any other signing failure.
     signMessage: async (message) => {
       const normalized = normalizeMessage(message);
-      await spent();
+      await spendAndCheck();
       return backend.signMessage(normalized);
     },
     /**
@@ -287,7 +343,7 @@ function getSigner(walletIndex, authorized = {}) {
       if (expectedHash !== undefined && hash !== expectedHash) {
         throw new Error('The typed data changed after it was confirmed');
       }
-      await spent();
+      await spendAndCheck();
       // `digest`: the hash a device's signature must recover over (#1063):
       // the one the user confirmed, or the core's own for main's typed
       // data, never one rebuilt from what the device was sent.
@@ -299,7 +355,7 @@ function getSigner(walletIndex, authorized = {}) {
   // probe for it — see transaction-service's signAndSendTransaction.
   if (typeof backend.sendTransaction === 'function') {
     signer.sendTransaction = async (tx) => {
-      await spent();
+      await spendAndCheck();
       return backend.sendTransaction(tx);
     };
   }

@@ -289,21 +289,25 @@ function getSafeMessageState(safeIndex, token) {
  * @param {{id: string, page: object}} params.approval - The Safe approval
  *   the request's `safe-message` token or its site's rule gave (design
  *   0012): held for the session, and ended if none opens for it
+ * @param {() => Promise<void>} [params.beforeSign] - The caller's last
+ *   check (a page's standing rule, for a message it answers): awaited
+ *   inside each free owner's signer, after the request's preparation and
+ *   right before that owner signs. Its refusal ends the session, nothing
+ *   more signed, and rejects with the caller's own error.
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
-async function startSafeMessage({ safeIndex, request, display, requester, owner = null, approval }) {
-  let held = false;
+async function startSafeMessage({ safeIndex, request, display, requester, owner = null, approval, beforeSign = null }) {
+  // Set once a session holds the approval: otherwise it is ended here.
+  const progress = { held: false };
   try {
     if (!safeApprovals.isApproval(approval)) throw new Error('This signature request was not confirmed');
-    const opened = await openSafeMessage({ safeIndex, request, display, requester, owner, approval });
-    held = opened.held;
-    return opened.state;
+    return await openSafeMessage({ safeIndex, request, display, requester, owner, approval, beforeSign, progress });
   } finally {
-    if (!held) await safeApprovals.release(approval);
+    if (!progress.held) await safeApprovals.release(approval);
   }
 }
 
-async function openSafeMessage({ safeIndex, request, display, requester, owner, approval }) {
+async function openSafeMessage({ safeIndex, request, display, requester, owner, approval, beforeSign, progress }) {
   const mainOwned = owner === 'main';
   const initial = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
@@ -351,7 +355,7 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
       // The identical request from the SAME page again (retried without
       // navigating) — resume: the collected signatures are still valid
       // for this hash, under the session's own approval.
-      return { state: await signSafeMessage(safeIndex, undefined, existing.token), held: false };
+      return signSafeMessage(safeIndex, undefined, existing.token);
     }
     if (!requesterGone(existing)) {
       // A different request, or the same digest from a DIFFERENT page:
@@ -389,13 +393,24 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
     };
     // Held first: a session opens only with its approval.
     await safeApprovals.hold(MESSAGE, safeIndex, approval, hash);
+    progress.held = true;
     setSession(safeIndex, entry);
     attachRequesterLifecycle(safeIndex, entry);
-    await collectFreeSignatures(store, safeIndex, record.owners);
+    try {
+      await collectFreeSignatures(store, safeIndex, record.owners, null, { beforeSign });
+    } catch (err) {
+      // The caller's last check refused: the session ends here (its
+      // approval ended first), and what it collected goes with it. If the
+      // end fails, it stays ended for the next drop to finish.
+      await endAndDiscard(safeIndex, entry).catch((endError) => {
+        console.warn('[SafeMessages] a refused signature request is kept, ended, for now:', endError.message);
+      });
+      throw err;
+    }
   } finally {
     release(safeIndex);
   }
-  return { state: sessionState(safeIndex), held: true };
+  return sessionState(safeIndex);
 }
 
 /**

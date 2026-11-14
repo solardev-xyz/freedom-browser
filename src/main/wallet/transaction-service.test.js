@@ -130,6 +130,35 @@ describe('signAndSendTransaction (signer-based)', () => {
     console.error.mockRestore();
   });
 
+  // APB-1b: a device's signer refuses before it is asked when the
+  // dispatcher's last check (`beforeSign`, signers.js) withdraws the
+  // request: the caller hears that very error, with nothing recorded or
+  // sent, a Ledger's nonce free for the next and a phone never asked.
+  it("a device signer's own withdrawal before the device: the very error, nothing recorded or sent", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const params = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '1000',
+      gasLimit: '21000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      chainId: 8453,
+    };
+    const withdrawn = Object.assign(new Error('withdrawn'), { code: 'INTENT_WITHDRAWN', answer: { error: {} } });
+    const ledger = { ...signer, signTransaction: jest.fn(async () => { throw withdrawn; }) };
+    await expect(signAndSendTransaction(params, ledger)).rejects.toBe(withdrawn);
+    expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+    await mockIntentStore.ready;
+    expect(mockIntentStore.held()).toEqual([]);
+    const phone = {
+      getAddress: async () => '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      sendTransaction: jest.fn(async () => { throw withdrawn; }),
+    };
+    await expect(signAndSendTransaction(params, phone)).rejects.toBe(withdrawn);
+    expect(mockBroadcastRawTransaction).not.toHaveBeenCalled();
+    console.error.mockRestore();
+  });
+
   // Codex round 2 on #1191: a keyed send (a Safe's execution) honours the
   // guard too: at its first commit, after the signer's wait, and at a held
   // intent's handoff, the last point before its bytes go out again.

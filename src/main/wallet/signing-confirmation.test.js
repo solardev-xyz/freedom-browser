@@ -519,3 +519,94 @@ describe("signing-confirmation: the core's kinds", () => {
     }
   });
 });
+
+// A site's standing rule (freedom-core design 0012, APB-1b): `approval.check`
+// under the page, in the core's forms, and what main does with the core's
+// `rule` reply to an "Always allow" send.
+describe("signing-confirmation: a site's standing rule", () => {
+  const sc = require('./signing-confirmation');
+  const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+
+  beforeEach(() => {
+    mockCore.reset();
+  });
+
+  test("approval.check gets the request in the core's form, under the page", async () => {
+    mockCore.setStanding(() => ({ covered: true }));
+    const send = { to: TX.to, value: '1000', data: TX.data, chainId: 100, gasLimit: '21000', gasPrice: '7' };
+    await expect(sc.checkStanding(PAGE, { kind: 'transaction', account: 0, accountType: 'remote', payload: send, paused: false })).resolves.toEqual({
+      covered: true,
+      reason: null,
+    });
+    await sc.checkStanding(PAGE, { kind: 'message', account: 2, accountType: 'ledger', payload: 'hi' });
+    await sc.checkStanding(PAGE, {
+      kind: 'typed_data',
+      account: 0,
+      accountType: 'mnemonic',
+      payload: { domain: { chainId: 100 }, types: { Mail: [{ name: 'body', type: 'string' }] }, primaryType: 'Mail', message: { body: 'x' } },
+      chainId: 100,
+    });
+    // A send without main's D12 reading reads as paused.
+    await sc.checkStanding(PAGE, { kind: 'transaction', account: 1, accountType: 'safe', payload: send });
+    expect(mockCore.calls.map(({ method, params, page }) => [method, params, page])).toEqual([
+      [
+        'approval.check',
+        {
+          request: {
+            kind: 'transaction',
+            account: 0,
+            account_kind: 'phone',
+            tx: { type: 0, chain_id: '100', gas_limit: '21000', to: TX.to, value: '1000', data: TX.data, gas_price: '7' },
+          },
+          chain_id: 100,
+          paused: false,
+        },
+        PAGE,
+      ],
+      ['approval.check', { request: { kind: 'message', account: 2, account_kind: 'ledger', message: '0x6869' } }, PAGE],
+      [
+        'approval.check',
+        {
+          request: {
+            kind: 'typed_data',
+            account: 0,
+            account_kind: 'vault',
+            typed_data: { domain: { chainId: 100 }, types: { Mail: [{ name: 'body', type: 'string' }] }, message: { body: 'x' } },
+            primary_type: 'Mail',
+          },
+          chain_id: 100,
+        },
+        PAGE,
+      ],
+      ['approval.check', expect.objectContaining({ paused: true, request: expect.objectContaining({ account_kind: 'safe' }) }), PAGE],
+    ]);
+  });
+
+  test('not covered: the core says so, the call fails, or the request is one the core cannot judge (unasked)', async () => {
+    mockCore.setStanding(() => ({ covered: false, reason: 'paused' }));
+    const message = { kind: 'message', account: 0, accountType: 'mnemonic', payload: 'hi' };
+    await expect(sc.checkStanding(PAGE, message)).resolves.toEqual({ covered: false, reason: 'paused' });
+    const check = jest.spyOn(mockCore.approval, 'check').mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 'unavailable' }));
+    await expect(sc.checkStanding(PAGE, message)).resolves.toEqual({ covered: false, reason: 'unavailable' });
+    check.mockRestore();
+    mockCore.calls.length = 0;
+    await expect(sc.checkStanding(PAGE, { ...message, accountType: 'hardware' })).resolves.toEqual({ covered: false, reason: 'invalid' });
+    await expect(sc.checkStanding(PAGE, { ...message, kind: 'other' })).resolves.toEqual({ covered: false, reason: 'invalid' });
+    await expect(sc.checkStanding(null, message)).resolves.toEqual({ covered: false, reason: 'no_page' });
+    expect(mockCore.calls).toEqual([]);
+  });
+
+  test('"Always allow": main writes the rule on the core\'s `not_moved`, or for a device\'s send, and on nothing else', () => {
+    expect(sc.mainWritesRule(true, { added: false, reason: 'not_moved' })).toBe(true);
+    expect(sc.mainWritesRule(false, undefined)).toBe(true);
+    for (const reply of [{ added: true }, { added: false, reason: 'not_exposed' }, { added: false }, null, undefined]) {
+      expect(sc.mainWritesRule(true, reply)).toBe(false);
+    }
+  });
+
+  test("a standing refusal keeps the core's reason, in today's words", () => {
+    const err = sc.confirmationError(Object.assign(new Error('x'), { code: 'not_authorized', data: { reason: 'no_rule' } }));
+    expect(err).toMatchObject({ code: NOT_CONFIRMED, reason: 'no_rule' });
+    expect(err.message).toBe("Signing was not confirmed: this request is not covered by the site's auto-approve rules");
+  });
+});

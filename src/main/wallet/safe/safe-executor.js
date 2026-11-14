@@ -362,10 +362,15 @@ async function buildSafeTransaction({ chainId, safe, tx, provider }) {
  * @param {Object} params.typedData - From buildSafeTransaction
  * @param {number} params.ownerIndex - Wallet index of the owner
  * @param {{id: string, page: object|null}} params.approval - The Safe approval
+ * @param {() => Promise<void>} [params.beforeSign] - The caller's last
+ *   check, awaited by the signer right before it signs (`signers.js`)
  * @returns {Promise<{signer: string, data: string}>}
  */
-async function collectOwnerSignature({ typedData, ownerIndex, approval }) {
-  const signer = getSigner(ownerIndex, approval ? { safe: approval } : {});
+async function collectOwnerSignature({ typedData, ownerIndex, approval, beforeSign = null }) {
+  const signer = getSigner(ownerIndex, {
+    ...(approval ? { safe: approval } : {}),
+    ...(beforeSign ? { beforeSign } : {}),
+  });
   const address = await signer.getAddress();
   const data = await signer.signTypedData(typedData);
   const recovered = verifyTypedData(

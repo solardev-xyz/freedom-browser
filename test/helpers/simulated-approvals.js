@@ -20,7 +20,11 @@
  *   - a `safe-send`'s or `safe-message`'s spend gives a Safe approval, held by
  *     its page or by the wallet (`shell`); `{ safe }` signs an owner's typed
  *     data or a send's executor (which ends it) only for its holder, until
- *     `approval.end`; a Safe's new send approval ends its older one.
+ *     `approval.end`; a Safe's new send approval ends its older one;
+ *   - a site's standing rule answers `approval.check` and a `sign.*` under
+ *     `page` with `{ standing }` as the test's `setStanding(fn)` says (none
+ *     by default), and a flagged `dapp-send`'s signature replies that no
+ *     rule was written (`not_moved`: the dApp file hasn't moved to the core).
  * Every call is recorded in `calls` as `{ method, params, page }`.
  */
 const crypto = require('crypto');
@@ -83,18 +87,25 @@ function simulatedApprovals() {
   const calls = [];
   // The core's vault clock: two minutes of life a token (setNow to move it).
   let now = () => Date.now();
-  const tokens = new Map(); // token -> { kind, account, digest, page, hash, sender }
+  const tokens = new Map(); // token -> { kind, account, digest, page, hash, sender, remember }
   // Safe approvals (design 0012): id -> { kind, holder }, `holder` the
   // page's { origin, frame, navigation }, or null for the wallet's (`shell`).
   const safes = new Map();
   // The core's own fee check at a Safe executor's signature: a reason to
   // refuse it with (`fee_check`), or null.
   let executorRefusal = null;
+  // A site's standing rule, as the core reads it: `(page, { request,
+  // chain_id?, paused? })` → `{ covered, reason? }`. None answers by default.
+  const noRule = () => ({ covered: false, reason: 'no_rule' });
+  let standing = noRule;
 
   const pageOf = (context, handle) =>
     context ? { origin: context.origin, frame: context.frame, navigation: context.navigation, handle } : null;
   const digestOf = (kind, account, payload, page) =>
     stable({ kind, account: account ?? null, facts: facts(kind, payload), page: page ?? null });
+
+  // Whether the last token `take` spent was a flagged dApp send's.
+  let remembered = null;
 
   // Spends `token` for a request: burnt whatever the outcome.
   function take(token, minter, fits) {
@@ -108,6 +119,7 @@ function simulatedApprovals() {
     if (!request || entry.digest !== digestOf(entry.kind, request.account, request.payload, request.page)) {
       throw refused('mismatch');
     }
+    remembered = entry.remember === true && Boolean(request.page);
     return entry;
   }
 
@@ -140,6 +152,7 @@ function simulatedApprovals() {
         typed = { hash: entry.hash, view: { primary_type: payload.primary_type ?? null } };
       }
       if (kind === 'intent-replace') entry.sender = payload.sender;
+      if (kind === 'dapp-send') entry.remember = payload.remember === true;
       tokens.set(token, entry);
       return { token, expires_in_ms: TOKEN_LIFE_MS, ...typed };
     },
@@ -170,6 +183,12 @@ function simulatedApprovals() {
       safes.delete(safe);
       return {};
     },
+    async check(params, context = null) {
+      calls.push({ method: 'approval.check', params, page: context });
+      if (!context) throw Object.assign(new Error('a standing rule answers only a page'), { code: 'forbidden' });
+      const answer = standing(context, params) || noRule();
+      return answer.covered === true ? { covered: true } : { covered: false, reason: answer.reason ?? 'no_rule' };
+    },
   };
 
   /**
@@ -180,7 +199,7 @@ function simulatedApprovals() {
    */
   function authorize(method, account, request, { authorization = null, page = null } = {}) {
     calls.push({ method, params: { account, ...request, ...(authorization ? { authorization } : {}) }, page });
-    if (!authorization) return;
+    if (!authorization) return null;
     if (authorization.safe !== undefined) {
       // A Safe approval: open, presented by its holder, for an owner's typed
       // data or the executor's transaction, which ends it.
@@ -193,7 +212,14 @@ function simulatedApprovals() {
         if (executorRefusal) throw refused(executorRefusal);
         safes.delete(authorization.safe);
       }
-      return;
+      return null;
+    }
+    if (authorization.standing) {
+      if (!page) throw Object.assign(new Error('a standing rule answers only a page'), { code: 'forbidden' });
+      const kind = method === 'sign.transaction' ? 'transaction' : method === 'sign.message' ? 'message' : 'typed_data';
+      const answer = standing(page, { request: { kind, account, ...request }, paused: authorization.standing.paused }) || noRule();
+      if (answer.covered !== true) throw refused(answer.reason ?? 'no_rule');
+      return null;
     }
     const { token, handle, intent } = authorization;
     const bound = pageOf(page, handle);
@@ -210,6 +236,11 @@ function simulatedApprovals() {
         const fits = page ? entry.kind === 'dapp-send' : entry.kind === 'wallet-send' || entry.kind === 'executor-send';
         return fits ? { account, payload: { tx: request.tx }, page: bound } : null;
       });
+      // A flagged dApp send: the core signs and writes no rule before the
+      // dApp file moves to it (design 0012, The model).
+      const spent = remembered;
+      remembered = null;
+      return spent ? { added: false, reason: 'not_moved' } : null;
     } else if (method === 'sign.message') {
       take(token, minter, (entry) =>
         entry.kind === 'sign-message' && page ? { account, payload: { message: request.message }, page: bound } : null
@@ -221,6 +252,7 @@ function simulatedApprovals() {
       );
       if (entry.hash !== expectedHash) throw refused('mismatch');
     }
+    return null;
   }
 
   return {
@@ -230,6 +262,10 @@ function simulatedApprovals() {
     outstanding: () => tokens.size,
     setNow(fn) {
       now = fn;
+    },
+    /** The site's standing rule the core reads (`approval.check`, `{ standing }`). */
+    setStanding(fn) {
+      standing = typeof fn === 'function' ? fn : noRule;
     },
     openSafeApprovals: () => safes.size,
     isSafeApprovalOpen: (id) => safes.has(id),
@@ -248,36 +284,40 @@ function simulatedApprovals() {
       safes.clear();
       executorRefusal = null;
       now = () => Date.now();
+      standing = noRule;
+      remembered = null;
     },
   };
 }
 
 /**
  * A test's vault signer as the core checks it: `sign.transaction` presents
- * the confirmation `getSigner` was handed (`authorized`), which `approvals`
- * spends before `signer` is asked, refusing in today's words.
+ * the confirmation `getSigner` was handed (`authorized`), or the page's
+ * standing rule (`{ standing }`), which `approvals` checks before `signer`
+ * is asked, refusing in today's words; the core's `rule` reply reaches
+ * `authorized.onRule`, as `signers.js` hands it on.
  */
 function coreCheckedSigner(approvals, signer, index, authorized = {}) {
   const { toCoreTransaction } = require('../../src/main/wallet/signing-utils');
   const { signingAuthorization, safeAuthorization, confirmationError } = require('../../src/main/wallet/signing-confirmation');
+  const presented = () => {
+    if (authorized?.confirmation) return signingAuthorization(authorized.confirmation);
+    if (authorized?.safe) return safeAuthorization(authorized.safe);
+    const page = authorized?.page ?? null;
+    return page && authorized?.standing ? { authorization: { standing: { ...authorized.standing } }, page } : { page };
+  };
   return {
     ...signer,
     signTransaction: async (tx) => {
+      let rule;
       try {
-        approvals.authorize(
-          'sign.transaction',
-          index,
-          { tx: toCoreTransaction(tx).tx },
-          authorized?.confirmation
-            ? signingAuthorization(authorized.confirmation)
-            : authorized?.safe
-              ? safeAuthorization(authorized.safe)
-              : { page: authorized?.page ?? null }
-        );
+        rule = approvals.authorize('sign.transaction', index, { tx: toCoreTransaction(tx).tx }, presented());
       } catch (err) {
         throw confirmationError(err);
       }
-      return signer.signTransaction(tx);
+      const raw = await signer.signTransaction(tx);
+      if (typeof authorized?.onRule === 'function') authorized.onRule(rule ?? null);
+      return raw;
     },
   };
 }

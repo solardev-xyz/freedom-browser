@@ -676,15 +676,22 @@ function safeAddress(safeIndex) {
  * a malformed one fails in today's words.
  *
  * @param {object} [options] `chainId`: a page's chain, which a typed-data
- *   view is made against (`typedDataViewOptions`)
+ *   view is made against (`typedDataViewOptions`); `remember`: a dApp send
+ *   whose "Always allow" was ticked (design 0012, `token-remember`)
  */
-function corePayload(kind, accountIndex, payload, { chainId } = {}) {
+function corePayload(kind, accountIndex, payload, { chainId, remember } = {}) {
   const facts = bindingFor(kind, accountIndex, payload);
   switch (kind) {
     case KINDS.WALLET_SEND:
     case KINDS.EXECUTOR_SEND:
-    case KINDS.DAPP_SEND:
       return { account: facts.walletIndex, payload: { tx: coreTx(payload) } };
+    case KINDS.DAPP_SEND:
+      // The flag rides beside the binding: the core keeps it with the
+      // token, and its `sign.transaction` says what became of the rule.
+      return {
+        account: facts.walletIndex,
+        payload: { tx: coreTx(payload), ...(remember === true ? { remember: true } : {}) },
+      };
     case KINDS.SIGN_MESSAGE: {
       const { normalizeMessage, messageToBytes } = require('./signing-utils');
       const bytes = typeof payload === 'string' ? messageToBytes(normalizeMessage(payload)) : Buffer.from(payload);
@@ -761,8 +768,8 @@ function corePayload(kind, accountIndex, payload, { chainId } = {}) {
  *   handle?: string, page?: object, intent?: {id: string}}} Confirmation
  */
 
-async function issueCore(kind, accountIndex, payload, { page = null, handle, feeAcknowledged, phone, chainId } = {}) {
-  const request = corePayload(kind, accountIndex, payload, { chainId });
+async function issueCore(kind, accountIndex, payload, { page = null, handle, feeAcknowledged, phone, chainId, remember } = {}) {
+  const request = corePayload(kind, accountIndex, payload, { chainId, remember });
   const params = { kind, payload: request.payload };
   if (request.account !== undefined) params.account = request.account;
   if (handle !== undefined) params.handle = handle;
@@ -842,7 +849,9 @@ function rememberKind(token, kind, expiresAt) {
  *   agent }`)
  * @param {object} [options] `chainId`: the page's chain, for typed data;
  *   for a dApp send, `feeAcknowledged` (the user confirmed a fee above the
- *   threshold again) and `phone` (a phone account's, whose fee it picks)
+ *   threshold again), `phone` (a phone account's, whose fee it picks) and
+ *   `remember` ("Always allow" ticked: the core says at the signature
+ *   whether it wrote the rule, `rule`)
  * @returns {Promise<Confirmation & {hash?: string, view?: object}>}
  */
 async function issuePageConfirmation(kind, accountIndex, payload, page, options = {}) {
@@ -859,6 +868,7 @@ async function issuePageConfirmation(kind, accountIndex, payload, page, options 
     chainId: options.chainId,
     feeAcknowledged: options.feeAcknowledged,
     phone: options.phone,
+    remember: kind === KINDS.DAPP_SEND && options.remember === true,
   });
   return {
     ...issued.confirmation,
@@ -1016,6 +1026,102 @@ function signingAuthorization(confirmation) {
   return { authorization, page: confirmation.page || null };
 }
 
+// The core's account kinds (design 0012, `approval.check`), by main's
+// wallet type: a vault account, a Ledger, a phone, a Safe.
+const ACCOUNT_KINDS = Object.freeze({ mnemonic: 'vault', ledger: 'ledger', remote: 'phone', safe: 'safe' });
+
+/**
+ * `approval.check`'s `request`, and its `chain_id` and `paused`, for a
+ * page's request as the core takes them: a message's bytes in hex, typed
+ * data in the core's form with the page's `primaryType` (viewed on the
+ * page's chain), or the send main would sign, without its nonce.
+ */
+function standingRequest({ kind, account, accountType, payload, chainId, paused }) {
+  const accountKind = ACCOUNT_KINDS[accountType];
+  if (!accountKind) throw new Error(`Unknown account type: ${accountType}`);
+  const request = { kind, account: index(account, 'account'), account_kind: accountKind };
+  const params = { request };
+  const utils = require('./signing-utils');
+  switch (kind) {
+    case 'message': {
+      const bytes = typeof payload === 'string' ? utils.messageToBytes(utils.normalizeMessage(payload)) : Buffer.from(payload);
+      request.message = '0x' + bytes.toString('hex');
+      return params;
+    }
+    case 'typed_data': {
+      const typedData = utils.normalizeTypedData(payload);
+      if (!typedData || typeof typedData !== 'object') throw new Error('Typed data is required');
+      const options = utils.typedDataViewOptions(typedData, chainId);
+      request.typed_data = utils.toCoreTypedData(typedData);
+      if (options.primaryType !== undefined) request.primary_type = options.primaryType;
+      if (options.chainId !== undefined) params.chain_id = options.chainId;
+      return params;
+    }
+    case 'transaction':
+      request.tx = coreTx(payload);
+      params.chain_id = chain(payload.chainId);
+      // Main's D12 reading, in the send's own turn; none reads as paused.
+      params.paused = paused !== false;
+      return params;
+    default:
+      throw new Error(`Unknown request kind: ${kind}`);
+  }
+}
+
+/**
+ * Whether a site's standing rule would answer a page's request now (design
+ * 0012, `approval.check`): the core reads today's rules from the dApp file
+ * main writes, for the page's own key, outside Agent custody (the
+ * PageContext's `agent`), with the D12 pause main reads and the core's own
+ * fee evidence for a send. Advice, for main's choice between a prompt and
+ * none: `sign.*` decides again under `{ standing }`. Asked under `page` with
+ * the request's PageContext; it counts nothing and writes nothing. Never
+ * rejects: a request the core can't judge, or a failed call, reads as not
+ * covered, and the request goes to its prompt.
+ *
+ * @param {object} page the request's PageContext
+ * @param {{kind: 'message'|'typed_data'|'transaction', account: number,
+ *   accountType: string, payload: *, chainId?: number, paused?: boolean}} request
+ *   `payload`: the message, the typed data, or the send main would sign
+ *   (`{ to, value, data, chainId, gasLimit, … }`); `chainId`: the page's
+ *   chain; `paused`: main's D12 reading, for a send
+ * @returns {Promise<{covered: boolean, reason: string|null}>}
+ */
+async function checkStanding(page, request) {
+  if (!page || typeof page.origin !== 'string' || !page.origin) return { covered: false, reason: 'no_page' };
+  let params;
+  try {
+    params = standingRequest(request || {});
+  } catch {
+    return { covered: false, reason: 'invalid' };
+  }
+  try {
+    const reply = await vault().approval.check(params, page);
+    if (reply?.covered === true) return { covered: true, reason: null };
+    return { covered: false, reason: typeof reply?.reason === 'string' ? reply.reason : null };
+  } catch (err) {
+    return { covered: false, reason: typeof err?.code === 'string' ? err.code : 'error' };
+  }
+}
+
+/**
+ * Whether main writes today's transaction rule after an "Always allow"
+ * send (design 0012, The model, "Before APB-2"): the core signs a vault
+ * account's flagged `dapp-send` and replies what became of the rule, which
+ * before the dApp file's move is always `{ added: false, reason:
+ * 'not_moved' }`; main then writes it, as today. Any other reply (none, a
+ * rule the core added, or another reason) leaves main's file alone. A
+ * device's send (a Ledger, a phone) is signed outside the core, which
+ * writes nothing for it: main writes the rule, as today.
+ *
+ * @param {boolean} coreSigned the core made the signature
+ * @param {object|null|undefined} rule the `sign.transaction` reply's `rule`
+ */
+function mainWritesRule(coreSigned, rule) {
+  if (!coreSigned) return true;
+  return rule?.added === false && rule.reason === 'not_moved';
+}
+
 /**
  * Burn a token without spending it: for a request that ended before it
  * presented its token, or refused before it named a request to check the
@@ -1067,11 +1173,14 @@ module.exports = {
   KINDS,
   PAGE_KINDS,
   NOT_CONFIRMED,
+  ACCOUNT_KINDS,
   bindingFor,
+  checkStanding,
   confirmationError,
   corePayload,
   isCoreKind,
   isPageKind,
+  mainWritesRule,
   issueConfirmation,
   issueMainConfirmation: issueMain,
   issuePageConfirmation,

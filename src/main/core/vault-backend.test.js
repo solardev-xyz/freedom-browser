@@ -480,6 +480,7 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.spend({ token: 't', kind: 'intent-close', payload: {} });
     await vaultBackend.approval.discard('t');
     await vaultBackend.approval.end('s');
+    await vaultBackend.approval.check({ request: {} }, { origin: 'https://app.example', agent: false });
     await vaultBackend.typedDataHash({});
     await vaultBackend.deleteVault('password2');
 

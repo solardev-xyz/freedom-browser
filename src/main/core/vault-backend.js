@@ -75,8 +75,10 @@ async function call(method, params = {}, page = null) {
 /**
  * `sign.*`'s caller and `authorization` (freedom-core design 0012, API):
  * `{ token, handle? }`, or `{ token, intent: { id } }` for an
- * intent-replace, checked by the core before any key is derived; a page's
- * under `page` with its PageContext. None, from main itself, as before.
+ * intent-replace, or `{ standing: { paused? } }` for a request a site's
+ * standing rule answers, checked by the core before any key is derived; a
+ * page's under `page` with its PageContext. None, from main itself, as
+ * before.
  */
 function signed(params, { authorization = null } = {}) {
   return authorization ? { ...params, authorization } : params;
@@ -374,7 +376,8 @@ const vaultBackend = {
     /**
      * `options`: `{ authorization, page }`, the confirmation the core checks
      * and the PageContext of a page's request (`signed`).
-     * @returns {{ raw: string, hash: string }}
+     * @returns {{ raw: string, hash: string, rule?: object }} `rule`: what
+     *   became of a flagged `dapp-send`'s "Always allow" (design 0012)
      */
     transaction(key, tx, options = {}) {
       return call('sign.transaction', signed({ key, tx }, options), options.page);
@@ -438,6 +441,14 @@ const vaultBackend = {
     /** Ends a Safe approval: `{}` whatever it was. */
     end(safe, page = null) {
       return call('approval.end', { safe }, page);
+    },
+    /**
+     * Whether a site's standing rule would answer a page's request (always
+     * under `page`): `{ request, chain_id?, paused? }` → `{ covered, reason? }`.
+     * Advice: `sign.*` decides again under `{ standing }`.
+     */
+    check(params, page) {
+      return call('approval.check', params, page);
     },
   },
 

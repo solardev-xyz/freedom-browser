@@ -263,7 +263,8 @@ async function start(options = {}) {
     {
       inCustody: () => false,
       isVaultUnlocked: async () => true,
-      ruleMatches: () => mockAutoApprove,
+      // The site's rule, as the identity core reads it (design 0012).
+      checkStanding: async () => (mockAutoApprove ? { covered: true, reason: null } : { covered: false, reason: 'no_rule' }),
       rulePaused: async () => false,
       estimateGas: async () => ({ gasLimit: '21000' }),
       getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' }),

@@ -20,19 +20,33 @@
  *   3. The site must be connected; a Safe sends only on Gnosis. The
  *      transaction's fields get main's shape checks: `to` an address,
  *      `value` a quantity, `data` hex.
- *   4. The site's contract rule ("always allow" on a confirmed send), read
- *      by main for the requester's key, is chosen only outside Agent
- *      custody, read live, for a contract call (never a plain transfer, never
- *      a Safe), with no more value than the send it was recorded from, and
- *      paused while a payment of the site waits (D12, `auto-approve-pause.js`).
+ *   4. The site's contract rule ("always allow" on a confirmed send) is
+ *      chosen only outside Agent custody, read live, for a contract call
+ *      (never a plain transfer, never a Safe), with no more value than the
+ *      send it was recorded from, paused while a payment of the site waits
+ *      (D12, `auto-approve-pause.js`, main's reading), and once the fee check
+ *      lets it (design 0005, A): a fee that couldn't be compared, is one
+ *      endpoint's word, or is above the threshold goes to the prompt
+ *      instead. The identity core reads the rule (design 0012, APB-1,
+ *      `approval.check`), for the requester's key under the request's
+ *      PageContext, from the file main still writes, and judges the fee on
+ *      its own evidence, so main quotes the send first and asks the core
+ *      about the send it would sign.
  *   5. The rule answers with no prompt, but a locked vault's unlock
- *      (`vault.unlock`), once the fee check lets it (design 0005, A): a fee
- *      that couldn't be compared, is one endpoint's word, or is above the
- *      threshold goes to the prompt instead. Just before the send, after the
- *      last wait (the quote, the fee check, the site's turn, the name),
- *      custody is read again, the rule read again and the document must hold
- *      its key: a guest that entered custody meanwhile is refused
- *      (`agent_custody`), with nothing sent.
+ *      (`vault.unlock`), after which the send is quoted and judged again.
+ *      Just before the send, after every other wait main makes (the quote,
+ *      the fee check, the site's turn, the name), the core reads the rule
+ *      again, custody is read again and the document must hold its key: a
+ *      guest that entered custody meanwhile is refused (`agent_custody`),
+ *      with nothing sent, and a fee the core no longer allows sends the
+ *      request to its prompt, with nothing signed. A Ledger or a phone
+ *      presents nothing the core judges as it signs, and the transaction
+ *      service waits again before asking it (a Ledger's fee and nonce reads,
+ *      a phone's address): the same reading is its signer's last check
+ *      (`beforeSign`), right before the device, with no wait between. A vault
+ *      signature goes under `page` with `{ standing }`, and the core judges
+ *      the rule once more as it signs, a fee it no longer allows again
+ *      sending the request to its prompt.
  *   6. Otherwise main prompts (`eth.send`) with its own view: the account,
  *      the chain, the transaction in main's form, the quoted fee, the fee
  *      check's verdict and the most the send can cost. On the user's
@@ -43,8 +57,10 @@
  *      approval, bound to the prompt's handle and the requester's key, with
  *      the transaction main holds, and the dispatcher spends it in the same
  *      run as the last checks, just before the send. "Always allow", one of
- *      the prompt's choices, records the contract rule for the requester's
- *      key once the payment is sent.
+ *      the prompt's choices, is minted into the token (`remember`), and main
+ *      records the contract rule for the requester's key once the payment is
+ *      sent: the core, which signs a vault account's send, writes no rule
+ *      until the dApp file moves to it (APB-2), and says so (`not_moved`).
  *
  * After the signer's wait (a Ledger, the core), and before the signed bytes
  * are recorded or sent, main checks the name, the grant (or the rule and
@@ -79,7 +95,7 @@
  * page gets the keyless answer.
  */
 
-const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED } = require('../wallet/signing-confirmation');
+const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED, mainWritesRule } = require('../wallet/signing-confirmation');
 const { guestInCustody } = require('./page-signing');
 
 // The core's refusal of a mint for its fee check (`signing-confirmation.js`),
@@ -335,8 +351,8 @@ function defaultSendDependencies() {
     ...defaultPaymentDependencies(),
     inCustody: guestInCustody,
     isVaultUnlocked: () => require('../identity-manager').isVaultUnlocked(),
-    ruleMatches: (key, to, selector, chainId, value) =>
-      require('../wallet/dapp-permissions').isTransactionAutoApproved(key, to, selector, chainId, value),
+    // The site's standing rule, as the identity core reads it (design 0012).
+    checkStanding: (page, request) => require('../wallet/signing-confirmation').checkStanding(page, request),
     rulePaused: (key) => require('../wallet/auto-approve-pause').transactionAutoApprovePaused(key),
     addTransactionAutoApprove: (key, to, selector, chainId, value) =>
       require('../wallet/dapp-permissions').addTransactionAutoApprove(key, to, selector, chainId, value),
@@ -414,28 +430,35 @@ function createSendDispatchers(shared, deps = {}) {
     return { id: chainId, name, symbol: symbol || 'ETH' };
   }
 
-  // The rule's own match, read now: the grant exposing the account, a
-  // contract call, and a rule for its contract, selector and chain with no
-  // less value than this send's.
-  function ruleMatches(key, walletIndex, tx, chainId) {
-    if (!grantExposes(key, walletIndex)) return false;
-    const selector = selectorOf(tx.data);
-    if (!selector) return false;
+  // Whether the site's contract rule answers `tx`, the send main would
+  // sign, now: the identity core's reading (design 0012, `approval.check`)
+  // for the requester's key under the request's PageContext (custody read
+  // live): the grant exposing the account, a contract call a rule covers
+  // with no more value than the send it was recorded from, not `paused`
+  // (D12, main's reading) and, but for a phone, the fee check on the core's
+  // own evidence. One the core can't judge is not covered.
+  async function ruleAnswers(context, ctx, tx, paused) {
     try {
-      return d.ruleMatches(key, tx.to, selector, chainId, tx.value) === true;
+      const answer = await d.checkStanding(context.pageContext(), {
+        kind: 'transaction',
+        account: ctx.walletIndex,
+        accountType: ctx.account.type,
+        payload: tx,
+        paused,
+      });
+      return answer?.covered === true ? { covered: true, reason: null } : { covered: false, reason: answer?.reason ?? null };
     } catch {
-      return false;
+      return { covered: false, reason: null };
     }
   }
 
-  // Whether the rule answers this request, chosen now: it matches, and it
-  // isn't paused for a payment of the site that waits (D12).
-  async function ruleChosen(key, walletIndex, tx, chainId) {
-    if (!ruleMatches(key, walletIndex, tx, chainId)) return false;
+  // Whether the site is paused for a payment of its own that waits (D12),
+  // read now; one main can't read is.
+  async function pausedNow(key) {
     try {
-      return (await d.rulePaused(key)) !== true;
+      return (await d.rulePaused(key)) === true;
     } catch {
-      return false;
+      return true;
     }
   }
 
@@ -548,10 +571,55 @@ function createSendDispatchers(shared, deps = {}) {
     return true;
   }
 
+  /**
+   * The choice between the prompt and none (design 0012, APB-1): the core
+   * judges the site's rule on the send main would sign, so main quotes it
+   * first, judges its fee as today (design 0005, A: a phone picks and pays
+   * its own, and has none to check), which also has the core gather its own
+   * evidence, and reads the D12 pause. Resolves that send when the rule
+   * answers it; otherwise null, with the quote (null when it couldn't be
+   * had: the prompt shows none, as for a send no rule answers) and the
+   * verdict kept for the prompt.
+   */
+  async function chooseRule(context, ctx) {
+    const judged = await quoteAndJudge(ctx);
+    if (!judged.tx) return null;
+    const paused = await pausedNow(context.requester.key);
+    return (await ruleAnswers(context, ctx, judged.tx, paused)).covered ? judged.tx : null;
+  }
+
+  // The send main would sign, quoted now, and its fee judged (design 0005,
+  // A: a phone picks and pays its own, and has none to check): `{ tx }`, or
+  // `{ failed }` when the quote couldn't be had, or `{ fee: true }` when the
+  // fee needs the user. The quote and the verdict are kept for the prompt.
+  async function quoteAndJudge(ctx) {
+    let quoted;
+    try {
+      quoted = await quote(ctx);
+    } catch (err) {
+      ctx.quoted = null;
+      ctx.verdict = null;
+      return { failed: err };
+    }
+    const tx = sendTxOf(ctx, quoted);
+    const verdict = ctx.phone ? null : await verdictOf(tx);
+    ctx.quoted = quoted;
+    ctx.verdict = verdict;
+    if (!ctx.phone && !verdict?.autoApprove) return { fee: true };
+    return { tx };
+  }
+
+  // What the core's refusal of a rule's send asks for: its prompt, for a fee
+  // the core no longer allows or a rate it has reached (nothing was signed).
+  const PROMPT_REASONS = new Set(['fee_check', 'rate_limited', 'warning']);
+
   // The site's rule answers: no prompt but a locked vault's unlock, and only
   // once the fee check lets it.
   async function autoSend(context, ctx) {
     const { requester } = context;
+    let tx = await chooseRule(context, ctx);
+    if (!tx) return NEEDS_APPROVAL;
+    if (!(await context.nameHolds())) return error(NO_ADDRESS);
     if (!(await vaultUnlocked())) {
       const unlock = await context.prompt({
         kind: 'vault.unlock',
@@ -560,30 +628,43 @@ function createSendDispatchers(shared, deps = {}) {
       });
       if (unlock.error) return { error: unlock.error };
       if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
+      // After the unlock's wait: the send quoted and its fee judged again,
+      // as before. The core reads the rule again just before the signature.
+      const judged = await quoteAndJudge(ctx);
+      if (judged.failed) return failure(judged.failed);
+      if (!judged.tx) return NEEDS_APPROVAL;
+      tx = judged.tx;
     }
-    let quoted;
-    try {
-      quoted = await quote(ctx);
-    } catch (err) {
-      return failure(err);
-    }
-    const tx = sendTxOf(ctx, quoted);
-    // Design 0005, A: a phone picks and pays its own fee, and has none to check.
-    if (!ctx.phone) {
-      const verdict = await verdictOf(tx);
-      if (!verdict?.autoApprove) {
-        ctx.quoted = quoted;
-        ctx.verdict = verdict;
-        return NEEDS_APPROVAL;
+    // The core's reading of the rule (in the send's own turn, which a
+    // paused site doesn't get: `sendDappPayment`), then, in the same run,
+    // custody and the document's key; throws `withdrawn` when it no longer
+    // answers. Before the signature a fee the core no longer allows sends
+    // the request to its prompt, nothing signed. After it the fee is the
+    // one the verdict before it passed, fixed in the signed bytes: a
+    // `fee_check` answer then (its evidence aged during a device's wait) is
+    // accepted only past that verdict, and still means the rule, the
+    // account and the pause hold, which the core judges first.
+    let feePassed = false;
+    const stillAnswers = async (signed) => {
+      const still = await ruleAnswers(context, ctx, tx, false);
+      if (custody(requester.guest) || still.reason === 'custody') throw withdrawn(error(AGENT_CUSTODY));
+      if (!still.covered && !(signed && feePassed && still.reason === 'fee_check')) {
+        if (!signed && PROMPT_REASONS.has(still.reason)) throw Object.assign(withdrawn(null), { prompt: true });
+        throw withdrawn(error(RULE_GONE));
       }
-    }
-    // Just before the signature, after the last wait, and again after the
-    // signer's: the name, custody, the rule and the document's key.
-    const ruleStillAnswers = async (effect) => {
-      if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
-      if (custody(requester.guest)) throw withdrawn(error(AGENT_CUSTODY));
-      if (!ruleMatches(requester.key, ctx.walletIndex, ctx.tx, ctx.chainId)) throw withdrawn(error(RULE_GONE));
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
+    };
+    // Just before the signature, and again after the signer's wait: the
+    // name, then that reading, the last wait before the effect, so a rule
+    // revoked or fee evidence refreshed while the name resolved is seen.
+    // A Ledger or a phone presents no `{ standing }` the core could judge as
+    // it signs, and the transaction service waits again before asking it (a
+    // Ledger's fee and nonce reads, a phone's address): the same reading is
+    // its signer's last check (`beforeSign`), right before the device.
+    const ruleStillAnswers = (signed) => async (effect) => {
+      if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
+      await stillAnswers(signed);
+      if (!signed) feePassed = true;
       return effect();
     };
     let sent;
@@ -594,14 +675,25 @@ function createSendDispatchers(shared, deps = {}) {
           tx,
           site: requester.key,
           silent: true,
-          guard: ruleStillAnswers,
-          afterSignature: ruleStillAnswers,
-          // A page's send, never main's own (design 0012).
-          authorized: () => ({ page: context.pageContext() }),
+          guard: ruleStillAnswers(false),
+          afterSignature: ruleStillAnswers(true),
+          // A page's send, never main's own, which a vault signature presents
+          // as the site's rule for the core to judge (design 0012), not
+          // paused: its turn is the send's own, which a paused site doesn't
+          // get (`sendDappPayment`). A device's signer reads the rule last.
+          authorized: () => ({
+            page: context.pageContext(),
+            standing: { paused: false },
+            beforeSign: () => stillAnswers(false),
+          }),
         },
         paymentDeps
       );
     } catch (err) {
+      if (err?.prompt === true) return NEEDS_APPROVAL;
+      if (err?.code === NOT_CONFIRMED && PROMPT_REASONS.has(err.reason)) return NEEDS_APPROVAL;
+      if (err?.code === NOT_CONFIRMED && err.reason === 'custody') return error(AGENT_CUSTODY);
+      if (err?.code === NOT_CONFIRMED && err.reason === 'no_rule') return error(RULE_GONE);
       return err?.answer ?? failure(err);
     }
     // The site's last use, only while the name still answers. The hash is
@@ -633,6 +725,12 @@ function createSendDispatchers(shared, deps = {}) {
     // evidence moved past main's check at the press (another request
     // refreshed it, or it aged), and the user is asked again with it.
     let feeAskAgain = null;
+    // "Always allow" for a contract call: minted into the token, and what
+    // the core said of the rule as it signed (a vault account's send).
+    const selector = selectorOf(tx.data);
+    const remember = choices.alwaysAllow === true && Boolean(selector);
+    let ruleHeard = false;
+    let coreRule = null;
     const mintedAndHeld = (run) =>
       stillHeld(null)(async () => {
         // The core judges the fee as it mints (design 0012): a fee the user
@@ -642,6 +740,7 @@ function createSendDispatchers(shared, deps = {}) {
           confirmation = await context.confirm(CONFIRM_KINDS.DAPP_SEND, ctx.walletIndex, payload, {
             feeAcknowledged: choices.feeAcknowledged === true,
             phone: ctx.phone === true,
+            remember,
           });
         } catch (err) {
           if (err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck) feeAskAgain = { ...err.feeCheck, askAgain: true };
@@ -665,7 +764,13 @@ function createSendDispatchers(shared, deps = {}) {
           silent: false,
           guard: mintedAndHeld,
           afterSignature: stillHeld(null),
-          authorized: () => ({ confirmation }),
+          authorized: () => ({
+            confirmation,
+            onRule: (rule) => {
+              ruleHeard = true;
+              coreRule = rule;
+            },
+          }),
         },
         paymentDeps
       );
@@ -681,9 +786,12 @@ function createSendDispatchers(shared, deps = {}) {
     // transaction the user just confirmed, so it covers only a (contract,
     // selector, chain) the user saw, with no more value than this send's;
     // written only while the name still answers after the send's wait. The
-    // hash is the page's either way: the payment has gone out.
-    const selector = selectorOf(tx.data);
-    if (choices.alwaysAllow === true && selector) {
+    // hash is the page's either way: the payment has gone out. Main writes
+    // it, as today, when the core that signed a vault account's send wrote
+    // none because the dApp file hasn't moved to it (`not_moved`), or when a
+    // device signed (design 0012, The model).
+    const coreSigned = ruleHeard || ctx.account?.type === 'mnemonic';
+    if (remember && mainWritesRule(coreSigned, coreRule)) {
       await recheckThen(context, ctx, () =>
         d.addTransactionAutoApprove(requester.key, tx.to, selector, ctx.chainId, tx.value)
       );
@@ -833,6 +941,10 @@ function createSendDispatchers(shared, deps = {}) {
     });
     if (unlock.error) return { error: unlock.error };
     if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
+    // A quote taken before the unlock's wait (the rule's choice) is taken
+    // again for the prompt.
+    ctx.quoted = undefined;
+    ctx.verdict = null;
     return null;
   }
 
@@ -942,8 +1054,7 @@ function createSendDispatchers(shared, deps = {}) {
     // A standing rule is chosen only outside Agent custody, read live now.
     // A request that goes to its prompt keeps it, whatever custody does
     // next; one the rule answers reads custody again just before its send.
-    if (!safe && !custody(requester.guest) && (await ruleChosen(requester.key, walletIndex, tx, chainId))) {
-      if (!(await context.nameHolds())) return error(NO_ADDRESS);
+    if (!safe && !custody(requester.guest)) {
       const out = await autoSend(context, ctx);
       if (out !== NEEDS_APPROVAL) return out;
     }

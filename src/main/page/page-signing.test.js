@@ -63,6 +63,9 @@ const REJECTED = { error: { code: 4001, message: 'User rejected the request' } }
 const CUSTODY = {
   error: { code: 4100, message: 'The origin is not authorized for this operation', data: { reason: 'agent_custody' } },
 };
+const RULE_GONE = {
+  error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
+};
 
 let nextId = 1;
 let nextNonce = 1;
@@ -146,7 +149,16 @@ function backends() {
     agent: null,
     signed: [],
     signerFails: null,
-    safe: { complete: true, sessions: [], completed: [], cancelled: [], standing: [] },
+    // The core's hash of a device's typed data, when a test holds it.
+    hashHold: null,
+    hashWaits: 0,
+    // A vault signer's own wait before the core signs, when a test holds it.
+    addressHold: null,
+    // `prepare`: the session's preparation and the vault's state, when a
+    // test holds them; `ownersSigned`: each free owner's signature, made
+    // past the caller's last check; `standing`: the rule-answered Safe
+    // messages' spends.
+    safe: { complete: true, sessions: [], completed: [], cancelled: [], standing: [], prepare: null, preparing: 0, ownersSigned: 0 },
   };
   const signer = {
     signMessage: jest.fn(async (message) => {
@@ -192,7 +204,47 @@ function backends() {
         return { hash: TYPED_HASH, view: TYPED_VIEW, warnings: state.typedWarnings.slice() };
       }),
       signsRawHash,
-      getSigner: jest.fn(() => signer),
+      // As signers.js: a signature no token answers awaits its caller's
+      // last check (`beforeSign`) after the signer's own waits (a device's
+      // hash of typed data, which a test holds with `hashHold`), right
+      // before it signs.
+      getSigner: jest.fn((index, authorized) => {
+        const device = state.wallets.find((wallet) => wallet.index === index)?.type !== 'mnemonic';
+        const last = authorized?.confirmation ? null : authorized?.beforeSign;
+        if (!last) return signer;
+        // A vault's own wait (its address from the core), when held.
+        const vaultWait = async () => {
+          if (!device && state.addressHold) await state.addressHold.promise;
+        };
+        return {
+          signMessage: async (message) => {
+            await vaultWait();
+            await last();
+            return signer.signMessage(message);
+          },
+          signTypedData: async (data, options) => {
+            await vaultWait();
+            if (device && state.hashHold) {
+              state.hashWaits += 1;
+              await state.hashHold.promise;
+            }
+            await last();
+            return signer.signTypedData(data, options);
+          },
+        };
+      }),
+      // The identity core's `approval.check` (design 0012), simulated from
+      // the same state: the grant exposing the account and its signing rule,
+      // outside custody, never 32 bytes nor a warned view.
+      checkStanding: jest.fn(async (page, request) => {
+        const refused = (reason) => ({ covered: false, reason });
+        if (page?.agent !== false) return refused('custody');
+        const permission = state.permissions.get(page.origin);
+        if (permission?.walletIndex !== request.account || permission.autoApprove?.signing !== true) return refused('no_rule');
+        if (request.kind === 'message' && signsRawHash(request.payload)) return refused('warning');
+        if (request.kind === 'typed_data' && state.typedWarnings.length > 0) return refused('warning');
+        return { covered: true, reason: null };
+      }),
       setSigningAutoApprove: jest.fn((key, enabled) => {
         state.rules.push([key, enabled]);
         const permission = state.permissions.get(key);
@@ -216,6 +268,15 @@ function backends() {
       }),
       startSafeMessage: jest.fn(async (options) => {
         state.safe.sessions.push(options);
+        // As safe-messages.js: the request's preparation and the vault's
+        // state, then the free owner's signer, which awaits the caller's
+        // last check right before it signs.
+        if (state.safe.prepare) {
+          state.safe.preparing += 1;
+          await state.safe.prepare.promise;
+        }
+        if (options.beforeSign) await options.beforeSign();
+        state.safe.ownersSigned += 1;
         return {
           safeIndex: options.safeIndex,
           kind: 'message',
@@ -804,13 +865,62 @@ describe("the site's rule, read by main for the request it holds", () => {
       ['typed', TYPED, { expectedHash: TYPED_HASH }],
     ]);
     expect(env.state.lastUsed).toEqual([[KEY_A], [KEY_A]]);
-    // A page's signature, never main's own: under its PageContext (design
-    // 0012), with no token until `{ standing }` (APB-1b).
+    // A page's signature, never main's own: under its PageContext, as the
+    // site's rule (`{ standing }`), the typed data's view on the page's chain
+    // (design 0012).
     const pageContext = expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false });
+    // With the dispatcher's last check, which a vault's signer leaves to the
+    // core (`signers.js`).
     expect(env.deps.signing.getSigner.mock.calls).toEqual([
-      [0, { page: pageContext }],
-      [0, { page: pageContext }],
+      [0, { page: pageContext, standing: {}, chainId: 100, beforeSign: expect.any(Function) }],
+      [0, { page: pageContext, standing: {}, chainId: 100, beforeSign: expect.any(Function) }],
     ]);
+    // The core chose each (`approval.check`), and read it again just before
+    // the signer is called and as the signer's last check: what the request
+    // signs, for the account the grant exposes, on the page's chain.
+    const message = [KEY_A, { kind: 'message', account: 0, accountType: 'mnemonic', payload: MESSAGE, chainId: 100 }];
+    const typed = [KEY_A, { kind: 'typed_data', account: 0, accountType: 'mnemonic', payload: TYPED, chainId: 100 }];
+    expect(env.deps.signing.checkStanding.mock.calls.map(([context, request]) => [context.origin, request])).toEqual([
+      message,
+      message,
+      message,
+      typed,
+      typed,
+      typed,
+    ]);
+  });
+
+  test("a rule the core doesn't hold sends the request to its prompt; one it refuses at the signature answers as before", async () => {
+    const env = setup();
+    ruled(env);
+    const page = env.tab();
+    // The core reads no rule (its file, its account): the prompt.
+    env.deps.signing.checkStanding.mockImplementationOnce(async () => ({ covered: false, reason: 'no_rule' }));
+    const prompted = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await prompted).toEqual(REJECTED);
+    // A check that fails reads as not covered.
+    env.deps.signing.checkStanding.mockImplementationOnce(async () => {
+      throw new Error('core gone');
+    });
+    const failed = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await failed).toEqual(REJECTED);
+    // The core refuses the signature itself under `{ standing }`.
+    const refusing = (reason) =>
+      env.signer.signMessage.mockImplementationOnce(async () => {
+        const { confirmationError } = require('../wallet/signing-confirmation');
+        throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason } }));
+      });
+    refusing('custody');
+    expect(await page.ask('personal_sign', [MESSAGE, ACCOUNT])).toEqual(CUSTODY);
+    refusing('no_rule');
+    expect(await page.ask('personal_sign', [MESSAGE, ACCOUNT])).toEqual(RULE_GONE);
+    expect(env.state.signed).toEqual([]);
   });
 
   test('a warned request always prompts: a 32-byte message, and typed data the view warns about', async () => {
@@ -1200,6 +1310,203 @@ describe('a DNS name over IPNS that moves off its key', () => {
     await env.decide(env.lastPrompt().handle, true, {});
     expect(await answer).toEqual(NO_ADDRESS);
     expect(env.state.signed).toEqual([]);
+  });
+});
+
+// The last wait before a rule's signature is the core's own reading of the
+// rule, after the name's: a Ledger, a phone and a Safe present no
+// `{ standing }` the core could judge again as they sign, so a rule revoked
+// while the name resolved is seen there, before the device is asked.
+describe('a rule revoked while the name resolves just before the effect', () => {
+  const PHONE = '0x4444444444444444444444444444444444444444';
+  const PHONE_INDEX = 2000;
+
+  // The site's signing rule over a DNS name, and the name's resolution just
+  // before the effect held: the one after the vault's check, the last wait
+  // but the core's reading. `held` resolves once it waits.
+  function heldAtTheEffect(walletIndex) {
+    const env = setup();
+    env.state.wallets.push({ index: PHONE_INDEX, name: 'Phone', address: PHONE, type: 'remote' });
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME, walletIndex, { autoApprove: { signing: true } });
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const hold = deferred();
+    const held = deferred();
+    env.state.unlocked = () => {
+      env.state.unlocked = true;
+      env.nameHolds.set(NAME, hold);
+      held.resolve();
+      return true;
+    };
+    return { env, page, hold, held };
+  }
+
+  const ask = (page, method, address) =>
+    page.ask(method, method === 'personal_sign' ? [MESSAGE, address] : [address, TYPED]);
+
+  test.each([
+    ['a Ledger', 1, LEDGER, 'personal_sign'],
+    ['a Ledger', 1, LEDGER, 'eth_signTypedData_v4'],
+    ['a phone', PHONE_INDEX, PHONE, 'personal_sign'],
+    ['a phone', PHONE_INDEX, PHONE, 'eth_signTypedData_v4'],
+    ['a Safe', SAFE_INDEX, SAFE, 'personal_sign'],
+    ['the vault', 0, ACCOUNT, 'personal_sign'],
+  ])('%s: refused, nothing signed (%s)', async (_label, walletIndex, address, method) => {
+    const { env, page, hold, held } = heldAtTheEffect(walletIndex);
+    const answer = ask(page, method, address);
+    await held.promise;
+    await flush();
+    // The choice's reading only, so far.
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(1);
+    env.state.permissions.get(NAME).autoApprove = { signing: false };
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    // The core read the rule again after the name, and refused.
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(2);
+    await expect(env.deps.signing.checkStanding.mock.results[1].value).resolves.toEqual({ covered: false, reason: 'no_rule' });
+    expect(env.deps.signing.getSigner).not.toHaveBeenCalled();
+    expect(env.signer.signMessage).not.toHaveBeenCalled();
+    expect(env.signer.signTypedData).not.toHaveBeenCalled();
+    expect(env.state.safe.sessions).toEqual([]);
+    expect(env.state.signed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test('a rule that holds through the name: the Ledger signs', async () => {
+    const { env, page, hold, held } = heldAtTheEffect(1);
+    const answer = ask(page, 'personal_sign', LEDGER);
+    await held.promise;
+    await flush();
+    hold.resolve();
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+    expect(env.state.signed).toEqual([['message', MESSAGE]]);
+  });
+
+  test("the vault's signature still goes with `{ standing }` past that reading, and the core's refusal there stands", async () => {
+    const { env, page, hold, held } = heldAtTheEffect(0);
+    const answer = ask(page, 'personal_sign', ACCOUNT);
+    await held.promise;
+    await flush();
+    // The rule holds through the name; the core judges it again as it signs.
+    env.signer.signMessage.mockImplementationOnce(async () => {
+      const { confirmationError } = require('../wallet/signing-confirmation');
+      throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason: 'no_rule' } }));
+    });
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    expect(env.deps.signing.getSigner).toHaveBeenCalledWith(0, {
+      page: expect.objectContaining({ origin: NAME, agent: false }),
+      standing: {},
+      chainId: 100,
+      beforeSign: expect.any(Function),
+    });
+    expect(env.state.signed).toEqual([]);
+  });
+});
+
+// A device's typed data waits once more inside its signer, on the core's
+// hash, and a Safe's message on its preparation and the vault's state: the
+// core's reading of the rule, and custody, are the signer's last check,
+// right before each signature (`beforeSign`), so neither wait lets a rule
+// revoked or a tab taken into custody reach a signer.
+describe('a rule revoked or custody entered while a signer waits, just before its signature', () => {
+  const PHONE = '0x4444444444444444444444444444444444444444';
+  const PHONE_INDEX = 2000;
+
+  function ruledTab(walletIndex) {
+    const env = setup();
+    env.state.wallets.push({ index: PHONE_INDEX, name: 'Phone', address: PHONE, type: 'remote' });
+    env.connect(KEY_A, walletIndex, { autoApprove: { signing: true } });
+    return { env, page: env.tab() };
+  }
+  const change = (env, page, what) => {
+    if (what === 'custody entered') env.state.custody.add(page.guest.id);
+    else env.state.permissions.get(KEY_A).autoApprove = { signing: false };
+  };
+
+  test.each([
+    ['a Ledger', 1, LEDGER, 'the rule revoked', RULE_GONE],
+    ['a Ledger', 1, LEDGER, 'custody entered', CUSTODY],
+    ['a phone', PHONE_INDEX, PHONE, 'the rule revoked', RULE_GONE],
+    ['a phone', PHONE_INDEX, PHONE, 'custody entered', CUSTODY],
+  ])("%s's typed data, %s while the core hashes it: refused, the device never asked", async (_label, walletIndex, address, what, refused) => {
+    const { env, page } = ruledTab(walletIndex);
+    env.state.hashHold = deferred();
+    const answer = page.ask('eth_signTypedData_v4', [address, TYPED]);
+    await flush();
+    // Past the choice and the dispatcher's own last reading, in the signer.
+    expect(env.state.hashWaits).toBe(1);
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(2);
+    change(env, page, what);
+    env.state.hashHold.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(3);
+    expect(env.signer.signTypedData).not.toHaveBeenCalled();
+    expect(env.state.signed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test('a rule that holds through the hash: the Ledger and the phone sign', async () => {
+    for (const [walletIndex, address] of [
+      [1, LEDGER],
+      [PHONE_INDEX, PHONE],
+    ]) {
+      const { env, page } = ruledTab(walletIndex);
+      env.state.hashHold = deferred();
+      const answer = page.ask('eth_signTypedData_v4', [address, TYPED]);
+      await flush();
+      env.state.hashHold.resolve();
+      expect(await answer).toEqual({ result: '0xtypedsig' });
+      expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(3);
+      expect(env.state.signed).toEqual([['typed', TYPED, { expectedHash: TYPED_HASH }]]);
+    }
+  });
+
+  test.each([
+    ['the rule revoked', RULE_GONE],
+    ['custody entered', CUSTODY],
+  ])("a Safe's message, %s while its session prepares: refused, no owner signs", async (what, refused) => {
+    const { env, page } = ruledTab(SAFE_INDEX);
+    env.state.safe.prepare = deferred();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    expect(env.state.safe.preparing).toBe(1);
+    expect(env.state.safe.sessions[0].beforeSign).toEqual(expect.any(Function));
+    change(env, page, what);
+    env.state.safe.prepare.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.state.safe.ownersSigned).toBe(0);
+    expect(env.state.safe.completed).toEqual([]);
+    expect(env.prompts()).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test.each([
+    ['the rule revoked', RULE_GONE],
+    ['custody entered', CUSTODY],
+  ])("the vault's signature, %s while its signer waits: refused, the core never asked to sign", async (what, refused) => {
+    const { env, page } = ruledTab(0);
+    env.state.addressHold = deferred();
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(2);
+    change(env, page, what);
+    env.state.addressHold.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(3);
+    expect(env.signer.signMessage).not.toHaveBeenCalled();
+    expect(env.state.signed).toEqual([]);
+  });
+
+  test("a rule that holds through the Safe's preparation: its owner signs, and the page gets the signature", async () => {
+    const { env, page } = ruledTab(SAFE_INDEX);
+    env.state.safe.prepare = deferred();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    env.state.safe.prepare.resolve();
+    expect(await answer).toEqual({ result: '0xsafesig' });
+    expect(env.state.safe.ownersSigned).toBe(1);
+    expect(env.state.safe.completed).toHaveLength(1);
   });
 });
 

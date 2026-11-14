@@ -1,5 +1,6 @@
 // D12 through main's real paths: main's own reading of a site's contract rule
-// (as page/page-sends.js reads it: the rule's match, then the pause), a page's
+// (the rule's match, then the pause, as the identity core reads it for
+// page/page-sends.js, simulated here from main's file), a page's
 // send as main makes it (page/page-sends.js: the silent send a rule answers,
 // and one the user confirmed), and main's dispatcher with its prompt, with
 // the real permissions store, intent store, payment history and transaction
@@ -154,6 +155,19 @@ function start() {
   const { sendDappPayment, createSendDispatchers } = require('../page/page-sends');
   const confirmations = require('./signing-confirmation');
 
+  // The site's contract rule, as the identity core reads it from the file
+  // main writes (design 0012, APB-1b): the grant exposing the account, the
+  // rule's match, and main's D12 reading (`paused`). Fees aren't judged here.
+  mockApprovals.setStanding((page, { request, paused }) => {
+    if (page.agent !== false) return { covered: false, reason: 'custody' };
+    if (request.kind !== 'transaction') return { covered: false, reason: 'no_rule' };
+    const { tx } = request;
+    const exposed = permissions.getPermission(page.origin)?.walletIndex === request.account;
+    const ruled =
+      exposed && permissions.isTransactionAutoApproved(page.origin, tx.to, tx.data.slice(0, 10), Number(tx.chain_id), tx.value);
+    if (!ruled) return { covered: false, reason: 'no_rule' };
+    return paused === false ? { covered: true } : { covered: false, reason: 'paused' };
+  });
   permissions.grantPermission(SWAP, 0, CHAIN);
   permissions.addTransactionAutoApprove(SWAP, CONTRACT, SELECTOR, CHAIN);
   permissions.grantPermission(OTHER, 1, CHAIN);
@@ -205,8 +219,9 @@ function start() {
         return decision;
       },
       pageContext: () => pageOf(site),
-      confirm: (kind, accountIndex, payload) =>
-        confirmations.issuePageConfirmation(kind, accountIndex, payload, { handle: approved, context: pageOf(site) }),
+      // Main's issuer, with the dispatcher's options ("Always allow" among them).
+      confirm: (kind, accountIndex, payload, options) =>
+        confirmations.issuePageConfirmation(kind, accountIndex, payload, { handle: approved, context: pageOf(site) }, options),
       spend: (confirmation) => confirmation,
       signal: new AbortController().signal,
       leaveWalletSlot: () => {},
