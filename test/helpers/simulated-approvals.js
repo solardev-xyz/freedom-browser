@@ -66,6 +66,20 @@ const EXEC_TRANSACTION = '0x6a761202';
 const SAFE_TYPES = ['SafeTx', 'SafeMessage'];
 
 /**
+ * The caller a request's context names, as vault-backend sends it: a page's
+ * PageContext (an object) is `page`, `'chrome'` the chrome, and none main
+ * itself (`shell`). Only a PageContext is a page: the chrome's sentinel is
+ * not one.
+ */
+function callerOf(context) {
+  if (context === 'chrome') return 'chrome';
+  return context !== null && typeof context === 'object' ? 'page' : 'shell';
+}
+
+/** The PageContext a page's request carries, or null under another caller. */
+const pageContext = (context) => (callerOf(context) === 'page' ? context : null);
+
+/**
  * Whether a signature is a Safe's, as the core tells (APR-4b): typed data
  * whose `types` declare `SafeTx` or `SafeMessage`, primary or not, or a
  * transaction whose data calls `execTransaction`.
@@ -257,8 +271,14 @@ function simulatedApprovals() {
   const storeRule = (page, params) => dapp.covers(page, params);
   let standing = storeRule;
 
-  const pageOf = (context, handle) =>
-    context ? { origin: context.origin, frame: context.frame, navigation: context.navigation, handle } : null;
+  const pageOf = (context, handle) => {
+    const page = pageContext(context);
+    return page ? { origin: page.origin, frame: page.frame, navigation: page.navigation, handle } : null;
+  };
+  const holderOf = (context) => {
+    const page = pageContext(context);
+    return page ? { origin: page.origin, frame: page.frame, navigation: page.navigation } : null;
+  };
   const digestOf = (kind, account, payload, page) =>
     stable({ kind, account: account ?? null, facts: facts(kind, payload), page: page ?? null });
 
@@ -286,12 +306,14 @@ function simulatedApprovals() {
     async issue(params, context = null) {
       calls.push({ method: 'approval.issue', params, page: context });
       const { kind, account, payload, handle } = params;
+      const caller = callerOf(context);
       // A Safe send is a page's when it names a site, which its page says.
-      const pageKind = PAGE_KINDS.has(kind) || (kind === 'safe-send' && Boolean(context));
-      if (pageKind !== Boolean(context)) {
+      // The chrome mints no kind.
+      const pageKind = PAGE_KINDS.has(kind) || (kind === 'safe-send' && caller === 'page');
+      if (caller === 'chrome' || pageKind !== (caller === 'page')) {
         throw Object.assign(new Error("this caller can't confirm this kind"), { code: 'forbidden' });
       }
-      if (context && !/^[0-9a-f]{64}$/.test(handle ?? '')) {
+      if (caller === 'page' && !/^[0-9a-f]{64}$/.test(handle ?? '')) {
         throw Object.assign(new Error('A page confirmation needs its handle'), { code: 'invalid_argument' });
       }
       while (tokens.size >= MAX_OUTSTANDING) tokens.delete(tokens.keys().next().value);
@@ -300,7 +322,7 @@ function simulatedApprovals() {
       const entry = {
         kind,
         account,
-        minter: context ? 'page' : 'shell',
+        minter: caller,
         digest: digestOf(kind, account, payload, bound),
         expiresAt: now() + TOKEN_LIFE_MS,
       };
@@ -319,10 +341,12 @@ function simulatedApprovals() {
       calls.push({ method: 'approval.spend', params, page: context });
       const { token, kind, account, payload, handle } = params;
       const page = pageOf(context, handle);
-      take(token, context ? 'page' : 'shell', (entry) => (entry.kind === kind ? { account, payload, page } : null));
+      // Spent only by the caller kind that minted it: the chrome, which
+      // mints none, spends none.
+      take(token, callerOf(context), (entry) => (entry.kind === kind ? { account, payload, page } : null));
       if (kind === 'safe-send' || kind === 'safe-message') {
         const safe = crypto.randomBytes(16).toString('hex');
-        const holder = context ? { origin: context.origin, frame: context.frame, navigation: context.navigation } : null;
+        const holder = holderOf(context);
         // A Safe's new send approval ends its older one.
         if (kind === 'safe-send') {
           for (const [id, entry] of safes) if (entry.kind === kind && entry.account === account) safes.delete(id);
@@ -344,7 +368,10 @@ function simulatedApprovals() {
     },
     async check(params, context = null) {
       calls.push({ method: 'approval.check', params, page: context });
-      if (!context) throw Object.assign(new Error('a standing rule answers only a page'), { code: 'forbidden' });
+      // The method table admits `approval.check` from a page only.
+      if (callerOf(context) !== 'page') {
+        throw Object.assign(new Error('a standing rule answers only a page'), { code: 'forbidden' });
+      }
       const answer = standing(context, params) || noRule();
       // No rule answers a Safe's signature (APR-4b) but a Safe account's
       // own: the page's prompt does.
@@ -360,7 +387,7 @@ function simulatedApprovals() {
       const { store, change } = params;
       // The core admits `approval.grant` from a page or main, never the chrome.
       if (context === 'chrome') throw coded('approval.grant: not open to the chrome', 'forbidden');
-      if (store !== 'dapp' || !context) throw coded("this caller can't write this store's grants", 'forbidden');
+      if (store !== 'dapp' || callerOf(context) !== 'page') throw coded("this caller can't write this store's grants", 'forbidden');
       if (change?.op === 'transaction') throw coded('a transaction rule comes only with a confirmed send', 'forbidden');
       if (change && 'key' in change) throw coded('change: a page changes its own grant', 'invalid_argument');
       const key = context.origin;
@@ -377,7 +404,7 @@ function simulatedApprovals() {
       calls.push({ method: 'approval.revoke', params, page: context });
       const { store, key, what } = params;
       if (store !== 'dapp') throw coded('not moved', 'not_moved');
-      if (context && context !== 'chrome' && context.origin !== key) {
+      if (callerOf(context) === 'page' && context.origin !== key) {
         throw coded('a page revokes only its own grant', 'forbidden');
       }
       let revoked;
@@ -392,7 +419,7 @@ function simulatedApprovals() {
     async touch(params, context = null) {
       calls.push({ method: 'approval.touch', params, page: context });
       if (params.store !== 'dapp') throw coded('not moved', 'not_moved');
-      if (!context) throw coded('only a page marks its own use', 'forbidden');
+      if (callerOf(context) !== 'page') throw coded('only a page marks its own use', 'forbidden');
       const entry = dapp.entries.get(context.origin);
       if (entry) {
         entry.lastUsed = wallNow();
@@ -425,12 +452,13 @@ function simulatedApprovals() {
    */
   function authorize(method, account, request, { authorization = null, page = null } = {}) {
     calls.push({ method, params: { account, ...request, ...(authorization ? { authorization } : {}) }, page });
+    const caller = callerOf(page);
     const safeSignature = isSafes(method, request);
     if (!authorization) {
       // APR-4 (cored 0.16.0): a page's (or the chrome's) signature needs its
       // authorization, and a Safe's one under every caller; main's own
       // other signatures sign on its word.
-      if (page || safeSignature) throw refused('no_token');
+      if (caller !== 'shell' || safeSignature) throw refused('no_token');
       return null;
     }
     if (authorization.safe !== undefined) {
@@ -438,8 +466,10 @@ function simulatedApprovals() {
       // data or the executor's transaction, which ends it.
       const entry = safes.get(authorization.safe);
       if (!entry) throw refused('unknown_token');
-      const presenter = page ? { origin: page.origin, frame: page.frame, navigation: page.navigation } : null;
-      if (stable(presenter) !== stable(entry.holder) || method === 'sign.message') throw refused('mismatch');
+      // A page presents its own, main the wallet's; the chrome holds none.
+      if (caller === 'chrome' || stable(holderOf(page)) !== stable(entry.holder) || method === 'sign.message') {
+        throw refused('mismatch');
+      }
       if (method === 'sign.transaction') {
         if (entry.kind !== 'safe-send') throw refused('mismatch');
         if (executorRefusal) throw refused(executorRefusal);
@@ -450,7 +480,7 @@ function simulatedApprovals() {
     if (authorization.standing) {
       // A standing rule answers only a page, and never a Safe's signature
       // (cored 0.16.0; `forbidden` from main or the chrome before).
-      if (!page || safeSignature) throw refused('no_rule');
+      if (caller !== 'page' || safeSignature) throw refused('no_rule');
       const kind = method === 'sign.transaction' ? 'transaction' : method === 'sign.message' ? 'message' : 'typed_data';
       const answer = standing(page, { request: { kind, account, ...request }, paused: authorization.standing.paused }) || noRule();
       if (answer.covered !== true) throw refused(answer.reason ?? 'no_rule');
@@ -458,17 +488,19 @@ function simulatedApprovals() {
     }
     const { token, handle, intent } = authorization;
     const bound = pageOf(page, handle);
-    const minter = page ? 'page' : 'shell';
+    // A token is spent only by the caller kind that minted it.
+    const minter = caller;
+    const underPage = caller === 'page';
     if (method === 'sign.transaction') {
       take(token, minter, (entry) => {
         if (intent) {
-          if (entry.kind !== 'intent-replace' || page || authorization.kind !== undefined) return null;
+          if (entry.kind !== 'intent-replace' || underPage || authorization.kind !== undefined) return null;
           return { account, payload: { intent_id: intent.id, sender: entry.sender, tx: request.tx }, page: null };
         }
         // A send's token names the kind it was minted as (design 0012,
         // "Naming the kind").
         if (authorization.kind !== entry.kind) return null;
-        const fits = page ? entry.kind === 'dapp-send' : entry.kind === 'wallet-send' || entry.kind === 'executor-send';
+        const fits = underPage ? entry.kind === 'dapp-send' : entry.kind === 'wallet-send' || entry.kind === 'executor-send';
         return fits ? { account, payload: { tx: request.tx }, page: bound } : null;
       });
       // A flagged dApp send: the core writes the limited contract rule for
@@ -483,12 +515,12 @@ function simulatedApprovals() {
       return { added: true };
     } else if (method === 'sign.message') {
       take(token, minter, (entry) =>
-        entry.kind === 'sign-message' && page ? { account, payload: { message: request.message }, page: bound } : null
+        entry.kind === 'sign-message' && underPage ? { account, payload: { message: request.message }, page: bound } : null
       );
     } else {
       const { expected_hash: expectedHash, ...payload } = request;
       const entry = take(token, minter, (candidate) =>
-        candidate.kind === 'sign-typed-data' && page ? { account, payload, page: bound } : null
+        candidate.kind === 'sign-typed-data' && underPage ? { account, payload, page: bound } : null
       );
       if (entry.hash !== expectedHash) throw refused('mismatch');
     }
@@ -520,7 +552,7 @@ function simulatedApprovals() {
     // A Safe approval as a spend gives one, for a test that starts past it.
     openSafeApproval({ kind = 'safe-send', account = 0, page = null } = {}) {
       const safe = crypto.randomBytes(16).toString('hex');
-      safes.set(safe, { kind, account, holder: page ? { origin: page.origin, frame: page.frame, navigation: page.navigation } : null });
+      safes.set(safe, { kind, account, holder: holderOf(page) });
       return safe;
     },
     setExecutorRefusal(reason) {
