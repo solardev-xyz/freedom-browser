@@ -68,7 +68,11 @@
  *   the same checks as every other path. One `bytes=` range is sent as
  *   `range`; several, or one that doesn't parse, are ignored, and the whole
  *   blob is served. A `HEAD` sends `head_only` and answers as its `GET`
- *   would, with no body, its failures included. The answer is 200, 206 with
+ *   would, with no body, its failures included: whether a request is a raw
+ *   one is decided from its path before any check (`isRawRepoPath`), and
+ *   every answer to it, refusals and failures included, goes through
+ *   `rawAnswer`, which gives it the raw security headers and drops a HEAD's
+ *   body. The answer is 200, 206 with
  *   `Content-Range`, or 416 with a `Content-Range` that gives the blob's
  *   size; a blob over 64 MiB is 413 (deviation `size-caps`). Its bytes are
  *   served under `nosniff` and `Content-Security-Policy: sandbox`, typed
@@ -378,7 +382,17 @@ function pageParams(searchParams) {
  *   `/raw/` reads on the service
  * @returns {Promise<Response>}
  */
-async function serveRepoApi(
+async function serveRepoApi(rid, apiPath, options = {}) {
+  // Decided before anything else is: every answer to a raw request is a raw
+  // answer, its refusals and failures included.
+  const raw = isRawRepoPath(apiPath);
+  const answer = await serveRepoAnswer(rid, apiPath, options);
+  if (!raw) return answer;
+  return rawAnswer(answer, { method: options.method ?? 'GET', cors: !options.allowPrivate });
+}
+
+/** serveRepoApi's answer, before a raw request's is made a raw answer. */
+async function serveRepoAnswer(
   rid,
   apiPath,
   {
@@ -814,17 +828,14 @@ async function serveServiceRepoApi(
   { method, search, allowPrivate, range = null, signal, stream }
 ) {
   const cors = !allowPrivate;
-  // `/raw/`'s HEAD answers as its GET would, with no body: its refusals too.
-  let bodiless = false;
   const reply = (payload, status = 200, headers = {}) => {
     const response = json(payload, status, { cors });
     for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
-    return bodiless ? withoutBody(response) : response;
+    return response;
   };
   if (!RID_RE.test(rid)) return reply({ error: 'invalid RID' }, 400);
   const parts = decodeRepoApiPath(apiPath);
   if (!parts) return reply({ error: 'invalid repository path' }, 400);
-  bodiless = method === 'HEAD' && parts[0] === 'raw';
   const route = serviceRoute(rid, parts, search);
   const read = { signal, admitted: true };
   // The op being read, for its failure's text.
@@ -1023,6 +1034,55 @@ function rangeParam(header) {
   return { start: position(first), end: position(last) };
 }
 
+/**
+ * Whether a repository path is the raw endpoint's: its first segment,
+ * decoded as the route decodes it, is `raw`. Read from the path alone,
+ * before any check, so that whatever answers the request, a refusal
+ * included, can be a raw answer (`rawAnswer`). Leading slashes are skipped
+ * here though the route refuses them: a path that only looks raw is
+ * answered as one.
+ */
+function isRawRepoPath(apiPath) {
+  const first = String(apiPath ?? '')
+    .replace(/^\/+/, '')
+    .split('/')[0];
+  try {
+    return decodeURIComponent(first) === 'raw';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What every raw answer carries, a refusal's or a failure's too (0008, "The
+ * raw endpoint"): nosniff and a sandbox, so that no answer to a raw request
+ * is ever run as a document; on `rad:`, the range headers readable by pages.
+ */
+function rawSecurityHeaders(cors) {
+  const headers = {
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': 'sandbox',
+  };
+  if (cors) headers['Access-Control-Expose-Headers'] = 'Accept-Ranges, Content-Range, ETag';
+  return headers;
+}
+
+/**
+ * Makes `response`, any answer to a raw request, a raw answer: the raw
+ * security headers set on it, and for a HEAD its body dropped (cancelled if
+ * it streams), so that a HEAD answers as its GET would, status and headers,
+ * on every path. Setting them again on an answer that has them changes
+ * nothing, so an answer may pass through here more than once.
+ */
+function rawAnswer(response, { method, cors }) {
+  for (const [name, value] of Object.entries(rawSecurityHeaders(cors))) {
+    response.headers.set(name, value);
+  }
+  if (method !== 'HEAD' || response.body === null) return response;
+  response.body.cancel().catch(() => {});
+  return withoutBody(response);
+}
+
 /** The raw endpoint's headers for a `rad.blob` head (0008, "The raw
  * endpoint"); `rad:`'s are readable by any page, as its other answers. */
 function rawHeaders(head, blobPath, cors) {
@@ -1033,16 +1093,12 @@ function rawHeaders(head, blobPath, cors) {
     ETag: `"${head.oid}"`,
     // The URL pins a commit, so its bytes never change.
     'Cache-Control': 'public, max-age=31536000, immutable',
-    'X-Content-Type-Options': 'nosniff',
-    'Content-Security-Policy': 'sandbox',
+    ...rawSecurityHeaders(cors),
   };
   if (head.range) {
     headers['Content-Range'] = `bytes ${head.range.start}-${head.range.end}/${head.size}`;
   }
-  if (cors) {
-    headers['Access-Control-Allow-Origin'] = '*';
-    headers['Access-Control-Expose-Headers'] = 'Accept-Ranges, Content-Range, ETag';
-  }
+  if (cors) headers['Access-Control-Allow-Origin'] = '*';
   return headers;
 }
 
@@ -1149,11 +1205,29 @@ async function handleRadicleApiRequest(request, { partition = null } = {}) {
   } catch {
     return json({ error: 'invalid URL' }, 400, { cors: false });
   }
+  const method = (request.method || 'GET').toUpperCase();
+  // Decided before any other check: every answer to a raw request, the
+  // gates' and admission's refusals included, is a raw answer.
+  const raw = isRawApiUrl(url);
+  const answer = await answerRadicleApiRequest(request, url, method, { partition });
+  return raw ? rawAnswer(answer, { method, cors: false }) : answer;
+}
 
+/** Whether a `radapi:` URL is the raw endpoint's:
+ * `/api/v1/repos/<rid>/raw/…`, its segments split as the handler splits
+ * them. */
+function isRawApiUrl(url) {
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (parts[0] !== 'api' || parts[1] !== 'v1' || parts[2] !== 'repos') return false;
+  return parts.length > 4 && isRawRepoPath(`/${parts.slice(4).join('/')}`);
+}
+
+/** handleRadicleApiRequest's answer for `url`, before a raw request's is
+ * made a raw answer. */
+async function answerRadicleApiRequest(request, url, method, { partition }) {
   if (isDisabledForProfile()) {
     return json({ error: 'Radicle is disabled for this profile' }, 403, { cors: false });
   }
-  const method = (request.method || 'GET').toUpperCase();
   if (!ALLOWED_METHODS.has(method)) {
     return json({ error: 'method not allowed' }, 405, { cors: false });
   }
@@ -1275,6 +1349,8 @@ module.exports = {
   serviceRoute,
   BODY_IDLE_MS,
   // The raw endpoint's.
+  isRawRepoPath,
+  rawAnswer,
   rangeParam,
   rawContentType,
   RAW_MEDIA_TYPES,

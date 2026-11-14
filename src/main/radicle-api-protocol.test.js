@@ -47,6 +47,8 @@ const {
   mapWithConcurrency,
   boundedStringify,
   REPO_LIST_CONCURRENCY,
+  isRawRepoPath,
+  rawAnswer,
   rangeParam,
   rawContentType,
   RAW_MEDIA_TYPES,
@@ -1062,11 +1064,75 @@ describe('radapi protocol', () => {
 // and "The raw endpoint"); its answers on the service are
 // radicle/radicle-service-handlers.test.js's.
 describe('the raw endpoint', () => {
-  test('/raw/ is an unsupported endpoint on the add-on, which has no rad.blob', async () => {
+  test('/raw/ is an unsupported endpoint on the add-on, which has no rad.blob: a raw 404', async () => {
     embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
     const res = await serveRepoApi(RID, `/raw/${REVISION}/README.md`);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'unsupported endpoint: raw' });
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('content-security-policy')).toBe('sandbox');
+    expect(res.headers.get('access-control-expose-headers')).toBe(
+      'Accept-Ranges, Content-Range, ETag'
+    );
+
+    const head = await handleRadicleApiRequest(
+      new Request(
+        `radapi://local/api/v1/repos/${encodeURIComponent(RID)}/raw/${REVISION}/README.md`,
+        { method: 'HEAD' }
+      )
+    );
+    expect(head.status).toBe(404);
+    expect(head.body).toBeNull();
+    expect(head.headers.get('content-security-policy')).toBe('sandbox');
+    expect(head.headers.get('access-control-expose-headers')).toBeNull();
+  });
+
+  test('isRawRepoPath: the first segment, decoded as the route decodes it, is raw', () => {
+    for (const apiPath of [
+      '/raw',
+      '/raw/',
+      `/raw/${REVISION}/a.png`,
+      '/%72aw/x',
+      '//raw/x',
+      'raw/x',
+    ]) {
+      expect([apiPath, isRawRepoPath(apiPath)]).toEqual([apiPath, true]);
+    }
+    for (const apiPath of ['', '/', '/blob/raw', '/RAW/x', '/raw%2fx', '/rawx', '/%ZZ/raw', null]) {
+      expect([apiPath, isRawRepoPath(apiPath)]).toEqual([apiPath, false]);
+    }
+  });
+
+  test('rawAnswer: the security headers on any answer, a HEAD without its body; twice is once', async () => {
+    let cancelled = false;
+    const streamed = new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+    const head = rawAnswer(rawAnswer(streamed, { method: 'HEAD', cors: true }), {
+      method: 'HEAD',
+      cors: true,
+    });
+    expect(head.body).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(head.status).toBe(500);
+    expect([...head.headers]).toEqual([
+      ['access-control-expose-headers', 'Accept-Ranges, Content-Range, ETag'],
+      ['content-security-policy', 'sandbox'],
+      ['content-type', 'application/json'],
+      ['x-content-type-options', 'nosniff'],
+    ]);
+    const get = rawAnswer(new Response('{"error":"x"}', { status: 404 }), {
+      method: 'GET',
+      cors: false,
+    });
+    expect(await get.text()).toBe('{"error":"x"}');
+    expect(get.headers.get('access-control-expose-headers')).toBeNull();
+    expect(get.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
   describe('rangeParam: one bytes= range, or none', () => {

@@ -362,8 +362,19 @@ async function fetchTree(sha, path) {
 
 async function fetchBlob(sha, path) {
   const res = await fetch(`${repoApiRoot}/blob/${sha}/${encodePathSegments(path)}`);
-  // Too large to show as text: its raw bytes can still be downloaded.
-  if (res.status === 413) return { name: path.split('/').pop(), tooLarge: true };
+  if (res.status === 413) {
+    // Too large to show as text. Whether its raw bytes can still be
+    // downloaded is the raw endpoint's answer to a HEAD: 413 past its own
+    // cap. Any other failure of the HEAD leaves the download offered.
+    let downloadable = true;
+    try {
+      const head = await fetch(rawFileUrl(sha, path), { method: 'HEAD' });
+      downloadable = head.status !== 413;
+    } catch (err) {
+      console.error('Error checking file size:', err);
+    }
+    return { name: path.split('/').pop(), tooLarge: true, downloadable };
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
@@ -760,16 +771,23 @@ function renderBlob(blob, rawUrl) {
   const name = blob.name || '';
   if (blob.binary || blob.tooLarge) {
     const image = !blob.tooLarge && isImageFile(name);
+    // Past the raw endpoint's cap too, it can't be downloaded either.
+    const download = blob.tooLarge && blob.downloadable === false ? '' : downloadLink(rawUrl, name);
     let body = '<div class="file-viewer-image"></div>';
-    if (blob.tooLarge) body = '<div class="file-viewer-binary">Too large to show here</div>';
-    else if (!image) body = '<div class="file-viewer-binary">Binary file</div>';
+    if (blob.tooLarge && !download) {
+      body = '<div class="file-viewer-binary">Too large to open or download here</div>';
+    } else if (blob.tooLarge) {
+      body = '<div class="file-viewer-binary">Too large to show here</div>';
+    } else if (!image) {
+      body = '<div class="file-viewer-binary">Binary file</div>';
+    }
     fileViewerEl.innerHTML = `
         <div class="file-viewer">
           <div class="file-viewer-header">
             <div class="file-info">
               <span>${escapeHtml(name)}</span>
             </div>
-            ${downloadLink(rawUrl, name)}
+            ${download}
           </div>
           ${body}
         </div>

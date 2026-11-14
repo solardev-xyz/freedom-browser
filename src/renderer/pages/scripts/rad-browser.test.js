@@ -12,15 +12,19 @@ const path = require('path');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'rad-browser.js'), 'utf8');
 
-/** Pull a top-level `const NAME = ...` / `function NAME(...)` out of the source,
+/** Pull a top-level `const NAME = ...` / `[async] function NAME(...)` out of the source,
  * after `prelude` (the page globals they read). */
 function loadHelpers(names, prelude = '') {
   const chunks = names.map((name) => {
     const constStart = SOURCE.indexOf(`const ${name} =`);
-    const fnStart = SOURCE.indexOf(`function ${name}(`);
+    let fnStart = SOURCE.indexOf(`function ${name}(`);
+    // An async function keeps its `async`.
+    if (fnStart !== -1 && SOURCE.slice(fnStart - 6, fnStart) === 'async ') fnStart -= 6;
     const start = fnStart !== -1 ? fnStart : constStart;
     expect(start).toBeGreaterThanOrEqual(0);
-    // Helpers are separated by a blank line at top level.
+    // A function ends at its top-level closing brace; other helpers are
+    // separated by a blank line at top level.
+    if (fnStart !== -1) return SOURCE.slice(start, SOURCE.indexOf('\n}\n', start) + 2);
     const end = SOURCE.indexOf('\n\n', start);
     return SOURCE.slice(start, end === -1 ? undefined : end);
   });
@@ -335,10 +339,113 @@ describe('raw files: images and downloads', () => {
     );
   });
 
-  test('"Binary file not shown." is gone: every file view offers the download', () => {
+  test('"Binary file not shown." is gone: every file view the raw endpoint serves offers the download', () => {
     expect(SOURCE).not.toContain('Binary file not shown');
-    expect(SOURCE.match(/\$\{downloadLink\(rawUrl, name\)\}/g)).toHaveLength(2);
+    expect(SOURCE.match(/downloadLink\(rawUrl, name\)/g)).toHaveLength(2);
     expect(SOURCE).toContain('renderBlob(blob, rawFileUrl(headSha, viewPath));');
+  });
+
+  // A /blob/ 413 is past the 16 MiB text view; the raw endpoint serves up to
+  // 64 MiB. Its HEAD says which.
+  describe('a file too large to show', () => {
+    const calls = [];
+    let answers = {};
+    globalThis.__radBrowserFetch = async (url, init = {}) => {
+      const method = init.method || 'GET';
+      calls.push([method, url]);
+      const answer = answers[method];
+      if (answer instanceof Error) throw answer;
+      return new Response(answer.body ?? null, { status: answer.status });
+    };
+    const { fetchBlob } = loadHelpers(
+      ['encodePathSegments', 'rawFileUrl', 'fetchBlob'],
+      `const repoApiRoot = '${ROOT}'; const fetch = globalThis.__radBrowserFetch;` +
+        ' const console = { error() {} };'
+    );
+    afterAll(() => {
+      delete globalThis.__radBrowserFetch;
+    });
+    beforeEach(() => {
+      calls.length = 0;
+    });
+
+    test('downloads when the raw endpoint would serve it, or when its HEAD fails otherwise', async () => {
+      for (const head of [{ status: 200 }, { status: 503 }, new Error('offline')]) {
+        answers = { GET: { status: 413, body: '{"error":"too large"}' }, HEAD: head };
+        expect(await fetchBlob(REVISION, 'dir/big.bin')).toEqual({
+          name: 'big.bin',
+          tooLarge: true,
+          downloadable: true,
+        });
+      }
+      expect(calls.slice(0, 2)).toEqual([
+        ['GET', `${ROOT}/blob/${REVISION}/dir/big.bin`],
+        ['HEAD', `${ROOT}/raw/${REVISION}/dir/big.bin`],
+      ]);
+    });
+
+    test("not past the raw endpoint's own cap: its HEAD is 413", async () => {
+      answers = { GET: { status: 413, body: '{}' }, HEAD: { status: 413 } };
+      expect(await fetchBlob(REVISION, 'huge.bin')).toEqual({
+        name: 'huge.bin',
+        tooLarge: true,
+        downloadable: false,
+      });
+    });
+
+    test('a file the text view serves asks nothing more', async () => {
+      answers = { GET: { status: 200, body: '{"binary":false,"name":"a.txt","content":"x"}' } };
+      expect(await fetchBlob(REVISION, 'a.txt')).toEqual({
+        binary: false,
+        name: 'a.txt',
+        content: 'x',
+      });
+      expect(calls).toEqual([['GET', `${ROOT}/blob/${REVISION}/a.txt`]]);
+    });
+  });
+
+  describe('the binary file view', () => {
+    const view = { innerHTML: '', querySelector: () => null };
+    globalThis.__radBrowserView = view;
+    const { renderBlob } = loadHelpers(
+      [
+        'HTML_ESCAPES',
+        'escapeHtml',
+        'downloadLink',
+        'IMAGE_EXTENSIONS',
+        'isImageFile',
+        'wireDownloadLink',
+        'renderBlob',
+      ],
+      'const fileViewerEl = globalThis.__radBrowserView; const showImage = () => {};'
+    );
+    afterAll(() => {
+      delete globalThis.__radBrowserView;
+    });
+    const URL_ = `${ROOT}/raw/${REVISION}/big.bin`;
+    const text = () =>
+      view.innerHTML
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    test('past the raw cap: no download link, and says it can be neither opened nor downloaded', () => {
+      renderBlob({ name: 'big.bin', tooLarge: true, downloadable: false }, URL_);
+      expect(view.innerHTML).not.toContain('file-download');
+      expect(text()).toBe('big.bin Too large to open or download here');
+    });
+
+    test('past the text view only: the download link', () => {
+      renderBlob({ name: 'big.bin', tooLarge: true, downloadable: true }, URL_);
+      expect(view.innerHTML).toContain(`href="${URL_}" download="big.bin"`);
+      expect(text()).toBe('big.bin Download Too large to show here');
+    });
+
+    test('a binary file that is not an image: the download link', () => {
+      renderBlob({ name: 'big.bin', binary: true }, URL_);
+      expect(view.innerHTML).toContain('class="file-download"');
+      expect(text()).toBe('big.bin Download Binary file');
+    });
   });
 
   test('img-src allows the object URLs the file view shows images from', () => {

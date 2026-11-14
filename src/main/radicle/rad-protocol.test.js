@@ -4,6 +4,9 @@ jest.mock('../radicle-manager', () => ({
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../radicle-api-protocol', () => ({
   serveRepoApi: jest.fn(async () => new Response('{"native":true}', { status: 200 })),
+  // The raw endpoint's decision and answer are the real ones.
+  isRawRepoPath: jest.requireActual('../radicle-api-protocol').isRawRepoPath,
+  rawAnswer: jest.requireActual('../radicle-api-protocol').rawAnswer,
   decodeRepoApiPath: jest.fn((path) => {
     if (!path) return [];
     try {
@@ -201,6 +204,38 @@ describe('handleRadRequest', () => {
       handleRadRequest({ url: 'rad://invalid', method: 'GET' }).then((r) => r.status)
     ).resolves.toBe(400);
     expect(serveRepoApi).not.toHaveBeenCalled();
+  });
+
+  // freedom-core design 0008, "The raw endpoint": the refusals handleRadRequest
+  // makes itself, before serveRepoApi, are raw answers for a raw request.
+  test("a raw request's own refusals carry the raw headers; a HEAD has no body", async () => {
+    const raw = `/raw/${'a'.repeat(40)}/logo.png`;
+    const security = (res) => [
+      res.headers.get('x-content-type-options'),
+      res.headers.get('content-security-policy'),
+      res.headers.get('access-control-expose-headers'),
+      res.headers.get('access-control-allow-origin'),
+    ];
+    const RAW = ['nosniff', 'sandbox', 'Accept-Ranges, Content-Range, ETag', '*'];
+    const posted = await handleRadRequest({ url: `rad://${RID}${raw}`, method: 'POST' });
+    expect([posted.status, ...security(posted)]).toEqual([405, ...RAW]);
+    for (const method of ['GET', 'HEAD']) {
+      const invalid = await handleRadRequest({ url: `rad://invalid${raw}`, method });
+      expect([method, invalid.status, ...security(invalid)]).toEqual([method, 400, ...RAW]);
+      expect(invalid.body === null).toBe(method === 'HEAD');
+      isDisabledForProfile.mockReturnValue(true);
+      const disabled = await handleRadRequest({ url: `rad://${RID}${raw}`, method });
+      isDisabledForProfile.mockReturnValue(false);
+      expect([method, disabled.status, ...security(disabled)]).toEqual([method, 403, ...RAW]);
+      expect(disabled.body === null).toBe(method === 'HEAD');
+    }
+    // And what serveRepoApi answers is passed through as a raw answer too.
+    serveRepoApi.mockImplementation(async () => new Response('{}', { status: 200 }));
+    const served = await handleRadRequest({ url: `rad://${RID}${raw}`, method: 'GET' });
+    expect([served.status, ...security(served).slice(0, 3)]).toEqual([200, ...RAW.slice(0, 3)]);
+    // Other paths are left as they are.
+    const other = await handleRadRequest({ url: 'rad://invalid/blob/x', method: 'GET' });
+    expect([other.status, ...security(other)]).toEqual([400, null, null, null, '*']);
   });
 });
 

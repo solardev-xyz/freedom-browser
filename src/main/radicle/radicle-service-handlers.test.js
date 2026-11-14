@@ -78,6 +78,11 @@ const RAD_HEADERS = [
   ['content-type', 'application/json'],
 ];
 const RADAPI_HEADERS = [['content-type', 'application/json']];
+/** rad:'s own refusals (rad-protocol.js's `{ code, message }`). */
+const RAD_OWN_HEADERS = [
+  ['access-control-allow-origin', '*'],
+  ['content-type', 'application/json; charset=utf-8'],
+];
 
 /** Lets the pipes and promises run. */
 async function settle(turns = 30) {
@@ -959,6 +964,25 @@ describe('the raw endpoint', () => {
     };
   }
 
+  /** Headers sorted by name, as a Response lists them. */
+  const sorted = (headers) => [...headers].sort(([a], [b]) => a.localeCompare(b));
+
+  /** The raw security headers every raw answer carries (`rad:`'s with the
+   * range headers exposed to pages). */
+  const rawSecurity = (cors = true) => [
+    ['content-security-policy', 'sandbox'],
+    ['x-content-type-options', 'nosniff'],
+    ...(cors ? [['access-control-expose-headers', 'Accept-Ranges, Content-Range, ETag']] : []),
+  ];
+
+  /** A raw refusal's headers: its JSON error's, `rad:`'s (`cors`) or
+   * `radapi:`'s, with the raw security headers and `extra`. */
+  const rawRefusal = ({
+    cors = true,
+    extra = [],
+    base = cors ? RAD_HEADERS : RADAPI_HEADERS,
+  } = {}) => sorted([...base, ...rawSecurity(cors), ...extra]);
+
   /** The headers of a raw answer for `rad:` (`cors`) or `radapi:`. */
   function rawHeaders({ length, type = 'text/plain; charset=utf-8', range = null, cors = true }) {
     const headers = [
@@ -1008,7 +1032,7 @@ describe('the raw endpoint', () => {
       const res = await answered(await raw(RAW_PATH, { method }));
       expect(res).toEqual({
         status: 404,
-        headers: RAD_HEADERS,
+        headers: rawRefusal(),
         body: method === 'GET' ? JSON.stringify({ error: 'repository not found' }) : null,
       });
     }
@@ -1050,15 +1074,15 @@ describe('the raw endpoint', () => {
     const page = await answered(await raw(RAW_PATH, { range: 'bytes=58-' }));
     expect(page).toEqual({
       status: 416,
-      headers: [...RAD_HEADERS, ['content-range', 'bytes */58']].sort(([a], [b]) =>
-        a.localeCompare(b)
-      ),
+      headers: rawRefusal({ extra: [['content-range', 'bytes */58']] }),
       body: JSON.stringify({ error: 'range not satisfiable' }),
     });
     const viewer = await answered(await raw(RAW_PATH, { range: 'bytes=-0', api: true }));
-    expect(viewer.status).toBe(416);
-    expect(viewer.headers).toContainEqual(['content-range', 'bytes */58']);
-    expect(JSON.parse(viewer.body)).toEqual({ error: 'range not satisfiable' });
+    expect(viewer).toEqual({
+      status: 416,
+      headers: rawRefusal({ cors: false, extra: [['content-range', 'bytes */58']] }),
+      body: JSON.stringify({ error: 'range not satisfiable' }),
+    });
     expect(blobs(child).map((params) => params.range)).toEqual([{ start: 58 }, { suffix: 0 }]);
     expect(log.warn).not.toHaveBeenCalled();
   });
@@ -1129,7 +1153,7 @@ describe('the raw endpoint', () => {
       const page = await answered(await raw(`/raw/${REV}/big.bin`, { method }));
       expect(page).toEqual({
         status: 413,
-        headers: RAD_HEADERS,
+        headers: rawRefusal(),
         body:
           method === 'GET'
             ? JSON.stringify({ error: 'repository data too large to serve here' })
@@ -1137,20 +1161,210 @@ describe('the raw endpoint', () => {
       });
     }
     const viewer = await answered(await raw(`/raw/${REV}/big.bin`, { api: true }));
-    expect([viewer.status, JSON.parse(viewer.body)]).toEqual([413, { error: message }]);
+    expect(viewer).toEqual({
+      status: 413,
+      headers: rawRefusal({ cors: false }),
+      body: JSON.stringify({ error: message }),
+    });
   });
 
-  test("main's own refusals send no rad.blob: a path or revision missing is 400", async () => {
+  /**
+   * GET and HEAD for `pathname`, through `rad:` or `radapi:` (`api`): the
+   * HEAD has the GET's status and headers and no body, and both carry the
+   * raw security headers. The GET's answer.
+   */
+  async function getAndHead(pathname, { api: viewer = false, request = null } = {}) {
+    const send = (method) => (request ? request(method) : raw(pathname, { method, api: viewer }));
+    const get = await answered(await send('GET'));
+    const head = await answered(await send('HEAD'));
+    expect(head).toEqual({ ...get, body: null });
+    for (const header of rawSecurity(!viewer)) expect(get.headers).toContainEqual(header);
+    return get;
+  }
+
+  const SERVICE_FAILURES = [
+    ['not_found', 'the path does not exist in the given tree', 404, 'not found'],
+    ['failed', 'the read failed somewhere', 500, 'the read failed'],
+    ['deadline', 'past its deadline', 504, 'Radicle read timed out'],
+    ['busy', 'the read pool is full', 503, 'Radicle is busy; try again'],
+    ['cancelled', 'Cancelled', 503, 'request cancelled'],
+    [
+      'quarantined',
+      'quarantined',
+      503,
+      "the repository is quarantined: Radicle couldn't repair it",
+    ],
+  ];
+
+  test.each(SERVICE_FAILURES)(
+    "the service's %s: %#, a raw answer for GET and HEAD at rad: and radapi:",
+    async (code, message, status, publicText) => {
+      await running(() => undefined, { blob: (m, c) => c.error(m.id, code, message) });
+      const page = await getAndHead(RAW_PATH);
+      expect(page).toEqual({
+        status,
+        headers: rawRefusal(),
+        body: JSON.stringify({ error: publicText }),
+      });
+      const viewer = await getAndHead(RAW_PATH, { api: true });
+      expect(viewer.status).toBe(status);
+      expect(viewer.headers).toEqual(rawRefusal({ cors: false }));
+    }
+  );
+
+  test("main's refusals inside the route: a bad path, a missing one, a revision that isn't one", async () => {
     const { child } = await running(() => undefined, { blob: serving() });
-    for (const pathname of [`/raw/${REV}`, `/raw/${REV}/`, '/raw/main/README.md']) {
-      const res = await answered(await raw(pathname));
-      expect([pathname, res.status, res.body]).toEqual([
-        pathname,
-        400,
-        JSON.stringify({ error: 'missing path' }),
-      ]);
+    for (const [pathname, error] of [
+      [`/raw/${REV}`, 'missing path'],
+      [`/raw/${REV}/`, 'missing path'],
+      ['/raw/main/README.md', 'missing path'],
+      [`/raw/${REV}/%ZZ`, 'invalid repository path'],
+    ]) {
+      for (const viewer of [false, true]) {
+        const res = await getAndHead(pathname, { api: viewer });
+        // rad: refuses a path it can't decode itself, before the route.
+        const outer = !viewer && pathname.includes('%ZZ');
+        expect([pathname, viewer, res]).toEqual([
+          pathname,
+          viewer,
+          {
+            status: 400,
+            headers: outer ? rawRefusal({ base: RAD_OWN_HEADERS }) : rawRefusal({ cors: !viewer }),
+            body: outer
+              ? JSON.stringify({ code: 400, message: 'invalid rad reference' })
+              : JSON.stringify({ error }),
+          },
+        ]);
+      }
     }
     expect(blobs(child)).toEqual([]);
+  });
+
+  test("the handlers' own refusals before the route are raw answers too", async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    // rad:'s reference check: a RID that isn't one.
+    const badRid = await getAndHead(null, {
+      request: (method) =>
+        rad.handleRadRequest(new Request(`rad://nope/raw/${REV}/a.png`, { method })),
+    });
+    expect([badRid.status, badRid.headers]).toEqual([400, rawRefusal({ base: RAD_OWN_HEADERS })]);
+    // radapi:'s RID encoding.
+    const badEncoding = await getAndHead(null, {
+      api: true,
+      request: (method) =>
+        api.handleRadicleApiRequest(
+          new Request(`radapi://local/api/v1/repos/%ZZ/raw/${REV}/a.png`, { method })
+        ),
+    });
+    expect(badEncoding).toEqual({
+      status: 400,
+      headers: rawRefusal({ cors: false }),
+      body: JSON.stringify({ error: 'invalid RID encoding' }),
+    });
+    // radapi:'s referrer check: a page that isn't the viewer.
+    const elsewhere = await getAndHead(null, {
+      api: true,
+      request: (method) =>
+        api.handleRadicleApiRequest({
+          url: `radapi://local/api/v1/repos/${encodeURIComponent(RID)}${RAW_PATH}`,
+          method,
+          referrer: 'https://example.com/',
+          headers: new Headers(),
+        }),
+    });
+    expect([elsewhere.status, elsewhere.headers]).toEqual([403, rawRefusal({ cors: false })]);
+    // Any method but GET and HEAD.
+    const posted = await answered(
+      await rad.handleRadRequest(new Request(`rad://${BARE}${RAW_PATH}`, { method: 'POST' }))
+    );
+    expect([posted.status, posted.headers]).toEqual([405, rawRefusal({ base: RAD_OWN_HEADERS })]);
+    const postedApi = await answered(
+      await api.handleRadicleApiRequest(
+        new Request(`radapi://local/api/v1/repos/${encodeURIComponent(RID)}${RAW_PATH}`, {
+          method: 'POST',
+        })
+      )
+    );
+    expect([postedApi.status, postedApi.headers]).toEqual([405, rawRefusal({ cors: false })]);
+    expect(blobs(child)).toEqual([]);
+  });
+
+  test('the profile gate: Radicle disabled is a raw 403 at rad: and radapi:', async () => {
+    const { isDisabledForProfile } = require('../radicle-manager');
+    isDisabledForProfile.mockReturnValue(true);
+    try {
+      const page = await getAndHead(RAW_PATH);
+      expect([page.status, page.headers]).toEqual([403, rawRefusal({ base: RAD_OWN_HEADERS })]);
+      const viewer = await getAndHead(RAW_PATH, { api: true });
+      expect([viewer.status, viewer.headers]).toEqual([403, rawRefusal({ cors: false })]);
+    } finally {
+      isDisabledForProfile.mockReturnValue(false);
+    }
+  });
+
+  test('a full admission: a raw 503 at rad: and radapi:, and no rad.blob', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    const held = [];
+    for (let i = 0; i < admission.MAX_ACTIVE; i++) held.push(await admission.acquireDwebFetch({}));
+    const waiting = [];
+    for (let i = 0; i < admission.MAX_WAITING; i++) waiting.push(admission.acquireDwebFetch({}));
+    try {
+      const page = await getAndHead(RAW_PATH);
+      expect(page).toEqual({
+        status: 503,
+        headers: rawRefusal({ base: RAD_OWN_HEADERS }),
+        body: JSON.stringify({ code: 503, message: 'Radicle is busy; try again' }),
+      });
+      const viewer = await getAndHead(RAW_PATH, { api: true });
+      expect(viewer).toEqual({
+        status: 503,
+        headers: rawRefusal({ cors: false }),
+        body: JSON.stringify({ error: 'Radicle is busy; try again' }),
+      });
+      expect(blobs(child)).toEqual([]);
+    } finally {
+      const freed = waiting.map((granted) => granted.then((slot) => slot.release()));
+      for (const slot of held) slot.release();
+      await Promise.all(freed);
+    }
+  });
+
+  test('other routes keep their headers: /blob/ and a JSON route, served and refused', async () => {
+    await running(
+      answers({
+        blob_at: (message, c) =>
+          message.params.args.path === 'big.bin'
+            ? c.error(message.id, 'too_large', '67108865 bytes is over the limit of 16777216')
+            : c.readReply(message.id, '{"binary":false,"name":"README.md","content":"x"}'),
+        remotes: '[]',
+      })
+    );
+    for (const pathname of [`/blob/${REV}/README.md`, '/remotes']) {
+      for (const method of ['GET', 'HEAD']) {
+        const page = await answered(await radGet(pathname, { method }));
+        expect([pathname, method, page.status, page.headers]).toEqual([
+          pathname,
+          method,
+          200,
+          RAD_HEADERS,
+        ]);
+        const viewer = await answered(
+          await radapiGet(`/api/v1/repos/${encodeURIComponent(RID)}${pathname}`, { method })
+        );
+        expect([pathname, method, viewer.status, viewer.headers]).toEqual([
+          pathname,
+          method,
+          200,
+          RADAPI_HEADERS,
+        ]);
+      }
+    }
+    const refused = await answered(await radGet(`/blob/${REV}/big.bin`));
+    expect(refused).toEqual({
+      status: 413,
+      headers: RAD_HEADERS,
+      body: JSON.stringify({ error: 'repository data too large to serve here' }),
+    });
   });
 
   test('a head unlike the design, or a body longer than its head, fails the read', async () => {
