@@ -80,7 +80,10 @@ const METHOD_CLASSES = Object.freeze({
   'naming.invalidate_content': IMMEDIATE,
   'naming.invalidate_tezos': IMMEDIATE,
   // Design 0012's approvals (cored-v0.14.0, APR-3): main mints and spends
-  // its tokens through the first four (APB-1).
+  // its tokens through the first four (APB-1). cored-v0.16.0 adds two
+  // methods, both `page` only: `approval.radicle_write` (a page's Radicle
+  // write counted in R-6) and `approval.remember` (a device send's "Always
+  // allow", from `approval.spend`'s receipt). Main doesn't send either yet.
   'approval.issue': IMMEDIATE,
   'approval.discard': IMMEDIATE,
   'approval.spend': IMMEDIATE,
@@ -89,8 +92,10 @@ const METHOD_CLASSES = Object.freeze({
   'approval.grant': IMMEDIATE,
   'approval.revoke': IMMEDIATE,
   'approval.touch': IMMEDIATE,
+  'approval.radicle_write': IMMEDIATE,
   'approval.grants': IMMEDIATE,
   'approval.forget_account': IMMEDIATE,
+  'approval.remember': IMMEDIATE,
   'dweb.open': SESSION,
   'dweb.verify': HEAD,
   'dweb.forget': IMMEDIATE,
