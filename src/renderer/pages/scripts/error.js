@@ -300,7 +300,55 @@ const ADDRESS_ERRORS = {
   },
 };
 
+// An .onion page load main held back while Tor isn't running (#1248,
+// tor-onion-gate.js). Nothing to retry: main opens the page itself once Tor
+// is connected. `tor_off` means Tor is off in Settings, and only the user
+// turns it on, with the button; a site can't, since starting Tor shows on
+// the network.
+const ONION_STARTING_TEXT =
+  'This is an onion site, which only opens through Tor. Tor is starting, and the page opens ' +
+  `by itself once it's connected. Tor's status is in the Nodes menu ${NODES_ICON}.`;
+
+function showOnionStarting() {
+  setErrorTitle('Waiting for Tor');
+  descriptionEl.innerHTML = ONION_STARTING_TEXT;
+  document.getElementById('start-tor-btn').hidden = true;
+}
+
+function displayOnionNotice() {
+  // Not a failure, so not in the error page's red (error.html, body.onion).
+  document.body.classList.replace('error', 'onion');
+  detailsEl.textContent = url || '';
+  document.getElementById('retry-btn').hidden = true;
+  if (error === 'tor_starting') {
+    showOnionStarting();
+    return;
+  }
+  setErrorTitle('This site needs Tor');
+  descriptionEl.textContent =
+    'This is an onion site, which only opens through Tor, and Tor is turned off. Starting it ' +
+    'turns it on in Settings: your network provider then sees that you use Tor, but not which ' +
+    'sites you visit.';
+  const button = document.getElementById('start-tor-btn');
+  button.hidden = false;
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      await window.freedomAPI.startTorForOnion();
+      showOnionStarting();
+    } catch {
+      descriptionEl.textContent =
+        "Freedom couldn't start Tor. Try again, or turn it on in Settings > Advanced.";
+      button.disabled = false;
+    }
+  };
+}
+
 async function displayError() {
+  if (error === 'tor_starting' || error === 'tor_off') {
+    displayOnionNotice();
+    return;
+  }
   const addressError = ADDRESS_ERRORS[error];
   if (addressError) {
     setErrorTitle(addressError.title);

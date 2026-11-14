@@ -103,6 +103,8 @@ function loadElectron44ClipboardModule(options = {}) {
   });
 }
 
+const DEFAULT_SESSION = { name: 'default session' };
+
 function loadIpcHandlersModule(options = {}) {
   const ipcMain = options.ipcMain || createIpcMainMock();
   const log = {
@@ -241,7 +243,12 @@ function loadIpcHandlersModule(options = {}) {
     nativeImage,
     webContents: options.webContents,
     webContentsList: options.webContentsList,
-    electronOverrides: options.electronOverrides,
+    // A normal window's tabs run on the default session: Save Image and Copy
+    // Image fetch through it (#1248).
+    electronOverrides: {
+      session: { defaultSession: DEFAULT_SESSION },
+      ...options.electronOverrides,
+    },
     extraMocks: {
       [require.resolve('./logger')]: () => log,
       [require.resolve('./settings-store')]: () => ({ loadSettings }),
@@ -631,6 +638,42 @@ describe('ipc-handlers', () => {
         { sender: lost },
         'https://example.com/x.png'
       )
+    ).resolves.toMatchObject({ success: false });
+    expect(ctx2.fetchBuffer).not.toHaveBeenCalled();
+  });
+
+  // #1248: a private window's fetch goes through its own session too, so an
+  // `.onion` image follows the `.onion` routing and gate there, and never
+  // reaches the system resolver through Node's stack.
+  test('Save Image and Copy Image in a private window fetch through its session', async () => {
+    const privateSession = { name: 'private session' };
+    const fromPartition = jest.fn(() => privateSession);
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+      isTorWebContents: () => false,
+      getPartitionForWebContents: (wc) => (wc?.isPrivate ? 'private-abc' : null),
+      electronOverrides: { session: { fromPartition } },
+    });
+    ctx.mod.registerBaseIpcHandlers({});
+    const sender = { isPrivate: true, getOwnerBrowserWindow: () => ({}) };
+    const onion = 'http://example.onion/x.png';
+
+    await ctx.ipcMain.handlers.get('clipboard:copy-image')({ sender }, onion);
+    expect(fromPartition).toHaveBeenCalledWith('private-abc');
+    expect(ctx.fetchBuffer).toHaveBeenCalledWith(onion, {
+      session: privateSession,
+      maxBytes: 50 * 1024 * 1024,
+    });
+
+    // A private window whose session can't be found fetches nothing.
+    const ctx2 = loadIpcHandlersModule({
+      isPrivateWebContents: () => true,
+      isTorWebContents: () => false,
+      getPartitionForWebContents: () => null,
+    });
+    ctx2.mod.registerBaseIpcHandlers({});
+    await expect(
+      ctx2.ipcMain.handlers.get('clipboard:copy-image')({ sender }, onion)
     ).resolves.toMatchObject({ success: false });
     expect(ctx2.fetchBuffer).not.toHaveBeenCalled();
   });
@@ -1723,9 +1766,13 @@ describe('ipc-handlers', () => {
         defaultPath: 'logo.png',
       })
     );
+    // Through the window's own session, as the page loaded it (#1248).
     expect(ctx.fetchToFile).toHaveBeenCalledWith(
       'https://example.com/assets/logo.png',
-      '/tmp/logo.png'
+      '/tmp/logo.png',
+      {
+        session: DEFAULT_SESSION,
+      }
     );
   });
 
@@ -1777,7 +1824,10 @@ describe('ipc-handlers', () => {
     ).resolves.toEqual({
       success: true,
     });
-    expect(ctx.fetchBuffer).toHaveBeenCalledWith('https://example.com/image.png');
+    expect(ctx.fetchBuffer).toHaveBeenCalledWith('https://example.com/image.png', {
+      session: DEFAULT_SESSION,
+      maxBytes: 50 * 1024 * 1024,
+    });
     // Electron 43 still gets `writeImage`, on purpose: its `clipboard.write`
     // takes a `{ image }` object and silently ignores an array, so routing the
     // array form here would drop the image with no error at all.

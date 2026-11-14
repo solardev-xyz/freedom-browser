@@ -308,7 +308,8 @@ describe('error page heading case (#260)', () => {
   });
 
   test('every heading this page can show is sentence case', () => {
-    const PROPER_NOUNS = new Set(['Swarm']);
+    // Tor's notices for an .onion address (#1248) name it.
+    const PROPER_NOUNS = new Set(['Swarm', 'Tor']);
     // Literal setErrorTitle() calls, plus the per-reason Swarm headings
     // describeSwarmFailure() hands it (#618).
     const runtime = [

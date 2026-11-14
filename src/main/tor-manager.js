@@ -78,6 +78,12 @@ const proxySessions = new Map();
 // when `.onion` is routed DIRECT. A session registered later adopts it, so a
 // private window opened while Tor is already running inherits the same policy.
 let appliedSocksEndpoint = null;
+// The endpoint each tracked session's PAC was last applied with, by key, once
+// the apply has completed. A session's `.onion` route is live only when this
+// matches `appliedSocksEndpoint` and Tor is running (isOnionRouteLive): until
+// then tor-onion-gate.js cancels its `.onion` requests rather than let them go
+// DIRECT, where Chromium hands the name to the system resolver (#1248).
+const onionRoutes = new Map();
 // Tor windows (#473): sessions that send *all* their traffic through Arti,
 // keyed by private partition. Unlike `proxySessions` they are never set to
 // DIRECT. A stop leaves them pointed at the port Arti listened on, so their
@@ -261,6 +267,9 @@ function updateState(newState, error = null) {
   lastError = error;
   // Tor windows follow the state: held off unless Tor is up (rerouteTorWindows).
   if (torWindowSessions.size > 0) rerouteTorWindows();
+  // applyTorProxy applies `.onion` routing before it reports RUNNING, so the
+  // sessions it routes are live by now (#1248).
+  if (newState === STATUS.RUNNING) notifyOnionRoutingLive();
   const windows = require('electron').BrowserWindow.getAllWindows();
   for (const win of windows) {
     try {
@@ -347,9 +356,54 @@ function startHealthCheck(mode) {
 async function applyOnionRouting(endpoint) {
   appliedSocksEndpoint = endpoint;
   await Promise.all([
-    ...[...proxySessions.values()].map((targetSession) => applyOnionProxy(targetSession, endpoint)),
+    ...[...proxySessions.entries()].map(([key, targetSession]) =>
+      applyOnionRoute(key, targetSession, endpoint)
+    ),
     rerouteTorWindows(),
   ]);
+}
+
+// Apply a session's `.onion` PAC, and record the endpoint once it's in place,
+// unless the policy or the session changed meanwhile.
+async function applyOnionRoute(key, targetSession, endpoint) {
+  await applyOnionProxy(targetSession, endpoint);
+  if (proxySessions.get(key) === targetSession && appliedSocksEndpoint === endpoint) {
+    onionRoutes.set(key, endpoint);
+  }
+}
+
+/**
+ * Whether a session may send `.onion` requests now: Tor is running, and this
+ * session's PAC sends `.onion` to the endpoint Tor validated. Anything else
+ * (Tor off, starting, stopped, crashed, the session not tracked or not yet
+ * re-pointed) is not live, and tor-onion-gate.js holds the request back.
+ */
+function isOnionRouteLive(targetSession) {
+  if (currentState !== STATUS.RUNNING || !appliedSocksEndpoint) return false;
+  for (const [key, candidate] of proxySessions) {
+    if (candidate === targetSession) return onionRoutes.get(key) === appliedSocksEndpoint;
+  }
+  return false;
+}
+
+// Told each time `.onion` routing goes live, so the `.onion` page loads held
+// back meanwhile can open (tor-held-loads.js#resumeHeldLoads).
+const onionRoutingLiveListeners = new Set();
+
+/** Call `listener` whenever `.onion` routing goes live on a session. */
+function onOnionRoutingLive(listener) {
+  onionRoutingLiveListeners.add(listener);
+  return () => onionRoutingLiveListeners.delete(listener);
+}
+
+function notifyOnionRoutingLive() {
+  for (const listener of onionRoutingLiveListeners) {
+    try {
+      listener();
+    } catch (err) {
+      log.error('[Tor] .onion routing listener failed:', err.message);
+    }
+  }
 }
 
 // Apply a Tor window's proxy, and record the endpoint once it's in place.
@@ -386,7 +440,7 @@ function torWindowEndpoint() {
 }
 
 // Told each time Tor windows have been pointed at a running Tor, so what they
-// held back meanwhile can open (tor-window.js#resumeHeldBack).
+// held back meanwhile can open (tor-held-loads.js#resumeHeldLoads).
 const torWindowsLiveListeners = new Set();
 
 /** Call `listener` whenever Tor windows are routed through a running Tor. */
@@ -452,25 +506,44 @@ function unregisterTorWindowSession(key) {
 }
 
 /**
- * Start Tor for a Tor window, unless it's running or on its way. Opening a Tor
- * window is the request, and so is a page load in one while Tor isn't running
- * (tor-window.js#notifyHeldBack): the window can do nothing without Tor. With
- * Tor turned off in Settings, this turns it on first, as Settings → Advanced →
- * Enable Tor would.
+ * Start Tor because something needs it now, unless it's running or on its way.
+ * With Tor turned off in Settings, `turnOn` turns it on first, as Settings →
+ * Advanced → Enable Tor would; without it, nothing starts. Returns whether Tor
+ * is on (and so running or on its way).
  */
-function ensureTorForTorWindow({ promptWindow } = {}) {
+function startTorOnDemand({ promptWindow, turnOn, reason }) {
   if (loadSettings().enableTorIntegration !== true) {
-    log.info('[Tor] Turning Tor on for a Tor window');
+    if (!turnOn) return false;
+    log.info(`[Tor] Turning Tor on for ${reason}`);
     saveSettings({ enableTorIntegration: true });
   }
   // While stopping too: startTor queues the start for once the stop is done.
   if (currentState !== STATUS.RUNNING && currentState !== STATUS.STARTING) {
-    log.info('[Tor] Starting for a Tor window');
-    // The harness records the start instead in specs that check Tor windows
-    // with Tor not running (test-harness.js#recordTorWindowStarts).
+    log.info(`[Tor] Starting for ${reason}`);
+    // The harness records the start instead in specs that check Tor's
+    // on-demand starts with Tor not running (test-harness.js#recordTorWindowStarts).
     const start = globalThis.__FREEDOM_TEST_TOR_WINDOW_START__ || startTor;
     start({ checkDefaultExternalCandidate: true, promptWindow });
   }
+  return true;
+}
+
+/**
+ * Start Tor for a Tor window. Opening a Tor window is the request, and so is
+ * a page load in one while Tor isn't running (tor-window.js): the window can
+ * do nothing without Tor, so this turns Tor on in Settings if it's off.
+ */
+function ensureTorForTorWindow({ promptWindow } = {}) {
+  startTorOnDemand({ promptWindow, turnOn: true, reason: 'a Tor window' });
+}
+
+/**
+ * Start Tor for an `.onion` address in a normal or private window (#1248).
+ * Turns Tor on in Settings only when the user asked (`turnOn`): an address
+ * they typed, or the notice's Start Tor button. Returns whether Tor is on.
+ */
+function ensureTorForOnion({ promptWindow, turnOn = false } = {}) {
+  return startTorOnDemand({ promptWindow, turnOn, reason: 'an .onion address' });
 }
 
 /**
@@ -495,6 +568,7 @@ async function reassertOnionRouting() {
  */
 async function clearOnionRouting() {
   appliedSocksEndpoint = null;
+  onionRoutes.clear();
   await Promise.all(
     [...proxySessions.values()].map((targetSession) =>
       clearOnionProxy(targetSession).catch(() => {})
@@ -514,15 +588,21 @@ async function clearOnionRouting() {
 function registerOnionRoutingSession(key, targetSession) {
   if (!key || !targetSession) return;
   proxySessions.set(key, targetSession);
+  onionRoutes.delete(key);
   if (!appliedSocksEndpoint) return;
-  applyOnionProxy(targetSession, appliedSocksEndpoint).catch((err) => {
-    log.error(`[Tor] Failed to apply .onion routing to session ${key}:`, err.message);
-  });
+  applyOnionRoute(key, targetSession, appliedSocksEndpoint)
+    .then(() => {
+      if (isOnionRouteLive(targetSession)) notifyOnionRoutingLive();
+    })
+    .catch((err) => {
+      log.error(`[Tor] Failed to apply .onion routing to session ${key}:`, err.message);
+    });
 }
 
 /** Stop tracking a session (private window closed; its session is gone). */
 function unregisterOnionRoutingSession(key) {
   proxySessions.delete(key);
+  onionRoutes.delete(key);
 }
 
 async function applyTorProxy(mode, statusMessage, superseded = () => false) {
@@ -986,6 +1066,17 @@ function registerTorIpc() {
     return { status: currentState, error: lastError };
   });
 
+  // The user asked for an `.onion` address: typed into the address bar (the
+  // chrome), or the Start Tor button on the notice an `.onion` page load
+  // shows while Tor is off (the error page, freedomAPI.startTorForOnion).
+  // Unlike TOR_START, this turns Tor on in Settings first (#1248).
+  ipcMain.handle(IPC.TOR_START_FOR_ONION, (event) => {
+    log.info('[Tor] IPC: start for an .onion address');
+    const sender = event?.sender?.hostWebContents || event?.sender;
+    ensureTorForOnion({ promptWindow: getPromptWindowForEvent({ sender }), turnOn: true });
+    return { status: currentState, error: lastError };
+  });
+
   ipcMain.handle(IPC.TOR_STOP, () => {
     log.info('[Tor] IPC: stop requested');
     stopTor();
@@ -1034,6 +1125,9 @@ module.exports = {
   // Tests: settle once the queued Tor-window routing has run.
   whenTorWindowsRouted: () => torWindowRouting,
   ensureTorForTorWindow,
+  ensureTorForOnion,
+  isOnionRouteLive,
+  onOnionRoutingLive,
   getActivePort,
   getArtiVersion,
   getArtiBinaryPath,

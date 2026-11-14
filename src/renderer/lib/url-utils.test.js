@@ -1,4 +1,5 @@
 import {
+  isOnionAddress,
   ensureTrailingSlash,
   composeTargetUrl,
   deriveBzzBaseFromUrl,
@@ -1512,5 +1513,46 @@ describe('applyDnsNameIdentity', () => {
     expect(applyDnsNameIdentity('https://example.com/', names)).toBe('https://example.com/');
     expect(applyDnsNameIdentity(`ipns://${B58}/`, new Map())).toBe(`ipns://${B58}/`);
     expect(applyDnsNameIdentity('', names)).toBe('');
+  });
+});
+
+describe('isOnionAddress (#1248)', () => {
+  test('an onion URL or a bare onion address, as the address bar opens it', () => {
+    for (const input of [
+      'http://example.onion/',
+      'https://sub.example.onion:8443/path',
+      'wss://example.onion/socket',
+      'HTTP://EXAMPLE.ONION/',
+      'example.onion',
+      ' example.onion/path?q=1 ',
+      'example.onion:8080',
+      'example.onion.',
+    ]) {
+      expect({ input, onion: isOnionAddress(input) }).toEqual({ input, onion: true });
+    }
+    for (const input of [
+      'https://example.com/',
+      'https://example.com/x.onion',
+      'onion',
+      '.onion',
+      'bzz://example.onion/',
+      'what is an onion site',
+      'example.onion is down',
+      '',
+      undefined,
+    ]) {
+      expect({ input, onion: isOnionAddress(input) }).toEqual({ input, onion: false });
+    }
+  });
+});
+
+describe('formatBzzUrl opens an onion address, never searches it (#1248)', () => {
+  test('bare, with a port or a path, and fully qualified, as http://', () => {
+    expect(formatBzzUrl('abc.onion', null)?.targetUrl).toBe('http://abc.onion');
+    expect(formatBzzUrl('abc.onion:8080/x', null)?.targetUrl).toBe('http://abc.onion:8080/x');
+    expect(formatBzzUrl('abc.onion.', null)?.targetUrl).toBe('http://abc.onion.');
+    expect(formatBzzUrl('abc.onion./path', null)?.targetUrl).toBe('http://abc.onion./path');
+    // An ordinary domain still defaults to https.
+    expect(formatBzzUrl('example.com', null)?.targetUrl).toBe('https://example.com');
   });
 });

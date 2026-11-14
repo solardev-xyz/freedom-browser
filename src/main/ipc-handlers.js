@@ -19,20 +19,24 @@ const path = require('path');
 const { activeBzzBases } = require('./state');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
 
-// TOR WINDOW GUARD (#473): Save Image and Copy Image fetch the image again.
-// http-fetch.js does that with Node's own stack, outside any session, so from
-// a Tor window it would go out from the user's own IP address. A Tor
-// window's fetch goes through its session instead, where the proxy and the
-// gate apply (tor-window.js), streamed to disk for a save and capped for the
-// clipboard. The sender is the window's chrome, so the session is found by
-// the window's partition. No partition: refused.
-const TOR_CLIPBOARD_IMAGE_MAX_BYTES = 50 * 1024 * 1024;
+// Save Image and Copy Image fetch the image again, through the window's own
+// session as the page's request went: its proxy and gates apply, streamed to
+// disk for a save and capped for the clipboard. http-fetch.js's Node stack
+// goes out outside any session: from a Tor window, from the user's own IP
+// address (#473); for an `.onion` image elsewhere, past the `.onion` routing
+// and gate, handing the name to the system resolver (#1248). The sender is
+// the window's chrome, so a private or Tor window's session is found by its
+// partition. A private window without one is refused.
+const CLIPBOARD_IMAGE_MAX_BYTES = 50 * 1024 * 1024;
 
 function fetchSessionFor(sender) {
-  if (!isTorWebContents(sender)) return null;
   const partition = getPartitionForWebContents(sender);
-  if (!partition) throw new Error("Tor window's session not found");
-  return session.fromPartition(partition);
+  if (partition) return session.fromPartition(partition);
+  if (isPrivateWebContents(sender) || isTorWebContents(sender)) {
+    throw new Error("The window's session wasn't found");
+  }
+  if (!session?.defaultSession) throw new Error("The window's session wasn't found");
+  return session.defaultSession;
 }
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
@@ -1016,12 +1020,7 @@ function registerBaseIpcHandlers(callbacks = {}) {
         return { success: false, canceled: true };
       }
 
-      const torSession = fetchSessionFor(event?.sender);
-      if (torSession) {
-        await fetchToFile(imageUrl, result.filePath, { session: torSession });
-      } else {
-        await fetchToFile(imageUrl, result.filePath);
-      }
+      await fetchToFile(imageUrl, result.filePath, { session: fetchSessionFor(event?.sender) });
       return { success: true, filePath: result.filePath };
     } catch (error) {
       log.error('[context-menu] Failed to save image:', error);
@@ -1081,13 +1080,10 @@ function registerBaseIpcHandlers(callbacks = {}) {
     }
 
     try {
-      const torSession = fetchSessionFor(event?.sender);
-      const imageData = torSession
-        ? await fetchBuffer(imageUrl, {
-            session: torSession,
-            maxBytes: TOR_CLIPBOARD_IMAGE_MAX_BYTES,
-          })
-        : await fetchBuffer(imageUrl);
+      const imageData = await fetchBuffer(imageUrl, {
+        session: fetchSessionFor(event?.sender),
+        maxBytes: CLIPBOARD_IMAGE_MAX_BYTES,
+      });
       const image = nativeImage.createFromBuffer(imageData);
 
       if (image.isEmpty()) {

@@ -705,6 +705,9 @@ contextBridge.exposeInMainWorld('tor', {
   getStatus: () => ipcRenderer.invoke('tor:getStatus'),
   checkBinary: () => ipcRenderer.invoke('tor:checkBinary'),
   getVersion: () => ipcRenderer.invoke('tor:getVersion'),
+  // An .onion address the user typed or opened: turns Tor on and starts it
+  // (#1248).
+  startForOnion: () => ipcRenderer.invoke('tor:start-for-onion'),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);
     ipcRenderer.on('tor:statusUpdate', handler);

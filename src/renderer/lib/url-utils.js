@@ -253,10 +253,37 @@ export const looksLikeBzzInput = (input) => {
   return isValidSwarmHash(raw.split('/')[0]);
 };
 
+// True when `input` names an onion service: an http(s) or ws(s) URL whose host
+// is `.onion`, or a bare `<name>.onion` address (with an optional port and
+// path), which the address bar opens as http:// (formatBzzUrl below). Main's
+// `.onion` gate (tor-onion-gate.js) matches hosts the same way (#1248).
+export const isOnionAddress = (input) => {
+  const raw = String(input ?? '').trim();
+  if (/^(?:https?|wss?):\/\//i.test(raw)) {
+    try {
+      return new URL(raw).hostname.toLowerCase().replace(/\.$/, '').endsWith('.onion');
+    } catch {
+      return false;
+    }
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return false;
+  const host = raw.split(/[/?#]/)[0].toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+  return /^[a-z0-9.-]+\.onion$/.test(host);
+};
+
 export const formatBzzUrl = (input, bzzRoutePrefix) => {
   const raw = (input || '').trim();
   if (!raw) {
     return null;
+  }
+
+  // A bare onion address opens as http:// (see the domain branch below) in
+  // every spelling isOnionAddress accepts: with a port, which `new URL()`
+  // would read as a scheme, and fully qualified (`abc.onion.`), which
+  // looksLikeDomain refuses. It must never reach the search provider (#1248).
+  if (isOnionAddress(raw) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    const urlWithProtocol = `http://${raw}`;
+    return { targetUrl: urlWithProtocol, displayValue: urlWithProtocol, baseUrl: null };
   }
 
   try {

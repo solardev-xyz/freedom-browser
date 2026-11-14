@@ -57,6 +57,8 @@ module.exports = {
   TOR_STATUS_UPDATE: 'tor:statusUpdate',
   TOR_CHECK_BINARY: 'tor:checkBinary',
   TOR_GET_VERSION: 'tor:getVersion',
+  // Start Tor for an .onion address the user asked for, turning it on (#1248).
+  TOR_START_FOR_ONION: 'tor:start-for-onion',
 
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',

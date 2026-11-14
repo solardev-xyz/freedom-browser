@@ -20,13 +20,18 @@ const ONION_PROXY_TEST_URL = 'https://freedom-proxy-check.onion/';
  * @returns {string} PAC script source
  */
 function buildOnionPacScript(socksHostPort) {
-  // dnsDomainIs matches both `foo.onion` and `sub.foo.onion`.
+  // dnsDomainIs matches both `foo.onion` and `sub.foo.onion`. A fully
+  // qualified spelling (`foo.onion.`) is the same host, so its final dot goes
+  // first: dnsDomainIs misses it otherwise, and the name would go DIRECT to
+  // the system resolver (#1248).
   // SOCKS5 only (no SOCKS4 fallback): SOCKS4 can't do remote DNS, so a
   // fallback would make Chromium resolve the .onion name locally — a DNS leak
   // and a guaranteed failure. Fail closed if the proxy is unreachable.
   return [
     'function FindProxyForURL(url, host) {',
-    `  if (dnsDomainIs(host, ".onion") || host === "onion") {`,
+    '  var name = String(host).toLowerCase();',
+    '  if (name.charAt(name.length - 1) === ".") name = name.substring(0, name.length - 1);',
+    `  if (dnsDomainIs(name, ".onion") || name === "onion") {`,
     `    return "SOCKS5 ${socksHostPort}";`,
     '  }',
     '  return "DIRECT";',

@@ -33,6 +33,11 @@
       .auto-retry {
         font-size: 14px;
       }
+      /* The Tor notices an .onion address gets while Tor isn't running
+         (#1248) report no failure: the address keeps the page's ink. */
+      body.onion .error-details {
+        color: inherit;
+      }
       .nodes-icon {
         display: inline-block;
         width: 1.2em;
@@ -68,6 +73,7 @@
       <div id="details" class="error-details"></div>
       <p id="auto-retry" class="auto-retry" hidden></p>
       <div class="buttons">
+        <button id="start-tor-btn" class="button-primary" hidden>Start Tor</button>
         <button id="retry-btn" class="button-primary">Try again</button>
         <button id="auto-retry-stop" hidden>Stop retrying</button>
       </div>

@@ -129,7 +129,10 @@ describe('a held-back page load (#473)', () => {
     }));
     jest.doMock('./tor-manager', () => tor);
     const mod = require('./tor-window');
-    mod.trackTorWindowNavigation(guest);
+    // The held-back flow itself lives in tor-held-loads.js (shared with the
+    // `.onion` gate, #1248); a Tor window brings its policy to it.
+    const held = require('./tor-held-loads');
+    held.trackTabNavigation(guest);
     const navigate = (url, isMainFrame = true) =>
       guest.emit('did-start-navigation', { url, isMainFrame });
     // A navigation that starts, and that the gate holds back.
@@ -138,7 +141,18 @@ describe('a held-back page load (#473)', () => {
       mod.notifyHeldBack({ webContentsId: 41, url, method });
     };
     const loads = () => guest.loadURL.mock.calls.map(([url]) => url);
-    return { mod, window, guest, tor, navigate, heldBack, loads, NOTICE: mod.TOR_WAITING_PAGE_URL };
+    const resume = held.resumeHeldLoads;
+    return {
+      mod,
+      resume,
+      window,
+      guest,
+      tor,
+      navigate,
+      heldBack,
+      loads,
+      NOTICE: mod.TOR_WAITING_PAGE_URL,
+    };
   };
 
   test('the notice is the Tor page, from main', () => {
@@ -168,44 +182,44 @@ describe('a held-back page load (#473)', () => {
   });
 
   test('opens once Tor is connected, in a tab still waiting for it, once', async () => {
-    const { mod, tor, navigate, heldBack, loads, NOTICE } = setup();
+    const { resume, tor, navigate, heldBack, loads, NOTICE } = setup();
     heldBack('https://a.example/');
     await tick();
     navigate(NOTICE);
 
     // Told while this session isn't re-pointed yet: nothing happens.
-    mod.resumeHeldBack();
+    resume();
     expect(loads()).toEqual([NOTICE]);
 
     tor.live = true;
-    mod.resumeHeldBack();
-    mod.resumeHeldBack();
+    resume();
+    resume();
     expect(loads()).toEqual([NOTICE, 'https://a.example/']);
   });
 
   test('Tor up before the notice: the page opens, and no notice follows it', async () => {
-    const { mod, tor, navigate, heldBack, loads } = setup();
+    const { resume, tor, navigate, heldBack, loads } = setup();
     heldBack('https://a.example/');
     // Tor comes up in the same turn, before the notice would go up.
     tor.live = true;
-    mod.resumeHeldBack();
+    resume();
     navigate('https://a.example/');
     await tick();
     expect(loads()).toEqual(['https://a.example/']);
   });
 
   test('Tor up just after the notice was asked for: the page opens over it', async () => {
-    const { mod, tor, heldBack, loads, NOTICE } = setup();
+    const { resume, tor, heldBack, loads, NOTICE } = setup();
     heldBack('https://a.example/');
     await tick();
     // The notice's navigation hasn't started yet when Tor comes up.
     tor.live = true;
-    mod.resumeHeldBack();
+    resume();
     expect(loads()).toEqual([NOTICE, 'https://a.example/']);
   });
 
   test('a form held after a page replaces it, and neither is sent again by itself', async () => {
-    const { mod, tor, navigate, heldBack, loads, NOTICE } = setup();
+    const { resume, tor, navigate, heldBack, loads, NOTICE } = setup();
     heldBack('https://a.example/');
     await tick();
     navigate(NOTICE);
@@ -217,18 +231,18 @@ describe('a held-back page load (#473)', () => {
     expect(loads()).toEqual([NOTICE, NOTICE]);
 
     tor.live = true;
-    mod.resumeHeldBack();
+    resume();
     expect(loads()).toEqual([NOTICE, NOTICE]);
   });
 
   test('a tab sent elsewhere since keeps its page', async () => {
-    const { mod, tor, navigate, heldBack, loads, NOTICE } = setup();
+    const { resume, tor, navigate, heldBack, loads, NOTICE } = setup();
     heldBack('https://a.example/');
     await tick();
     navigate(NOTICE);
     navigate('file:///app/src/renderer/pages/tor.html');
     tor.live = true;
-    mod.resumeHeldBack();
+    resume();
     expect(loads()).toEqual([NOTICE]);
   });
 });

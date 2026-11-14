@@ -1,0 +1,4 @@
+- An `.onion` address opened while Tor isn't running now waits for Tor and opens once it's connected, instead of failing ([#1248](https://github.com/solardev-xyz/freedom-browser/issues/1248))
+  - With Tor on in Settings it starts by itself; with Tor off, an address you type turns it on, and a page's link to an `.onion` address asks first
+  - `.onion` addresses are no longer handed to the system's DNS resolver while Tor isn't running, nor when written with a trailing dot
+  - Save Image and Copy Image fetch through the window's own connection, so an `.onion` image goes through Tor
