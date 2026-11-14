@@ -497,6 +497,13 @@ jobs:
             npm run test:e2e -- --output=test-results/e2e-profiles test-e2e/profiles.spec.js
           fi
 
+      # Two-finger swipe between pages (#980) is a macOS feature, so its spec
+      # only means something on the macOS leg (it skips itself elsewhere).
+      - name: Run swipe-between-pages E2E
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
+        shell: bash
+        run: npm run test:e2e -- --output=test-results/e2e-swipe-navigation test-e2e/swipe-navigation.spec.js
+
       # ── was the `e2e-onboarding-identity` job ──
       # Onboarding wizard must create node identities while a real Swarm node (now
       # antd) is running. Drives the full password wizard end-to-end against a real

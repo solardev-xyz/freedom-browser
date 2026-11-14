@@ -18,6 +18,7 @@
 @import './styles/agent-privacy.css';
 @import './styles/agent-dictation.css';
 @import './styles/link-status.css';
+@import './styles/swipe-navigation.css';
 @import './styles/permissions.css';
 @import './styles/gateway-offer.css';
 @import './styles/find-bar.css';

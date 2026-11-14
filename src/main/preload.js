@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openUrlInNewWindow: (url) => ipcRenderer.send('window:new-with-url', url),
   showAbout: () => ipcRenderer.send('app:show-about'),
   getPlatform: () => ipcRenderer.invoke('window:get-platform'),
+  // { twoFinger } — whether a two-finger swipe past a page's edge navigates (#980).
+  getSwipeNavigation: () => ipcRenderer.invoke('window:get-swipe-navigation'),
+  awaitSwipeScrollEnd: (webContentsId) =>
+    ipcRenderer.invoke('window:await-swipe-scroll-end', webContentsId),
   // Synchronous copy of process.platform for renderer/platform-init.js, which
   // must tag <html> before first paint (getPlatform() resolves too late for
   // layout that differs per OS, e.g. the macOS traffic-light spacer).

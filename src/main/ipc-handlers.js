@@ -41,6 +41,7 @@ const { isPrivateWebContents } = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
 const { relaunchArgs } = require('./launch-urls');
+const { awaitScrollEnd, getSwipeNavigationState } = require('./swipe-navigation');
 
 // Bzz content probes, keyed by probe id. Each entry exposes a promise that
 // resolves to the probe outcome. Entries survive until BZZ_AWAIT_PROBE
@@ -780,6 +781,28 @@ function registerBaseIpcHandlers(callbacks = {}) {
 
   ipcMain.handle(IPC.WINDOW_GET_PLATFORM, () => {
     return process.platform;
+  });
+
+  // Asked at the start of each two-finger swipe past a page's edge (#980),
+  // so a change to "Swipe between pages" applies without a restart.
+  ipcMain.handle(IPC.WINDOW_GET_SWIPE_NAVIGATION, () => getSwipeNavigationState());
+
+  // After a two-finger swipe navigates, the chrome waits for that tab's scroll
+  // to be over before it takes another swipe from it. Only for a tab of the
+  // asking window: a page could otherwise keep listeners on other tabs.
+  ipcMain.handle(IPC.WINDOW_AWAIT_SWIPE_SCROLL_END, (event, webContentsId) => {
+    if (!validateWebContentsId(webContentsId)) return null;
+    let contents;
+    try {
+      contents = webContents.fromId(webContentsId);
+    } catch {
+      return null;
+    }
+    if (!contents || contents.isDestroyed?.()) return null;
+    if (!Number.isInteger(event?.sender?.id) || contents.hostWebContents?.id !== event.sender.id) {
+      return null;
+    }
+    return awaitScrollEnd(contents);
   });
 
   // Which window-manager buttons the desktop expects (GNOME defaults to
