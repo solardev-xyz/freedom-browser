@@ -103,6 +103,10 @@
  * signature (Ledger, phone), and the kinds that sign nothing (a held
  * intent's resend and close, a Safe's send and message, whose owners sign
  * later) spend theirs through `approval.spend` (`spendConfirmation`). A
+ * Safe's spend gives a Safe approval (`spendSafeConfirmation`; a Safe
+ * message a site's rule answers, `spendStandingSafeMessage`), which each
+ * vault owner's signature and the executor's present as `{ safe }`
+ * (`safeAuthorization`; `safe/safe-approvals.js` holds them). A
  * presented token is burnt whatever the outcome, as before, and main
  * discards one a request ended without presenting (`discardConfirmation`).
  * A send's token names its kind to `sign.transaction`, which refuses it
@@ -931,24 +935,75 @@ async function spendConfirmation(confirmation) {
   }
 }
 
+// A Safe approval's id, as the core sends it: 32 lowercase hex digits.
+const SAFE_APPROVAL_ID = /^[0-9a-f]{32}$/;
+
 /**
- * Spend a Safe's send or message confirmation (`spendConfirmation`). The
- * Safe approval the core gives for it is ended at once: until APB-1c
- * carries it to each owner's signature and the executor's, nothing presents
- * it, and an approval nothing holds is one nothing can misuse.
+ * The Safe approval in an `approval.spend` reply (design 0012, "A page's
+ * Safe and Swarm signatures"): `{ id, page }`, `page` being the PageContext
+ * it was recorded with (a page's, used only under `page` with that same
+ * PageContext) or null (the wallet's, under `shell`). Null if the core gave
+ * none.
+ */
+function safeApprovalOf(spent, page) {
+  return typeof spent?.safe === 'string' && SAFE_APPROVAL_ID.test(spent.safe)
+    ? { id: spent.safe, page: page || null }
+    : null;
+}
+
+/**
+ * Spend a Safe's send or message confirmation (`spendConfirmation`), for
+ * the Safe approval the core gives for it (APB-1c): each vault owner's
+ * signature presents it, and a send's executor's, under the caller kind
+ * that minted the token (`safe-approvals.js`). Main ends it at each step
+ * that ends its effect.
  *
  * @param {Confirmation} confirmation
+ * @returns {Promise<{bound: boolean, approval: {id: string, page: object|null}|null}>}
  */
 async function spendSafeConfirmation(confirmation) {
   const spent = await spendConfirmation(confirmation);
-  if (typeof spent?.safe === 'string') {
-    try {
-      await vault().approval.end(spent.safe, confirmation.page || null);
-    } catch {
-      // Gone with the core, or dropped among its 64: nothing holds it.
-    }
+  return { bound: spent?.bound === true, approval: safeApprovalOf(spent, confirmation.page) };
+}
+
+/**
+ * A Safe message a site's signing rule answers (design 0012, API): no token,
+ * `approval.spend { standing, kind: 'safe-message', account, payload }`
+ * under `page` with the request's PageContext. The core judges the rule
+ * for the Safe's grant itself (custody, the rule, the message's warnings,
+ * on the Safe's chain) and gives a Safe approval the page holds. Rejects
+ * (SIGNING_NOT_CONFIRMED, the core's `reason` kept) when no rule answers.
+ *
+ * @param {object} page the request's PageContext
+ * @param {number} safeIndex
+ * @param {{method: string, params: Array}} request the page's request
+ * @returns {Promise<{id: string, page: object}>}
+ */
+async function spendStandingSafeMessage(page, safeIndex, request) {
+  if (!page || typeof page.origin !== 'string' || !page.origin) throw notConfirmed('a standing rule answers only a page');
+  const { account, payload } = corePayload(KINDS.SAFE_MESSAGE, safeIndex, request);
+  let spent;
+  try {
+    spent = await vault().approval.spend({ standing: {}, kind: KINDS.SAFE_MESSAGE, account, payload }, page);
+  } catch (err) {
+    throw confirmationError(err);
   }
-  return { bound: spent?.bound === true };
+  const approval = safeApprovalOf(spent, page);
+  if (!approval) throw notConfirmed('the core gave no Safe approval');
+  return approval;
+}
+
+/**
+ * What a Safe's owner or executor signature presents (design 0012, API):
+ * `{ safe }`, the approval's id, under the caller kind it was recorded for:
+ * a page's under `page` with its recorded PageContext, the wallet's as main
+ * itself.
+ *
+ * @param {{id: string, page: object|null}} approval
+ * @returns {{authorization: {safe: string}, page: object|null}}
+ */
+function safeAuthorization(approval) {
+  return { authorization: { safe: approval.id }, page: approval.page || null };
 }
 
 /**
@@ -1133,6 +1188,8 @@ module.exports = {
   consumeConfirmation,
   spendConfirmation,
   spendSafeConfirmation,
+  spendStandingSafeMessage,
+  safeAuthorization,
   signingAuthorization,
   discardConfirmation,
   withConfirmation,

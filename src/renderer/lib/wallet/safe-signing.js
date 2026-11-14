@@ -51,6 +51,7 @@ import { escapeHtml, truncateAddress, formatRawTokenBalance, walletRecord, timeA
 import { refreshBalances } from './balance-display.js';
 import { showVaultUnlock } from './vault-unlock.js';
 import { bindExplorerLink } from './explorer-link.js';
+import { confirmSigning } from './signing-confirmation.js';
 import { registerPagePromptRenderer, pagePromptDisplaced } from '../page-prompt-renderers.js';
 import {
   FEE_CHECK,
@@ -107,7 +108,10 @@ const isStale = (epoch) => epoch !== boardEpoch;
 const KIND_API = {
   send: {
     state: (safeIndex) => window.wallet.safeState(safeIndex),
-    sign: (safeIndex, ownerIndex) => window.wallet.safeSign(safeIndex, ownerIndex),
+    sign: (safeIndex, ownerIndex, authorization) =>
+      authorization === undefined
+        ? window.wallet.safeSign(safeIndex, ownerIndex)
+        : window.wallet.safeSign(safeIndex, ownerIndex, authorization),
     cancel: (safeIndex) => window.wallet.safeCancelPending(safeIndex),
   },
   message: {
@@ -469,6 +473,27 @@ async function maybeFinalize() {
 
 // --- signing ---------------------------------------------------------------
 
+/**
+ * A send whose Safe approval main no longer holds (SAFE_APPROVAL_NEEDED:
+ * the app restarted since it was confirmed, or the approval ended): the
+ * owner the user tapped signs with the SafeTx confirmed again, a
+ * 'safe-send' token for main's own call of it (freedom-core design 0012).
+ */
+async function signWithNewConfirmation(ownerIndex) {
+  const call = state?.call;
+  if (boardKind !== 'send' || !call?.to) return null;
+  let confirmation;
+  try {
+    ({ confirmation } = await confirmSigning('safe-send', boardSafeIndex, {
+      tx: { to: call.to, value: call.value, data: call.data },
+      chainId: state.chainId,
+    }));
+  } catch {
+    return null;
+  }
+  return api().sign(boardSafeIndex, ownerIndex, { confirmation });
+}
+
 async function signOwner(ownerIndex) {
   if (signingIndex !== null || phase !== 'board') return;
   const epoch = boardEpoch;
@@ -476,10 +501,13 @@ async function signOwner(ownerIndex) {
   rowNotes.delete(ownerIndex);
   render();
 
-  const result = await api().sign(boardSafeIndex, ownerIndex);
+  let result = await api().sign(boardSafeIndex, ownerIndex);
   if (isStale(epoch)) return;
+  if (result.code === 'SAFE_APPROVAL_NEEDED') {
+    result = (await signWithNewConfirmation(ownerIndex)) || result;
+    if (isStale(epoch)) return;
+  }
   signingIndex = null;
-
   if (result.success) {
     state = result.state;
     render();

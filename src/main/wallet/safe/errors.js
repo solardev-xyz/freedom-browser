@@ -30,6 +30,18 @@ const CODES = {
   /** The same, but the records couldn't yet be rewritten to say so: the
    * SafeTx still names its site, and the next attempt finishes the move. */
   SAFE_SITE_WITHDRAWING: 'SAFE_SITE_WITHDRAWING',
+  /** No Safe approval is held for the pending item (freedom-core design
+   * 0012): main restarted since it was confirmed, or the approval ended, so
+   * no owner signs it until the user confirms it again. */
+  SAFE_APPROVAL_NEEDED: 'SAFE_APPROVAL_NEEDED',
+  /** The identity core didn't confirm the end of the pending item's Safe
+   * approval (`approval.end`), and the process that gave it is still
+   * running: nothing that waits on its end (a discard, a cancel, the join,
+   * clearing an executed SafeTx) was done, and the user tries again. */
+  SAFE_APPROVAL_END_FAILED: 'SAFE_APPROVAL_END_FAILED',
+  /** A held Safe execution's Safe is no longer in the wallet list (deleted):
+   * its bytes aren't sent again or replaced. */
+  SAFE_DELETED: 'SAFE_DELETED',
 };
 
 function codedError(message, code) {

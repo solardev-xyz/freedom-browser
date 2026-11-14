@@ -453,6 +453,29 @@ const vaultBackend = {
   },
 
   /**
+   * The core process answering main's requests now, as an opaque mark, or
+   * null while none does. What a process keeps only in its memory (design
+   * 0012's Safe approvals) ends with it: the next process doesn't know it,
+   * and a request still on its way to it fails once it has exited.
+   */
+  coreProcess() {
+    const core = getCoreClient();
+    const gen = core?.current ?? null;
+    return core && gen && core.serves(gen) ? Object.freeze({ core, gen }) : null;
+  },
+
+  /**
+   * Whether the process `mark` names (`coreProcess()`) has ended since: it
+   * exited, or main stopped its client. Null (none answered then) counts as
+   * ended, and anything else that isn't a mark doesn't.
+   */
+  coreProcessEnded(mark) {
+    if (mark === null) return true;
+    if (!mark?.core || !mark.gen) return false;
+    return mark.gen.exited === true || getCoreClient() !== mark.core;
+  },
+
+  /**
    * EIP-712 digest with the core's strict rules, and the core's view of
    * exactly what it signs (freedom-core design 0002, #88): ethers'
    * getPayload, with `ignored`, `named_type` and `chain` reports. Public,
