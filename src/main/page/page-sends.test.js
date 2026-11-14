@@ -627,6 +627,58 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     expect(env.minted()).toHaveLength(1);
   });
 
+  test("the core's fee check refusing the mint asks again with its verdict, and the next mint is acknowledged", async () => {
+    // Main's check at the press passes; the core's own, at the mint, reads
+    // newer evidence (design 0012, "The fee check") and refuses once.
+    const coreVerdict = {
+      max_cost: '60000000000000',
+      comparable: true,
+      ratio: '20',
+      above: true,
+      one_endpoint: false,
+      basis: 'quote',
+      auto_approve: false,
+    };
+    const issue = jest.spyOn(mockApprovals.approval, 'issue');
+    issue.mockRejectedValueOnce(
+      Object.assign(new Error('fee'), { code: 'not_authorized', data: { reason: 'fee_check', fee_check: coreVerdict } })
+    );
+    try {
+      const env = setup();
+      env.connect();
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      const first = env.lastPrompt();
+      expect(first.view).toMatchObject({ feeCheck: PASSING, feeAskAgain: false });
+      const decided = env.decide(first.handle, true, {});
+      await flush();
+      // Not the page's answer: the prompt shows again, with the core's verdict.
+      expect(env.prompts()).toHaveLength(2);
+      const second = env.lastPrompt();
+      expect(second.handle).not.toBe(first.handle);
+      expect(second).toMatchObject({
+        kind: 'eth.send',
+        view: { feeCheck: { ...ABOVE, askAgain: true }, feeAskAgain: true },
+      });
+      expect(issue).toHaveBeenCalledTimes(1);
+      expect(issue.mock.calls[0][0]).not.toHaveProperty('fee_ack');
+      expect(env.state.records).toEqual([]);
+      expect(env.minted()).toEqual([]);
+      await env.decide(second.handle, true, { feeAcknowledged: true });
+      expect(await answer).toEqual({ result: HASH });
+      expect(await decided).toEqual({ ok: true });
+      // The second mint carries the acknowledgement, under the second handle.
+      expect(issue).toHaveBeenCalledTimes(2);
+      expect(issue.mock.calls[1][0]).toMatchObject({ kind: 'dapp-send', fee_ack: true, handle: second.handle });
+      expect(env.minted()).toHaveLength(1);
+      expect(env.state.committed).toHaveLength(1);
+      expect(mockApprovals.outstanding()).toBe(0);
+    } finally {
+      issue.mockRestore();
+    }
+  });
+
   test("a fee that couldn't be quoted: the prompt says so, and its approval asks for the quote again", async () => {
     const env = setup();
     env.connect();

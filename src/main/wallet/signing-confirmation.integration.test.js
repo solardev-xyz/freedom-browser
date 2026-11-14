@@ -84,8 +84,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     calls = [];
     const request = core.request.bind(core);
     core.request = (method, params, context, options) => {
-      calls.push({ method, context, params });
-      return request(method, params, context, options);
+      const reply = request(method, params, context, options);
+      calls.push({ method, context, params, reply });
+      return reply;
     };
     jest.resetModules();
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
@@ -247,6 +248,24 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(await reasonOf(signSend(again, TX, 1))).toBe('unknown_token');
       const fresh = await walletToken('executor-send', 1, TX);
       await expect(signSend(fresh, TX, 1)).resolves.toHaveProperty('raw');
+    });
+
+    test("a token on another kind's route is refused before the core signs, and burnt (wallet-send, executor-send)", async () => {
+      // The core reads a sign.transaction token's kind from the token: main
+      // checks the route's kind against the one it minted, as its JS check did.
+      for (const [mintedAs, route] of [
+        ['executor-send', 'wallet-send'],
+        ['wallet-send', 'executor-send'],
+      ]) {
+        const { token } = await sc.issueConfirmation(mintedAs, 0, TX);
+        calls.length = 0;
+        expect(() => sc.confirmationFor(token, route, 0, TX)).toThrow(/request differs from what was confirmed/);
+        // Nothing asked of the core but the burn.
+        expect(calls.map((call) => call.method)).toEqual(['approval.discard']);
+        await calls[0].reply;
+        // Burnt in the core: not even its own kind's signature takes it now.
+        expect(await reasonOf(signSend({ token }, TX))).toBe('unknown_token');
+      }
     });
 
     test('a page kind is never minted by main itself', async () => {

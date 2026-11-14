@@ -82,6 +82,10 @@
 const { KINDS: CONFIRM_KINDS, NOT_CONFIRMED } = require('../wallet/signing-confirmation');
 const { guestInCustody } = require('./page-signing');
 
+// The core's refusal of a mint for its fee check (`signing-confirmation.js`),
+// as fee-check.js codes it: the fee is asked again.
+const FEE_CHECK_ASK_AGAIN = 'FEE_CHECK_ASK_AGAIN';
+
 const SEND_METHODS = Object.freeze(['eth_sendTransaction']);
 
 const INTERNAL_ERROR_CODE = -32603;
@@ -624,15 +628,24 @@ function createSendDispatchers(shared, deps = {}) {
     // it, in the same run as the last checks, to the signature, where the
     // core spends it.
     let confirmation = null;
+    // The core's verdict when its own fee check refused the mint: its
+    // evidence moved past main's check at the press (another request
+    // refreshed it, or it aged), and the user is asked again with it.
+    let feeAskAgain = null;
     const mintedAndHeld = (run) =>
       stillHeld(null)(async () => {
         // The core judges the fee as it mints (design 0012): a fee the user
         // confirmed again above the threshold is minted as acknowledged,
         // and a phone's, whose fee it picks, isn't judged.
-        confirmation = await context.confirm(CONFIRM_KINDS.DAPP_SEND, ctx.walletIndex, payload, {
-          feeAcknowledged: choices.feeAcknowledged === true,
-          phone: ctx.phone === true,
-        });
+        try {
+          confirmation = await context.confirm(CONFIRM_KINDS.DAPP_SEND, ctx.walletIndex, payload, {
+            feeAcknowledged: choices.feeAcknowledged === true,
+            phone: ctx.phone === true,
+          });
+        } catch (err) {
+          if (err?.code === FEE_CHECK_ASK_AGAIN && err.feeCheck) feeAskAgain = { ...err.feeCheck, askAgain: true };
+          throw err;
+        }
         // After the mint's wait, in the same run as the signature: the grant
         // and the document's key again (a name that moved meanwhile has
         // ended the document's binding), and the token handed over.
@@ -656,6 +669,8 @@ function createSendDispatchers(shared, deps = {}) {
         paymentDeps
       );
     } catch (err) {
+      // Nothing was minted or signed: the prompt shows again (promptedSend).
+      if (feeAskAgain) return { feeAskAgain };
       return err?.answer ?? failure(err);
     } finally {
       // Spent at its presentation; one a send ended before is burnt.
@@ -853,7 +868,16 @@ function createSendDispatchers(shared, deps = {}) {
           continue;
         }
       }
-      return confirmedSend(context, ctx, tx, decision.choices);
+      // The core's fee check at the mint can still ask again, with its own
+      // verdict: the prompt shows again, and its approval is minted as
+      // acknowledged (`fee_ack`).
+      const sent = await confirmedSend(context, ctx, tx, decision.choices);
+      if (sent.feeAskAgain) {
+        verdict = sent.feeAskAgain;
+        askAgain = true;
+        continue;
+      }
+      return sent;
     }
   }
 

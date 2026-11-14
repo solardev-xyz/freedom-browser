@@ -889,6 +889,30 @@ describe("the fee check on the executor's fee", () => {
     expect(signedCount).toBe(1);
   });
 
+  test("a wallet-send token on the executor's route is refused before any signature, and burnt", async () => {
+    mockCheckAtApproval.mockResolvedValue({ ...FEE_LIKE_TODAYS, comparable: false, autoApprove: false });
+    const { execute } = await signedExecution();
+    const { offer } = await stopped(execute);
+    const { executorIndex, ...payload } = offer;
+    const fees = { maxFeePerGas: offer.maxFeePerGas, maxPriorityFeePerGas: offer.maxPriorityFeePerGas };
+    // The same account and transaction, minted as the wallet's own send: the
+    // core would read its kind from the token, so main checks it first.
+    const { token } = await issueConfirmation('wallet-send', executorIndex, payload);
+    mockCore.approvals.calls.length = 0;
+    await expect(
+      execute({ feeConfirmation: { confirmation: token, gasLimit: offer.gasLimit, fees } })
+    ).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', message: expect.stringMatching(/request differs/) });
+    expect(signedCount).toBe(0);
+    expect(mockSignAndSendTransaction).not.toHaveBeenCalled();
+    // Nothing asked of the core but the burn (the route's own burn of the
+    // token it held follows, a no-op).
+    expect(mockCore.approvals.calls.length).toBeGreaterThan(0);
+    for (const call of mockCore.approvals.calls) {
+      expect(call).toMatchObject({ method: 'approval.discard', params: { token } });
+    }
+    expect(mockCore.approvals.outstanding()).toBe(0);
+  });
+
   test('a confirmation of no fee signs nothing: it would be given today\'s', async () => {
     mockCheckAtApproval.mockResolvedValue({ ...FEE_LIKE_TODAYS, comparable: false, autoApprove: false });
     const { execute } = await signedExecution();

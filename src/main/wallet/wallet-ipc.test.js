@@ -257,6 +257,27 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(signedTxs).toHaveLength(1);
     });
 
+    test("an executor-send token is refused before any signature, and burnt", async () => {
+      // The core reads a transaction token's kind from the token: main checks
+      // the route's against the kind it minted, as its JS check did.
+      const confirmation = await mint('executor-send', 0, TX);
+      mockApprovals.calls.length = 0;
+      getSigner.mockClear();
+      const result = await handlers['wallet:send-transaction']({}, TX, {}, { confirmation });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(result.error).toMatch(/request differs from what was confirmed/);
+      expect(signAndRecord).not.toHaveBeenCalled();
+      expect(getSigner).not.toHaveBeenCalled();
+      expect(signedTxs).toEqual([]);
+      // Nothing asked of the core but the burn.
+      expect(mockApprovals.calls.map((call) => call.method)).toEqual(['approval.discard']);
+      expect(mockApprovals.calls[0].params).toEqual({ token: confirmation });
+      expect(outstanding()).toBe(0);
+      // Burnt: the executor's own route can't present it either.
+      const { confirmationFor } = confirmations;
+      expect(() => confirmationFor(confirmation, 'executor-send', 0, TX)).toThrow(/unknown or already used/);
+    });
+
     test('a changed recipient is refused', async () => {
       const confirmation = await mint('wallet-send', null, TX);
       const result = await handlers['wallet:send-transaction'](

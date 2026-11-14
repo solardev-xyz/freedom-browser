@@ -1279,15 +1279,15 @@ describe('replacement fees (9)', () => {
       gasLimit: 21000n,
       gasPrice: 1100000000n,
     });
-    // Spent: presented again, nothing more is signed. The core checks it at
-    // the signature (design 0012), which the replacement's own floor, now
-    // the first replacement's fees, refuses before.
+    // Spent: presented again, nothing more is signed. Main no longer holds
+    // the kind it minted the token as, so it refuses it before the core is
+    // asked (the core would refuse it too, at the signature).
     const sent = mockBroadcast.mock.calls.length;
     await expect(
       running.replace(intent.intentId, fees, { confirmation: token })
     ).resolves.toMatchObject({
       success: false,
-      code: 'INTENT_FEE_TOO_LOW',
+      code: 'SIGNING_NOT_CONFIRMED',
     });
     expect(mockBroadcast.mock.calls).toHaveLength(sent);
   });

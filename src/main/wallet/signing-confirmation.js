@@ -105,6 +105,10 @@
  * later) spend theirs through `approval.spend` (`spendConfirmation`). A
  * presented token is burnt whatever the outcome, as before, and main
  * discards one a request ended without presenting (`discardConfirmation`).
+ * The core reads a transaction token's kind from the token, so main keeps
+ * the kind it minted each of its own tokens as, and burns one the chrome
+ * presents on another kind's route before the core is asked to sign
+ * (`confirmationFor`).
  * `x402-payment` stays main's until the core can spend it (X402-1), and
  * `x402-cap-update`, the panel's decision, until X402-2: both are minted
  * and spent here, in JS, as before.
@@ -154,6 +158,17 @@ function isPageKind(kind, payload) {
 const HANDLE = /^[0-9a-f]{64}$/;
 
 const outstanding = new Map(); // token -> { kind, digest, expiresAt }: x402's kinds only
+
+// The kind main asked the core to mint for each token of its own, which the
+// chrome presents back with a request: token -> { kind, expiresAt }. The
+// core reads a `sign.transaction` token's kind from the token itself (a
+// wallet-send's or an executor-send's), so main checks that kind against the
+// route's before the token is presented, as its own check did before APB-1:
+// the wallet's send route never presents an executor-send token, nor the
+// executor's route a wallet-send token. Bounded as the core bounds its
+// tokens; one main no longer knows is refused, so evicting one can't skip
+// the check.
+const minted = new Map();
 let now = () => Date.now();
 
 function notConfirmed(reason) {
@@ -774,7 +789,21 @@ async function issueConfirmation(kind, accountIndex, payload, options = {}) {
     feeAcknowledged: options.feeAcknowledged,
     phone: options.phone,
   });
+  rememberKind(token, kind, expiresAt);
   return { token, expiresAt };
+}
+
+// Main's record of the kind it minted `token` as (`minted`): the oldest
+// dropped past the bound, expired ones first.
+function rememberKind(token, kind, expiresAt) {
+  if (minted.size >= MAX_OUTSTANDING) {
+    const t = Date.now();
+    for (const [held, entry] of minted) {
+      if (entry.expiresAt <= t) minted.delete(held);
+    }
+  }
+  while (minted.size >= MAX_OUTSTANDING) minted.delete(minted.keys().next().value);
+  minted.set(token, { kind, expiresAt });
 }
 
 /**
@@ -817,13 +846,25 @@ async function issuePageConfirmation(kind, accountIndex, payload, page, options 
 /**
  * The confirmation a handler holds for a token the chrome presented with
  * its request (`wallet:confirm-signing`'s), read as the core binds it.
- * Throws (SIGNING_NOT_CONFIRMED) for no token, and burns the token for a
- * request that can't be read, as before.
+ * Throws (SIGNING_NOT_CONFIRMED) for no token, and burns the token, before
+ * anything is asked of the core, for a token main didn't mint as this
+ * route's kind (`minted`: an executor-send token on the wallet's send route,
+ * or the reverse) and for a request that can't be read, as before.
  *
  * @returns {Confirmation}
  */
 function confirmationFor(token, kind, accountIndex, payload, options = {}) {
   if (typeof token !== 'string' || token.length === 0) throw notConfirmed('no confirmation token');
+  const issued = minted.get(token);
+  minted.delete(token);
+  if (!issued) {
+    discardConfirmation(token);
+    throw notConfirmed('unknown or already used confirmation');
+  }
+  if (issued.kind !== kind) {
+    discardConfirmation(token);
+    throw notConfirmed('request differs from what was confirmed');
+  }
   let request;
   try {
     request = corePayload(kind, accountIndex, payload, options);
@@ -906,6 +947,7 @@ function signingAuthorization(confirmation) {
 function discardConfirmation(token) {
   if (typeof token !== 'string' || token.length === 0) return Promise.resolve();
   outstanding.delete(token);
+  minted.delete(token);
   return vault()
     .approval.discard(token)
     .then(
@@ -929,6 +971,7 @@ async function withConfirmation(token, fn) {
 
 function _reset() {
   outstanding.clear();
+  minted.clear();
   now = () => Date.now();
 }
 
