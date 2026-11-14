@@ -146,13 +146,19 @@ function sanitizeErrorMessage(message) {
 // request", Colibri's RPC and publicnode below 50k), publicnode's gateway
 // ("exceed maximum block range: 50000"), dRPC's free plan ("ranges over 10000
 // blocks are not supported"), Alchemy-style ("up to a 10000 block range",
-// "up to a 2K block range"). A cap on the number of results or logs is not a
-// block range and is not read as one.
+// "up to a 2K block range"). Measured 2026-11-09 (#596): Nethermind now says
+// "Logs request reads 50001 blocks without the log index, over the maximum
+// of 10000 per request" (publicnode below 50k; RangeLimitedLogFinder's
+// Receipt.MaxBlockDepth check). It names no unit after the cap, so only that
+// exact sentence is read, not any "maximum of N per request" near "blocks".
+// A cap on the number of results or logs is not a block range and is not
+// read as one.
 const BLOCK_RANGE_CAP_TEXT = [
   /maximum of ([\d,]+)(k?) blocks?\b/i,
   /max(?:imum)? (?:allowed )?block range(?: is)?:? ?([\d,]+)(k?)\b/i,
   /(?:up to|limited to) an? ([\d,]+)(k?)[ -]?(?:blocks? )?range/i,
   /ranges? (?:over|above|greater than|larger than|wider than) ([\d,]+)(k?) blocks?\b/i,
+  /\breads [\d,]+ blocks without the log index, over the maximum of ([\d,]+)(k?) per request\b/i,
 ];
 
 // Wordings about the size of the answer rather than of the block range.
@@ -500,11 +506,20 @@ async function startAntChainBridge({
           receiptWaits.delete(receiptHash);
         const { code, message, data } = antErrorReply(method, error);
         fail(code, message, data);
-        log.warn(
-          `[Ant chain] ${
-            READ_METHODS.has(method) || method === 'eth_sendRawTransaction' ? method : 'request'
-          } failed (${code})`
-        );
+        if (method === 'eth_getLogs' && rankLogScanError(error) === RANK.REQUEST) {
+          // A window wider than an endpoint (or, once its cap is learned,
+          // the router) serves. Ant halves it and doubles the next one after
+          // an answer, so a scan meets one of these per window: verbose, like
+          // the reads they pace (#511, #596). A scan that fails anyway is
+          // still logged by Ant itself ("rediscovery scan failed").
+          log.verbose(`[Ant chain] eth_getLogs window too wide (${code}), Ant narrows it`);
+        } else {
+          log.warn(
+            `[Ant chain] ${
+              READ_METHODS.has(method) || method === 'eth_sendRawTransaction' ? method : 'request'
+            } failed (${code})`
+          );
+        }
         if (method === 'eth_getLogs' && !warnedNoLogQuorum && logScanQuorumMissing(error)) {
           // Ant only sees an error it does not halve on, ends the scan and
           // retries later, forever: say once why its batches and chequebook
