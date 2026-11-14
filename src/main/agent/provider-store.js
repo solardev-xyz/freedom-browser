@@ -126,6 +126,12 @@ function isStoredConnection(connection, providerId) {
         Boolean(modelId) &&
         connection.modelIds.indexOf(modelId) === index
     ) &&
+    (connection.models === undefined || (
+      Array.isArray(connection.models) && connection.models.length === connection.modelIds.length &&
+      connection.models.every((model, index) => model?.id === connection.modelIds[index] &&
+        (model.tools === undefined || typeof model.tools === 'boolean') &&
+        (model.digest === undefined || (typeof model.digest === 'string' && /^[a-f0-9]{64}$/.test(model.digest))))
+    )) &&
     connection.modelIds.includes(connection.modelId)
   );
 }
@@ -216,6 +222,7 @@ class AgentProviderStore {
         ...(candidate.kind === 'ollama' && {
           baseUrl: candidate.baseUrl,
           modelIds: [...candidate.modelIds],
+          ...(candidate.models && { models: structuredClone(candidate.models) }),
         }),
       })),
       ...(connection && {
@@ -308,7 +315,7 @@ class AgentProviderStore {
       activeProviderId: activate ? providerId : payload.activeProviderId });
   }
 
-  saveOllama({ modelId, modelIds: discoveredModels, baseUrl, activate = true }) {
+  saveOllama({ modelId, modelIds: discoveredModels, models, baseUrl, activate = true }) {
     const payload = this.#read();
     const previous = payload.connections.ollama;
     const modelIds = discoveredModels || (
@@ -322,6 +329,10 @@ class AgentProviderStore {
         ...payload.connections,
         ollama: {
           kind: 'ollama', providerId: 'ollama', modelId, modelIds, baseUrl,
+          ...(models && { models: models.map(({ id, tools, digest }) => ({
+            id, ...(typeof tools === 'boolean' && { tools }),
+            ...(typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest) && { digest }),
+          })) }),
           ...(previous?.baseUrl === baseUrl && previous.favoriteModelIds && {
             favoriteModelIds: previous.favoriteModelIds.filter((id) => modelIds.includes(id)),
           }),
@@ -330,6 +341,18 @@ class AgentProviderStore {
       activeProviderId: activate ? 'ollama' : payload.activeProviderId,
       credentials: payload.credentials,
     });
+  }
+
+  updateOllamaModel(baseUrl, modelId, tools) {
+    const payload = this.#read();
+    const connection = payload.connections.ollama;
+    if (connection?.baseUrl !== baseUrl || !connection.modelIds.includes(modelId)) return;
+    const models = connection.modelIds.map(id => ({
+      id,
+      ...connection.models?.find(model => model.id === id),
+      ...(id === modelId && { tools }),
+    }));
+    this.saveOllama({ ...connection, models, activate: false });
   }
 
   saveSubscription({ providerId, modelId }) {

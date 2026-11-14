@@ -1908,7 +1908,9 @@ function buildAgentOutcomeFromReceipts(activity, status, error, options = {}) {
     kind: 'recovery',
     verification: counts.successful ? 'partial' : 'none',
     tone: 'danger',
-    headline: providerPresentation ? 'Model connection failed' : 'Agent stopped before completion',
+    headline: providerPresentation?.category === PROVIDER_FAILURE_CATEGORIES.TOOLS_UNSUPPORTED
+      ? 'Choose a compatible model'
+      : providerPresentation ? 'Model connection failed' : 'Agent stopped before completion',
     detail: `${failureExplanation} ${browserState}${destinationNote}`.trim(),
     ...(providerPresentation?.technicalDetails && {
       technicalDetails: providerPresentation.technicalDetails,
@@ -1919,7 +1921,7 @@ function buildAgentOutcomeFromReceipts(activity, status, error, options = {}) {
       : providerPresentation?.nextStep || 'You can safely try the task again.',
     retrySafety: retryNeedsReview ? 'review' : 'safe',
     canRetry: !retryNeedsReview && providerPresentation?.recovery === 'transient',
-    ...(providerPresentation?.category === PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE && {
+    ...([PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE, PROVIDER_FAILURE_CATEGORIES.TOOLS_UNSUPPORTED].includes(providerPresentation?.category) && {
       providerAction: 'choose_model',
     }),
     counts,

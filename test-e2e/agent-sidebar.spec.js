@@ -16,7 +16,9 @@ const test = baseTest.extend({
       response.setHeader('Content-Type', 'application/json');
       if (request.method === 'GET' && request.url === '/api/tags') {
         response.end(JSON.stringify({ models: [{ name: 'freedom-e2e-no-server' }] }));
-      } else {
+      } else if (request.method === 'POST' && request.url === '/api/show') {
+        response.end(JSON.stringify({ capabilities: ['completion', 'tools'] }));
+      } else if (request.method === 'POST' && request.url === '/v1/chat/completions') {
         // Ollama answers a chat request for a model it does not have with
         // HTTP 500 (#849), which generic retry policies treat as transient.
         ollamaChatRequests.count += 1;
@@ -24,6 +26,9 @@ const test = baseTest.extend({
         response.end(JSON.stringify({
           error: { message: 'model "freedom-e2e-no-server" not found, try pulling it first' },
         }));
+      } else {
+        response.writeHead(404);
+        response.end('{}');
       }
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
