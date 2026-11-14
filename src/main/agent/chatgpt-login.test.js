@@ -94,9 +94,110 @@ test('stale success and denial callbacks and unexpected hosts cannot settle the 
 test('token exchange errors are branded and never reflect token response bodies', async () => {
   global.fetch.mockResolvedValue({ ok: false, status: 401, text: async () => 'sensitive-token-body' });
   let response;
-  await expect(start(url => { response = callback(url); })).rejects.toThrow('ChatGPT token exchange failed (401)');
+  await expect(start(url => { response = callback(url); })).rejects.toThrow('OpenAI HTTP status: 401');
   expect(response.end.mock.calls[0][0]).toContain('Connection unsuccessful');
   expect(response.end.mock.calls[0][0]).not.toContain('sensitive-token-body');
+});
+
+test('the external-browser callback page explains token rejection with safe support details', async () => {
+  global.fetch.mockResolvedValue(new Response(JSON.stringify({ error: 'invalid_grant',
+    error_description: '<script>private-description-canary</script>', refresh_token: 'private-refresh-canary' }), {
+    status: 400, headers: { 'x-request-id': 'req_0123456789abcdef0123456789abcdef' },
+  }));
+  let response;
+  await expect(start(url => { response = callback(url); })).rejects.toMatchObject({ code: 'AGENT_CHATGPT_LOGIN_FAILED' });
+  const html = response.end.mock.calls[0][0];
+  expect(html).toContain('OpenAI rejected the sign-in exchange');
+  expect(html).toContain('Details for support');
+  expect(html).toContain('CHATGPT_TOKEN_HTTP');
+  expect(html).toContain('invalid_grant');
+  expect(html).toContain('OpenAI HTTP status: 400');
+  expect(html).not.toMatch(/private-|test-code|issued-client|code_verifier|<script/);
+});
+
+test.each([
+  ['invalid_scope', 'OpenAI did not authorize this connection', 'invalid_scope'],
+  ['private-provider-error-canary', 'OpenAI did not authorize this connection', 'CHATGPT_AUTHORIZATION'],
+])('authorization error %s is explained without reflecting arbitrary callback text', async (error, summary, reference) => {
+  let response;
+  await expect(start(url => { response = callback(url, { error, error_description: 'private-description-canary' }); }))
+    .rejects.toMatchObject({ code: 'AGENT_CHATGPT_LOGIN_FAILED' });
+  const html = response.end.mock.calls[0][0];
+  expect(html).toContain(summary);
+  expect(html).toContain(reference);
+  expect(html).not.toContain('private-');
+  expect(global.fetch).not.toHaveBeenCalled();
+});
+
+test('a missing direct grant explains permission rather than claiming the account needs a paid plan', async () => {
+  global.fetch.mockResolvedValue({ ok: true, json: async () => ({
+    access_token: 'private-access-canary', refresh_token: 'private-refresh-canary', id_token: 'private-id-canary',
+    expires_in: 3600, scope: 'openid profile email',
+  }) });
+  let response;
+  await expect(start(url => { response = callback(url); })).rejects.toThrow('CHATGPT_PERMISSION');
+  const html = response.end.mock.calls[0][0];
+  expect(html).toContain('did not grant Freedom permission');
+  expect(html).not.toMatch(/private-|paid plan|Free account|not eligible/);
+});
+
+test.each([
+  ['ENOTFOUND', 'CHATGPT_TOKEN_NETWORK'],
+  ['CERT_HAS_EXPIRED', 'CHATGPT_TOKEN_TLS'],
+  ['CERT_NOT_YET_VALID', 'CHATGPT_TOKEN_TLS'],
+  ['UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'CHATGPT_TOKEN_TLS'],
+])('network error %s has a safe diagnostic and releases the callback server', async (code, reference) => {
+  global.fetch.mockRejectedValue(Object.assign(new Error('private-network-canary'), { cause: { code } }));
+  let response;
+  await expect(start(url => { response = callback(url); })).rejects.toThrow(reference);
+  expect(response.end.mock.calls[0][0]).toContain(reference);
+  expect(response.end.mock.calls[0][0]).toContain(`Network error: ${code}`);
+  expect(response.end.mock.calls[0][0]).not.toContain('private-network-canary');
+  expect(server.closeAllConnections).toHaveBeenCalled();
+});
+
+test.each([
+  [{ code: '' }, 'code'],
+  [{ client_id: '' }, 'client_id'],
+])('a malformed callback for this attempt fails promptly with the missing field: %j', async (params, field) => {
+  let response;
+  await expect(start(url => { response = callback(url, params); })).rejects.toThrow('CHATGPT_CALLBACK_FIELDS');
+  expect(response.end.mock.calls[0][0]).toContain(`Missing or invalid fields: ${field}`);
+  expect(global.fetch).not.toHaveBeenCalled();
+  expect(server.closeAllConnections).toHaveBeenCalled();
+});
+
+test('invalid Host requests get no installation metadata and used callbacks have a distinct reference', async () => {
+  await expect(start(url => {
+    const invalid = callback(url, {}, { host: 'unexpected.test' }).end.mock.calls[0][0];
+    expect(invalid).not.toMatch(/Platform:|Freedom Browser:|Details for support/);
+    callback(url);
+    const used = callback(url).end.mock.calls[0][0];
+    expect(used).toContain('CHATGPT_CALLBACK_USED');
+    expect(used).toContain('already been used');
+  })).resolves.toHaveProperty('access', 'test-access');
+});
+
+test('invalid success JSON and incomplete fields get distinct safe references', async () => {
+  let response;
+  global.fetch.mockResolvedValue({ ok: true, json: async () => { throw new Error('private-json-canary'); } });
+  await expect(start(url => { response = callback(url); })).rejects.toThrow('CHATGPT_TOKEN_JSON');
+  expect(response.end.mock.calls[0][0]).not.toContain('private-json-canary');
+  global.fetch.mockResolvedValue({ ok: true, json: async () => ({ scope: 'chatgpt.tokens.use.direct', expires_in: 3600 }) });
+  await expect(start(url => { response = callback(url); })).rejects.toThrow('CHATGPT_TOKEN_FIELDS');
+  expect(response.end.mock.calls[0][0]).toContain('access_token, refresh_token, id_token');
+});
+
+test('timeout is distinguishable from cancellation even while token exchange is running', async () => {
+  const controller = new AbortController();
+  global.fetch.mockImplementation(async () => {
+    controller.abort(Object.assign(new Error('private-timeout-canary'), { code: 'AGENT_PROVIDER_AUTH_TIMEOUT' }));
+    throw controller.signal.reason;
+  });
+  let response;
+  await expect(start(url => { response = callback(url); }, controller)).rejects.toMatchObject({ code: 'AGENT_PROVIDER_AUTH_TIMEOUT' });
+  expect(response.end.mock.calls[0][0]).toContain('ChatGPT sign-in timed out');
+  expect(response.end.mock.calls[0][0]).not.toContain('private-timeout-canary');
 });
 
 test('sidebar cancellation releases the server and manual callback prompt', async () => {
@@ -112,7 +213,7 @@ test.each([
 ])('rejects incomplete grants instead of reporting success', async token => {
   global.fetch.mockResolvedValue({ ok: true, json: async () => token });
   let response;
-  await expect(start(url => { response = callback(url); })).rejects.toThrow('incomplete authorization grant');
+  await expect(start(url => { response = callback(url); })).rejects.toMatchObject({ code: 'AGENT_CHATGPT_LOGIN_FAILED' });
   expect(response.end.mock.calls[0][0]).toContain('Connection unsuccessful');
 });
 

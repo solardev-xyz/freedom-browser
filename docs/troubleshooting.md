@@ -1,5 +1,12 @@
 # Troubleshooting
 
+## ChatGPT connection fails
+
+- If the sign-in browser shows a Freedom-branded error page, open **Details for support** and copy those details when reporting the problem. They identify the failed stage, Freedom version/platform, and recognized OpenAI HTTP/error codes or request ID when available.
+- Freedom also shows the explanation and a **Details for support** disclosure under Settings > AI > Models & providers. A deliberate cancellation has no support report there.
+- Share the support text, not the browser address: sign-in and callback URLs can contain temporary credentials. The report excludes callback values, tokens and raw server responses.
+- If the error appears on OpenAI’s own website before returning to Freedom, our callback page cannot explain it. Share the visible error message without including the address.
+
 ## Swarm node (Ant) fails to start
 
 - Check the Nodes panel for the reported state and error.

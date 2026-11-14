@@ -8,6 +8,7 @@ const flush = async () => {
 function createAgentElements() {
   const ids = [
     'agent-provider-form-heading',
+    'agent-provider-login-details', 'agent-provider-login-report',
     'agent-provider-test', 'agent-provider-test-note',
     'agent-provider-search', 'agent-model-search', 'agent-model-refresh', 'agent-model-details',
     'agent-provider-disconnect', 'agent-model-menu-search', 'agent-catalog-status',
@@ -5868,6 +5869,31 @@ describe('Agent UI', () => {
     await flush();
     expect(ctx.electronAPI.refreshAgentProviderModels).toHaveBeenCalledWith('ollama', undefined);
     expect(ctx.elements['agent-provider-models-list'].children.map((row) => row.children[0].textContent)).toEqual(['qwen3:8b', 'new-model']);
+  });
+
+  test('ChatGPT support details are separate from the live message and clear on another provider', async () => {
+    const report = 'Stage: Token exchange\nReference: CHATGPT_TOKEN_HTTP\nOpenAI HTTP status: 400';
+    const ctx = await loadAgentUi({ electronAPI: {
+      loginSubscriptionAgentProvider: jest.fn().mockResolvedValue({ ok: false, error: {
+        code: 'AGENT_CHATGPT_LOGIN_FAILED', message: 'OpenAI rejected the sign-in exchange.', supportDetails: report,
+      } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai-chatgpt';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-provider-login'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-provider-message'].textContent).toBe('OpenAI rejected the sign-in exchange.');
+    expect(ctx.elements['agent-provider-login-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-login-details'].open).toBe(false);
+    expect(ctx.elements['agent-provider-login-report'].textContent).toBe(report);
+    ctx.elements['agent-provider-login-details'].open = true;
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-provider-login-details'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-login-details'].open).toBe(false);
+    expect(ctx.elements['agent-provider-login-report'].textContent).toBe('');
   });
 
   test('a failed connect reports under the button, hides the placeholder and points at Ollama (#858)', async () => {
