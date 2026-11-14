@@ -126,6 +126,9 @@ function defaultSigningDependencies() {
     checkStanding: (page, request) => require('../wallet/signing-confirmation').checkStanding(page, request),
     // A Safe message's token, spent through the identity core (design 0012).
     spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
+    // A Safe message the site's rule answers: `approval.spend { standing }`.
+    spendStandingSafe: (page, safeIndex, request) =>
+      require('../wallet/signing-confirmation').spendStandingSafeMessage(page, safeIndex, request),
     discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
     setSigningAutoApprove: (key, enabled) => require('../wallet/dapp-permissions').setSigningAutoApprove(key, enabled),
     startSafeMessage: (options) => require('../wallet/safe/safe-messages').startSafeMessage(options),
@@ -155,6 +158,7 @@ function createSigningDispatchers(shared, deps = {}) {
     getSigner,
     checkStanding,
     spendSafe,
+    spendStandingSafe,
     discardToken,
     setSigningAutoApprove,
     startSafeMessage,
@@ -340,12 +344,15 @@ function createSigningDispatchers(shared, deps = {}) {
 
   /**
    * A Safe's message, once main has authorized it: a session main owns,
-   * bound to the requester, whose vault owners sign at once. A Safe that
-   * needs a device owner's signature shows its board (`eth.safe_message`),
-   * and main completes the session on its approval. Cancelled if the
-   * request ends any other way.
+   * bound to the requester, whose vault owners sign at once, each presenting
+   * `approval`, the Safe approval its token or the site's rule gave (design
+   * 0012, APB-1c), past `beforeSign`, the caller's last check (a rule's
+ * answer's), if any. A Safe that needs a device owner's signature shows its
+   * board (`eth.safe_message`), and main completes the session on its
+   * approval. Cancelled if the request ends any other way. The session ends
+   * the approval at its last signature, and before its join or cancel.
    */
-  async function safeMessage(context, ctx, beforeSign = null) {
+  async function safeMessage(context, ctx, approval, beforeSign = null) {
     const { requester, method, params } = context;
     let state;
     try {
@@ -355,6 +362,7 @@ function createSigningDispatchers(shared, deps = {}) {
         display: { kind: 'message', site: requester.key, method },
         requester: { origin: requester.key, webContentsId: requester.guest },
         owner: 'main',
+        approval,
         ...(beforeSign ? { beforeSign } : {}),
       });
     } catch (err) {
@@ -384,7 +392,7 @@ function createSigningDispatchers(shared, deps = {}) {
       if (!(await context.nameHolds(ctx.keyless)) || !context.holdsKey()) return error(NO_ADDRESS);
       let signature;
       try {
-        ({ signature } = completeSafeMessage(ctx.walletIndex, token));
+        ({ signature } = await completeSafeMessage(ctx.walletIndex, token));
       } catch (err) {
         return failure(err);
       }
@@ -393,9 +401,10 @@ function createSigningDispatchers(shared, deps = {}) {
     } finally {
       if (!completed) {
         try {
-          cancelSafeMessage(ctx.walletIndex, token);
+          await cancelSafeMessage(ctx.walletIndex, token);
         } catch {
-          // A device step still running: the session goes with its page.
+          // A device step still running: its approval ended, the session
+          // goes with its page.
         }
       }
     }
@@ -426,7 +435,19 @@ function createSigningDispatchers(shared, deps = {}) {
     if (refused) return refused;
     let out;
     if (ctx.safe) {
-      out = await safeMessage(context, ctx, lastCheck(context, ctx));
+      // No token: the core judges the site's rule for the Safe's grant
+      // itself (`approval.spend { standing }`, design 0012) and gives the
+      // Safe approval its owners present, under this page; the same rule's
+      // reading is each owner's last check.
+      let approval;
+      try {
+        approval = await spendStandingSafe(context.pageContext(), ctx.walletIndex, { method, params: context.params });
+      } catch (err) {
+        if (err?.reason === 'custody') return error(AGENT_CUSTODY);
+        if (err?.reason === 'no_rule') return error(RULE_GONE);
+        return failure(err);
+      }
+      out = await safeMessage(context, ctx, approval, lastCheck(context, ctx));
     } else {
       try {
         // Under `page` with `{ standing }`: the core judges the site's rule
@@ -502,6 +523,7 @@ function createSigningDispatchers(shared, deps = {}) {
         : CONFIRM_KINDS.SIGN_TYPED_DATA;
     const payload = ctx.safe ? { method, params: context.params } : ctx.prepared.payload;
     let confirmation = null;
+    let approval = null;
     let out;
     try {
       try {
@@ -521,13 +543,13 @@ function createSigningDispatchers(shared, deps = {}) {
       try {
         context.spend(confirmation);
         // A Safe's message signs nothing here: its token is spent through
-        // the core, and its owners sign on the board.
-        if (ctx.safe) await spendSafe(confirmation);
+        // the core, for the Safe approval its owners present on the board.
+        if (ctx.safe) ({ approval } = await spendSafe(confirmation));
       } catch (err) {
         return failure(err);
       }
       if (ctx.safe) {
-        out = await safeMessage(context, ctx);
+        out = await safeMessage(context, ctx, approval);
       } else {
         try {
           out = { result: await signWith(ctx.walletIndex, method, ctx.prepared, confirmation.hash, { confirmation }) };

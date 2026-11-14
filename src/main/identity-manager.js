@@ -1332,6 +1332,25 @@ function getWalletRecord(walletIndex, meta = getVaultMeta()) {
 }
 
 /**
+ * The wallet-list record stored with `address` (case-insensitive), as
+ * getWalletRecord normalizes it, or null. An address names one record at
+ * most: a second account at an address in the list is refused. Only stored
+ * addresses count (a Safe's, a device's); synchronous and cheap.
+ *
+ * @param {string} address
+ * @param {Object} [meta] - Already-loaded vault-meta, to skip the disk read
+ * @returns {Object|null}
+ */
+function findWalletRecordByAddress(address, meta = getVaultMeta()) {
+  if (!meta || typeof address !== 'string' || !address) return null;
+  const wanted = address.toLowerCase();
+  const found = getWalletList(meta).find(
+    (wallet) => typeof wallet.address === 'string' && wallet.address.toLowerCase() === wanted
+  );
+  return found ? getWalletRecord(found.index, meta) : null;
+}
+
+/**
  * Get list of derived user wallets
  * @returns {Array<{index: number, name: string, address: string, type: string}>}
  */
@@ -1919,25 +1938,26 @@ async function deleteDerivedWallet(index) {
   // write so a failure never leaves a deleted record with live state.
   // (Lazy requires — both modules are dependency-light — keep the Safe
   // stack out of ordinary wallet operations.)
-  if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
-    require('./wallet/safe/message-sessions').discardSession(index);
-    require('./wallet/safe/pending-store').clearPending(index);
+  let deletion = null;
+  try {
+    if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
+      const safeApprovals = require('./wallet/safe/safe-approvals');
+      // The Safe's exclusion first: refused (SAFE_BUSY) while one of its
+      // steps runs (a signature, an execution up to its broadcast) or a
+      // send has reserved it; from here no step, send or approval of it
+      // starts until the deletion ends, failed or done.
+      deletion = safeApprovals.beginDeletion(index);
+      // Its Safe approvals (freedom-core design 0012): ended in the core
+      // before the state they sign for goes. If an end fails, nothing is
+      // deleted (SAFE_APPROVAL_END_FAILED), and the user tries again.
+      await safeApprovals.endSafe(index);
+      require('./wallet/safe/message-sessions').discardSession(index);
+      require('./wallet/safe/pending-store').clearPending(index);
+    }
+    removeWalletRecord(index, meta);
+  } finally {
+    deletion?.release();
   }
-
-  // Remove from list
-  wallets.splice(walletIndex, 1);
-
-  // If active wallet was deleted, reset to main wallet
-  let activeIndex = meta.activeWalletIndex ?? 0;
-  if (activeIndex === index) {
-    activeIndex = 0;
-  }
-
-  saveVaultMeta({
-    ...meta,
-    derivedWallets: wallets,
-    activeWalletIndex: activeIndex,
-  });
 
   // A dApp permission is a standing authorisation to sign with this one
   // account (plus any auto-approve rules on top). It cannot outlive the
@@ -1947,6 +1967,29 @@ async function deleteDerivedWallet(index) {
   // storage path, which identity-manager must not need at load time.
   const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
   revokePermissionsForWalletIndex(index);
+}
+
+/**
+ * `deleteDerivedWallet`'s meta write: the record removed from the meta as
+ * it is now (a Safe's approvals' end was an await, and a change saved
+ * meanwhile stays), and the active wallet reset to the main one if it was
+ * this one.
+ */
+function removeWalletRecord(index, meta) {
+  const latest = getVaultMeta() || meta;
+  const remaining = getWalletList(latest).filter((w) => w.index !== index);
+
+  // If active wallet was deleted, reset to main wallet
+  let activeIndex = latest.activeWalletIndex ?? 0;
+  if (activeIndex === index) {
+    activeIndex = 0;
+  }
+
+  saveVaultMeta({
+    ...latest,
+    derivedWallets: remaining,
+    activeWalletIndex: activeIndex,
+  });
 }
 
 /**
@@ -2314,6 +2357,7 @@ module.exports = {
   HARDWARE_INDEX_BASE,
   isHardwareWalletIndex,
   getWalletRecord,
+  findWalletRecordByAddress,
   getDerivedWallets,
   getActiveWalletIndex,
   setActiveWalletIndex,

@@ -160,12 +160,13 @@ test('create, activate, and send from a Safe account', async ({ window: win, anv
   const recipient = await sendFromSafe(win, electronApp);
 
   // Confirm hands over to main's board; with a 1-of-2 vault owner the free
-  // signature meets the threshold and execution runs on its own: the
-  // executor's fee is like today's (the harness's fee reference). The
-  // sidebar shows the executed send.
-  await expect(win.locator('#safe-signing-title')).toHaveText('Transaction sent', {
-    timeout: 90_000,
-  });
+  // signature meets the threshold and execution runs on its own. The
+  // executor presents the SafeTx's Safe approval (freedom-core design 0012,
+  // APB-1c), which the core checks against its own fee evidence: the
+  // harness's fee reference is main's, so the core has none, stops it, and
+  // the fee is asked as an executor-send token, confirmed in the panel.
+  // The sidebar shows the executed send.
+  await confirmFeesInPanel(electronApp, async () => (await win.locator('#safe-signing-title').textContent()) === 'Transaction sent');
   await win.click('#safe-signing-done');
   await expectReceived(anvil, recipient);
 });

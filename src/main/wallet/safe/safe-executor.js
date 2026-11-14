@@ -56,7 +56,12 @@ const {
   feeCheckError,
   feeNotShownError,
 } = require('../fee-check');
-const { KINDS: CONFIRM_KINDS, confirmationFor, withConfirmation } = require('../signing-confirmation');
+const {
+  KINDS: CONFIRM_KINDS,
+  NOT_CONFIRMED,
+  confirmationFor,
+  withConfirmation,
+} = require('../signing-confirmation');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
 const { getEip1193Provider } = require('../provider-manager');
 const { codedError, SAFE_UNSUPPORTED } = require('./errors');
@@ -348,15 +353,24 @@ async function buildSafeTransaction({ chainId, safe, tx, provider }) {
  * recover-verified before it counts, so a mis-keyed or compromised
  * device fails here rather than on-chain.
  *
+ * A vault owner's signature presents the Safe approval (`approval`, `{ id,
+ * page }`: freedom-core design 0012, APB-1c) under the caller it was
+ * recorded for; the core signs no SafeTx or SafeMessage without it. A
+ * device owner signs as before.
+ *
  * @param {Object} params
  * @param {Object} params.typedData - From buildSafeTransaction
  * @param {number} params.ownerIndex - Wallet index of the owner
+ * @param {{id: string, page: object|null}} params.approval - The Safe approval
  * @param {() => Promise<void>} [params.beforeSign] - The caller's last
  *   check, awaited by the signer right before it signs (`signers.js`)
  * @returns {Promise<{signer: string, data: string}>}
  */
-async function collectOwnerSignature({ typedData, ownerIndex, beforeSign = null }) {
-  const signer = beforeSign ? getSigner(ownerIndex, { beforeSign }) : getSigner(ownerIndex);
+async function collectOwnerSignature({ typedData, ownerIndex, approval, beforeSign = null }) {
+  const signer = getSigner(ownerIndex, {
+    ...(approval ? { safe: approval } : {}),
+    ...(beforeSign ? { beforeSign } : {}),
+  });
   const address = await signer.getAddress();
   const data = await signer.signTypedData(typedData);
   const recovered = verifyTypedData(
@@ -398,13 +412,32 @@ async function quotedExecutorSend({ chainId, to, data, executorIndex, from }) {
   ]);
   const params = { to, value: '0', data, gasLimit, ...toFeeFields(gasPrices), chainId };
   const verdict = await checkAtApproval(params);
-  if (!verdict.autoApprove) {
-    const error = feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, verdict);
-    error.offer = { executorIndex, chainId, to, value: '0', data, gasLimit, ...toFeeFields(gasPrices) };
-    throw error;
-  }
-  return params;
+  if (!verdict.autoApprove) throw executorFeeAsk(verdict, executorIndex, params);
+  return { params, verdict };
 }
+
+/**
+ * The executor's fee, for the user to confirm on the Safe's screen
+ * (FEE_CHECK_NEEDS_CONFIRMATION, with the verdict and the transaction
+ * offered): the screen confirms it as an 'executor-send' token, which the
+ * executor's signature then presents.
+ */
+function executorFeeAsk(verdict, executorIndex, params) {
+  const error = feeCheckError(FEE_CHECK_NEEDS_CONFIRMATION, verdict);
+  const { chainId, to, data, gasLimit } = params;
+  const fees = {};
+  for (const field of ['maxFeePerGas', 'maxPriorityFeePerGas', 'gasPrice']) {
+    if (params[field] !== undefined) fees[field] = params[field];
+  }
+  error.offer = { executorIndex, chainId, to, value: '0', data, gasLimit, ...fees };
+  return error;
+}
+
+// The core's refusals of a Safe approval at the executor's signature that
+// its 'executor-send' token answers (design 0012): the core's own fee check
+// stopped it, or the approval is gone (ended, dropped, or the core
+// restarted).
+const EXECUTOR_ASKS = new Set(['fee_check', 'unknown_token']);
 
 /**
  * The executor's transaction with the fee the user confirmed on the Safe's
@@ -447,26 +480,45 @@ async function sendViaExecutor({
   intentKey,
   feeConfirmation = null,
   guardCommit = null,
+  safe = null,
 }) {
   // A fee confirmation is burnt once this send has ended, whatever became
   // of it: a held execution sends its bytes again without it.
   return withConfirmation(feeConfirmation?.confirmation, () =>
-    sendConfirmedViaExecutor({ chainId, to, data, executorIndex, record, intentKey, feeConfirmation, guardCommit })
+    sendConfirmedViaExecutor({ chainId, to, data, executorIndex, record, intentKey, feeConfirmation, guardCommit, safe })
   );
 }
 
-async function sendConfirmedViaExecutor({ chainId, to, data, executorIndex, record, intentKey, feeConfirmation, guardCommit }) {
+/**
+ * `safe`: a SafeTx's execution (`execTransaction`), `{ approval }` being the
+ * Safe approval main holds for it, or null (freedom-core design 0012,
+ * APB-1c). Its executor signs with the approval while the fee check allows
+ * it, or with the 'executor-send' token the user confirmed, and never with
+ * neither: with no approval held (a restart since its owners signed, or it
+ * ended), the fee is asked, as when the check stops it. So is it when the
+ * core refuses the approval at the signature for its own fee check, or as
+ * gone, with nothing signed. A Safe's activation (no `safe`) is main's own
+ * send, as before.
+ */
+async function sendConfirmedViaExecutor({ chainId, to, data, executorIndex, record, intentKey, feeConfirmation, guardCommit, safe }) {
   const from = await getSigner(executorIndex).getAddress();
   let params = { to, value: '0', data, chainId };
   let confirmation = null;
+  let verdict = null;
   if (!(await heldIntentFor(intentKey))) {
     if (feeConfirmation) {
       ({ params, confirmation } = confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmation }));
     } else {
-      params = await quotedExecutorSend({ chainId, to, data, executorIndex, from });
+      ({ params, verdict } = await quotedExecutorSend({ chainId, to, data, executorIndex, from }));
+      if (safe && !safe.approval) throw executorFeeAsk(verdict, executorIndex, params);
     }
   }
-  const executor = getSigner(executorIndex, confirmation ? { confirmation } : {});
+  const approval = !confirmation && safe?.approval ? safe.approval : null;
+  const executor = getSigner(executorIndex, confirmation ? { confirmation } : approval ? { safe: approval } : {});
+  const asked = (err) =>
+    approval && verdict && err?.code === NOT_CONFIRMED && EXECUTOR_ASKS.has(err.reason)
+      ? executorFeeAsk(verdict, executorIndex, params)
+      : err;
   if (record) {
     // A site's payment (a dApp's Safe transaction) takes the site's turn
     // until it is committed, as its other dApp payments do, so a silent
@@ -479,11 +531,17 @@ async function sendConfirmedViaExecutor({ chainId, to, data, executorIndex, reco
         { ...record, metadata: { ...record.metadata, executor: from } },
         { intentKey, onCommitted: leave, guardCommit }
       );
+    } catch (err) {
+      throw asked(err);
     } finally {
       leave?.();
     }
   }
-  return signAndSendTransaction(params, executor, { intentKey, guardCommit });
+  try {
+    return await signAndSendTransaction(params, executor, { intentKey, guardCommit });
+  } catch (err) {
+    throw asked(err);
+  }
 }
 
 /**
@@ -505,6 +563,9 @@ async function sendConfirmedViaExecutor({ chainId, to, data, executorIndex, reco
  *   guard, run after the executor's signature and before its first commit,
  *   or before a held execution's bytes are handed off again
  *   (signAndSendTransaction's `guardCommit`)
+ * @param {{id: string, page: object|null}|null} [params.approval] - The
+ *   Safe approval main holds for the SafeTx, which the executor's signature
+ *   presents (sendConfirmedViaExecutor)
  * @returns {Promise<Object>} transaction-service result ({hash, …})
  */
 async function execTransaction({
@@ -516,6 +577,7 @@ async function execTransaction({
   record,
   feeConfirmation,
   guardCommit = null,
+  approval = null,
 }) {
   const safeTx = new EthSafeTransaction(safeTxData);
   for (const { signer, data } of signatures) {
@@ -549,6 +611,7 @@ async function execTransaction({
     intentKey: execIntentKey(chainId, safeTxHash),
     feeConfirmation,
     guardCommit,
+    safe: { approval },
   });
 }
 

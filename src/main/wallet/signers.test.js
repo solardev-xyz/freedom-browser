@@ -305,6 +305,28 @@ describe('getSigner (vault-backed)', () => {
     expect(coreCalls('sign.typed_data').map(([, , , hash]) => hash)).toEqual([confirmed]);
   });
 
+  // freedom-core design 0012, APB-1c: a Safe's vault owner presents the Safe
+  // approval as `{ safe }`, under the caller it was recorded for; a device
+  // owner signs as before.
+  test("a Safe owner's signature presents its Safe approval, under its holder", async () => {
+    const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    for (const holder of [null, page]) {
+      const id = mockCore.approvals.openSafeApproval({ page: holder });
+      mockCore.approvals.calls.length = 0;
+      await getSigner(0, { safe: { id, page: holder } }).signTypedData(typed);
+      expect(mockCore.approvals.calls.at(-1)).toMatchObject({
+        method: 'sign.typed_data',
+        params: { authorization: { safe: id } },
+        page: holder,
+      });
+      // Presented by another holder: refused before the key.
+      await expect(
+        getSigner(0, { safe: { id, page: holder ? null : page } }).signTypedData(typed)
+      ).rejects.toThrow(/differs from what was confirmed/);
+    }
+  });
+
   // #88: a primaryType that isn't the inferred root is warned about, and
   // approving signs as ethers does: over the inferred root.
   test.each([

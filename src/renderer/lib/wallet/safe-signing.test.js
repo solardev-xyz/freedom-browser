@@ -428,6 +428,7 @@ describe("safe signing board — a page's Safe send (0011 PRQ-5b)", () => {
       safeSign: jest.fn(async () => ({ success: true, state: sendState() })),
       safeCancelPending: jest.fn(async () => ({ success: true })),
       safeExecute: jest.fn(),
+      confirmSigning: jest.fn(async () => ({ success: true, token: 'token-1' })),
     });
     const renderer = require('../page-prompt-renderers.js').pagePromptRenderer('eth.safe_send');
     const show = (handle = 'h1', view = { safeIndex: 5, state: sendState() }) =>
@@ -448,6 +449,34 @@ describe("safe signing board — a page's Safe send (0011 PRQ-5b)", () => {
     expect(decisions).toEqual([{ handle: 'h1', approve: false, choices: {} }]);
     expect(walletMocks.safeCancelPending).not.toHaveBeenCalled();
     expect(screen.classList.contains('hidden')).toBe(true);
+  });
+
+  // freedom-core design 0012, APB-1c: with no Safe approval held for the
+  // SafeTx (the app restarted since), the owner the user taps signs with
+  // the SafeTx confirmed again, a safe-send token for main's own call of it.
+  test('an owner with no Safe approval held signs with the SafeTx confirmed again', async () => {
+    const { walletMocks, show } = await loadSendBoard();
+    const content = global.document.getElementById('safe-signing-content');
+    const signButton = createElement('button', { dataset: { signOwner: '1' } });
+    content.appendChild(signButton);
+    const state = sendState({ chainId: 100, call: { to: '0xabc', value: '0', data: '0x01' } });
+    walletMocks.safeState.mockResolvedValue({ success: true, state });
+    walletMocks.safeSign.mockResolvedValue({ success: true, state });
+    show('h1', { safeIndex: 5, state });
+    await flushMicrotasks();
+    walletMocks.safeSign.mockClear();
+    walletMocks.safeSign.mockResolvedValueOnce({ success: false, code: 'SAFE_APPROVAL_NEEDED', error: 'confirm again' });
+    walletMocks.safeSign.mockResolvedValueOnce({ success: true, state });
+    signButton.dispatch('click');
+    await flushMicrotasks();
+    expect(walletMocks.confirmSigning).toHaveBeenCalledWith('safe-send', 5, {
+      tx: { to: '0xabc', value: '0', data: '0x01' },
+      chainId: 100,
+    });
+    expect(walletMocks.safeSign.mock.calls).toEqual([
+      [5, 1],
+      [5, 1, { confirmation: 'token-1' }],
+    ]);
   });
 
   test('at the threshold it executes as before; main closing the prompt meanwhile keeps the board to its summary', async () => {

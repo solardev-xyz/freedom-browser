@@ -27,6 +27,15 @@
  * another start, and only main completes it: the chrome's signing board
  * collects its device signatures with the session token, and main hands the
  * signature to the page that asked.
+ *
+ * Every owner's signature presents the session's Safe approval (freedom-core
+ * design 0012, APB-1c; `safe-approvals.js`): the one the page's
+ * `safe-message` token gave, or its site's rule (`approval.spend {
+ * standing }`), held by the page, under whose PageContext each vault owner
+ * signs. Main ends it when the threshold's last signature is made, and
+ * again before the signatures are joined, before a cancel, and before a
+ * session whose page went away is dropped: each waits for the core's end,
+ * and does nothing if it fails (SAFE_APPROVAL_END_FAILED).
  */
 
 const { randomUUID } = require('crypto');
@@ -51,9 +60,60 @@ const {
   signEntryOwner,
 } = require('./signature-collection');
 const { getSession, setSession, discardSession } = require('./message-sessions');
-const { codedError, SAFE_BUSY, SAFE_MESSAGE_EXISTS } = require('./errors');
+const safeApprovals = require('./safe-approvals');
+const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_MESSAGE_EXISTS } = require('./errors');
 
-const store = { get: getSession, set: setSession, idOf: (entry) => entry.hash };
+const MESSAGE = safeApprovals.KINDS.MESSAGE;
+const store = {
+  get: getSession,
+  set: setSession,
+  idOf: (entry) => entry.hash,
+  approvalOf: (safeIndex, entry) => (entry.dead ? null : safeApprovals.held(MESSAGE, safeIndex, entry.hash)),
+  // Ended for good (its page gone, or its caller's last check refused):
+  // kept only until its approval's end, and nothing more signs it.
+  ended: (entry) => entry.dead === true,
+  forgetApproval: (safeIndex, entry) => safeApprovals.forget(MESSAGE, safeIndex, entry.hash),
+  // The threshold's last signature ends the approval (design 0012): no
+  // owner signs the SafeMessage after it.
+  signed: async (safeIndex, entry) => {
+    if (entry.signatures.length >= entry.threshold) await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+  },
+  // The caller's last check, kept with the session (a page's standing rule,
+  // for a message it answers): every owner's signer awaits it right before
+  // it signs, the free ones' as the session opens and each later owner's
+  // from the board.
+  lastCheck: (entry) => entry.beforeSign,
+  // Its refusal ends the session there: its approval ended, then the
+  // session dropped. If the end fails, it stays ended for the next drop.
+  refused: (safeIndex, entry) =>
+    endAndDiscard(safeIndex, entry).catch((err) => {
+      console.warn('[SafeMessages] a refused signature request is kept, ended, for now:', err.message);
+    }),
+};
+
+/**
+ * The session's approval ended (`approval.end`, which the core answers only
+ * after a signature already presenting it), then the session dropped. One
+ * drop at a time per session: its page's close after its navigation, or a
+ * new request that finds its page gone, shares the one under way. If the
+ * end fails, the session stays as it was (its signatures, its approval) and
+ * the drop rejects; the next one tries again.
+ */
+function endAndDiscard(safeIndex, entry) {
+  // Ended for good from here, whether or not the end succeeds: no board
+  // action signs it, and a signature landing for it is dropped.
+  entry.dead = true;
+  if (!entry.dropping) {
+    entry.dropping = (async () => {
+      await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+      if (getSession(safeIndex) === entry) discardSession(safeIndex);
+    })().catch((err) => {
+      entry.dropping = null;
+      throw err;
+    });
+  }
+  return entry.dropping;
+}
 
 /**
  * The digest a VERIFIER computes for the dApp's request — EIP-191 for
@@ -156,9 +216,13 @@ function attachRequesterLifecycle(safeIndex, entry) {
     return;
   }
   const drop = () => {
-    if (getSession(safeIndex) === entry) {
-      discardSession(safeIndex);
-    }
+    if (getSession(safeIndex) !== entry) return;
+    // Its approval ended first, then the session dropped. Kept if the end
+    // fails: its page's next event, or the next request for the Safe (which
+    // finds its page gone), drops it again.
+    endAndDiscard(safeIndex, entry).catch((err) => {
+      console.warn('[SafeMessages] a gone page\'s signature request is kept for now:', err.message);
+    });
   };
   contents.on('destroyed', drop);
   contents.on('did-navigate', drop);
@@ -169,13 +233,17 @@ function attachRequesterLifecycle(safeIndex, entry) {
 }
 
 /** The session, but only for the caller holding its token. */
-function requireSession(safeIndex, token) {
+function requireSession(safeIndex, token, { ended = false } = {}) {
   const entry = getSession(safeIndex);
   if (!entry) {
     throw new Error('No signature request is open for this account');
   }
   if (token !== entry.token) {
     throw new Error('This signature request belongs to a different page');
+  }
+  // One whose page went away is kept only until its approval has ended.
+  if (entry.dead && !ended) {
+    throw codedError('This signature request has ended', SAFE_DISCARDED);
   }
   return entry;
 }
@@ -214,7 +282,7 @@ function sessionState(safeIndex, entry = getSession(safeIndex)) {
  */
 function getSafeMessageState(safeIndex, token) {
   const entry = getSession(safeIndex);
-  if (!entry || token !== entry.token) {
+  if (!entry || token !== entry.token || entry.dead) {
     return null;
   }
   return sessionState(safeIndex, entry);
@@ -239,14 +307,30 @@ function getSafeMessageState(safeIndex, token) {
  * @param {{origin: string, webContentsId: number|null}} [params.requester]
  *   - The requesting page's identity (permission key + webview
  *   webContents id)
+ * @param {{id: string, page: object}} params.approval - The Safe approval
+ *   the request's `safe-message` token or its site's rule gave (design
+ *   0012): held for the session, and ended if none opens for it
  * @param {() => Promise<void>} [params.beforeSign] - The caller's last
- *   check (a page's standing rule, for a message it answers): awaited
- *   inside each free owner's signer, after the request's preparation and
- *   right before that owner signs. Its refusal ends the session, nothing
- *   more signed, and rejects with the caller's own error.
+ *   check (a page's standing rule, for a message it answers), kept with the
+ *   session: awaited inside every owner's signer right before that owner
+ *   signs, a free owner's here (after the request's preparation) and a later
+ *   owner's from the board (`signSafeMessage`). Its refusal ends the
+ *   session (its approval ended first), nothing more signed, and rejects
+ *   with the caller's own error.
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
-async function startSafeMessage({ safeIndex, request, display, requester, owner = null, beforeSign = null }) {
+async function startSafeMessage({ safeIndex, request, display, requester, owner = null, approval, beforeSign = null }) {
+  // Set once a session holds the approval: otherwise it is ended here.
+  const progress = { held: false };
+  try {
+    if (!safeApprovals.isApproval(approval)) throw new Error('This signature request was not confirmed');
+    return await openSafeMessage({ safeIndex, request, display, requester, owner, approval, beforeSign, progress });
+  } finally {
+    if (!progress.held) await safeApprovals.release(approval);
+  }
+}
+
+async function openSafeMessage({ safeIndex, request, display, requester, owner, approval, beforeSign, progress }) {
   const mainOwned = owner === 'main';
   const initial = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
@@ -255,18 +339,22 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
   if (!isMarkedDeployed(initial, DEPLOY_CHAIN_ID)) {
     throw new Error('Activate this account on Gnosis before signing for apps');
   }
-  // Hashing awaits the identity core: watch the requesting page meanwhile,
-  // since its lifecycle listeners are only attached to the session later.
+  // Every wait until the session holds its approval (the core's hash, a
+  // leftover's drop, the approval's hold) is watched for the requesting
+  // page, since its lifecycle listeners are only attached to the session.
   const watch = watchRequester(requester);
-  let digest;
   try {
-    digest = await requestDigest(request.method, request.params);
+    return await openWatched({ safeIndex, request, display, requester, mainOwned, approval, beforeSign, progress, initial, watch });
   } finally {
     watch.stop();
   }
-  if (watch.gone()) {
-    throw new Error('The requesting page went away before the signature request opened');
-  }
+}
+
+const pageWentAway = () => new Error('The requesting page went away before the signature request opened');
+
+async function openWatched({ safeIndex, request, display, requester, mainOwned, approval, beforeSign, progress, initial, watch }) {
+  const digest = await requestDigest(request.method, request.params);
+  if (watch.gone()) throw pageWentAway();
   // The account may have changed meanwhile (deleted: getSafeRecord throws).
   const record = getSafeRecord(safeIndex);
   if (
@@ -290,13 +378,19 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
 
   const existing = getSession(safeIndex);
   if (existing) {
-    if (!mainOwned && !existing.mainOwned && existing.hash === hash && sameRequester(existing.requester, requester)) {
+    if (
+      !existing.dead &&
+      !mainOwned &&
+      !existing.mainOwned &&
+      existing.hash === hash &&
+      sameRequester(existing.requester, requester)
+    ) {
       // The identical request from the SAME page again (retried without
       // navigating) — resume: the collected signatures are still valid
-      // for this hash.
+      // for this hash, under the session's own approval.
       return signSafeMessage(safeIndex, undefined, existing.token);
     }
-    if (!requesterGone(existing)) {
+    if (!existing.dead && !requesterGone(existing)) {
       // A different request, or the same digest from a DIFFERENT page:
       // never resume or replace someone else's live ceremony.
       throw codedError(
@@ -304,12 +398,27 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
         SAFE_MESSAGE_EXISTS
       );
     }
-    // The requesting page provably no longer exists — dead leftover.
-    discardSession(safeIndex);
+    // The requesting page provably no longer exists, or the session ended
+    // and its drop hasn't finished — dead leftover.
+    await endAndDiscard(safeIndex, existing);
+    if (getSession(safeIndex)) {
+      throw codedError(
+        'Another signature request is already open for this account — finish or cancel it first',
+        SAFE_MESSAGE_EXISTS
+      );
+    }
+    // That drop was a wait (its end asked again, maybe): this page may have
+    // gone meanwhile, and gets no session.
+    if (watch.gone()) throw pageWentAway();
   }
 
   acquire(safeIndex);
   try {
+    // The account may have changed while a leftover was dropped (deleted:
+    // getSafeRecord throws).
+    if (getAddress(getSafeRecord(safeIndex).address) !== safeAddress) {
+      throw new Error('This account changed while the signature request was opening');
+    }
     const entry = {
       token: randomUUID(),
       requester: requester
@@ -323,15 +432,34 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
       signatures: [],
       createdAt: Date.now(),
       mainOwned,
+      beforeSign: typeof beforeSign === 'function' ? beforeSign : null,
     };
+    // Held first: a session opens only with its approval.
+    await safeApprovals.hold(MESSAGE, safeIndex, approval, hash);
+    progress.held = true;
+    if (watch.gone()) {
+      // The page went while its approval was being held: ended here, and
+      // no session opens. (An end that fails leaves it in the Safe's slot,
+      // presented by nothing; the next hold or the Safe's deletion ends it.)
+      await safeApprovals.end(MESSAGE, safeIndex, hash).catch((err) => {
+        console.warn("[SafeMessages] a gone page's approval is kept for now:", err.message);
+      });
+      throw pageWentAway();
+    }
+    // From here the session's own listeners watch the page (same run).
     setSession(safeIndex, entry);
     attachRequesterLifecycle(safeIndex, entry);
+    watch.stop();
     try {
-      await collectFreeSignatures(store, safeIndex, record.owners, null, { beforeSign });
+      await collectFreeSignatures(store, safeIndex, record.owners);
     } catch (err) {
-      // The caller's last check refused: the session ends here, and what
-      // it collected goes with it.
-      if (getSession(safeIndex) === entry) discardSession(safeIndex);
+      // The caller's last check refused (the store ended the session, its
+      // approval first), or the sweep failed: the session ends, and what it
+      // collected goes with it. If the end fails, it stays ended for the
+      // next drop to finish.
+      await endAndDiscard(safeIndex, entry).catch((endError) => {
+        console.warn('[SafeMessages] a refused signature request is kept, ended, for now:', endError.message);
+      });
       throw err;
     }
   } finally {
@@ -363,11 +491,14 @@ async function signSafeMessage(safeIndex, ownerIndex, token) {
  * owners' signatures sorted by signer and concatenated, ready to hand
  * back to the dApp (which verifies via `isValidSignature` on the Safe).
  *
+ * The session's approval is ended first (design 0012), the Safe held
+ * meanwhile, so no owner signs between the two.
+ *
  * @param {number} safeIndex
  * @param {string} token - The session token from startSafeMessage
- * @returns {{signature: string}}
+ * @returns {Promise<{signature: string}>}
  */
-function completeSafeMessage(safeIndex, token) {
+async function completeSafeMessage(safeIndex, token) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
@@ -377,25 +508,43 @@ function completeSafeMessage(safeIndex, token) {
       `Not enough signatures yet (${entry.signatures.length} of ${entry.threshold})`
     );
   }
-  // buildSignatureBytes sorts its input in place — hand it a copy.
-  const signature = buildSignatureBytes(entry.signatures.map((sig) => ({ ...sig })));
-  discardSession(safeIndex);
-  return { signature };
+  acquire(safeIndex);
+  try {
+    await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+    if (getSession(safeIndex) !== entry || entry.dead) {
+      throw new Error('No signature request is open for this account');
+    }
+    // buildSignatureBytes sorts its input in place — hand it a copy.
+    const signature = buildSignatureBytes(entry.signatures.map((sig) => ({ ...sig })));
+    discardSession(safeIndex);
+    return { signature };
+  } finally {
+    release(safeIndex);
+  }
 }
 
 /**
  * Drop the session (collected signatures are thrown away). Idempotent
- * when nothing is open; refused with someone else's token.
+ * when nothing is open; refused with someone else's token. Its approval is
+ * ended first (design 0012), even while a device's step runs: the session
+ * is then refused (SAFE_BUSY) and kept until its page goes, but no vault
+ * owner signs it again.
  */
-function cancelSafeMessage(safeIndex, token) {
-  if (isBusy(safeIndex)) {
-    throw codedError('Wait for the current step to finish first', SAFE_BUSY);
-  }
+async function cancelSafeMessage(safeIndex, token) {
   if (!getSession(safeIndex)) {
     return; // already gone — cancelling twice is fine
   }
-  requireSession(safeIndex, token);
-  discardSession(safeIndex);
+  const entry = requireSession(safeIndex, token, { ended: true });
+  // Ended already (its page gone): its drop, again.
+  if (entry.dead) {
+    await endAndDiscard(safeIndex, entry);
+    return;
+  }
+  await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+  if (isBusy(safeIndex)) {
+    throw codedError('Wait for the current step to finish first', SAFE_BUSY);
+  }
+  if (getSession(safeIndex) === entry) discardSession(safeIndex);
 }
 
 module.exports = {
