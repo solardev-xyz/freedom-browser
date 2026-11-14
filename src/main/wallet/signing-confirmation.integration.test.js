@@ -261,8 +261,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     });
 
     test("a token on another kind's route is refused before the core signs, and burnt (wallet-send, executor-send)", async () => {
-      // The core reads a sign.transaction token's kind from the token: main
-      // checks the route's kind against the one it minted, as its JS check did.
+      // Main checks the route's kind against the one it minted, as its JS
+      // check did, before the core (which refuses another kind named) is asked.
       for (const [mintedAs, route] of [
         ['executor-send', 'wallet-send'],
         ['wallet-send', 'executor-send'],
@@ -387,9 +387,66 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         return vaultBackend.sign.transaction(account(index), wire(replace, nonce), sc.signingAuthorization(confirmation));
       };
       await expect(present(0, 7)).resolves.toHaveProperty('raw');
+      // Its intent named, and no kind (cored 0.15.0, "Naming the kind").
+      expect(calls.find((call) => call.method === 'sign.transaction').params.authorization).toEqual({
+        token: expect.stringMatching(/^[0-9a-f]{64}$/),
+        intent: { id: INTENT.intentId },
+      });
       expect(await reasonOf(present(0, 8))).toBe('mismatch');
       expect(await reasonOf(present(1, 7))).toBe('mismatch');
       expect(await reasonOf(present(0, 7, 'intent-0002'))).toBe('mismatch');
+    });
+  });
+
+  describe('a send names its kind (cored 0.15.0, design 0012 "Naming the kind")', () => {
+    // The sends, each minted as main mints it, with what it signs and the key.
+    const SENDS = [
+      ['wallet-send', () => walletToken('wallet-send', 0, TX), TX, 0],
+      ['executor-send', () => walletToken('executor-send', 1, TX), TX, 1],
+      ['dapp-send', () => pageToken('dapp-send', 0, DAPP_TX), DAPP_TX, 0],
+    ];
+    const lastSigned = () => calls.filter((call) => call.method === 'sign.transaction').at(-1);
+
+    test('each kind signs, named as the kind main minted it as, under its caller', async () => {
+      for (const [kind, mint, tx, index] of SENDS) {
+        const confirmation = await mint();
+        await expect(signSend(confirmation, tx, index)).resolves.toHaveProperty('raw');
+        const { context, params } = lastSigned();
+        expect(params.authorization).toEqual({
+          token: confirmation.token,
+          kind,
+          ...(kind === 'dapp-send' ? { handle: HANDLE } : {}),
+        });
+        expect(context).toEqual(kind === 'dapp-send' ? { caller: 'page', page: PAGE } : { caller: 'shell' });
+      }
+    });
+
+    test('a send presented without its kind is refused and burnt', async () => {
+      for (const [kind, mint, tx, index] of SENDS) {
+        const confirmation = await mint();
+        const { authorization, page } = sc.signingAuthorization(confirmation);
+        const { kind: named, ...kindless } = authorization;
+        expect(named).toBe(kind);
+        const presented = vaultBackend.sign.transaction(account(index), wire(tx), { authorization: kindless, page });
+        expect(await reasonOf(presented)).toBe('mismatch');
+        // Burnt: not even named as its own kind does it sign now.
+        expect(await reasonOf(signSend(confirmation, tx, index))).toBe('unknown_token');
+      }
+    });
+
+    test('a send named as another kind is refused and burnt', async () => {
+      for (const [kind, mint, tx, index] of SENDS) {
+        for (const other of ['wallet-send', 'executor-send', 'dapp-send', 'intent-replace'].filter((k) => k !== kind)) {
+          const confirmation = await mint();
+          const { authorization, page } = sc.signingAuthorization(confirmation);
+          const presented = vaultBackend.sign.transaction(account(index), wire(tx), {
+            authorization: { ...authorization, kind: other },
+            page,
+          });
+          expect(await reasonOf(presented)).toBe('mismatch');
+          expect(await reasonOf(signSend(confirmation, tx, index))).toBe('unknown_token');
+        }
+      }
     });
   });
 
@@ -403,7 +460,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       await expect(signSend(confirmation, DAPP_TX)).resolves.toHaveProperty('raw');
       expect(calls.find((call) => call.method === 'sign.transaction')).toMatchObject({
         context: { caller: 'page', page: PAGE },
-        params: { authorization: { token: confirmation.token, handle: HANDLE } },
+        params: { authorization: { token: confirmation.token, kind: 'dapp-send', handle: HANDLE } },
       });
       expect(await reasonOf(signSend(confirmation, DAPP_TX))).toBe('unknown_token');
     });

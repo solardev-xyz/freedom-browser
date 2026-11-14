@@ -105,10 +105,11 @@
  * later) spend theirs through `approval.spend` (`spendConfirmation`). A
  * presented token is burnt whatever the outcome, as before, and main
  * discards one a request ended without presenting (`discardConfirmation`).
- * The core reads a transaction token's kind from the token, so main keeps
- * the kind it minted each of its own tokens as, and burns one the chrome
- * presents on another kind's route before the core is asked to sign
- * (`confirmationFor`).
+ * A send's token names its kind to `sign.transaction`, which refuses it
+ * under another (`signingAuthorization`; freedom-core design 0012, "Naming
+ * the kind"). Main keeps the kind it minted each of its own tokens as, and
+ * burns one the chrome presents on another kind's route before the core is
+ * asked to sign (`confirmationFor`).
  * `x402-payment` stays main's until the core can spend it (X402-1), and
  * `x402-cap-update`, the panel's decision, until X402-2: both are minted
  * and spent here, in JS, as before.
@@ -148,6 +149,10 @@ const NOT_CONFIRMED = 'SIGNING_NOT_CONFIRMED';
 const PAGE_KINDS = Object.freeze([KINDS.DAPP_SEND, KINDS.SIGN_MESSAGE, KINDS.SIGN_TYPED_DATA, KINDS.SAFE_MESSAGE]);
 const PAGE_KIND_SET = new Set(PAGE_KINDS);
 
+// The sends: a token of one names its kind to `sign.transaction` (design
+// 0012, "Naming the kind"). An intent-replace names its intent instead.
+const SEND_KINDS = new Set([KINDS.WALLET_SEND, KINDS.EXECUTOR_SEND, KINDS.DAPP_SEND]);
+
 /** Whether a confirmation of `kind` for `payload` serves a page's request. */
 function isPageKind(kind, payload) {
   if (PAGE_KIND_SET.has(kind)) return true;
@@ -160,12 +165,12 @@ const HANDLE = /^[0-9a-f]{64}$/;
 const outstanding = new Map(); // token -> { kind, digest, expiresAt }: x402's kinds only
 
 // The kind main asked the core to mint for each token of its own, which the
-// chrome presents back with a request: token -> { kind, expiresAt }. The
-// core reads a `sign.transaction` token's kind from the token itself (a
-// wallet-send's or an executor-send's), so main checks that kind against the
-// route's before the token is presented, as its own check did before APB-1:
-// the wallet's send route never presents an executor-send token, nor the
-// executor's route a wallet-send token. Bounded as the core bounds its
+// chrome presents back with a request: token -> { kind, expiresAt }. Main
+// checks that kind against the route's before the token is presented, as its
+// own check did before APB-1, and the signature names it to the core
+// (`signingAuthorization`): the wallet's send route never presents an
+// executor-send token, nor the executor's route a wallet-send token, and the
+// core refuses one named as another kind. Bounded as the core bounds its
 // tokens; one main no longer knows is refused, so evicting one can't skip
 // the check.
 const minted = new Map();
@@ -948,15 +953,19 @@ async function spendSafeConfirmation(confirmation) {
 
 /**
  * What a signature the core makes presents (design 0012, API): `sign.*`'s
- * `authorization`, `{ token, handle? }` or, for an intent-replace,
- * `{ token, intent: { id } }`, and the PageContext of a page's request,
- * under which it is sent. The core spends the token there.
+ * `authorization`, `{ token, handle? }`; for a send, `{ token, kind,
+ * handle? }`, naming the kind main minted it as (`wallet-send`,
+ * `executor-send` or `dapp-send`), without which `sign.transaction` refuses
+ * it (cored 0.15.0, "Naming the kind"); for an intent-replace, `{ token,
+ * intent: { id } }`. And the PageContext of a page's request, under which
+ * it is sent. The core spends the token there.
  *
  * @param {Confirmation} confirmation
  * @returns {{authorization: object, page: object|null}}
  */
 function signingAuthorization(confirmation) {
   const authorization = { token: confirmation.token };
+  if (SEND_KINDS.has(confirmation.kind)) authorization.kind = confirmation.kind;
   if (confirmation.handle !== undefined) authorization.handle = confirmation.handle;
   if (confirmation.intent) authorization.intent = { id: confirmation.intent.id };
   return { authorization, page: confirmation.page || null };

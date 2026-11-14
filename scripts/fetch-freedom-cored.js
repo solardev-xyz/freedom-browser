@@ -9,15 +9,15 @@ const { createReleaseFetcher } = require('./lib/freedom-core-release');
 // The known-good release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run); never float on `latest`. Override with
 // FREEDOM_CORE_RELEASE_TAG for local testing.
-const PINNED_RELEASE_TAG = 'cored-v0.14.0';
+const PINNED_RELEASE_TAG = 'cored-v0.15.0';
 // In-repo trust root: the sha256 of the pinned release's SHA256SUMS asset
 // (the freedom-core release workflow prints it). Without it, a compromised
 // release could swap binaries and checksums together. Update with the tag.
-// cored-v0.14.0: published as an immutable release (run 43509206058, from
-// freedom-core 6e9cdf68); this digest matches the one its publish job
+// cored-v0.15.0: published as an immutable release (run 43547607239, from
+// freedom-core 55a40dca); this digest matches the one its publish job
 // printed and the release API's asset digest, and was re-checked against the
 // downloaded assets (every archive verified against it).
-const PINNED_SHA256SUMS_DIGEST = '91d16b4a052c406a5096d501b91577c0fb06fccdfc5d3e95f9800f1974ed6374';
+const PINNED_SHA256SUMS_DIGEST = '6676822e7710ef2b3e76c2fe85360fc518938d52752b1c1b02c03c62f69e0c15';
 
 // freedom-core tags the core's releases `cored-vX.Y.Z` from 0.6.0 on (its
 // service binaries get tags of their own, `ipfsd-v*` and `radicled-v*`), and

@@ -13,6 +13,8 @@
  *   - `sign.*` spends a page's `dapp-send`, `sign-message` and
  *     `sign-typed-data` under `page`, and the wallet's `wallet-send`,
  *     `executor-send` and (with its intent) `intent-replace` under `shell`;
+ *     a send's token names its kind (`authorization.kind`), and one named
+ *     as none, or as another, is refused (cored 0.15.0);
  *   - a typed-data token keeps the data's EIP-712 hash, which the signature's
  *     `expected_hash` must equal;
  *   - a site's standing rule answers `approval.check` and a `sign.*` under
@@ -197,9 +199,12 @@ function simulatedApprovals() {
     if (method === 'sign.transaction') {
       take(token, minter, (entry) => {
         if (intent) {
-          if (entry.kind !== 'intent-replace' || page) return null;
+          if (entry.kind !== 'intent-replace' || page || authorization.kind !== undefined) return null;
           return { account, payload: { intent_id: intent.id, sender: entry.sender, tx: request.tx }, page: null };
         }
+        // A send's token names the kind it was minted as (design 0012,
+        // "Naming the kind").
+        if (authorization.kind !== entry.kind) return null;
         const fits = page ? entry.kind === 'dapp-send' : entry.kind === 'wallet-send' || entry.kind === 'executor-send';
         return fits ? { account, payload: { tx: request.tx }, page: bound } : null;
       });
