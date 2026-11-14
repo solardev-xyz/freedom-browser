@@ -415,6 +415,14 @@ describe('collectOwnerSignature', () => {
     typedData = built.typedData;
   });
 
+  test("a vault owner's signer carries the Safe approval; none without one", async () => {
+    const approval = { id: 'b2'.repeat(16), page: { origin: 'https://app.example', frame: 1, navigation: 2 } };
+    await collectOwnerSignature({ typedData, ownerIndex: 0, approval });
+    expect(mockGetSigner).toHaveBeenLastCalledWith(0, { safe: approval });
+    await collectOwnerSignature({ typedData, ownerIndex: 0 });
+    expect(mockGetSigner).toHaveBeenLastCalledWith(0, {});
+  });
+
   test('returns a recover-verified signature for the owner', async () => {
     const signature = await collectOwnerSignature({ typedData, ownerIndex: 2 });
     expect(signature.signer).toBe(OWNERS[1]);
@@ -430,7 +438,7 @@ describe('collectOwnerSignature', () => {
     await collectOwnerSignature({ typedData, ownerIndex: 2, beforeSign });
     expect(mockGetSigner).toHaveBeenLastCalledWith(2, { beforeSign });
     await collectOwnerSignature({ typedData, ownerIndex: 2 });
-    expect(mockGetSigner).toHaveBeenLastCalledWith(2);
+    expect(mockGetSigner).toHaveBeenLastCalledWith(2, {});
   });
 
   test('rejects a signature that does not recover to the owner address', async () => {
@@ -498,6 +506,9 @@ describe('collectOwnerSignature', () => {
 });
 
 describe('execTransaction', () => {
+  // The Safe approval main holds for the SafeTx (design 0012, APB-1c): the
+  // wallet's, which the executor's signature presents under `shell`.
+  const WALLET_APPROVAL = Object.freeze({ id: 'a1'.repeat(16), page: null });
   const EXEC_INTERFACE = new Interface([
     'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
   ]);
@@ -529,6 +540,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+    approval: WALLET_APPROVAL,
     });
 
     expect(result.hash).toBe('0x' + 'aa'.repeat(32));
@@ -569,6 +581,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+      approval: WALLET_APPROVAL,
       record: {
         kind: 'safe-send',
         fromAddress: built.safeAddress,
@@ -617,6 +630,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+      approval: WALLET_APPROVAL,
       record: { kind: 'safe-send', origin: 'https://swap.example', metadata: {} },
     });
     expect(committed).toEqual(expect.any(Function));
@@ -633,6 +647,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+    approval: WALLET_APPROVAL,
     });
     const [, , options] = mockSignAndSendTransaction.mock.calls[0];
     expect(options).toEqual({ intentKey: `safe-exec:100:${built.safeTxHash.toLowerCase()}`, guardCommit: null });
@@ -650,6 +665,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+      approval: WALLET_APPROVAL,
       record: { kind: 'safe-send', fromAddress: built.safeAddress, origin: 'https://app.example' },
       guardCommit,
     });
@@ -660,6 +676,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+      approval: WALLET_APPROVAL,
       guardCommit,
     });
     expect(mockSignAndSendTransaction.mock.calls.at(-1)[2]).toMatchObject({ guardCommit });
@@ -674,6 +691,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+    approval: WALLET_APPROVAL,
     });
     expect(mockEstimateGas).not.toHaveBeenCalled();
     expect(mockGetGasPrices).not.toHaveBeenCalled();
@@ -696,6 +714,7 @@ describe('execTransaction', () => {
       safeTxData: built.safeTxData,
       signatures,
       executorIndex: 0,
+    approval: WALLET_APPROVAL,
     });
     const [params] = mockSignAndSendTransaction.mock.calls[0];
     expect(params.gasPrice).toBe('5000000000');
@@ -771,8 +790,11 @@ describe("the fee check on the executor's fee", () => {
       await collectOwnerSignature({ typedData: built.typedData, ownerIndex: 0 }),
       await collectOwnerSignature({ typedData: built.typedData, ownerIndex: 2 }),
     ];
+    // The wallet's Safe approval for it, open in the (simulated) core.
+    const approval = { id: mockCore.approvals.openSafeApproval(), page: null };
     return {
       built,
+      approval,
       execute: (options = {}) =>
         execTransaction({
           chainId: 100,
@@ -780,6 +802,7 @@ describe("the fee check on the executor's fee", () => {
           safeTxData: built.safeTxData,
           signatures,
           executorIndex: 0,
+          approval,
           ...extra,
           ...options,
         }),
@@ -836,6 +859,55 @@ describe("the fee check on the executor's fee", () => {
       maxFeePerGas: '2000000000',
       maxPriorityFeePerGas: '1000000000',
     });
+  });
+
+  // Design 0012, APB-1c: the executor presents the SafeTx's Safe approval
+  // while the fee check allows it, or the 'executor-send' token the user
+  // confirmed; never neither.
+  test("the executor presents the SafeTx's Safe approval, which its signature ends", async () => {
+    const { execute, approval } = await signedExecution();
+    await execute();
+    expect(mockGetSigner).toHaveBeenCalledWith(0, { safe: approval });
+    const signed = mockCore.approvals.calls.filter((call) => call.method === 'sign.transaction');
+    expect(signed.at(-1)).toMatchObject({ params: { authorization: { safe: approval.id } }, page: null });
+    expect(mockCore.approvals.isSafeApprovalOpen(approval.id)).toBe(false);
+  });
+
+  test('with no Safe approval held, the fee is asked as an executor-send, nothing signed', async () => {
+    const { execute } = await signedExecution();
+    const { offer } = await stopped(() => execute({ approval: null }));
+    expect(offer).toMatchObject({ executorIndex: 0, value: '0', gasLimit: '150000' });
+    // Confirmed: the executor-send token signs, the approval not presented.
+    const { executorIndex, ...payload } = offer;
+    const { token } = await issueConfirmation('executor-send', executorIndex, payload);
+    await execute({
+      approval: null,
+      feeConfirmation: {
+        confirmation: token,
+        gasLimit: offer.gasLimit,
+        fees: { maxFeePerGas: offer.maxFeePerGas, maxPriorityFeePerGas: offer.maxPriorityFeePerGas },
+      },
+    });
+    expect(signedCount).toBe(1);
+  });
+
+  test("the core's own fee check, or an approval it no longer knows, asks the fee; another refusal is the error", async () => {
+    for (const reason of ['fee_check', 'unknown_token']) {
+      mockSignAndSendTransaction.mockClear();
+      const { execute, approval } = await signedExecution();
+      mockCore.approvals.setExecutorRefusal(reason === 'fee_check' ? 'fee_check' : null);
+      if (reason === 'unknown_token') await mockCore.approvals.approval.end(approval.id);
+      const error = await execute().then(
+        () => null,
+        (err) => err
+      );
+      expect(error).toMatchObject({ code: FEE_CHECK_NEEDS_CONFIRMATION, offer: expect.objectContaining({ executorIndex: 0 }) });
+      expect(signedCount).toBe(0);
+    }
+    mockCore.approvals.setExecutorRefusal(null);
+    const { execute } = await signedExecution();
+    const other = { id: mockCore.approvals.openSafeApproval({ page: { origin: 'https://app.example', frame: 1, navigation: 1 } }), page: null };
+    await expect(execute({ approval: other })).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'mismatch' });
   });
 
   test('the fee the user confirmed is signed exactly, without a new quote or check', async () => {

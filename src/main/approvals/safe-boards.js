@@ -52,7 +52,14 @@
  * it was made for, which waits (parked) as after Reject.
  *
  * A board's decision mints nothing (`page-requests.js`): the Safe's request
- * was approved, and its one token minted, before the board opened.
+ * was approved, and its one token minted, before the board opened. Its
+ * Safe approval (freedom-core design 0012, APB-1c) is what each owner's
+ * signature presents. A send's owner with none held (main restarted since,
+ * or the approval ended: SAFE_APPROVAL_NEEDED) asks for the SafeTx to be
+ * confirmed again, as the wallet's own: `wallet.safe_send` in the panel
+ * (`wallet-approvals.js`), whose token is spent for a new approval, and
+ * the owner signs with it. Its executor with none asks for its fee, as an
+ * 'executor-send' token (`wallet.executor_send`).
  */
 
 const BOARD_KINDS = Object.freeze({
@@ -73,6 +80,8 @@ const FEE_CHECK_NEEDS_CONFIRMATION = 'FEE_CHECK_NEEDS_CONFIRMATION';
 const SAFE_NEEDS_FUNDS = 'SAFE_NEEDS_FUNDS';
 // Another SafeTx (or none) pending than the one the step names.
 const SAFE_DISCARDED = 'SAFE_DISCARDED';
+// No Safe approval held for the SafeTx: it is confirmed again first.
+const SAFE_APPROVAL_NEEDED = 'SAFE_APPROVAL_NEEDED';
 // The most of main's own error message a view carries.
 const MAX_MESSAGE = 300;
 
@@ -148,6 +157,9 @@ function defaultWatchWindow(windowId, onClosed) {
  *   a window's own vault unlock (`page-requests.js`).
  * @param {(windowId: number, offer: object) => Promise<object|null>} deps.confirmExecutorFee
  *   the executor's fee asked in the panel: the fee confirmation, or null.
+ * @param {(windowId: number, safeIndex: number, call: object) => Promise<string|null>} [deps.confirmSafeSend]
+ *   a pending SafeTx confirmed again in the panel, as the wallet's own: the
+ *   'safe-send' token, or null.
  * @param {(tx: object) => object|null} [deps.transferOf]
  * @param {(windowId: number, onClosed: Function) => (Function|null)} [deps.watchWindow]
  *   a window's close heard, until the stop it returns; null for a window closed already.
@@ -162,6 +174,7 @@ function createSafeBoards({
   walletPrompt,
   walletUnlock,
   confirmExecutorFee,
+  confirmSafeSend: confirmSafeAgain = async () => null,
   transferOf = () => null,
   watchWindow = defaultWatchWindow,
 }) {
@@ -272,7 +285,10 @@ function createSafeBoards({
    * one pending as it opens. `signal`, aborted, ends the board after the
    * wait it is in (`closed`).
    */
-  async function runBoard(board, { safeIndex, safeTxHash = null, token = null, ask, unlock, confirmFee, signal = null }) {
+  async function runBoard(
+    board,
+    { safeIndex, safeTxHash = null, token = null, ask, unlock, confirmFee, confirmSafe = async () => null, signal = null }
+  ) {
     // The SafeTx a send's board shows and acts on, once known.
     let bound = board === 'message' || typeof safeTxHash !== 'string' ? null : safeTxHash;
     // A send's state and the SafeTx it shows, read in one run from the
@@ -291,7 +307,13 @@ function createSafeBoards({
             state: () => messages.state(safeIndex, token),
             sign: (owner) => messages.sign(safeIndex, owner, token),
           }
-        : { state: sendState, sign: (owner) => sends.sign(safeIndex, owner, bound) };
+        : {
+            state: sendState,
+            sign: (owner, confirmation) =>
+              confirmation
+                ? sends.signConfirmed(safeIndex, owner, bound, confirmation)
+                : sends.sign(safeIndex, owner, bound),
+          };
     // After each wait: the window closed (the wallet's board), or the
     // board's SafeTx no longer the one pending, ends the board.
     const ended = () => {
@@ -326,13 +348,31 @@ function createSafeBoards({
 
     async function signOwner(owner) {
       notes.delete(owner);
+      let confirmation = null;
+      let confirmed = false;
       for (let attempt = 0; ; attempt += 1) {
         try {
-          await api.sign(owner);
+          await api.sign(owner, confirmation);
           return;
         } catch (err) {
+          confirmation = null;
           // Not the board's SafeTx: the next turn ends the board.
           if (err?.code === SAFE_DISCARDED) return;
+          if (err?.code === SAFE_APPROVAL_NEEDED && board !== 'message' && !confirmed) {
+            // The SafeTx confirmed again, as the wallet's own, once.
+            confirmed = true;
+            releasePrevious();
+            const call = sends.call(safeIndex, bound);
+            try {
+              confirmation = call ? await confirmSafe(call) : null;
+            } catch {
+              confirmation = null;
+            }
+            if (ended()) return;
+            if (confirmation) continue;
+            notes.set(owner, { note: 'failed', message: messageOf(err) });
+            return;
+          }
           if (attempt === 0 && isVaultLocked(err)) {
             releasePrevious();
             if (await unlock('sign')) {
@@ -461,7 +501,7 @@ function createSafeBoards({
           }
           confirming = false;
           try {
-            sends.cancel(safeIndex, bound);
+            await sends.cancel(safeIndex, bound);
           } catch (err) {
             if (err?.code === SAFE_DISCARDED) return { outcome: 'gone' };
             error = { code: 'failed', message: messageOf(err) };
@@ -511,6 +551,7 @@ function createSafeBoards({
       ask: ({ view, choices, released }) => context.prompt({ kind: BOARD_KINDS.SEND, view, choices, released }),
       unlock: unlockWith((spec) => context.prompt(spec)),
       confirmFee: (offer) => confirmExecutorFee(context.requester?.window, offer),
+      confirmSafe: (call) => confirmSafeAgain(context.requester?.window, safeIndex, call),
     });
   }
 
@@ -547,6 +588,7 @@ function createSafeBoards({
           }
         },
         confirmFee: (offer) => confirmExecutorFee(windowId, offer),
+        confirmSafe: (call) => confirmSafeAgain(windowId, safeIndex, call),
       });
     } finally {
       walletBoards.delete(safeIndex);
@@ -587,8 +629,25 @@ async function confirmExecutorFee(windowId, offer) {
   return { confirmation: outcome.token, gasLimit: payload.gasLimit, fees };
 }
 
-let shared = null;
+/**
+ * A pending SafeTx confirmed again, as the wallet's own (freedom-core design
+ * 0012: "an owner that hasn't signed needs a new safe-send token from the
+ * board"), in window `windowId`'s panel as `wallet.safe_send`
+ * (`wallet-approvals.js`), its token minted on the user's approval there:
+ * main's own call of the SafeTx (`{ tx: { to, value, data }, chainId }`),
+ * never the chrome's. Resolves with the token, or null.
+ */
+async function confirmSafeSend(windowId, safeIndex, call) {
+  const approvals = require('./wallet-approvals').getWalletApprovals();
+  if (!approvals || !Number.isInteger(windowId) || !isPlainObject(call)) return null;
+  const signing = require('../wallet/signing-confirmation');
+  const outcome = await approvals.confirm({ windowId, kind: signing.KINDS.SAFE_SEND, index: safeIndex, payload: call }, () =>
+    signing.issueConfirmation(signing.KINDS.SAFE_SEND, safeIndex, call)
+  );
+  return outcome?.approved && typeof outcome.token === 'string' ? outcome.token : null;
+}
 
+let shared = null;
 /** The app's one instance, or null while the approvals document is off. */
 function getSafeBoards() {
   const { isApprovalsDocumentEnabled } = require('./approvals-document');
@@ -610,6 +669,21 @@ function getSafeBoards() {
         sign: (safeIndex, owner, safeTxHash) => transactions().signSafePending(safeIndex, owner, { safeTxHash }),
         execute: (safeIndex, options) => transactions().executeSafePending(safeIndex, options),
         cancel: (safeIndex, safeTxHash) => transactions().cancelSafeSend(safeIndex, { safeTxHash }),
+        // The SafeTx's call, for confirming it again, and an owner's
+        // signature with the new confirmation's Safe approval.
+        call: (safeIndex, safeTxHash) => transactions().pendingCall(safeIndex, safeTxHash),
+        signConfirmed: async (safeIndex, owner, safeTxHash, token) => {
+          const signing = require('../wallet/signing-confirmation');
+          const call = transactions().pendingCall(safeIndex, safeTxHash);
+          if (!call) {
+            signing.discardConfirmation(token);
+            const { codedError } = require('../wallet/safe/errors');
+            throw codedError('This transaction was discarded or replaced', SAFE_DISCARDED);
+          }
+          const confirmation = signing.confirmationFor(token, signing.KINDS.SAFE_SEND, safeIndex, call);
+          const { approval } = await signing.spendSafeConfirmation(confirmation);
+          return transactions().signSafePending(safeIndex, owner, { safeTxHash, approval });
+        },
         tx: (safeIndex, safeTxHash) => {
           const pending = require('../wallet/safe/pending-store').getPending(safeIndex);
           return pending && pending.safeTxHash === safeTxHash ? (pending.safeTxData ?? null) : null;
@@ -624,6 +698,7 @@ function getSafeBoards() {
       walletPrompt: (windowId, spec) => pageRequests().walletPrompt(windowId, spec),
       walletUnlock: (windowId, view) => pageRequests().walletUnlock(windowId, view),
       confirmExecutorFee,
+      confirmSafeSend,
       transferOf: (tx) => require('./wallet-approvals').transferOf(tx),
     });
   }
@@ -637,5 +712,6 @@ module.exports = {
   boardChoices,
   createSafeBoards,
   confirmExecutorFee,
+  confirmSafeSend,
   getSafeBoards,
 };

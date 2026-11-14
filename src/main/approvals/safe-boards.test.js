@@ -45,6 +45,9 @@ function backends({ threshold = 2 } = {}) {
     pending: true,
     superseded: false,
     signFails: new Map(), // owner -> error, once
+    safeConfirms: [], // the SafeTx confirmed again: [windowId, safeIndex, call]
+    safeConfirmAnswer: true,
+    confirmedWith: [], // [owner, token]: a signature with a new confirmation
     executeFails: [], // errors, in turn
     executed: [],
     cancelled: [],
@@ -109,10 +112,18 @@ function backends({ threshold = 2 } = {}) {
       state.pending = false;
       return out;
     }),
-    cancel: jest.fn((safeIndex, hash) => {
+    cancel: jest.fn(async (safeIndex, hash) => {
       named(hash);
       state.cancelled.push(state.hash);
       state.pending = false;
+    }),
+    // The SafeTx's call, and an owner's signature with a new confirmation's
+    // approval (design 0012, APB-1c).
+    call: jest.fn((safeIndex, hash) => (state.pending && hash === state.hash ? { tx: { to: SAFE, value: '0', data: '0x' }, chainId: 100 } : null)),
+    signConfirmed: jest.fn(async (safeIndex, owner, hash, token) => {
+      state.confirmedWith.push([owner, token]);
+      state.signFails.delete(owner);
+      return sign(owner, hash);
     }),
     tx: jest.fn((safeIndex, hash) => {
       if (!state.pending || (hash !== undefined && hash !== state.hash)) return null;
@@ -216,6 +227,10 @@ function setup(options = {}) {
       if (state.unlockAnswer === false) return { approve: false, choices: {} };
       state.unlocked = true;
       return { approve: true, choices: {} };
+    }),
+    confirmSafeSend: jest.fn(async (windowId, safeIndex, call) => {
+      state.safeConfirms.push([windowId, safeIndex, call]);
+      return state.safeConfirmAnswer === false ? null : 'safe-send-token';
     }),
     confirmExecutorFee: jest.fn(async (windowId, offer) => {
       fees.push([windowId, offer]);
@@ -495,6 +510,37 @@ describe('a Safe send\'s board, a page\'s or the wallet\'s own', () => {
 
 // Codex round 1 on #1214, finding 1: a send board's decision acts only on
 // the SafeTx it showed.
+// freedom-core design 0012, APB-1c: an owner with no Safe approval held asks
+// for the SafeTx to be confirmed again, as the wallet's own, in the panel.
+describe("a send board's owner with no Safe approval held", () => {
+  test('the SafeTx confirmed again in the window, then the owner signs with that confirmation', async () => {
+    const env = setup();
+    env.state.signFails.set(5, coded('confirm again', 'SAFE_APPROVAL_NEEDED'));
+    const run = env.boards.openWalletBoard(WINDOW, SAFE_INDEX);
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    expect((await run).outcome).toBe('executed');
+    expect(env.state.safeConfirms).toEqual([[WINDOW, SAFE_INDEX, { tx: { to: SAFE, value: '0', data: '0x' }, chainId: 100 }]]);
+    expect(env.state.confirmedWith).toEqual([[5, 'safe-send-token']]);
+  });
+
+  test('not confirmed: a note on the row, nothing signed', async () => {
+    const env = setup();
+    env.state.safeConfirmAnswer = false;
+    env.state.signFails.set(5, coded('This request needs your confirmation again', 'SAFE_APPROVAL_NEEDED'));
+    const run = env.boards.runSendBoard(env.context, { safeIndex: SAFE_INDEX });
+    await flush();
+    await env.panel.decide(true, { action: 'sign', owner: 5 });
+    await flush();
+    expect(env.state.confirmedWith).toEqual([]);
+    expect(env.panel.last().view.notes).toEqual([
+      { owner: 5, note: 'failed', message: 'This request needs your confirmation again' },
+    ]);
+    await env.panel.decide(false);
+    expect((await run).outcome).toBe('parked');
+  });
+});
+
 describe('a send board is bound to the SafeTx it shows', () => {
   test('A discarded and B started while A shows: a stale owner choice signs nothing, and B is never executed or shown', async () => {
     const env = setup();

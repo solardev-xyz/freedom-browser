@@ -185,7 +185,9 @@ function backends() {
     turns: [],
     paymentWaiting: false,
     turnBusy: false,
-    safe: { started: [], listeners: new Set(), guards: new Map() },
+    // `reserved`: the Safes whose send slot a send holds (reserveSafeSend);
+    // `startHold`: a deferred the next start waits on.
+    safe: { started: [], listeners: new Set(), guards: new Map(), reserved: new Set(), startHold: null },
   };
   const signer = { signTransaction: jest.fn() };
   const phoneSigner = { sendTransaction: jest.fn() };
@@ -299,7 +301,20 @@ function backends() {
         return () => {};
       }),
       sitePaymentWaiting: jest.fn(async () => state.paymentWaiting),
-      startSafeSend: jest.fn(async (options) => {
+      // As safe-transactions reserves a Safe's send slot: one per Safe,
+      // refused while a SafeTx is pending, until its release.
+      reserveSafeSend: jest.fn((safeIndex) => {
+        if (state.safe.pendingExists || state.safe.reserved.has(safeIndex)) {
+          throw Object.assign(new Error('A transaction is already waiting for signatures'), { code: 'SAFE_PENDING_EXISTS' });
+        }
+        state.safe.reserved.add(safeIndex);
+        return { safeIndex, release: () => state.safe.reserved.delete(safeIndex) };
+      }),
+      startSafeSend: jest.fn(async ({ reservation, ...options }) => {
+        // Started only under its Safe's reservation, still held.
+        expect(reservation?.safeIndex).toBe(options.safeIndex);
+        expect(state.safe.reserved.has(options.safeIndex)).toBe(true);
+        if (state.safe.startHold) await state.safe.startHold.promise;
         state.safe.started.push(options);
         return { safeIndex: options.safeIndex, safeTxHash: SAFE_TX_HASH, threshold: 2, collected: 1, status: 'awaiting' };
       }),
@@ -944,7 +959,10 @@ describe("main's issuer: a dapp-send or a site's safe-send token only for its ha
       /differs/
     );
     const again = await mint({ ...safeTx, origin: KEY_A }, 'c'.repeat(64), 'safe-send', SAFE_INDEX);
-    await expect(confirmations.spendSafeConfirmation(again)).resolves.toEqual({ bound: true });
+    await expect(confirmations.spendSafeConfirmation(again)).resolves.toEqual({
+      bound: true,
+      approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE_A },
+    });
     expect(mockApprovals.calls.filter((call) => call.method === 'approval.spend').at(-1).page).toEqual(PAGE_A);
   });
 
@@ -1625,6 +1643,58 @@ describe('a rule revoked, custody entered or fee evidence refreshed while the se
 });
 
 describe("a Safe's send: a safe-send token for the site, and its board as a second prompt", () => {
+  // freedom-core design 0012, APB-1c: one pending SafeTx per Safe, refused
+  // before its token is spent, since the core's new approval for a Safe
+  // ends its pending one's.
+  test('a Safe with a SafeTx pending: the token is burnt, not spent, and no SafeTx starts', async () => {
+    const env = setup();
+    env.connect(KEY_A, SAFE_INDEX);
+    env.state.safe.pendingExists = true;
+    const answer = env.tab().send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    const out = await answer;
+    expect(out.error).toBeDefined();
+    expect(env.state.safe.started).toEqual([]);
+    expect(mockApprovals.calls.map(({ method }) => method)).toEqual(['approval.issue', 'approval.discard']);
+  });
+
+  // Review of #1245, round 1: the Safe's SafeTx is reserved before the
+  // token is spent and held until it has started, so a second send for the
+  // Safe meanwhile is refused before it spends its own token (whose spend
+  // would end the first one's Safe approval in the core).
+  test('two sends for one Safe at once: one spends, the other is refused with its token burnt, not spent', async () => {
+    const env = setup();
+    env.connect(KEY_A, SAFE_INDEX);
+    let release;
+    env.state.safe.startHold = { promise: new Promise((resolve) => (release = resolve)) };
+    const first = env.tab().send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    expect(env.state.safe.reserved.has(SAFE_INDEX)).toBe(true);
+    const second = env.tab().send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    const refused = await second;
+    expect(refused.error).toBeDefined();
+    const page_ = expect.objectContaining({ origin: KEY_A });
+    expect(mockApprovals.calls.map(({ method, page: under }) => [method, under])).toEqual([
+      ['approval.issue', page_],
+      ['approval.spend', page_],
+      ['approval.issue', page_],
+      ['approval.discard', null],
+    ]);
+    release();
+    await flush();
+    expect(env.state.safe.started).toHaveLength(1);
+    expect(env.state.safe.reserved.has(SAFE_INDEX)).toBe(false);
+    // The first one's Safe approval is still live in the core.
+    expect(mockApprovals.isSafeApprovalOpen(env.state.safe.started[0].approval.id)).toBe(true);
+    env.settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+    expect(await first).toEqual(REJECTED);
+  });
+
   test("the SafeTx starts for the requester's key, and the page gets the execution's hash", async () => {
     const env = setup();
     env.connect(KEY_A, SAFE_INDEX);
@@ -1644,18 +1714,21 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
         tx: { to: CONTRACT, value: '0', data: DATA },
         display: { site: KEY_A, asset: null, toAddress: CONTRACT, amount: '0', label: 'a contract call to 0x8335…2913' },
         chainId: 100,
+        // The page's Safe approval (design 0012, APB-1c), with the request's
+        // PageContext: its owners and its executor present it under `page`.
+        approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: expect.objectContaining({ origin: KEY_A, agent: false }) },
       },
     ]);
     expect(env.minted()).toEqual([expect.objectContaining({ token: 'safe-send' })]);
     // Minted and spent through the core under the page (design 0012); the
-    // Safe approval it gave ended until APB-1c carries it to the owners.
+    // Safe approval it gave is held for the SafeTx, not ended.
     const page_ = expect.objectContaining({ origin: KEY_A, agent: false });
     expect(mockApprovals.calls.map(({ method, page: under }) => [method, under])).toEqual([
       ['approval.issue', page_],
       ['approval.spend', page_],
-      ['approval.end', page_],
       ['approval.discard', null],
     ]);
+    expect(env.state.safe.started[0].approval.page).toEqual(mockApprovals.calls[1].page);
     expect(mockApprovals.calls[0].params).toMatchObject({
       kind: 'safe-send',
       account: SAFE_INDEX,

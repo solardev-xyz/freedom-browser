@@ -40,7 +40,12 @@ const {
   typedDataViewOptions,
   assertBoundedTypeGraph,
 } = require('./signing-utils');
-const { signingAuthorization, spendConfirmation, confirmationError } = require('./signing-confirmation');
+const {
+  signingAuthorization,
+  safeAuthorization,
+  spendConfirmation,
+  confirmationError,
+} = require('./signing-confirmation');
 
 /**
  * @typedef {Object} Signer
@@ -66,11 +71,14 @@ const { signingAuthorization, spendConfirmation, confirmationError } = require('
  * 0012, API): the confirmation's `authorization`, which the core checks and
  * spends before any key is derived; for a page's request a standing rule
  * answers, `{ standing: { paused? } }`, which the core judges against the
- * site's rule; and a page's PageContext, under which a page's request is
- * sent. None from main itself.
+ * site's rule; for a Safe's vault owner or its executor, the Safe approval
+ * (`{ safe }`) under the caller it was recorded for; and a page's
+ * PageContext, under which a page's request is sent. None from main itself.
  */
-function signOptions({ confirmation = null, page = null, standing = null } = {}) {
+function signOptions({ confirmation = null, page = null, standing = null, safe = null } = {}) {
   if (confirmation) return signingAuthorization(confirmation);
+  // A Safe's owner or executor: the Safe approval, under its own caller.
+  if (safe) return safeAuthorization(safe);
   if (page && standing) return { authorization: { standing: { ...standing } }, page };
   return { page };
 }
@@ -228,12 +236,19 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * its own error.
  *
  * @param {number} walletIndex
+ * A Safe's owner or executor carries the Safe approval (`safe`: `{ id,
+ * page }`, `safe/safe-approvals.js`): a vault signature presents it to the
+ * core (design 0012, APB-1c). A device owner signs as before: the core
+ * doesn't make its signature, and has no check of a Safe approval for it
+ * (advised until 0016).
+ *
  * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
  *   chainId?: number, onRule?: (rule: object|null) => void,
- *   beforeSign?: () => Promise<void>}} [authorized]
+ *   beforeSign?: () => Promise<void>, safe?: object}} [authorized]
  *   the confirmation (`signing-confirmation.js`), or a page's PageContext
  *   with, for a rule's answer, `standing` and the page's chain (typed
- *   data's view); `onRule` hears a vault send's `rule` reply
+ *   data's view); `onRule` hears a vault send's `rule` reply; or a Safe
+ *   approval
  * @returns {Signer}
  */
 function getSigner(walletIndex, authorized = {}) {
