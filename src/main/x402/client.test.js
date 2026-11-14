@@ -174,3 +174,16 @@ describe('createX402Client', () => {
     expect(recovered).toBe(TEST_ADDRESS);
   });
 });
+
+test('the signing boundary revalidates custody after client construction, before private-key signing', async () => {
+  const beforeSign = jest.fn(() => { throw Object.assign(new Error('custody changed'), { code: 'X402_CUSTODY_CHANGED' }); });
+  const client = await createX402Client(0, { beforeSign });
+  mockIdentity.exportPrivateKey.mockClear();
+  await expect(client.createPaymentPayload({ x402Version: 2, resource: { url: 'https://fixture.test/' }, accepts: [{
+    scheme: 'exact', network: 'eip155:8453', amount: '10000',
+    asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+    maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' },
+  }] })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+  expect(beforeSign).toHaveBeenCalledTimes(1);
+  expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+});

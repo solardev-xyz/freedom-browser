@@ -47,11 +47,11 @@ const V1_NETWORKS = ['base', 'ethereum'];
  * @param {number} [walletIndex=0]
  * @returns {Promise<import('@x402/core/client').x402Client>}
  */
-async function createX402Client(walletIndex = 0) {
+async function createX402Client(walletIndex = 0, { beforeSign } = {}) {
   const walletSigner = getSigner(walletIndex);
   const signer = {
     address: await walletSigner.getAddress(),
-    signTypedData: walletSigner.signTypedData,
+    signTypedData: (...args) => { beforeSign?.(); return walletSigner.signTypedData(...args); },
   };
 
   const client = new x402Client();

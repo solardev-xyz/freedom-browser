@@ -44,7 +44,7 @@ const { KINDS: PAYMENT_KINDS, STATUSES: PAYMENT_STATUSES } = paymentHistory;
 const { findCoveringPermission } = require('./payment-utils');
 const { tryConsume } = require('./permissions');
 const { isVaultLockedError } = require('../wallet/vault-errors');
-const { isUserPageId } = require('../wallet/agent-tab-custody');
+const { userPageCustodyVersion, hasUserPageCustodyVersion } = require('../wallet/agent-tab-custody');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 // Header names used on the wire. V2 uses the un-prefixed names; V1 (Coinbase
@@ -119,22 +119,12 @@ const awaitingResponse = new Map();
 // capturedAt }.
 const requestContext = new Map();
 const REQUEST_CONTEXT_TTL_MS = 60_000;
+const MAX_REQUEST_CONTEXT = 10000;
 // Amortize the lazy TTL sweep so a busy session doesn't pay an O(n)
 // scan on every captured request. One sweep per second is plenty given
 // the TTL is 60s.
 const REQUEST_CONTEXT_SWEEP_INTERVAL_MS = 1000;
 let requestContextLastSweepAt = 0;
-
-// Resource types where the browser issues high-volume requests that
-// will never be x402-paywalled (image galleries, CSS, web fonts). The
-// capture handler runs on every request, so skipping these cuts the
-// per-request cost and bounds `requestContext`'s working set.
-const X402_IRRELEVANT_RESOURCE_TYPES = new Set([
-  'image',
-  'stylesheet',
-  'font',
-  'script',
-]);
 
 // "Auto-pay tried to sign but the vault was locked; the user will unlock
 // via the sidebar and the dedicated x402:resume-unlock IPC will fire to
@@ -286,10 +276,6 @@ function clearAllRequestContext() {
 // (Accept, Origin, custom headers) when a real endpoint demands it.
 function captureRequestContextHandler(details) {
   if (typeof details?.id !== 'number') return null;
-  // Skip resource types that never receive x402 paywalls. Galleries,
-  // CSS-heavy SPAs, and font-laden sites would otherwise flood the
-  // map for no benefit.
-  if (X402_IRRELEVANT_RESOURCE_TYPES.has(details.resourceType)) return null;
   const now = Date.now();
   // Amortized lazy TTL sweep. The lifecycle handlers do the bulk of
   // the cleanup; this scan is a backstop for events Electron drops
@@ -302,11 +288,15 @@ function captureRequestContextHandler(details) {
       }
     }
   }
+  // Any resource can be paywalled. Bound the cache rather than guessing
+  // from MIME/resource type; evicted requests fail closed to approval.
+  if (!requestContext.has(details.id) && requestContext.size >= MAX_REQUEST_CONTEXT) requestContext.delete(requestContext.keys().next().value);
   requestContext.set(details.id, {
     webContentsId: details.webContentsId,
     method: details.method ?? 'GET',
     range: getHeaderValue(details.requestHeaders, 'Range'),
     capturedAt: now,
+    custodyVersion: userPageCustodyVersion(details.webContentsId),
   });
   return null;
 }
@@ -756,6 +746,24 @@ function requestVaultUnlockForAutoPay(webContentsId, detection, url) {
   notifyVaultUnlockNeeded(webContentsId, url);
 }
 
+// A held main-frame auto-payment whose custody changed becomes an ordinary
+// exact approval. Never overwrite a newer charge's card on the same tab.
+function requestManualApprovalForAutoPay(webContentsId, detection) {
+  const current = getDetectedPayment(webContentsId);
+  if (!current || current.detectionId !== detection.detectionId) return false;
+  const guest = webContents.fromId(webContentsId);
+  if (!guest || guest.isDestroyed?.() || guest.getURL?.() !== detection.url) {
+    clearDetectedPayment(webContentsId);
+    return false;
+  }
+  const detectionId = mintDetectionId({});
+  abortPendingApprovalsForTab(webContentsId, new Error('superseded by manual approval'));
+  detectedPayments.set(webContentsId, { ...detection, detectionId, authorizedBy: AUTHORIZED_BY.MANUAL, detectedAt: Date.now() });
+  sendToHost(webContentsId, 'x402:approval-needed', { webContentsId, detectionId,
+    url: detection.url, requirements: detection.requirements, resourceType: detection.resourceType });
+  return true;
+}
+
 /**
  * Detect 402+PAYMENT-REQUIRED in a response and either auto-pay (cap
  * covers) or surface an approval card. Async so the cap-covered
@@ -767,7 +775,7 @@ function requestVaultUnlockForAutoPay(webContentsId, detection, url) {
  * happening synchronously before the first `await`. Preserve that
  * ordering when modifying this function.
  */
-async function detectPaymentRequiredHandler(details) {
+async function detectPaymentRequiredHandler(details, { requireApproval = false } = {}) {
   if (!isStatus402(details.statusLine)) return null;
 
   // The app's own gateway / CCIP-Read dials (`ipfs/gateway-transport.js`) are
@@ -821,7 +829,9 @@ async function detectPaymentRequiredHandler(details) {
   // level navigation; correct for `mainFrame`) or has to leave the tab
   // alone (subresource fetches — wc.loadURL would yank the user off the
   // page that initiated the fetch). See sign-flow.js for the gate.
+  const detectionId = mintDetectionId(details);
   detectedPayments.set(details.webContentsId, {
+    detectionId,
     url: details.url,
     requirements,
     resourceType: details.resourceType,
@@ -865,7 +875,8 @@ async function detectPaymentRequiredHandler(details) {
   // user tab (the id names no guest, or one already gone): custody cannot
   // be read for it, so it fails closed to the card as well.
   const origin = originKeyForUrl(details.url);
-  const covering = origin && isUserPageId(details.webContentsId)
+  const custodyVersion = captured?.custodyVersion;
+  const covering = !requireApproval && origin && hasUserPageCustodyVersion(details.webContentsId, custodyVersion)
     ? findCoveringPermission(origin, requirements.accepts)
     : null;
   if (covering) {
@@ -880,6 +891,7 @@ async function detectPaymentRequiredHandler(details) {
     detectedPayments.set(id, {
       ...detectedPayments.get(id),
       authorizedBy: AUTHORIZED_BY.CAP,
+      custodyVersion,
     });
     // Snapshot the detection at the point of decision. The mainFrame
     // path captures it for the setImmediate closure (so a second 402 on
@@ -889,6 +901,7 @@ async function detectPaymentRequiredHandler(details) {
     // has a parallel latent gap tracked separately; full request-keyed
     // state for both is future work.
     const detection = {
+      detectionId, custodyVersion,
       url,
       requirements,
       resourceType: details.resourceType,
@@ -919,6 +932,10 @@ async function detectPaymentRequiredHandler(details) {
             responseHeaders: { Location: [url] },
           };
         } catch (err) {
+          if (err.code === 'X402_CUSTODY_CHANGED') {
+            if (getDetectedPayment(id)?.detectionId !== detectionId) return null;
+            return detectPaymentRequiredHandler(details, { requireApproval: true });
+          }
           if (!isVaultLockedError(err)) {
             log.error(`[x402:auto-pay] sign failed: ${err.message}\n  stack: ${err.stack}`);
             return null;
@@ -948,6 +965,10 @@ async function detectPaymentRequiredHandler(details) {
         // detection's snapshot + CAP authorization so the unlock-resume
         // signs the right charge even if a newer 402 replaced
         // detectedPayments[id] while the unlock dialog was open.
+        if (err.code === 'X402_CUSTODY_CHANGED') {
+          requestManualApprovalForAutoPay(id, detection);
+          return;
+        }
         if (isVaultLockedError(err)) {
           log.info(`[x402:auto-pay] vault locked — requesting unlock for ${sanitizeUrlForLog(url)}`);
           requestVaultUnlockForAutoPay(id, detection, url);
@@ -978,7 +999,6 @@ async function detectPaymentRequiredHandler(details) {
   // approve/reject, and the pendingApprovals Map. P2b fix: a newer 402
   // arriving on the same tab while the user is still deciding aborts
   // the older entry — the sidebar will have replaced the card anyway.
-  const detectionId = mintDetectionId(details);
   abortPendingApprovalsForTab(details.webContentsId, new Error('superseded by newer 402'));
   detectedPayments.set(details.webContentsId, {
     ...detectedPayments.get(details.webContentsId),
@@ -1204,6 +1224,10 @@ function injectPaymentSignatureHandler(details) {
     return null;
   }
 
+  if (signed.authorizedBy === AUTHORIZED_BY.CAP && !hasUserPageCustodyVersion(details.webContentsId, signed.custodyVersion)) {
+    log.info('[x402:inject] tab custody changed; withholding automatic payment');
+    return null;
+  }
   const { withhold, consumed } = consumeOrWithhold(signed, sanitizeUrlForLog(details.url));
   if (withhold) return null; // one-shot drop already happened via shift()
 
@@ -1258,6 +1282,7 @@ module.exports = {
   X402_HEADERS,
   AUTHORIZED_BY,
   sendToHost,
+  requestManualApprovalForAutoPay,
   outgoingHeaderForVersion,
   installX402Interception,
   captureRequestContextHandler,

@@ -5,9 +5,11 @@ jest.mock('../logger', () => ({
 }));
 
 const mockLoadURL = jest.fn().mockResolvedValue();
+const mockGuest = { loadURL: mockLoadURL };
+const { userPageCustodyVersion, setAgentPageCustody } = require('../wallet/agent-tab-custody');
 jest.mock('electron', () => ({
   webContents: {
-    fromId: jest.fn(() => ({ loadURL: mockLoadURL })),
+    fromId: jest.fn(() => mockGuest),
   },
 }));
 
@@ -65,6 +67,7 @@ beforeEach(() => {
   intercept.clearAllPendingPayments();
   intercept.clearAllDetectedPayments();
   intercept.clearAllAwaitingResponse();
+  setAgentPageCustody(mockGuest, false);
   mockClient.createPaymentPayload.mockReset().mockResolvedValue({
     x402Version: 2,
     payload: { authorization: {}, signature: '0xsig' },
@@ -147,6 +150,7 @@ describe('signAndQueueRetry — selectedAccept resolution', () => {
   test('normalizes dweb ENS origins before cap accounting and banner refresh', async () => {
     await signAndQueueRetry(7, {
       detection: {
+        custodyVersion: userPageCustodyVersion(7),
         url: 'bzz://Paywall.eth/segment',
         requirements: requirementsWith(baseAccept),
         resourceType: 'xhr',
@@ -246,5 +250,41 @@ describe('signAndQueueRetry — authorization freshness', () => {
     expect(consumePending(7, 'https://api.example/article')?.requestHeaders['PAYMENT-SIGNATURE'])
       .toBeDefined();
     expect(mockLoadURL).toHaveBeenCalledWith('https://api.example/article');
+  });
+});
+
+describe('automatic payment custody binding', () => {
+  const detection = () => ({ url: 'https://api.example/article', requirements: requirementsWith(baseAccept), resourceType: 'xhr', custodyVersion: userPageCustodyVersion(7) });
+  test('an automatic payment cannot start from Agent custody', async () => {
+    const snapshot = detection(); setAgentPageCustody(mockGuest, true);
+    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    expect(mockCreateClient).not.toHaveBeenCalled();
+    expect(permissions.tryConsume).not.toHaveBeenCalled();
+  });
+  test('a user-to-Agent-to-user transition invalidates the original automatic consent', async () => {
+    const snapshot = detection(); setAgentPageCustody(mockGuest, true); setAgentPageCustody(mockGuest, false);
+    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    expect(mockCreateClient).not.toHaveBeenCalled();
+  });
+  test('custody changes during signer construction stop before payload signing', async () => {
+    const snapshot = detection();
+    mockCreateClient.mockImplementationOnce(async () => { setAgentPageCustody(mockGuest, true); return mockClient; });
+    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+  });
+  test('custody changes during device confirmation prevent dispatch or cap consumption', async () => {
+    const snapshot = detection();
+    mockClient.createPaymentPayload.mockImplementationOnce(async () => { setAgentPageCustody(mockGuest, true); return { payload: { signature: 'fixture' } }; });
+    await expect(signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' })).rejects.toMatchObject({ code: 'X402_CUSTODY_CHANGED' });
+    expect(consumePending(7, snapshot.url)).toBeNull();
+    expect(permissions.tryConsume).not.toHaveBeenCalled();
+    expect(mockLoadURL).not.toHaveBeenCalled();
+  });
+  test('a queued automatic signature is withheld before charging if custody changes', async () => {
+    const snapshot = detection();
+    await signAndQueueRetry(7, { detection: snapshot, authorizedBy: 'cap' });
+    setAgentPageCustody(mockGuest, true);
+    expect(consumePending(7, snapshot.url)).toBeNull();
+    expect(permissions.tryConsume).not.toHaveBeenCalled();
   });
 });
