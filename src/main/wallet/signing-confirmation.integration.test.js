@@ -93,7 +93,17 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     jest.doMock('../identity-manager', () => ({
       getWalletRecord: (index) =>
         index === SAFE_INDEX ? { index, type: 'safe', address: SAFE_ADDRESS, owners: [0], threshold: 1 } : null,
+      isHardwareWalletIndex: () => false,
+      recordLedgerAddressCheck: () => {},
+      recordRemoteAddressCheck: () => {},
+      WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
     }));
+    // Main's own signers (`signers.js`) for the vault: no device here.
+    jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
+    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => ({}) }));
+    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => ({}) }));
+    // Main's dApp file, written where the core reads it (its grant root).
+    jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
     sc = require('./signing-confirmation');
     ({ vaultBackend } = require('../core/vault-backend'));
     ({ buildTransaction } = require('./transaction-service'));
@@ -542,6 +552,168 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         await expect(sc.issuePageConfirmation('sign-message', 0, '0x68', { handle, context: page })).rejects.toThrow(/needs its/);
       }
       expect(calls.filter((call) => call.method === 'approval.issue')).toEqual([]);
+    });
+  });
+
+  describe("a site's standing rule: today's rule main writes, read and judged by the core (APB-1b)", () => {
+    const SELECTOR = TX.data.slice(0, 10);
+    const MESSAGE_SIGNER = new Wallet(ABANDON_KEY).address;
+    let permissions;
+    let getSigner;
+
+    beforeAll(() => {
+      permissions = require('./dapp-permissions');
+      ({ getSigner } = require('./signers'));
+    });
+
+    afterEach(() => {
+      for (const site of [SITE, OTHER_SITE]) permissions.revokePermission(site);
+    });
+
+    // The send main would sign under the rule: the page's call, quoted.
+    const SEND = Object.freeze({
+      to: TX.to,
+      value: TX.value,
+      data: TX.data,
+      chainId: 100,
+      gasLimit: TX.gasLimit,
+      maxFeePerGas: TX.maxFeePerGas,
+      maxPriorityFeePerGas: TX.maxPriorityFeePerGas,
+    });
+    const check = (request, page = PAGE) => sc.checkStanding(page, { account: 0, accountType: 'mnemonic', ...request });
+    const ruled = (page) => getSigner(0, { page, standing: {}, chainId: 100 });
+    const notConfirmed = async (promise) => {
+      const err = await refusal(promise);
+      expect(err.code).toBe('SIGNING_NOT_CONFIRMED');
+      return err.reason;
+    };
+
+    test('a signature the signing rule answers: chosen by the core, and signed under `page` with `{ standing }`', async () => {
+      permissions.grantPermission(SITE, 0, 100);
+      permissions.setSigningAutoApprove(SITE, true);
+      expect(await check({ kind: 'message', payload: 'hello' })).toEqual({ covered: true, reason: null });
+      expect(calls.at(-1)).toMatchObject({
+        method: 'approval.check',
+        context: { caller: 'page', page: PAGE },
+        params: { request: { kind: 'message', account: 0, account_kind: 'vault', message: '0x68656c6c6f' } },
+      });
+      const signature = await ruled(PAGE).signMessage('hello');
+      expect(require('ethers').verifyMessage('hello', signature)).toBe(MESSAGE_SIGNER);
+      expect(calls.at(-1)).toMatchObject({
+        method: 'sign.message',
+        context: { caller: 'page', page: PAGE },
+        params: { authorization: { standing: {} } },
+      });
+
+      // Typed data, viewed on the page's chain, as the core judges it.
+      const { domain, types, message } = TYPED_DATA;
+      const hash = TypedDataEncoder.hash(domain, types, message);
+      expect(await check({ kind: 'typed_data', payload: TYPED_DATA, chainId: 100 })).toEqual({ covered: true, reason: null });
+      expect(calls.at(-1).params).toMatchObject({ chain_id: 100, request: { kind: 'typed_data', primary_type: 'Permit' } });
+      await expect(ruled(PAGE).signTypedData(TYPED_DATA, { expectedHash: hash })).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+      expect(calls.at(-1)).toMatchObject({
+        method: 'sign.typed_data',
+        context: { caller: 'page', page: PAGE },
+        params: { chain_id: '100', primary_type: 'Permit', authorization: { standing: {} } },
+      });
+      // On another chain than the data's, the view warns: the prompt, and
+      // no signature under the rule.
+      expect(await check({ kind: 'typed_data', payload: TYPED_DATA, chainId: 1 })).toEqual({ covered: false, reason: 'warning' });
+      const elsewhere = getSigner(0, { page: PAGE, standing: {}, chainId: 1 });
+      expect(await notConfirmed(elsewhere.signTypedData(TYPED_DATA, { expectedHash: hash }))).toBe('warning');
+      // Never 32 bytes (#89).
+      const raw = '0x' + 'ab'.repeat(32);
+      expect(await check({ kind: 'message', payload: raw })).toEqual({ covered: false, reason: 'warning' });
+      expect(await notConfirmed(ruled(PAGE).signMessage(raw))).toBe('warning');
+    });
+
+    test('no rule answers another site, another account, a tab in custody, a flag turned off, or no grant', async () => {
+      permissions.grantPermission(SITE, 0, 100);
+      permissions.setSigningAutoApprove(SITE, true);
+      const message = { kind: 'message', payload: 'hello' };
+      expect(await check(message, { ...PAGE, origin: OTHER_SITE, top_origin: OTHER_SITE })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await check({ ...message, account: 1 })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await check(message, { ...PAGE, agent: true })).toEqual({ covered: false, reason: 'custody' });
+      expect(await notConfirmed(ruled({ ...PAGE, agent: true }).signMessage('hello'))).toBe('custody');
+      expect(await notConfirmed(ruled({ ...PAGE, origin: OTHER_SITE }).signMessage('hello'))).toBe('no_rule');
+      // Turned off, or revoked, in main's file: the core's next check reads it.
+      permissions.setSigningAutoApprove(SITE, false);
+      expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await notConfirmed(ruled(PAGE).signMessage('hello'))).toBe('no_rule');
+      permissions.setSigningAutoApprove(SITE, true);
+      permissions.revokePermission(SITE);
+      expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
+      // A request the core can't judge reads as not covered, unasked.
+      calls.length = 0;
+      expect(await sc.checkStanding(PAGE, { kind: 'message', account: 0, accountType: 'hardware', payload: 'hello' })).toEqual({
+        covered: false,
+        reason: 'invalid',
+      });
+      expect(calls).toEqual([]);
+    });
+
+    test("a send the contract rule answers: the core reads the rule main wrote, with main's pause, its value cap and its own fee check", async () => {
+      permissions.grantPermission(SITE, 0, 100);
+      permissions.addTransactionAutoApprove(SITE, TX.to, SELECTOR, 100, TX.value);
+      const send = (request) => check({ kind: 'transaction', payload: SEND, paused: false, ...request });
+      // A phone picks its own fee: the rule, the account and the pause decide.
+      expect(await send({ accountType: 'remote' })).toEqual({ covered: true, reason: null });
+      expect(calls.at(-1).params).toMatchObject({
+        chain_id: 100,
+        paused: false,
+        request: { kind: 'transaction', account_kind: 'phone', tx: { to: TX.to, value: TX.value, data: TX.data } },
+      });
+      expect(calls.at(-1).params.request.tx).not.toHaveProperty('nonce');
+      // D12: paused, or a pause main didn't read, isn't covered.
+      expect(await send({ accountType: 'remote', paused: true })).toEqual({ covered: false, reason: 'paused' });
+      expect(await send({ accountType: 'remote', paused: undefined })).toEqual({ covered: false, reason: 'paused' });
+      // More value than the confirmed send's, a plain transfer, another chain, a Safe.
+      const more = { ...SEND, value: (BigInt(TX.value) + 1n).toString() };
+      expect(await send({ accountType: 'remote', payload: more })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'remote', payload: { ...SEND, data: '0x' } })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'remote', payload: { ...SEND, chainId: 1 } })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await send({ accountType: 'safe' })).toEqual({ covered: false, reason: 'no_rule' });
+      // A vault account's send needs the core's own fee evidence, which only
+      // its `chain.fee_reference` gives: with none, the prompt.
+      expect(await send({ accountType: 'mnemonic' })).toEqual({ covered: false, reason: 'fee_check' });
+      // The signature itself: judged again by the core under `{ standing }`.
+      const built = buildTransaction({ ...SEND, nonce: 7 });
+      const signer = getSigner(0, { page: PAGE, standing: { paused: false } });
+      expect(await notConfirmed(signer.signTransaction(built))).toBe('fee_check');
+      expect(calls.at(-1)).toMatchObject({
+        method: 'sign.transaction',
+        context: { caller: 'page', page: PAGE },
+        params: { authorization: { standing: { paused: false } } },
+      });
+      expect(await notConfirmed(getSigner(0, { page: PAGE, standing: {} }).signTransaction(built))).toBe('paused');
+      expect(await notConfirmed(getSigner(0, { page: { ...PAGE, agent: true }, standing: { paused: false } }).signTransaction(built))).toBe(
+        'custody'
+      );
+      permissions.revokePermission(SITE);
+      expect(await notConfirmed(signer.signTransaction(built))).toBe('no_rule');
+    });
+
+    test('"Always allow": the flagged send signs, the core writes no rule and says `not_moved`, and the file stays main\'s', async () => {
+      permissions.grantPermission(SITE, 0, 100);
+      const file = path.join(root, 'dapp-permissions.json');
+      const before = fs.readFileSync(file);
+      const built = buildTransaction({ ...SEND, nonce: 7 });
+      const confirmation = await pageToken('dapp-send', 0, DAPP_TX, PAGE, HANDLE, { remember: true });
+      expect(calls.find((call) => call.method === 'approval.issue').params.payload).toEqual({ tx: expect.any(Object), remember: true });
+      const heard = [];
+      const raw = await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(built);
+      expect(Transaction.from(raw).from).toBe(MESSAGE_SIGNER);
+      expect(heard).toEqual([{ added: false, reason: 'not_moved' }]);
+      expect(sc.mainWritesRule(true, heard[0])).toBe(true);
+      // The core changed nothing in main's file.
+      expect(fs.readFileSync(file)).toEqual(before);
+      // Not ticked: no flag, and no rule in the reply.
+      const plain = await pageToken('dapp-send', 0, DAPP_TX);
+      expect(calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({ tx: expect.any(Object) });
+      await getSigner(0, { confirmation: plain, onRule: (rule) => heard.push(rule) }).signTransaction(built);
+      expect(heard).toEqual([{ added: false, reason: 'not_moved' }, null]);
+      expect(sc.mainWritesRule(true, null)).toBe(false);
+      expect(fs.readFileSync(file)).toEqual(before);
     });
   });
 });

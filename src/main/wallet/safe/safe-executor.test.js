@@ -424,6 +424,15 @@ describe('collectOwnerSignature', () => {
     );
   });
 
+  test("the caller's last check goes to the owner's signer (`beforeSign`), and only then", async () => {
+    const beforeSign = jest.fn(async () => {});
+    mockGetSigner.mockClear();
+    await collectOwnerSignature({ typedData, ownerIndex: 2, beforeSign });
+    expect(mockGetSigner).toHaveBeenLastCalledWith(2, { beforeSign });
+    await collectOwnerSignature({ typedData, ownerIndex: 2 });
+    expect(mockGetSigner).toHaveBeenLastCalledWith(2);
+  });
+
   test('rejects a signature that does not recover to the owner address', async () => {
     // A compromised device returns a signature from the wrong key.
     mockGetSigner.mockImplementationOnce(() => ({

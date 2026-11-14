@@ -159,6 +159,11 @@ function backends() {
     // The site's contract rules: [key, to, selector, chainId, value].
     txRules: [],
     paused: false,
+    // The core's own fee check under a rule (its evidence): false refuses.
+    coreFee: true,
+    // The core's reply for a flagged dApp send it signed (design 0012):
+    // before the dApp file moves, no rule written.
+    coreRule: { added: false, reason: 'not_moved' },
     quoteFails: false,
     prices: { type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' },
     verdict: PASSING,
@@ -172,6 +177,11 @@ function backends() {
     // commit; and a phone's own send, which signs and broadcasts at once.
     signerHold: null,
     phoneHold: null,
+    // The transaction service's waits before a signer is asked, when held;
+    // and how many times a signer (a device, or the core for a vault) was.
+    serviceHold: null,
+    serviceWaits: 0,
+    signerAsked: 0,
     turns: [],
     paymentWaiting: false,
     turnBusy: false,
@@ -203,16 +213,30 @@ function backends() {
     sends: {
       inCustody: (guestId) => state.custody.has(guestId),
       isVaultUnlocked: async () => (typeof state.unlocked === 'function' ? state.unlocked() : state.unlocked),
-      ruleMatches: jest.fn((key, to, selector, chainId, value) =>
-        state.txRules.some(
+      // The identity core's `approval.check` (design 0012), simulated from
+      // the same state: the grant exposing the account, a contract call a
+      // rule covers, the pause main read, and the core's fee check (but for
+      // a phone), outside custody.
+      checkStanding: jest.fn(async (page, request) => {
+        const refused = (reason) => ({ covered: false, reason });
+        if (page?.agent !== false) return refused('custody');
+        const tx = request.payload;
+        const selector = typeof tx.data === 'string' && tx.data.length >= 10 ? tx.data.slice(0, 10).toLowerCase() : null;
+        if (state.permissions.get(page.origin)?.walletIndex !== request.account) return refused('no_rule');
+        if (request.accountType === 'safe' || !selector) return refused('no_rule');
+        const ruled = state.txRules.some(
           (rule) =>
-            rule[0] === key &&
-            rule[1] === to.toLowerCase() &&
+            rule[0] === page.origin &&
+            rule[1] === tx.to.toLowerCase() &&
             rule[2] === selector &&
-            rule[3] === chainId &&
-            BigInt(value) <= BigInt(rule[4])
-        )
-      ),
+            rule[3] === tx.chainId &&
+            BigInt(tx.value) <= BigInt(rule[4])
+        );
+        if (!ruled) return refused('no_rule');
+        if (request.paused !== false) return refused('paused');
+        if (request.accountType !== 'remote' && state.coreFee === false) return refused('fee_check');
+        return { covered: true, reason: null };
+      }),
       rulePaused: jest.fn(async () => state.paused),
       addTransactionAutoApprove: jest.fn((key, to, selector, chainId, value) => {
         state.txRules.push([key, to.toLowerCase(), selector, chainId, value]);
@@ -227,10 +251,30 @@ function backends() {
         const verdict = state.atPress || state.verdict;
         return { ...verdict, askAgain: verdict.above === true && acknowledged !== true };
       }),
-      getSigner: jest.fn((index) => (index === PHONE_INDEX ? phoneSigner : signer)),
+      // The vault account's signer hears the core's `rule` reply as it signs
+      // (`onRule`), a Ledger's doesn't.
+      // A device's signer keeps the dispatcher's last check (`beforeSign`),
+      // which it awaits right before the device is asked (`signers.js`).
+      getSigner: jest.fn((index, authorized) =>
+        index === PHONE_INDEX
+          ? { ...phoneSigner, beforeSign: authorized?.beforeSign }
+          : index === 0
+            ? { ...signer, authorized }
+            : { ...signer, beforeSign: authorized?.beforeSign }
+      ),
       signAndRecord: jest.fn(async (tx, chosen, context, options) => {
         state.records.push({ tx, context, walletIndex: options.walletIndex });
         if (state.sendFails) throw state.sendFails;
+        // The transaction service's own waits before the device (a Ledger's
+        // fee and nonce reads, a phone's address), when a test holds them;
+        // then a device's signer awaits the dispatcher's last check.
+        if (state.serviceHold) {
+          state.serviceWaits += 1;
+          await state.serviceHold.promise;
+        }
+        const last = chosen.beforeSign ?? (chosen.authorized?.confirmation ? null : chosen.authorized?.beforeSign);
+        if (last) await last();
+        state.signerAsked += 1;
         if (typeof chosen.sendTransaction === 'function') {
           // A phone: it signs and broadcasts in one step.
           if (state.phoneHold) await state.phoneHold.promise;
@@ -239,6 +283,8 @@ function backends() {
           return { hash: PHONE_HASH };
         }
         if (state.signerHold) await state.signerHold.promise;
+        // The core signed a vault account's send: a flagged one's reply.
+        if (chosen.authorized?.confirmation) chosen.authorized.onRule?.(state.coreRule);
         const commit = async () => {
           state.committed.push(tx);
           return { intentId: 'intent-1' };
@@ -586,6 +632,50 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledWith(KEY_A, CONTRACT, SELECTOR, 100, '10000000000000000');
   });
 
+  test('"always allow" is minted into the token, and main writes the rule only on the core\'s `not_moved` (design 0012, APB-1)', async () => {
+    const issued = () => mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload;
+    const env = setup();
+    env.connect();
+    const page = env.tab();
+    const confirmed = async (choices, coreRule) => {
+      env.state.coreRule = coreRule;
+      // Each on its prompt: no rule written before answers it.
+      env.state.txRules = [];
+      const answer = page.send(CALL);
+      await flush();
+      await env.decide(env.lastPrompt().handle, true, choices);
+      expect(await answer).toEqual({ result: HASH });
+    };
+    // Ticked: the flag rides with the token; the core signed, wrote nothing
+    // (the dApp file hasn't moved to it) and said so: main writes today's rule.
+    await confirmed({ alwaysAllow: true }, { added: false, reason: 'not_moved' });
+    expect(issued()).toEqual({ tx: expect.any(Object), remember: true });
+    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+    // Not ticked: no flag, no rule.
+    await confirmed({ alwaysAllow: false }, null);
+    expect(issued()).toEqual({ tx: expect.any(Object) });
+    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+    // Any other reply of the core's (a rule it wrote, another reason, none)
+    // leaves main's file alone.
+    for (const reply of [{ added: true }, { added: false, reason: 'not_exposed' }, null, undefined]) {
+      await confirmed({ alwaysAllow: true }, reply);
+      expect(issued().remember).toBe(true);
+    }
+    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+  });
+
+  test('"always allow" on a Ledger send: the device signs, the core writes nothing, and main records the rule', async () => {
+    const env = setup();
+    env.connect(KEY_A, LEDGER_INDEX);
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+    expect(await answer).toEqual({ result: HASH });
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload.remember).toBe(true);
+    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledWith(KEY_A, CONTRACT, SELECTOR, 100, '0');
+  });
+
   test('"always allow" records nothing for a plain transfer, or when the send fails', async () => {
     const env = setup();
     env.connect();
@@ -709,6 +799,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     // signs: its signer is handed the confirmation, the page's.
     expect(env.deps.sends.getSigner).toHaveBeenCalledWith(LEDGER_INDEX, {
       confirmation: expect.objectContaining({ kind: 'dapp-send', account: LEDGER_INDEX, page: expect.objectContaining({ origin: KEY_A }) }),
+      onRule: expect.any(Function),
     });
     env.state.sendFails = Object.assign(new Error('Rejected on device'), { code: 'LEDGER_USER_REJECTED' });
     answer = page.send(CALL);
@@ -889,11 +980,24 @@ describe("the site's contract rule, read by main for the request it holds", () =
     expect(await page.send(CALL)).toEqual({ result: HASH });
     expect(env.prompts()).toEqual([]);
     expect(env.minted()).toEqual([]);
-    // A page's send, never main's own: under its PageContext (design 0012),
-    // with no token until `{ standing }` (APB-1b).
+    // A page's send, never main's own: under its PageContext, as the site's
+    // rule (`{ standing }`), not paused in its own turn (design 0012).
     expect(env.deps.sends.getSigner).toHaveBeenCalledWith(0, {
       page: expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false }),
+      standing: { paused: false },
+      beforeSign: expect.any(Function),
     });
+    // The core chose it (`approval.check`) on the send main signs, and read
+    // it again in the send's own turn: at the guard, as the signer's last
+    // check, and after the signature.
+    const checks = env.deps.sends.checkStanding.mock.calls;
+    expect(checks.map(([page, request]) => [page.origin, request.kind, request.paused])).toEqual([
+      [KEY_A, 'transaction', false],
+      [KEY_A, 'transaction', false],
+      [KEY_A, 'transaction', false],
+      [KEY_A, 'transaction', false],
+    ]);
+    expect(checks[0][1].payload).toEqual({ to: CONTRACT, value: '0', data: DATA, chainId: 100, gasLimit: '60000', gasPrice: '1000000000' });
     expect(env.state.lastUsed).toEqual([[KEY_A]]);
     // In its own turn, silently: a busy turn or a waiting payment pauses it (D12).
     expect(env.state.turns).toEqual([[KEY_A, false]]);
@@ -938,7 +1042,11 @@ describe("the site's contract rule, read by main for the request it holds", () =
     await flush();
     // Another site's rule never answers this page.
     expect(env.prompts()).toHaveLength(1);
-    expect(env.deps.sends.ruleMatches).toHaveBeenCalledWith(KEY_B, CONTRACT, SELECTOR, 100, '0');
+    expect(env.deps.sends.checkStanding).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: KEY_B, agent: false }),
+      expect.objectContaining({ kind: 'transaction', account: 0, accountType: 'mnemonic', paused: false })
+    );
+    await expect(env.deps.sends.checkStanding.mock.results.at(-1).value).resolves.toEqual({ covered: false, reason: 'no_rule' });
     expect(env.state.records).toEqual([]);
   });
 
@@ -1022,6 +1130,70 @@ describe("the site's contract rule, read by main for the request it holds", () =
     await env.decide(env.lastPrompt().handle, true, {});
     expect(await answer).toEqual(RULE_GONE);
     expect(env.state.records).toEqual([]);
+  });
+
+  test("the core's own fee check under the rule: a send it doesn't allow goes to the prompt (design 0012)", async () => {
+    const env = setup();
+    env.connect();
+    env.rule();
+    env.state.coreFee = false;
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    // Main's verdict allowed it; the core's evidence doesn't: the prompt,
+    // with the quote main took for the choice, and nothing signed.
+    expect(env.lastPrompt()).toMatchObject({ kind: 'eth.send', view: { fee: { gasLimit: '60000' }, feeCheck: PASSING } });
+    expect(env.state.records).toEqual([]);
+    expect(env.deps.sends.estimateGas).toHaveBeenCalledTimes(1);
+    env.state.coreFee = true;
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+  });
+
+  test("a rule's vault signature the core refuses: its fee check sends it to the prompt; custody and a rule gone answer as before", async () => {
+    const env = setup();
+    env.connect();
+    env.rule();
+    const page = env.tab();
+    const refusing = (reason) =>
+      env.deps.sends.signAndRecord.mockImplementationOnce(async () => {
+        const { confirmationError } = require('../wallet/signing-confirmation');
+        throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason } }));
+      });
+    refusing('fee_check');
+    const answer = page.send(CALL);
+    await flush();
+    expect(env.lastPrompt().kind).toBe('eth.send');
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+    refusing('custody');
+    expect(await page.send(CALL)).toEqual(CUSTODY);
+    refusing('no_rule');
+    expect(await page.send(CALL)).toEqual(RULE_GONE);
+    expect(env.state.committed).toEqual([]);
+  });
+
+  test("after a device's wait the core's fee evidence may have aged: the rule, not the fee, decides the commit", async () => {
+    const env = setup();
+    env.connect(KEY_A, LEDGER_INDEX);
+    env.rule();
+    const page = env.tab();
+    env.state.signerHold = deferred();
+    let answer = page.send(CALL);
+    await flush();
+    env.state.coreFee = false;
+    env.state.signerHold.resolve();
+    expect(await answer).toEqual({ result: HASH });
+    expect(env.state.committed).toHaveLength(1);
+    // A rule gone during the device's wait: nothing recorded or sent.
+    env.state.coreFee = true;
+    env.state.signerHold = deferred();
+    answer = page.send(CALL);
+    await flush();
+    env.state.txRules = [];
+    env.state.signerHold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    expect(env.state.committed).toHaveLength(1);
   });
 });
 
@@ -1273,6 +1445,182 @@ describe('a DNS name over IPNS that moves off its key', () => {
     expect(await answer).toEqual({ result: HASH });
     expect(env.state.committed).toHaveLength(1);
     expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
+  });
+});
+
+// The last wait before a rule's send is the core's own reading of the rule,
+// after the name's: a Ledger and a phone present no `{ standing }` the core
+// could judge again as they sign (a phone signs and broadcasts at once), so
+// a rule revoked or fee evidence refreshed while the name resolved is seen
+// there, before the device is asked.
+describe('a rule revoked or fee evidence refreshed while the name resolves just before the send', () => {
+  // The site's contract rule over a DNS name, and the name's resolution in
+  // the send's own turn held: the last wait but the core's reading. `held`
+  // resolves once it waits.
+  function heldAtTheSend(walletIndex) {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME, walletIndex);
+    env.rule(NAME);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const hold = deferred();
+    const held = deferred();
+    env.deps.sends.sitePaymentWaiting.mockImplementationOnce(async () => {
+      env.nameHolds.set(NAME, hold);
+      held.resolve();
+      return false;
+    });
+    return { env, page, hold, held };
+  }
+
+  test.each([
+    ['a Ledger', LEDGER_INDEX],
+    ['a phone', PHONE_INDEX],
+    ['the vault', 0],
+  ])('%s: the rule revoked, nothing signed or sent', async (_label, walletIndex) => {
+    const { env, page, hold, held } = heldAtTheSend(walletIndex);
+    const answer = page.send(CALL);
+    await held.promise;
+    await flush();
+    const before = env.deps.sends.checkStanding.mock.calls.length;
+    env.state.txRules = [];
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    // The core read the rule again after the name, and refused.
+    expect(env.deps.sends.checkStanding).toHaveBeenCalledTimes(before + 1);
+    await expect(env.deps.sends.checkStanding.mock.results[before].value).resolves.toEqual({ covered: false, reason: 'no_rule' });
+    expect(env.deps.sends.getSigner).not.toHaveBeenCalled();
+    expect(env.phoneSigner.sendTransaction).not.toHaveBeenCalled();
+    expect(env.state.records).toEqual([]);
+    expect(env.state.committed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test.each([
+    ['a Ledger', LEDGER_INDEX],
+    ['the vault', 0],
+  ])("%s: the core's fee evidence refreshed, the prompt, nothing signed", async (_label, walletIndex) => {
+    const { env, page, hold, held } = heldAtTheSend(walletIndex);
+    const answer = page.send(CALL);
+    await held.promise;
+    await flush();
+    env.state.coreFee = false;
+    hold.resolve();
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'eth.send' });
+    expect(env.deps.sends.getSigner).not.toHaveBeenCalled();
+    expect(env.state.records).toEqual([]);
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+    expect(env.state.records).toEqual([]);
+    expect(env.state.committed).toEqual([]);
+  });
+
+  test('a rule that holds through the name: the Ledger and the phone send', async () => {
+    for (const [walletIndex, hash] of [
+      [LEDGER_INDEX, HASH],
+      [PHONE_INDEX, PHONE_HASH],
+    ]) {
+      const { env, page, hold, held } = heldAtTheSend(walletIndex);
+      const answer = page.send(CALL);
+      await held.promise;
+      await flush();
+      hold.resolve();
+      expect(await answer).toEqual({ result: hash });
+      expect(env.state.committed).toHaveLength(1);
+    }
+  });
+
+  test("the vault's send still goes with `{ standing }` past that reading, and the core's refusal there stands", async () => {
+    const { env, page, hold, held } = heldAtTheSend(0);
+    const answer = page.send(CALL);
+    await held.promise;
+    await flush();
+    // The rule holds through the name; the core judges it again as it signs.
+    env.deps.sends.signAndRecord.mockImplementationOnce(async () => {
+      const { confirmationError } = require('../wallet/signing-confirmation');
+      throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason: 'no_rule' } }));
+    });
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    expect(env.deps.sends.getSigner).toHaveBeenCalledWith(0, {
+      page: expect.objectContaining({ origin: NAME, agent: false }),
+      standing: { paused: false },
+      beforeSign: expect.any(Function),
+    });
+    expect(env.state.committed).toEqual([]);
+  });
+});
+
+// The transaction service waits again before it asks a device (a Ledger's
+// fee and nonce reads, a phone's address): the core's reading of the rule,
+// custody and the document's key are the device's signer's last check
+// (`beforeSign`), right before the device is asked.
+describe('a rule revoked, custody entered or fee evidence refreshed while the send waits to reach its signer', () => {
+  function ruledTab(walletIndex) {
+    const env = setup();
+    env.connect(KEY_A, walletIndex);
+    env.rule();
+    return { env, page: env.tab() };
+  }
+
+  test.each([
+    ['a Ledger', LEDGER_INDEX, 'the rule revoked', RULE_GONE],
+    ['a Ledger', LEDGER_INDEX, 'custody entered', CUSTODY],
+    ['a phone', PHONE_INDEX, 'the rule revoked', RULE_GONE],
+    ['a phone', PHONE_INDEX, 'custody entered', CUSTODY],
+    // A vault's signature presents `{ standing }` with the PageContext main
+    // read before these waits: main reads custody again here too.
+    ['the vault', 0, 'custody entered', CUSTODY],
+  ])('%s, %s: refused, nothing signed or sent', async (_label, walletIndex, what, refused) => {
+    const { env, page } = ruledTab(walletIndex);
+    env.state.serviceHold = deferred();
+    const answer = page.send(CALL);
+    await flush();
+    // Past the guard, in the transaction service.
+    expect(env.state.serviceWaits).toBe(1);
+    const before = env.deps.sends.checkStanding.mock.calls.length;
+    if (what === 'custody entered') env.state.custody.add(page.guest.id);
+    else env.state.txRules = [];
+    env.state.serviceHold.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.deps.sends.checkStanding).toHaveBeenCalledTimes(before + 1);
+    expect(env.state.signerAsked).toBe(0);
+    expect(env.state.committed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test("a Ledger, the core's fee evidence refreshed: the prompt, the device never asked", async () => {
+    const { env, page } = ruledTab(LEDGER_INDEX);
+    env.state.serviceHold = deferred();
+    const answer = page.send(CALL);
+    await flush();
+    expect(env.state.serviceWaits).toBe(1);
+    env.state.coreFee = false;
+    env.state.serviceHold.resolve();
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'eth.send' });
+    expect(env.state.signerAsked).toBe(0);
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+    expect(env.state.signerAsked).toBe(0);
+    expect(env.state.committed).toEqual([]);
+  });
+
+  test('a rule that holds through the wait: the Ledger and the phone are asked, and send', async () => {
+    for (const [walletIndex, hash] of [
+      [LEDGER_INDEX, HASH],
+      [PHONE_INDEX, PHONE_HASH],
+    ]) {
+      const { env, page } = ruledTab(walletIndex);
+      env.state.serviceHold = deferred();
+      const answer = page.send(CALL);
+      await flush();
+      env.state.serviceHold.resolve();
+      expect(await answer).toEqual({ result: hash });
+      expect(env.state.signerAsked).toBe(1);
+      expect(env.state.committed).toHaveLength(1);
+    }
   });
 });
 
