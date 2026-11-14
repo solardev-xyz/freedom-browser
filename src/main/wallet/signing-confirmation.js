@@ -1070,8 +1070,9 @@ function standingRequest({ kind, account, accountType, payload, chainId, paused 
 
 /**
  * Whether a site's standing rule would answer a page's request now (design
- * 0012, `approval.check`): the core reads today's rules from the dApp file
- * main writes, for the page's own key, outside Agent custody (the
+ * 0012, `approval.check`): the core reads the site's rules from the dApp
+ * file it writes (APB-2: Q9's limited rules only, with their expiry, rate
+ * and value cap), for the page's own key, outside Agent custody (the
  * PageContext's `agent`), with the D12 pause main reads and the core's own
  * fee evidence for a send. Advice, for main's choice between a prompt and
  * none: `sign.*` decides again under `{ standing }`. Asked under `page` with
@@ -1102,24 +1103,6 @@ async function checkStanding(page, request) {
   } catch (err) {
     return { covered: false, reason: typeof err?.code === 'string' ? err.code : 'error' };
   }
-}
-
-/**
- * Whether main writes today's transaction rule after an "Always allow"
- * send (design 0012, The model, "Before APB-2"): the core signs a vault
- * account's flagged `dapp-send` and replies what became of the rule, which
- * before the dApp file's move is always `{ added: false, reason:
- * 'not_moved' }`; main then writes it, as today. Any other reply (none, a
- * rule the core added, or another reason) leaves main's file alone. A
- * device's send (a Ledger, a phone) is signed outside the core, which
- * writes nothing for it: main writes the rule, as today.
- *
- * @param {boolean} coreSigned the core made the signature
- * @param {object|null|undefined} rule the `sign.transaction` reply's `rule`
- */
-function mainWritesRule(coreSigned, rule) {
-  if (!coreSigned) return true;
-  return rule?.added === false && rule.reason === 'not_moved';
 }
 
 /**
@@ -1180,7 +1163,6 @@ module.exports = {
   corePayload,
   isCoreKind,
   isPageKind,
-  mainWritesRule,
   issueConfirmation,
   issueMainConfirmation: issueMain,
   issuePageConfirmation,

@@ -1705,7 +1705,9 @@ class FreedomAgentService {
    * key), `signal` (aborted when main answers the request: its approval is
    * withdrawn), `beforeEffect`/`effectAllowed`, which the effect waits on,
    * and `grantWritten`, which the controller tells what a connect's grant
-   * write did, in the write's own run (PRQ-6).
+   * write did, in the write's own run (PRQ-6); `pageContext`, the
+   * document's PageContext, under which the identity core writes that grant
+   * (freedom-core design 0012, APB-2).
    */
   async handleWalletRequest(tabId, payload, pageRequest = null) {
     const run = this.activeRun;
@@ -3244,6 +3246,7 @@ class FreedomAgentService {
           effectAllowed: pageRequest.effectAllowed,
           grantWritten: pageRequest.grantWritten,
           pageToken: pageRequest.pageToken,
+          pageContext: pageRequest.pageContext,
         }),
       },
       payload

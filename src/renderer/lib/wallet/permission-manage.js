@@ -187,7 +187,7 @@ export async function showDappPermissions(permissionKey) {
   if (dappPermsSite) dappPermsSite.textContent = permissionKey;
 
   if (dappPermsSigningToggle) {
-    dappPermsSigningToggle.checked = permission.autoApprove?.signing === true;
+    dappPermsSigningToggle.checked = signingRuleOf(permission);
     // Off can't be turned on here: only from a signing prompt.
     dappPermsSigningToggle.disabled = !dappPermsSigningToggle.checked;
     dappPermsSigningToggle.title = dappPermsSigningToggle.checked
@@ -195,11 +195,42 @@ export async function showDappPermissions(permissionKey) {
       : 'Turn this on with “Always allow” on a signing request from this site';
   }
 
-  renderTxRules(permission.autoApprove?.transactions || []);
+  renderTxRules(txRulesOf(permission));
 
   walletState.identityView?.classList.add('hidden');
   dappPermsScreen?.classList.remove('hidden');
   openSidebarPanel();
+}
+
+/**
+ * Whether a site stores a signing rule (freedom-core design 0012, Q9): the
+ * limited one "Always allow" writes, or today's flag, which answers nothing
+ * now but an older build still would. Turning it off clears both.
+ */
+function signingRuleOf(permission) {
+  const rules = permission?.autoApprove;
+  return rules?.signing === true || Boolean(rules?.limited?.signing);
+}
+
+/**
+ * A site's contract rules, each call once: the limited ones "Always allow"
+ * writes (design 0012, Q9) and today's, which answer nothing now but an
+ * older build still would. Removing one clears both for that call.
+ */
+function txRulesOf(permission) {
+  const rules = permission?.autoApprove;
+  const all = [
+    ...(Array.isArray(rules?.limited?.transactions) ? rules.limited.transactions : []),
+    ...(Array.isArray(rules?.transactions) ? rules.transactions : []),
+  ];
+  const seen = new Set();
+  return all.filter((rule) => {
+    if (typeof rule?.to !== 'string' || typeof rule?.selector !== 'string') return false;
+    const call = `${rule.to.toLowerCase()} ${rule.selector.toLowerCase()} ${rule.chainId}`;
+    if (seen.has(call)) return false;
+    seen.add(call);
+    return true;
+  });
 }
 
 function renderTxRules(rules) {
@@ -243,7 +274,7 @@ function renderTxRules(rules) {
         dappPermsKey, rule.to, rule.selector, rule.chainId
       );
       const updated = await window.dappPermissions.getPermission(dappPermsKey);
-      renderTxRules(updated?.autoApprove?.transactions || []);
+      renderTxRules(txRulesOf(updated));
       updateConnectionBanner(dappPermsKey);
     });
 

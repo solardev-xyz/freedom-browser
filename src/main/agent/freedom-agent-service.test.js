@@ -3041,6 +3041,7 @@ describe('FreedomAgentService', () => {
       grantWritten: jest.fn(),
       // Main's issuer for the Agent's decision (design 0012, APB-1d).
       pageToken: { mint: jest.fn(), present: jest.fn(), discard: jest.fn() },
+      pageContext: jest.fn(() => ({ origin: 'https://app.example' })),
     };
     const response = service.handleWalletRequest(
       'tab_assigned',
@@ -3056,6 +3057,7 @@ describe('FreedomAgentService', () => {
       effectAllowed: pageRequest.effectAllowed,
       grantWritten: pageRequest.grantWritten,
       pageToken: pageRequest.pageToken,
+      pageContext: pageRequest.pageContext,
     });
     // Main answers the request (its deadline): the approval is withdrawn.
     answered.abort();

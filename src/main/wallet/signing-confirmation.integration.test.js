@@ -80,9 +80,16 @@ const TYPED_DATA = Object.freeze({
   message: { value: '1' },
 });
 
-// The core's write methods for the four permission files: main calls none
-// before each file's move (APB-2, APB-3, X402-2).
+// The core's write methods for the four permission files: main calls them
+// for a moved file only (`dapp` from APB-2; Swarm and Radicle from APB-3,
+// x402 from X402-2).
 const WRITE_METHODS = ['approval.grant', 'approval.revoke', 'approval.touch', 'approval.forget_account'];
+const MOVED = new Set(['dapp']);
+const unmovedWrites = (calls) =>
+  calls.filter(
+    (call) =>
+      WRITE_METHODS.includes(call.method) && call.method !== 'approval.forget_account' && !MOVED.has(call.params?.store)
+  );
 
 describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
   let root;
@@ -165,8 +172,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
   });
 
   afterEach(() => {
-    // Main calls none of the files' write methods on the core.
-    expect(calls.filter((call) => WRITE_METHODS.includes(call.method))).toEqual([]);
+    // Main calls none of the write methods of a file that hasn't moved.
+    expect(unmovedWrites(calls)).toEqual([]);
   });
 
   // A send as main signs it: built as every send is, at the nonce main
@@ -606,7 +613,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     });
   });
 
-  describe("a site's standing rule: today's rule main writes, read and judged by the core (APB-1b)", () => {
+  describe("a site's standing rule: Q9's limited rule, written and judged by the core (APB-1b, APB-2)", () => {
     const SELECTOR = TX.data.slice(0, 10);
     const MESSAGE_SIGNER = new Wallet(ABANDON_KEY).address;
     let permissions;
@@ -617,8 +624,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       ({ getSigner } = require('./signers'));
     });
 
-    afterEach(() => {
-      for (const site of [SITE, OTHER_SITE]) permissions.revokePermission(site);
+    afterEach(async () => {
+      for (const site of [SITE, OTHER_SITE]) await permissions.revokePermission(site);
     });
 
     // The send main would sign under the rule: the page's call, quoted.
@@ -638,10 +645,21 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(err.code).toBe('SIGNING_NOT_CONFIRMED');
       return err.reason;
     };
+    // "Always allow" on a confirmed dApp send: the core signs it and writes
+    // the contract rule (design 0012, The model, APB-2); its reply says so.
+    async function flaggedSend(page = PAGE, send = SEND) {
+      const confirmation = await pageToken('dapp-send', 0, { ...send, origin: page.origin }, page, HANDLE, { remember: true });
+      const heard = [];
+      const raw = await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(
+        buildTransaction({ ...send, nonce: 7 })
+      );
+      expect(Transaction.from(raw).from).toBe(MESSAGE_SIGNER);
+      return heard;
+    }
 
     test('a signature the signing rule answers: chosen by the core, and signed under `page` with `{ standing }`', async () => {
-      permissions.grantPermission(SITE, 0, 100);
-      permissions.setSigningAutoApprove(SITE, true);
+      await permissions.grantPermission(SITE, 0, 100, PAGE);
+      await permissions.setSigningAutoApprove(SITE, true, PAGE);
       expect(await check({ kind: 'message', payload: 'hello' })).toEqual({ covered: true, reason: null });
       expect(calls.at(-1)).toMatchObject({
         method: 'approval.check',
@@ -678,21 +696,22 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(await notConfirmed(ruled(PAGE).signMessage(raw))).toBe('warning');
     });
 
-    test('no rule answers another site, another account, a tab in custody, a flag turned off, or no grant', async () => {
-      permissions.grantPermission(SITE, 0, 100);
-      permissions.setSigningAutoApprove(SITE, true);
+    test('no rule answers another site, another account, a tab in custody, a rule turned off, or no grant', async () => {
+      await permissions.grantPermission(SITE, 0, 100, PAGE);
+      await permissions.setSigningAutoApprove(SITE, true, PAGE);
       const message = { kind: 'message', payload: 'hello' };
       expect(await check(message, { ...PAGE, origin: OTHER_SITE, top_origin: OTHER_SITE })).toEqual({ covered: false, reason: 'no_rule' });
       expect(await check({ ...message, account: 1 })).toEqual({ covered: false, reason: 'no_rule' });
       expect(await check(message, { ...PAGE, agent: true })).toEqual({ covered: false, reason: 'custody' });
       expect(await notConfirmed(ruled({ ...PAGE, agent: true }).signMessage('hello'))).toBe('custody');
       expect(await notConfirmed(ruled({ ...PAGE, origin: OTHER_SITE }).signMessage('hello'))).toBe('no_rule');
-      // Turned off, or revoked, in main's file: the core's next check reads it.
-      permissions.setSigningAutoApprove(SITE, false);
+      // Turned off (main's own, from the chrome), or revoked: the core's next
+      // check reads it.
+      expect(await permissions.setSigningAutoApprove(SITE, false)).toBe(true);
       expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
       expect(await notConfirmed(ruled(PAGE).signMessage('hello'))).toBe('no_rule');
-      permissions.setSigningAutoApprove(SITE, true);
-      permissions.revokePermission(SITE);
+      await permissions.setSigningAutoApprove(SITE, true, PAGE);
+      expect(await permissions.revokePermission(SITE)).toBe(true);
       expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
       // A request the core can't judge reads as not covered, unasked.
       calls.length = 0;
@@ -703,9 +722,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(calls).toEqual([]);
     });
 
-    test("a send the contract rule answers: the core reads the rule main wrote, with main's pause, its value cap and its own fee check", async () => {
-      permissions.grantPermission(SITE, 0, 100);
-      permissions.addTransactionAutoApprove(SITE, TX.to, SELECTOR, 100, TX.value);
+    test("a send the contract rule answers: the rule the core wrote from a confirmed send, with main's pause, its value cap and the core's own fee check", async () => {
+      await permissions.grantPermission(SITE, 0, 100, PAGE);
+      expect(await flaggedSend()).toEqual([{ added: true }]);
       const send = (request) => check({ kind: 'transaction', payload: SEND, paused: false, ...request });
       // A phone picks its own fee: the rule, the account and the pause decide.
       expect(await send({ accountType: 'remote' })).toEqual({ covered: true, reason: null });
@@ -740,31 +759,47 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(await notConfirmed(getSigner(0, { page: { ...PAGE, agent: true }, standing: { paused: false } }).signTransaction(built))).toBe(
         'custody'
       );
-      permissions.revokePermission(SITE);
+      // Removed (main's own, from the chrome), the rule answers nothing.
+      expect(await permissions.removeTransactionAutoApprove(SITE, TX.to, SELECTOR, 100)).toBe(true);
+      expect(await send({ accountType: 'remote' })).toEqual({ covered: false, reason: 'no_rule' });
+      expect(await flaggedSend()).toEqual([{ added: true }]);
+      await permissions.revokePermission(SITE);
       expect(await notConfirmed(signer.signTransaction(built))).toBe('no_rule');
     });
 
-    test('"Always allow": the flagged send signs, the core writes no rule and says `not_moved`, and the file stays main\'s', async () => {
-      permissions.grantPermission(SITE, 0, 100);
-      const file = path.join(root, 'dapp-permissions.json');
-      const before = fs.readFileSync(file);
-      const built = buildTransaction({ ...SEND, nonce: 7 });
-      const confirmation = await pageToken('dapp-send', 0, DAPP_TX, PAGE, HANDLE, { remember: true });
-      expect(calls.find((call) => call.method === 'approval.issue').params.payload).toEqual({ tx: expect.any(Object), remember: true });
-      const heard = [];
-      const raw = await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(built);
-      expect(Transaction.from(raw).from).toBe(MESSAGE_SIGNER);
-      expect(heard).toEqual([{ added: false, reason: 'not_moved' }]);
-      expect(sc.mainWritesRule(true, heard[0])).toBe(true);
-      // The core changed nothing in main's file.
-      expect(fs.readFileSync(file)).toEqual(before);
+    test('"Always allow": the core writes the rule as it signs and says so; not ticked, or not connected, none', async () => {
+      // Not connected: the core signs the confirmed send, and writes no rule.
+      expect(await flaggedSend()).toEqual([{ added: false, reason: 'not_exposed' }]);
+      await permissions.grantPermission(SITE, 0, 100, PAGE);
+      expect(calls.find((call) => call.method === 'approval.grant')).toMatchObject({
+        context: { caller: 'page', page: PAGE },
+        params: { store: 'dapp', change: { op: 'connect', account: 0, chain_id: 100 } },
+      });
+      expect(await flaggedSend()).toEqual([{ added: true }]);
+      expect(calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({
+        tx: expect.any(Object),
+        remember: true,
+      });
       // Not ticked: no flag, and no rule in the reply.
       const plain = await pageToken('dapp-send', 0, DAPP_TX);
       expect(calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).toEqual({ tx: expect.any(Object) });
-      await getSigner(0, { confirmation: plain, onRule: (rule) => heard.push(rule) }).signTransaction(built);
-      expect(heard).toEqual([{ added: false, reason: 'not_moved' }, null]);
-      expect(sc.mainWritesRule(true, null)).toBe(false);
-      expect(fs.readFileSync(file)).toEqual(before);
+      const heard = [];
+      await getSigner(0, { confirmation: plain, onRule: (rule) => heard.push(rule) }).signTransaction(
+        buildTransaction({ ...SEND, nonce: 7 })
+      );
+      expect(heard).toEqual([null]);
+      // The file holds Q9's limited rule, where an older build doesn't look.
+      const file = JSON.parse(fs.readFileSync(path.join(root, 'dapp-permissions.json'), 'utf8'));
+      expect(file[SITE].autoApprove).toEqual({
+        signing: false,
+        transactions: [],
+        limited: {
+          signing: null,
+          transactions: [
+            { to: TX.to.toLowerCase(), selector: SELECTOR, chainId: 100, maxValue: TX.value, grantedAt: expect.any(Number) },
+          ],
+        },
+      });
     });
   });
 
@@ -914,6 +949,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
                 beforeEffect: options.beforeEffect,
                 effectAllowed: options.effectAllowed,
                 pageToken: options.pageToken,
+                pageContext: options.pageContext,
               },
               request
             )),
@@ -1001,7 +1037,12 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       };
     }
 
-    beforeEach(() => {
+    // A PageContext for `key`, under which the core writes a grant or rule
+    // for this test's setup (design 0012, APB-2: every grant write is the
+    // core's, under the page's own PageContext).
+    const pageOf = (key) => ({ origin: key, top_origin: key, frame: 4, navigation: 9, agent: false });
+
+    beforeEach(async () => {
       approvals = [];
       answerWith = 'approved';
       running = [];
@@ -1009,11 +1050,11 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       deviceAsked = [];
       devices.ledger = device('ledger');
       devices.phone = device('phone');
-      permissions.grantPermission(SITE, 0, 100);
+      await permissions.grantPermission(SITE, 0, 100, pageOf(SITE));
     });
 
-    afterEach(() => {
-      permissions.revokePermission(SITE);
+    afterEach(async () => {
+      await permissions.revokePermission(SITE);
       // No signature for an attested page request goes as main's own: each
       // is under `page`, in the Agent's tab, with a token.
       const signs = calls.filter((call) => call.method.startsWith('sign.'));
@@ -1137,8 +1178,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     });
 
     test("a standing rule never answers it: the Agent decides, and the core refuses `{ standing }` in its tab (custody)", async () => {
-      permissions.setSigningAutoApprove(SITE, true);
-      permissions.addTransactionAutoApprove(SITE, TX.to, TX.data.slice(0, 10), 100, TX.value);
+      await permissions.setSigningAutoApprove(SITE, true, pageOf(SITE));
       const tab = agentTab();
       const answer = await tab.ask('personal_sign', ['0x68656c6c6f', SIGNER]);
       expect(require('ethers').verifyMessage('hello', answer.result)).toBe(SIGNER);
@@ -1275,7 +1315,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         ['the document navigates', (tab) => tab.guest.commit(`${SITE}/next`), { gone: true }],
         ['nothing changes', () => {}, null],
       ])('%s there: the signer\'s last step decides', async (_change, change, refused) => {
-        permissions.grantPermission(SITE, index, 100);
+        await permissions.grantPermission(SITE, index, 100, pageOf(SITE));
         const tab = agentTab();
         const hold = holdAt === 'service' ? holdService() : holdCore(holdAt);
         let answer;
@@ -1393,7 +1433,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         for (const hold of ledgerHolds) hold.release();
         await Promise.allSettled([...ledgerHolds.map((hold) => hold.done), ...running]);
         names.clear();
-        permissions.revokePermission(NAME);
+        await permissions.revokePermission(NAME);
       });
 
       describe.each(Object.keys(HOLDS))('%s held', (held) => {
@@ -1412,7 +1452,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             deviceAsked = [];
             running = [];
             names.set(NAME, IPNS_KEY);
-            permissions.grantPermission(NAME, LEDGER_INDEX, 100);
+            await permissions.grantPermission(NAME, LEDGER_INDEX, 100, pageOf(NAME));
             const tab = agentTab({ name: NAME });
             const hold = HOLDS[held](settledCall('approval.spend'));
             const asking = tab.ask(...ASKS[method](DEVICE_ADDRESS));
@@ -1443,8 +1483,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           for (const revoke of [true, false]) {
             calls.length = 0;
             deviceAsked = [];
-            permissions.grantPermission(SITE, LEDGER_INDEX, 100);
-            permissions.setSigningAutoApprove(SITE, true);
+            await permissions.grantPermission(SITE, LEDGER_INDEX, 100, pageOf(SITE));
+            await permissions.setSigningAutoApprove(SITE, true, pageOf(SITE));
             const tab = agentTab({ held: false });
             // The core's verdict for the choice, then again just before the
             // signer (APB-1b): the device session comes after the second.
@@ -1454,7 +1494,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             await hold.reached;
             // The rule answered (no prompt, no Agent), and the device session waits.
             expect({ revoke, approvals, asked: deviceAsked }).toEqual({ revoke, approvals: [], asked: [] });
-            if (revoke) permissions.setSigningAutoApprove(SITE, false);
+            if (revoke) await permissions.setSigningAutoApprove(SITE, false);
             hold.release();
             await hold.done;
             const answer = await asking;
@@ -1470,7 +1510,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             // The core's verdict: for the choice, just before the signer, and
             // inside the device session, last.
             expect(calls.filter((call) => call.method === 'approval.check')).toHaveLength(3);
-            permissions.setSigningAutoApprove(SITE, false);
+            await permissions.setSigningAutoApprove(SITE, false);
           }
         });
       });
@@ -1658,9 +1698,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       const request = { method: 'personal_sign', params: ['0x68656c6c6f', SAFE_ADDRESS] };
       try {
         // No rule for the Safe: refused, no approval.
-        permissions.grantPermission(SITE, SAFE_INDEX, 100);
+        await permissions.grantPermission(SITE, SAFE_INDEX, 100, PAGE);
         await expect(notConfirmed(sc.spendStandingSafeMessage(PAGE, SAFE_INDEX, request))).resolves.toBe('no_rule');
-        permissions.setSigningAutoApprove(SITE, true);
+        await permissions.setSigningAutoApprove(SITE, true, PAGE);
         // In custody: the rule never answers.
         await expect(notConfirmed(sc.spendStandingSafeMessage({ ...PAGE, agent: true }, SAFE_INDEX, request))).resolves.toBe('custody');
         const approval = await sc.spendStandingSafeMessage(PAGE, SAFE_INDEX, request);
@@ -1673,7 +1713,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         await expect(owner(approval).signTypedData(safeMessage(digest))).resolves.toMatch(/^0x[0-9a-f]{130}$/);
         await vaultBackend.approval.end(approval.id, PAGE);
       } finally {
-        permissions.revokePermission(SITE);
+        await permissions.revokePermission(SITE);
       }
     });
 
@@ -1709,5 +1749,278 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       await vaultBackend.unlock('testpass1');
       await expect(notConfirmed(owner(live).signTypedData(safeTx()))).resolves.toBe('unknown_token');
     }, 30_000);
+  });
+});
+
+// APB-2 (design 0012, "The files (Q10)", Q9): `dapp-permissions.json` is the
+// core's. Main names it in the hello's `grant_moved`, every write goes to the
+// core's write methods (main writes the file nowhere: a spy on `fs`), and
+// today's unlimited rules answer nothing. A profile from before the move,
+// with today's signing flag and a contract rule, prompts for both; "Always
+// allow" on each prompt has the core write the limited replacement and clear
+// today's rule in the same write, so the reference (the build before APB-2,
+// test/helpers/reference-dapp-permissions.js) then finds no rule for either.
+// Rolled back, the reference reads the core's file and sees the same grants.
+describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', () => {
+  const SELECTOR = TX.data.slice(0, 10);
+  const THIRD_SITE = 'https://third.example';
+  const TODAY_RULE = Object.freeze({ to: TX.to.toLowerCase(), selector: SELECTOR, chainId: 100, maxValue: TX.value });
+  // A profile written by a build before APB-2.
+  const TODAY = Object.freeze({
+    [SITE]: {
+      origin: SITE,
+      connectedAt: 1700000000000,
+      lastUsed: 1700000000001,
+      walletIndex: 0,
+      chainId: 100,
+      autoApprove: { signing: true, transactions: [TODAY_RULE] },
+    },
+    [OTHER_SITE]: {
+      origin: OTHER_SITE,
+      connectedAt: 1700000000000,
+      lastUsed: 1700000000000,
+      walletIndex: 0,
+      chainId: 1,
+      autoApprove: { signing: false, transactions: [] },
+    },
+  });
+  const SEND = Object.freeze({
+    to: TX.to,
+    value: TX.value,
+    data: TX.data,
+    chainId: 100,
+    gasLimit: TX.gasLimit,
+    maxFeePerGas: TX.maxFeePerGas,
+    maxPriorityFeePerGas: TX.maxPriorityFeePerGas,
+  });
+  const FS_WRITES = ['writeFileSync', 'appendFileSync', 'renameSync', 'copyFileSync', 'truncateSync', 'unlinkSync', 'rmSync', 'openSync'];
+  const FS_PROMISE_WRITES = ['writeFile', 'appendFile', 'rename', 'copyFile', 'truncate', 'unlink', 'rm', 'open'];
+
+  let root;
+  let core;
+  let calls;
+  let sc;
+  let permissions;
+  let reference;
+  let getSigner;
+  let buildTransaction;
+  let vaultBackend;
+  let spies;
+
+  const file = () => path.join(root, 'dapp-permissions.json');
+  const readReference = () => {
+    reference._resetCache();
+    return reference;
+  };
+  const coreRecords = async () => (await vaultBackend.approval.grants({ store: 'dapp' })).records;
+  const check = (request, page = PAGE) => sc.checkStanding(page, { account: 0, accountType: 'remote', ...request });
+  const message = { kind: 'message', payload: 'hello' };
+  const send = { kind: 'transaction', payload: SEND, paused: false };
+  async function flaggedSend(page = PAGE) {
+    const confirmation = await sc.issuePageConfirmation(
+      'dapp-send',
+      0,
+      { ...SEND, origin: page.origin },
+      { handle: HANDLE, context: page },
+      { remember: true }
+    );
+    const heard = [];
+    await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction(buildTransaction({ ...SEND, nonce: 7 }));
+    return heard;
+  }
+  async function refusal(promise) {
+    try {
+      await promise;
+    } catch (err) {
+      return err;
+    }
+    throw new Error('expected a refusal');
+  }
+  async function until(condition) {
+    for (let i = 0; i < 100 && !condition(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(condition()).toBe(true);
+  }
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'dapp-file-moved-'));
+    fs.writeFileSync(path.join(root, 'dapp-permissions.json'), JSON.stringify(TODAY, null, 2), { mode: 0o600 });
+    const { CoreClient } = require('../core/core-client');
+    core = new CoreClient({
+      spawn,
+      command: binary,
+      args: ['serve', '--data-dir', path.join(root, 'identity'), '--lock-dir', path.join(root, 'locks')],
+      log: quietLog,
+      shellVersion: 'jest',
+      grantRoot: root,
+    });
+    calls = [];
+    const request = core.request.bind(core);
+    core.request = (method, params, context, options) => {
+      calls.push({ method, context, params });
+      return request(method, params, context, options);
+    };
+    jest.resetModules();
+    jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
+    jest.doMock('../identity-manager', () => ({
+      getWalletRecord: () => null,
+      isHardwareWalletIndex: () => false,
+      recordLedgerAddressCheck: () => {},
+      recordRemoteAddressCheck: () => {},
+      WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+    }));
+    jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
+    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => ({}) }));
+    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => ({}) }));
+    // The reference reads the file where the core writes it.
+    jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
+    sc = require('./signing-confirmation');
+    ({ vaultBackend } = require('../core/vault-backend'));
+    ({ buildTransaction } = require('./transaction-service'));
+    ({ getSigner } = require('./signers'));
+    permissions = require('./dapp-permissions');
+    reference = require('../../../test/helpers/reference-dapp-permissions');
+    // Main's copy follows the core: read whole at the handshake, a key again
+    // for each approval.changed (core-process.js attaches it).
+    permissions.attachCore(core);
+    await core.start();
+    await permissions.whenLoaded();
+    await vaultBackend.importVault('testpass1', ABANDON);
+  });
+
+  afterAll(async () => {
+    await core.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    calls.length = 0;
+    spies = [...FS_WRITES.map((name) => jest.spyOn(fs, name)), ...FS_PROMISE_WRITES.map((name) => jest.spyOn(fs.promises, name))];
+  });
+
+  afterEach(() => {
+    // Main writes the dApp file nowhere: the core is its only writer. (A
+    // read opens it 'r'.)
+    for (const spy of spies) {
+      spy.mock.calls.forEach(([target, second]) => {
+        if (spy === fs.openSync || spy === fs.promises.open) {
+          if (second === undefined || second === 'r') return;
+        }
+        expect(String(target)).not.toMatch(/dapp-permissions\.json/);
+        if (typeof second === 'string') expect(second).not.toMatch(/dapp-permissions\.json/);
+      });
+      spy.mockRestore();
+    }
+    expect(unmovedWrites(calls)).toEqual([]);
+  });
+
+  test("the hello names the dApp file in grant_moved, and main's copy is the store the core read", async () => {
+    expect(core.service.helloParams(core).grant_moved).toEqual(['dapp']);
+    expect(permissions.getPermission(SITE)).toEqual(TODAY[SITE]);
+    expect(permissions.getPermission(OTHER_SITE)).toEqual(TODAY[OTHER_SITE]);
+    expect(await coreRecords()).toEqual([TODAY[SITE], TODAY[OTHER_SITE]]);
+    expect(calls.at(-1)).toMatchObject({ method: 'approval.grants', context: { caller: 'shell' } });
+  });
+
+  test("today's unlimited rules answer nothing (Q9): the site's signature and its send each prompt", async () => {
+    expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
+    expect(await check(send)).toEqual({ covered: false, reason: 'no_rule' });
+    const signer = getSigner(0, { page: PAGE, standing: {}, chainId: 100 });
+    const err = await refusal(signer.signMessage('hello'));
+    expect(err).toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'no_rule' });
+    // The older build still answers them in the file as it stands.
+    expect(readReference().getSigningAutoApprove(SITE)).toBe(true);
+    expect(readReference().isTransactionAutoApproved(SITE, TX.to, SELECTOR, 100, TX.value)).toBe(true);
+  });
+
+  test("Q9's transition: the limited replacements through the browser's own prompt; the reference then finds no rule for either", async () => {
+    // "Always allow" on the signing prompt (page/page-signing.js): Q9's
+    // limited rule, under the page, which clears today's flag.
+    expect(await permissions.setSigningAutoApprove(SITE, true, PAGE)).toBe(true);
+    expect(calls.find((call) => call.method === 'approval.grant')).toMatchObject({
+      context: { caller: 'page', page: PAGE },
+      params: { store: 'dapp', change: { op: 'signing' } },
+    });
+    // "Always allow" on the send's prompt (page/page-sends.js): the core
+    // writes the limited contract rule as it signs, clearing today's.
+    expect(await flaggedSend()).toEqual([{ added: true }]);
+    // The new build answers both.
+    expect(await check(message)).toEqual({ covered: true, reason: null });
+    expect(await check(send)).toEqual({ covered: true, reason: null });
+    // The file: the limited rules where an older build doesn't look, today's
+    // cleared, the rest as it was.
+    const written = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    expect(written[SITE]).toEqual({
+      ...TODAY[SITE],
+      autoApprove: {
+        signing: false,
+        transactions: [],
+        limited: {
+          signing: { grantedAt: expect.any(Number) },
+          transactions: [{ ...TODAY_RULE, grantedAt: expect.any(Number) }],
+        },
+      },
+    });
+    expect(written[OTHER_SITE]).toEqual(TODAY[OTHER_SITE]);
+    // An older build, reading the core's file, finds no rule for either, and
+    // prompts for both.
+    const older = readReference();
+    expect(older.getSigningAutoApprove(SITE)).toBe(false);
+    expect(older.isTransactionAutoApproved(SITE, TX.to, SELECTOR, 100, TX.value)).toBe(false);
+    expect(older.isTransactionAutoApproved(SITE, TX.to, SELECTOR, 100, '0')).toBe(false);
+    expect(older.getPermission(SITE).walletIndex).toBe(0);
+    // Main's copy followed the core's change (approval.changed).
+    await until(() => permissions.getPermission(SITE)?.autoApprove?.limited?.transactions?.length === 1);
+  });
+
+  test('rollback: the reference reads the file the core wrote and sees the same grants', async () => {
+    const third = { ...PAGE, origin: THIRD_SITE, top_origin: THIRD_SITE };
+    await permissions.grantPermission(THIRD_SITE, 1, 10, third);
+    await permissions.updateWalletIndex(THIRD_SITE, 2, third);
+    await permissions.updateLastUsed(THIRD_SITE, 100, third);
+    expect(await permissions.revokePermission(OTHER_SITE)).toBe(true);
+    // The chrome's revoke goes as the chrome (design 0012, API).
+    expect(calls.filter((call) => call.method === 'approval.revoke').at(-1)).toMatchObject({
+      params: { store: 'dapp', key: OTHER_SITE, what: 'grant' },
+      context: { caller: 'chrome' },
+    });
+    const records = await coreRecords();
+    const older = readReference();
+    expect(older.getAllPermissions()).toEqual(records);
+    for (const record of records) expect(older.getPermission(record.origin)).toEqual(record);
+    expect(older.getPermission(THIRD_SITE)).toMatchObject({ origin: THIRD_SITE, walletIndex: 2, chainId: 100 });
+    // A grant revoked in the new build stays revoked.
+    expect(older.getPermission(OTHER_SITE)).toBeNull();
+    // The text is today's: JSON.stringify(…, null, 2).
+    const text = fs.readFileSync(file(), 'utf8');
+    expect(JSON.stringify(JSON.parse(text), null, 2)).toBe(text);
+    // Main's copy is the core's.
+    await until(() => permissions.getPermission(OTHER_SITE) === null);
+    expect(permissions.getAllPermissions().map((record) => record.origin).sort()).toEqual(records.map((r) => r.origin).sort());
+  });
+
+  test("an account change for a key the core holds no grant for: the core writes nothing, and main's change rejects", async () => {
+    const fourth = 'https://fourth.example';
+    const page = { ...PAGE, origin: fourth, top_origin: fourth };
+    const before = fs.readFileSync(file(), 'utf8');
+    await expect(permissions.updateWalletIndex(fourth, 1, page)).rejects.toThrow('The account change was not recorded');
+    expect(calls.filter((call) => call.method === 'approval.grant').at(-1)).toMatchObject({
+      params: { store: 'dapp', change: { op: 'account', account: 1 } },
+      context: { caller: 'page', page },
+    });
+    expect((await coreRecords()).map((record) => record.origin)).not.toContain(fourth);
+    expect(permissions.getPermission(fourth)).toBeNull();
+    expect(fs.readFileSync(file(), 'utf8')).toBe(before);
+  });
+
+  test("an account deleted: the core revokes its grants (main's own), and the reference sees none", async () => {
+    const revoked = await permissions.revokePermissionsForWalletIndex(0);
+    expect(revoked).toEqual([SITE]);
+    expect(calls.find((call) => call.method === 'approval.forget_account')).toMatchObject({
+      context: { caller: 'shell' },
+      params: { wallet_index: 0 },
+    });
+    expect(permissions.getPermission(SITE)).toBeNull();
+    expect(readReference().getPermission(SITE)).toBeNull();
+    expect(await check(message)).toEqual({ covered: false, reason: 'no_rule' });
   });
 });

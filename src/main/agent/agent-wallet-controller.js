@@ -475,6 +475,15 @@ class AgentWalletController {
     const permission = this.getPermission(permissionKey);
 
     if (payload.method === 'eth_requestAccounts') {
+      // The grant is the identity core's to write, under the page's own
+      // PageContext (freedom-core design 0012, APB-2): only a page's request
+      // main attested has one. Refused before the approval otherwise.
+      if (!context.attested || typeof context.pageContext !== 'function') {
+        throw new AutomationError(
+          ERROR_CODES.POLICY_DENIED,
+          'A wallet connection is written only for a page’s own request'
+        );
+      }
       const defaultWalletIndex = permission?.walletIndex ?? this.identity.getActiveWalletIndex();
       const decision = await this.#approve(context, {
         action: 'wallet_connection',
@@ -502,29 +511,37 @@ class AgentWalletController {
       // A request main attested writes only while main still holds it: not
       // answered (its deadline, its page gone), the name checked again, and
       // the page still under its key in the same run as the write.
+      // The write goes to the identity core in that run, under the page's
+      // PageContext (design 0012, APB-2), and the connect answers once it is
+      // written: one that fails (a widening whose write failed isn't
+      // applied) fails the request.
       await this.#underMain(context, () => {
-        const current = context.attested ? this.getPermission(permissionKey) : permission;
+        const page = context.pageContext();
+        const current = this.getPermission(permissionKey);
         let grant;
+        let written;
         if (current) {
           grant = current.walletIndex !== selected.index ? 'updated' : 'unchanged';
-          if (grant === 'updated') {
-            this.updateWalletIndex(permissionKey, selected.index);
-          }
-          this.updateLastUsed(permissionKey, chainId);
+          written =
+            grant === 'updated'
+              ? Promise.resolve(this.updateWalletIndex(permissionKey, selected.index, page))
+              : Promise.resolve(true);
+          Promise.resolve(this.updateLastUsed(permissionKey, chainId, page)).catch(() => {});
         } else {
           grant = 'created';
-          this.grantPermission(permissionKey, selected.index, chainId);
+          written = Promise.resolve(this.grantPermission(permissionKey, selected.index, chainId, page));
         }
         // What this write did, decided here, told to main in the same run
         // (freedom-core design 0011, PRQ-6): main queues a created grant's
-        // events at this write, in the key's order.
-        if (context.attested && typeof context.grantWritten === 'function') {
+        // events at this write, in the key's order, sent once it is written.
+        if (typeof context.grantWritten === 'function') {
           try {
-            context.grantWritten({ grant, walletIndex: selected.index, account: selected.address, chainId });
+            context.grantWritten({ grant, walletIndex: selected.index, account: selected.address, chainId, written });
           } catch {
             // Main's events never undo the write.
           }
         }
+        return written;
       });
       return {
         providerResult: [selected.address],
@@ -682,7 +699,7 @@ class AgentWalletController {
     // holds the request after the send's wait, checked the same way. The
     // hash itself reaches the page only while its name holds, which main
     // checks when it answers.
-    await this.#underMain(context, () => this.updateLastUsed(permissionKey, chainId), { required: false });
+    await this.#underMain(context, () => this.#touch(context, permissionKey, chainId), { required: false });
     return {
       providerResult: result.hash,
       receipt: {
@@ -771,7 +788,7 @@ class AgentWalletController {
     // holds the request after the signature's wait, checked the same way.
     // The signature itself reaches the page only while its name holds, which
     // main checks when it answers.
-    await this.#underMain(context, () => this.updateLastUsed(permissionKey, chain.chainId), { required: false });
+    await this.#underMain(context, () => this.#touch(context, permissionKey, chain.chainId), { required: false });
     return {
       providerResult: signature,
       receipt: {
@@ -838,6 +855,20 @@ class AgentWalletController {
     if (ready && typeof context.effectAllowed === 'function' && context.effectAllowed() === true) return effect();
     if (required) throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The page’s wallet request is no longer open');
     return undefined;
+  }
+
+  /**
+   * A grant's last use and chain, which the identity core writes under the
+   * page's PageContext (design 0012, APB-2): none without one. Sent in the
+   * caller's run; nothing waits on it, and it never rejects.
+   */
+  #touch(context, permissionKey, chainId) {
+    if (typeof context.pageContext !== 'function') return;
+    try {
+      Promise.resolve(this.updateLastUsed(permissionKey, chainId, context.pageContext())).catch(() => {});
+    } catch {
+      // The signature or send stands.
+    }
   }
 
   async #approve(context, request) {

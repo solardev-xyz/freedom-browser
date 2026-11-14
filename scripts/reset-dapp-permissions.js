@@ -1,33 +1,27 @@
 #!/usr/bin/env node
 /**
- * Reset dApp permissions
- * Usage: npm run reset:dapp-permissions
+ * `npm run dapp:reset`: refuses, and touches nothing.
+ *
+ * It used to delete `dapp-permissions.json`. Since APB-2 (freedom-core design
+ * 0012) the identity core is that file's only writer: it holds the grants in
+ * memory, so a file deleted behind it resets nothing, and its next write puts
+ * the grants back. A site's grant and rules are revoked through the core, from
+ * the browser's own controls, and this command says so and exits non-zero.
  */
 
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const MESSAGE = [
+  'npm run dapp:reset no longer deletes dapp-permissions.json, and nothing was changed.',
+  "Since APB-2 the dApp permissions are the identity core's (freedom-core design 0012): it is the file's",
+  'only writer, so a file deleted behind it resets nothing.',
+  'Revoke a site from the browser: open it, then in the wallet panel use its connection banner',
+  '(Disconnect, or Manage permissions to turn its auto-approve rules off).',
+].join('\n');
 
-// Determine userData path based on platform
-function getUserDataPath() {
-  const appName = 'Freedom';
-  switch (process.platform) {
-    case 'darwin':
-      return path.join(os.homedir(), 'Library', 'Application Support', appName);
-    case 'win32':
-      return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), appName);
-    default: // linux and others
-      return path.join(os.homedir(), '.config', appName);
-  }
+function main() {
+  console.error(MESSAGE);
+  return 1;
 }
 
-const permissionsFile = path.join(getUserDataPath(), 'dapp-permissions.json');
+if (require.main === module) process.exitCode = main();
 
-console.log('dApp permissions file:', permissionsFile);
-
-if (fs.existsSync(permissionsFile)) {
-  fs.unlinkSync(permissionsFile);
-  console.log('✓ dApp permissions reset (file deleted)');
-} else {
-  console.log('✓ No permissions file found (already clean)');
-}
+module.exports = { MESSAGE, main };

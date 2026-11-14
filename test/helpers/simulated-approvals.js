@@ -21,10 +21,24 @@
  *     its page or by the wallet (`shell`); `{ safe }` signs an owner's typed
  *     data or a send's executor (which ends it) only for its holder, until
  *     `approval.end`; a Safe's new send approval ends its older one;
+ *   - the dApp store is the core's (APB-2, `grant_moved` names `dapp`): its
+ *     write methods (`approval.grant` under `page` for the page's own key,
+ *     never a transaction rule; `approval.revoke` under a page for its own
+ *     key, the chrome (`'chrome'`) or main (`shell`); `approval.touch` under
+ *     `page`; `approval.forget_account`) and `approval.grants` change and
+ *     read `dapp`, entries in today's format with Q9's limited rules under
+ *     `autoApprove.limited` ("Always allow" for signing clears today's flag
+ *     in the same change);
  *   - a site's standing rule answers `approval.check` and a `sign.*` under
- *     `page` with `{ standing }` as the test's `setStanding(fn)` says (none
- *     by default), and a flagged `dapp-send`'s signature replies that no
- *     rule was written (`not_moved`: the dApp file hasn't moved to the core).
+ *     `page` with `{ standing }` as the test's `setStanding(fn)` says, or by
+ *     default as Q9 has it from that store: outside custody, the grant
+ *     exposing the account, a live limited rule (30 days from its
+ *     `grantedAt`; a contract rule's call and `maxValue`), and for a send
+ *     not paused; today's rules answer nothing (Q9's rate and the fee check
+ *     are the real core's, tested in signing-confirmation.integration);
+ *   - a flagged `dapp-send`'s signature writes the limited contract rule for
+ *     the page's key when its grant exposes the account, replacing today's
+ *     rule for the same call, and replies `{ added: true }` (or why not).
  * Every call is recorded in `calls` as `{ method, params, page }`.
  */
 const crypto = require('crypto');
@@ -32,6 +46,116 @@ const { TypedDataEncoder } = require('ethers');
 
 const PAGE_KINDS = new Set(['dapp-send', 'sign-message', 'sign-typed-data', 'safe-message']);
 const MAX_OUTSTANDING = 32;
+// Q9: a limited rule answers for 30 days of the wall clock.
+const RULE_TTL_MS = 2_592_000_000;
+
+const coded = (message, code) => Object.assign(new Error(message), { code });
+
+/**
+ * The dApp store as the core holds it once `dapp-permissions.json` has
+ * moved to it (design 0012, APB-2): key -> entry, today's format, Q9's
+ * limited rules under `autoApprove.limited`. `wallNow` is its wall clock.
+ */
+function simulatedDappStore(wallNow) {
+  const entries = new Map();
+  const clone = (value) => (value == null ? null : JSON.parse(JSON.stringify(value)));
+  const live = (rule) => {
+    const at = wallNow();
+    return typeof rule?.grantedAt === 'number' && rule.grantedAt <= at && at < rule.grantedAt + RULE_TTL_MS;
+  };
+  const sameCall = (rule, to, selector, chainId) =>
+    typeof rule?.to === 'string' &&
+    typeof rule?.selector === 'string' &&
+    rule.to.toLowerCase() === to.toLowerCase() &&
+    rule.selector.toLowerCase() === selector.toLowerCase() &&
+    rule.chainId === chainId;
+  const limitedOf = (entry) => {
+    entry.autoApprove = entry.autoApprove || { signing: false, transactions: [] };
+    if (!entry.autoApprove.limited || typeof entry.autoApprove.limited !== 'object') {
+      entry.autoApprove.limited = { signing: null, transactions: [] };
+    }
+    return entry.autoApprove.limited;
+  };
+  return {
+    entries,
+    entry: (key) => clone(entries.get(key)),
+    records: () => [...entries.values()].map(clone).sort((a, b) => b.lastUsed - a.lastUsed),
+    /** A file the core read at its start, as given. */
+    seed(key, entry) {
+      entries.set(key, clone(entry));
+    },
+    exposes: (key, account) => entries.get(key)?.walletIndex === account,
+    connect(key, account, chainId) {
+      const now = wallNow();
+      entries.set(key, {
+        origin: key,
+        connectedAt: now,
+        lastUsed: now,
+        walletIndex: account,
+        chainId,
+        autoApprove: { signing: false, transactions: [] },
+      });
+    },
+    signingRule: (key) => live(entries.get(key)?.autoApprove?.limited?.signing),
+    transactionRule(key, to, selector, chainId, value) {
+      const rules = entries.get(key)?.autoApprove?.limited?.transactions;
+      return (
+        Array.isArray(rules) &&
+        rules.some((rule) => sameCall(rule, to, selector, chainId) && live(rule) && BigInt(value || 0) <= BigInt(rule.maxValue))
+      );
+    },
+    allowSigning(key) {
+      const entry = entries.get(key);
+      if (!entry) return false;
+      limitedOf(entry).signing = { grantedAt: wallNow() };
+      entry.autoApprove.signing = false;
+      return true;
+    },
+    allowTransaction(key, to, selector, chainId, value) {
+      const entry = entries.get(key);
+      if (!entry) return false;
+      const limited = limitedOf(entry);
+      const rule = { to: to.toLowerCase(), selector: selector.toLowerCase(), chainId, maxValue: BigInt(value || 0).toString(), grantedAt: wallNow() };
+      limited.transactions = (limited.transactions || []).filter((r) => !sameCall(r, to, selector, chainId));
+      limited.transactions.push(rule);
+      entry.autoApprove.transactions = (entry.autoApprove.transactions || []).filter((r) => !sameCall(r, to, selector, chainId));
+      return true;
+    },
+    signingOff(key) {
+      const entry = entries.get(key);
+      if (!entry) return false;
+      entry.autoApprove = entry.autoApprove || { signing: false, transactions: [] };
+      entry.autoApprove.signing = false;
+      if (entry.autoApprove.limited) entry.autoApprove.limited.signing = null;
+      return true;
+    },
+    removeTransaction(key, to, selector, chainId) {
+      const rules = entries.get(key)?.autoApprove;
+      if (!rules) return false;
+      const before = (rules.transactions || []).length + (rules.limited?.transactions || []).length;
+      rules.transactions = (rules.transactions || []).filter((r) => !sameCall(r, to, selector, chainId));
+      if (rules.limited) rules.limited.transactions = (rules.limited.transactions || []).filter((r) => !sameCall(r, to, selector, chainId));
+      return before !== rules.transactions.length + (rules.limited?.transactions || []).length;
+    },
+    /** Q9's reading of a request, but its rate and the fee check. */
+    covers(page, { request, paused }) {
+      if (page.agent !== false) return { covered: false, reason: 'custody' };
+      const key = page.origin;
+      if (!this.exposes(key, request.account)) return { covered: false, reason: 'no_rule' };
+      if (request.kind === 'transaction') {
+        const { tx } = request;
+        if (request.account_kind === 'safe' || typeof tx?.to !== 'string' || !/^0x[0-9a-fA-F]{8}/.test(tx.data || '')) {
+          return { covered: false, reason: 'no_rule' };
+        }
+        if (!this.transactionRule(key, tx.to, tx.data.slice(0, 10), Number(tx.chain_id), tx.value)) {
+          return { covered: false, reason: 'no_rule' };
+        }
+        return paused === false ? { covered: true } : { covered: false, reason: 'paused' };
+      }
+      return this.signingRule(key) ? { covered: true } : { covered: false, reason: 'no_rule' };
+    },
+  };
+}
 
 function stable(value) {
   if (value === undefined) return 'null';
@@ -97,14 +221,19 @@ function simulatedApprovals() {
   // A site's standing rule, as the core reads it: `(page, { request,
   // chain_id?, paused? })` → `{ covered, reason? }`. None answers by default.
   const noRule = () => ({ covered: false, reason: 'no_rule' });
-  let standing = noRule;
+  // The core's wall clock, which Q9's expiry reads (setWallNow to move it).
+  let wallNow = () => Date.now();
+  const dapp = simulatedDappStore(() => wallNow());
+  const storeRule = (page, params) => dapp.covers(page, params);
+  let standing = storeRule;
 
   const pageOf = (context, handle) =>
     context ? { origin: context.origin, frame: context.frame, navigation: context.navigation, handle } : null;
   const digestOf = (kind, account, payload, page) =>
     stable({ kind, account: account ?? null, facts: facts(kind, payload), page: page ?? null });
 
-  // Whether the last token `take` spent was a flagged dApp send's.
+  // The page of the last token `take` spent, when it was a flagged dApp
+  // send's.
   let remembered = null;
 
   // Spends `token` for a request: burnt whatever the outcome.
@@ -119,7 +248,7 @@ function simulatedApprovals() {
     if (!request || entry.digest !== digestOf(entry.kind, request.account, request.payload, request.page)) {
       throw refused('mismatch');
     }
-    remembered = entry.remember === true && Boolean(request.page);
+    remembered = entry.remember === true && request.page ? request.page : null;
     return entry;
   }
 
@@ -189,6 +318,68 @@ function simulatedApprovals() {
       const answer = standing(context, params) || noRule();
       return answer.covered === true ? { covered: true } : { covered: false, reason: answer.reason ?? 'no_rule' };
     },
+    // The dApp store's writes (APB-2): a page's for its own key, main's own
+    // as `shell`.
+    async grant(params, context = null) {
+      calls.push({ method: 'approval.grant', params, page: context });
+      const { store, change } = params;
+      // The core admits `approval.grant` from a page or main, never the chrome.
+      if (context === 'chrome') throw coded('approval.grant: not open to the chrome', 'forbidden');
+      if (store !== 'dapp' || !context) throw coded("this caller can't write this store's grants", 'forbidden');
+      if (change?.op === 'transaction') throw coded('a transaction rule comes only with a confirmed send', 'forbidden');
+      if (change && 'key' in change) throw coded('change: a page changes its own grant', 'invalid_argument');
+      const key = context.origin;
+      if (change?.op === 'connect') dapp.connect(key, change.account, change.chain_id);
+      else if (change?.op === 'account') {
+        if (!dapp.entries.has(key)) return { grant: null };
+        Object.assign(dapp.entries.get(key), { walletIndex: change.account, lastUsed: wallNow() });
+      } else if (change?.op === 'signing') {
+        if (!dapp.allowSigning(key)) return { grant: null };
+      } else throw coded('change: unknown op for this store', 'invalid_argument');
+      return { grant: dapp.entry(key) };
+    },
+    async revoke(params, context = null) {
+      calls.push({ method: 'approval.revoke', params, page: context });
+      const { store, key, what } = params;
+      if (store !== 'dapp') throw coded('not moved', 'not_moved');
+      if (context && context !== 'chrome' && context.origin !== key) {
+        throw coded('a page revokes only its own grant', 'forbidden');
+      }
+      let revoked;
+      if (what === 'grant') revoked = dapp.entries.delete(key);
+      else if (what === 'signing') revoked = dapp.signingOff(key);
+      else if (what?.transaction) {
+        const { to, selector, chain_id: chainId } = what.transaction;
+        revoked = dapp.removeTransaction(key, to, selector, chainId);
+      } else throw coded('what: unknown for this store', 'invalid_argument');
+      return { revoked };
+    },
+    async touch(params, context = null) {
+      calls.push({ method: 'approval.touch', params, page: context });
+      if (params.store !== 'dapp') throw coded('not moved', 'not_moved');
+      if (!context) throw coded('only a page marks its own use', 'forbidden');
+      const entry = dapp.entries.get(context.origin);
+      if (entry) {
+        entry.lastUsed = wallNow();
+        if (params.chain_id !== undefined) entry.chainId = params.chain_id;
+      }
+      return {};
+    },
+    async forgetAccount(walletIndex) {
+      calls.push({ method: 'approval.forget_account', params: { wallet_index: walletIndex }, page: null });
+      const keys = [...dapp.entries.keys()].filter((key) => dapp.exposes(key, walletIndex));
+      for (const key of keys) dapp.entries.delete(key);
+      return { keys };
+    },
+    async grants(params) {
+      calls.push({ method: 'approval.grants', params, page: null });
+      if (params.store !== 'dapp') return { records: [] };
+      if (params.key !== undefined) {
+        const entry = dapp.entry(params.key);
+        return { records: entry ? [entry] : [] };
+      }
+      return { records: dapp.records() };
+    },
   };
 
   /**
@@ -236,11 +427,16 @@ function simulatedApprovals() {
         const fits = page ? entry.kind === 'dapp-send' : entry.kind === 'wallet-send' || entry.kind === 'executor-send';
         return fits ? { account, payload: { tx: request.tx }, page: bound } : null;
       });
-      // A flagged dApp send: the core signs and writes no rule before the
-      // dApp file moves to it (design 0012, The model).
-      const spent = remembered;
+      // A flagged dApp send: the core writes the limited contract rule for
+      // the page's key as it signs (design 0012, The model, APB-2).
+      const flagged = remembered;
       remembered = null;
-      return spent ? { added: false, reason: 'not_moved' } : null;
+      if (!flagged) return null;
+      const { tx } = request;
+      if (!dapp.exposes(flagged.origin, account)) return { added: false, reason: 'not_exposed' };
+      if (typeof tx?.to !== 'string' || !/^0x[0-9a-fA-F]{8}/.test(tx.data || '')) return { added: false, reason: 'no_rule' };
+      dapp.allowTransaction(flagged.origin, tx.to, tx.data.slice(0, 10), Number(tx.chain_id), tx.value);
+      return { added: true };
     } else if (method === 'sign.message') {
       take(token, minter, (entry) =>
         entry.kind === 'sign-message' && page ? { account, payload: { message: request.message }, page: bound } : null
@@ -263,9 +459,17 @@ function simulatedApprovals() {
     setNow(fn) {
       now = fn;
     },
-    /** The site's standing rule the core reads (`approval.check`, `{ standing }`). */
+    /**
+     * The site's standing rule the core reads (`approval.check`, `{
+     * standing }`); none given, Q9's reading of the dApp store.
+     */
     setStanding(fn) {
-      standing = typeof fn === 'function' ? fn : noRule;
+      standing = typeof fn === 'function' ? fn : storeRule;
+    },
+    /** The dApp store the core holds (APB-2). */
+    dapp,
+    setWallNow(fn) {
+      wallNow = fn;
     },
     openSafeApprovals: () => safes.size,
     isSafeApprovalOpen: (id) => safes.has(id),
@@ -284,8 +488,10 @@ function simulatedApprovals() {
       safes.clear();
       executorRefusal = null;
       now = () => Date.now();
-      standing = noRule;
+      wallNow = () => Date.now();
+      standing = storeRule;
       remembered = null;
+      dapp.entries.clear();
     },
   };
 }

@@ -544,7 +544,9 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
       const confirmation = await confirmations.issuePageConfirmation('dapp-send', 0, send, page, { remember });
       await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction({ ...send, nonce: 1, type: 0 });
     }
-    expect(heard).toEqual([{ added: false, reason: 'not_moved' }, null]);
+    // The dApp file is the core's (APB-2): the core decides the rule as it
+    // signs, and this page's grant doesn't expose the account.
+    expect(heard).toEqual([{ added: false, reason: 'not_exposed' }, null]);
   });
 });
 

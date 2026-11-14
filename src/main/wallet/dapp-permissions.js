@@ -1,11 +1,38 @@
 /**
- * dApp Permissions Manager
+ * dApp Permissions, kept by the identity core (freedom-core design 0012,
+ * APB-2).
  *
- * Manages which dApps (origins) have been granted permission to connect
- * to the wallet. Permissions are persisted to disk and include:
- * - Which wallet index is exposed to the dApp
- * - Which chain was last used
- * - Connection timestamps
+ * `dapp-permissions.json` has moved to the core (the hello's `grant_moved`,
+ * core/core-client.js): the core is its only writer, in today's format, and
+ * main writes it nowhere. Each change goes to the core's write methods
+ * ("The files (Q10)", API):
+ * - **A page's**, under `page` with the request's PageContext, for its own
+ *   key: a connect and its account (`approval.grant`, `connect` and
+ *   `account`), its last use and chain (`approval.touch`), and "Always
+ *   allow" on a signing prompt (`approval.grant`'s `signing`: Q9's limited
+ *   rule, which clears today's flag in the same write). A transaction rule
+ *   comes only with the confirmed send it was ticked on: the core writes it
+ *   as it signs, and says so in `sign.transaction`'s reply.
+ * - **The chrome's**, as `chrome`: a revoke from its settings, a site's
+ *   signing rule or contract rule turned off there (`approval.revoke`; it
+ *   only narrows). Main relays them from the chrome's IPC.
+ * - **Main's own**, as `shell`: an account deleted
+ *   (`approval.forget_account`).
+ *
+ * A failed write is reported as the core reports it: a widening (a connect,
+ * a rule) isn't applied, so a connect fails; a narrowing (a revoke, a rule
+ * turned off) stands in the core's memory and isn't saved, so a restart
+ * before the next save brings the old file back; and a change after which
+ * the directory couldn't be flushed is in place but not durable
+ * (`durable: false`). Each is logged, as today's failed saves are.
+ *
+ * Main keeps a copy of the store as the core holds it, for its own checks
+ * (whether a site is connected, and with which account): read whole with
+ * `approval.grants` at each start of the core, and a key's entry again for
+ * each `approval.changed` the core sends and at each of main's writes. The
+ * chrome's reads ask the core itself. Today's rules (`autoApprove.signing`,
+ * `autoApprove.transactions`) answer nothing from here on (Q9): the core
+ * judges every standing rule (`approval.check`, `{ standing }`).
  *
  * A grant revoked, or its account changed, is told to whoever listens
  * (`onGrantChanged`): main sends `accountsChanged` to every live document
@@ -15,19 +42,32 @@
  */
 
 const { ipcMain } = require('electron');
-const { getFreedomDataPath } = require('../freedom-root');
-const fs = require('fs');
-const { writeFileAtomicSync } = require('../lib/atomic-file');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
-const PERMISSIONS_FILE = 'dapp-permissions.json';
+const STORE = 'dapp';
+// The caller of a revoke from the chrome's settings (design 0012, API).
+const CHROME = 'chrome';
 const GRANT_REFUSED = 'A dApp connection is granted only from its own prompt';
 const SIGNING_RULE_REFUSED = 'Signing auto-approve is turned on only from a signing prompt';
-const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
+const PAGE_ONLY = 'A site’s grant is written only under its own page';
+// How long a page's request waits for main's first copy of the store
+// before it reads it as it stands (empty: no site connected).
+const FIRST_LOAD_WAIT_MS = 15_000;
 
-// In-memory cache of permissions
-let permissionsCache = null;
+// Main's copy of the store, as the core holds it: key -> entry.
+const grants = new Map();
+// The order of main's reads and writes of each key, as the core answers
+// them in the order they were sent: an answer older than the one already
+// applied is dropped. `seq` counts every one sent.
+let seq = 0;
+const applied = new Map();
+let wholeAt = 0;
+
+// The core client main's copy follows, its first load, and who waits on it.
+let attachedCore = null;
+let loadedOnce = false;
+let loadWaiters = [];
 
 // Called with { key, walletIndex } when a grant is revoked (walletIndex
 // null) or its account changes.
@@ -55,113 +95,216 @@ function grantChanged(key, walletIndex) {
   }
 }
 
-/**
- * Get the path to the permissions file
- */
-function getPermissionsPath() {
-  return getFreedomDataPath(PERMISSIONS_FILE);
+function vault() {
+  return require('../core/vault-backend').vaultBackend;
 }
 
 /**
- * Load permissions from disk
- * @returns {Object} Map of origin -> permission data
+ * A key's entry as the core answered it, sent at `at`, into main's copy:
+ * unless an answer sent later has been applied already. A revocation, or
+ * an account changed, is told (`onGrantChanged`); a connect isn't (`silent`:
+ * its dispatcher tells it).
  */
+function applyEntry(key, entry, at, { silent = false } = {}) {
+  if (at < (applied.get(key) || 0) || at < wholeAt) return;
+  applied.set(key, at);
+  const before = grants.get(key) || null;
+  const record = entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : null;
+  if (record) grants.set(key, record);
+  else grants.delete(key);
+  if (!before || silent) return;
+  if (!record) grantChanged(key, null);
+  else if (record.walletIndex !== before.walletIndex) grantChanged(key, record.walletIndex);
+}
+
+/** The core's records, keyed as the file keys them (each `origin`). */
+function keyed(records) {
+  const out = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    if (record && typeof record === 'object' && typeof record.origin === 'string') {
+      const key = normalizeOrigin(record.origin);
+      if (key) out.set(key, record);
+    }
+  }
+  return out;
+}
+
+/** The store as the core holds it, whole: main's copy replaced. */
+async function refreshPermissions() {
+  const at = ++seq;
+  const { records } = await vault().approval.grants({ store: STORE });
+  const next = keyed(records);
+  if (at < wholeAt) return;
+  for (const key of [...grants.keys()]) {
+    if (!next.has(key)) applyEntry(key, null, at);
+  }
+  for (const [key, record] of next) applyEntry(key, record, at);
+  wholeAt = at;
+}
+
+/** A key's entry as the core holds it, into main's copy; null for none. */
+async function refreshGrant(origin) {
+  const key = normalizeOrigin(origin);
+  if (!key) return null;
+  const at = ++seq;
+  const { records } = await vault().approval.grants({ store: STORE, key });
+  const entry = keyed(records).get(key) || null;
+  applyEntry(key, entry, at);
+  return entry;
+}
+
+/** A key's entry read again after a write that answers no entry. */
+function reread(key) {
+  refreshGrant(key).catch((err) =>
+    console.error('[DAppPermissions] Failed to read a changed permission:', err?.message || err)
+  );
+}
+
+function markLoaded() {
+  loadedOnce = true;
+  const waiters = loadWaiters;
+  loadWaiters = [];
+  for (const resolve of waiters) resolve();
+}
+
+/**
+ * core-process.js: main's copy follows `client`, the core client, from its
+ * first handshake: read whole at each start of the core (a restarted core
+ * reads the file again), and a key again for each `approval.changed`.
+ */
+function attachCore(client) {
+  if (!client || typeof client.on !== 'function' || client === attachedCore) return;
+  attachedCore = client;
+  client.on('ready', () => {
+    refreshPermissions()
+      .catch((err) => console.error('[DAppPermissions] Failed to load permissions:', err?.message || err))
+      .finally(markLoaded);
+  });
+  // A core that fails to start leaves the store unread: a page's request
+  // then reads no grant rather than waiting.
+  client.on('failed', markLoaded);
+  client.on('event', (name, data) => {
+    if (name !== 'approval.changed' || data?.store !== STORE || typeof data.key !== 'string') return;
+    refreshGrant(data.key).catch((err) =>
+      console.error('[DAppPermissions] Failed to read a changed permission:', err?.message || err)
+    );
+  });
+}
+
+/**
+ * Resolves once main's copy has been read from the core the first time (or
+ * that failed), at once with no core attached, and at the latest after
+ * FIRST_LOAD_WAIT_MS: a page's request reads the grants after it.
+ */
+function whenLoaded() {
+  if (loadedOnce || !attachedCore) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, FIRST_LOAD_WAIT_MS);
+    timer.unref?.();
+    loadWaiters.push(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/** Main's copy of the store: key -> entry. */
 function loadPermissions() {
-  if (permissionsCache !== null) {
-    return permissionsCache;
-  }
-
-  try {
-    const filePath = getPermissionsPath();
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      permissionsCache = JSON.parse(data);
-    } else {
-      permissionsCache = {};
-    }
-  } catch (err) {
-    console.error('[DAppPermissions] Failed to load permissions:', err);
-    permissionsCache = {};
-  }
-
-  return permissionsCache;
+  return Object.fromEntries(grants);
 }
 
 /**
- * Save permissions to disk, by a temp file and a rename: freedom-cored reads
- * the file at its checks (design 0012, "The files (Q10)").
+ * The key a page's write is for: its own (`PageContext.origin`), and the one
+ * the caller names, which must be the same. Throws otherwise.
  */
-function savePermissions() {
-  try {
-    const filePath = getPermissionsPath();
-    const { durable } = writeFileAtomicSync(filePath, JSON.stringify(permissionsCache, null, 2));
-    if (!durable) {
-      console.warn('[DAppPermissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
-    }
-  } catch (err) {
-    console.error('[DAppPermissions] Failed to save permissions:', err);
+function pageKey(origin, page) {
+  const key = normalizeOrigin(origin);
+  if (!key || !page || typeof page.origin !== 'string' || normalizeOrigin(page.origin) !== key) {
+    throw Object.assign(new Error(PAGE_ONLY), { code: 'forbidden' });
+  }
+  return key;
+}
+
+function notDurable(what, reply) {
+  if (reply?.durable === false) {
+    console.warn(`[DAppPermissions] ${what}, but it may not survive a power loss yet (the flush after the rename failed)`);
+  }
+}
+
+/** Whether a failed write still stands in the core: a narrowing, not saved. */
+function standsUnsaved(err) {
+  return err?.code === 'storage' && err?.data?.applied === true;
+}
+
+function writeFailed(what, err) {
+  if (standsUnsaved(err)) {
+    console.error(`[DAppPermissions] ${what}, but it couldn't be saved: a restart before the next save brings it back`);
+  } else {
+    console.error(`[DAppPermissions] Failed to save permissions (${what}):`, err?.message || err);
   }
 }
 
 /**
- * Check if an origin has permission to connect
+ * Check if an origin has permission to connect, in main's copy.
  * @param {string} origin - The dApp origin
  * @returns {Object|null} Permission data or null if not permitted
  */
 function getPermission(origin) {
-  const permissions = loadPermissions();
-  const normalizedOrigin = normalizeOrigin(origin);
-  return permissions[normalizedOrigin] || null;
+  return grants.get(normalizeOrigin(origin)) || null;
 }
 
 /**
- * Grant permission to an origin
- * @param {string} origin - The dApp origin
+ * A page's connect, from the user's decision on the prompt main showed: the
+ * core writes the grant for the page's key. Rejects when it isn't written
+ * (a widening whose write failed isn't applied).
+ * @param {string} origin - The dApp's key, the page's own
  * @param {number} walletIndex - Which wallet to expose
  * @param {number} chainId - Initial chain ID
- * @returns {Object} The created permission
+ * @param {object} page - the request's PageContext
+ * @returns {Promise<Object>} The created permission
  */
-function grantPermission(origin, walletIndex, chainId) {
-  const permissions = loadPermissions();
-  const normalizedOrigin = normalizeOrigin(origin);
-  const now = Date.now();
-
-  const permission = {
-    origin: normalizedOrigin,
-    connectedAt: now,
-    lastUsed: now,
-    walletIndex: walletIndex,
-    chainId: chainId,
-    autoApprove: DEFAULT_AUTO_APPROVE(),
-  };
-
-  permissions[normalizedOrigin] = permission;
-  permissionsCache = permissions;
-  savePermissions();
-
-  console.log('[DAppPermissions] Granted permission to:', normalizedOrigin);
-  return permission;
+async function grantPermission(origin, walletIndex, chainId, page) {
+  const key = pageKey(origin, page);
+  const at = ++seq;
+  let reply;
+  try {
+    reply = await vault().approval.grant(
+      { store: STORE, change: { op: 'connect', account: walletIndex, chain_id: chainId } },
+      page
+    );
+  } catch (err) {
+    writeFailed(`connecting ${key}`, err);
+    throw err;
+  }
+  notDurable(`Granted ${key}`, reply);
+  const grant = reply?.grant ?? null;
+  applyEntry(key, grant, at, { silent: true });
+  if (!grant) throw new Error('The connection was not recorded');
+  console.log('[DAppPermissions] Granted permission to:', key);
+  return grant;
 }
 
 /**
- * Revoke permission for an origin
+ * Revoke permission for an origin (the chrome's disconnect): the chrome's,
+ * as `chrome`, which only narrows.
  * @param {string} origin - The dApp origin
- * @returns {boolean} True if permission was revoked
+ * @returns {Promise<boolean>} True if permission was revoked
  */
-function revokePermission(origin) {
-  const permissions = loadPermissions();
-  const normalizedOrigin = normalizeOrigin(origin);
-
-  if (permissions[normalizedOrigin]) {
-    delete permissions[normalizedOrigin];
-    permissionsCache = permissions;
-    savePermissions();
-    console.log('[DAppPermissions] Revoked permission for:', normalizedOrigin);
-    grantChanged(normalizedOrigin, null);
-    return true;
+async function revokePermission(origin) {
+  const key = normalizeOrigin(origin);
+  if (!key) return false;
+  const at = ++seq;
+  try {
+    const reply = await vault().approval.revoke({ store: STORE, key, what: 'grant' }, CHROME);
+    notDurable(`Revoked ${key}`, reply);
+    if (reply?.revoked !== true) return false;
+  } catch (err) {
+    writeFailed(`revoking ${key}`, err);
+    if (!standsUnsaved(err)) return false;
   }
-
-  return false;
+  applyEntry(key, null, at);
+  console.log('[DAppPermissions] Revoked permission for:', key);
+  return true;
 }
 
 /**
@@ -174,283 +317,196 @@ function revokePermission(origin) {
  * no device and no vault key, for a deleted mnemonic account at an
  * account the user believes is gone. Either way the origin keeps its
  * auto-approve rules and would sign against an account the user can no
- * longer see. Origins must reconnect and pick a live account.
+ * longer see. Origins must reconnect and pick a live account. The core
+ * revokes them (`approval.forget_account`, main's own). Never rejects.
  *
  * @param {number} walletIndex
- * @returns {string[]} Origins whose permission was revoked
+ * @returns {Promise<string[]>} Origins whose permission was revoked
  */
-function revokePermissionsForWalletIndex(walletIndex) {
-  const permissions = loadPermissions();
-  const revoked = Object.keys(permissions).filter(
-    (origin) => permissions[origin]?.walletIndex === walletIndex
-  );
-
-  if (revoked.length === 0) {
+async function revokePermissionsForWalletIndex(walletIndex) {
+  const at = ++seq;
+  let reply;
+  try {
+    reply = await vault().approval.forgetAccount(walletIndex);
+  } catch (err) {
+    writeFailed(`revoking the permissions of deleted wallet ${walletIndex}`, err);
+    // Revoked in the core's memory: main's copy reads them again.
+    if (standsUnsaved(err)) await refreshPermissions().catch(() => {});
     return [];
   }
-
-  for (const origin of revoked) {
-    delete permissions[origin];
+  notDurable(`Revoked the permissions of deleted wallet ${walletIndex}`, reply);
+  const revoked = Array.isArray(reply?.keys) ? reply.keys.filter((key) => typeof key === 'string') : [];
+  for (const key of revoked) applyEntry(normalizeOrigin(key), null, at);
+  if (revoked.length > 0) {
+    console.log(
+      `[DAppPermissions] Revoked ${revoked.length} permission(s) for deleted wallet ${walletIndex}:`,
+      revoked.join(', ')
+    );
   }
-  permissionsCache = permissions;
-  savePermissions();
-
-  console.log(
-    `[DAppPermissions] Revoked ${revoked.length} permission(s) for deleted wallet ${walletIndex}:`,
-    revoked.join(', ')
-  );
-  for (const origin of revoked) grantChanged(origin, null);
   return revoked;
 }
 
 /**
- * Get all granted permissions
+ * Get all granted permissions, in main's copy.
  * @returns {Object[]} Array of permission objects
  */
 function getAllPermissions() {
-  const permissions = loadPermissions();
-  return Object.values(permissions).sort((a, b) => b.lastUsed - a.lastUsed);
+  return [...grants.values()].sort((a, b) => b.lastUsed - a.lastUsed);
 }
 
 /**
- * Update the last used timestamp for an origin
- * @param {string} origin - The dApp origin
+ * A page's last use, and its chain: the core writes them for the page's
+ * own key. Never rejects.
+ * @param {string} origin - The dApp's key, the page's own
  * @param {number} [chainId] - Optionally update the chain ID
- * @returns {boolean} True if updated
+ * @param {object} page - the request's PageContext
+ * @returns {Promise<boolean>} True if updated
  */
-function updateLastUsed(origin, chainId) {
-  const permissions = loadPermissions();
-  const normalizedOrigin = normalizeOrigin(origin);
-
-  if (permissions[normalizedOrigin]) {
-    permissions[normalizedOrigin].lastUsed = Date.now();
-    if (chainId !== undefined) {
-      permissions[normalizedOrigin].chainId = chainId;
-    }
-    permissionsCache = permissions;
-    savePermissions();
+async function updateLastUsed(origin, chainId, page) {
+  try {
+    pageKey(origin, page);
+    const params = { store: STORE };
+    if (chainId !== undefined) params.chain_id = chainId;
+    const reply = await vault().approval.touch(params, page);
+    notDurable('Last use saved', reply);
     return true;
+  } catch (err) {
+    writeFailed('last use', err);
+    return false;
   }
-
-  return false;
 }
 
 /**
- * Update the wallet index for an origin
- * @param {string} origin - The dApp origin
+ * The account a page's grant exposes, chosen again on its own prompt (the
+ * agent's connect): the core writes it for the page's key. Rejects when it
+ * isn't written: a failed write, or a reply with no grant (the core holds
+ * none for the key).
+ * @param {string} origin - The dApp's key, the page's own
  * @param {number} walletIndex - New wallet index
- * @returns {boolean} True if updated
+ * @param {object} page - the request's PageContext
+ * @returns {Promise<true>} Resolves once written
  */
-function updateWalletIndex(origin, walletIndex) {
-  const permissions = loadPermissions();
-  const normalizedOrigin = normalizeOrigin(origin);
-
-  if (permissions[normalizedOrigin]) {
-    const changed = permissions[normalizedOrigin].walletIndex !== walletIndex;
-    permissions[normalizedOrigin].walletIndex = walletIndex;
-    permissions[normalizedOrigin].lastUsed = Date.now();
-    permissionsCache = permissions;
-    savePermissions();
-    if (changed) grantChanged(normalizedOrigin, walletIndex);
-    return true;
+async function updateWalletIndex(origin, walletIndex, page) {
+  const key = pageKey(origin, page);
+  const at = ++seq;
+  let reply;
+  try {
+    reply = await vault().approval.grant({ store: STORE, change: { op: 'account', account: walletIndex } }, page);
+  } catch (err) {
+    writeFailed(`the account of ${key}`, err);
+    throw err;
   }
-
-  return false;
+  notDurable(`Account of ${key} saved`, reply);
+  // No grant in the reply: the core holds none for the key (removed behind
+  // main's copy), so nothing was written. Main's copy drops it, and the
+  // account change fails, as a connect not recorded does.
+  const grant = reply?.grant ?? null;
+  applyEntry(key, grant, at);
+  if (!grant) {
+    console.error(`[DAppPermissions] Failed to save permissions (the account of ${key}): the core holds no grant for it`);
+    throw new Error('The account change was not recorded');
+  }
+  return true;
 }
 
 /**
- * Check if signing auto-approve is enabled for an origin.
+ * Whether an entry stores a signing rule: Q9's limited one, or today's flag
+ * (which answers nothing from APB-2, but an older build still would).
+ */
+function signingRuleStored(permission) {
+  const rules = permission?.autoApprove;
+  return rules?.signing === true || Boolean(rules?.limited?.signing);
+}
+
+/**
+ * Check if a signing rule is stored for an origin, in main's copy.
  * @param {string} origin
  * @returns {boolean}
  */
 function getSigningAutoApprove(origin) {
-  const permission = getPermission(origin);
-  return permission?.autoApprove?.signing === true;
+  return signingRuleStored(getPermission(origin));
 }
 
 /**
- * Set signing auto-approve for an origin.
+ * A site's signing rule: turned on only from "Always allow" on a signing
+ * prompt main showed, under the page (Q9's limited rule, which clears
+ * today's flag in the same write); turned off by the chrome (as `chrome`,
+ * which clears both). Never rejects.
  * @param {string} origin
  * @param {boolean} enabled
- * @returns {boolean} True if updated
+ * @param {object} [page] - the request's PageContext, to turn it on
+ * @returns {Promise<boolean>} True if updated
  */
-function setSigningAutoApprove(origin, enabled) {
-  const permissions = loadPermissions();
+async function setSigningAutoApprove(origin, enabled, page) {
   const key = normalizeOrigin(origin);
-
-  if (!permissions[key]) return false;
-
-  if (!permissions[key].autoApprove) {
-    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
+  const at = ++seq;
+  try {
+    if (enabled) {
+      pageKey(origin, page);
+      const reply = await vault().approval.grant({ store: STORE, change: { op: 'signing' } }, page);
+      notDurable(`Signing rule saved for ${key}`, reply);
+      if (!reply?.grant) return false;
+      applyEntry(key, reply.grant, at);
+    } else {
+      const reply = await vault().approval.revoke({ store: STORE, key, what: 'signing' }, CHROME);
+      notDurable(`Signing rule turned off for ${key}`, reply);
+      if (reply?.revoked !== true) return false;
+      reread(key);
+    }
+  } catch (err) {
+    writeFailed(`the signing rule of ${key}`, err);
+    if (enabled || !standsUnsaved(err)) return false;
+    reread(key);
   }
-
-  permissions[key].autoApprove.signing = enabled;
-  permissionsCache = permissions;
-  savePermissions();
-
   console.log(`[DAppPermissions] Signing auto-approve ${enabled ? 'enabled' : 'disabled'} for:`, key);
   return true;
 }
 
 /**
- * A transaction's `value` in wei, as a BigInt: absent means 0. Null for a
- * value that isn't a non-negative integer (decimal or 0x-hex string,
- * number or bigint), which no rule covers.
- */
-function weiOf(value) {
-  if (value === undefined || value === null || value === '') return 0n;
-  if (!['string', 'number', 'bigint'].includes(typeof value)) return null;
-  try {
-    const wei = BigInt(value);
-    return wei >= 0n ? wei : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The most `value` a transaction rule covers, in wei: the value of the
- * confirmed send it was recorded from (`maxValue`, a decimal string). A
- * rule recorded before rules carried a value covers only calls that send
- * none: it came from a send of at least 0, and of no more is known.
- */
-function ruleMaxValue(rule) {
-  return typeof rule?.maxValue === 'string' && /^\d+$/.test(rule.maxValue)
-    ? BigInt(rule.maxValue)
-    : 0n;
-}
-
-function sameCall(rule, to, selector, chainId) {
-  return (
-    typeof rule?.to === 'string' &&
-    typeof rule?.selector === 'string' &&
-    rule.to.toLowerCase() === to &&
-    rule.selector.toLowerCase() === selector &&
-    rule.chainId === chainId
-  );
-}
-
-/**
- * Check if a transaction is auto-approved for an origin.
- * Matches on contract address + 4-byte function selector + chainId, and
- * covers no more `value` than the send the rule was recorded from.
- * Plain ETH transfers (no data) are never auto-approved.
- * @param {string} origin
- * @param {string} to - Contract address
- * @param {string} selector - 4-byte function selector (0x prefixed, 10 chars)
- * @param {number} chainId
- * @param {string|number|bigint} [value] - The transaction's value in wei
- *   (decimal or 0x-hex); absent means 0
- * @returns {boolean}
- */
-function isTransactionAutoApproved(origin, to, selector, chainId, value) {
-  if (!to || !selector || selector.length < 10) return false;
-  const wei = weiOf(value);
-  if (wei === null) return false;
-
-  const permission = getPermission(origin);
-  const txRules = permission?.autoApprove?.transactions;
-  if (!Array.isArray(txRules) || txRules.length === 0) return false;
-
-  const normalizedTo = to.toLowerCase();
-  const normalizedSelector = selector.slice(0, 10).toLowerCase();
-
-  return txRules.some(
-    (rule) =>
-      sameCall(rule, normalizedTo, normalizedSelector, chainId) && wei <= ruleMaxValue(rule)
-  );
-}
-
-/**
- * Add a transaction auto-approve rule for an origin, from a send the user
- * confirmed: it covers that call with no more `value` than that send's.
- * Added again for the same call, the rule covers the larger of the two
- * values the user confirmed.
- * @param {string} origin
- * @param {string} to - Contract address
- * @param {string} selector - 4-byte function selector (0x prefixed)
- * @param {number} chainId
- * @param {string|number|bigint} [value] - The confirmed send's value in
- *   wei; absent means 0
- * @returns {boolean} True if the rule covers that send now
- */
-function addTransactionAutoApprove(origin, to, selector, chainId, value) {
-  if (!to || !selector || selector.length < 10 || chainId === undefined) return false;
-  const wei = weiOf(value);
-  if (wei === null) return false;
-
-  const permissions = loadPermissions();
-  const key = normalizeOrigin(origin);
-  if (!permissions[key]) return false;
-
-  if (!permissions[key].autoApprove) {
-    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
-  }
-
-  const normalizedTo = to.toLowerCase();
-  const normalizedSelector = selector.slice(0, 10).toLowerCase();
-
-  const existing = permissions[key].autoApprove.transactions || [];
-  const same = existing.find((r) => sameCall(r, normalizedTo, normalizedSelector, chainId));
-  if (same && ruleMaxValue(same) >= wei) return true;
-
-  if (same) {
-    same.maxValue = wei.toString();
-  } else {
-    existing.push({
-      to: normalizedTo,
-      selector: normalizedSelector,
-      chainId,
-      maxValue: wei.toString(),
-    });
-  }
-  permissions[key].autoApprove.transactions = existing;
-  permissionsCache = permissions;
-  savePermissions();
-
-  console.log(
-    `[DAppPermissions] Transaction auto-approve added for ${key}: ${normalizedTo} ${normalizedSelector} chain=${chainId} maxValue=${wei}`
-  );
-  return true;
-}
-
-/**
- * Remove a transaction auto-approve rule for an origin.
+ * Remove a site's contract rule (the chrome's), today's and Q9's limited
+ * one for the same call, in one write: the chrome's, as `chrome`, which
+ * only narrows.
+ * Never rejects.
  * @param {string} origin
  * @param {string} to - Contract address
  * @param {string} selector - 4-byte function selector
  * @param {number} chainId
- * @returns {boolean} True if removed
+ * @returns {Promise<boolean>} True if removed
  */
-function removeTransactionAutoApprove(origin, to, selector, chainId) {
-  const permissions = loadPermissions();
+async function removeTransactionAutoApprove(origin, to, selector, chainId) {
   const key = normalizeOrigin(origin);
-  if (!permissions[key]?.autoApprove?.transactions) return false;
-
-  const normalizedTo = to.toLowerCase();
-  const normalizedSelector = selector.slice(0, 10).toLowerCase();
-
-  const before = permissions[key].autoApprove.transactions.length;
-  permissions[key].autoApprove.transactions = permissions[key].autoApprove.transactions.filter(
-    (r) => !(r.to.toLowerCase() === normalizedTo &&
-             r.selector.toLowerCase() === normalizedSelector &&
-             r.chainId === chainId)
-  );
-
-  if (permissions[key].autoApprove.transactions.length === before) return false;
-
-  permissionsCache = permissions;
-  savePermissions();
-  console.log(`[DAppPermissions] Transaction auto-approve removed for ${key}: ${normalizedTo} ${normalizedSelector} chain=${chainId}`);
+  if (!key || typeof to !== 'string' || typeof selector !== 'string') return false;
+  const call = { to: to.toLowerCase(), selector: selector.slice(0, 10).toLowerCase(), chain_id: chainId };
+  try {
+    const reply = await vault().approval.revoke({ store: STORE, key, what: { transaction: call } }, CHROME);
+    notDurable(`Contract rule removed for ${key}`, reply);
+    if (reply?.revoked !== true) return false;
+  } catch (err) {
+    writeFailed(`a contract rule of ${key}`, err);
+    if (!standsUnsaved(err)) return false;
+  }
+  reread(key);
+  console.log(`[DAppPermissions] Transaction auto-approve removed for ${key}: ${call.to} ${call.selector} chain=${chainId}`);
   return true;
+}
+
+/** The chrome's read of a key: the core's entry now, or null. */
+async function readGrant(origin) {
+  try {
+    return await refreshGrant(origin);
+  } catch (err) {
+    console.error('[DAppPermissions] Failed to read a permission:', err?.message || err);
+    return null;
+  }
 }
 
 /**
  * Register IPC handlers for dApp permissions
  */
 function registerDappPermissionsIpc() {
+  // The chrome's reads ask the core: the store as it holds it now.
   ipcMain.handle(IPC.DAPP_GET_PERMISSION, (_event, origin) => {
-    return getPermission(origin);
+    return readGrant(origin);
   });
 
   // Refused for every site (freedom-core design 0011, "Grants"; PRQ-4): a
@@ -468,17 +524,23 @@ function registerDappPermissionsIpc() {
     return revokePermission(origin);
   });
 
-  ipcMain.handle(IPC.DAPP_GET_ALL_PERMISSIONS, () => {
-    return getAllPermissions();
+  ipcMain.handle(IPC.DAPP_GET_ALL_PERMISSIONS, async () => {
+    try {
+      const { records } = await vault().approval.grants({ store: STORE });
+      return [...keyed(records).values()];
+    } catch (err) {
+      console.error('[DAppPermissions] Failed to read permissions:', err?.message || err);
+      return [];
+    }
   });
 
-  ipcMain.handle(IPC.DAPP_GET_SIGNING_AUTO_APPROVE, (_event, origin) => {
-    return getSigningAutoApprove(origin);
+  ipcMain.handle(IPC.DAPP_GET_SIGNING_AUTO_APPROVE, async (_event, origin) => {
+    return signingRuleStored(await readGrant(origin));
   });
 
   // Clearing only (freedom-core design 0011, PRQ-5): main sets a site's
-  // signing rule itself, for the requester's key, from the user's "always
-  // allow" on a signing prompt main showed (page/page-signing.js). The
+  // signing rule through the core, for the requester's key, from the user's
+  // "always allow" on a signing prompt main showed (page/page-signing.js). The
   // chrome named the site here, so a rule it sets is refused. Turning one
   // off only narrows, and stays open.
   ipcMain.handle(IPC.DAPP_SET_SIGNING_AUTO_APPROVE, (_event, origin, enabled) => {
@@ -486,10 +548,10 @@ function registerDappPermissionsIpc() {
     return setSigningAutoApprove(origin, false);
   });
 
-  // No IPC adds a transaction auto-approve rule: main records one itself,
-  // for the requester's key, from a send the user just confirmed on main's
-  // own prompt with "Always allow" (security audit O-7; freedom-core design
-  // 0011, PRQ-5b: page/page-sends.js).
+  // No IPC adds a transaction auto-approve rule: the core writes one as it
+  // signs a send the user just confirmed on main's own prompt with "Always
+  // allow", for the requester's key (security audit O-7; freedom-core
+  // design 0011, PRQ-5b; design 0012, APB-2: page/page-sends.js).
 
   ipcMain.handle(IPC.DAPP_REMOVE_TX_AUTO_APPROVE, (_event, origin, to, selector, chainId) => {
     return removeTransactionAutoApprove(origin, to, selector, chainId);
@@ -499,7 +561,13 @@ function registerDappPermissionsIpc() {
 }
 
 function _resetCache() {
-  permissionsCache = null;
+  grants.clear();
+  applied.clear();
+  seq = 0;
+  wholeAt = 0;
+  attachedCore = null;
+  loadedOnce = false;
+  loadWaiters = [];
 }
 
 module.exports = {
@@ -513,9 +581,12 @@ module.exports = {
   updateWalletIndex,
   getSigningAutoApprove,
   setSigningAutoApprove,
-  isTransactionAutoApproved,
-  addTransactionAutoApprove,
+  signingRuleStored,
   removeTransactionAutoApprove,
+  refreshPermissions,
+  refreshGrant,
+  attachCore,
+  whenLoaded,
   onGrantChanged,
   registerDappPermissionsIpc,
   _resetCache,

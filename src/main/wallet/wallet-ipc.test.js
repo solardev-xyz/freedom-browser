@@ -26,8 +26,6 @@ jest.mock('./signers', () => ({ getSigner: jest.fn() }));
 jest.mock('./dapp-permissions', () => ({
   getPermission: jest.fn(() => null),
   getSigningAutoApprove: jest.fn(() => false),
-  isTransactionAutoApproved: jest.fn(() => false),
-  addTransactionAutoApprove: jest.fn(() => true),
 }));
 jest.mock('./safe/safe-transactions', () => {
   // The Safe's send slot, reserved as safe-transactions reserves it: one per
@@ -243,8 +241,6 @@ describe('signing handlers require a main-side confirmation', () => {
     getActiveWalletIndex.mockReset().mockReturnValue(0);
     dappPermissions.getPermission.mockReset().mockReturnValue(null);
     dappPermissions.getSigningAutoApprove.mockReset().mockReturnValue(false);
-    dappPermissions.isTransactionAutoApproved.mockReset().mockReturnValue(false);
-    dappPermissions.addTransactionAutoApprove.mockReset().mockReturnValue(true);
     startSafeSend.mockClear();
     guests = new Map();
     webContents.fromId.mockReset().mockImplementation((id) => guests.get(id) ?? null);
@@ -326,9 +322,11 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(getSigner).toHaveBeenCalledWith(4);
     });
 
-    test('a wallet send has no auto-approve', async () => {
+    test('a wallet send has no auto-approve, whatever rule the site holds in the core', async () => {
       dappPermissions.getPermission.mockReturnValue({ walletIndex: 0 });
-      dappPermissions.isTransactionAutoApproved.mockReturnValue(true);
+      // The site's limited rule for this very call (design 0012, Q9).
+      mockApprovals.dapp.connect(SITE, 0, 100);
+      mockApprovals.dapp.allowTransaction(SITE, TX.to, TX.data.slice(0, 10), 100, '0');
       const result = await handlers['wallet:send-transaction']({}, TX, {}, { autoApprove: SITE });
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(signAndRecord).not.toHaveBeenCalled();

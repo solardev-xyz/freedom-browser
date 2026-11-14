@@ -134,6 +134,29 @@ describe('dApp connection banner', () => {
     expect(banner.classList.contains('hidden')).toBe(true);
   });
 
+  // The badge shows a site's stored standing rules: Q9's limited ones, which
+  // "Always allow" writes from APB-2 (freedom-core design 0012), as well as
+  // today's, as the permission screen lists them.
+  const RULE = { to: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', selector: '0x095ea7b3', chainId: 100, maxValue: '0' };
+  test.each([
+    ['a limited signing rule', { signing: false, transactions: [], limited: { signing: { grantedAt: 1 }, transactions: [] } }, true],
+    [
+      'a limited contract rule',
+      { signing: false, transactions: [], limited: { signing: null, transactions: [{ ...RULE, grantedAt: 1 }] } },
+      true,
+    ],
+    ["today's signing flag", { signing: true, transactions: [] }, true],
+    ["today's contract rule", { signing: false, transactions: [RULE] }, true],
+    ['no rule of either kind', { signing: false, transactions: [], limited: { signing: null, transactions: [] } }, false],
+    ['no rules at all', undefined, false],
+  ])("the auto-approve badge for %s", async (_name, autoApprove, shown) => {
+    const ctx = await loadDappConnect({ activeDisplayUrl: 'visible.eth' });
+    global.window.dappPermissions.getPermission.mockResolvedValue({ walletIndex: 0, autoApprove });
+    await ctx.mod.updateConnectionBanner();
+    expect(ctx.elements['dapp-connection-banner'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['dapp-auto-approve-badge'].classList.contains('hidden')).toBe(!shown);
+  });
+
   test('a refresh hint for a site that is not on screen paints nothing', async () => {
     const ctx = await loadDappConnect({ activeDisplayUrl: 'visible.eth' });
     await ctx.mod.updateConnectionBanner('background.eth');
