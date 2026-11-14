@@ -1933,10 +1933,20 @@ describe('a tab the agent holds: its send inside the request', () => {
       updateWalletIndex: jest.fn(),
       getChain: (chainId) => ({ chainId, name: 'Gnosis Chain', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
       // The agent's signer as the identity core checks it (simulated):
-      // what it presents (`signers.js`) is checked as it signs.
+      // what it presents (`signers.js`) is checked as it signs, after the
+      // caller's last check (`beforeSign`), which `signers.js` awaits right
+      // before the core or the device is asked.
       getSigner: (index, authorized) => {
         agentSigners.push([index, authorized]);
-        return coreCheckedSigner(mockApprovals, { signTransaction: async () => '0xsigned' }, index, authorized);
+        const checked = coreCheckedSigner(mockApprovals, { signTransaction: async () => '0xsigned' }, index, authorized);
+        return {
+          ...checked,
+          signTransaction: async (tx) => {
+            if (authorized?.beforeSign) await authorized.beforeSign();
+            env.state.agentSignerAsked = (env.state.agentSignerAsked || 0) + 1;
+            return checked.signTransaction(tx);
+          },
+        };
       },
       estimateGas: async () => ({ gasLimit: '21000' }),
       getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
@@ -1945,6 +1955,13 @@ describe('a tab the agent holds: its send inside the request', () => {
       // signed bytes itself or withdraws them, then the broadcast.
       signAndRecord: async (tx, signer, context, options) => {
         agentSends.push({ tx, context });
+        // The service's own waits before it asks the signer (the fee, the
+        // address, the nonce), when a test holds them.
+        const wait = env.state.agentServiceWait;
+        if (wait) {
+          wait.reached.resolve();
+          await wait.promise;
+        }
         await signer.signTransaction(buildTransaction({ ...tx, nonce: 3 }));
         if (env.state.agentSignerHold) await env.state.agentSignerHold.promise;
         const commit = async () => {
@@ -2026,7 +2043,10 @@ describe('a tab the agent holds: its send inside the request', () => {
     const handle = issue.params.handle;
     expect(handle).toMatch(/^[0-9a-f]{64}$/);
     expect(agentSigners).toEqual([
-      [walletIndex, { confirmation: expect.objectContaining({ kind: 'dapp-send', account: walletIndex, handle, page: PAGE }) }],
+      [
+        walletIndex,
+        { confirmation: expect.objectContaining({ kind: 'dapp-send', account: walletIndex, handle, page: PAGE }), beforeSign: expect.any(Function) },
+      ],
     ]);
     expect(signatures()).toEqual([
       expect.objectContaining({
@@ -2139,6 +2159,11 @@ describe('a tab the agent holds: its send inside the request', () => {
       { error: { code: -32603, message: expect.stringContaining('no longer connected with this account') } },
     ],
     [
+      'the agent leaves the tab',
+      (env, page) => env.state.custody.delete(page.guest.id),
+      { error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } },
+    ],
+    [
       'its grant moves to another account',
       (env) => env.state.permissions.set(NAME, { origin: NAME, walletIndex: LEDGER_INDEX, chainId: 100 }),
       { error: { code: -32603, message: expect.stringContaining('no longer connected with this account') } },
@@ -2202,6 +2227,89 @@ describe('a tab the agent holds: its send inside the request', () => {
     approvals[0].resolve('approved');
     expect(await answer).toEqual(NO_ADDRESS);
     expect(agentSends).toEqual([]);
+  });
+
+  // Codex on #1246: the name, checked before the mint, is checked again
+  // after it: the core's mint is a wait, and a DNS name over IPNS can move
+  // during it.
+  test.each([
+    ['a vault account', 0],
+    ['a phone account', PHONE_INDEX],
+  ])("%s: a name that moves while the Agent's token is minted: nothing signed or sent, the token burnt", async (_label, walletIndex) => {
+    const env = setup({ agentContext: true });
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME, walletIndex);
+    const { approvals, agentSends, agentSigners, agentCommitted } = withAgent(env);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const minting = deferred();
+    const release = deferred();
+    const issue = mockApprovals.approval.issue;
+    const spy = jest.spyOn(mockApprovals.approval, 'issue').mockImplementationOnce(async (...args) => {
+      minting.resolve();
+      await release.promise;
+      return issue(...args);
+    });
+    try {
+      const answer = page.send(TRANSFER);
+      await flush();
+      approvals[0].resolve('approved');
+      await minting.promise;
+      env.names.set(NAME, OTHER_IPNS_KEY);
+      release.resolve();
+      expect(await answer).toEqual(NO_ADDRESS);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(agentSigners).toEqual([]);
+    expect(agentSends).toEqual([]);
+    expect(agentCommitted).toEqual([]);
+    expect(signatures()).toEqual([]);
+    expect(mockApprovals.outstanding()).toBe(0);
+  });
+
+  // Codex on #1246: main presented the token as the signer was built, and
+  // the transaction service waits after that (the fee, the address, the
+  // nonce) before it asks the signer; the signer's last step reads the
+  // name, the document, the grant and the tab again, right before the core
+  // or the device is asked, and a phone signs and broadcasts in that step.
+  test.each([
+    ['a vault account', 0],
+    ['a phone account', PHONE_INDEX],
+  ])("%s: when the tab, the document or the name changes during the service's wait, nothing is signed or sent", async (_label, walletIndex) => {
+    for (const [label, change, expected] of [
+      ['the agent leaves the tab', (env, page) => env.state.custody.delete(page.guest.id), { error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } }],
+      ['the document navigates', (env, page) => page.guest.commit(`ipns://${IPNS_KEY}/next`), GONE],
+      ['the name moves', (env) => env.names.set(NAME, OTHER_IPNS_KEY), NO_ADDRESS],
+      ['nothing changes', () => {}, null],
+    ]) {
+      mockApprovals.reset();
+      const env = setup({ agentContext: true });
+      env.names.set(NAME, IPNS_KEY);
+      env.connect(NAME, walletIndex);
+      const { approvals, agentSigners, agentCommitted } = withAgent(env);
+      const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+      env.state.agentServiceWait = { ...deferred(), reached: deferred() };
+      const answer = page.send(TRANSFER);
+      await flush();
+      approvals[0].resolve('approved');
+      await env.state.agentServiceWait.reached.promise;
+      // Presented: the signer was built with the token, and the service waits.
+      expect({ label, signers: agentSigners.length }).toEqual({ label, signers: 1 });
+      change(env, page);
+      env.state.agentServiceWait.resolve();
+      if (expected) {
+        expect({ label, answer: await answer }).toEqual({ label, answer: expected });
+        await flush();
+        expect({ label, asked: env.state.agentSignerAsked ?? 0 }).toEqual({ label, asked: 0 });
+        expect({ label, signatures: signatures() }).toEqual({ label, signatures: [] });
+        expect({ label, committed: agentCommitted }).toEqual({ label, committed: [] });
+        expect({ label, outstanding: mockApprovals.outstanding() }).toEqual({ label, outstanding: 0 });
+      } else {
+        expect({ label, answer: await answer }).toEqual({ label, answer: { result: HASH } });
+        expect({ label, asked: env.state.agentSignerAsked }).toEqual({ label, asked: 1 });
+        expect({ label, committed: agentCommitted.length }).toEqual({ label, committed: 1 });
+      }
+    }
   });
 });
 

@@ -913,6 +913,88 @@ describe("getSigner: the caller's last check, right before the signature", () =>
     });
   });
 
+  // Codex on #1246: a token the Agent's decision minted (design 0012) is
+  // spent by the core under the PageContext main read as the signer was
+  // built; main reads the decision again (its tab, its document, its name)
+  // as the signer's last step, after the signer's own waits, on any
+  // account, the vault's included.
+  describe("the Agent's token, which the core spends under the PageContext main read as the signer was built", () => {
+    const confirmations = require('./signing-confirmation');
+    const AGENT = Object.freeze({ ...PAGE, agent: true });
+    const handle = 'd'.repeat(64);
+    const SEND = { to: TX.to, value: TX.value, data: TX.data, gasLimit: TX.gasLimit, gasPrice: TX.gasPrice, chainId: 100, origin: AGENT.origin };
+    const mint = (kind, index, payload, options) =>
+      confirmations.issuePageConfirmation(kind, index, payload, { handle, context: AGENT }, options);
+    const approvals = () => mockCore.approvals;
+    const count = (method) => approvals().calls.filter((call) => call.method === method).length;
+
+    beforeEach(() => {
+      confirmations._reset();
+      mockCore.approvals?.reset();
+    });
+
+    test.each([
+      ['a message', 'sign-message', 'hello', {}, (signer) => signer.signMessage('hello'), 'sign.message'],
+      ['typed data', 'sign-typed-data', TYPED, { chainId: 100 }, (signer, minted) => signer.signTypedData(TYPED, { expectedHash: minted.hash }), 'sign.typed_data'],
+      ['a send', 'dapp-send', SEND, {}, (signer) => signer.signTransaction({ ...TX, from: testWallet.address }), 'sign.transaction'],
+    ])("on a vault, %s: the check after the address, right before the core signs; a refusal there: the core never asked, the token unspent", async (_label, kind, payload, options, sign, method) => {
+      mockCore.calls = [];
+      const order = [];
+      const beforeSign = jest.fn(async () => {
+        order.push(['check', coreCalls('keys.addresses').length, coreCalls(method).length]);
+      });
+      const minted = await mint(kind, 0, payload, options);
+      await sign(getSigner(0, { confirmation: { ...minted, page: AGENT }, beforeSign }), minted);
+      // The address resolved, the core not yet asked, when the check ran.
+      expect(order).toEqual([['check', 1, 0]]);
+      expect(coreCalls(method)).toHaveLength(1);
+      expect(approvals().outstanding()).toBe(0);
+      const refusal = new Error('Signing was not confirmed: the Agent no longer holds this tab');
+      const again = await mint(kind, 0, payload, options);
+      await expect(sign(getSigner(0, { confirmation: { ...again, page: AGENT }, beforeSign: async () => { throw refusal; } }), again)).rejects.toBe(refusal);
+      expect(coreCalls(method)).toHaveLength(1);
+      // Never presented: the caller burns it.
+      expect(approvals().outstanding()).toBe(1);
+    });
+
+    test.each(Object.keys(DEVICES))('on a %s: the check after the core\'s hash and the token\'s spend, right before the device; a refusal there: the device never asked', async (device) => {
+      const [record, backend] = DEVICES[device];
+      mockGetWalletRecord.mockReturnValue(record);
+      const order = [];
+      let refusal = null;
+      const beforeSign = jest.fn(async () => {
+        order.push(['check', count('approval.spend')]);
+        if (refusal) throw refusal;
+      });
+      for (const method of ['signTransaction', 'signMessage', 'signTypedData', 'sendTransaction']) {
+        backend[method]?.mockReset().mockImplementation(async () => {
+          order.push([method]);
+          return '0xsig';
+        });
+      }
+      const typed = await mint('sign-typed-data', record.index, TYPED, { chainId: 100 });
+      await getSigner(record.index, { confirmation: { ...typed, page: AGENT }, beforeSign }).signTypedData(TYPED, { expectedHash: typed.hash });
+      const message = await mint('sign-message', record.index, 'hello');
+      await getSigner(record.index, { confirmation: { ...message, page: AGENT }, beforeSign }).signMessage('hello');
+      const send = await mint('dapp-send', record.index, SEND, { phone: device === 'phone' });
+      const sender = getSigner(record.index, { confirmation: { ...send, page: AGENT }, beforeSign });
+      await (sender.sendTransaction ? sender.sendTransaction(TX) : sender.signTransaction(TX));
+      const sent = sender.sendTransaction ? 'sendTransaction' : 'signTransaction';
+      expect(order).toEqual([['check', 1], ['signTypedData'], ['check', 2], ['signMessage'], ['check', 3], [sent]]);
+      refusal = new Error('Signing was not confirmed: the Agent no longer holds this tab');
+      order.length = 0;
+      const refusedTyped = await mint('sign-typed-data', record.index, TYPED, { chainId: 100 });
+      await expect(
+        getSigner(record.index, { confirmation: { ...refusedTyped, page: AGENT }, beforeSign }).signTypedData(TYPED, { expectedHash: refusedTyped.hash })
+      ).rejects.toBe(refusal);
+      const refusedSend = await mint('dapp-send', record.index, SEND, { phone: device === 'phone' });
+      const refusedSender = getSigner(record.index, { confirmation: { ...refusedSend, page: AGENT }, beforeSign });
+      await expect(refusedSender.sendTransaction ? refusedSender.sendTransaction(TX) : refusedSender.signTransaction(TX)).rejects.toBe(refusal);
+      // Spent through the core, then refused: no device asked.
+      expect(order).toEqual([['check', 4], ['check', 5]]);
+    });
+  });
+
   test("a vault's own signature (no authorization, as a Safe owner's): the check after the core's hash, right before the core signs", async () => {
     const order = [];
     let refusal = null;

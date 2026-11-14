@@ -279,7 +279,9 @@ function createEthereumDispatchers(deps = {}) {
   // signature or send is a page's (design 0012, APB-1): the Agent's decision
   // mints the request's page-kind token through main's issuer, and the
   // signer presents it under `page`, with the PageContext read live
-  // (`agent: true`); no standing rule answers it, and none goes as `shell`.
+  // (`agent: true`), and reads the decision again (`agentToken.holds`, the
+  // name before it) as its last step, right before the core or the device
+  // is asked; no standing rule answers it, and none goes as `shell`.
   // `params` are the request's own, or the dispatcher's checked form of them.
   async function agentAnswer(context, keyless, params = context.params) {
     const { requester, method } = context;

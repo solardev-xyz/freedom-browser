@@ -95,7 +95,11 @@
  * request's page-kind token through the same issuer (`context.agentToken`),
  * under `page` with the record's PageContext (`agent: true`) and a handle
  * main draws for that decision, and its signature presents it under `page`
- * with the PageContext read again then. One decision mints one token.
+ * with the PageContext read again then. Whether that decision still holds
+ * (`agentToken.holds`: the request, its document and key, and the Agent's
+ * custody, read now) is the signer's last check, after its own waits, and a
+ * send's again before its signed bytes are recorded. One decision mints one
+ * token.
  */
 
 const crypto = require('crypto');
@@ -470,9 +474,11 @@ function createPageRequests({
       tokenHandle: null,
       // Whether its wallet operation (the Agent's own approval) is running
       // now, and whether the Agent's decision has minted its one token
-      // (`agentMint`).
+      // (`agentMint`), and that token's handle, which stays the decision's
+      // after the token is spent (`agentHolds`).
       operating: false,
       agentMinted: false,
+      agentHandle: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -691,10 +697,12 @@ function createPageRequests({
       confirm: (kind, accountIndex, payload, options) => confirm(record, kind, accountIndex, payload, options),
       spend: (confirmation) => spend(record, confirmation),
       // The Agent's decision on this request, in a tab it holds (design
-      // 0012): its page-kind token, minted and presented under `page`.
+      // 0012): its page-kind token, minted and presented under `page`, and
+      // whether the decision still holds at the signer's last step.
       agentToken: Object.freeze({
         mint: (kind, accountIndex, payload, options) => agentMint(record, kind, accountIndex, payload, options),
         present: (confirmation) => agentPresent(record, confirmation),
+        holds: (confirmation) => agentHolds(record, confirmation),
         discard: (confirmation) => signingConfirmation.discardConfirmation(confirmation?.token),
       }),
       // The requesting document's PageContext, under which a page's request
@@ -1119,6 +1127,7 @@ function createPageRequests({
       { chainId: options.chainId, phone: options.phone === true }
     );
     record.tokenHandle = handle;
+    record.agentHandle = handle;
     trace({ kind: 'token-minted', id: record.id, token: kind, by: 'agent' });
     return confirmation;
   }
@@ -1139,6 +1148,39 @@ function createPageRequests({
       throw notConfirmed('the Agent no longer holds this tab');
     }
     return { confirmation: { ...spent, page } };
+  }
+
+  /**
+   * Whether the Agent's decision still holds, read now (design 0012, "A page
+   * request the Agent answers"): the record unanswered within its wallet
+   * operation, its document current and holding its key, the token this
+   * decision's, and the PageContext read again still saying the agent holds
+   * the tab. The core spends the token under the PageContext main read when
+   * it was presented, and a signer can wait long after that (the address,
+   * the core's hash, a device's spend, the transaction service's fee and
+   * nonce), so this is the signer's last check (`beforeSign`, `signers.js`),
+   * right before the core or the device is asked, and a send's again before
+   * its signed bytes are recorded or sent. Throws (`SIGNING_NOT_CONFIRMED`)
+   * otherwise, and burns the token if it is still unspent.
+   */
+  function agentHolds(record, confirmation) {
+    const refuse = (reason) => {
+      signingConfirmation.discardConfirmation(confirmation?.token);
+      throw notConfirmed(reason);
+    };
+    if (
+      record.answered ||
+      !record.operating ||
+      walletOperations.get(record.key) !== record ||
+      !documents.isCurrent(record.requester) ||
+      !documents.holdsKey(record.requester)
+    ) {
+      refuse('the document that asked has gone');
+    }
+    if (!confirmation || record.agentHandle === null || confirmation.handle !== record.agentHandle) {
+      refuse('not the confirmation of this request');
+    }
+    if (pageContextOf(record).agent !== true) refuse('the Agent no longer holds this tab');
   }
 
   // Whether a name-revalidated method may use its document's key now

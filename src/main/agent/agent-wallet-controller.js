@@ -53,15 +53,19 @@ const PAGE_TOKEN_KINDS = Object.freeze({
  * (design 0012): `mint(kind, walletIndex, payload, options)` has the identity
  * core mint the request's page-kind token under `page`, `present(token)`
  * hands it to the signature in the same run as main's last checks, under
- * the page's live PageContext (`{ confirmation }`, for `getSigner`), and
+ * the page's live PageContext (`{ confirmation }`, for `getSigner`),
+ * `holds(token)` throws unless the decision still holds now (the request,
+ * its document and key, and the agent's custody of the tab), and
  * `discard(token)` burns one the request ended before presenting. Null
- * when main gave none.
+ * when main gave none, or one without any of them: such a request signs
+ * nothing.
  */
 function pageTokenOf(context) {
   const token = context?.pageToken;
   return token &&
     typeof token.mint === 'function' &&
     typeof token.present === 'function' &&
+    typeof token.holds === 'function' &&
     typeof token.discard === 'function'
     ? token
     : null;
@@ -638,12 +642,16 @@ class AgentWalletController {
     });
     // A request main attested sends only while main still holds it: not
     // answered (its deadline, its page gone), the name checked again, the
-    // page still under its key and its grant still exposing this account, in
-    // the same run as the send. A signer can take long (a Ledger, the core),
-    // so the same gates run again after the signature and before the signed
-    // bytes are recorded or sent (the transaction service's `guardCommit`),
-    // and the guard commits them itself. A phone signs and broadcasts in one
-    // step: its send is gated before the phone is asked.
+    // page still under its key, the tab still the agent's and its grant
+    // still exposing this account: before the mint, after it, and as the
+    // signer's last step, after the transaction service's waits (fee, nonce,
+    // address) and the signer's own (the core's spend for a device), right
+    // before the core or the device is asked. A signer can take long (a
+    // Ledger, the core), so the same gates run again after the signature and
+    // before the signed bytes are recorded or sent (the transaction
+    // service's `guardCommit`), and the guard commits them itself. A phone
+    // signs and broadcasts in one step: its send is gated right before the
+    // phone is asked.
     const grantStillExposes = () => {
       if (this.getPermission(permissionKey)?.walletIndex !== wallet.index) {
         throw new AutomationError(ERROR_CODES.POLICY_DENIED, 'The site is no longer connected with this account');
@@ -657,20 +665,17 @@ class AgentWalletController {
       grantStillExposes();
       return this.#withPageToken(
         context,
-        PAGE_TOKEN_KINDS.eth_sendTransaction,
-        wallet.index,
-        { ...tx, origin: permissionKey },
-        { phone: wallet.type === 'remote' },
-        (authorized) => {
-          grantStillExposes();
-          return this.signAndRecord(tx, this.getSigner(wallet.index, authorized()), record, {
-            guardCommit: (commit) =>
-              this.#underMain(context, () => {
-                grantStillExposes();
-                return commit();
-              }),
-          });
-        }
+        {
+          kind: PAGE_TOKEN_KINDS.eth_sendTransaction,
+          walletIndex: wallet.index,
+          payload: { ...tx, origin: permissionKey },
+          options: { phone: wallet.type === 'remote' },
+          check: grantStillExposes,
+        },
+        (authorized, _confirmation, held) =>
+          this.signAndRecord(tx, this.getSigner(wallet.index, authorized()), record, {
+            guardCommit: (commit) => held(commit),
+          })
       );
     });
     // A grant held under the attested key is touched only while main still
@@ -737,18 +742,23 @@ class AgentWalletController {
       },
     });
     // A request main attested signs only while main still holds it: not
-    // answered (its deadline, its page gone), the name checked again, and
-    // the page still under its key in the same run as the signature, which
-    // presents the page's token the Agent's approval minted (design 0012):
-    // a message's bytes, or typed data viewed on the page's chain, whose
-    // hash the core bound is the one it signs.
+    // answered (its deadline, its page gone), the name checked again, the
+    // page still under its key and the tab still the agent's: before the
+    // mint, after it, and as the signer's last step, after its own waits
+    // (the address, the core's hash and spend for a device), right before
+    // the core or the device is asked. The signature presents the page's
+    // token the Agent's approval minted (design 0012): a message's bytes,
+    // or typed data viewed on the page's chain, whose hash the core bound
+    // is the one it signs.
     const signature = await this.#underMain(context, () =>
       this.#withPageToken(
         context,
-        PAGE_TOKEN_KINDS[payload.method],
-        wallet.index,
-        personal ? message : typedData,
-        personal ? {} : { chainId: chain.chainId },
+        {
+          kind: PAGE_TOKEN_KINDS[payload.method],
+          walletIndex: wallet.index,
+          payload: personal ? message : typedData,
+          options: personal ? {} : { chainId: chain.chainId },
+        },
         (authorized, confirmation) => {
           const signer = this.getSigner(wallet.index, authorized());
           return personal
@@ -778,17 +788,38 @@ class AgentWalletController {
   /**
    * A page's signature or send under the token the Agent's decision mints
    * (design 0012, "A page request the Agent answers"): main's issuer mints
-   * it for this request, then `sign(authorized, confirmation)` runs, and
-   * `authorized()`, called in the same run as the signer is asked for,
-   * presents it there after main's checks again (the request still open,
-   * its page holding its key, the agent still holding the tab), under the
-   * page's live PageContext. The token is burnt afterwards, spent or not.
+   * it for this request, then `sign(authorized, confirmation, held)` runs.
+   *
+   * Main's gate (`held`): the name resolved again, then, in the same run as
+   * the step it gates, the request still open, its page holding its key,
+   * the caller's own `check` (a send's grant) and the decision itself
+   * (`holds`: the agent still holding the tab). It runs after the mint's
+   * wait, before `sign`; `authorized()`, called as the signer is built,
+   * presents the token there under the page's live PageContext; and the
+   * signer awaits the same gate as its last step (`beforeSign`), after its
+   * own waits, right before the core or the device is asked: the custody
+   * main read when it presented the token is read again there. A send's
+   * guard runs it once more before the signed bytes are recorded. Any of
+   * them refusing signs nothing. The token is burnt afterwards, spent or
+   * not.
    */
-  async #withPageToken(context, kind, walletIndex, payload, options, sign) {
+  async #withPageToken(context, { kind, walletIndex, payload, options, check = () => {} }, sign) {
     const issuer = pageTokenOf(context);
     const confirmation = await issuer.mint(kind, walletIndex, payload, options);
+    const held = (step) =>
+      this.#underMain(context, () => {
+        check();
+        issuer.holds(confirmation);
+        return step();
+      });
     try {
-      return await sign(() => issuer.present(confirmation), confirmation);
+      return await held(() =>
+        sign(
+          () => ({ ...issuer.present(confirmation), beforeSign: () => held(() => undefined) }),
+          confirmation,
+          held
+        )
+      );
     } finally {
       issuer.discard(confirmation);
     }

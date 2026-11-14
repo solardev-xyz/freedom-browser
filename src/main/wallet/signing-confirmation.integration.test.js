@@ -39,6 +39,24 @@ const HANDLE = 'c'.repeat(64);
 const OTHER_HANDLE = 'd'.repeat(64);
 const SAFE_INDEX = 5000;
 const SAFE_ADDRESS = '0x' + 'aa'.repeat(20);
+// A Ledger's and a phone's accounts, whose devices (`devices`) a test sets:
+// main's signers ask them after the core's hash and spend.
+const LEDGER_INDEX = 1000000;
+const PHONE_INDEX = 1000001;
+const DEVICE_ADDRESS = new Wallet(ABANDON_KEY).address;
+const DEVICE_RECORDS = Object.freeze({
+  [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: DEVICE_ADDRESS },
+  [PHONE_INDEX]: { index: PHONE_INDEX, type: 'remote', address: DEVICE_ADDRESS },
+});
+const devices = { ledger: {}, phone: {} };
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 const PAGE = Object.freeze({ origin: SITE, top_origin: SITE, frame: 4, navigation: 9, agent: false });
 
 const TX = Object.freeze({
@@ -95,16 +113,19 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
     jest.doMock('../identity-manager', () => ({
       getWalletRecord: (index) =>
-        index === SAFE_INDEX ? { index, type: 'safe', address: SAFE_ADDRESS, owners: [0], threshold: 1 } : null,
+        index === SAFE_INDEX
+          ? { index, type: 'safe', address: SAFE_ADDRESS, owners: [0], threshold: 1 }
+          : DEVICE_RECORDS[index] ?? null,
       isHardwareWalletIndex: () => false,
       recordLedgerAddressCheck: () => {},
       recordRemoteAddressCheck: () => {},
       WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
     }));
-    // Main's own signers (`signers.js`) for the vault: no device here.
+    // Main's own signers (`signers.js`): the vault's through the core, a
+    // device's through a test's fake device, asked after the core's spend.
     jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
-    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => ({}) }));
-    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => ({}) }));
+    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => devices.ledger }));
+    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => devices.phone }));
     // Main's dApp file, written where the core reads it (its grant root).
     jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
     sc = require('./signing-confirmation');
@@ -749,6 +770,14 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     let answerWith;
     let nextId = 1;
     let nextNonce = 1;
+    // The agent route's runs, which outlive a request main answered (its
+    // document gone): a test waits for them before it checks what was signed.
+    let running;
+    // The transaction service's own waits before it asks the signer (the
+    // fee, the nonce), held when a test sets one; and what each device was
+    // asked.
+    let serviceWait;
+    let deviceAsked;
 
     class Guest extends EventEmitter {
       constructor() {
@@ -790,7 +819,11 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       const { AgentWalletController } = require('../agent/agent-wallet-controller');
       guests = new Map();
       custody = new Set();
-      const wallets = async () => [{ index: 0, name: 'Main Wallet', address: SIGNER, type: 'mnemonic' }];
+      const wallets = async () => [
+        { index: 0, name: 'Main Wallet', address: SIGNER, type: 'mnemonic' },
+        { index: LEDGER_INDEX, name: 'My Ledger', address: DEVICE_ADDRESS, type: 'ledger' },
+        { index: PHONE_INDEX, name: 'My Phone', address: DEVICE_ADDRESS, type: 'remote' },
+      ];
       // The Agent's own approval, as the agent service asks it: the test
       // answers each, and sees what it was asked.
       const controller = new AgentWalletController({
@@ -804,9 +837,19 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         getGasPrices: async () => ({ type: 'eip1559', maxFeePerGas: TX.maxFeePerGas, maxPriorityFeePerGas: TX.maxPriorityFeePerGas }),
         // Main's own signers: a vault account's signature by the core.
         getSigner,
-        // As the transaction service runs it: signed at the nonce main
-        // chose, then committed past the caller's guard.
+        // As the transaction service runs it: the account's address, its
+        // own waits (held when a test sets `serviceWait`), then signed at
+        // the nonce main chose and committed past the caller's guard; a
+        // phone signs and broadcasts in one step.
         signAndRecord: async (tx, signer, _record, options) => {
+          await signer.getAddress();
+          if (serviceWait) {
+            serviceWait.reached.resolve();
+            await serviceWait.promise;
+          }
+          if (typeof signer.sendTransaction === 'function') {
+            return { hash: await signer.sendTransaction(buildTransaction({ ...tx, nonce: 7 })) };
+          }
           const raw = await signer.signTransaction(buildTransaction({ ...tx, nonce: 7 }));
           let committed = null;
           await options.guardCommit(async () => {
@@ -836,7 +879,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           getActiveWalletIndex: () => 0,
           updateLastUsed: () => {},
           agentWalletRequest: (guestId, request, options) =>
-            controller.handleRequest(
+            track(controller.handleRequest(
               {
                 tabId: `tab_${guestId}`,
                 pageUrl: guests.get(guestId).getURL(),
@@ -851,7 +894,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
                 pageToken: options.pageToken,
               },
               request
-            ),
+            )),
           signing: { inCustody },
           sends: { inCustody },
         }),
@@ -863,9 +906,51 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       });
     });
 
+    // A run of the agent route, kept until it settles.
+    function track(run) {
+      running.push(run);
+      return run;
+    }
+
+    // A fake device, as main's signers ask one (`signers.js`): after the
+    // core's hash and spend, and the caller's last check. What it is asked
+    // is recorded; it signs with the test key.
+    function device(name) {
+      const key = new Wallet(ABANDON_KEY);
+      const asked = (method) => deviceAsked.push([name, method]);
+      return {
+        getAddress: async () => DEVICE_ADDRESS,
+        signMessage: async (message) => {
+          asked('signMessage');
+          return key.signMessage(message);
+        },
+        signTypedData: async (_data, { digest }) => {
+          asked('signTypedData');
+          return key.signingKey.sign(digest).serialized;
+        },
+        signTransaction: async (tx) => {
+          asked('signTransaction');
+          return key.signTransaction(tx);
+        },
+        ...(name === 'phone'
+          ? {
+              sendTransaction: async () => {
+                asked('sendTransaction');
+                return '0x' + 'ab'.repeat(32);
+              },
+            }
+          : {}),
+      };
+    }
+
     beforeEach(() => {
       approvals = [];
       answerWith = 'approved';
+      running = [];
+      serviceWait = null;
+      deviceAsked = [];
+      devices.ledger = device('ledger');
+      devices.phone = device('phone');
       permissions.grantPermission(SITE, 0, 100);
     });
 
@@ -908,12 +993,12 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     // The core's calls for one request: the Agent's token minted under
     // `page` with `agent: true` and main's handle, then presented under
     // `page` with `agent: true` by the one signature.
-    function minted(kind, page) {
+    function minted(kind, page, index = 0) {
       const issued = calls.filter((call) => call.method === 'approval.issue');
       expect(issued).toEqual([
         expect.objectContaining({
           context: { caller: 'page', page },
-          params: expect.objectContaining({ kind, account: 0, handle: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+          params: expect.objectContaining({ kind, account: index, handle: expect.stringMatching(/^[0-9a-f]{64}$/) }),
         }),
       ]);
       return issued[0].params.handle;
@@ -1018,12 +1103,19 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       expect(calls.filter((call) => call.method === 'approval.issue' || call.method.startsWith('sign.'))).toEqual([]);
     });
 
-    test('a tab the Agent leaves between the mint and the signature: refused, the token burnt, nothing signed', async () => {
+    // Codex on #1246: custody ends at the signer's own wait (the vault's
+    // address), after main presented the token as the signer was built.
+    test('a tab the Agent leaves at the signer\'s wait, after the token was presented: refused, the token burnt, nothing signed', async () => {
       const tab = agentTab();
       const request = core.request;
+      let presented = null;
       core.request = (method, params, context, options) => {
         const reply = request(method, params, context, options);
-        if (method === 'approval.issue') reply.then(() => custody.delete(tab.guest.id), () => {});
+        if (method === 'keys.addresses') {
+          // The signer waits on its address: built, the token presented.
+          presented = calls.some((call) => call.method === 'approval.issue');
+          reply.then(() => custody.delete(tab.guest.id), () => {});
+        }
         return reply;
       };
       let answer;
@@ -1032,6 +1124,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       } finally {
         core.request = request;
       }
+      expect(presented).toBe(true);
       expect(answer).toEqual({
         error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' },
       });
@@ -1049,6 +1142,120 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         )
       ).toBe('unknown_token');
       calls.length = 0;
+    });
+
+    // Codex on #1246: main presents the Agent's token as the signer is
+    // built, and the core spends it under the PageContext read then; the
+    // signer waits after that (a vault's address, a device's hash and the
+    // core's spend, the transaction service's fee and nonce). Its last step
+    // reads the tab and the document again, right before the core or the
+    // device is asked: a tab the Agent left, or a document gone, at any of
+    // those waits signs nothing, sends nothing, and leaves no live token.
+    const ASKS = {
+      personal_sign: (account) => ['personal_sign', ['0x68656c6c6f', account]],
+      eth_signTypedData_v4: (account) => ['eth_signTypedData_v4', [account, JSON.stringify(TYPED_DATA)]],
+      eth_sendTransaction: () => ['eth_sendTransaction', [{ to: TX.to, value: '0x' + BigInt(TX.value).toString(16), data: TX.data }]],
+    };
+    const KINDS = { personal_sign: 'sign-message', eth_signTypedData_v4: 'sign-typed-data', eth_sendTransaction: 'dapp-send' };
+    const ACCOUNTS = { vault: [0, SIGNER], ledger: [LEDGER_INDEX, DEVICE_ADDRESS], phone: [PHONE_INDEX, DEVICE_ADDRESS] };
+
+    // Holds the core's next reply to `method` until released.
+    function holdCore(method) {
+      const request = core.request;
+      const reached = deferred();
+      const released = deferred();
+      core.request = (name, params, context, options) => {
+        const reply = request(name, params, context, options);
+        if (name !== method) return reply;
+        core.request = request;
+        const held = async (settle) => {
+          reached.resolve();
+          await released.promise;
+          return settle();
+        };
+        return reply.then(
+          (value) => held(() => value),
+          (err) => held(() => Promise.reject(err))
+        );
+      };
+      return { reached: reached.promise, release: released.resolve, restore: () => (core.request = request) };
+    }
+
+    // Holds the transaction service's own wait before it asks the signer.
+    function holdService() {
+      const wait = { ...deferred(), reached: deferred() };
+      serviceWait = wait;
+      return { reached: wait.reached.promise, release: wait.resolve, restore: () => (serviceWait = null) };
+    }
+
+    describe.each([
+      ['a vault message, at its address', 'vault', 'personal_sign', 'keys.addresses'],
+      ['vault typed data, at its address', 'vault', 'eth_signTypedData_v4', 'keys.addresses'],
+      ["a vault send, at the transaction service's wait", 'vault', 'eth_sendTransaction', 'service'],
+      ["a Ledger message, at the core's spend", 'ledger', 'personal_sign', 'approval.spend'],
+      ["Ledger typed data, at the core's hash", 'ledger', 'eth_signTypedData_v4', 'typed_data.hash'],
+      ["Ledger typed data, at the core's spend", 'ledger', 'eth_signTypedData_v4', 'approval.spend'],
+      ["a Ledger send, at the transaction service's wait", 'ledger', 'eth_sendTransaction', 'service'],
+      ["a Ledger send, at the core's spend", 'ledger', 'eth_sendTransaction', 'approval.spend'],
+      ["a phone message, at the core's spend", 'phone', 'personal_sign', 'approval.spend'],
+      ["phone typed data, at the core's spend", 'phone', 'eth_signTypedData_v4', 'approval.spend'],
+      ["a phone send, at the transaction service's wait", 'phone', 'eth_sendTransaction', 'service'],
+      ["a phone send, at the core's spend", 'phone', 'eth_sendTransaction', 'approval.spend'],
+    ])('%s', (_label, held, method, holdAt) => {
+      const [index, address] = ACCOUNTS[held];
+
+      test.each([
+        ['the Agent leaves the tab', (tab) => custody.delete(tab.guest.id), { error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } }],
+        ['the document navigates', (tab) => tab.guest.commit(`${SITE}/next`), { gone: true }],
+        ['nothing changes', () => {}, null],
+      ])('%s there: the signer\'s last step decides', async (_change, change, refused) => {
+        permissions.grantPermission(SITE, index, 100);
+        const tab = agentTab();
+        const hold = holdAt === 'service' ? holdService() : holdCore(holdAt);
+        let answer;
+        try {
+          const asking = tab.ask(...ASKS[method](address));
+          await hold.reached;
+          // Minted and presented: the signer was built, and waits.
+          const handle = minted(KINDS[method], tab.page, index);
+          change(tab);
+          hold.release();
+          answer = await asking;
+          await Promise.allSettled(running);
+          const issued = await calls.find((call) => call.method === 'approval.issue').reply;
+          const signs = calls.filter((call) => call.method.startsWith('sign.'));
+          if (refused) {
+            expect(answer).toEqual(refused);
+            // Neither the core nor the device was asked.
+            expect(signs).toEqual([]);
+            expect(deviceAsked).toEqual([]);
+            // No live token: spent by a device's signer before its last
+            // step, or burnt unspent.
+            const page = calls.find((call) => call.method === 'approval.issue').context.page;
+            expect(
+              await reasonOf(
+                vaultBackend.sign.message(account(0), Buffer.from('hello'), {
+                  authorization: { token: issued.token, handle },
+                  page,
+                })
+              )
+            ).toBe('unknown_token');
+            calls.length = 0;
+          } else {
+            expect(answer).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]+$/) });
+            if (held === 'vault') {
+              expect(signs).toHaveLength(1);
+              expect(deviceAsked).toEqual([]);
+            } else {
+              expect(signs).toEqual([]);
+              expect(deviceAsked).toHaveLength(1);
+              expect(calls.filter((call) => call.method === 'approval.spend')).toHaveLength(1);
+            }
+          }
+        } finally {
+          hold.restore();
+        }
+      });
     });
   });
 
