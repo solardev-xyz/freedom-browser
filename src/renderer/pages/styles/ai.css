@@ -339,6 +339,25 @@
   font-size: 13px;
   line-height: 1.6;
 }
+#providers #agent-provider-login-details {
+  margin: 0 0 16px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+#agent-provider-login-details summary {
+  cursor: pointer;
+  color: var(--text);
+}
+#agent-provider-login-details summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+#agent-provider-login-report {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.6 ui-monospace, monospace;
+}
 :is(#providers, #voice) .error {
   color: var(--danger);
 }

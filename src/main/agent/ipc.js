@@ -3,6 +3,7 @@
 const IPC = require('../../shared/ipc-channels');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
 const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
+const { loginFailure, loginFailureDetails } = require('./chatgpt-login-errors');
 
 const AGENT_IPC_ERROR_CODES = Object.freeze({
   TAB_NOT_BOUND: 'AGENT_TAB_NOT_BOUND',
@@ -32,6 +33,7 @@ const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_MODEL_UNAVAILABLE: 'No configured agent model is available',
   AGENT_PROVIDER_AUTH_BUSY: 'A provider sign-in is already in progress',
   AGENT_PROVIDER_AUTH_CANCELLED: 'Provider sign-in was cancelled',
+  AGENT_PROVIDER_AUTH_TIMEOUT: 'Provider sign-in timed out. Start a new connection attempt and complete it within five minutes.',
   AGENT_PROVIDER_AUTH_UNSUPPORTED: 'The provider sign-in flow is unsupported',
   AGENT_CATALOG_UNAVAILABLE: 'Could not refresh models. The previous catalog is still available.',
   AGENT_CATALOG_KEY_REQUIRED: 'Enter a Venice API key to load its models.',
@@ -105,6 +107,13 @@ function safeServiceError(error) {
 }
 
 function safeProviderError(error) {
+  const loginDiagnostic = loginFailureDetails(error);
+  if (loginDiagnostic) {
+    const cancelled = loginDiagnostic.code === 'AGENT_PROVIDER_AUTH_CANCELLED';
+    const response = errorEnvelope(loginDiagnostic.code, cancelled ? loginDiagnostic.summary : loginDiagnostic.userMessage);
+    if (!cancelled) response.error.supportDetails = loginDiagnostic.report;
+    return response;
+  }
   const message = SAFE_PROVIDER_ERROR_MESSAGES[error?.code];
   return message
     ? errorEnvelope(error.code, message)
@@ -1159,7 +1168,7 @@ function registerFreedomAgentIpc(options = {}) {
         controller,
         onDestroyed: () => controller.abort(),
       };
-      const loginTimeout = setTimeout(() => controller.abort(), 5 * 60_000);
+      const loginTimeout = setTimeout(() => controller.abort(providerError('AGENT_PROVIDER_AUTH_TIMEOUT', 'Provider sign-in timed out')), 5 * 60_000);
       providerLogin = pending;
       event.sender.once?.('destroyed', pending.onDestroyed);
       try {
@@ -1212,6 +1221,11 @@ function registerFreedomAgentIpc(options = {}) {
         return { status };
       } catch (error) {
         if (controller.signal.aborted) {
+          if (controller.signal.reason?.code === 'AGENT_PROVIDER_AUTH_TIMEOUT') {
+            if (loginFailureDetails(error)) throw error;
+            if (payload?.providerId === 'openai-chatgpt') throw loginFailure('timeout');
+            throw providerError('AGENT_PROVIDER_AUTH_TIMEOUT', 'Provider sign-in timed out');
+          }
           throw providerError('AGENT_PROVIDER_AUTH_CANCELLED', 'Provider sign-in was cancelled');
         }
         throw error;

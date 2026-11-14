@@ -124,6 +124,8 @@ export function createAgentProviderUi(options = {}) {
     authCallbackSubmit: byId('agent-auth-callback-submit'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
+    loginDetails: byId('agent-provider-login-details'),
+    loginReport: byId('agent-provider-login-report'),
     connectMessage: byId('agent-provider-connect-message'),
     ollamaInstall: byId('agent-ollama-install'),
     ...options.elements,
@@ -157,6 +159,11 @@ export function createAgentProviderUi(options = {}) {
     if (!element) return;
     element.textContent = text;
     element.classList.toggle('error', error);
+    if (element === elements.providerMessage && elements.loginDetails) {
+      elements.loginDetails.hidden = true;
+      elements.loginDetails.open = false;
+      elements.loginReport.textContent = '';
+    }
     // Any later action that reports in the page-wide line (disconnect,
     // refresh, test prompt, sign-in, preferences) supersedes the Connect
     // result, so stale text never sits under the button beside it.
@@ -1536,6 +1543,12 @@ export function createAgentProviderUi(options = {}) {
           responseMessage(response, `Could not sign in with ${accountName}`),
           response?.error?.code !== 'AGENT_PROVIDER_AUTH_CANCELLED'
         );
+        const report = response?.error?.supportDetails;
+        if (elements.loginDetails && ['AGENT_CHATGPT_LOGIN_FAILED', 'AGENT_PROVIDER_AUTH_TIMEOUT'].includes(response?.error?.code) &&
+            typeof report === 'string' && report.length <= 2048) {
+          elements.loginReport.textContent = report;
+          elements.loginDetails.hidden = false;
+        }
         return;
       }
       renderProviderStatus(response.status, { userAction: true });
