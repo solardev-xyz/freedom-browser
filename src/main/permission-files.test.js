@@ -6,7 +6,9 @@
  * each store makes goes through the helper, and nothing else writes the
  * file: a spy on the helper and on `fs`. `dapp-permissions.json` is the
  * core's from APB-2, and main writes it nowhere
- * (wallet/dapp-permissions.test.js).
+ * (wallet/dapp-permissions.test.js). No script under scripts/ writes,
+ * renames or deletes a permission file either: `npm run dapp:reset`, which
+ * deleted the dApp file, refuses from APB-2 and touches nothing.
  */
 
 const fs = require('fs');
@@ -28,6 +30,7 @@ jest.mock('./lib/atomic-file', () => {
   return { writeFileAtomicSync: jest.fn(actual.writeFileAtomicSync) };
 });
 
+const { spawnSync } = require('child_process');
 const { app } = require('electron');
 const { writeFileAtomicSync } = require('./lib/atomic-file');
 const swarm = require('./swarm/swarm-permissions');
@@ -136,5 +139,75 @@ describe.each(STORES)('%s', (name, _store, writes) => {
     // The file is whole JSON, as JSON.stringify(…, null, 2) wrote it.
     const text = fs.readFileSync(target, 'utf-8');
     expect(JSON.stringify(JSON.parse(text), null, 2)).toBe(text);
+  });
+});
+
+// Scripts run beside main, not through it: one that wrote a file the core
+// owns would write behind the core, which holds the grants in memory and
+// writes them back. None writes, renames or deletes a permission file, nor
+// loads a store's module to write through it.
+describe('scripts/ writes no permission file', () => {
+  const ROOT = path.join(__dirname, '..', '..');
+  const SCRIPTS = path.join(ROOT, 'scripts');
+  const PERMISSION_FILE = /\b(?:dapp|swarm|radicle|x402)-permissions\b/;
+  const JS_WRITES =
+    /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync|rename|renameSync|copyFile|copyFileSync|cp|cpSync|truncate|truncateSync|createWriteStream|writeFileAtomicSync|grantPermission|revokePermission|revokePermissionsForWalletIndex|setAutoApprove|grantMessaging|revokeMessaging|grantSigning|grant|revoke|revokeAllForOrigin|charge|refund|updatePermission)\s*\(/;
+  const SHELL_WRITES =
+    /\b(?:rm|mv|cp|del|erase|move|copy|Remove-Item|Move-Item|Copy-Item|Rename-Item|Set-Content|Add-Content|Out-File|Clear-Content|remove|unlink|rename|truncate|shutil)\b|>/;
+  const JS = new Set(['.js', '.cjs', '.mjs', '.ts']);
+  const writesPermissionFile = (text, ext) =>
+    PERMISSION_FILE.test(text) && (JS.has(ext) ? JS_WRITES : SHELL_WRITES).test(text);
+
+  function* files(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) yield* files(full);
+      else if (entry.isFile()) yield full;
+    }
+  }
+
+  test('the check finds the write the old dapp:reset made, and none in the scripts now', () => {
+    expect(writesPermissionFile("fs.unlinkSync(path.join(dir, 'dapp-permissions.json'));", '.js')).toBe(true);
+    expect(writesPermissionFile('rm -f "$HOME/.config/Freedom/swarm-permissions.json"', '.sh')).toBe(true);
+    expect(writesPermissionFile("console.log('dapp-permissions.json');", '.js')).toBe(false);
+    const writers = [];
+    let read = 0;
+    for (const file of files(SCRIPTS)) {
+      const bytes = fs.readFileSync(file);
+      if (bytes.includes(0)) continue;
+      read += 1;
+      if (writesPermissionFile(bytes.toString('utf8'), path.extname(file))) writers.push(path.relative(ROOT, file));
+    }
+    expect(read).toBeGreaterThan(100);
+    expect(writers).toEqual([]);
+  });
+
+  test('npm run dapp:reset refuses: it exits non-zero, says why, and leaves the file as it was', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    expect(pkg.scripts['dapp:reset']).toBe('node scripts/reset-dapp-permissions.js');
+    // The file where the old command looked for it, on each platform.
+    const appData = path.join(tmpDir, 'AppData', 'Roaming');
+    const planted = [
+      path.join(tmpDir, '.config', 'Freedom'),
+      path.join(tmpDir, 'Library', 'Application Support', 'Freedom'),
+      path.join(appData, 'Freedom'),
+    ].map((dir) => {
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 'dapp-permissions.json');
+      fs.writeFileSync(file, JSON.stringify({ 'https://app.example': { origin: 'https://app.example' } }, null, 2));
+      return [file, fs.readFileSync(file)];
+    });
+    const run = spawnSync(process.execPath, [path.join(SCRIPTS, 'reset-dapp-permissions.js')], {
+      cwd: ROOT,
+      env: { PATH: process.env.PATH, HOME: tmpDir, USERPROFILE: tmpDir, APPDATA: appData, XDG_CONFIG_HOME: path.join(tmpDir, '.config') },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    expect(run.status).toBe(1);
+    expect(run.stdout).toBe('');
+    expect(run.stderr).toContain('nothing was changed');
+    expect(run.stderr).toContain("the dApp permissions are the identity core's");
+    expect(run.stderr).toContain('Disconnect');
+    for (const [file, bytes] of planted) expect(fs.readFileSync(file).equals(bytes)).toBe(true);
   });
 });

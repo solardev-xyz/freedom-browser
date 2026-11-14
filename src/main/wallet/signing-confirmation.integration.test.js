@@ -1221,6 +1221,11 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     await permissions.updateWalletIndex(THIRD_SITE, 2, third);
     await permissions.updateLastUsed(THIRD_SITE, 100, third);
     expect(await permissions.revokePermission(OTHER_SITE)).toBe(true);
+    // The chrome's revoke goes as the chrome (design 0012, API).
+    expect(calls.filter((call) => call.method === 'approval.revoke').at(-1)).toMatchObject({
+      params: { store: 'dapp', key: OTHER_SITE, what: 'grant' },
+      context: { caller: 'chrome' },
+    });
     const records = await coreRecords();
     const older = readReference();
     expect(older.getAllPermissions()).toEqual(records);
@@ -1234,6 +1239,20 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
     // Main's copy is the core's.
     await until(() => permissions.getPermission(OTHER_SITE) === null);
     expect(permissions.getAllPermissions().map((record) => record.origin).sort()).toEqual(records.map((r) => r.origin).sort());
+  });
+
+  test("an account change for a key the core holds no grant for: the core writes nothing, and main's change rejects", async () => {
+    const fourth = 'https://fourth.example';
+    const page = { ...PAGE, origin: fourth, top_origin: fourth };
+    const before = fs.readFileSync(file(), 'utf8');
+    await expect(permissions.updateWalletIndex(fourth, 1, page)).rejects.toThrow('The account change was not recorded');
+    expect(calls.filter((call) => call.method === 'approval.grant').at(-1)).toMatchObject({
+      params: { store: 'dapp', change: { op: 'account', account: 1 } },
+      context: { caller: 'page', page },
+    });
+    expect((await coreRecords()).map((record) => record.origin)).not.toContain(fourth);
+    expect(permissions.getPermission(fourth)).toBeNull();
+    expect(fs.readFileSync(file(), 'utf8')).toBe(before);
   });
 
   test("an account deleted: the core revokes its grants (main's own), and the reference sees none", async () => {

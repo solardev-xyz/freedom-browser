@@ -13,9 +13,11 @@
  *   rule, which clears today's flag in the same write). A transaction rule
  *   comes only with the confirmed send it was ticked on: the core writes it
  *   as it signs, and says so in `sign.transaction`'s reply.
- * - **Main's own**, as `shell`: the chrome's revoke, its signing rule or
- *   contract rule turned off (`approval.revoke`; it only narrows), and an
- *   account deleted (`approval.forget_account`).
+ * - **The chrome's**, as `chrome`: a revoke from its settings, a site's
+ *   signing rule or contract rule turned off there (`approval.revoke`; it
+ *   only narrows). Main relays them from the chrome's IPC.
+ * - **Main's own**, as `shell`: an account deleted
+ *   (`approval.forget_account`).
  *
  * A failed write is reported as the core reports it: a widening (a connect,
  * a rule) isn't applied, so a connect fails; a narrowing (a revoke, a rule
@@ -44,6 +46,8 @@ const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 
 const STORE = 'dapp';
+// The caller of a revoke from the chrome's settings (design 0012, API).
+const CHROME = 'chrome';
 const GRANT_REFUSED = 'A dApp connection is granted only from its own prompt';
 const SIGNING_RULE_REFUSED = 'Signing auto-approve is turned on only from a signing prompt';
 const PAGE_ONLY = 'A site’s grant is written only under its own page';
@@ -281,8 +285,8 @@ async function grantPermission(origin, walletIndex, chainId, page) {
 }
 
 /**
- * Revoke permission for an origin (the chrome's disconnect): main's own,
- * which only narrows.
+ * Revoke permission for an origin (the chrome's disconnect): the chrome's,
+ * as `chrome`, which only narrows.
  * @param {string} origin - The dApp origin
  * @returns {Promise<boolean>} True if permission was revoked
  */
@@ -291,7 +295,7 @@ async function revokePermission(origin) {
   if (!key) return false;
   const at = ++seq;
   try {
-    const reply = await vault().approval.revoke({ store: STORE, key, what: 'grant' });
+    const reply = await vault().approval.revoke({ store: STORE, key, what: 'grant' }, CHROME);
     notDurable(`Revoked ${key}`, reply);
     if (reply?.revoked !== true) return false;
   } catch (err) {
@@ -375,11 +379,12 @@ async function updateLastUsed(origin, chainId, page) {
 /**
  * The account a page's grant exposes, chosen again on its own prompt (the
  * agent's connect): the core writes it for the page's key. Rejects when it
- * isn't written.
+ * isn't written: a failed write, or a reply with no grant (the core holds
+ * none for the key).
  * @param {string} origin - The dApp's key, the page's own
  * @param {number} walletIndex - New wallet index
  * @param {object} page - the request's PageContext
- * @returns {Promise<boolean>} True if updated
+ * @returns {Promise<true>} Resolves once written
  */
 async function updateWalletIndex(origin, walletIndex, page) {
   const key = pageKey(origin, page);
@@ -392,8 +397,16 @@ async function updateWalletIndex(origin, walletIndex, page) {
     throw err;
   }
   notDurable(`Account of ${key} saved`, reply);
-  applyEntry(key, reply?.grant ?? null, at);
-  return Boolean(reply?.grant);
+  // No grant in the reply: the core holds none for the key (removed behind
+  // main's copy), so nothing was written. Main's copy drops it, and the
+  // account change fails, as a connect not recorded does.
+  const grant = reply?.grant ?? null;
+  applyEntry(key, grant, at);
+  if (!grant) {
+    console.error(`[DAppPermissions] Failed to save permissions (the account of ${key}): the core holds no grant for it`);
+    throw new Error('The account change was not recorded');
+  }
+  return true;
 }
 
 /**
@@ -417,7 +430,7 @@ function getSigningAutoApprove(origin) {
 /**
  * A site's signing rule: turned on only from "Always allow" on a signing
  * prompt main showed, under the page (Q9's limited rule, which clears
- * today's flag in the same write); turned off by the chrome (main's own,
+ * today's flag in the same write); turned off by the chrome (as `chrome`,
  * which clears both). Never rejects.
  * @param {string} origin
  * @param {boolean} enabled
@@ -435,7 +448,7 @@ async function setSigningAutoApprove(origin, enabled, page) {
       if (!reply?.grant) return false;
       applyEntry(key, reply.grant, at);
     } else {
-      const reply = await vault().approval.revoke({ store: STORE, key, what: 'signing' });
+      const reply = await vault().approval.revoke({ store: STORE, key, what: 'signing' }, CHROME);
       notDurable(`Signing rule turned off for ${key}`, reply);
       if (reply?.revoked !== true) return false;
       reread(key);
@@ -451,7 +464,8 @@ async function setSigningAutoApprove(origin, enabled, page) {
 
 /**
  * Remove a site's contract rule (the chrome's), today's and Q9's limited
- * one for the same call, in one write: main's own, which only narrows.
+ * one for the same call, in one write: the chrome's, as `chrome`, which
+ * only narrows.
  * Never rejects.
  * @param {string} origin
  * @param {string} to - Contract address
@@ -464,7 +478,7 @@ async function removeTransactionAutoApprove(origin, to, selector, chainId) {
   if (!key || typeof to !== 'string' || typeof selector !== 'string') return false;
   const call = { to: to.toLowerCase(), selector: selector.slice(0, 10).toLowerCase(), chain_id: chainId };
   try {
-    const reply = await vault().approval.revoke({ store: STORE, key, what: { transaction: call } });
+    const reply = await vault().approval.revoke({ store: STORE, key, what: { transaction: call } }, CHROME);
     notDurable(`Contract rule removed for ${key}`, reply);
     if (reply?.revoked !== true) return false;
   } catch (err) {

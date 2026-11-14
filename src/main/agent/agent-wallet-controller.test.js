@@ -462,6 +462,43 @@ describe('AgentWalletController', () => {
       ]);
     });
 
+    // The identity core answers an account change with `{ grant: null }`
+    // when the key holds no grant any more (removed behind main's copy):
+    // nothing was written, so the connect fails with no account and no
+    // receipt. dapp-permissions.js's own `updateWalletIndex`, over that reply.
+    test('an account change the identity core answers with no grant fails the connect: no account, no receipt', async () => {
+      const { vaultBackend } = require('../core/vault-backend');
+      const grant = jest.spyOn(vaultBackend.approval, 'grant').mockResolvedValue({ grant: null });
+      const quiet = jest.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const harness = createHarness({
+          permission: { walletIndex: 1, chainId: 1 },
+          wallets: [
+            { index: 0, name: 'Main Wallet', address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' },
+            { index: 1, name: 'Second', address: '0x2222222222222222222222222222222222222222', type: 'mnemonic' },
+          ],
+        });
+        const controller = new AgentWalletController({ ...harness.dependencies, updateWalletIndex: undefined });
+        const told = [];
+        const pick = jest.fn(async () => ({ status: 'approved', walletIndex: 0 }));
+        const provider = await controller.handleRequest(
+          { ...attestedContext({}, pick), grantWritten: (effect) => told.push(effect) },
+          attestedRequest
+        );
+        expect(grant).toHaveBeenCalledWith({ store: 'dapp', change: { op: 'account', account: 0 } }, PAGE);
+        expect(provider).toEqual({
+          handled: true,
+          error: { code: -32603, message: 'The account change was not recorded' },
+          errorCode: ERROR_CODES.INTERNAL_ERROR,
+        });
+        expect(told.map((effect) => effect.grant)).toEqual(['updated']);
+        await expect(told[0].written).rejects.toThrow('The account change was not recorded');
+      } finally {
+        grant.mockRestore();
+        quiet.mockRestore();
+      }
+    });
+
     // freedom-core design 0011, PRQ-6 (#1192 round 2): the controller tells
     // main what its own write did, decided from the grant it read in the
     // write's run and told in that run, so main queues a created grant's

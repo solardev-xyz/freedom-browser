@@ -384,6 +384,23 @@ describe('vaultBackend', () => {
     });
   });
 
+  // Design 0012, API: `approval.revoke` is open to a page (its own key), to
+  // the chrome (its settings' narrowing) and to main itself.
+  test("a revoke's caller: a page under its PageContext, the chrome's as chrome, main's own as shell", async () => {
+    const core = new FakeCore(() => ({ revoked: true }));
+    const { vaultBackend } = load(core);
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1, agent: false };
+    const params = { store: 'dapp', key: 'https://app.example', what: 'grant' };
+    await vaultBackend.approval.revoke(params, page);
+    await vaultBackend.approval.revoke(params, 'chrome');
+    await vaultBackend.approval.revoke(params);
+    expect(core.calls.map(({ method, context }) => [method, context])).toEqual([
+      ['approval.revoke', { caller: 'page', page }],
+      ['approval.revoke', { caller: 'chrome' }],
+      ['approval.revoke', { caller: 'shell' }],
+    ]);
+  });
+
   test.each([
     ['no_vault', 'No vault exists'],
     ['vault_locked', 'Vault is locked'],

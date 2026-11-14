@@ -153,7 +153,7 @@ describe('dapp-permissions — every write goes to the identity core (APB-2)', (
     expect(mockApprovals.dapp.entry(SITE).chainId).toBe(10);
   });
 
-  test('"Always allow" for signing is Q9\'s limited rule, written under the page; turning it off is main\'s own', async () => {
+  test('"Always allow" for signing is Q9\'s limited rule, written under the page; turning it off is the chrome\'s', async () => {
     await grant(SITE);
     expect(await setSigningAutoApprove(SITE, true, pageFor(SITE))).toBe(true);
     expect(lastWrite()).toMatchObject({
@@ -170,24 +170,44 @@ describe('dapp-permissions — every write goes to the identity core (APB-2)', (
     expect(lastWrite()).toEqual({
       method: 'approval.revoke',
       params: { store: 'dapp', key: SITE, what: 'signing' },
-      page: null,
+      page: 'chrome',
     });
     expect(mockApprovals.dapp.entry(SITE).autoApprove.limited.signing).toBeNull();
   });
 
-  test('a contract rule is removed by its call, today\'s and the limited one, as main\'s own', async () => {
+  // The core answers `{ grant: null }` when the key holds no grant (removed
+  // behind main's copy): nothing was written, so the change fails, as a
+  // connect not recorded does, and main's copy drops the stale grant.
+  test('an account change the core answers with no grant rejects, and main\'s copy drops the grant', async () => {
+    await grant(SITE, 0, 1);
+    mockApprovals.dapp.entries.delete(SITE);
+    await expect(updateWalletIndex(SITE, 4, pageFor(SITE))).rejects.toThrow('The account change was not recorded');
+    expect(lastWrite()).toEqual({
+      method: 'approval.grant',
+      params: { store: 'dapp', change: { op: 'account', account: 4 } },
+      page: pageFor(SITE),
+    });
+    expect(getPermission(SITE)).toBeNull();
+    expect(logs.error).toHaveBeenCalledWith(expect.stringContaining('the core holds no grant'));
+    // A reply with nothing in it is no write either.
+    await grant(SITE, 0, 1);
+    jest.spyOn(mockApprovals.approval, 'grant').mockResolvedValueOnce({});
+    await expect(updateWalletIndex(SITE, 4, pageFor(SITE))).rejects.toThrow('The account change was not recorded');
+  });
+
+  test('a contract rule is removed by its call, today\'s and the limited one, as the chrome\'s', async () => {
     await grant(SITE);
     mockApprovals.dapp.entries.get(SITE).autoApprove.transactions.push({ to: TOKEN, selector: APPROVE, chainId: 100, maxValue: '0' });
     expect(await removeTransactionAutoApprove(SITE, TOKEN.toUpperCase().replace('0X', '0x'), APPROVE, 100)).toBe(true);
     expect(lastWrite()).toEqual({
       method: 'approval.revoke',
       params: { store: 'dapp', key: SITE, what: { transaction: { to: TOKEN, selector: APPROVE, chain_id: 100 } } },
-      page: null,
+      page: 'chrome',
     });
     expect(await removeTransactionAutoApprove(SITE, TOKEN, APPROVE, 100)).toBe(false);
   });
 
-  test('a revoke and an account deleted are main\'s own, and leave main\'s copy as the core holds it', async () => {
+  test('a revoke is the chrome\'s and an account deleted main\'s own, and each leaves main\'s copy as the core holds it', async () => {
     await grant(SITE, 2);
     await grant('https://keep.example', 0);
     await grant('https://also.example', 2);
@@ -199,7 +219,7 @@ describe('dapp-permissions — every write goes to the identity core (APB-2)', (
     expect(lastWrite()).toEqual({
       method: 'approval.revoke',
       params: { store: 'dapp', key: 'https://keep.example', what: 'grant' },
-      page: null,
+      page: 'chrome',
     });
     expect(getPermission('https://keep.example')).toBeNull();
     expect(await revokePermission('https://keep.example')).toBe(false);

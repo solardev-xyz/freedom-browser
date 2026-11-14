@@ -23,7 +23,8 @@
  *     `approval.end`; a Safe's new send approval ends its older one;
  *   - the dApp store is the core's (APB-2, `grant_moved` names `dapp`): its
  *     write methods (`approval.grant` under `page` for the page's own key,
- *     never a transaction rule; `approval.revoke`; `approval.touch` under
+ *     never a transaction rule; `approval.revoke` under a page for its own
+ *     key, the chrome (`'chrome'`) or main (`shell`); `approval.touch` under
  *     `page`; `approval.forget_account`) and `approval.grants` change and
  *     read `dapp`, entries in today's format with Q9's limited rules under
  *     `autoApprove.limited` ("Always allow" for signing clears today's flag
@@ -322,6 +323,8 @@ function simulatedApprovals() {
     async grant(params, context = null) {
       calls.push({ method: 'approval.grant', params, page: context });
       const { store, change } = params;
+      // The core admits `approval.grant` from a page or main, never the chrome.
+      if (context === 'chrome') throw coded('approval.grant: not open to the chrome', 'forbidden');
       if (store !== 'dapp' || !context) throw coded("this caller can't write this store's grants", 'forbidden');
       if (change?.op === 'transaction') throw coded('a transaction rule comes only with a confirmed send', 'forbidden');
       if (change && 'key' in change) throw coded('change: a page changes its own grant', 'invalid_argument');
@@ -339,7 +342,9 @@ function simulatedApprovals() {
       calls.push({ method: 'approval.revoke', params, page: context });
       const { store, key, what } = params;
       if (store !== 'dapp') throw coded('not moved', 'not_moved');
-      if (context && context.origin !== key) throw coded('a page revokes only its own grant', 'forbidden');
+      if (context && context !== 'chrome' && context.origin !== key) {
+        throw coded('a page revokes only its own grant', 'forbidden');
+      }
       let revoked;
       if (what === 'grant') revoked = dapp.entries.delete(key);
       else if (what === 'signing') revoked = dapp.signingOff(key);
