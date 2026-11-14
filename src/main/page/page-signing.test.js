@@ -149,7 +149,15 @@ function backends() {
     agent: null,
     signed: [],
     signerFails: null,
-    safe: { complete: true, sessions: [], completed: [], cancelled: [] },
+    // The core's hash of a device's typed data, when a test holds it.
+    hashHold: null,
+    hashWaits: 0,
+    // A vault signer's own wait before the core signs, when a test holds it.
+    addressHold: null,
+    // `prepare`: the session's preparation and the vault's state, when a
+    // test holds them; `ownersSigned`: each free owner's signature, made
+    // past the caller's last check.
+    safe: { complete: true, sessions: [], completed: [], cancelled: [], prepare: null, preparing: 0, ownersSigned: 0 },
   };
   const signer = {
     signMessage: jest.fn(async (message) => {
@@ -195,7 +203,35 @@ function backends() {
         return { hash: TYPED_HASH, view: TYPED_VIEW, warnings: state.typedWarnings.slice() };
       }),
       signsRawHash,
-      getSigner: jest.fn(() => signer),
+      // As signers.js: a signature no token answers awaits its caller's
+      // last check (`beforeSign`) after the signer's own waits (a device's
+      // hash of typed data, which a test holds with `hashHold`), right
+      // before it signs.
+      getSigner: jest.fn((index, authorized) => {
+        const device = state.wallets.find((wallet) => wallet.index === index)?.type !== 'mnemonic';
+        const last = authorized?.confirmation ? null : authorized?.beforeSign;
+        if (!last) return signer;
+        // A vault's own wait (its address from the core), when held.
+        const vaultWait = async () => {
+          if (!device && state.addressHold) await state.addressHold.promise;
+        };
+        return {
+          signMessage: async (message) => {
+            await vaultWait();
+            await last();
+            return signer.signMessage(message);
+          },
+          signTypedData: async (data, options) => {
+            await vaultWait();
+            if (device && state.hashHold) {
+              state.hashWaits += 1;
+              await state.hashHold.promise;
+            }
+            await last();
+            return signer.signTypedData(data, options);
+          },
+        };
+      }),
       // The identity core's `approval.check` (design 0012), simulated from
       // the same state: the grant exposing the account and its signing rule,
       // outside custody, never 32 bytes nor a warned view.
@@ -215,6 +251,15 @@ function backends() {
       }),
       startSafeMessage: jest.fn(async (options) => {
         state.safe.sessions.push(options);
+        // As safe-messages.js: the request's preparation and the vault's
+        // state, then the free owner's signer, which awaits the caller's
+        // last check right before it signs.
+        if (state.safe.prepare) {
+          state.safe.preparing += 1;
+          await state.safe.prepare.promise;
+        }
+        if (options.beforeSign) await options.beforeSign();
+        state.safe.ownersSigned += 1;
         return {
           safeIndex: options.safeIndex,
           kind: 'message',
@@ -807,18 +852,24 @@ describe("the site's rule, read by main for the request it holds", () => {
     // site's rule (`{ standing }`), the typed data's view on the page's chain
     // (design 0012).
     const pageContext = expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false });
+    // With the dispatcher's last check, which a vault's signer leaves to the
+    // core (`signers.js`).
     expect(env.deps.signing.getSigner.mock.calls).toEqual([
-      [0, { page: pageContext, standing: {}, chainId: 100 }],
-      [0, { page: pageContext, standing: {}, chainId: 100 }],
+      [0, { page: pageContext, standing: {}, chainId: 100, beforeSign: expect.any(Function) }],
+      [0, { page: pageContext, standing: {}, chainId: 100, beforeSign: expect.any(Function) }],
     ]);
     // The core chose each (`approval.check`), and read it again just before
-    // the signature: what the request signs, for the account the grant
-    // exposes, on the page's chain.
+    // the signer is called and as the signer's last check: what the request
+    // signs, for the account the grant exposes, on the page's chain.
+    const message = [KEY_A, { kind: 'message', account: 0, accountType: 'mnemonic', payload: MESSAGE, chainId: 100 }];
+    const typed = [KEY_A, { kind: 'typed_data', account: 0, accountType: 'mnemonic', payload: TYPED, chainId: 100 }];
     expect(env.deps.signing.checkStanding.mock.calls.map(([context, request]) => [context.origin, request])).toEqual([
-      [KEY_A, { kind: 'message', account: 0, accountType: 'mnemonic', payload: MESSAGE, chainId: 100 }],
-      [KEY_A, { kind: 'message', account: 0, accountType: 'mnemonic', payload: MESSAGE, chainId: 100 }],
-      [KEY_A, { kind: 'typed_data', account: 0, accountType: 'mnemonic', payload: TYPED, chainId: 100 }],
-      [KEY_A, { kind: 'typed_data', account: 0, accountType: 'mnemonic', payload: TYPED, chainId: 100 }],
+      message,
+      message,
+      message,
+      typed,
+      typed,
+      typed,
     ]);
   });
 
@@ -1330,8 +1381,115 @@ describe('a rule revoked while the name resolves just before the effect', () => 
       page: expect.objectContaining({ origin: NAME, agent: false }),
       standing: {},
       chainId: 100,
+      beforeSign: expect.any(Function),
     });
     expect(env.state.signed).toEqual([]);
+  });
+});
+
+// A device's typed data waits once more inside its signer, on the core's
+// hash, and a Safe's message on its preparation and the vault's state: the
+// core's reading of the rule, and custody, are the signer's last check,
+// right before each signature (`beforeSign`), so neither wait lets a rule
+// revoked or a tab taken into custody reach a signer.
+describe('a rule revoked or custody entered while a signer waits, just before its signature', () => {
+  const PHONE = '0x4444444444444444444444444444444444444444';
+  const PHONE_INDEX = 2000;
+
+  function ruledTab(walletIndex) {
+    const env = setup();
+    env.state.wallets.push({ index: PHONE_INDEX, name: 'Phone', address: PHONE, type: 'remote' });
+    env.connect(KEY_A, walletIndex, { autoApprove: { signing: true } });
+    return { env, page: env.tab() };
+  }
+  const change = (env, page, what) => {
+    if (what === 'custody entered') env.state.custody.add(page.guest.id);
+    else env.state.permissions.get(KEY_A).autoApprove = { signing: false };
+  };
+
+  test.each([
+    ['a Ledger', 1, LEDGER, 'the rule revoked', RULE_GONE],
+    ['a Ledger', 1, LEDGER, 'custody entered', CUSTODY],
+    ['a phone', PHONE_INDEX, PHONE, 'the rule revoked', RULE_GONE],
+    ['a phone', PHONE_INDEX, PHONE, 'custody entered', CUSTODY],
+  ])("%s's typed data, %s while the core hashes it: refused, the device never asked", async (_label, walletIndex, address, what, refused) => {
+    const { env, page } = ruledTab(walletIndex);
+    env.state.hashHold = deferred();
+    const answer = page.ask('eth_signTypedData_v4', [address, TYPED]);
+    await flush();
+    // Past the choice and the dispatcher's own last reading, in the signer.
+    expect(env.state.hashWaits).toBe(1);
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(2);
+    change(env, page, what);
+    env.state.hashHold.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(3);
+    expect(env.signer.signTypedData).not.toHaveBeenCalled();
+    expect(env.state.signed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test('a rule that holds through the hash: the Ledger and the phone sign', async () => {
+    for (const [walletIndex, address] of [
+      [1, LEDGER],
+      [PHONE_INDEX, PHONE],
+    ]) {
+      const { env, page } = ruledTab(walletIndex);
+      env.state.hashHold = deferred();
+      const answer = page.ask('eth_signTypedData_v4', [address, TYPED]);
+      await flush();
+      env.state.hashHold.resolve();
+      expect(await answer).toEqual({ result: '0xtypedsig' });
+      expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(3);
+      expect(env.state.signed).toEqual([['typed', TYPED, { expectedHash: TYPED_HASH }]]);
+    }
+  });
+
+  test.each([
+    ['the rule revoked', RULE_GONE],
+    ['custody entered', CUSTODY],
+  ])("a Safe's message, %s while its session prepares: refused, no owner signs", async (what, refused) => {
+    const { env, page } = ruledTab(SAFE_INDEX);
+    env.state.safe.prepare = deferred();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    expect(env.state.safe.preparing).toBe(1);
+    expect(env.state.safe.sessions[0].beforeSign).toEqual(expect.any(Function));
+    change(env, page, what);
+    env.state.safe.prepare.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.state.safe.ownersSigned).toBe(0);
+    expect(env.state.safe.completed).toEqual([]);
+    expect(env.prompts()).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test.each([
+    ['the rule revoked', RULE_GONE],
+    ['custody entered', CUSTODY],
+  ])("the vault's signature, %s while its signer waits: refused, the core never asked to sign", async (what, refused) => {
+    const { env, page } = ruledTab(0);
+    env.state.addressHold = deferred();
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(2);
+    change(env, page, what);
+    env.state.addressHold.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(3);
+    expect(env.signer.signMessage).not.toHaveBeenCalled();
+    expect(env.state.signed).toEqual([]);
+  });
+
+  test("a rule that holds through the Safe's preparation: its owner signs, and the page gets the signature", async () => {
+    const { env, page } = ruledTab(SAFE_INDEX);
+    env.state.safe.prepare = deferred();
+    const answer = page.ask('personal_sign', [MESSAGE, SAFE]);
+    await flush();
+    env.state.safe.prepare.resolve();
+    expect(await answer).toEqual({ result: '0xsafesig' });
+    expect(env.state.safe.ownersSigned).toBe(1);
+    expect(env.state.safe.completed).toHaveLength(1);
   });
 });
 

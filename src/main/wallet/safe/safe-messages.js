@@ -239,9 +239,14 @@ function getSafeMessageState(safeIndex, token) {
  * @param {{origin: string, webContentsId: number|null}} [params.requester]
  *   - The requesting page's identity (permission key + webview
  *   webContents id)
+ * @param {() => Promise<void>} [params.beforeSign] - The caller's last
+ *   check (a page's standing rule, for a message it answers): awaited
+ *   inside each free owner's signer, after the request's preparation and
+ *   right before that owner signs. Its refusal ends the session, nothing
+ *   more signed, and rejects with the caller's own error.
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
-async function startSafeMessage({ safeIndex, request, display, requester, owner = null }) {
+async function startSafeMessage({ safeIndex, request, display, requester, owner = null, beforeSign = null }) {
   const mainOwned = owner === 'main';
   const initial = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
@@ -321,7 +326,14 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
     };
     setSession(safeIndex, entry);
     attachRequesterLifecycle(safeIndex, entry);
-    await collectFreeSignatures(store, safeIndex, record.owners);
+    try {
+      await collectFreeSignatures(store, safeIndex, record.owners, null, { beforeSign });
+    } catch (err) {
+      // The caller's last check refused: the session ends here, and what
+      // it collected goes with it.
+      if (getSession(safeIndex) === entry) discardSession(safeIndex);
+      throw err;
+    }
   } finally {
     release(safeIndex);
   }

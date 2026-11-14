@@ -39,11 +39,14 @@
  *      again, custody is read again and the document must hold its key: a
  *      guest that entered custody meanwhile is refused (`agent_custody`),
  *      with nothing sent, and a fee the core no longer allows sends the
- *      request to its prompt, with nothing signed. For a Ledger or a phone
- *      that reading is the core's verdict; a vault signature goes under
- *      `page` with `{ standing }`, and the core judges the rule once more as
- *      it signs, a fee it no longer allows again sending the request to its
- *      prompt.
+ *      request to its prompt, with nothing signed. A Ledger or a phone
+ *      presents nothing the core judges as it signs, and the transaction
+ *      service waits again before asking it (a Ledger's fee and nonce reads,
+ *      a phone's address): the same reading is its signer's last check
+ *      (`beforeSign`), right before the device, with no wait between. A vault
+ *      signature goes under `page` with `{ standing }`, and the core judges
+ *      the rule once more as it signs, a fee it no longer allows again
+ *      sending the request to its prompt.
  *   6. Otherwise main prompts (`eth.send`) with its own view: the account,
  *      the chain, the transaction in main's form, the quoted fee, the fee
  *      check's verdict and the most the send can cost. On the user's
@@ -631,22 +634,17 @@ function createSendDispatchers(shared, deps = {}) {
       if (!judged.tx) return NEEDS_APPROVAL;
       tx = judged.tx;
     }
-    // Just before the signature, and again after the signer's wait: the
-    // name, then the core's reading of the rule (in the send's own turn,
-    // which a paused site doesn't get: `sendDappPayment`), the last wait
-    // before the effect, so a rule revoked or fee evidence refreshed while
-    // the name resolved is seen; then, in the same run as the effect,
-    // custody and the document's key. Before the signature this is the
-    // core's verdict for a Ledger or a phone, which present no `{ standing }`
-    // to judge again (a phone signs and broadcasts at once), and a fee the
-    // core no longer allows sends the request to its prompt, nothing signed.
-    // After the signature the fee is the one that verdict passed, fixed in
-    // the signed bytes: a `fee_check` answer then (its evidence aged during
-    // a device's wait) is accepted only past that verdict, and still means
-    // the rule, the account and the pause hold, which the core judges first.
+    // The core's reading of the rule (in the send's own turn, which a
+    // paused site doesn't get: `sendDappPayment`), then, in the same run,
+    // custody and the document's key; throws `withdrawn` when it no longer
+    // answers. Before the signature a fee the core no longer allows sends
+    // the request to its prompt, nothing signed. After it the fee is the
+    // one the verdict before it passed, fixed in the signed bytes: a
+    // `fee_check` answer then (its evidence aged during a device's wait) is
+    // accepted only past that verdict, and still means the rule, the
+    // account and the pause hold, which the core judges first.
     let feePassed = false;
-    const ruleStillAnswers = (signed) => async (effect) => {
-      if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
+    const stillAnswers = async (signed) => {
       const still = await ruleAnswers(context, ctx, tx, false);
       if (custody(requester.guest) || still.reason === 'custody') throw withdrawn(error(AGENT_CUSTODY));
       if (!still.covered && !(signed && feePassed && still.reason === 'fee_check')) {
@@ -654,6 +652,17 @@ function createSendDispatchers(shared, deps = {}) {
         throw withdrawn(error(RULE_GONE));
       }
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
+    };
+    // Just before the signature, and again after the signer's wait: the
+    // name, then that reading, the last wait before the effect, so a rule
+    // revoked or fee evidence refreshed while the name resolved is seen.
+    // A Ledger or a phone presents no `{ standing }` the core could judge as
+    // it signs, and the transaction service waits again before asking it (a
+    // Ledger's fee and nonce reads, a phone's address): the same reading is
+    // its signer's last check (`beforeSign`), right before the device.
+    const ruleStillAnswers = (signed) => async (effect) => {
+      if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
+      await stillAnswers(signed);
       if (!signed) feePassed = true;
       return effect();
     };
@@ -670,8 +679,12 @@ function createSendDispatchers(shared, deps = {}) {
           // A page's send, never main's own, which a vault signature presents
           // as the site's rule for the core to judge (design 0012), not
           // paused: its turn is the send's own, which a paused site doesn't
-          // get (`sendDappPayment`).
-          authorized: () => ({ page: context.pageContext(), standing: { paused: false } }),
+          // get (`sendDappPayment`). A device's signer reads the rule last.
+          authorized: () => ({
+            page: context.pageContext(),
+            standing: { paused: false },
+            beforeSign: () => stillAnswers(false),
+          }),
         },
         paymentDeps
       );

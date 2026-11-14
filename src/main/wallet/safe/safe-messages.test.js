@@ -123,7 +123,15 @@ const signatureOf = (index) => ({
   signer: OWNERS[index === 0 ? 0 : index === 2 ? 1 : 2],
   data: sigDataOf[index],
 });
-const mockCollectOwnerSignature = jest.fn(async ({ ownerIndex }) => signatureOf(ownerIndex));
+// As the owner's signer does: the caller's last check, if any, right
+// before it signs (`signers.js`); `mockOwnersSigned` counts the signatures
+// made past it.
+let mockOwnersSigned = 0;
+const mockCollectOwnerSignature = jest.fn(async ({ ownerIndex, beforeSign }) => {
+  if (beforeSign) await beforeSign();
+  mockOwnersSigned += 1;
+  return signatureOf(ownerIndex);
+});
 jest.mock('./safe-executor', () => ({
   SAFE_VERSION: '1.4.1',
   collectOwnerSignature: (...args) => mockCollectOwnerSignature(...args),
@@ -364,6 +372,83 @@ describe('startSafeMessage', () => {
       })
     ).rejects.toThrow('bool takes only true or false');
     expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+  });
+
+  // A page's standing rule (design 0012), read by main as a signer's last
+  // check: after the request's preparation (the core's digest) and the
+  // vault's state, right before each free owner signs.
+  describe("the caller's last check (`beforeSign`)", () => {
+    const deferred = () => {
+      let resolve;
+      const promise = new Promise((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+    const flush = async () => {
+      for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    };
+    const startTyped = (beforeSign) =>
+      startSafeMessage({
+        safeIndex: 5,
+        request: { method: 'eth_signTypedData_v4', params: [SAFE_ADDRESS, DAPP_TYPED_DATA] },
+        display: { site: 'app.example', method: 'eth_signTypedData_v4' },
+        requester: TAB_A,
+        owner: 'main',
+        beforeSign,
+      });
+
+    test.each([
+      ['the preparation (the core\'s digest)', 'prepare'],
+      ['the vault\'s state', 'status'],
+    ])('refusing once %s is past: the session ends, no owner signs', async (_label, boundary) => {
+      mockOwnersSigned = 0;
+      const held = deferred();
+      if (boundary === 'prepare') {
+        const real = mockTypedDataHash.getMockImplementation();
+        mockTypedDataHash.mockImplementationOnce(async (data) => {
+          await held.promise;
+          return real(data);
+        });
+      } else {
+        mockIsVaultUnlocked.mockImplementationOnce(async () => {
+          await held.promise;
+          return true;
+        });
+      }
+      let allowed = true;
+      const refusal = Object.assign(new Error("The site's rule no longer answers this request"), { code: 'STANDING_WITHDRAWN' });
+      const beforeSign = jest.fn(async () => {
+        if (!allowed) throw refusal;
+      });
+      const started = startTyped(beforeSign);
+      await flush();
+      expect(beforeSign).not.toHaveBeenCalled();
+      // The rule revoked (or the tab taken into custody) during the wait.
+      allowed = false;
+      held.resolve();
+      await expect(started).rejects.toBe(refusal);
+      expect(beforeSign).toHaveBeenCalledTimes(1);
+      expect(mockOwnersSigned).toBe(0);
+      expect(getSession(5)).toBeNull();
+    });
+
+    test('a check that passes: the free owner signs past it, once', async () => {
+      mockOwnersSigned = 0;
+      const beforeSign = jest.fn(async () => {});
+      const state = await startTyped(beforeSign);
+      expect(beforeSign).toHaveBeenCalledTimes(1);
+      expect(mockOwnersSigned).toBe(1);
+      expect(state.collected).toBe(1);
+      expect(mockCollectOwnerSignature).toHaveBeenCalledWith(expect.objectContaining({ ownerIndex: 0, beforeSign: expect.any(Function) }));
+    });
+
+    test("an owner's own failure still degrades to a manual row; only the check's refusal ends the session", async () => {
+      mockCollectOwnerSignature.mockRejectedValueOnce(new Error('derivation hiccup'));
+      const state = await startTyped(jest.fn(async () => {}));
+      expect(state.collected).toBe(0);
+      expect(getSession(5)).not.toBeNull();
+    });
   });
 
   test('a 1-of-N session is complete right after the free signature', async () => {

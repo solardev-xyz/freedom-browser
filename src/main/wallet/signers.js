@@ -112,6 +112,10 @@ function createVaultBackend(walletIndex, authorized = {}) {
   const wrapped = (label, err) =>
     err?.code === 'vault_locked' ? err : refusal(err) || new Error(`${label}: ${err.message}`, { cause: err });
   const options = signOptions(authorized);
+  // The caller's last check, for a signature no token answers: main's own
+  // (a Safe owner's), or a standing rule's, whose PageContext (custody)
+  // main read before this signer's own waits.
+  const lastCheck = authorized.confirmation ? null : authorized.beforeSign || null;
   return {
     getAddress: () => withVaultAccount(walletIndex, () => ownAddress()),
     // The expected address is resolved before signing: a lock right after
@@ -124,6 +128,7 @@ function createVaultBackend(walletIndex, authorized = {}) {
         if (from != null && getAddress(from) !== expected) {
           throw new Error('transaction from address mismatch');
         }
+        if (lastCheck) await lastCheck();
         let reply;
         try {
           reply = await vaultBackend.sign.transaction(key, tx, options);
@@ -146,6 +151,7 @@ function createVaultBackend(walletIndex, authorized = {}) {
         // Strings sign as UTF-8, as ethers' signMessage does.
         const bytes = typeof message === 'string' ? Buffer.from(message, 'utf8') : Buffer.from(message);
         const expected = await ownAddress();
+        if (lastCheck) await lastCheck();
         let signature;
         try {
           signature = await vaultBackend.sign.message(key, bytes, options);
@@ -160,7 +166,6 @@ function createVaultBackend(walletIndex, authorized = {}) {
         const data = toCoreTypedData(typedData);
         const expected = await ownAddress();
         let digest;
-        let signature;
         try {
           // The digest the core signs only if the data hashes to it
           // (freedom-core #88): the hash the user confirmed, or, for
@@ -168,6 +173,13 @@ function createVaultBackend(walletIndex, authorized = {}) {
           // own hash of it, taken now. The core's bounded encoder, not
           // ethers' (whose type walk is exponential on some graphs).
           digest = expectedHash ?? (await vaultBackend.typedDataHash(data));
+        } catch (err) {
+          throw wrapped('Typed data signing failed', err);
+        }
+        // After the core's hash, right before the signature.
+        if (lastCheck) await lastCheck();
+        let signature;
+        try {
           // The view a typed-data token binds is made again from what the
           // core was told beside the data when it was minted; a standing
           // rule's is the page's view, on the page's chain, which the core
@@ -206,9 +218,19 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * vault signature is judged by the core against the site's rule; a device
  * signs it as today (the core's `approval.check` advised the choice).
  *
+ * `beforeSign`, the caller's last check (a page's standing rule read again,
+ * with custody), is for a signature no token answers: a device's, which the
+ * core never judges, and a vault's under `{ standing }` (whose PageContext
+ * main read before the signer's own waits) or main's own (a Safe owner's).
+ * It is awaited after every other wait of the signer's (the address, the
+ * core's hash, a token's spend), right before the device is asked or the
+ * core signs, and throws to refuse: nothing is signed, and the caller hears
+ * its own error.
+ *
  * @param {number} walletIndex
  * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
- *   chainId?: number, onRule?: (rule: object|null) => void}} [authorized]
+ *   chainId?: number, onRule?: (rule: object|null) => void,
+ *   beforeSign?: () => Promise<void>}} [authorized]
  *   the confirmation (`signing-confirmation.js`), or a page's PageContext
  *   with, for a rule's answer, `standing` and the page's chain (typed
  *   data's view); `onRule` hears a vault send's `rule` reply
@@ -260,8 +282,13 @@ function getSigner(walletIndex, authorized = {}) {
   // A device signs what it shows, so the core can only advise: its
   // confirmation is spent first, and the device asked only after.
   const confirmation = vaultSigned ? null : authorized?.confirmation || null;
-  const spent = async () => {
+  // The caller's last check (`beforeSign`), after the token's spend: a
+  // device's signature is never judged by the core, so it is awaited right
+  // before the device is asked, after every other wait of the signer's.
+  const beforeSign = vaultSigned ? null : authorized?.beforeSign || null;
+  const spendAndCheck = async () => {
     if (confirmation) await spendConfirmation(confirmation);
+    if (beforeSign) await beforeSign();
   };
 
   let address = null;
@@ -273,13 +300,13 @@ function getSigner(walletIndex, authorized = {}) {
       return address;
     },
     signTransaction: async (tx) => {
-      await spent();
+      await spendAndCheck();
       return backend.signTransaction(tx);
     },
     // async: a malformed input rejects like any other signing failure.
     signMessage: async (message) => {
       const normalized = normalizeMessage(message);
-      await spent();
+      await spendAndCheck();
       return backend.signMessage(normalized);
     },
     /**
@@ -301,7 +328,7 @@ function getSigner(walletIndex, authorized = {}) {
       if (expectedHash !== undefined && hash !== expectedHash) {
         throw new Error('The typed data changed after it was confirmed');
       }
-      await spent();
+      await spendAndCheck();
       // `digest`: the hash a device's signature must recover over (#1063):
       // the one the user confirmed, or the core's own for main's typed
       // data, never one rebuilt from what the device was sent.
@@ -313,7 +340,7 @@ function getSigner(walletIndex, authorized = {}) {
   // probe for it — see transaction-service's signAndSendTransaction.
   if (typeof backend.sendTransaction === 'function') {
     signer.sendTransaction = async (tx) => {
-      await spent();
+      await spendAndCheck();
       return backend.sendTransaction(tx);
     };
   }

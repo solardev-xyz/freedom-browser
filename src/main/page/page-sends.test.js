@@ -177,6 +177,11 @@ function backends() {
     // commit; and a phone's own send, which signs and broadcasts at once.
     signerHold: null,
     phoneHold: null,
+    // The transaction service's waits before a signer is asked, when held;
+    // and how many times a signer (a device, or the core for a vault) was.
+    serviceHold: null,
+    serviceWaits: 0,
+    signerAsked: 0,
     turns: [],
     paymentWaiting: false,
     turnBusy: false,
@@ -248,12 +253,28 @@ function backends() {
       }),
       // The vault account's signer hears the core's `rule` reply as it signs
       // (`onRule`), a Ledger's doesn't.
+      // A device's signer keeps the dispatcher's last check (`beforeSign`),
+      // which it awaits right before the device is asked (`signers.js`).
       getSigner: jest.fn((index, authorized) =>
-        index === PHONE_INDEX ? phoneSigner : index === 0 ? { ...signer, authorized } : signer
+        index === PHONE_INDEX
+          ? { ...phoneSigner, beforeSign: authorized?.beforeSign }
+          : index === 0
+            ? { ...signer, authorized }
+            : { ...signer, beforeSign: authorized?.beforeSign }
       ),
       signAndRecord: jest.fn(async (tx, chosen, context, options) => {
         state.records.push({ tx, context, walletIndex: options.walletIndex });
         if (state.sendFails) throw state.sendFails;
+        // The transaction service's own waits before the device (a Ledger's
+        // fee and nonce reads, a phone's address), when a test holds them;
+        // then a device's signer awaits the dispatcher's last check.
+        if (state.serviceHold) {
+          state.serviceWaits += 1;
+          await state.serviceHold.promise;
+        }
+        const last = chosen.beforeSign ?? (chosen.authorized?.confirmation ? null : chosen.authorized?.beforeSign);
+        if (last) await last();
+        state.signerAsked += 1;
         if (typeof chosen.sendTransaction === 'function') {
           // A phone: it signs and broadcasts in one step.
           if (state.phoneHold) await state.phoneHold.promise;
@@ -964,11 +985,14 @@ describe("the site's contract rule, read by main for the request it holds", () =
     expect(env.deps.sends.getSigner).toHaveBeenCalledWith(0, {
       page: expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false }),
       standing: { paused: false },
+      beforeSign: expect.any(Function),
     });
     // The core chose it (`approval.check`) on the send main signs, and read
-    // it again before the signature and after it, in the send's own turn.
+    // it again in the send's own turn: at the guard, as the signer's last
+    // check, and after the signature.
     const checks = env.deps.sends.checkStanding.mock.calls;
     expect(checks.map(([page, request]) => [page.origin, request.kind, request.paused])).toEqual([
+      [KEY_A, 'transaction', false],
       [KEY_A, 'transaction', false],
       [KEY_A, 'transaction', false],
       [KEY_A, 'transaction', false],
@@ -1522,8 +1546,81 @@ describe('a rule revoked or fee evidence refreshed while the name resolves just 
     expect(env.deps.sends.getSigner).toHaveBeenCalledWith(0, {
       page: expect.objectContaining({ origin: NAME, agent: false }),
       standing: { paused: false },
+      beforeSign: expect.any(Function),
     });
     expect(env.state.committed).toEqual([]);
+  });
+});
+
+// The transaction service waits again before it asks a device (a Ledger's
+// fee and nonce reads, a phone's address): the core's reading of the rule,
+// custody and the document's key are the device's signer's last check
+// (`beforeSign`), right before the device is asked.
+describe('a rule revoked, custody entered or fee evidence refreshed while the send waits to reach its signer', () => {
+  function ruledTab(walletIndex) {
+    const env = setup();
+    env.connect(KEY_A, walletIndex);
+    env.rule();
+    return { env, page: env.tab() };
+  }
+
+  test.each([
+    ['a Ledger', LEDGER_INDEX, 'the rule revoked', RULE_GONE],
+    ['a Ledger', LEDGER_INDEX, 'custody entered', CUSTODY],
+    ['a phone', PHONE_INDEX, 'the rule revoked', RULE_GONE],
+    ['a phone', PHONE_INDEX, 'custody entered', CUSTODY],
+    // A vault's signature presents `{ standing }` with the PageContext main
+    // read before these waits: main reads custody again here too.
+    ['the vault', 0, 'custody entered', CUSTODY],
+  ])('%s, %s: refused, nothing signed or sent', async (_label, walletIndex, what, refused) => {
+    const { env, page } = ruledTab(walletIndex);
+    env.state.serviceHold = deferred();
+    const answer = page.send(CALL);
+    await flush();
+    // Past the guard, in the transaction service.
+    expect(env.state.serviceWaits).toBe(1);
+    const before = env.deps.sends.checkStanding.mock.calls.length;
+    if (what === 'custody entered') env.state.custody.add(page.guest.id);
+    else env.state.txRules = [];
+    env.state.serviceHold.resolve();
+    expect(await answer).toEqual(refused);
+    expect(env.deps.sends.checkStanding).toHaveBeenCalledTimes(before + 1);
+    expect(env.state.signerAsked).toBe(0);
+    expect(env.state.committed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test("a Ledger, the core's fee evidence refreshed: the prompt, the device never asked", async () => {
+    const { env, page } = ruledTab(LEDGER_INDEX);
+    env.state.serviceHold = deferred();
+    const answer = page.send(CALL);
+    await flush();
+    expect(env.state.serviceWaits).toBe(1);
+    env.state.coreFee = false;
+    env.state.serviceHold.resolve();
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'eth.send' });
+    expect(env.state.signerAsked).toBe(0);
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+    expect(env.state.signerAsked).toBe(0);
+    expect(env.state.committed).toEqual([]);
+  });
+
+  test('a rule that holds through the wait: the Ledger and the phone are asked, and send', async () => {
+    for (const [walletIndex, hash] of [
+      [LEDGER_INDEX, HASH],
+      [PHONE_INDEX, PHONE_HASH],
+    ]) {
+      const { env, page } = ruledTab(walletIndex);
+      env.state.serviceHold = deferred();
+      const answer = page.send(CALL);
+      await flush();
+      env.state.serviceHold.resolve();
+      expect(await answer).toEqual({ result: hash });
+      expect(env.state.signerAsked).toBe(1);
+      expect(env.state.committed).toHaveLength(1);
+    }
   });
 });
 

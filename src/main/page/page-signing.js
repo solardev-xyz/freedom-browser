@@ -34,10 +34,14 @@
  *      vault, the name), the core reads the rule again, and in the same run
  *      as the signature custody is read again and the document must hold
  *      its key: a guest that entered custody meanwhile is refused
- *      (`agent_custody`), with nothing signed. For a Ledger, a phone or a
- *      Safe that reading is the core's verdict; a vault signature goes under
- *      `page` with `{ standing }`, and the core judges the rule once more as
- *      it signs.
+ *      (`agent_custody`), with nothing signed. A Ledger, a phone or a Safe's
+ *      owners present nothing the core judges as they sign, and their
+ *      signers wait again (a device on the core's hash of typed data, a Safe
+ *      on the message's preparation and the vault's state): the same reading
+ *      is their signer's last check (`beforeSign`), right before each
+ *      signature, with no wait between. A vault signature goes under `page`
+ *      with `{ standing }`, and the core judges the rule once more as it
+ *      signs.
  *   7. Otherwise main prompts (`eth.sign`, with main's view). On the user's
  *      approval main's own issuer mints the token for that approval, bound
  *      to the prompt's handle and the requester's key, with the account and
@@ -251,10 +255,37 @@ function createSigningDispatchers(shared, deps = {}) {
     }
   }
 
+  // The site's rule as the core reads it now, then, in the same run,
+  // custody and the document's key: null while the rule answers, otherwise
+  // the request's answer. The last wait before every effect of a rule's
+  // signature: before the signer is asked, and again inside a signer the
+  // core doesn't judge (`beforeSign`: a device after the core's hash, a
+  // Safe's owner after the session's preparation), right before it signs.
+  async function standingRefusal(context, ctx) {
+    const still = await ruleAnswers(context, ctx);
+    if (custody(context.requester.guest) || still.reason === 'custody') return error(AGENT_CUSTODY);
+    if (!still.covered) return error(RULE_GONE);
+    if (!context.holdsKey()) return error(NO_ADDRESS);
+    return null;
+  }
+
+  // `standingRefusal` as a signer's last check: it throws the answer.
+  const STANDING_WITHDRAWN = 'STANDING_WITHDRAWN';
+  const lastCheck = (context, ctx) => async () => {
+    const refused = await standingRefusal(context, ctx);
+    if (refused) {
+      throw Object.assign(new Error("The site's rule no longer answers this request"), {
+        code: STANDING_WITHDRAWN,
+        answer: refused,
+      });
+    }
+  };
+
   // A standing rule's signature the core refused (`{ standing }`): custody
   // as the dispatcher answers it, a rule gone as before, anything else in
-  // the core's words.
+  // the core's words; one the last check withdrew, its answer.
   function standingFailure(err) {
+    if (err?.code === STANDING_WITHDRAWN) return err.answer;
     if (err?.reason === 'custody') return error(AGENT_CUSTODY);
     if (err?.reason === 'no_rule') return error(RULE_GONE);
     return failure(err);
@@ -314,7 +345,7 @@ function createSigningDispatchers(shared, deps = {}) {
    * and main completes the session on its approval. Cancelled if the
    * request ends any other way.
    */
-  async function safeMessage(context, ctx) {
+  async function safeMessage(context, ctx, beforeSign = null) {
     const { requester, method, params } = context;
     let state;
     try {
@@ -324,9 +355,10 @@ function createSigningDispatchers(shared, deps = {}) {
         display: { kind: 'message', site: requester.key, method },
         requester: { origin: requester.key, webContentsId: requester.guest },
         owner: 'main',
+        ...(beforeSign ? { beforeSign } : {}),
       });
     } catch (err) {
-      return failure(err);
+      return err?.code === STANDING_WITHDRAWN ? err.answer : failure(err);
     }
     const token = state?.token;
     let completed = false;
@@ -381,28 +413,30 @@ function createSigningDispatchers(shared, deps = {}) {
       if (unlock.error) return { error: unlock.error };
       if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
     }
-    // After the unlock's wait, the name; then the core's last reading of the
-    // rule, the last wait before the effect, so a rule revoked while the name
-    // resolved is seen; then, in the same run as the signature, custody and
-    // the key. For a Ledger, a phone or a Safe this is the core's verdict:
-    // their signatures present no `{ standing }` to judge again.
+    // After the unlock's wait, the name; then the core's reading of the
+    // rule, so a rule revoked while the name resolved is seen; then, in the
+    // same run as the call to the signer, custody and the key. A Ledger, a
+    // phone or a Safe's owners present no `{ standing }` the core could
+    // judge as they sign, and their signers wait again (a device on the
+    // core's hash of typed data, a Safe on the message's preparation and
+    // the vault's state): the same reading is their signer's last check,
+    // right before each signature.
     if (!(await context.nameHolds(ctx.keyless))) return error(NO_ADDRESS);
-    const still = await ruleAnswers(context, ctx);
-    if (custody(requester.guest) || still.reason === 'custody') return error(AGENT_CUSTODY);
-    if (!still.covered) return error(RULE_GONE);
-    if (!context.holdsKey()) return error(NO_ADDRESS);
+    const refused = await standingRefusal(context, ctx);
+    if (refused) return refused;
     let out;
     if (ctx.safe) {
-      out = await safeMessage(context, ctx);
+      out = await safeMessage(context, ctx, lastCheck(context, ctx));
     } else {
       try {
         // Under `page` with `{ standing }`: the core judges the site's rule
-        // as it signs, the typed data viewed on the page's chain.
+        // as a vault signs, the typed data viewed on the page's chain.
         out = {
           result: await signWith(ctx.walletIndex, method, ctx.prepared, ctx.prepared.typedData?.hash, {
             page: context.pageContext(),
             standing: {},
             chainId: ctx.chainId,
+            beforeSign: lastCheck(context, ctx),
           }),
         };
       } catch (err) {
