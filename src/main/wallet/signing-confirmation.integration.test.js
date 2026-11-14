@@ -1369,8 +1369,12 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           return { reached: reached.promise, release: gate.resolve, done: Promise.resolve() };
         },
       };
-      const until = async (found) => {
-        for (let i = 0; i < 200 && !found(); i += 1) await new Promise((resolve) => setImmediate(resolve));
+      // Polled by the clock, not by turns: the core's replies take their
+      // own time, more under load.
+      const until = async (found, ms = 10000) => {
+        const deadline = Date.now() + ms;
+        while (!found() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+        if (!found()) throw new Error('the request never reached the held step');
         return found();
       };
       // The `nth` call of `method` settled: the last wait before the signer.
@@ -1379,11 +1383,15 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         await call.reply.catch(() => {});
       };
 
+      let ledgerHolds = [];
       beforeEach(() => {
         names.set(NAME, IPNS_KEY);
+        ledgerHolds = [];
       });
 
-      afterEach(() => {
+      afterEach(async () => {
+        for (const hold of ledgerHolds) hold.release();
+        await Promise.allSettled([...ledgerHolds.map((hold) => hold.done), ...running]);
         names.clear();
         permissions.revokePermission(NAME);
       });
@@ -1408,6 +1416,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             const tab = agentTab({ name: NAME });
             const hold = HOLDS[held](settledCall('approval.spend'));
             const asking = tab.ask(...ASKS[method](DEVICE_ADDRESS));
+            // A failure never leaves the device queue held for the next.
+            ledgerHolds.push(hold);
             await hold.reached;
             // Past the token's spend, in the device session: no APDU yet.
             expect({ change, spent: calls.filter((call) => call.method === 'approval.spend').length, asked: deviceAsked }).toEqual({ change, spent: 1, asked: [] });
@@ -1440,6 +1450,7 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             // signer (APB-1b): the device session comes after the second.
             const hold = HOLDS[held](settledCall('approval.check', 2));
             const asking = tab.ask('personal_sign', ['0x68656c6c6f', DEVICE_ADDRESS]);
+            ledgerHolds.push(hold);
             await hold.reached;
             // The rule answered (no prompt, no Agent), and the device session waits.
             expect({ revoke, approvals, asked: deviceAsked }).toEqual({ revoke, approvals: [], asked: [] });
