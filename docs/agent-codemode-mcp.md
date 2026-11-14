@@ -1,7 +1,7 @@
 # Codemode and connected MCP services
 
 Developed on `experiment/agent-codemode-mcp`, integrated into
-`feature/freedom-automation-kernel`, and qualified with Pi 1.0.2. These are capabilities of the
+`feature/freedom-automation-kernel`, and qualified with Pi 1.5.0. These are capabilities of the
 embedded Freedom Agent runtime, without another model-provider requirement.
 
 ## Using it

@@ -182,7 +182,7 @@ async function fetchNearWithEvidence({ input, options = {}, modelId, apiKey, sig
     if (encrypt) {
       const reports = evidence.reports || [];
       if (!validHardware(evidence) || reports.length < 2 ||
-        reports.some(r => !['UpToDate', 'OutOfDate'].includes(r.tcb)) ||
+        reports.some(r => !['UpToDate', 'OutOfDate', 'TDRelaunchAdvised'].includes(r.tcb)) ||
         reports.slice(1).some(r => !r.encryptionKey)) {
         throw new Error('NEAR encryption could not verify the model keys. No messages were sent.');
       }
@@ -329,7 +329,7 @@ async function fetchVeniceEncrypted({ input, options = {}, modelId, apiKey, sign
     const hardware = await attest({ providerId: 'venice', modelId, apiKey, signal: options.signal, includeKeys: true });
     report({ hardware, connection: 'unavailable', response: 'pending' });
     if (!validHardware(hardware) || hardware.reports?.length !== 1 ||
-      !['UpToDate', 'OutOfDate'].includes(hardware.reports[0].tcb) || !hardware.reports[0].encryptionKey) {
+      !['UpToDate', 'OutOfDate', 'TDRelaunchAdvised'].includes(hardware.reports[0].tcb) || !hardware.reports[0].encryptionKey) {
       throw new Error('Venice encryption could not verify the model key. No messages were sent.');
     }
     session = createEncryptionSession(hardware.reports[0].encryptionKey);

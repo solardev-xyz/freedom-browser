@@ -20,11 +20,11 @@ function normalizeHardware(value) {
   return {
     status: value.status,
     checkedAt: Number.isFinite(value.checkedAt) ? value.checkedAt : null,
-    verifier: value.verifier === 'dcap-qvl/0.6.5' ? value.verifier : null,
+    verifier: ['dcap-qvl/0.6.5', 'dcap-qvl/0.7.1'].includes(value.verifier) ? value.verifier : null,
     reports: (Array.isArray(value.reports) ? value.reports : []).slice(0, 16).map(report => ({
       status: report.status === 'checked' ? 'checked' : 'advisory',
       tcb: ['UpToDate', 'SWHardeningNeeded', 'ConfigurationNeeded', 'ConfigurationAndSWHardeningNeeded',
-        'OutOfDate', 'OutOfDateConfigurationNeeded', 'Revoked', 'Unknown'].includes(report.tcb) ? report.tcb : 'Unknown',
+        'OutOfDate', 'OutOfDateConfigurationNeeded', 'TDRelaunchAdvised', 'TDRelaunchAdvisedConfigurationNeeded', 'Revoked', 'Unknown'].includes(report.tcb) ? report.tcb : 'Unknown',
       advisories: (Array.isArray(report.advisories) ? report.advisories : [])
         .filter(id => typeof id === 'string' && /^INTEL-SA-\d{5}$/.test(id)).slice(0, 32),
       quoteHash: typeof report.quoteHash === 'string' && /^[a-f0-9]{64}$/.test(report.quoteHash) ? report.quoteHash : null,

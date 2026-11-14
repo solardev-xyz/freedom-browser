@@ -29,9 +29,10 @@ An update covers all three, not only npm:
   qualified or approved at that version. List them in the "held back" table
   with their latest version and whether an advisory affects the pin; bump one
   only on request, in its own change.
-- **An exact pin does not freeze its siblings.** Pi 1.0.2 declares its own
-  `@earendil-works/*` packages as `^1.0.2`, so a plain `npm update` moves them
-  to the newest 1.x underneath a 1.0.2 agent. Pass `npm update` the package
+- **An exact pin does not freeze its siblings.** Older Pi releases (through 1.2) declared their own
+  `@earendil-works/*` packages with caret ranges, so a plain `npm update` could
+  move them underneath the pinned agent. Pi 1.5.0 pins its siblings exactly;
+  still review every family entry in the lockfile rather than assuming this. Pass `npm update` the package
   names to update with the pinned family left out, and confirm the lockfile
   diff has no `@earendil-works/` version change.
 - **A transitive advisory under an exact pin takes an override.** When the
