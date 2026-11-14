@@ -56,10 +56,15 @@ let beeLifecycle = { stop: null, start: null };
  * holds another identity. `onKeyReinjectionNeeded(listener)` subscribes to
  * a start that stops for re-injection, so an already unlocked vault
  * recovers at once rather than on its next unlock.
+ * `restartingUntil(promise)` tells the node manager that a recovery will
+ * start the node once `promise` settles, so page calls wait for it (#988);
+ * `abandonRestart()` that a node `stop` stopped will not be started again.
  * @param {{stop?: () => Promise<boolean>, start?: () => Promise<void>,
  *   needsKeyReinjection?: () => boolean,
  *   refuseKeyReinjection?: (message: string) => void,
- *   onKeyReinjectionNeeded?: (listener: () => void) => void}} hooks
+ *   onKeyReinjectionNeeded?: (listener: () => void) => void,
+ *   restartingUntil?: (promise: Promise<unknown>) => void,
+ *   abandonRestart?: () => void}} hooks
  */
 function setBeeLifecycle(hooks = {}) {
   if (typeof hooks.onKeyReinjectionNeeded === 'function') {
@@ -72,6 +77,9 @@ function setBeeLifecycle(hooks = {}) {
       typeof hooks.needsKeyReinjection === 'function' ? hooks.needsKeyReinjection : null,
     refuseKeyReinjection:
       typeof hooks.refuseKeyReinjection === 'function' ? hooks.refuseKeyReinjection : null,
+    restartingUntil:
+      typeof hooks.restartingUntil === 'function' ? hooks.restartingUntil : null,
+    abandonRestart: typeof hooks.abandonRestart === 'function' ? hooks.abandonRestart : null,
   };
 }
 
@@ -629,6 +637,7 @@ function reencryptBeeKeystore() {
     }
   });
   keystoreRecoveries.set(dataDir, { epoch, promise });
+  beeLifecycle.restartingUntil?.(promise);
   return promise;
 }
 
@@ -881,7 +890,12 @@ async function injectBeeIdentity(epoch = currentVaultEpoch()) {
   assertNodeKeysDirUsable(dataDir);
 
   // Stop Bee (if running) and wipe its stale state before writing fresh keys.
-  const beeWasRunning = await wipeStaleBeeState(dataDir);
+  // A wipe that fails leaves the node stopped, with no start to follow, so
+  // page calls stop waiting for it (#988).
+  const beeWasRunning = await wipeStaleBeeState(dataDir).catch((err) => {
+    beeLifecycle.abandonRestart?.();
+    throw err;
+  });
 
   let address;
   try {

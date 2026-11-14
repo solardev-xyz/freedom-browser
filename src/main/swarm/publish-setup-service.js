@@ -1692,10 +1692,8 @@ function getPublishSetupService() {
       getNodeStatus: antManager.getStatus,
       getRegistryMode: () => getRegistry().ant?.mode,
       getNodeStartedAt: antManager.getSpawnedAt,
-      restartNode: async () => {
-        await antManager.stopAnt();
-        await antManager.startAnt();
-      },
+      // One planned restart, so page calls made meanwhile wait (#988).
+      restartNode: () => antManager.restartAnt(),
       getTransactionStatus,
       getWalletTxCount: async (address) => {
         const chainData = require('../networks/chain-data-router');
