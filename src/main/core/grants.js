@@ -347,9 +347,25 @@ async function useBackendForTests(fake) {
   if (fake) await loadAll();
 }
 
+/**
+ * `approval.radicle_write { key }` (cored 0.16.0, design 0012 "A page's
+ * Radicle write"): whether a page's COB write its "always allow writes" rule
+ * would answer is covered, judged by the core with its own Radicle grant for
+ * the page's own key (connected, outside custody, the signing grant and its
+ * rule) and counted in R-6 when it is. Under `page`, for `page.origin`.
+ * Changes no grant: the mirror isn't touched.
+ *
+ * @param {object} page the requester's PageContext
+ * @returns {Promise<{covered: boolean, reason?: string}>}
+ */
+function radicleWrite(page) {
+  return backend().radicleWrite({ key: page.origin }, page);
+}
+
 module.exports = {
   GRANT_STORES: STORES,
   grantStore,
+  radicleWrite,
   attachGrants,
   detachGrants,
   _useBackendForTests: useBackendForTests,

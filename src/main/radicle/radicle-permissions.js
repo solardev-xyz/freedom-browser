@@ -25,7 +25,7 @@ const { ipcMain } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { isPrivateSender } = require('../private/private-sender');
-const { grantStore } = require('../core/grants');
+const { grantStore, radicleWrite } = require('../core/grants');
 
 const store = () => grantStore('radicle');
 // How fresh a last use stays unwritten: the core writes none fresher
@@ -126,6 +126,22 @@ async function updateLastUsed(origin, { page = null } = {}) {
   return true;
 }
 
+/**
+ * A page's COB write its "always allow writes" rule would answer, asked of
+ * the identity core under `page`, for the page's own key (freedom-core
+ * design 0012, "A page's Radicle write"; cored 0.16.0): the core judges it
+ * with its own grant (connected, outside custody, the signing grant and its
+ * rule) and counts a covered one in R-6, a burst of 5, one per 30 s and 50
+ * in 24 hours, forgotten with each revoke of the grant. `{ covered: true }`,
+ * or `{ covered: false, reason }`, `reason` one of `no_rule`, `custody` or
+ * `rate_limited`. Rejects with the core's error otherwise (`not_moved`, or
+ * no core to ask).
+ * @returns {Promise<{covered: boolean, reason?: string}>}
+ */
+async function admitAutoWrite(origin, { page = null } = {}) {
+  return radicleWrite(pageFor(normalizeOrigin(origin), page));
+}
+
 /** Signing tier: identity disclosure + COB writes. Requires connection. */
 function hasSigningGrant(origin) {
   return getPermission(origin)?.signing === true;
@@ -222,6 +238,7 @@ module.exports = {
   revokePermission,
   getAllPermissions,
   updateLastUsed,
+  admitAutoWrite,
   hasSigningGrant,
   grantSigning,
   getAutoApprove,

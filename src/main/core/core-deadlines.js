@@ -92,6 +92,7 @@ const METHOD_CLASSES = Object.freeze({
   'approval.grant': IMMEDIATE,
   'approval.revoke': IMMEDIATE,
   'approval.touch': IMMEDIATE,
+  // Asked by radicle-provider-ipc.js before a rule-answered write.
   'approval.radicle_write': IMMEDIATE,
   'approval.grants': IMMEDIATE,
   'approval.forget_account': IMMEDIATE,

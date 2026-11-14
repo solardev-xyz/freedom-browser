@@ -3,8 +3,13 @@
  * design 0012, APB-3: both in the hello's `grant_moved`) for unit tests:
  * `approval.grants`, `approval.grant`, `approval.revoke` and
  * `approval.touch`, simulated in memory with the reference's operations (the
- * JS stores before the move, which the core ports with vectors), and its
- * callers as the core takes them:
+ * JS stores before the move, which the core ports with vectors), and
+ * `approval.radicle_write` (cored 0.16.0, design 0012 "A page's Radicle
+ * write"): a page's rule-answered COB write judged with its Radicle grant
+ * (outside custody, connected with the signing grant and its rule) and
+ * counted in R-6 when covered, a burst of 5, one more per 30 s and at most
+ * 50 in any 24 hours, per key, on `now`, forgotten with each revoke of the
+ * key's grant. Its callers as the core takes them:
  * - a page (a PageContext object) changes only its own key;
  * - `shell` (null) grants only in the Swarm store, naming `change.key`;
  * - `'chrome'` only narrows; a last use only from a page.
@@ -27,6 +32,8 @@
 const { EventEmitter } = require('events');
 
 const STORES = ['swarm', 'radicle'];
+// R-6 (design 0012, "The rules"): as the core counts a page's Radicle writes.
+const R6 = Object.freeze({ burst: 5, refillMs: 30000, dailyMax: 50, dayMs: 86400000 });
 
 function coreError(code, message, data) {
   return Object.assign(new Error(message), { code, data });
@@ -38,6 +45,22 @@ function simulatedGrantCore({ now = () => Date.now() } = {}) {
   const failures = [];
   // The key reads' answers held by holdKeyReads(), or null.
   let held = null;
+  // R-6's buckets: key -> { tokens, at, recent }.
+  const buckets = new Map();
+  function admitWrite(key, time) {
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { tokens: R6.burst, at: time, recent: [] };
+      buckets.set(key, bucket);
+    }
+    bucket.tokens = Math.min(R6.burst, bucket.tokens + Math.max(0, time - bucket.at) / R6.refillMs);
+    bucket.at = time;
+    while (bucket.recent.length && time - bucket.recent[0] >= R6.dayMs) bucket.recent.shift();
+    if (bucket.tokens < 1 || bucket.recent.length >= R6.dailyMax) return false;
+    bucket.tokens -= 1;
+    bucket.recent.push(time);
+    return true;
+  }
 
   const callerName = (caller) => (caller === 'chrome' ? 'chrome' : caller ? 'page' : 'shell');
 
@@ -146,6 +169,8 @@ function simulatedGrantCore({ now = () => Date.now() } = {}) {
         if (what === 'grant') {
           const had = Boolean(all[key]);
           delete all[key];
+          // A revoked Radicle grant forgets the key's R-6 count.
+          if (store === 'radicle') buckets.delete(key);
           return { revoked: had };
         }
         if (store === 'swarm' && what === 'messaging') {
@@ -162,6 +187,15 @@ function simulatedGrantCore({ now = () => Date.now() } = {}) {
         }
         throw coreError('invalid_argument', 'what: unknown for this store');
       });
+    },
+    async radicleWrite(params, page) {
+      calls.push({ method: 'approval.radicle_write', params: structuredClone(params), caller: callerName(page) });
+      if (!page || typeof page !== 'object') throw coreError('forbidden', 'a standing rule answers only a page');
+      if (params?.key !== page.origin) throw coreError('forbidden', 'a page asks only for its own key');
+      if (page.agent !== false) return { covered: false, reason: 'custody' };
+      const entry = entries.radicle[page.origin];
+      if (!entry || entry.signing !== true || entry.autoApprove?.signing !== true) return { covered: false, reason: 'no_rule' };
+      return admitWrite(page.origin, now()) ? { covered: true } : { covered: false, reason: 'rate_limited' };
     },
     async touch(params, page) {
       calls.push({ method: 'approval.touch', params: structuredClone(params), caller: callerName(page) });

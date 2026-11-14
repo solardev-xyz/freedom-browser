@@ -489,6 +489,15 @@ const vaultBackend = {
     touch(params, page) {
       return call('approval.touch', params, page);
     },
+    /**
+     * A page's Radicle COB write its "always allow writes" rule would answer
+     * (cored 0.16.0, design 0012 "A page's Radicle write"), always under
+     * `page`, for its own key: `{ key }` → `{ covered, reason? }`. A decision,
+     * not advice: a covered write is counted in R-6, and main forwards it.
+     */
+    radicleWrite(params, page) {
+      return call('approval.radicle_write', params, page);
+    },
     /** `{ wallet_index }` → `{ keys, durable? }`, main's own */
     forgetAccount(walletIndex) {
       return call('approval.forget_account', { wallet_index: walletIndex });

@@ -116,6 +116,8 @@ jest.mock('./radicle-permissions', () => ({
   getAutoApprove: jest.fn(() => false),
   updateLastUsed: jest.fn(),
   revokePermission: jest.fn(() => true),
+  // The identity core's judgement of a rule-answered write (R-6).
+  admitAutoWrite: jest.fn(async () => ({ covered: true })),
 }));
 
 const {
@@ -123,7 +125,6 @@ const {
   executeRadicleForPage,
   setSeedStatusSink,
   registerRadicleProviderIpc,
-  _resetAutoWriteLimiter,
 } = require('./radicle-provider-ipc');
 const manager = require('../radicle-manager');
 const cob = require('./cob-service');
@@ -141,7 +142,7 @@ beforeEach(() => {
   permissions.getPermission.mockReturnValue({ origin: ORIGIN, signing: false });
   permissions.hasSigningGrant.mockReturnValue(false);
   permissions.getAutoApprove.mockReturnValue(false);
-  _resetAutoWriteLimiter();
+  permissions.admitAutoWrite.mockResolvedValue({ covered: true });
 });
 
 // PRQ-8b: a site's seed statuses go to main's page requests, which send
@@ -471,24 +472,19 @@ describe('signing tier', () => {
 });
 
 describe('signed write approval (R-6)', () => {
+  const PAGE = Object.freeze({ origin: ORIGIN, top_origin: ORIGIN, frame: 3, navigation: 7, agent: false });
   const write = (approval) =>
     executeRadicleMethod(
       'radicle_commentIssue',
       { rid: RID, issueId: 'ab12cd', body: 'hi' },
       ORIGIN,
-      approval ? { approval } : {}
+      { ...(approval ? { approval } : {}), pageContext: () => PAGE }
     );
-  let now;
+  const ruleOn = () => permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
 
   beforeEach(() => {
     permissions.hasSigningGrant.mockReturnValue(true);
     cob.commentIssue.mockImplementation(async () => ({ id: 'b'.repeat(40) }));
-    now = 1_000_000;
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
-  });
-
-  afterEach(() => {
-    jest.restoreAllMocks();
   });
 
   test('without the "always allow writes" rule an automatic write is refused', async () => {
@@ -496,59 +492,83 @@ describe('signed write approval (R-6)', () => {
       await expectProviderError(write(approval), 4100, 'approval_required');
     }
     expect(cob.commentIssue).not.toHaveBeenCalled();
+    expect(permissions.admitAutoWrite).not.toHaveBeenCalled();
     await write('user');
     expect(cob.commentIssue).toHaveBeenCalledTimes(1);
   });
 
-  test('rule-answered writes: a burst of 5, then 1 per 30 s', async () => {
-    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
-    for (let i = 0; i < 5; i += 1) await write('auto');
-    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(5);
-
-    // A write the user approves in its prompt is not counted.
+  // freedom-core design 0012, "A page's Radicle write" (cored 0.16.0): the
+  // identity core judges a rule-answered write and counts it in R-6
+  // (`approval.radicle_write`), under the page, for its own key.
+  test("a rule-answered write is the core's to judge, under the request's PageContext; covered, it is written", async () => {
+    ruleOn();
+    await expect(write('auto')).resolves.toEqual({ id: 'b'.repeat(40) });
+    expect(permissions.admitAutoWrite).toHaveBeenCalledTimes(1);
+    expect(permissions.admitAutoWrite).toHaveBeenCalledWith(ORIGIN, { page: PAGE });
+    // Asked before the write.
+    expect(permissions.admitAutoWrite.mock.invocationCallOrder[0]).toBeLessThan(cob.commentIssue.mock.invocationCallOrder[0]);
+    // A write the user approves on its prompt isn't asked about, nor counted.
     await write('user');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(6);
-
-    now += 29_000;
-    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
-    now += 1_000;
-    await write('auto');
-    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(7);
+    expect(permissions.admitAutoWrite).toHaveBeenCalledTimes(1);
+    expect(cob.commentIssue).toHaveBeenCalledTimes(2);
   });
 
-  test('rule-answered writes: at most 50 in 24 hours', async () => {
-    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
-    for (let i = 0; i < 50; i += 1) {
-      await write('auto');
-      now += 30_000;
+  test.each([
+    // Past R-6: the dispatcher asks the user instead (page-radicle.js).
+    ['rate_limited', 'auto_write_limit', "This site has used up its automatic writes for now; this one needs the user's approval"],
+    ['no_rule', 'approval_required', "This write needs the user's approval"],
+    ['custody', 'agent_custody', 'A page in Agent custody needs approval for this action'],
+  ])("the core's %s is today's %s refusal, with nothing written", async (reason, refusal, message) => {
+    ruleOn();
+    permissions.admitAutoWrite.mockResolvedValue({ covered: false, reason });
+    const err = await expectProviderError(write('auto'), 4100, refusal);
+    expect(err.message).toBe(message);
+    expect(cob.commentIssue).not.toHaveBeenCalled();
+  });
+
+  test('not_moved, an answer with no known reason, no core to ask, or no page: an internal error, with nothing written', async () => {
+    ruleOn();
+    const notMoved = Object.assign(new Error('the radicle store has not moved'), { code: 'not_moved', data: { store: 'radicle' } });
+    for (const answer of [
+      () => Promise.reject(notMoved),
+      () => Promise.reject(Object.assign(new Error('core unavailable'), { code: 'core_unavailable' })),
+      () => Promise.resolve({ covered: false, reason: 'something_else' }),
+      () => Promise.resolve({ covered: false }),
+      () => Promise.resolve(null),
+    ]) {
+      permissions.admitAutoWrite.mockImplementationOnce(answer);
+      const err = await expectProviderError(write('auto'), -32603);
+      expect(err).toEqual({ code: -32603, message: 'Internal error' });
     }
-    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(50);
-
-    // A day after the first of them, room for one again.
-    now = 1_000_000 + 24 * 60 * 60 * 1000;
-    await write('auto');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(51);
+    // A rule-answered write without its page is never asked about.
+    permissions.admitAutoWrite.mockClear();
+    await expectProviderError(
+      executeRadicleMethod('radicle_commentIssue', { rid: RID, issueId: 'ab12cd', body: 'hi' }, ORIGIN, { approval: 'auto' }),
+      -32603
+    );
+    expect(permissions.admitAutoWrite).not.toHaveBeenCalled();
+    expect(cob.commentIssue).not.toHaveBeenCalled();
   });
 
-  test('the limit is per origin, and disconnecting resets it', async () => {
-    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
-    for (let i = 0; i < 5; i += 1) await write('auto');
-    await expectProviderError(write('auto'), 4100, 'auto_write_limit');
+  test("asked last: a write main refuses first (no connection, no signing grant, the node stopped) is never counted", async () => {
+    ruleOn();
+    permissions.getPermission.mockReturnValueOnce(null);
+    await expectProviderError(write('auto'), 4100, 'not_connected');
+    permissions.hasSigningGrant.mockReturnValueOnce(false);
+    await expectProviderError(write('auto'), 4100, 'signing_not_granted');
+    manager.getCurrentStatus.mockReturnValueOnce({ status: 'stopped', error: null });
+    await expectProviderError(write('auto'), 4900, 'node-stopped');
+    expect(permissions.admitAutoWrite).not.toHaveBeenCalled();
+    expect(cob.commentIssue).not.toHaveBeenCalled();
+  });
 
-    await executeRadicleMethod(
-      'radicle_commentIssue',
-      { rid: RID, issueId: 'ab12cd', body: 'hi' },
-      'https://other.example',
-      { approval: 'auto' }
-    );
-    expect(cob.commentIssue).toHaveBeenCalledTimes(6);
-
-    await executeRadicleMethod('radicle_disconnect', {}, ORIGIN);
-    await write('auto');
-    expect(cob.commentIssue).toHaveBeenCalledTimes(7);
+  test('disconnecting is the revoke, under the page; the core forgets the count with it', async () => {
+    const page = { ...PAGE };
+    await expect(executeRadicleMethod('radicle_disconnect', {}, ORIGIN, { pageContext: () => page })).resolves.toEqual({
+      connected: false,
+    });
+    expect(permissions.revokePermission).toHaveBeenCalledWith(ORIGIN, { page });
+    expect(permissions.admitAutoWrite).not.toHaveBeenCalled();
   });
 
   test('identity disclosure is not a write and needs no approval', async () => {
@@ -558,10 +578,10 @@ describe('signed write approval (R-6)', () => {
   });
 
   // Plan B10 (freedom-core design 0008, `needs_vault`).
-  test('a node running with a throwaway key: every write is refused before the rule counts it, and nothing is sent', async () => {
+  test('a node running with a throwaway key: every write is refused before the core counts it, and nothing is sent', async () => {
     const message = "Radicle is running with a throwaway key and can't publish. Restart Radicle once your identity is set up.";
     manager.radicleWriteRefusal.mockReturnValue({ reason: 'needs_vault', message });
-    permissions.getAutoApprove.mockImplementation((_origin, type) => type === 'signing');
+    ruleOn();
     try {
       for (let i = 0; i < 6; i += 1) {
         const err = await expectProviderError(write('auto'), 4900, 'needs_vault');
@@ -575,8 +595,11 @@ describe('signed write approval (R-6)', () => {
     } finally {
       manager.radicleWriteRefusal.mockReturnValue(null);
     }
-    // The node restarted with the derived key: the rule's whole burst is left.
+    // None of them was asked of the core, so none was counted in R-6.
+    expect(permissions.admitAutoWrite).not.toHaveBeenCalled();
+    // The node restarted with the derived key: the core is asked, and writes go.
     for (let i = 0; i < 5; i += 1) await write('auto');
+    expect(permissions.admitAutoWrite).toHaveBeenCalledTimes(5);
     expect(cob.commentIssue).toHaveBeenCalledTimes(5);
   });
 
