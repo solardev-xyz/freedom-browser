@@ -6,7 +6,10 @@
  * and handle), a signature the core makes presents its token to `sign.*`,
  * and the kinds that sign nothing here spend theirs with `approval.spend`.
  * A spy on the core's requests checks the caller of each, and that main
- * calls none of the permission files' write methods. Skipped unless
+ * calls none of the permission files' write methods. A page request the
+ * Agent answers in a tab it holds (APB-1d) goes through main's own page
+ * dispatcher, the agent route and main's issuer to the core, under `page`
+ * with `agent: true`, and never as `shell`. Skipped unless
  * FREEDOM_CORED_PATH points at a build, e.g.
  *   FREEDOM_CORED_PATH=…/freedom-cored-bin/linux-x64/freedom-cored npx jest src/main/wallet/signing-confirmation.integration
  * or FREEDOM_CORED_APPROVALS_TEST=1 asks for the binary `npm run core:download`
@@ -36,6 +39,27 @@ const HANDLE = 'c'.repeat(64);
 const OTHER_HANDLE = 'd'.repeat(64);
 const SAFE_INDEX = 5000;
 const SAFE_ADDRESS = '0x' + 'aa'.repeat(20);
+// A Ledger's and a phone's accounts. A phone's backend is a test's fake
+// (`devices.phone`); a Ledger's is main's real backend and transport, over
+// a fake HID device (`devices.ledger`: its open, its address and its
+// signing APDUs), so its device queue, open and address check run as they
+// do in the app.
+const LEDGER_INDEX = 1000000;
+const PHONE_INDEX = 1000001;
+const DEVICE_ADDRESS = new Wallet(ABANDON_KEY).address;
+const DEVICE_RECORDS = Object.freeze({
+  [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: DEVICE_ADDRESS, path: "44'/60'/0'/0/0" },
+  [PHONE_INDEX]: { index: PHONE_INDEX, type: 'remote', address: DEVICE_ADDRESS },
+});
+const devices = { ledger: {}, phone: {} };
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 const PAGE = Object.freeze({ origin: SITE, top_origin: SITE, frame: 4, navigation: 9, agent: false });
 
 const TX = Object.freeze({
@@ -99,16 +123,35 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
     jest.doMock('../identity-manager', () => ({
       getWalletRecord: (index) =>
-        index === SAFE_INDEX ? { index, type: 'safe', address: SAFE_ADDRESS, owners: [0], threshold: 1 } : null,
+        index === SAFE_INDEX
+          ? { index, type: 'safe', address: SAFE_ADDRESS, owners: [0], threshold: 1 }
+          : DEVICE_RECORDS[index] ?? null,
       isHardwareWalletIndex: () => false,
       recordLedgerAddressCheck: () => {},
       recordRemoteAddressCheck: () => {},
       WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
     }));
-    // Main's own signers (`signers.js`) for the vault: no device here.
+    // Main's own signers (`signers.js`): the vault's through the core, a
+    // device's through a test's fake device, asked after the core's spend.
     jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
-    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => ({}) }));
-    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => ({}) }));
+    jest.doMock('@ledgerhq/hw-transport-node-hid', () => ({ default: { open: (...args) => devices.ledger.open(...args) } }));
+    jest.doMock('@ledgerhq/hw-app-eth', () => ({
+      default: class FakeEth {
+        getAddress(...args) {
+          return devices.ledger.getAddress(...args);
+        }
+        signPersonalMessage(...args) {
+          return devices.ledger.signPersonalMessage(...args);
+        }
+        signEIP712Message(...args) {
+          return devices.ledger.signEIP712Message(...args);
+        }
+        signTransaction(...args) {
+          return devices.ledger.signTransaction(...args);
+        }
+      },
+    }));
+    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => devices.phone }));
     // Main's dApp file, written where the core reads it (its grant root).
     jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
     sc = require('./signing-confirmation');
@@ -756,6 +799,720 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             { to: TX.to.toLowerCase(), selector: SELECTOR, chainId: 100, maxValue: TX.value, grantedAt: expect.any(Number) },
           ],
         },
+      });
+    });
+  });
+
+  // Design 0012 (as amended by freedom-core #368), "A page request the Agent
+  // answers": in a tab the Agent holds, its decision mints the request's
+  // page-kind token through main's issuer, under `page` with the request's
+  // PageContext (`agent: true`) and a handle main drew, and the signature
+  // presents it under `page` with the live PageContext. No standing rule
+  // answers it, and none goes as `shell`. Driven end to end: the page's
+  // request through main's page dispatcher (`page-requests.js`,
+  // `page-ethereum.js`), the real AgentWalletController with main's signers,
+  // and the core.
+  describe('a page request the Agent answers, in a tab it holds (APB-1d)', () => {
+    const { EventEmitter } = require('events');
+    const CHROME_URL = 'file:///app/src/renderer/index.html';
+    const SIGNER = new Wallet(ABANDON_KEY).address;
+    let permissions;
+    let requests;
+    let guests;
+    let custody;
+    let approvals;
+    let answerWith;
+    let nextId = 1;
+    let nextNonce = 1;
+    // The agent route's runs, which outlive a request main answered (its
+    // document gone): a test waits for them before it checks what was signed.
+    let running;
+    // The transaction service's own waits before it asks the signer (the
+    // fee, the nonce), held when a test sets one; and what each device was
+    // asked.
+    let serviceWait;
+    let deviceAsked;
+    // DNS names over IPNS the page documents resolve: name -> IPNS key.
+    const names = new Map();
+
+    class Guest extends EventEmitter {
+      constructor() {
+        super();
+        this.id = nextId++;
+        this.hostWebContents = { id: 501, isDestroyed: () => false, mainFrame: { url: CHROME_URL } };
+        this.mainFrame = this.frame('about:blank');
+      }
+
+      frame(url) {
+        return { url, frameTreeNodeId: 1000 + this.id, processId: 1, routingId: this.id, detached: false, send: () => {} };
+      }
+
+      isDestroyed() {
+        return false;
+      }
+
+      getType() {
+        return 'webview';
+      }
+
+      getURL() {
+        return this.mainFrame.url;
+      }
+
+      commit(url) {
+        this.mainFrame.detached = true;
+        this.mainFrame = this.frame(url);
+        this.emit('did-frame-navigate', {}, url, 200, 'OK', true, 1, this.mainFrame.routingId);
+      }
+    }
+
+    beforeAll(() => {
+      permissions = require('./dapp-permissions');
+      const { getSigner } = require('./signers');
+      const { createPageDocuments } = require('../page/page-documents');
+      const { createPageRequests } = require('../page/page-requests');
+      const { createEthereumDispatchers } = require('../page/page-ethereum');
+      const { AgentWalletController } = require('../agent/agent-wallet-controller');
+      guests = new Map();
+      custody = new Set();
+      const wallets = async () => [
+        { index: 0, name: 'Main Wallet', address: SIGNER, type: 'mnemonic' },
+        { index: LEDGER_INDEX, name: 'My Ledger', address: DEVICE_ADDRESS, type: 'ledger' },
+        { index: PHONE_INDEX, name: 'My Phone', address: DEVICE_ADDRESS, type: 'remote' },
+      ];
+      // The Agent's own approval, as the agent service asks it: the test
+      // answers each, and sees what it was asked.
+      const controller = new AgentWalletController({
+        identityManager: { getDerivedWallets: wallets, getActiveWalletIndex: () => 0 },
+        getPermission: (key) => permissions.getPermission(key),
+        grantPermission: () => {},
+        updateLastUsed: () => {},
+        updateWalletIndex: () => {},
+        getChain: (chainId) => ({ chainId, name: 'Gnosis', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
+        estimateGas: async () => ({ gasLimit: TX.gasLimit }),
+        getGasPrices: async () => ({ type: 'eip1559', maxFeePerGas: TX.maxFeePerGas, maxPriorityFeePerGas: TX.maxPriorityFeePerGas }),
+        // Main's own signers: a vault account's signature by the core.
+        getSigner,
+        // As the transaction service runs it: the account's address, its
+        // own waits (held when a test sets `serviceWait`), then signed at
+        // the nonce main chose and committed past the caller's guard; a
+        // phone signs and broadcasts in one step.
+        signAndRecord: async (tx, signer, _record, options) => {
+          await signer.getAddress();
+          if (serviceWait) {
+            serviceWait.reached.resolve();
+            await serviceWait.promise;
+          }
+          if (typeof signer.sendTransaction === 'function') {
+            return { hash: await signer.sendTransaction(buildTransaction({ ...tx, nonce: 7 })) };
+          }
+          const raw = await signer.signTransaction(buildTransaction({ ...tx, nonce: 7 }));
+          let committed = null;
+          await options.guardCommit(async () => {
+            committed = raw;
+          });
+          return { hash: Transaction.from(committed).hash };
+        },
+      });
+      const documents = createPageDocuments({
+        isPrivateWebContents: () => false,
+        isChromeIndexUrl: (url) => url === CHROME_URL,
+        isAgentPage: () => false,
+        windowIdOf: () => 1,
+        resolveEnsContent: async (name) =>
+          names.has(name) ? { type: 'ok', protocol: 'ipns', decoded: names.get(name) } : { type: 'not_found' },
+      });
+      const inCustody = (guestId) => custody.has(guestId);
+      requests = createPageRequests({
+        documents,
+        webContentsFromId: (id) => guests.get(id),
+        dispatchers: createEthereumDispatchers({
+          identityWalletEnabled: () => true,
+          selectedChainOf: () => 100,
+          getPermission: (key) => permissions.getPermission(key),
+          getDerivedWallets: wallets,
+          chainName: () => 'Gnosis',
+          networks: () => ({ 100: { name: 'Gnosis' } }),
+          getActiveWalletIndex: () => 0,
+          updateLastUsed: () => {},
+          agentWalletRequest: (guestId, request, options) =>
+            track(controller.handleRequest(
+              {
+                tabId: `tab_${guestId}`,
+                pageUrl: guests.get(guestId).getURL(),
+                conversationId: 'conversation_1',
+                requestApproval: async (asked) => {
+                  approvals.push(asked);
+                  return answerWith;
+                },
+                attested: options.attested,
+                beforeEffect: options.beforeEffect,
+                effectAllowed: options.effectAllowed,
+                pageToken: options.pageToken,
+                pageContext: options.pageContext,
+              },
+              request
+            )),
+          // Main's own signing path for a tab the Agent doesn't hold (a
+          // site's standing rule, APB-1b): the real signers and the core's
+          // `approval.check`; the message's view made here, without the IPC
+          // module.
+          signing: {
+            inCustody,
+            isVaultUnlocked: async () => true,
+            messageView: (message) => {
+              const { messageToBytes, normalizeMessage, signsRawHash } = require('./signing-utils');
+              return { hex: '0x' + messageToBytes(normalizeMessage(message)).toString('hex'), rawHash: signsRawHash(message) };
+            },
+          },
+          sends: { inCustody },
+        }),
+        chromeWindowOf: (contents) => (contents?.id === 501 ? 1 : null),
+        sendToWindow: () => {},
+        watchWindow: () => {},
+        // A PageContext's `agent`: the custody the dispatchers read.
+        isAgentGuest: inCustody,
+      });
+    });
+
+    // A run of the agent route, kept until it settles.
+    function track(run) {
+      running.push(run);
+      return run;
+    }
+
+    // A fake device, as main's signers ask one (`signers.js`): after the
+    // core's hash and spend, and the caller's last check. What it is asked
+    // is recorded; it signs with the test key.
+    function device(name) {
+      const key = new Wallet(ABANDON_KEY);
+      const asked = (method) => deviceAsked.push([name, method]);
+      if (name === 'ledger') {
+        // The HID device under main's Ledger backend: what hw-app-eth asks.
+        const answer = async (signature) => {
+          const sig = require('ethers').Signature.from(await signature);
+          return { r: sig.r.slice(2), s: sig.s.slice(2), v: sig.v };
+        };
+        return {
+          open: async () => ({ close: async () => {} }),
+          getAddress: async () => ({ address: DEVICE_ADDRESS }),
+          signPersonalMessage: async (_path, hex) => {
+            asked('signMessage');
+            return answer(key.signMessage(Buffer.from(hex, 'hex')));
+          },
+          signEIP712Message: async (_path, payload) => {
+            asked('signTypedData');
+            const { EIP712Domain: _domain, ...types } = payload.types;
+            return answer(key.signTypedData(payload.domain, types, payload.message));
+          },
+          signTransaction: async (_path, rawHex) => {
+            asked('signTransaction');
+            const signed = Transaction.from(await key.signTransaction(Transaction.from('0x' + rawHex)));
+            return answer(signed.signature.serialized);
+          },
+        };
+      }
+      return {
+        getAddress: async () => DEVICE_ADDRESS,
+        signMessage: async (message) => {
+          asked('signMessage');
+          return key.signMessage(message);
+        },
+        signTypedData: async (_data, { digest }) => {
+          asked('signTypedData');
+          return key.signingKey.sign(digest).serialized;
+        },
+        signTransaction: async (tx) => {
+          asked('signTransaction');
+          return key.signTransaction(tx);
+        },
+        ...(name === 'phone'
+          ? {
+              sendTransaction: async () => {
+                asked('sendTransaction');
+                return '0x' + 'ab'.repeat(32);
+              },
+            }
+          : {}),
+      };
+    }
+
+    // A PageContext for `key`, under which the core writes a grant or rule
+    // for this test's setup (design 0012, APB-2: every grant write is the
+    // core's, under the page's own PageContext).
+    const pageOf = (key) => ({ origin: key, top_origin: key, frame: 4, navigation: 9, agent: false });
+
+    beforeEach(async () => {
+      approvals = [];
+      answerWith = 'approved';
+      running = [];
+      serviceWait = null;
+      deviceAsked = [];
+      devices.ledger = device('ledger');
+      devices.phone = device('phone');
+      await permissions.grantPermission(SITE, 0, 100, pageOf(SITE));
+    });
+
+    afterEach(async () => {
+      await permissions.revokePermission(SITE);
+      // No signature for an attested page request goes as main's own: each
+      // is under `page`, in the Agent's tab, with a token.
+      const signs = calls.filter((call) => call.method.startsWith('sign.'));
+      for (const call of signs) {
+        expect(call.context).toEqual({ caller: 'page', page: expect.objectContaining({ origin: expect.stringMatching(/^(https:\/\/app\.example|example\.com)$/), agent: true }) });
+        expect(call.params.authorization).toEqual(expect.objectContaining({ token: expect.stringMatching(/^[0-9a-f]{64}$/) }));
+        expect(call.params.authorization).not.toHaveProperty('standing');
+      }
+    });
+
+    // A page in a tab the Agent holds (or, `held: false`, one it doesn't),
+    // and its requests; `name`: a DNS name over IPNS bound to the tab, at
+    // its IPNS key.
+    function agentTab({ held = true, name = null } = {}) {
+      const guest = new Guest();
+      guests.set(guest.id, guest);
+      requests.track(guest);
+      if (name) {
+        expect(requests.bindName({ sender: guest.hostWebContents }, { guest: guest.id, name, key: names.get(name) })).toBe(true);
+        guest.commit(`ipns://${names.get(name)}/`);
+      } else {
+        guest.commit(`${SITE}/app`);
+      }
+      const nonce = (nextNonce++).toString(16).padStart(32, '0');
+      const event = { sender: guest, senderFrame: guest.mainFrame };
+      expect(requests.hello(event, { nonce }).ok).toBe(true);
+      if (held) custody.add(guest.id);
+      const origin = name || SITE;
+      const page = {
+        origin,
+        top_origin: origin,
+        frame: guest.mainFrame.frameTreeNodeId,
+        navigation: expect.any(Number),
+        agent: held,
+      };
+      return {
+        guest,
+        page,
+        ask: (method, params) => requests.request(event, { nonce, provider: 'ethereum', method, params }),
+      };
+    }
+
+    // The core's calls for one request: the Agent's token minted under
+    // `page` with `agent: true` and main's handle, then presented under
+    // `page` with `agent: true` by the one signature.
+    function minted(kind, page, index = 0) {
+      const issued = calls.filter((call) => call.method === 'approval.issue');
+      expect(issued).toEqual([
+        expect.objectContaining({
+          context: { caller: 'page', page },
+          params: expect.objectContaining({ kind, account: index, handle: expect.stringMatching(/^[0-9a-f]{64}$/) }),
+        }),
+      ]);
+      return issued[0].params.handle;
+    }
+
+    test('personal_sign: minted as a sign-message token under `page` with agent: true, and signed under it', async () => {
+      const tab = agentTab();
+      const answer = await tab.ask('personal_sign', ['0x68656c6c6f', SIGNER]);
+      expect(require('ethers').verifyMessage('hello', answer.result)).toBe(SIGNER);
+      expect(approvals).toEqual([expect.objectContaining({ action: 'wallet_signature' })]);
+      const handle = minted('sign-message', tab.page);
+      const signs = calls.filter((call) => call.method.startsWith('sign.'));
+      expect(signs).toEqual([
+        expect.objectContaining({
+          method: 'sign.message',
+          context: { caller: 'page', page: tab.page },
+          params: expect.objectContaining({ authorization: { token: expect.any(String), handle } }),
+        }),
+      ]);
+      // Spent there: presented again, the core no longer knows it.
+      const token = signs[0].params.authorization.token;
+      expect(
+        await reasonOf(vaultBackend.sign.message(account(0), Buffer.from('hello'), { authorization: { token, handle }, page: signs[0].context.page }))
+      ).toBe('unknown_token');
+    });
+
+    test('eth_signTypedData_v4: a sign-typed-data token viewed on the page\'s chain, its hash the one signed', async () => {
+      const tab = agentTab();
+      const answer = await tab.ask('eth_signTypedData_v4', [SIGNER, JSON.stringify(TYPED_DATA)]);
+      const { domain, types, message } = TYPED_DATA;
+      expect(require('ethers').verifyTypedData(domain, types, message, answer.result)).toBe(SIGNER);
+      const handle = minted('sign-typed-data', tab.page);
+      expect(calls.find((call) => call.method === 'approval.issue').params.payload).toMatchObject({
+        primary_type: 'Permit',
+        chain_id: '100',
+      });
+      expect(calls.filter((call) => call.method.startsWith('sign.'))).toEqual([
+        expect.objectContaining({
+          method: 'sign.typed_data',
+          context: { caller: 'page', page: tab.page },
+          params: expect.objectContaining({
+            expected_hash: TypedDataEncoder.hash(domain, types, message),
+            authorization: { token: expect.any(String), handle },
+          }),
+        }),
+      ]);
+    });
+
+    test('eth_sendTransaction: a dapp-send token under `page` with agent: true, presented naming its kind', async () => {
+      const tab = agentTab();
+      const answer = await tab.ask('eth_sendTransaction', [{ to: TX.to, value: '0x' + BigInt(TX.value).toString(16), data: TX.data }]);
+      expect(answer.result).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(approvals).toEqual([expect.objectContaining({ action: 'wallet_transaction' })]);
+      const handle = minted('dapp-send', tab.page);
+      // The Agent ticks no "Always allow" and confirms no fee again.
+      const issue = calls.find((call) => call.method === 'approval.issue');
+      expect(issue.params.payload).not.toHaveProperty('remember');
+      expect(issue.params).not.toHaveProperty('fee_ack');
+      const signs = calls.filter((call) => call.method.startsWith('sign.'));
+      expect(signs).toEqual([
+        expect.objectContaining({
+          method: 'sign.transaction',
+          context: { caller: 'page', page: tab.page },
+          params: expect.objectContaining({ authorization: { token: expect.any(String), kind: 'dapp-send', handle } }),
+        }),
+      ]);
+      expect(Transaction.from(await signs[0].reply.then((reply) => reply.raw)).from).toBe(SIGNER);
+      // No rule was asked for, so none is reported.
+      expect((await signs[0].reply).rule ?? null).toBeNull();
+    });
+
+    test("a standing rule never answers it: the Agent decides, and the core refuses `{ standing }` in its tab (custody)", async () => {
+      await permissions.setSigningAutoApprove(SITE, true, pageOf(SITE));
+      const tab = agentTab();
+      const answer = await tab.ask('personal_sign', ['0x68656c6c6f', SIGNER]);
+      expect(require('ethers').verifyMessage('hello', answer.result)).toBe(SIGNER);
+      // The Agent was asked; main asked the core for no rule's verdict.
+      expect(approvals).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'approval.check')).toEqual([]);
+      minted('sign-message', tab.page);
+      // Under the PageContext main sent for the Agent's request, the core
+      // answers no rule: custody.
+      const page = calls.find((call) => call.method === 'sign.message').context.page;
+      expect(await sc.checkStanding(page, { kind: 'message', account: 0, accountType: 'mnemonic', payload: 'hello' })).toEqual({
+        covered: false,
+        reason: 'custody',
+      });
+      const ruled = require('./signers').getSigner(0, { page, standing: {}, chainId: 100 });
+      const refused = await refusal(ruled.signMessage('hello'));
+      expect(refused.reason).toBe('custody');
+      calls.length = 0;
+    });
+
+    test('the Agent declining mints nothing and signs nothing', async () => {
+      const tab = agentTab();
+      answerWith = 'declined';
+      expect(await tab.ask('personal_sign', ['0x68656c6c6f', SIGNER])).toEqual({
+        error: { code: 4001, message: 'User rejected the request' },
+      });
+      expect(approvals).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'approval.issue' || call.method.startsWith('sign.'))).toEqual([]);
+    });
+
+    // Codex on #1246: custody ends at the signer's own wait (the vault's
+    // address), after main presented the token as the signer was built.
+    test('a tab the Agent leaves at the signer\'s wait, after the token was presented: refused, the token burnt, nothing signed', async () => {
+      const tab = agentTab();
+      const request = core.request;
+      let presented = null;
+      core.request = (method, params, context, options) => {
+        const reply = request(method, params, context, options);
+        if (method === 'keys.addresses') {
+          // The signer waits on its address: built, the token presented.
+          presented = calls.some((call) => call.method === 'approval.issue');
+          reply.then(() => custody.delete(tab.guest.id), () => {});
+        }
+        return reply;
+      };
+      let answer;
+      try {
+        answer = await tab.ask('personal_sign', ['0x68656c6c6f', SIGNER]);
+      } finally {
+        core.request = request;
+      }
+      expect(presented).toBe(true);
+      expect(answer).toEqual({
+        error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' },
+      });
+      const handle = minted('sign-message', tab.page);
+      expect(calls.filter((call) => call.method.startsWith('sign.'))).toEqual([]);
+      const issued = await calls.find((call) => call.method === 'approval.issue').reply;
+      expect(calls.filter((call) => call.method === 'approval.discard').map((call) => call.params.token)).toContain(issued.token);
+      // Burnt: the core no longer knows it.
+      expect(
+        await reasonOf(
+          vaultBackend.sign.message(account(0), Buffer.from('hello'), {
+            authorization: { token: issued.token, handle },
+            page: { ...PAGE, origin: SITE, top_origin: SITE },
+          })
+        )
+      ).toBe('unknown_token');
+      calls.length = 0;
+    });
+
+    // Codex on #1246: main presents the Agent's token as the signer is
+    // built, and the core spends it under the PageContext read then; the
+    // signer waits after that (a vault's address, a device's hash and the
+    // core's spend, the transaction service's fee and nonce). Its last step
+    // reads the tab and the document again, right before the core or the
+    // device is asked: a tab the Agent left, or a document gone, at any of
+    // those waits signs nothing, sends nothing, and leaves no live token.
+    const ASKS = {
+      personal_sign: (account) => ['personal_sign', ['0x68656c6c6f', account]],
+      eth_signTypedData_v4: (account) => ['eth_signTypedData_v4', [account, JSON.stringify(TYPED_DATA)]],
+      eth_sendTransaction: () => ['eth_sendTransaction', [{ to: TX.to, value: '0x' + BigInt(TX.value).toString(16), data: TX.data }]],
+    };
+    const KINDS = { personal_sign: 'sign-message', eth_signTypedData_v4: 'sign-typed-data', eth_sendTransaction: 'dapp-send' };
+    const ACCOUNTS = { vault: [0, SIGNER], ledger: [LEDGER_INDEX, DEVICE_ADDRESS], phone: [PHONE_INDEX, DEVICE_ADDRESS] };
+
+    // Holds the core's next reply to `method` until released.
+    function holdCore(method) {
+      const request = core.request;
+      const reached = deferred();
+      const released = deferred();
+      core.request = (name, params, context, options) => {
+        const reply = request(name, params, context, options);
+        if (name !== method) return reply;
+        core.request = request;
+        const held = async (settle) => {
+          reached.resolve();
+          await released.promise;
+          return settle();
+        };
+        return reply.then(
+          (value) => held(() => value),
+          (err) => held(() => Promise.reject(err))
+        );
+      };
+      return { reached: reached.promise, release: released.resolve, restore: () => (core.request = request) };
+    }
+
+    // Holds the transaction service's own wait before it asks the signer.
+    function holdService() {
+      const wait = { ...deferred(), reached: deferred() };
+      serviceWait = wait;
+      return { reached: wait.reached.promise, release: wait.resolve, restore: () => (serviceWait = null) };
+    }
+
+    describe.each([
+      ['a vault message, at its address', 'vault', 'personal_sign', 'keys.addresses'],
+      ['vault typed data, at its address', 'vault', 'eth_signTypedData_v4', 'keys.addresses'],
+      ["a vault send, at the transaction service's wait", 'vault', 'eth_sendTransaction', 'service'],
+      ["a Ledger message, at the core's spend", 'ledger', 'personal_sign', 'approval.spend'],
+      ["Ledger typed data, at the core's hash", 'ledger', 'eth_signTypedData_v4', 'typed_data.hash'],
+      ["Ledger typed data, at the core's spend", 'ledger', 'eth_signTypedData_v4', 'approval.spend'],
+      ["a Ledger send, at the transaction service's wait", 'ledger', 'eth_sendTransaction', 'service'],
+      ["a Ledger send, at the core's spend", 'ledger', 'eth_sendTransaction', 'approval.spend'],
+      ["a phone message, at the core's spend", 'phone', 'personal_sign', 'approval.spend'],
+      ["phone typed data, at the core's spend", 'phone', 'eth_signTypedData_v4', 'approval.spend'],
+      ["a phone send, at the transaction service's wait", 'phone', 'eth_sendTransaction', 'service'],
+      ["a phone send, at the core's spend", 'phone', 'eth_sendTransaction', 'approval.spend'],
+    ])('%s', (_label, held, method, holdAt) => {
+      const [index, address] = ACCOUNTS[held];
+
+      test.each([
+        ['the Agent leaves the tab', (tab) => custody.delete(tab.guest.id), { error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } }],
+        ['the document navigates', (tab) => tab.guest.commit(`${SITE}/next`), { gone: true }],
+        ['nothing changes', () => {}, null],
+      ])('%s there: the signer\'s last step decides', async (_change, change, refused) => {
+        await permissions.grantPermission(SITE, index, 100, pageOf(SITE));
+        const tab = agentTab();
+        const hold = holdAt === 'service' ? holdService() : holdCore(holdAt);
+        let answer;
+        try {
+          const asking = tab.ask(...ASKS[method](address));
+          await hold.reached;
+          // Minted and presented: the signer was built, and waits.
+          const handle = minted(KINDS[method], tab.page, index);
+          change(tab);
+          hold.release();
+          answer = await asking;
+          await Promise.allSettled(running);
+          const issued = await calls.find((call) => call.method === 'approval.issue').reply;
+          const signs = calls.filter((call) => call.method.startsWith('sign.'));
+          if (refused) {
+            expect(answer).toEqual(refused);
+            // Neither the core nor the device was asked.
+            expect(signs).toEqual([]);
+            expect(deviceAsked).toEqual([]);
+            // No live token: spent by a device's signer before its last
+            // step, or burnt unspent.
+            const page = calls.find((call) => call.method === 'approval.issue').context.page;
+            expect(
+              await reasonOf(
+                vaultBackend.sign.message(account(0), Buffer.from('hello'), {
+                  authorization: { token: issued.token, handle },
+                  page,
+                })
+              )
+            ).toBe('unknown_token');
+            calls.length = 0;
+          } else {
+            expect(answer).toEqual({ result: expect.stringMatching(/^0x[0-9a-f]+$/) });
+            if (held === 'vault') {
+              expect(signs).toHaveLength(1);
+              expect(deviceAsked).toEqual([]);
+            } else {
+              expect(signs).toEqual([]);
+              expect(deviceAsked).toHaveLength(1);
+              expect(calls.filter((call) => call.method === 'approval.spend')).toHaveLength(1);
+            }
+          }
+        } finally {
+          hold.restore();
+        }
+      });
+    });
+
+    // Codex round 2 on #1246: a Ledger's backend waits again after the
+    // signer's own steps (its device queue, the transport's open, the
+    // device's address check), so the caller's last check runs inside that
+    // session, right before the signing APDU. Main's real Ledger backend
+    // and transport here, over a fake HID device.
+    describe("a Ledger's device session: the last check after its queue, its open and its address", () => {
+      const NAME = 'example.com';
+      const IPNS_KEY = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
+      const OTHER_IPNS_KEY = 'k51qzi5uqu5dh71qgwangrt6r0nd4094i88nsady6qgd1dhjcyfsaqmpp143ab';
+      const tick = async () => {
+        for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      };
+      // The step held, and how to tell the request has reached it: the
+      // device queue held by another device task (the request queued once
+      // its token's spend, or the core's verdict, has settled), the
+      // transport's open, or the device's address check.
+      const HOLDS = {
+        'the device queue': (settled) => {
+          const gate = deferred();
+          const blocker = require('./ledger/transport').withEthApp(() => gate.promise);
+          return { reached: settled().then(tick), release: gate.resolve, done: blocker };
+        },
+        "the transport's open": () => {
+          const gate = deferred();
+          const reached = deferred();
+          const open = devices.ledger.open;
+          devices.ledger.open = async (...args) => {
+            reached.resolve();
+            await gate.promise;
+            return open(...args);
+          };
+          return { reached: reached.promise, release: gate.resolve, done: Promise.resolve() };
+        },
+        "the device's address check": () => {
+          const gate = deferred();
+          const reached = deferred();
+          const getAddress = devices.ledger.getAddress;
+          devices.ledger.getAddress = async (...args) => {
+            reached.resolve();
+            await gate.promise;
+            return getAddress(...args);
+          };
+          return { reached: reached.promise, release: gate.resolve, done: Promise.resolve() };
+        },
+      };
+      // Polled by the clock, not by turns: the core's replies take their
+      // own time, more under load.
+      const until = async (found, ms = 10000) => {
+        const deadline = Date.now() + ms;
+        while (!found() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+        if (!found()) throw new Error('the request never reached the held step');
+        return found();
+      };
+      // The `nth` call of `method` settled: the last wait before the signer.
+      const settledCall = (method, nth = 1) => async () => {
+        const call = await until(() => calls.filter((entry) => entry.method === method)[nth - 1]);
+        await call.reply.catch(() => {});
+      };
+
+      let ledgerHolds = [];
+      beforeEach(() => {
+        names.set(NAME, IPNS_KEY);
+        ledgerHolds = [];
+      });
+
+      afterEach(async () => {
+        for (const hold of ledgerHolds) hold.release();
+        await Promise.allSettled([...ledgerHolds.map((hold) => hold.done), ...running]);
+        names.clear();
+        await permissions.revokePermission(NAME);
+      });
+
+      describe.each(Object.keys(HOLDS))('%s held', (held) => {
+        test.each([
+          ['personal_sign', 'signMessage'],
+          ['eth_signTypedData_v4', 'signTypedData'],
+          ['eth_sendTransaction', 'signTransaction'],
+        ])("the Agent's %s: the tab left, the document gone or the name moved there sends no signing APDU; unchanged, one", async (method, apdu) => {
+          for (const [change, act, refused] of [
+            ['the Agent leaves the tab', (tab) => custody.delete(tab.guest.id), { error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } }],
+            ['the document navigates', (tab) => tab.guest.commit(`ipns://${IPNS_KEY}/next`), { gone: true }],
+            ['the name moves', () => names.set(NAME, OTHER_IPNS_KEY), { error: { code: 4100, message: 'This page has no address to connect from yet' } }],
+            ['nothing changes', () => {}, null],
+          ]) {
+            calls.length = 0;
+            deviceAsked = [];
+            running = [];
+            names.set(NAME, IPNS_KEY);
+            await permissions.grantPermission(NAME, LEDGER_INDEX, 100, pageOf(NAME));
+            const tab = agentTab({ name: NAME });
+            const hold = HOLDS[held](settledCall('approval.spend'));
+            const asking = tab.ask(...ASKS[method](DEVICE_ADDRESS));
+            // A failure never leaves the device queue held for the next.
+            ledgerHolds.push(hold);
+            await hold.reached;
+            // Past the token's spend, in the device session: no APDU yet.
+            expect({ change, spent: calls.filter((call) => call.method === 'approval.spend').length, asked: deviceAsked }).toEqual({ change, spent: 1, asked: [] });
+            act(tab);
+            hold.release();
+            await hold.done;
+            const answer = await asking;
+            await Promise.allSettled(running);
+            if (refused) {
+              expect({ change, answer }).toEqual({ change, answer: refused });
+              expect({ change, asked: deviceAsked }).toEqual({ change, asked: [] });
+            } else {
+              expect({ change, answer }).toEqual({ change, answer: { result: expect.stringMatching(/^0x[0-9a-f]+$/) } });
+              expect({ change, asked: deviceAsked }).toEqual({ change, asked: [['ledger', apdu]] });
+            }
+            expect(calls.filter((call) => call.method.startsWith('sign.'))).toEqual([]);
+            // The device is free for the next.
+            await expect(require('./ledger/transport').withEthApp(async () => 'free')).resolves.toBe('free');
+          }
+        });
+
+        test("a site's signing rule on a Ledger (APB-1b): revoked there sends no signing APDU; unchanged, one", async () => {
+          for (const revoke of [true, false]) {
+            calls.length = 0;
+            deviceAsked = [];
+            await permissions.grantPermission(SITE, LEDGER_INDEX, 100, pageOf(SITE));
+            await permissions.setSigningAutoApprove(SITE, true, pageOf(SITE));
+            const tab = agentTab({ held: false });
+            // The core's verdict for the choice, then again just before the
+            // signer (APB-1b): the device session comes after the second.
+            const hold = HOLDS[held](settledCall('approval.check', 2));
+            const asking = tab.ask('personal_sign', ['0x68656c6c6f', DEVICE_ADDRESS]);
+            ledgerHolds.push(hold);
+            await hold.reached;
+            // The rule answered (no prompt, no Agent), and the device session waits.
+            expect({ revoke, approvals, asked: deviceAsked }).toEqual({ revoke, approvals: [], asked: [] });
+            if (revoke) await permissions.setSigningAutoApprove(SITE, false);
+            hold.release();
+            await hold.done;
+            const answer = await asking;
+            if (revoke) {
+              expect(answer).toEqual({
+                error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
+              });
+              expect(deviceAsked).toEqual([]);
+            } else {
+              expect(require('ethers').verifyMessage('hello', answer.result)).toBe(DEVICE_ADDRESS);
+              expect(deviceAsked).toEqual([['ledger', 'signMessage']]);
+            }
+            // The core's verdict: for the choice, just before the signer, and
+            // inside the device session, last.
+            expect(calls.filter((call) => call.method === 'approval.check')).toHaveLength(3);
+            await permissions.setSigningAutoApprove(SITE, false);
+          }
+        });
       });
     });
   });

@@ -120,10 +120,13 @@ function createVaultBackend(walletIndex, authorized = {}) {
   const wrapped = (label, err) =>
     err?.code === 'vault_locked' ? err : refusal(err) || new Error(`${label}: ${err.message}`, { cause: err });
   const options = signOptions(authorized);
-  // The caller's last check, for a signature no token answers: main's own
-  // (a Safe owner's), or a standing rule's, whose PageContext (custody)
-  // main read before this signer's own waits.
-  const lastCheck = authorized.confirmation ? null : authorized.beforeSign || null;
+  // The caller's last check, whenever the caller gives one: for a signature
+  // no token answers, main's own (a Safe owner's) or a standing rule's; and
+  // for a token the Agent's decision minted (design 0012), which the core
+  // spends under the PageContext main read as this signer was built. Either
+  // way main read custody before this signer's own waits, so it is read
+  // again here, last.
+  const lastCheck = authorized.beforeSign || null;
   return {
     getAddress: () => withVaultAccount(walletIndex, () => ownAddress()),
     // The expected address is resolved before signing: a lock right after
@@ -226,14 +229,19 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * vault signature is judged by the core against the site's rule; a device
  * signs it as today (the core's `approval.check` advised the choice).
  *
- * `beforeSign`, the caller's last check (a page's standing rule read again,
- * with custody), is for a signature no token answers: a device's, which the
- * core never judges, and a vault's under `{ standing }` (whose PageContext
- * main read before the signer's own waits) or main's own (a Safe owner's).
- * It is awaited after every other wait of the signer's (the address, the
- * core's hash, a token's spend), right before the device is asked or the
- * core signs, and throws to refuse: nothing is signed, and the caller hears
- * its own error.
+ * `beforeSign`, the caller's last check, is awaited whenever the caller
+ * gives one: a page's standing rule read again, with custody, for a
+ * signature no token answers (a device's, which the core never judges, and
+ * a vault's under `{ standing }`, whose PageContext main read before the
+ * signer's own waits) or main's own (a Safe owner's); and the Agent's
+ * decision read again (design 0012: its tab, its document, its name) for
+ * the token it minted, on any account, whose PageContext main read as the
+ * signer was built. It is awaited after every other wait of the signer's
+ * (the address, the core's hash, a token's spend), right before the device
+ * is asked or the core signs, and throws to refuse: nothing is signed, and
+ * the caller hears its own error. A Ledger's backend awaits it inside its
+ * device session, after the device queue, the transport's open and the
+ * address check, right before each signing APDU (`ledger/signer.js`).
  *
  * @param {number} walletIndex
  * A Safe's owner or executor carries the Safe approval (`safe`: `{ id,
@@ -278,12 +286,18 @@ function getSigner(walletIndex, authorized = {}) {
   }
   let backend;
   let vaultSigned = false;
+  // A Ledger's backend runs the caller's last check itself, in its device
+  // session (after the queue, the transport and the address check), right
+  // before each signing APDU (`ledger/signer.js`).
+  let backendChecks = false;
   if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record, {
       // What the device said about a record no device has matched yet
       // (#1065): kept on the record.
       onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
+      ...(authorized?.beforeSign ? { beforeSign: authorized.beforeSign } : {}),
     });
+    backendChecks = true;
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record, {
       // What the phone's answer showed about the record (#1078): kept on
@@ -299,8 +313,11 @@ function getSigner(walletIndex, authorized = {}) {
   const confirmation = vaultSigned ? null : authorized?.confirmation || null;
   // The caller's last check (`beforeSign`), after the token's spend: a
   // device's signature is never judged by the core, so it is awaited right
-  // before the device is asked, after every other wait of the signer's.
-  const beforeSign = vaultSigned ? null : authorized?.beforeSign || null;
+  // before the device is asked, after every other wait of the signer's,
+  // whether a token answers it or not. A phone's backend asks the phone in
+  // the same run as it is called; a Ledger's waits on its device session
+  // first, so its backend runs the check there, right before the APDU.
+  const beforeSign = vaultSigned || backendChecks ? null : authorized?.beforeSign || null;
   const spendAndCheck = async () => {
     if (confirmation) await spendConfirmation(confirmation);
     if (beforeSign) await beforeSign();

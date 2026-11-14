@@ -88,6 +88,18 @@
  * holds. The dispatcher spends it itself (`context.spend`), after checking
  * the document again: a token for a document that has gone is refused and
  * burnt. An approval mints one token.
+ *
+ * A request the Agent answers, in a tab it holds (design 0012, "A page
+ * request the Agent answers"), is a page request too: the Agent's decision,
+ * made within the record's wallet operation (`walletOperation`), mints the
+ * request's page-kind token through the same issuer (`context.agentToken`),
+ * under `page` with the record's PageContext (`agent: true`) and a handle
+ * main draws for that decision, and its signature presents it under `page`
+ * with the PageContext read again then. Whether that decision still holds
+ * (`agentToken.holds`: the request, its document and key, and the Agent's
+ * custody, read now) is the signer's last check, after its own waits, and a
+ * send's again before its signed bytes are recorded. One decision mints one
+ * token.
  */
 
 const crypto = require('crypto');
@@ -161,6 +173,15 @@ const MAX_PASSWORD_LENGTH = 1024;
 
 // A handle: 32 random bytes, made by main.
 const HANDLE_BYTES = 32;
+
+// The page kinds the Agent's decision mints (design 0012, "A page request
+// the Agent answers"): it answers a page's sends, messages and typed data
+// for the accounts it signs with, and no Safe's (`agent-wallet-controller.js`).
+const AGENT_KINDS = new Set([
+  signingConfirmation.KINDS.DAPP_SEND,
+  signingConfirmation.KINDS.SIGN_MESSAGE,
+  signingConfirmation.KINDS.SIGN_TYPED_DATA,
+]);
 
 // The reasons a handle closes (design 0011, "The prompt protocol").
 const CLOSED = Object.freeze({
@@ -451,6 +472,13 @@ function createPageRequests({
       // document (APS-2).
       approvedFrom: null,
       tokenHandle: null,
+      // Whether its wallet operation (the Agent's own approval) is running
+      // now, and whether the Agent's decision has minted its one token
+      // (`agentMint`), and that token's handle, which stays the decision's
+      // after the token is spent (`agentHolds`).
+      operating: false,
+      agentMinted: false,
+      agentHandle: null,
     };
     record.reply = new Promise((resolve) => {
       record.resolve = resolve;
@@ -668,6 +696,15 @@ function createPageRequests({
         Boolean(record.handle) && handles.get(record.handle) === record && prompts.update(record.handle, view),
       confirm: (kind, accountIndex, payload, options) => confirm(record, kind, accountIndex, payload, options),
       spend: (confirmation) => spend(record, confirmation),
+      // The Agent's decision on this request, in a tab it holds (design
+      // 0012): its page-kind token, minted and presented under `page`, and
+      // whether the decision still holds at the signer's last step.
+      agentToken: Object.freeze({
+        mint: (kind, accountIndex, payload, options) => agentMint(record, kind, accountIndex, payload, options),
+        present: (confirmation) => agentPresent(record, confirmation),
+        holds: (confirmation) => agentHolds(record, confirmation),
+        discard: (confirmation) => signingConfirmation.discardConfirmation(confirmation?.token),
+      }),
       // The requesting document's PageContext, under which a page's request
       // goes to the identity core (design 0012), never as main's own.
       pageContext: () => pageContextOf(record),
@@ -1045,6 +1082,107 @@ function createPageRequests({
     return confirmation;
   }
 
+  /**
+   * Main's issuer for the Agent's decision (design 0012, "A page request the
+   * Agent answers"): a request in a tab the agent holds is a page request,
+   * and the Agent's approval of it mints the request's normal page-kind
+   * token (a dApp send, a message or typed data), by the identity core under
+   * `page` with the record's PageContext, `agent: true`, and a handle main
+   * draws for that decision, which never leaves main. Only while the
+   * record's wallet operation runs (`walletOperation`: the agent route,
+   * which asks the Agent), for a live document that holds its key and a tab
+   * the agent still holds, and once per record. The Agent never confirms a
+   * fee again nor ticks "Always allow": the token carries neither. Rejects
+   * (`SIGNING_NOT_CONFIRMED`) with nothing minted otherwise.
+   *
+   * @param {object} [options] `chainId`: the page's chain, for typed data;
+   *   `phone`: a phone account's send, whose fee the phone picks
+   * @returns {Promise<object>} the confirmation, with the core's `hash` for
+   *   typed data
+   */
+  async function agentMint(record, kind, accountIndex, payload, options = {}) {
+    if (!AGENT_KINDS.has(kind)) throw new Error(`Not a kind the Agent answers: ${kind}`);
+    if (
+      record.answered ||
+      !record.operating ||
+      walletOperations.get(record.key) !== record ||
+      !documents.isCurrent(record.requester) ||
+      !record.requester.key ||
+      !documents.holdsKey(record.requester)
+    ) {
+      throw notConfirmed('no live request the Agent answers');
+    }
+    if (record.agentMinted || record.approved || record.tokenHandle) {
+      throw notConfirmed('this request has been decided');
+    }
+    const context = pageContextOf(record);
+    if (context.agent !== true) throw notConfirmed('the Agent no longer holds this tab');
+    record.agentMinted = true;
+    const handle = randomHex(HANDLE_BYTES);
+    const confirmation = await signingConfirmation.issuePageConfirmation(
+      kind,
+      accountIndex,
+      payload,
+      { handle, context },
+      { chainId: options.chainId, phone: options.phone === true }
+    );
+    record.tokenHandle = handle;
+    record.agentHandle = handle;
+    trace({ kind: 'token-minted', id: record.id, token: kind, by: 'agent' });
+    return confirmation;
+  }
+
+  /**
+   * The Agent's token, for the signature it is about to present it to, in
+   * the same run (`spend`'s checks: the record unanswered, its document
+   * current and holding its key, the token this decision's), and under the
+   * PageContext read again now, which must still say the agent holds the
+   * tab. Burnt otherwise. Returns what the signer presents (`signers.js`):
+   * `{ confirmation }`.
+   */
+  function agentPresent(record, confirmation) {
+    const spent = spend(record, confirmation);
+    const page = pageContextOf(record);
+    if (page.agent !== true) {
+      signingConfirmation.discardConfirmation(spent.token);
+      throw notConfirmed('the Agent no longer holds this tab');
+    }
+    return { confirmation: { ...spent, page } };
+  }
+
+  /**
+   * Whether the Agent's decision still holds, read now (design 0012, "A page
+   * request the Agent answers"): the record unanswered within its wallet
+   * operation, its document current and holding its key, the token this
+   * decision's, and the PageContext read again still saying the agent holds
+   * the tab. The core spends the token under the PageContext main read when
+   * it was presented, and a signer can wait long after that (the address,
+   * the core's hash, a device's spend, the transaction service's fee and
+   * nonce), so this is the signer's last check (`beforeSign`, `signers.js`),
+   * right before the core or the device is asked, and a send's again before
+   * its signed bytes are recorded or sent. Throws (`SIGNING_NOT_CONFIRMED`)
+   * otherwise, and burns the token if it is still unspent.
+   */
+  function agentHolds(record, confirmation) {
+    const refuse = (reason) => {
+      signingConfirmation.discardConfirmation(confirmation?.token);
+      throw notConfirmed(reason);
+    };
+    if (
+      record.answered ||
+      !record.operating ||
+      walletOperations.get(record.key) !== record ||
+      !documents.isCurrent(record.requester) ||
+      !documents.holdsKey(record.requester)
+    ) {
+      refuse('the document that asked has gone');
+    }
+    if (!confirmation || record.agentHandle === null || confirmation.handle !== record.agentHandle) {
+      refuse('not the confirmation of this request');
+    }
+    if (pageContextOf(record).agent !== true) refuse('the Agent no longer holds this tab');
+  }
+
   // Whether a name-revalidated method may use its document's key now
   // (design 0011, "Which methods check the name"): the document current,
   // with a key, and for a DNS name over IPNS the name resolved again to the
@@ -1110,10 +1248,12 @@ function createPageRequests({
       return { error: { ...PROMPT_PENDING } };
     }
     walletOperations.set(record.key, record);
+    record.operating = true;
     try {
       const value = await run({ signal: abortSignalOf(record), open: () => !record.answered });
       return { done: value };
     } finally {
+      record.operating = false;
       if (walletOperations.get(record.key) === record) walletOperations.delete(record.key);
     }
   }

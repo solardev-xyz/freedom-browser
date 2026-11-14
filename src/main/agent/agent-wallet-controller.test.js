@@ -122,6 +122,110 @@ function attested(requestApproval) {
 }
 const CONNECT = { method: 'eth_requestAccounts', params: [], chainId: 100 };
 
+/**
+ * Main's issuer for the Agent's decision (`page-requests.js` `agentToken`,
+ * freedom-core design 0012): `mint` the request's page-kind token, `present`
+ * it to the signature (main's checks, the live PageContext), `holds` reads
+ * the decision again (the request, its document, the agent's custody),
+ * `discard` it after. Each call is recorded in `calls`, in order;
+ * `onPresent` and `onHolds` run as main's checks would, and may throw to
+ * refuse.
+ */
+function fakePageToken({ onPresent = null, onHolds = null } = {}) {
+  const calls = [];
+  let minted = 0;
+  return {
+    calls,
+    mint: jest.fn(async (kind, walletIndex, payload, options) => {
+      minted += 1;
+      calls.push(['mint', kind, walletIndex]);
+      return {
+        token: `token-${minted}`,
+        kind,
+        account: walletIndex,
+        handle: 'a'.repeat(64),
+        ...(kind === 'sign-typed-data' ? { hash: '0xboundhash' } : {}),
+        options,
+      };
+    }),
+    present: jest.fn((confirmation) => {
+      calls.push(['present', confirmation.token]);
+      onPresent?.(confirmation);
+      return { confirmation: { ...confirmation, page: { origin: 'https://app.example', agent: true } } };
+    }),
+    holds: jest.fn((confirmation) => {
+      calls.push(['holds', confirmation.token]);
+      onHolds?.(confirmation);
+    }),
+    discard: jest.fn((confirmation) => {
+      calls.push(['discard', confirmation?.token]);
+    }),
+  };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * A signer as `signers.js` runs one for the Agent's token (Codex on #1246):
+ * its own wait (the address, the core's hash, a device's spend), which a
+ * test holds (`reached` once it waits, `release` to go on), then the
+ * caller's last check (`beforeSign`), then the core or the device, recorded
+ * in `asked`.
+ */
+function heldSigner() {
+  const reached = deferred();
+  const released = deferred();
+  const asked = [];
+  const step = (method, result) => async function signed(...args) {
+    reached.resolve();
+    await released.promise;
+    await this.authorized.beforeSign();
+    asked.push([method, ...args]);
+    return result;
+  };
+  return {
+    reached: reached.promise,
+    release: released.resolve,
+    asked,
+    getSigner: (index, authorized) => ({
+      authorized,
+      signMessage: step('signMessage', '0xsignature'),
+      signTypedData: step('signTypedData', '0xtyped'),
+      signTransaction: step('signTransaction', '0xsigned'),
+    }),
+  };
+}
+
+// The issuer's decision, which a test ends: `holds` then refuses.
+function custodyToken() {
+  const decision = { custody: true };
+  const pageToken = fakePageToken({
+    onHolds: () => {
+      if (!decision.custody) throw new Error('Signing was not confirmed: the Agent no longer holds this tab');
+    },
+  });
+  return { decision, pageToken };
+}
+
+// A page's request main attested, with its issuer for the Agent's decision.
+function attestedPage(requestApproval = jest.fn(async () => 'approved'), extra = {}) {
+  return {
+    ...context(requestApproval),
+    attested: { key: 'https://app.example', transportKey: 'https://app.example' },
+    beforeEffect: jest.fn(async () => true),
+    effectAllowed: jest.fn(() => true),
+    pageToken: fakePageToken(),
+    pageContext: () => SITE_PAGE,
+    ...extra,
+  };
+}
+
 describe('AgentWalletController', () => {
   describe('direct transfers', () => {
     test('holds one resolved ERC-20 transfer for approval and broadcasts that exact intent', async () => {
@@ -359,6 +463,7 @@ describe('AgentWalletController', () => {
       attested: { key: 'example.com', transportKey: IPNS },
       beforeEffect: gate.beforeEffect || jest.fn(async () => true),
       effectAllowed: gate.effectAllowed || jest.fn(() => true),
+      pageToken: gate.pageToken || fakePageToken(),
       // The document's PageContext, under which the identity core writes the
       // grant (freedom-core design 0012, APB-2).
       pageContext: () => PAGE,
@@ -571,13 +676,24 @@ describe('AgentWalletController', () => {
       async (method) => {
         const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
         const { state, gate } = racingGate();
+        // After the mint's wait, main's last check is the token's
+        // presentation: the signature runs in its run.
+        const presented = { held: false };
+        gate.pageToken = fakePageToken({
+          onPresent: () => {
+            presented.held = true;
+            queueMicrotask(() => {
+              presented.held = false;
+            });
+          },
+        });
         const atEffect = [];
         harness.signer.signMessage.mockImplementation(async () => {
-          atEffect.push(['signature', state.held]);
+          atEffect.push(['signature', presented.held]);
           return '0xsignature';
         });
         harness.signer.signTypedData.mockImplementation(async () => {
-          atEffect.push(['signature', state.held]);
+          atEffect.push(['signature', presented.held]);
           return '0xtyped';
         });
         harness.dependencies.updateLastUsed.mockImplementation(() => atEffect.push(['lastUsed', state.held]));
@@ -591,6 +707,9 @@ describe('AgentWalletController', () => {
           ['signature', true],
           ['lastUsed', true],
         ]);
+        // The mint itself ran past main's gate, in its run, and the gate
+        // ran again after it: the decision read again, then presented.
+        expect(gate.pageToken.calls.map(([step]) => step)).toEqual(['mint', 'holds', 'present', 'discard']);
       }
     );
 
@@ -615,15 +734,127 @@ describe('AgentWalletController', () => {
         expect(provider.receipt.wallet.origin).toBe('example.com');
         expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
         expect(harness.signer[signerMethod]).toHaveBeenCalledTimes(1);
-        // Both before the signature, and again before the grant's last use.
-        expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
-        expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
+        // Before the mint, after it, and again before the grant's last use
+        // (this signer has no last step of its own).
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(3);
+        expect(gate.effectAllowed).toHaveBeenCalledTimes(3);
         expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100, PAGE);
+      });
+
+      // Design 0012 (APB-1d): the Agent's decision mints the page's token
+      // through main's issuer, and the signer is handed that token, never
+      // none (main's own, `shell`).
+      test('the signer presents the page-kind token the Agent\'s decision minted, burnt after', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const pageToken = fakePageToken();
+        const approval = jest.fn(async () => {
+          expect(pageToken.mint).not.toHaveBeenCalled();
+          return 'approved';
+        });
+        const provider = await harness.controller.handleRequest(attestedContext({ pageToken }, approval), {
+          method,
+          params,
+          chainId: 100,
+        });
+        expect(provider).toMatchObject({ handled: true });
+        const kind = method === 'personal_sign' ? 'sign-message' : 'sign-typed-data';
+        expect(pageToken.mint).toHaveBeenCalledWith(
+          kind,
+          0,
+          method === 'personal_sign' ? params[0] : params[1],
+          method === 'personal_sign' ? {} : { chainId: 100 }
+        );
+        expect(pageToken.calls).toEqual([
+          ['mint', kind, 0],
+          ['holds', 'token-1'],
+          ['present', 'token-1'],
+          ['discard', 'token-1'],
+        ]);
+        expect(harness.dependencies.getSigner).toHaveBeenCalledTimes(1);
+        // With main's gate as the signer's last step (`beforeSign`).
+        expect(harness.dependencies.getSigner).toHaveBeenCalledWith(0, {
+          confirmation: expect.objectContaining({ token: 'token-1', kind, page: expect.objectContaining({ agent: true }) }),
+          beforeSign: expect.any(Function),
+        });
+        if (method === 'eth_signTypedData_v4') {
+          // The hash the core bound is the one the signature must have.
+          expect(harness.signer.signTypedData).toHaveBeenCalledWith(params[1], { expectedHash: '0xboundhash' });
+        }
+      });
+
+      // Codex on #1246: the mint waits on the core, and the signer on its
+      // own waits, long after main presented the token. Main's gate runs
+      // after the mint, and again as the signer's last step, right before
+      // the core or the device is asked.
+      test('the name moving while the token is minted: no signer asked, nothing signed, the token burnt', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        const pageToken = fakePageToken();
+        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect, pageToken }), {
+          method,
+          params,
+          chainId: 100,
+        });
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(pageToken.calls).toEqual([
+          ['mint', expect.any(String), 0],
+          ['discard', 'token-1'],
+        ]);
+        expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
+        expect(harness.signer[signerMethod]).not.toHaveBeenCalled();
+      });
+
+      test.each([
+        ['the name moves', (gate) => gate.beforeEffect.mockResolvedValueOnce(false), 'no longer open'],
+        ['the page leaves its key', (gate) => gate.effectAllowed.mockReturnValueOnce(false), 'no longer open'],
+        ['the agent leaves the tab', (_gate, decision) => (decision.custody = false), 'no longer holds this tab'],
+        ['nothing changes', () => {}, null],
+      ])("when %s during the signer's own wait: its last step is main's gate, and a refusal signs nothing", async (_label, change, refused) => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const { decision, pageToken } = custodyToken();
+        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true), pageToken };
+        const signer = heldSigner();
+        harness.dependencies.getSigner.mockImplementation(signer.getSigner);
+        const pending = harness.controller.handleRequest(attestedContext(gate), { method, params, chainId: 100 });
+        await signer.reached;
+        // Presented, and the signer waiting.
+        expect(pageToken.calls.map(([step]) => step)).toEqual(['mint', 'holds', 'present']);
+        change(gate, decision);
+        signer.release();
+        const provider = await pending;
+        if (refused) {
+          expect(provider).toMatchObject({ handled: true, error: { code: -32603, message: expect.stringContaining(refused) } });
+          expect(signer.asked).toEqual([]);
+          expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
+        } else {
+          expect(provider).toMatchObject({ handled: true });
+          expect(signer.asked).toEqual([[signerMethod, expect.anything(), ...(signerMethod === 'signTypedData' ? [expect.anything()] : [])]]);
+          expect(pageToken.calls.map(([step]) => step)).toEqual(['mint', 'holds', 'present', 'holds', 'discard']);
+        }
+        expect(pageToken.calls.at(-1)).toEqual(['discard', 'token-1']);
+      });
+
+      test('a token main refuses to present signs nothing, and is burnt', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const pageToken = fakePageToken({
+          onPresent: () => {
+            throw new Error('Signing was not confirmed: the Agent no longer holds this tab');
+          },
+        });
+        const provider = await harness.controller.handleRequest(attestedContext({ pageToken }), { method, params, chainId: 100 });
+        expect(provider).toMatchObject({
+          handled: true,
+          error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' },
+        });
+        expect(harness.signer[signerMethod]).not.toHaveBeenCalled();
+        expect(pageToken.calls.at(-1)).toEqual(['discard', 'token-1']);
+        expect(harness.dependencies.updateLastUsed).not.toHaveBeenCalled();
       });
 
       test("the name moving during the signature: signed, but the grant's last use untouched", async () => {
         const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        // Holds before the mint and after it; moved once signed.
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
         const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect }), { method, params, chainId: 100 });
         expect(provider).toMatchObject({ handled: true });
         expect(harness.signer[signerMethod]).toHaveBeenCalledTimes(1);
@@ -660,10 +891,118 @@ describe('AgentWalletController', () => {
         expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
         expect(harness.dependencies.signAndRecord).toHaveBeenCalledTimes(1);
         expect(harness.dependencies.signAndRecord.mock.calls[0][2]).toMatchObject({ origin: 'example.com' });
-        // Both before the send, and again before the grant's last use.
-        expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
-        expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
+        // Before the mint, after it, and again before the grant's last use
+        // (this service asks no signer and commits through no guard).
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(3);
+        expect(gate.effectAllowed).toHaveBeenCalledTimes(3);
         expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100, PAGE);
+      });
+
+      // Design 0012 (APB-1d): the Agent's approval mints the page's
+      // dapp-send token for this transaction through main's issuer, and the
+      // send's signer presents it, in the same run as main's last checks.
+      test.each([
+        ['a vault account', 'mnemonic', false],
+        ['a phone account', 'remote', true],
+      ])('%s: the send presents the dapp-send token the Agent\'s decision minted', async (_label, type, phone) => {
+        const harness = createHarness({
+          permission: { walletIndex: 0, chainId: 100 },
+          wallets: [{ index: 0, name: 'Main Wallet', address: '0x1111111111111111111111111111111111111111', type }],
+        });
+        const pageToken = fakePageToken();
+        const order = [];
+        harness.dependencies.getSigner.mockImplementation((index, authorized) => {
+          order.push(['signer', authorized?.confirmation?.token]);
+          return harness.signer;
+        });
+        harness.dependencies.signAndRecord.mockImplementation(async () => {
+          order.push(['send']);
+          return { hash: '0xtransaction' };
+        });
+        const provider = await harness.controller.handleRequest(attestedContext({ pageToken }), send);
+        expect(provider).toMatchObject({ handled: true, result: '0xtransaction' });
+        expect(pageToken.mint).toHaveBeenCalledWith(
+          'dapp-send',
+          0,
+          expect.objectContaining({
+            to: send.params[0].to,
+            value: '0x1',
+            gasLimit: '24000',
+            gasPrice: '1000000000',
+            chainId: 100,
+            origin: 'example.com',
+          }),
+          { phone }
+        );
+        expect(pageToken.calls).toEqual([
+          ['mint', 'dapp-send', 0],
+          ['holds', 'token-1'],
+          ['present', 'token-1'],
+          ['discard', 'token-1'],
+        ]);
+        expect(order).toEqual([['signer', 'token-1'], ['send']]);
+        expect(harness.dependencies.getSigner).toHaveBeenCalledWith(0, {
+          confirmation: expect.objectContaining({ token: 'token-1', kind: 'dapp-send', page: expect.objectContaining({ agent: true }) }),
+          beforeSign: expect.any(Function),
+        });
+      });
+
+      test.each([
+        ['the name moves', (gate) => gate.beforeEffect.mockResolvedValueOnce(false), 'no longer open'],
+        ['the page leaves its key', (gate) => gate.effectAllowed.mockReturnValueOnce(false), 'no longer open'],
+        ['the agent leaves the tab', (_gate, decision) => (decision.custody = false), 'no longer holds this tab'],
+        ['its grant moves to another account', (_gate, _decision, harness) => harness.dependencies.getPermission.mockReturnValue({ walletIndex: 7 }), 'no longer connected'],
+      ])("when %s during the transaction service's or the signer's wait: the signer's last step refuses, nothing signed or sent", async (_label, change, refused) => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const { decision, pageToken } = custodyToken();
+        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true), pageToken };
+        const signer = heldSigner();
+        harness.dependencies.getSigner.mockImplementation(signer.getSigner);
+        const committed = [];
+        harness.dependencies.signAndRecord.mockImplementation(async (tx, chosen, _record, options) => {
+          const raw = await chosen.signTransaction(tx);
+          await options.guardCommit(async () => committed.push(raw));
+          return { hash: '0xhash' };
+        });
+        const pending = harness.controller.handleRequest(attestedContext(gate), send);
+        await signer.reached;
+        change(gate, decision, harness);
+        signer.release();
+        const provider = await pending;
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603, message: expect.stringContaining(refused) } });
+        expect(signer.asked).toEqual([]);
+        expect(committed).toEqual([]);
+        expect(pageToken.calls.at(-1)).toEqual(['discard', 'token-1']);
+      });
+
+      test('the name moving while the token is minted: nothing presented, signed or sent, the token burnt', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        const pageToken = fakePageToken();
+        const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect, pageToken }), send);
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(pageToken.calls).toEqual([
+          ['mint', 'dapp-send', 0],
+          ['discard', 'token-1'],
+        ]);
+        expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
+        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+      });
+
+      test('the grant gone during the mint: nothing presented or sent, the token burnt', async () => {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const pageToken = fakePageToken();
+        const mint = pageToken.mint.getMockImplementation();
+        pageToken.mint.mockImplementation(async (...args) => {
+          const minted = await mint(...args);
+          harness.dependencies.getPermission.mockReturnValue(null);
+          return minted;
+        });
+        const provider = await harness.controller.handleRequest(attestedContext({ pageToken }), send);
+        expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+        expect(pageToken.present).not.toHaveBeenCalled();
+        expect(pageToken.calls.at(-1)).toEqual(['discard', 'token-1']);
+        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
       });
 
       // Codex on #1191: a signer can outlast a name move, the page's going or
@@ -678,24 +1017,37 @@ describe('AgentWalletController', () => {
           await options.guardCommit(async () => committed.push(tx));
           return { hash: '0xhash' };
         });
-        const gate = { beforeEffect: jest.fn(async () => true), effectAllowed: jest.fn(() => true) };
-        await expect(harness.controller.handleRequest(attestedContext(gate), send)).resolves.toMatchObject({
+        let custody = true;
+        const gate = {
+          beforeEffect: jest.fn(async () => true),
+          effectAllowed: jest.fn(() => true),
+        };
+        const pageToken = () =>
+          fakePageToken({
+            onHolds: () => {
+              if (!custody) throw new Error('Signing was not confirmed: the Agent no longer holds this tab');
+            },
+          });
+        await expect(harness.controller.handleRequest(attestedContext({ ...gate, pageToken: pageToken() }), send)).resolves.toMatchObject({
           handled: true,
           result: '0xhash',
         });
         expect(committed).toHaveLength(1);
-        // Before the send, after its signature, and before the last use.
-        expect(gate.beforeEffect).toHaveBeenCalledTimes(3);
-        expect(gate.effectAllowed).toHaveBeenCalledTimes(3);
+        // Before the mint, after it, after the signature, and before the
+        // last use.
+        expect(gate.beforeEffect).toHaveBeenCalledTimes(4);
+        expect(gate.effectAllowed).toHaveBeenCalledTimes(4);
         for (const [label, change] of [
           ['main answered, or the name moved', () => gate.beforeEffect.mockResolvedValueOnce(false)],
           ['the page left its key', () => gate.effectAllowed.mockReturnValueOnce(false)],
           ['the grant moved to another account', () => harness.dependencies.getPermission.mockReturnValue({ walletIndex: 7 })],
+          ['the agent left the tab', () => (custody = false)],
         ]) {
           committed.length = 0;
+          custody = true;
           harness.dependencies.getPermission.mockReturnValue({ walletIndex: 0, chainId: 100 });
           between = change;
-          const provider = await harness.controller.handleRequest(attestedContext(gate), send);
+          const provider = await harness.controller.handleRequest(attestedContext({ ...gate, pageToken: pageToken() }), send);
           expect({ label, provider }).toMatchObject({ label, provider: { handled: true, error: { code: -32603 } } });
           expect({ label, committed }).toEqual({ label, committed: [] });
         }
@@ -718,7 +1070,8 @@ describe('AgentWalletController', () => {
 
       test("the name moving during the send: sent, but the grant's last use untouched", async () => {
         const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+        // Holds before the mint and after it; moved once sent.
+        const beforeEffect = jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
         const provider = await harness.controller.handleRequest(attestedContext({ beforeEffect }), send);
         expect(provider).toMatchObject({ handled: true, result: expect.stringMatching(/^0x/) });
         expect(harness.dependencies.signAndRecord).toHaveBeenCalledTimes(1);
@@ -753,7 +1106,7 @@ describe('AgentWalletController', () => {
   test('rejects transaction data that cannot be displayed in full', async () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     const approval = jest.fn();
-    const result = await harness.controller.handleRequest(context(approval), request('eth_sendTransaction', [{
+    const result = await harness.controller.handleRequest(attestedPage(approval), request('eth_sendTransaction', [{
       to: '0x3333333333333333333333333333333333333333', data: '0x' + 'ab'.repeat(35000),
     }]));
     expect(result.errorCode).toBe('INVALID_ARGUMENT');
@@ -781,7 +1134,7 @@ describe('AgentWalletController', () => {
     };
 
     const provider = await harness.controller.handleRequest(
-      context(approval),
+      attestedPage(approval),
       request('eth_sendTransaction', [txParams])
     );
 
@@ -813,7 +1166,8 @@ describe('AgentWalletController', () => {
         chainId: 100,
       }),
       expect.any(Object),
-      { kind: 'dapp-send', origin: 'https://app.example' }
+      { kind: 'dapp-send', origin: 'https://app.example' },
+      { guardCommit: expect.any(Function) }
     );
   });
 
@@ -821,7 +1175,7 @@ describe('AgentWalletController', () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     harness.dependencies.getGasPrices.mockResolvedValue(gasPrices);
     const approval = jest.fn(async () => 'approved');
-    const result = await harness.controller.handleRequest(context(approval), request('eth_sendTransaction', [{
+    const result = await harness.controller.handleRequest(attestedPage(approval), request('eth_sendTransaction', [{
       from: '0x1111111111111111111111111111111111111111',
       to: '0x3333333333333333333333333333333333333333', value: '0x1', data: '0xabcdef12',
     }]));
@@ -837,7 +1191,7 @@ describe('AgentWalletController', () => {
     const params = method === 'eth_sendTransaction'
       ? [{ from: address, to: address, value: '0x0', chainId: '0x1' }]
       : [address, JSON.stringify({ domain: { chainId: 1 }, types: {}, message: {} })];
-    const result = await harness.controller.handleRequest(context(approve), request(method, params));
+    const result = await harness.controller.handleRequest(attestedPage(approve), request(method, params));
     expect(result).toMatchObject({ handled: true, errorCode: ERROR_CODES.POLICY_DENIED });
     expect(approve).not.toHaveBeenCalled();
     expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
@@ -855,7 +1209,7 @@ describe('AgentWalletController', () => {
       input.chainId = 1;
       return 'approved';
     });
-    await expect(harness.controller.handleRequest(context(approve), input)).resolves.toMatchObject({ result: '0xtransaction' });
+    await expect(harness.controller.handleRequest(attestedPage(approve), input)).resolves.toMatchObject({ result: '0xtransaction' });
     expect(harness.dependencies.signAndRecord.mock.calls[0][0].chainId).toBe(100);
   });
 
@@ -864,7 +1218,7 @@ describe('AgentWalletController', () => {
     const approval = jest.fn(async () => 'approved');
 
     const provider = await harness.controller.handleRequest(
-      context(approval),
+      attestedPage(approval),
       request('personal_sign', ['Hello Freedom', '0x1111111111111111111111111111111111111111'])
     );
 
@@ -899,7 +1253,7 @@ describe('AgentWalletController', () => {
     };
 
     const provider = await harness.controller.handleRequest(
-      context(approval),
+      attestedPage(approval),
       request('eth_signTypedData_v4', [
         '0x1111111111111111111111111111111111111111',
         JSON.stringify(typedData),
@@ -915,7 +1269,7 @@ describe('AgentWalletController', () => {
         }),
       })
     );
-    expect(harness.signer.signTypedData).toHaveBeenCalledWith(JSON.stringify(typedData));
+    expect(harness.signer.signTypedData).toHaveBeenCalledWith(JSON.stringify(typedData), { expectedHash: '0xboundhash' });
     expect(provider.receipt).toMatchObject({
       wallet: { action: 'signed', signatureType: 'eth_signTypedData_v4' },
     });
@@ -924,7 +1278,7 @@ describe('AgentWalletController', () => {
   test('rejects a signature claiming a different connected account', async () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     const provider = await harness.controller.handleRequest(
-      context(),
+      attestedPage(),
       request('personal_sign', [
         'Hello Freedom',
         '0x2222222222222222222222222222222222222222',
@@ -937,6 +1291,41 @@ describe('AgentWalletController', () => {
     });
     expect(provider.errorCode).toBe(ERROR_CODES.POLICY_DENIED);
   });
+
+  // Design 0012 (APB-1d): a page's signature or send goes under its page,
+  // with the token the Agent's decision mints through main's issuer. One
+  // main didn't attest, or gave no issuer for, has no page to sign under:
+  // refused before the Agent is asked, and nothing signs as main's own.
+  test.each(['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction'])(
+    'a %s main did not attest, or gave no issuer for, is refused before approval or signer',
+    async (method) => {
+      const params = {
+        personal_sign: ['Hello Freedom', '0x1111111111111111111111111111111111111111'],
+        eth_signTypedData_v4: [
+          '0x1111111111111111111111111111111111111111',
+          { domain: { chainId: 100 }, types: { Mail: [{ name: 'a', type: 'uint256' }] }, primaryType: 'Mail', message: { a: 1 } },
+        ],
+        eth_sendTransaction: [{ to: '0x3333333333333333333333333333333333333333', value: '0x1' }],
+      }[method];
+      for (const unattested of [
+        context(jest.fn(async () => 'approved')),
+        attestedPage(jest.fn(async () => 'approved'), { pageToken: undefined }),
+        attestedPage(jest.fn(async () => 'approved'), { pageToken: { mint: async () => ({}) } }),
+        // An issuer that can't read the decision again at the signer's last
+        // step (Codex on #1246).
+        attestedPage(jest.fn(async () => 'approved'), {
+          pageToken: { mint: async () => ({}), present: () => ({}), discard: () => {} },
+        }),
+      ]) {
+        const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
+        const result = await harness.controller.handleRequest(unattested, request(method, params));
+        expect(result).toMatchObject({ handled: true, errorCode: ERROR_CODES.POLICY_DENIED });
+        expect(unattested.requestApproval).not.toHaveBeenCalled();
+        expect(harness.dependencies.getSigner).not.toHaveBeenCalled();
+        expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+      }
+    }
+  );
 
   test('does not intercept an unarmed page or a mismatched page identity', async () => {
     const harness = createHarness();
