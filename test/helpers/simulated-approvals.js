@@ -39,6 +39,14 @@
  *   - a flagged `dapp-send`'s signature writes the limited contract rule for
  *     the page's key when its grant exposes the account, replacing today's
  *     rule for the same call, and replies `{ added: true }` (or why not);
+ *   - a flagged `dapp-send` spent under `page` (a device's: cored 0.16.0,
+ *     "A device send's rule") writes nothing and replies `{ bound, receipt }`;
+ *     `approval.remember { receipt }`, under the page the token was spent
+ *     under (origin, frame, navigation), takes it once, whatever the
+ *     outcome (`unknown_token`, `expired` after ten minutes, `mismatch`),
+ *     and writes that rule as the signature would, `{ rule }`; at most 64
+ *     are open, the oldest dropped, and a dApp revoke for the key, or
+ *     `approval.forget_account`, drops the key's or the account's;
  *   - APR-4 (cored 0.16.0): a page's signature needs its authorization (a
  *     page-kind token, `{ standing }` or `{ safe }`), and a Safe's (typed
  *     data declaring `SafeTx` or `SafeMessage`, or a call to
@@ -250,6 +258,9 @@ function facts(kind, payload) {
 }
 
 const TOKEN_LIFE_MS = 120000;
+// A finalize receipt's life and count (cored 0.16.0, "A device send's rule").
+const RECEIPT_LIFE_MS = 600000;
+const MAX_RECEIPTS = 64;
 
 function simulatedApprovals() {
   const calls = [];
@@ -285,6 +296,28 @@ function simulatedApprovals() {
   // The page of the last token `take` spent, when it was a flagged dApp
   // send's.
   let remembered = null;
+  // Finalize receipts: id -> { document, account, rule, expiresAt }.
+  const receipts = new Map();
+  const dropReceipts = (drop) => {
+    for (const [id, entry] of receipts) if (drop(entry)) receipts.delete(id);
+  };
+  // The rule `sign.transaction` would write for a send: to, selector, chain, value.
+  const proposedRule = (tx) => ({
+    to: typeof tx?.to === 'string' ? tx.to : null,
+    selector: typeof tx?.data === 'string' && /^0x[0-9a-fA-F]{8}/.test(tx.data) ? tx.data.slice(0, 10) : null,
+    chainId: tx?.chain_id === undefined || tx?.chain_id === null ? null : Number(tx.chain_id),
+    value: tx?.value ?? '0',
+  });
+  // The rule a flagged send asked for, written for `key` as the core writes
+  // it (`token-remember`), and its reply.
+  function writeRule(key, account, rule) {
+    if (!dapp.exposes(key, account)) return { added: false, reason: 'not_exposed' };
+    if (!rule.to || !rule.selector || !Number.isSafeInteger(rule.chainId) || rule.chainId < 1) {
+      return { added: false, reason: 'no_rule' };
+    }
+    dapp.allowTransaction(key, rule.to, rule.selector, rule.chainId, rule.value);
+    return { added: true };
+  }
 
   // Spends `token` for a request: burnt whatever the outcome.
   function take(token, minter, fits) {
@@ -343,7 +376,22 @@ function simulatedApprovals() {
       const page = pageOf(context, handle);
       // Spent only by the caller kind that minted it: the chrome, which
       // mints none, spends none.
-      take(token, callerOf(context), (entry) => (entry.kind === kind ? { account, payload, page } : null));
+      const spent = take(token, callerOf(context), (entry) => (entry.kind === kind ? { account, payload, page } : null));
+      remembered = null;
+      // A flagged dApp send spent here, under its page, is a device's: a
+      // receipt, no rule.
+      const holder = holderOf(context);
+      if (holder && kind === 'dapp-send' && spent.remember === true) {
+        while (receipts.size >= MAX_RECEIPTS) receipts.delete(receipts.keys().next().value);
+        const receipt = crypto.randomBytes(16).toString('hex');
+        receipts.set(receipt, {
+          document: holder,
+          account,
+          rule: proposedRule(payload?.tx),
+          expiresAt: now() + RECEIPT_LIFE_MS,
+        });
+        return { bound: true, receipt };
+      }
       if (kind === 'safe-send' || kind === 'safe-message') {
         const safe = crypto.randomBytes(16).toString('hex');
         const holder = holderOf(context);
@@ -355,6 +403,22 @@ function simulatedApprovals() {
         return { bound: true, safe };
       }
       return { bound: true };
+    },
+    // A device send's "Always allow" (cored 0.16.0): its receipt, presented
+    // once by the document it was given to.
+    async remember(params, context = null) {
+      calls.push({ method: 'approval.remember', params, page: context });
+      if (callerOf(context) !== 'page') throw coded('approval.remember: page only', 'forbidden');
+      const receipt = params?.receipt;
+      const entry = typeof receipt === 'string' ? receipts.get(receipt) : undefined;
+      if (typeof receipt === 'string') receipts.delete(receipt);
+      if (typeof receipt !== 'string' || Object.keys(params).length !== 1) {
+        throw coded('receipt: required', 'invalid_argument');
+      }
+      if (!entry) throw refused('unknown_token');
+      if (entry.expiresAt <= now()) throw refused('expired');
+      if (stable(holderOf(context)) !== stable(entry.document)) throw refused('mismatch');
+      return { rule: writeRule(entry.document.origin, entry.account, entry.rule) };
     },
     async discard(token) {
       calls.push({ method: 'approval.discard', params: { token }, page: null });
@@ -408,6 +472,8 @@ function simulatedApprovals() {
         throw coded('a page revokes only its own grant', 'forbidden');
       }
       let revoked;
+      // Every dApp revoke for the key drops its receipts (a narrowing wins).
+      dropReceipts((entry) => entry.document.origin === key);
       if (what === 'grant') revoked = dapp.entries.delete(key);
       else if (what === 'signing') revoked = dapp.signingOff(key);
       else if (what?.transaction) {
@@ -431,6 +497,7 @@ function simulatedApprovals() {
       calls.push({ method: 'approval.forget_account', params: { wallet_index: walletIndex }, page: null });
       const keys = [...dapp.entries.keys()].filter((key) => dapp.exposes(key, walletIndex));
       for (const key of keys) dapp.entries.delete(key);
+      dropReceipts((entry) => entry.account === walletIndex || keys.includes(entry.document.origin));
       return { keys };
     },
     async grants(params) {
@@ -508,11 +575,7 @@ function simulatedApprovals() {
       const flagged = remembered;
       remembered = null;
       if (!flagged) return null;
-      const { tx } = request;
-      if (!dapp.exposes(flagged.origin, account)) return { added: false, reason: 'not_exposed' };
-      if (typeof tx?.to !== 'string' || !/^0x[0-9a-fA-F]{8}/.test(tx.data || '')) return { added: false, reason: 'no_rule' };
-      dapp.allowTransaction(flagged.origin, tx.to, tx.data.slice(0, 10), Number(tx.chain_id), tx.value);
-      return { added: true };
+      return writeRule(flagged.origin, account, proposedRule(request.tx));
     } else if (method === 'sign.message') {
       take(token, minter, (entry) =>
         entry.kind === 'sign-message' && underPage ? { account, payload: { message: request.message }, page: bound } : null
@@ -532,6 +595,7 @@ function simulatedApprovals() {
     authorize,
     calls,
     outstanding: () => tokens.size,
+    openReceipts: () => receipts.size,
     setNow(fn) {
       now = fn;
     },
@@ -567,6 +631,7 @@ function simulatedApprovals() {
       wallNow = () => Date.now();
       standing = storeRule;
       remembered = null;
+      receipts.clear();
       dapp.entries.clear();
     },
   };

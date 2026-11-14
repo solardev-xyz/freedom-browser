@@ -95,4 +95,33 @@ describe('the simulated core tells a page from the chrome and from main', () => 
       await expect(approvals.approval.touch({ store: 'dapp' }, caller)).rejects.toMatchObject({ code: 'forbidden' });
     }
   });
+
+  // A device send's finalize receipt (cored 0.16.0, "A device send's rule"):
+  // given only to a page's flagged dApp send, presented only by that page.
+  test("a receipt: given to a page's flagged spend alone, presented by that page alone; the chrome and main are refused and leave it", async () => {
+    const payload = {
+      tx: { to: '0x' + '11'.repeat(20), value: '0', data: '0x095ea7b3' + '00'.repeat(4), chain_id: '100' },
+      remember: true,
+    };
+    const handle = 'c'.repeat(64);
+    const flagged = async () => {
+      const { token } = await approvals.approval.issue({ kind: 'dapp-send', account: 3, payload, handle }, PAGE);
+      return approvals.approval.spend({ token, kind: 'dapp-send', account: 3, payload, handle }, PAGE);
+    };
+    const { receipt } = await flagged();
+    expect(receipt).toMatch(/^[0-9a-f]{32}$/);
+    for (const caller of ['chrome', null]) {
+      await expect(approvals.approval.remember({ receipt }, caller)).rejects.toMatchObject({ code: 'forbidden' });
+    }
+    expect(approvals.openReceipts()).toBe(1);
+    approvals.dapp.connect(PAGE.origin, 3, 100);
+    await expect(approvals.approval.remember({ receipt }, PAGE)).resolves.toEqual({ rule: { added: true } });
+    await expect(approvals.approval.remember({ receipt }, PAGE)).rejects.toMatchObject({ code: 'not_authorized', data: { reason: 'unknown_token' } });
+    // Another document of the page's origin takes it, writing nothing.
+    const other = (await flagged()).receipt;
+    await expect(approvals.approval.remember({ receipt: other }, { ...PAGE, navigation: 3 })).rejects.toMatchObject({
+      data: { reason: 'mismatch' },
+    });
+    expect(approvals.openReceipts()).toBe(0);
+  });
 });

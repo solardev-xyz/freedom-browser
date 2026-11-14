@@ -435,9 +435,23 @@ const vaultBackend = {
     issue(params, page = null) {
       return call('approval.issue', params, page);
     },
-    /** `{ token, kind, account?, payload, handle? }` → `{ bound, safe? }` */
+    /**
+     * `{ token, kind, account?, payload, handle? }` → `{ bound, safe?, receipt? }`.
+     * `receipt`: a flagged `dapp-send` spent under `page` for a device (cored
+     * 0.16.0, design 0012 "A device send's rule"), which `remember` presents.
+     */
     spend(params, page = null) {
       return call('approval.spend', params, page);
+    },
+    /**
+     * A device send's "Always allow" (cored 0.16.0, design 0012 "A device
+     * send's rule"): `spend`'s receipt, presented once, always under `page`
+     * with the PageContext the token was spent under, after the device
+     * signed and main recorded the send. `{ receipt }` → `{ rule: { added,
+     * reason?, durable? } }`. The receipt is a bearer secret: never logged.
+     */
+    remember(params, page) {
+      return call('approval.remember', params, page);
     },
     /** Burns a token whatever it was: `{}` for one spent or unknown too. */
     discard(token) {

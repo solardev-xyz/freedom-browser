@@ -44,6 +44,7 @@ const {
   signingAuthorization,
   safeAuthorization,
   spendConfirmation,
+  finalizeReceiptOf,
   confirmationError,
 } = require('./signing-confirmation');
 
@@ -252,11 +253,13 @@ function createVaultBackend(walletIndex, authorized = {}) {
  *
  * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
  *   chainId?: number, onRule?: (rule: object|null) => void,
+ *   onReceipt?: (held: {receipt: string, page: object}|null) => void,
  *   beforeSign?: () => Promise<void>, safe?: object}} [authorized]
  *   the confirmation (`signing-confirmation.js`), or a page's PageContext
  *   with, for a rule's answer, `standing` and the page's chain (typed
- *   data's view); `onRule` hears a vault send's `rule` reply; or a Safe
- *   approval
+ *   data's view); `onRule` hears a vault send's `rule` reply, and
+ *   `onReceipt` a device's spend's finalize receipt, with the PageContext
+ *   it was spent under (null when it gave none); or a Safe approval
  * @returns {Signer}
  */
 function getSigner(walletIndex, authorized = {}) {
@@ -318,8 +321,15 @@ function getSigner(walletIndex, authorized = {}) {
   // the same run as it is called; a Ledger's waits on its device session
   // first, so its backend runs the check there, right before the APDU.
   const beforeSign = vaultSigned || backendChecks ? null : authorized?.beforeSign || null;
+  // A flagged dApp send's spend for a device gives a finalize receipt
+  // instead of a rule (design 0012, "A device send's rule"): handed to the
+  // caller with the PageContext it was spent under, for it to present once
+  // the device signed and the send is recorded.
   const spendAndCheck = async () => {
-    if (confirmation) await spendConfirmation(confirmation);
+    if (confirmation) {
+      const spent = await spendConfirmation(confirmation);
+      if (typeof authorized?.onReceipt === 'function') authorized.onReceipt(finalizeReceiptOf(spent, confirmation.page));
+    }
     if (beforeSign) await beforeSign();
   };
 

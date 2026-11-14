@@ -919,8 +919,10 @@ function confirmationFor(token, kind, accountIndex, payload, options = {}) {
  * kind, this request and, for a page's, this document and prompt.
  *
  * @param {Confirmation} confirmation
- * @returns {Promise<{bound: boolean, safe?: string}>} `safe`: the Safe
- *   approval a Safe's send or message gives (design 0012)
+ * @returns {Promise<{bound: boolean, safe?: string, receipt?: string}>}
+ *   `safe`: the Safe approval a Safe's send or message gives (design 0012);
+ *   `receipt`: the finalize receipt a flagged dApp send gives a device
+ *   (`finalizeReceiptOf`)
  */
 async function spendConfirmation(confirmation) {
   const { token, kind, account, payload, handle, page } = confirmation || {};
@@ -949,6 +951,49 @@ function safeApprovalOf(spent, page) {
   return typeof spent?.safe === 'string' && SAFE_APPROVAL_ID.test(spent.safe)
     ? { id: spent.safe, page: page || null }
     : null;
+}
+
+// A finalize receipt, as the core sends it: 32 lowercase hex digits.
+const FINALIZE_RECEIPT = /^[0-9a-f]{32}$/;
+
+/**
+ * The finalize receipt in an `approval.spend` reply (cored 0.16.0, design
+ * 0012 "A device send's rule"): a `dapp-send` whose "Always allow" was
+ * ticked, spent under `page` for a device (a Ledger, a phone), writes no
+ * rule and gives one instead. `{ receipt, page }`, `page` being the
+ * PageContext the token was spent under, the only one that presents it
+ * (`rememberDeviceSend`); null if the core gave none. Held in memory only,
+ * never logged.
+ */
+function finalizeReceiptOf(spent, page) {
+  return page && typeof spent?.receipt === 'string' && FINALIZE_RECEIPT.test(spent.receipt)
+    ? { receipt: spent.receipt, page }
+    : null;
+}
+
+/**
+ * Present a device send's finalize receipt (`approval.remember`, design 0012
+ * "A device send's rule"), once the device signed and main recorded the
+ * send: under `page`, with the PageContext the token was spent under. The
+ * core writes the contract rule the token's "Always allow" asked for, as
+ * `sign.transaction` writes a vault send's, and takes the receipt whatever
+ * the outcome. Resolves the reply's `rule` (`{ added, reason?, durable? }`),
+ * or null when it carries none. Rejects (SIGNING_NOT_CONFIRMED, the core's
+ * `reason` kept: `unknown_token`, `expired`, `mismatch`) when the receipt
+ * writes nothing.
+ *
+ * @param {{receipt: string, page: object}} held
+ * @returns {Promise<{added: boolean, reason?: string, durable?: boolean}|null>}
+ */
+async function rememberDeviceSend(held) {
+  if (!held || typeof held.receipt !== 'string' || !held.page) throw notConfirmed('no receipt to present');
+  let reply;
+  try {
+    reply = await vault().approval.remember({ receipt: held.receipt }, held.page);
+  } catch (err) {
+    throw confirmationError(err);
+  }
+  return reply?.rule && typeof reply.rule === 'object' ? reply.rule : null;
 }
 
 /**
@@ -1169,6 +1214,8 @@ module.exports = {
   confirmationFor,
   consumeConfirmation,
   spendConfirmation,
+  finalizeReceiptOf,
+  rememberDeviceSend,
   spendSafeConfirmation,
   spendStandingSafeMessage,
   safeAuthorization,
