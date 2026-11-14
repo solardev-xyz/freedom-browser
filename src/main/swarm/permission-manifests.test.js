@@ -67,7 +67,7 @@ let tempDir;
 
 function manifest(capabilities) {
   return {
-    schema: 'freedom-manifest/1',
+    schema: 'swarm-manifest/1',
     name: 'Test app',
     description: 'Exercises manifests',
     capabilities: { swarm: capabilities },
@@ -124,6 +124,120 @@ describe('permission manifests', () => {
       async () => responseFor(manifest({ publish: { why: 'Publish releases' } }))
     );
     expect(result).toMatchObject({ status: 'found', manifest: { name: 'Test app' } });
+  });
+
+  describe('file names (#1159)', () => {
+    const NEW_URL = 'bzz://app.eth/swarm-manifest.json';
+    const OLD_URL = 'bzz://app.eth/freedom-manifest.json';
+    const legacy = (capabilities) => ({ ...manifest(capabilities), schema: 'freedom-manifest/1' });
+    // Serves `files` by URL (404 for anything else) and records what was asked for.
+    const serve = (files) => {
+      const fetchManifest = jest.fn(async (request) => {
+        const file = files[request.url];
+        if (file === undefined) return responseFor({}, 404);
+        return file instanceof Response ? file : responseFor(file);
+      });
+      return fetchManifest;
+    };
+    const requested = (fetchManifest) => fetchManifest.mock.calls.map(([request]) => request.url);
+
+    test('reads swarm-manifest.json first and stops there when it exists', async () => {
+      const fetchManifest = serve({
+        [NEW_URL]: manifest({ publish: { why: 'New file' } }),
+        [OLD_URL]: legacy({ feeds: { why: 'Old file' } }),
+      });
+      const result = await discover('bzz://app.eth/page', fetchManifest);
+      expect(result).toMatchObject({ status: 'found', manifest: { capabilities: { publish: { why: 'New file' } } } });
+      expect(requested(fetchManifest)).toEqual([NEW_URL]);
+    });
+
+    test('falls back to freedom-manifest.json only when the new file is missing', async () => {
+      const fetchManifest = serve({ [OLD_URL]: legacy({ publish: { why: 'Old file' } }) });
+      await expect(discover('bzz://app.eth/', fetchManifest))
+        .resolves.toMatchObject({ status: 'found', manifest: { schema: 'freedom-manifest/1' } });
+      expect(requested(fetchManifest)).toEqual([NEW_URL, OLD_URL]);
+
+      const neither = serve({});
+      await expect(discover('bzz://app.eth/', neither)).resolves.toEqual({ status: 'absent' });
+      expect(requested(neither)).toEqual([NEW_URL, OLD_URL]);
+    });
+
+    test('an unreachable new file ends the lookup', async () => {
+      const old = legacy({ publish: { why: 'Old file' } });
+      for (const newFile of [responseFor({}, 503), severedResponse()]) {
+        const fetchManifest = serve({ [NEW_URL]: newFile, [OLD_URL]: old });
+        await expect(discover('bzz://app.eth/', fetchManifest)).resolves.toMatchObject({ status: 'unresolved' });
+        expect(requested(fetchManifest)).toEqual([NEW_URL]);
+      }
+      const oldUnreachable = serve({ [NEW_URL]: responseFor({}, 403), [OLD_URL]: responseFor({}, 503) });
+      await expect(discover('bzz://app.eth/', oldUnreachable)).resolves.toMatchObject({ status: 'unresolved' });
+    });
+
+    test("a site's error document at the new name doesn't hide the old file", async () => {
+      // Bee answers any missing path of a site that sets an error document
+      // with that document and a 200, typically the app's index page.
+      const errorDocument = () => new Response('<!doctype html><title>App</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+      const withOld = serve({ [NEW_URL]: errorDocument(), [OLD_URL]: legacy({ publish: { why: 'Old file' } }) });
+      await expect(discover('bzz://app.eth/', withOld))
+        .resolves.toMatchObject({ status: 'found', manifest: { schema: 'freedom-manifest/1' } });
+      expect(requested(withOld)).toEqual([NEW_URL, OLD_URL]);
+    });
+
+    test('when neither file is valid, the new file decides the outcome', async () => {
+      const broken = legacy({ publish: { why: 'Old schema in the new file' } });
+      await expect(discover('bzz://app.eth/', serve({ [NEW_URL]: broken })))
+        .resolves.toMatchObject({ status: 'invalid', error: 'unsupported manifest schema' });
+      await expect(discover('bzz://app.eth/', serve({ [NEW_URL]: broken, [OLD_URL]: new Response('not json') })))
+        .resolves.toMatchObject({ status: 'invalid', error: 'unsupported manifest schema' });
+      await expect(discover('bzz://app.eth/', serve({ [OLD_URL]: new Response('not json') })))
+        .resolves.toMatchObject({ status: 'invalid' });
+    });
+
+    test('the old file must keep the old schema', async () => {
+      await expect(discover('bzz://app.eth/', serve({ [OLD_URL]: manifest({ publish: { why: 'x' } }) })))
+        .resolves.toMatchObject({ status: 'invalid', error: 'unsupported manifest schema' });
+    });
+
+    test('both names fingerprint as records written before #1159 did', async () => {
+      const before = crypto.createHash('sha256')
+        .update(JSON.stringify({ schema: 'freedom-manifest/1', capabilities: ['feeds', 'publish'] }))
+        .digest('hex');
+      const capabilities = { publish: { why: 'Publish' }, feeds: { why: 'Feeds' } };
+      const fromNew = await discover('bzz://app.eth/', serve({ [NEW_URL]: manifest(capabilities) }));
+      const fromOld = await discover('bzz://app.eth/', serve({ [OLD_URL]: legacy(capabilities) }));
+      expect(fromNew.fingerprint).toBe(before);
+      expect(fromOld.fingerprint).toBe(before);
+    });
+
+    test('a site that renames its file is not asked again', async () => {
+      const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
+      const first = await checkManifest(request, {
+        fetchManifest: serve({ [OLD_URL]: legacy({ publish: { why: 'Publish releases' } }) }),
+      });
+      decideManifest(first.token, 'allow');
+
+      const renamed = await checkManifest(request, {
+        fetchManifest: serve({ [NEW_URL]: manifest({ publish: { why: 'Publish releases' } }) }),
+      });
+      expect(renamed).toEqual({ kind: 'ready' });
+      expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(true);
+    });
+
+    test('a sheet opened from the old file can still be decided after the site renames it', async () => {
+      const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
+      const consent = await checkManifest(request, {
+        fetchManifest: serve({ [OLD_URL]: legacy({ publish: { why: 'Publish releases' } }) }),
+      });
+      // A sibling tab checks while the sheet is open and finds the new file.
+      await checkManifest(request, {
+        fetchManifest: serve({ [NEW_URL]: manifest({ publish: { why: 'Publish releases' } }) }),
+      });
+      expect(() => decideManifest(consent.token, 'allow')).not.toThrow();
+      expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(true);
+    });
   });
 
   test('rejects non-JSON and streams no more than 8 KiB', async () => {

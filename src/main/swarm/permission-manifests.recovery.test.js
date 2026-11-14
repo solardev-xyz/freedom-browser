@@ -43,7 +43,7 @@ let tempDir;
 
 function responseForManifest() {
   return new Response(JSON.stringify({
-    schema: 'freedom-manifest/1',
+    schema: 'swarm-manifest/1',
     name: 'Recovery app',
     capabilities: { swarm: ALL_CAPABILITIES },
   }));

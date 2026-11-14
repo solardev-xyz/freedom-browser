@@ -250,11 +250,12 @@ Notes:
 ### Permission manifests
 
 A `bzz://` site can declare the capabilities it needs up front in a
-`freedom-manifest.json` at its root (at most 8 KiB, no unknown fields):
+`swarm-manifest.json` at its root (at most 8 KiB, no unknown fields), the
+name the Swarm provider SWIP uses:
 
 ```json
 {
-  "schema": "freedom-manifest/1",
+  "schema": "swarm-manifest/1",
   "name": "My App",
   "description": "Optional, up to 160 characters",
   "capabilities": {
@@ -267,6 +268,14 @@ A `bzz://` site can declare the capabilities it needs up front in a
   }
 }
 ```
+
+Freedom also reads the older name, `freedom-manifest.json` with
+`"schema": "freedom-manifest/1"`. Each file needs its own schema value, and
+the first valid one wins, `swarm-manifest.json` first. An invalid
+`swarm-manifest.json` lets the old file answer (a site with an error document
+serves that document for the missing new file), but a fetch that fails (a
+network error or a 5xx) stops the lookup there. A site that moves from the old
+file to the new one with the same capabilities is not asked again.
 
 `name` is at most 32 characters; at least one capability is required. Freedom
 fetches the manifest when the page calls `swarm_requestAccess`, and checks it
