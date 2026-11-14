@@ -177,6 +177,9 @@ const SWARM_PAGE_METHODS = Object.freeze([
 
 // The permission-free ones: the key is a rate, never authority.
 const PERMISSION_FREE = new Set(['swarm_readChunk', 'swarm_readData', 'swarm_readSingleOwnerChunk']);
+// The reads whose answer no grant decides, served while the grants can't be
+// read (`swarm_getCapabilities` reports the grant itself, so it isn't one).
+const GRANT_FREE_READS = new Set([...PERMISSION_FREE, 'swarm_readFeedEntry', 'swarm_listFeeds']);
 
 // A method whose only use of the key comes before any wait: the answer is
 // checked against the key in the same run as it goes out, with nothing to
@@ -1024,10 +1027,20 @@ function createSwarmDispatchers(deps = {}) {
     if (!(await grantsLoaded())) return error(GRANTS_UNAVAILABLE);
     return answer(context);
   };
+  // The reads no grant decides run without the grants: the permission-free
+  // reads (a missing grant only puts them on the unconnected budget, never a
+  // larger one), and the feed records' reads, which read swarm-feeds.json,
+  // not a grant. A failed load can't make them answer more than the core
+  // holds, so it doesn't refuse them.
+  const servePublic = (answer) => async (context) => {
+    if (!identityWalletEnabled()) return error(DISCONNECTED);
+    return answer(context);
+  };
 
   const dispatchers = {};
   for (const method of SWARM_READ_METHODS) {
-    dispatchers[`swarm:${method}`] = serve(PERMISSION_FREE.has(method) ? permissionFree : underKey);
+    const answer = PERMISSION_FREE.has(method) ? permissionFree : underKey;
+    dispatchers[`swarm:${method}`] = (GRANT_FREE_READS.has(method) ? servePublic : serve)(answer);
   }
   dispatchers['swarm:swarm_requestAccess'] = serve(requestAccess);
   for (const method of SWARM_MESSAGING_METHODS) {
