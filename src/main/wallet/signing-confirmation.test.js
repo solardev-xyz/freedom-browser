@@ -596,12 +596,8 @@ describe("signing-confirmation: a site's standing rule", () => {
     expect(mockCore.calls).toEqual([]);
   });
 
-  test('"Always allow": main writes the rule on the core\'s `not_moved`, or for a device\'s send, and on nothing else', () => {
-    expect(sc.mainWritesRule(true, { added: false, reason: 'not_moved' })).toBe(true);
-    expect(sc.mainWritesRule(false, undefined)).toBe(true);
-    for (const reply of [{ added: true }, { added: false, reason: 'not_exposed' }, { added: false }, null, undefined]) {
-      expect(sc.mainWritesRule(true, reply)).toBe(false);
-    }
+  test('"Always allow": main writes no rule itself, whatever the core replies (APB-2)', () => {
+    expect(sc).not.toHaveProperty('mainWritesRule');
   });
 
   test("a standing refusal keeps the core's reason, in today's words", () => {

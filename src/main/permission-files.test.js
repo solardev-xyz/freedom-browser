@@ -4,7 +4,9 @@
  * checks while main is still their only writer, so main writes each by a
  * temp file and a rename (lib/atomic-file.js), never in place. Every write
  * each store makes goes through the helper, and nothing else writes the
- * file: a spy on the helper and on `fs`.
+ * file: a spy on the helper and on `fs`. `dapp-permissions.json` is the
+ * core's from APB-2, and main writes it nowhere
+ * (wallet/dapp-permissions.test.js).
  */
 
 const fs = require('fs');
@@ -28,21 +30,19 @@ jest.mock('./lib/atomic-file', () => {
 
 const { app } = require('electron');
 const { writeFileAtomicSync } = require('./lib/atomic-file');
-const dapp = require('./wallet/dapp-permissions');
 const swarm = require('./swarm/swarm-permissions');
 const radicle = require('./radicle/radicle-permissions');
 const x402 = require('./x402/permissions');
 
 const ORIGIN = 'https://app.example';
 const TOKEN = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-const TRANSFER = '0xa9059cbb';
 
 let tmpDir;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'permission-files-'));
   app.getPath.mockReturnValue(tmpDir);
-  for (const store of [dapp, swarm, radicle, x402]) store._resetCache();
+  for (const store of [swarm, radicle, x402]) store._resetCache();
   jest.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -55,22 +55,6 @@ afterEach(() => {
 // Each store's writes, every one that saves the file: [file, store, writes]
 // where `writes()` returns how many saves it made.
 const STORES = [
-  [
-    'dapp-permissions.json',
-    dapp,
-    () => {
-      dapp.grantPermission(ORIGIN, 0, 1);
-      dapp.updateLastUsed(ORIGIN, 10);
-      dapp.updateWalletIndex(ORIGIN, 1);
-      dapp.setSigningAutoApprove(ORIGIN, true);
-      expect(dapp.addTransactionAutoApprove(ORIGIN, TOKEN, TRANSFER, 10, 0)).toBe(true);
-      expect(dapp.removeTransactionAutoApprove(ORIGIN, TOKEN, TRANSFER, 10)).toBe(true);
-      dapp.revokePermissionsForWalletIndex(1);
-      dapp.grantPermission(ORIGIN, 0, 1);
-      expect(dapp.revokePermission(ORIGIN)).toBe(true);
-      return 9;
-    },
-  ],
   [
     'swarm-permissions.json',
     swarm,

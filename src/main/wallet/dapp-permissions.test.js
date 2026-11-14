@@ -1,11 +1,18 @@
-const path = require('path');
+/**
+ * dapp-permissions.js once `dapp-permissions.json` has moved to the identity
+ * core (freedom-core design 0012, APB-2): every write goes to the core's
+ * write methods (simulated here, test/helpers/simulated-approvals.js; the
+ * real core in signing-confirmation.integration.test.js), main writes the
+ * file nowhere (a spy on `fs`), and main's copy of the store follows the
+ * core's answers and events.
+ */
 const fs = require('fs');
-const os = require('os');
+const { EventEmitter } = require('events');
 
 // Mock electron with IPC capture
 const ipcHandlers = {};
 jest.mock('electron', () => ({
-  app: { getPath: jest.fn() },
+  app: { getPath: jest.fn(() => '/nonexistent') },
   ipcMain: {
     handle: (channel, handler) => {
       ipcHandlers[channel] = handler;
@@ -14,18 +21,9 @@ jest.mock('electron', () => ({
   },
 }));
 
-const { app } = require('electron');
-
-let tmpDir;
-
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dapp-perms-test-'));
-  app.getPath.mockReturnValue(tmpDir);
-});
-
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
+// The identity core's dApp store and its write methods, simulated.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockApprovals.approval } }));
 
 const {
   getPermission,
@@ -33,424 +31,421 @@ const {
   revokePermission,
   revokePermissionsForWalletIndex,
   getAllPermissions,
-  addTransactionAutoApprove,
-  isTransactionAutoApproved,
   removeTransactionAutoApprove,
   getSigningAutoApprove,
   setSigningAutoApprove,
+  updateLastUsed,
   updateWalletIndex,
   onGrantChanged,
+  attachCore,
+  whenLoaded,
+  refreshPermissions,
   registerDappPermissionsIpc,
   _resetCache,
 } = require('./dapp-permissions');
 const sharedOriginUtils = require('../../shared/origin-utils');
 
+const SITE = 'https://app.example';
+const TOKEN = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const APPROVE = '0x095ea7b3';
+// A page's PageContext (design 0012), for its own key.
+const pageFor = (key, extra = {}) => ({
+  origin: sharedOriginUtils.normalizeOrigin(key),
+  top_origin: sharedOriginUtils.normalizeOrigin(key),
+  frame: 1,
+  navigation: 1,
+  agent: false,
+  ...extra,
+});
+const grant = (key, walletIndex = 0, chainId = 1) => grantPermission(key, walletIndex, chainId, pageFor(key));
+const storage = (applied) =>
+  Object.assign(new Error('The permission file could not be written'), { code: 'storage', data: { store: 'dapp', applied } });
+
+let logs;
 beforeEach(() => {
   _resetCache();
+  mockApprovals.reset();
+  logs = {
+    log: jest.spyOn(console, 'log').mockImplementation(() => {}),
+    warn: jest.spyOn(console, 'warn').mockImplementation(() => {}),
+    error: jest.spyOn(console, 'error').mockImplementation(() => {}),
+  };
 });
 
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
+const writes = () =>
+  mockApprovals.calls.filter((call) =>
+    ['approval.grant', 'approval.revoke', 'approval.touch', 'approval.forget_account'].includes(call.method)
+  );
+const lastWrite = () => writes().at(-1);
+
 describe('dapp-permissions — origin normalization consistency', () => {
-  // Battery of inputs covering every protocol family the renderer may produce.
-  // Each row: [input, expectedNormalizedKey]
-  // The expected key matches getPermissionKey from shared/origin-utils.js — the
-  // single source of truth for display-URL → permission-key mapping.
+  // Each row: [input, expectedNormalizedKey], as getPermissionKey maps them.
   const cases = [
-    // Standard HTTP(S)
     ['https://app.example.com', 'https://app.example.com'],
     ['https://app.example.com/path/to/page', 'https://app.example.com'],
     ['http://localhost:1234/foo', 'http://localhost:1234'],
-
-    // ENS (the historical drift hotspot)
     ['vitalik.eth', 'vitalik.eth'],
     ['vitalik.eth/blog', 'vitalik.eth'],
     ['ens://vitalik.eth', 'vitalik.eth'],
     ['ens://vitalik.eth/#/path', 'vitalik.eth'],
     ['VITALIK.ETH', 'vitalik.eth'],
     ['mysite.box', 'mysite.box'],
-
-    // dweb protocols
-    ['bzz://abc123def', 'bzz://abc123def'],
     ['bzz://abc123def/page/index.html', 'bzz://abc123def'],
     ['ipfs://QmHash/docs', 'ipfs://QmHash'],
     ['ipns://host/guide', 'ipns://host'],
     ['rad://z123abc/tree', 'rad://z123abc'],
-
-    // Onchain application aliases share a friendly contract-and-chain key.
-    [
-      'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/swap',
-      'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6',
-    ],
     [
       'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100/swap',
       'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100',
     ],
   ];
 
-  test.each(cases)(
-    'grantPermission stores under the shared-normalized key for input %s',
-    (input, expectedKey) => {
-      grantPermission(input, 0, 100);
-      const all = getAllPermissions();
-      const keys = all.map((p) => p.origin);
-      expect(keys).toContain(expectedKey);
-    }
-  );
-
-  test.each(cases)(
-    'getPermission resolves via the shared-normalized key for input %s',
-    (input, expectedKey) => {
-      grantPermission(input, 0, 100);
-      // Looking up with the already-normalized key (what the renderer passes)
-      // must find the same record as looking up with the raw input.
-      const byRaw = getPermission(input);
-      const byKey = getPermission(expectedKey);
-      expect(byRaw).not.toBeNull();
-      expect(byKey).not.toBeNull();
-      expect(byKey.origin).toBe(byRaw.origin);
-    }
-  );
-
-  test('ENS forms that used to diverge now resolve to the same record', () => {
-    // Before consolidation: `ens://vitalik.eth` stored under `ens://vitalik.eth`
-    // and `vitalik.eth` stored under `vitalik.eth` — two separate records.
-    // After: both normalize to `vitalik.eth` and share a single record.
-    grantPermission('ens://vitalik.eth/#/path', 0, 100);
-
-    const viaEnsScheme = getPermission('ens://vitalik.eth');
-    const viaBareName = getPermission('vitalik.eth');
-    const viaBareWithPath = getPermission('vitalik.eth/blog');
-
-    expect(viaEnsScheme).not.toBeNull();
-    expect(viaBareName).not.toBeNull();
-    expect(viaBareWithPath).not.toBeNull();
-    expect(viaBareName.origin).toBe('vitalik.eth');
-    expect(viaEnsScheme.origin).toBe(viaBareName.origin);
-    expect(viaBareWithPath.origin).toBe(viaBareName.origin);
+  test.each(cases)('%s reads as %s', async (input, expected) => {
+    expect(sharedOriginUtils.normalizeOrigin(input)).toBe(expected);
+    await grant(input);
+    expect(getPermission(input)?.origin).toBe(expected);
+    expect(getPermission(expected)?.origin).toBe(expected);
   });
 
-  test('uses the shared normalizer, not a local copy', () => {
-    // If anyone re-introduces a local normalizeOrigin in dapp-permissions.js,
-    // this test catches it: the key we store under must be what the shared
-    // utility produces — not what new URL() would have returned.
-    for (const [input, expectedKey] of cases) {
-      expect(sharedOriginUtils.normalizeOrigin(input)).toBe(expectedKey);
+  test('ENS forms that used to diverge resolve to the same record', async () => {
+    await grant('vitalik.eth', 2, 1);
+    for (const form of ['vitalik.eth', 'ens://vitalik.eth', 'VITALIK.ETH', 'vitalik.eth/blog']) {
+      expect(getPermission(form)?.walletIndex).toBe(2);
     }
   });
 });
 
-describe('dapp-permissions — basic CRUD round-trip', () => {
-  test('grant + get round-trips for an HTTP origin', () => {
-    grantPermission('https://app.uniswap.org', 0, 1);
-    const perm = getPermission('https://app.uniswap.org/swap');
-    expect(perm).not.toBeNull();
-    expect(perm.origin).toBe('https://app.uniswap.org');
-    expect(perm.walletIndex).toBe(0);
-    expect(perm.chainId).toBe(1);
+describe('dapp-permissions — every write goes to the identity core (APB-2)', () => {
+  test('a connect is written by the core under the page, for its own key, and read back', async () => {
+    const written = await grant(SITE, 3, 100);
+    expect(written).toMatchObject({ origin: SITE, walletIndex: 3, chainId: 100 });
+    expect(lastWrite()).toEqual({
+      method: 'approval.grant',
+      params: { store: 'dapp', change: { op: 'connect', account: 3, chain_id: 100 } },
+      page: pageFor(SITE),
+    });
+    expect(getPermission(SITE)).toEqual(mockApprovals.dapp.entry(SITE));
+    expect(getAllPermissions()).toEqual([mockApprovals.dapp.entry(SITE)]);
   });
 
-  test('grant + get round-trips for an ENS origin', () => {
-    grantPermission('vitalik.eth', 1, 100);
-    const perm = getPermission('vitalik.eth/blog');
-    expect(perm).not.toBeNull();
-    expect(perm.origin).toBe('vitalik.eth');
-    expect(perm.walletIndex).toBe(1);
+  test("a page's write for another key than its own is refused before the core is asked", async () => {
+    await expect(grantPermission(SITE, 0, 1, pageFor('https://other.example'))).rejects.toThrow(/own page/);
+    await expect(grantPermission(SITE, 0, 1, null)).rejects.toThrow(/own page/);
+    await expect(updateWalletIndex(SITE, 0, pageFor('https://other.example'))).rejects.toThrow(/own page/);
+    expect(await setSigningAutoApprove(SITE, true, null)).toBe(false);
+    expect(await updateLastUsed(SITE, 1, null)).toBe(false);
+    expect(writes()).toEqual([]);
   });
 
-  test('grant + get round-trips for a bzz:// origin', () => {
-    grantPermission('bzz://abc123/page', 0, 100);
-    const perm = getPermission('bzz://abc123/other');
-    expect(perm).not.toBeNull();
-    expect(perm.origin).toBe('bzz://abc123');
-  });
-
-  test('revokePermission removes the entry', () => {
-    grantPermission('vitalik.eth', 0, 1);
-    expect(getPermission('vitalik.eth')).not.toBeNull();
-    const removed = revokePermission('vitalik.eth');
-    expect(removed).toBe(true);
-    expect(getPermission('vitalik.eth')).toBeNull();
-  });
-
-  test('revokePermission finds entry via alternate ENS form', () => {
-    grantPermission('ens://vitalik.eth', 0, 1);
-    const removed = revokePermission('vitalik.eth');
-    expect(removed).toBe(true);
-    expect(getPermission('ens://vitalik.eth')).toBeNull();
-  });
-});
-
-describe('dapp-permissions — revoke by wallet index', () => {
-  const LEDGER_INDEX = 1000000;
-
-  test('drops every origin bound to the deleted account and keeps the rest', () => {
-    grantPermission('https://swap.example', LEDGER_INDEX, 8453);
-    grantPermission('vitalik.eth', LEDGER_INDEX, 1);
-    grantPermission('https://other.example', 0, 1);
-
-    const revoked = revokePermissionsForWalletIndex(LEDGER_INDEX);
-
-    expect(revoked.sort()).toEqual(['https://swap.example', 'vitalik.eth']);
-    expect(getPermission('https://swap.example')).toBeNull();
-    expect(getPermission('vitalik.eth')).toBeNull();
-    expect(getPermission('https://other.example')).not.toBeNull();
-  });
-
-  test('persists the removal to disk, so a stale index cannot survive a restart', () => {
-    grantPermission('https://swap.example', LEDGER_INDEX, 8453);
-    revokePermissionsForWalletIndex(LEDGER_INDEX);
-
-    _resetCache();
-    expect(getPermission('https://swap.example')).toBeNull();
-  });
-
-  test('is a no-op when no origin uses the index', () => {
-    grantPermission('https://other.example', 0, 1);
-    expect(revokePermissionsForWalletIndex(7)).toEqual([]);
-    expect(getPermission('https://other.example')).not.toBeNull();
-  });
-});
-
-// A transaction rule covers its call with no more value than the confirmed
-// send it was recorded from. Before, a rule recorded from a send of 0.01 ETH
-// covered the same call with any value.
-describe('dapp-permissions — a transaction rule covers no more value than its send', () => {
-  const SITE = 'https://swap.example';
-  const TO = '0x' + '66'.repeat(20);
-  const SELECTOR = '0xabcdef12';
-  const CENT = '10000000000000000'; // 0.01 ETH, in wei
-  const CENT_HEX = '0x2386f26fc10000';
-  const TWO_CENTS_HEX = '0x470de4df820000';
-  const covers = (value, site = SITE) => isTransactionAutoApproved(site, TO, SELECTOR, 1, value);
-
-  beforeEach(() => {
-    jest.spyOn(console, 'log').mockImplementation(() => {});
-    grantPermission(SITE, 0, 1);
-  });
-
-  afterEach(() => jest.restoreAllMocks());
-
-  test('a rule from a send of 0.01 ETH covers 0.01 ETH and less, never more', () => {
-    expect(addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT)).toBe(true);
-    expect(covers(CENT)).toBe(true);
-    expect(covers(CENT_HEX)).toBe(true);
-    expect(covers('0')).toBe(true);
-    expect(covers(undefined)).toBe(true);
-    expect(covers(BigInt(CENT) + 1n)).toBe(false);
-    expect(covers(TWO_CENTS_HEX)).toBe(false);
-    expect(covers('1000000000000000000000')).toBe(false);
-  });
-
-  test('a rule from a send of no value covers only calls of no value', () => {
-    expect(addTransactionAutoApprove(SITE, TO, SELECTOR, 1, '0x0')).toBe(true);
-    expect(covers('0')).toBe(true);
-    expect(covers('0x0')).toBe(true);
-    expect(covers('1')).toBe(false);
-    expect(covers('0x1')).toBe(false);
-  });
-
-  test('the rule records the value; the call, chain and site still have to match', () => {
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT_HEX);
-    expect(getPermission(SITE).autoApprove.transactions).toEqual([
-      { to: TO, selector: SELECTOR, chainId: 1, maxValue: CENT },
+  test('the account, the last use and the chain: under the page', async () => {
+    await grant(SITE, 0, 1);
+    expect(await updateWalletIndex(SITE, 4, pageFor(SITE))).toBe(true);
+    expect(getPermission(SITE).walletIndex).toBe(4);
+    expect(await updateLastUsed(SITE, 10, pageFor(SITE))).toBe(true);
+    expect(mockApprovals.calls.slice(-2).map(({ method, params, page }) => ({ method, params, page }))).toEqual([
+      { method: 'approval.grant', params: { store: 'dapp', change: { op: 'account', account: 4 } }, page: pageFor(SITE) },
+      { method: 'approval.touch', params: { store: 'dapp', chain_id: 10 }, page: pageFor(SITE) },
     ]);
-    expect(isTransactionAutoApproved(SITE, TO, '0x12345678', 1, '0')).toBe(false);
-    expect(isTransactionAutoApproved(SITE, TO, SELECTOR, 100, '0')).toBe(false);
-    expect(covers('0', 'https://other.example')).toBe(false);
+    expect(mockApprovals.dapp.entry(SITE).chainId).toBe(10);
   });
 
-  test('a value that is not a non-negative integer is never covered, nor recorded', () => {
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
-    for (const value of ['-1', 'lots', '0.5', 1.5, -1, {}, true]) {
-      expect(covers(value)).toBe(false);
-    }
-    expect(addTransactionAutoApprove(SITE, '0x' + '77'.repeat(20), SELECTOR, 1, 'lots')).toBe(false);
-    expect(getPermission(SITE).autoApprove.transactions).toHaveLength(1);
+  test('"Always allow" for signing is Q9\'s limited rule, written under the page; turning it off is main\'s own', async () => {
+    await grant(SITE);
+    expect(await setSigningAutoApprove(SITE, true, pageFor(SITE))).toBe(true);
+    expect(lastWrite()).toMatchObject({
+      method: 'approval.grant',
+      params: { store: 'dapp', change: { op: 'signing' } },
+      page: pageFor(SITE),
+    });
+    expect(mockApprovals.dapp.entry(SITE).autoApprove).toEqual({
+      signing: false,
+      transactions: [],
+      limited: { signing: { grantedAt: expect.any(Number) }, transactions: [] },
+    });
+    expect(await setSigningAutoApprove(SITE, false)).toBe(true);
+    expect(lastWrite()).toEqual({
+      method: 'approval.revoke',
+      params: { store: 'dapp', key: SITE, what: 'signing' },
+      page: null,
+    });
+    expect(mockApprovals.dapp.entry(SITE).autoApprove.limited.signing).toBeNull();
   });
 
-  test('added again for the same call, the rule covers the larger value confirmed', () => {
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, '0');
-    expect(covers(CENT)).toBe(true);
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, TWO_CENTS_HEX);
-    expect(covers(TWO_CENTS_HEX)).toBe(true);
-    expect(getPermission(SITE).autoApprove.transactions).toHaveLength(1);
+  test('a contract rule is removed by its call, today\'s and the limited one, as main\'s own', async () => {
+    await grant(SITE);
+    mockApprovals.dapp.entries.get(SITE).autoApprove.transactions.push({ to: TOKEN, selector: APPROVE, chainId: 100, maxValue: '0' });
+    expect(await removeTransactionAutoApprove(SITE, TOKEN.toUpperCase().replace('0X', '0x'), APPROVE, 100)).toBe(true);
+    expect(lastWrite()).toEqual({
+      method: 'approval.revoke',
+      params: { store: 'dapp', key: SITE, what: { transaction: { to: TOKEN, selector: APPROVE, chain_id: 100 } } },
+      page: null,
+    });
+    expect(await removeTransactionAutoApprove(SITE, TOKEN, APPROVE, 100)).toBe(false);
   });
 
-  test('a rule stored without a value, by an older build, covers only calls of no value', () => {
-    const file = path.join(tmpDir, 'dapp-permissions.json');
-    fs.writeFileSync(
-      file,
-      JSON.stringify({
-        [SITE]: {
-          origin: SITE,
-          walletIndex: 0,
-          chainId: 1,
-          autoApprove: { signing: false, transactions: [{ to: TO, selector: SELECTOR, chainId: 1 }] },
-        },
-      })
+  test('a revoke and an account deleted are main\'s own, and leave main\'s copy as the core holds it', async () => {
+    await grant(SITE, 2);
+    await grant('https://keep.example', 0);
+    await grant('https://also.example', 2);
+    expect((await revokePermissionsForWalletIndex(2)).sort()).toEqual(['https://also.example', SITE]);
+    expect(lastWrite()).toEqual({ method: 'approval.forget_account', params: { wallet_index: 2 }, page: null });
+    expect(getPermission(SITE)).toBeNull();
+    expect(getPermission('https://keep.example')).not.toBeNull();
+    expect(await revokePermission('https://keep.example')).toBe(true);
+    expect(lastWrite()).toEqual({
+      method: 'approval.revoke',
+      params: { store: 'dapp', key: 'https://keep.example', what: 'grant' },
+      page: null,
+    });
+    expect(getPermission('https://keep.example')).toBeNull();
+    expect(await revokePermission('https://keep.example')).toBe(false);
+    expect(await revokePermissionsForWalletIndex(9)).toEqual([]);
+  });
+
+  test('main writes dapp-permissions.json nowhere: a spy on fs', async () => {
+    const spies = [
+      'writeFileSync',
+      'appendFileSync',
+      'renameSync',
+      'copyFileSync',
+      'truncateSync',
+      'unlinkSync',
+      'rmSync',
+      'openSync',
+      'writeFile',
+      'rename',
+      'open',
+    ].map((name) => jest.spyOn(fs, name));
+    const promises = ['writeFile', 'rename', 'open', 'appendFile', 'copyFile', 'rm', 'unlink'].map((name) =>
+      jest.spyOn(fs.promises, name)
     );
-    _resetCache();
-    expect(covers('0')).toBe(true);
-    expect(covers(undefined)).toBe(true);
-    expect(covers(CENT)).toBe(false);
-    // Confirmed again with "Always allow", it covers that send's value.
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
-    expect(covers(CENT)).toBe(true);
-  });
-
-  test('removing a rule still works on its call alone', () => {
-    addTransactionAutoApprove(SITE, TO, SELECTOR, 1, CENT);
-    expect(removeTransactionAutoApprove(SITE, TO, SELECTOR, 1)).toBe(true);
-    expect(covers('0')).toBe(false);
-  });
-});
-
-// freedom-core design 0011, PRQ-4: main writes a connection itself, for the
-// key it attested, from the user's decision on its own prompt. The chrome's
-// grant write named the site, so it is refused for every site; revoking,
-// which only narrows, stays open.
-describe('dapp-permissions — the chrome writes no grant (0011 PRQ-4)', () => {
-  beforeEach(() => {
-    jest.spyOn(console, 'log').mockImplementation(() => {});
     registerDappPermissionsIpc();
-  });
-
-  afterEach(() => jest.restoreAllMocks());
-
-  test.each([
-    'https://swap.example',
-    'bzz://' + 'a'.repeat(64),
-    'name.eth',
-    'example.com',
-    'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100',
-    '',
-    undefined,
-  ])('dapp:grant-permission for %p is refused and writes nothing', (site) => {
-    expect(() => ipcHandlers['dapp:grant-permission']({}, site, 0, 100)).toThrow(
-      'A dApp connection is granted only from its own prompt'
-    );
-    expect(getAllPermissions()).toEqual([]);
-    if (site) expect(getPermission(site)).toBeNull();
-  });
-
-  test('an existing grant is left as it is, and revoking it still works', () => {
-    grantPermission('https://swap.example', 1, 1);
-    expect(() => ipcHandlers['dapp:grant-permission']({}, 'https://swap.example', 0, 100)).toThrow();
-    expect(getPermission('https://swap.example')).toMatchObject({ walletIndex: 1, chainId: 1 });
-    expect(ipcHandlers['dapp:revoke-permission']({}, 'https://swap.example')).toBe(true);
-    expect(getPermission('https://swap.example')).toBeNull();
-  });
-
-  // Main marks a site used and reads its rules itself, for a page's request
-  // it serves (page/page-ethereum.js, page/page-sends.js): the chrome's old
-  // route to either is gone (PRQ-9).
-  test('the chrome neither marks a site used nor asks for its rules', () => {
-    expect(Object.keys(ipcHandlers)).not.toContain('dapp:update-last-used');
-    expect(Object.keys(ipcHandlers)).not.toContain('dapp:is-tx-auto-approved');
-  });
-});
-
-// freedom-core design 0011, PRQ-5a: main sets a site's signing rule itself,
-// from the user's "always allow" on the signing prompt it showed
-// (page/page-signing.js). The chrome can only clear one.
-describe('dapp-permissions — the chrome sets no signing rule (0011 PRQ-5a)', () => {
-  beforeEach(() => {
-    jest.spyOn(console, 'log').mockImplementation(() => {});
-    registerDappPermissionsIpc();
-  });
-
-  afterEach(() => jest.restoreAllMocks());
-
-  test('dapp:set-signing-auto-approve is refused for setting a rule, and writes nothing', () => {
-    grantPermission('https://swap.example', 0, 100);
-    for (const enabled of [true, 'true', 1, undefined, null]) {
-      expect(() => ipcHandlers['dapp:set-signing-auto-approve']({}, 'https://swap.example', enabled)).toThrow(
-        'Signing auto-approve is turned on only from a signing prompt'
-      );
+    await grant(SITE);
+    await updateWalletIndex(SITE, 1, pageFor(SITE));
+    await updateLastUsed(SITE, 10, pageFor(SITE));
+    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await setSigningAutoApprove(SITE, false);
+    await removeTransactionAutoApprove(SITE, TOKEN, APPROVE, 100);
+    await ipcHandlers['dapp:revoke-permission']({}, SITE);
+    await grant(SITE, 1);
+    await revokePermissionsForWalletIndex(1);
+    await refreshPermissions();
+    for (const spy of [...spies, ...promises]) {
+      for (const [file] of spy.mock.calls) expect(String(file)).not.toMatch(/dapp-permissions\.json/);
     }
-    expect(getSigningAutoApprove('https://swap.example')).toBe(false);
-  });
-
-  test('clearing a rule is still accepted', () => {
-    grantPermission('https://swap.example', 0, 100);
-    setSigningAutoApprove('https://swap.example', true);
-    expect(ipcHandlers['dapp:set-signing-auto-approve']({}, 'https://swap.example', false)).toBe(true);
-    expect(getSigningAutoApprove('https://swap.example')).toBe(false);
+    expect(writes().map((call) => call.method)).toEqual([
+      'approval.grant',
+      'approval.grant',
+      'approval.touch',
+      'approval.grant',
+      'approval.revoke',
+      'approval.revoke',
+      'approval.revoke',
+      'approval.grant',
+      'approval.forget_account',
+    ]);
   });
 });
 
-// freedom-core design 0011, PRQ-6: main tells every live document of a key
-// when its grant is revoked or its account changes (page/page-events.js),
-// so the store says when either happens, with the normalized key.
+describe("dapp-permissions — a failed write, as the core reports it (design 0012, \"A failed write\")", () => {
+  test('a widening that failed is not applied: the connect rejects, and main\'s copy has no grant', async () => {
+    jest.spyOn(mockApprovals.approval, 'grant').mockRejectedValueOnce(storage(false));
+    await expect(grant(SITE)).rejects.toMatchObject({ code: 'storage' });
+    expect(getPermission(SITE)).toBeNull();
+    expect(logs.error).toHaveBeenCalledWith(expect.stringContaining('Failed to save permissions'), expect.anything());
+    // A rule that failed: not on.
+    await grant(SITE);
+    jest.spyOn(mockApprovals.approval, 'grant').mockRejectedValueOnce(storage(false));
+    expect(await setSigningAutoApprove(SITE, true, pageFor(SITE))).toBe(false);
+  });
+
+  test('a narrowing that failed stands, not saved: the revoke holds in main\'s copy, logged as unsaved', async () => {
+    await grant(SITE);
+    jest.spyOn(mockApprovals.approval, 'revoke').mockRejectedValueOnce(storage(true));
+    expect(await revokePermission(SITE)).toBe(true);
+    expect(getPermission(SITE)).toBeNull();
+    expect(logs.error).toHaveBeenCalledWith(expect.stringContaining("couldn't be saved"));
+    await grant(SITE);
+    jest.spyOn(mockApprovals.approval, 'revoke').mockRejectedValueOnce(storage(true));
+    expect(await setSigningAutoApprove(SITE, false)).toBe(true);
+  });
+
+  test('a core that answers nothing changes nothing in main\'s copy', async () => {
+    await grant(SITE);
+    jest
+      .spyOn(mockApprovals.approval, 'revoke')
+      .mockRejectedValueOnce(Object.assign(new Error('core is not running'), { code: 'core_unavailable' }));
+    expect(await revokePermission(SITE)).toBe(false);
+    expect(getPermission(SITE)).not.toBeNull();
+  });
+
+  test('applied but not durable (`durable: false`) is warned about, and stands', async () => {
+    const original = mockApprovals.approval.grant;
+    jest.spyOn(mockApprovals.approval, 'grant').mockImplementationOnce(async (...args) => ({
+      ...(await original(...args)),
+      durable: false,
+    }));
+    await grant(SITE);
+    expect(getPermission(SITE)).not.toBeNull();
+    expect(logs.warn).toHaveBeenCalledWith(expect.stringContaining('may not survive a power loss'));
+  });
+});
+
+describe('dapp-permissions — main\'s copy follows the core', () => {
+  const coreClient = () => Object.assign(new EventEmitter(), { request: jest.fn() });
+
+  test('read whole at each handshake: a page\'s request waits for the first', async () => {
+    mockApprovals.dapp.seed(SITE, { origin: SITE, connectedAt: 1, lastUsed: 1, walletIndex: 0, chainId: 1, autoApprove: { signing: false, transactions: [] } });
+    const client = coreClient();
+    attachCore(client);
+    let loaded = false;
+    const waiting = whenLoaded().then(() => {
+      loaded = true;
+    });
+    await Promise.resolve();
+    expect(loaded).toBe(false);
+    expect(getPermission(SITE)).toBeNull();
+    client.emit('ready', {});
+    await waiting;
+    expect(getPermission(SITE)).toMatchObject({ walletIndex: 0 });
+    // A restarted core reads the file again: what it no longer holds goes.
+    const told = [];
+    onGrantChanged((change) => told.push(change));
+    mockApprovals.dapp.entries.delete(SITE);
+    client.emit('ready', {});
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(getPermission(SITE)).toBeNull();
+    expect(told).toEqual([{ key: SITE, walletIndex: null }]);
+  });
+
+  test('with no core attached, nothing waits; a core that fails to start leaves the store unread', async () => {
+    await expect(whenLoaded()).resolves.toBeUndefined();
+    const client = coreClient();
+    attachCore(client);
+    const waiting = whenLoaded();
+    client.emit('failed', 'spawn');
+    await expect(waiting).resolves.toBeUndefined();
+  });
+
+  test('each approval.changed reads the key again: a rule the core wrote, a grant revoked elsewhere', async () => {
+    const client = coreClient();
+    attachCore(client);
+    client.emit('ready', {});
+    await whenLoaded();
+    await grant(SITE, 1);
+    const told = [];
+    onGrantChanged((change) => told.push(change));
+    mockApprovals.dapp.allowTransaction(SITE, TOKEN, APPROVE, 100, '5');
+    client.emit('event', 'approval.changed', { store: 'dapp', key: SITE });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(getPermission(SITE).autoApprove.limited.transactions).toHaveLength(1);
+    expect(told).toEqual([]);
+    mockApprovals.dapp.entries.get(SITE).walletIndex = 2;
+    client.emit('event', 'approval.changed', { store: 'dapp', key: SITE });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(told).toEqual([{ key: SITE, walletIndex: 2 }]);
+    // Another store's change isn't this one's.
+    const before = mockApprovals.calls.length;
+    client.emit('event', 'approval.changed', { store: 'swarm', key: SITE });
+    expect(mockApprovals.calls.length).toBe(before);
+  });
+});
+
+describe('dapp-permissions — the chrome writes no grant and sets no rule (0011 PRQ-4, PRQ-5a)', () => {
+  beforeEach(() => registerDappPermissionsIpc());
+
+  test('dapp:grant-permission is refused for every site, and nothing is written', async () => {
+    expect(() => ipcHandlers['dapp:grant-permission']({}, SITE, 0, 1)).toThrow(/own prompt/);
+    expect(writes()).toEqual([]);
+  });
+
+  test('dapp:set-signing-auto-approve is refused for setting a rule; clearing one is main\'s own', async () => {
+    await grant(SITE);
+    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    for (const enabled of [true, 'yes', 1, undefined]) {
+      expect(() => ipcHandlers['dapp:set-signing-auto-approve']({}, SITE, enabled)).toThrow(/signing prompt/);
+    }
+    await expect(ipcHandlers['dapp:set-signing-auto-approve']({}, SITE, false)).resolves.toBe(true);
+    expect(lastWrite().params).toEqual({ store: 'dapp', key: SITE, what: 'signing' });
+  });
+
+  test("the chrome's reads ask the core, as it holds the store now", async () => {
+    await grant(SITE);
+    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await updateLastUsed(SITE, 42, pageFor(SITE));
+    const read = await ipcHandlers['dapp:get-permission']({}, SITE);
+    expect(read).toEqual(mockApprovals.dapp.entry(SITE));
+    expect(read.chainId).toBe(42);
+    expect(mockApprovals.calls.at(-1)).toEqual({ method: 'approval.grants', params: { store: 'dapp', key: SITE }, page: null });
+    expect(await ipcHandlers['dapp:get-all-permissions']({})).toEqual([mockApprovals.dapp.entry(SITE)]);
+    // A signing rule stored: Q9's limited one (or today's flag).
+    expect(await ipcHandlers['dapp:get-signing-auto-approve']({}, SITE)).toBe(true);
+    expect(getSigningAutoApprove(SITE)).toBe(true);
+    // A core that can't answer: nothing.
+    jest.spyOn(mockApprovals.approval, 'grants').mockRejectedValue(new Error('down'));
+    expect(await ipcHandlers['dapp:get-permission']({}, SITE)).toBeNull();
+    expect(await ipcHandlers['dapp:get-all-permissions']({})).toEqual([]);
+  });
+});
+
 describe('dapp-permissions — a revoked grant or a changed account is told (0011 PRQ-6)', () => {
-  let heard;
+  let told;
   let stop;
-
   beforeEach(() => {
-    heard = [];
-    stop = onGrantChanged((change) => heard.push({ ...change }));
+    told = [];
+    stop = onGrantChanged((change) => told.push(change));
   });
-
   afterEach(() => stop());
 
-  test('a revocation, by any form of the key, is told once with the normalized key; nothing to revoke tells nothing', () => {
-    grantPermission('vitalik.eth', 0, 1);
-    expect(heard).toEqual([]);
-    expect(revokePermission('ens://VITALIK.eth/blog')).toBe(true);
-    expect(heard).toEqual([{ key: 'vitalik.eth', walletIndex: null }]);
-    expect(revokePermission('vitalik.eth')).toBe(false);
-    expect(heard).toHaveLength(1);
+  test('a revocation is told once with the normalized key; nothing to revoke tells nothing', async () => {
+    await grant('vitalik.eth');
+    expect(await revokePermission('ens://vitalik.eth')).toBe(true);
+    expect(await revokePermission('vitalik.eth')).toBe(false);
+    expect(told).toEqual([{ key: 'vitalik.eth', walletIndex: null }]);
   });
 
-  test('the chrome\'s dapp:revoke-permission is told too', () => {
-    registerDappPermissionsIpc();
-    grantPermission('https://app.example', 0, 1);
-    expect(ipcHandlers['dapp:revoke-permission']({}, 'https://app.example/path')).toBe(true);
-    expect(heard).toEqual([{ key: 'https://app.example', walletIndex: null }]);
-  });
-
-  test('a deleted account\'s grants are each told as revoked', () => {
-    grantPermission('https://a.example', 2, 1);
-    grantPermission('https://b.example', 2, 1);
-    grantPermission('https://c.example', 3, 1);
-    revokePermissionsForWalletIndex(2);
-    expect(heard).toEqual([
+  test("a deleted account's grants are each told as revoked", async () => {
+    await grant('https://a.example', 1);
+    await grant('https://b.example', 1);
+    await grant('https://c.example', 0);
+    await revokePermissionsForWalletIndex(1);
+    expect(told.sort((x, y) => x.key.localeCompare(y.key))).toEqual([
       { key: 'https://a.example', walletIndex: null },
       { key: 'https://b.example', walletIndex: null },
     ]);
-    revokePermissionsForWalletIndex(9);
-    expect(heard).toHaveLength(2);
   });
 
-  test('an account change is told with the new account, and only when it changes', () => {
-    grantPermission('https://app.example', 0, 1);
-    expect(updateWalletIndex('https://app.example', 0)).toBe(true);
-    expect(heard).toEqual([]);
-    expect(updateWalletIndex('https://app.example', 1)).toBe(true);
-    expect(heard).toEqual([{ key: 'https://app.example', walletIndex: 1 }]);
-    expect(updateWalletIndex('https://none.example', 1)).toBe(false);
-    expect(heard).toHaveLength(1);
+  test('an account change is told with the new account, and only when it changes', async () => {
+    await grant(SITE, 0);
+    await updateWalletIndex(SITE, 0, pageFor(SITE));
+    await updateWalletIndex(SITE, 3, pageFor(SITE));
+    expect(told).toEqual([{ key: SITE, walletIndex: 3 }]);
   });
 
-  test('a grant written, its chain, its rules and its last use are not told here', () => {
-    grantPermission('https://app.example', 0, 1);
-    setSigningAutoApprove('https://app.example', true);
-    addTransactionAutoApprove('https://app.example', '0x' + '1'.repeat(40), '0x095ea7b3', 1, 0);
-    expect(heard).toEqual([]);
+  test('a grant written, its rules and its last use are not told here', async () => {
+    await grant(SITE, 0);
+    await setSigningAutoApprove(SITE, true, pageFor(SITE));
+    await updateLastUsed(SITE, 5, pageFor(SITE));
+    expect(told).toEqual([]);
   });
 
-  test('one listener\'s failure does not keep another from hearing; a stopped listener hears nothing', () => {
-    const stopThrowing = onGrantChanged(() => {
-      throw new Error('boom');
+  test("one listener's failure does not keep another from hearing; a stopped listener hears nothing", async () => {
+    const stopThrower = onGrantChanged(() => {
+      throw new Error('listener');
     });
-    grantPermission('https://app.example', 0, 1);
-    expect(revokePermission('https://app.example')).toBe(true);
-    expect(heard).toEqual([{ key: 'https://app.example', walletIndex: null }]);
-    stopThrowing();
-    stop();
-    grantPermission('https://app.example', 0, 1);
-    revokePermission('https://app.example');
-    expect(heard).toHaveLength(1);
-    expect(onGrantChanged('not a function')()).toBeUndefined();
+    const late = [];
+    const stopLate = onGrantChanged((change) => late.push(change));
+    await grant(SITE);
+    await revokePermission(SITE);
+    expect(late).toEqual([{ key: SITE, walletIndex: null }]);
+    stopLate();
+    stopThrower();
+    await grant(SITE);
+    await revokePermission(SITE);
+    expect(late).toHaveLength(1);
   });
 });

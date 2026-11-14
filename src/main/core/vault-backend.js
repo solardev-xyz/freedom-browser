@@ -450,6 +450,32 @@ const vaultBackend = {
     check(params, page) {
       return call('approval.check', params, page);
     },
+    /**
+     * The permission files' writes, for a file that has moved to the core
+     * (design 0012, "The files (Q10)": `dapp` from APB-2). A page's change
+     * goes under `page` with its PageContext, for its own key; main's own
+     * (a revoke from the chrome, an account deleted) as `shell`.
+     */
+    /** `{ store, change }` → `{ grant, durable? }` */
+    grant(params, page = null) {
+      return call('approval.grant', params, page);
+    },
+    /** `{ store, key, what }` → `{ revoked, durable? }` */
+    revoke(params, page = null) {
+      return call('approval.revoke', params, page);
+    },
+    /** `{ store, chain_id? }` → `{ durable? }`, always under `page` */
+    touch(params, page) {
+      return call('approval.touch', params, page);
+    },
+    /** `{ wallet_index }` → `{ keys, durable? }`, main's own */
+    forgetAccount(walletIndex) {
+      return call('approval.forget_account', { wallet_index: walletIndex });
+    },
+    /** `{ store, key? }` → `{ records }`, the store as the core holds it */
+    grants(params) {
+      return call('approval.grants', params);
+    },
   },
 
   /**

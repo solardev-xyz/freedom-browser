@@ -102,6 +102,26 @@ function context(requestApproval = jest.fn(async () => 'approved')) {
   };
 }
 
+// A page's request main attested, with the document's PageContext, under
+// which the identity core writes its grant (freedom-core design 0012, APB-2).
+const SITE_PAGE = Object.freeze({
+  origin: 'https://app.example',
+  top_origin: 'https://app.example',
+  frame: 1,
+  navigation: 1,
+  agent: true,
+});
+function attested(requestApproval) {
+  return {
+    ...context(requestApproval),
+    attested: { key: 'https://app.example', transportKey: 'https://app.example' },
+    beforeEffect: async () => true,
+    effectAllowed: () => true,
+    pageContext: () => SITE_PAGE,
+  };
+}
+const CONNECT = { method: 'eth_requestAccounts', params: [], chainId: 100 };
+
 describe('AgentWalletController', () => {
   describe('direct transfers', () => {
     test('holds one resolved ERC-20 transfer for approval and broadcasts that exact intent', async () => {
@@ -277,10 +297,7 @@ describe('AgentWalletController', () => {
       ],
     });
     const approval = jest.fn(async () => ({ status: 'approved', walletIndex: 2 }));
-    const provider = await harness.controller.handleRequest(
-      context(approval),
-      request('eth_requestAccounts')
-    );
+    const provider = await harness.controller.handleRequest(attested(approval), CONNECT);
 
     expect(provider.receipt).toEqual({
       wallet: {
@@ -300,23 +317,51 @@ describe('AgentWalletController', () => {
         wallet: expect.objectContaining({ kind: 'connection', requiresUnlock: false }),
       })
     );
-    expect(harness.dependencies.grantPermission).toHaveBeenCalledWith(
-      'https://app.example',
-      2,
-      100
+    expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('https://app.example', 2, 100, SITE_PAGE);
+  });
+
+  // freedom-core design 0012, APB-2: the grant is the identity core's to
+  // write, under the page's PageContext, which only a request main attested
+  // has: any other connect is refused before the approval.
+  test('a connect main did not attest is refused before any approval, and nothing is written', async () => {
+    const harness = createHarness();
+    const approval = jest.fn(async () => 'approved');
+    const provider = await harness.controller.handleRequest(context(approval), request('eth_requestAccounts'));
+    expect(provider).toMatchObject({ handled: true, errorCode: ERROR_CODES.POLICY_DENIED });
+    expect(approval).not.toHaveBeenCalled();
+    expect(harness.dependencies.grantPermission).not.toHaveBeenCalled();
+    const noPage = { ...attested(approval) };
+    delete noPage.pageContext;
+    await expect(harness.controller.handleRequest(noPage, CONNECT)).resolves.toMatchObject({
+      errorCode: ERROR_CODES.POLICY_DENIED,
+    });
+    expect(approval).not.toHaveBeenCalled();
+  });
+
+  test('a grant the core does not write fails the connect', async () => {
+    const harness = createHarness();
+    harness.dependencies.grantPermission.mockRejectedValue(
+      Object.assign(new Error('The permission file could not be written'), { code: 'storage' })
     );
+    const provider = await harness.controller.handleRequest(attested(), CONNECT);
+    expect(provider).toMatchObject({ handled: true, error: { code: -32603 } });
+    expect(provider.result).toBeUndefined();
   });
 
   // freedom-core design 0011, PRQ-4: main attests a page's connect and
   // passes its key, and the checks the grant write waits on.
   describe('a connect main attested', () => {
     const IPNS = 'ipns://k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
+    const PAGE = Object.freeze({ origin: 'example.com', top_origin: 'example.com', frame: 1, navigation: 2, agent: true });
     const attestedContext = (gate = {}, approval = jest.fn(async () => 'approved')) => ({
       ...context(approval),
       pageUrl: `${IPNS}/docs`,
       attested: { key: 'example.com', transportKey: IPNS },
       beforeEffect: gate.beforeEffect || jest.fn(async () => true),
       effectAllowed: gate.effectAllowed || jest.fn(() => true),
+      // The document's PageContext, under which the identity core writes the
+      // grant (freedom-core design 0012, APB-2).
+      pageContext: () => PAGE,
     });
     const attestedRequest = { method: 'eth_requestAccounts', params: [], chainId: 100 };
 
@@ -327,7 +372,7 @@ describe('AgentWalletController', () => {
       expect(provider).toMatchObject({ handled: true, result: ['0x1111111111111111111111111111111111111111'] });
       expect(provider.receipt.wallet.origin).toBe('example.com');
       expect(harness.dependencies.getPermission).toHaveBeenCalledWith('example.com');
-      expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('example.com', 0, 100);
+      expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('example.com', 0, 100, PAGE);
       expect(gate.beforeEffect).toHaveBeenCalledTimes(1);
       expect(gate.effectAllowed).toHaveBeenCalledTimes(1);
     });
@@ -442,7 +487,7 @@ describe('AgentWalletController', () => {
         const provider = await harness.controller.handleRequest(context, attestedRequest);
         expect(provider).toMatchObject({ handled: true, result: [TWO[walletIndex].address] });
         expect(told).toEqual([
-          { grant, walletIndex, account: TWO[walletIndex].address, chainId: 100, held: true },
+          { grant, walletIndex, account: TWO[walletIndex].address, chainId: 100, written: expect.any(Promise), held: true },
         ]);
       });
 
@@ -458,7 +503,7 @@ describe('AgentWalletController', () => {
         });
         const context = { ...attestedContext({}, approve), grantWritten: (effect) => told.push(effect.grant) };
         await harness.controller.handleRequest(context, attestedRequest);
-        expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('example.com', 1, 100);
+        expect(harness.dependencies.grantPermission).toHaveBeenCalledWith('example.com', 1, 100, PAGE);
         expect(told).toEqual(['created']);
       });
 
@@ -536,7 +581,7 @@ describe('AgentWalletController', () => {
         // Both before the signature, and again before the grant's last use.
         expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
         expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
-        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100);
+        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100, PAGE);
       });
 
       test("the name moving during the signature: signed, but the grant's last use untouched", async () => {
@@ -581,7 +626,7 @@ describe('AgentWalletController', () => {
         // Both before the send, and again before the grant's last use.
         expect(gate.beforeEffect).toHaveBeenCalledTimes(2);
         expect(gate.effectAllowed).toHaveBeenCalledTimes(2);
-        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100);
+        expect(harness.dependencies.updateLastUsed).toHaveBeenCalledWith('example.com', 100, PAGE);
       });
 
       // Codex on #1191: a signer can outlast a name move, the page's going or
@@ -658,10 +703,7 @@ describe('AgentWalletController', () => {
 
   test('returns EIP-1193 rejection and a typed Agent cancellation when declined', async () => {
     const harness = createHarness();
-    const provider = await harness.controller.handleRequest(
-      context(jest.fn(async () => 'declined')),
-      request('eth_requestAccounts')
-    );
+    const provider = await harness.controller.handleRequest(attested(jest.fn(async () => 'declined')), CONNECT);
 
     expect(provider).toMatchObject({
       handled: true,
@@ -881,7 +923,7 @@ describe('unsupported Agent wallet signing', () => {
   test('preserves Safe identity in connection approval', async () => {
     const { controller } = createHarness({ wallets: [safe] });
     const approve = jest.fn(async () => ({ status: 'approved', walletIndex: safe.index }));
-    await controller.handleRequest(context(approve), request('eth_requestAccounts'));
+    await controller.handleRequest(attested(approve), CONNECT);
     expect(approve).toHaveBeenCalledWith(expect.objectContaining({
       wallet: expect.objectContaining({ wallets: [safe] }),
     }));

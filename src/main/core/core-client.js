@@ -15,9 +15,14 @@
  *   the core reads them there at its checks. The pinned core (0.15.0)
  *   requires it, as every core from 0.14.0 (APR-3) does, and answers a hello
  *   without it, or with a relative path, with `invalid_argument` and exits
- *   76, so a client can't be made without one. Main sends no
- *   `grant_moved`: it still writes all four files itself (by a temp file and
- *   a rename, lib/atomic-file.js), and the core only reads them.
+ *   76, so a client can't be made without one.
+ * - **`grant_moved`** names the files that have moved to the core, which is
+ *   their only writer from then on (design 0012, "One writer per file"):
+ *   `dapp` (APB-2), whose every write main sends to the core's write
+ *   methods (wallet/dapp-permissions.js). Main still writes the other three
+ *   itself (by a temp file and a rename, lib/atomic-file.js), and the core
+ *   only reads them. Reverting the move gives the file back to main: the
+ *   core then writes nothing in it, and older builds still read it (Q10).
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
  *   (0.15.0) speaks only 2: it answers a hello at any other protocol,
@@ -132,9 +137,11 @@ const CORE_SERVICE = Object.freeze({
     // Main takes fragmented responses (the handshake grants the core
     // main's bulk credit) and stream frames, which the core requires.
     frames: ['fragment', 'stream'],
-    // Where the permission files are (design 0012, APR-3); none has moved
-    // to the core, so no `grant_moved`.
+    // Where the permission files are (design 0012, APR-3), and those that
+    // have moved to the core, which writes them from then on (APB-2: the
+    // dApp file).
     grant_root: client.grantRoot,
+    grant_moved: ['dapp'],
   }),
   validHello,
   shutdownMethod: 'core.shutdown',

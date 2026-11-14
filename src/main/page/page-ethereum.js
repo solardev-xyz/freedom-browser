@@ -124,9 +124,13 @@ function defaultDependencies() {
     chainName: (chainId) => require('../networks/network-registry').getAllNetworks()?.[chainId]?.name,
     networks: () => require('../networks/network-registry').getAllNetworks() || {},
     getActiveWalletIndex: () => require('../identity-manager').getActiveWalletIndex(),
-    grantPermission: (key, walletIndex, chainId) =>
-      require('../wallet/dapp-permissions').grantPermission(key, walletIndex, chainId),
-    updateLastUsed: (key, chainId) => require('../wallet/dapp-permissions').updateLastUsed(key, chainId),
+    // The dApp grants, which the identity core writes for a page's key under
+    // its PageContext (design 0012, APB-2); main's copy, read from the core,
+    // answers `getPermission` once it has been read the first time.
+    grantPermission: (key, walletIndex, chainId, page) =>
+      require('../wallet/dapp-permissions').grantPermission(key, walletIndex, chainId, page),
+    updateLastUsed: (key, chainId, page) => require('../wallet/dapp-permissions').updateLastUsed(key, chainId, page),
+    permissionsLoaded: () => require('../wallet/dapp-permissions').whenLoaded(),
     selectChainForPage: (windowId, chainId) =>
       require('../wallet/selected-chain').selectChainForPage(windowId, chainId),
     agentWalletRequest: async (guestId, request, options) =>
@@ -180,10 +184,22 @@ function createEthereumDispatchers(deps = {}) {
     networks,
     getActiveWalletIndex,
     grantPermission,
-    updateLastUsed,
+    updateLastUsed: touchGrant,
+    permissionsLoaded,
     selectChainForPage,
     agentWalletRequest,
   } = { ...defaultDependencies(), ...deps };
+
+  // A page's last use (and chain) of its grant, written by the core under
+  // the request's PageContext: sent in the caller's run, which made the last
+  // checks. Never rejects; nothing waits on it.
+  function updateLastUsed(context, chainId) {
+    try {
+      Promise.resolve(touchGrant(context.requester.key, chainId, context.pageContext())).catch(() => {});
+    } catch {
+      // The request's answer stands.
+    }
+  }
 
   // The chain a window's pages read, but its onchain apps.
   function windowChainOf(windowId) {
@@ -286,6 +302,9 @@ function createEthereumDispatchers(deps = {}) {
           {
             signal,
             attested: { key: requester.key, transportKey: requester.transportKey },
+            // The document's PageContext, under which the core writes the
+            // grant the agent's connect decides (design 0012, APB-2).
+            pageContext: () => context.pageContext(),
             beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
             effectAllowed: () => open() && context.holdsKey(),
             // What the agent's own write did, told inside its guarded run
@@ -296,7 +315,7 @@ function createEthereumDispatchers(deps = {}) {
               if (effect?.grant !== 'created' || typeof effect.account !== 'string' || !effect.account) return;
               const chainId =
                 Number.isSafeInteger(effect.chainId) && effect.chainId > 0 ? effect.chainId : chainIdOf(requester);
-              announceNewGrant(context, effect.account, chainId);
+              announceNewGrant(context, effect.account, chainId, effect.written);
             },
           }
         );
@@ -348,9 +367,16 @@ function createEthereumDispatchers(deps = {}) {
   // the key's other documents hear it however the request ended; the
   // document that asked hears it only if its answer was the account, not
   // "Request timed out" or nothing at all.
-  function announceNewGrant(context, account, chainId) {
+  function announceNewGrant(context, account, chainId, written = Promise.resolve()) {
     const { requester } = context;
     context.inGrantOrder(requester.key, async () => {
+      // The core writes the grant (design 0012, APB-2): none written, none
+      // told.
+      try {
+        await written;
+      } catch {
+        return;
+      }
       const answered = await context.whenAnswered();
       const others = context
         .liveDocuments()
@@ -381,7 +407,7 @@ function createEthereumDispatchers(deps = {}) {
     if (permission) {
       const wallet = (await walletList()).find((candidate) => candidate?.index === permission.walletIndex);
       if (!(await context.nameHolds(keyless)) || !context.holdsKey()) return { error: { ...NO_ADDRESS } };
-      updateLastUsed(requester.key);
+      updateLastUsed(context);
       return { result: wallet?.address ? [wallet.address] : [] };
     }
     const view = connectView(await walletList(), requester);
@@ -408,12 +434,21 @@ function createEthereumDispatchers(deps = {}) {
     if (!chosen?.address) return { error: { ...ACCOUNT_GONE } };
     if (!(await context.nameHolds(keyless)) || !context.holdsKey()) return { error: { ...NO_ADDRESS } };
     const chainId = chainIdOf(requester);
+    // Sent to the core in this run, under the request's PageContext; its
+    // events queued here, in the key's order, sent only once it is written.
+    let written;
     try {
-      grantPermission(requester.key, chosen.index, chainId);
+      written = Promise.resolve(grantPermission(requester.key, chosen.index, chainId, context.pageContext()));
+    } catch (err) {
+      written = Promise.reject(err);
+    }
+    announceNewGrant(context, chosen.address, chainId, written);
+    try {
+      await written;
     } catch {
+      // Not written (a widening whose write failed isn't applied).
       return { error: { ...GRANT_FAILED } };
     }
-    announceNewGrant(context, chosen.address, chainId);
     return { result: [chosen.address] };
   }
 
@@ -455,7 +490,7 @@ function createEthereumDispatchers(deps = {}) {
     // IPNS key, neither the grant's chain nor the window's.
     if (!(await context.nameHolds()) || !context.holdsKey()) return { error: { ...NO_ADDRESS } };
     const previous = windowChainOf(requester.window);
-    if (getPermission(requester.key)) updateLastUsed(requester.key, requested);
+    if (getPermission(requester.key)) updateLastUsed(context, requested);
     selectChainForPage(requester.window, requested);
     // The chain changed for every other page of the window too, but the
     // onchain apps.
@@ -483,6 +518,8 @@ function createEthereumDispatchers(deps = {}) {
 
   const serve = (answer) => async (context) => {
     if (!identityWalletEnabled()) return { error: { ...DISCONNECTED } };
+    // Main's copy of the grants, read from the core the first time.
+    await permissionsLoaded();
     return answer(context);
   };
 
