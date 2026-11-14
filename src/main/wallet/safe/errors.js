@@ -39,6 +39,9 @@ const CODES = {
    * running: nothing that waits on its end (a discard, a cancel, the join,
    * clearing an executed SafeTx) was done, and the user tries again. */
   SAFE_APPROVAL_END_FAILED: 'SAFE_APPROVAL_END_FAILED',
+  /** A held Safe execution's Safe is no longer in the wallet list (deleted):
+   * its bytes aren't sent again or replaced. */
+  SAFE_DELETED: 'SAFE_DELETED',
 };
 
 function codedError(message, code) {

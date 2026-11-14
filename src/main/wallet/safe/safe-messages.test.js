@@ -1074,3 +1074,221 @@ describe("a session's Safe approval", () => {
     expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
   });
 });
+
+// Review of #1245, round 3: a session a page's standing rule answers keeps
+// its last check (`beforeSign`), and every later owner's signer awaits it
+// right before it signs, from the board as at the opening. Its refusal ends
+// the session there (its approval ended, then the session dropped).
+describe("a rule's session: its last check before every later owner", () => {
+  const REFUSALS = {
+    rule: Object.assign(new Error("The site's rule no longer answers this request"), {
+      code: 'STANDING_WITHDRAWN',
+      answer: { error: { code: 4100, message: 'rule gone' } },
+    }),
+    custody: Object.assign(new Error("The site's rule no longer answers this request"), {
+      code: 'STANDING_WITHDRAWN',
+      answer: { error: { code: 4100, message: 'agent custody' } },
+    }),
+  };
+  // The site's rule as the core reads it, and whether an agent holds the tab.
+  let rule;
+  let custody;
+  const beforeSign = jest.fn(async () => {
+    if (custody) throw REFUSALS.custody;
+    if (!rule) throw REFUSALS.rule;
+  });
+  const startRule = (approval = newApproval()) =>
+    startSafeMessage({
+      approval,
+      safeIndex: 5,
+      request: { method: 'eth_signTypedData_v4', params: [SAFE_ADDRESS, DAPP_TYPED_DATA] },
+      display: { site: 'app.example', method: 'eth_signTypedData_v4' },
+      requester: TAB_A,
+      owner: 'main',
+      beforeSign,
+    });
+  // What each end saw: whether the session was still there (ended first),
+  // and ended for good already.
+  const watchEnds = () => {
+    const seen = [];
+    mockApprovalEnd.mockImplementation(async (id) => {
+      seen.push({ id, session: getSession(5) !== null, dead: getSession(5)?.dead === true });
+      return {};
+    });
+    return seen;
+  };
+  const WITHDRAWALS = [
+    ['its rule is revoked', () => {
+      rule = false;
+    }, 'rule'],
+    ['custody begins', () => {
+      custody = true;
+    }, 'custody'],
+  ];
+
+  beforeEach(() => {
+    rule = true;
+    custody = false;
+    mockOwnersSigned = 0;
+    beforeSign.mockClear();
+  });
+
+  test.each(WITHDRAWALS)(
+    '%s after the first owner signed: a later owner chosen on the board is refused, nothing signed, the approval ended before the drop',
+    async (_label, withdraw, which) => {
+      const approval = newApproval();
+      const state = await startRule(approval);
+      // The vault owner signed past the check at the opening.
+      expect(state.collected).toBe(1);
+      expect(mockOwnersSigned).toBe(1);
+      withdraw();
+      const seen = watchEnds();
+      await expect(signSafeMessage(5, 2, state.token)).rejects.toBe(REFUSALS[which]);
+      // The check ran in the Ledger owner's signer, and stopped it.
+      expect(mockCollectOwnerSignature).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ownerIndex: 2, beforeSign: expect.any(Function) })
+      );
+      expect(beforeSign).toHaveBeenCalledTimes(2);
+      expect(mockOwnersSigned).toBe(1);
+      expect(seen).toEqual([{ id: approval.id, session: true, dead: true }]);
+      expect(getSession(5)).toBeNull();
+      expect(safeApprovals.stepRunning(5)).toBe(false);
+      // Nothing more signs it.
+      await expect(signSafeMessage(5, 4, state.token)).rejects.toThrow('No signature request is open');
+      expect(mockOwnersSigned).toBe(1);
+    }
+  );
+
+  test.each(WITHDRAWALS)(
+    "%s after a device owner signed: the board's sweep of a vault owner is refused the same way",
+    async (_label, withdraw, which) => {
+      // Locked at the opening: no free signature then.
+      mockIsVaultUnlocked.mockResolvedValueOnce(false);
+      const approval = newApproval();
+      const state = await startRule(approval);
+      expect(state.collected).toBe(0);
+      // The Ledger owner signs from the board, past the check.
+      await signSafeMessage(5, 2, state.token);
+      expect(beforeSign).toHaveBeenCalledTimes(1);
+      expect(mockOwnersSigned).toBe(1);
+      withdraw();
+      const seen = watchEnds();
+      // The board opens again after an unlock: its sweep reaches the vault
+      // owner.
+      await expect(signSafeMessage(5, undefined, state.token)).rejects.toBe(REFUSALS[which]);
+      expect(mockCollectOwnerSignature).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ownerIndex: 0, beforeSign: expect.any(Function) })
+      );
+      expect(mockOwnersSigned).toBe(1);
+      expect(seen).toEqual([{ id: approval.id, session: true, dead: true }]);
+      expect(getSession(5)).toBeNull();
+      expect(safeApprovals.stepRunning(5)).toBe(false);
+    }
+  );
+
+  test('while the rule still answers, a later owner signs past it', async () => {
+    const state = await startRule();
+    await signSafeMessage(5, 2, state.token);
+    expect(beforeSign).toHaveBeenCalledTimes(2);
+    expect(mockOwnersSigned).toBe(2);
+    expect(getSafeMessageState(5, state.token)).toMatchObject({ collected: 2, complete: true });
+  });
+
+  test("a token's session has no last check: its later owners sign as before", async () => {
+    const state = await startPersonal();
+    await signSafeMessage(5, 2, state.token);
+    expect(mockCollectOwnerSignature).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ beforeSign: expect.anything() })
+    );
+    expect(getSafeMessageState(5, state.token)).toMatchObject({ collected: 2 });
+  });
+
+  test('an end that fails on the refusal: the refusal is heard, the session kept ended, nothing more signs it', async () => {
+    const approval = newApproval();
+    const state = await startRule(approval);
+    rule = false;
+    mockApprovalEnd.mockRejectedValue(busy());
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(signSafeMessage(5, 2, state.token)).rejects.toBe(REFUSALS.rule);
+    expect(getSession(5)).toMatchObject({ token: state.token, dead: true });
+    // Not even with the rule back.
+    rule = true;
+    for (const owner of [2, 4, undefined]) {
+      await expect(signSafeMessage(5, owner, state.token)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    }
+    expect(mockOwnersSigned).toBe(1);
+    // Its drop, again, by a cancel.
+    mockApprovalEnd.mockReset().mockResolvedValue({});
+    await cancelSafeMessage(5, state.token);
+    expect(getSession(5)).toBeNull();
+    expect(endedIds()).toEqual([approval.id]);
+    console.warn.mockRestore();
+  });
+});
+
+// Review of #1245, round 3: the requesting page is watched through every
+// wait before its session holds its approval, a leftover's drop (its end
+// asked again) and the approval's hold included: a page gone by then gets
+// no session and no owner's signature, and its approval is ended.
+describe('a page that goes before its session opens', () => {
+  const LEAVES = [
+    ['navigates', (id) => mockWebContentsById.get(id).emit('did-navigate')],
+    ['closes', (id) => destroyWebContents(id)],
+  ];
+  const personal = (message) => ({ method: 'personal_sign', params: [message, SAFE_ADDRESS] });
+
+  test.each(LEAVES)(
+    "one that %s while a leftover's end is asked again: no owner signs, its approval is ended",
+    async (_label, leave) => {
+      // TAB_A's session, its page gone and its end failing: kept, ended.
+      await startSafeMessage({ approval: newApproval(), safeIndex: 5, request: personal(HEX_MESSAGE), display: DISPLAY, requester: TAB_A });
+      mockApprovalEnd.mockRejectedValue(busy());
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      destroyWebContents(TAB_A.webContentsId);
+      await flush();
+      const leftover = getSession(5);
+      expect(leftover).toMatchObject({ dead: true });
+      const leftoverId = endedIds()[0];
+
+      // TAB_B asks: the leftover's end is asked again, and waits.
+      const gate = deferred();
+      mockApprovalEnd.mockReset().mockImplementationOnce(() => gate.promise).mockResolvedValue({});
+      mockCollectOwnerSignature.mockClear();
+      const approval = newApproval();
+      const starting = startSafeMessage({ approval, safeIndex: 5, request: personal('another message'), display: DISPLAY, requester: TAB_B });
+      await flush();
+      expect(endedIds()).toEqual([leftoverId]);
+      leave(TAB_B.webContentsId);
+      gate.resolve({});
+      await expect(starting).rejects.toThrow('went away');
+      expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+      expect(getSession(5)).toBeNull();
+      expect(endedIds()).toEqual([leftoverId, approval.id]);
+      expect(safeApprovals.stepRunning(5)).toBe(false);
+      console.warn.mockRestore();
+    }
+  );
+
+  test.each(LEAVES)(
+    'one that %s while its approval is being held: no owner signs, the approval held is ended',
+    async (_label, leave) => {
+      // An approval left in the Safe's message slot with no session: the
+      // hold ends it first, and that waits.
+      const older = newApproval();
+      await safeApprovals.hold(safeApprovals.KINDS.MESSAGE, 5, older, '0x' + 'ab'.repeat(32));
+      const gate = deferred();
+      mockApprovalEnd.mockImplementationOnce(() => gate.promise);
+      const approval = newApproval();
+      const starting = startSafeMessage({ approval, safeIndex: 5, request: personal(HEX_MESSAGE), display: DISPLAY, requester: TAB_A });
+      await flush();
+      expect(endedIds()).toEqual([older.id]);
+      leave(TAB_A.webContentsId);
+      gate.resolve({});
+      await expect(starting).rejects.toThrow('went away');
+      expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+      expect(getSession(5)).toBeNull();
+      expect(endedIds()).toEqual([older.id, approval.id]);
+      expect(safeApprovals.stepRunning(5)).toBe(false);
+    }
+  );
+});

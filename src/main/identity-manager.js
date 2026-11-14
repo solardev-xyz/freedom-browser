@@ -1332,6 +1332,25 @@ function getWalletRecord(walletIndex, meta = getVaultMeta()) {
 }
 
 /**
+ * The wallet-list record stored with `address` (case-insensitive), as
+ * getWalletRecord normalizes it, or null. An address names one record at
+ * most: a second account at an address in the list is refused. Only stored
+ * addresses count (a Safe's, a device's); synchronous and cheap.
+ *
+ * @param {string} address
+ * @param {Object} [meta] - Already-loaded vault-meta, to skip the disk read
+ * @returns {Object|null}
+ */
+function findWalletRecordByAddress(address, meta = getVaultMeta()) {
+  if (!meta || typeof address !== 'string' || !address) return null;
+  const wanted = address.toLowerCase();
+  const found = getWalletList(meta).find(
+    (wallet) => typeof wallet.address === 'string' && wallet.address.toLowerCase() === wanted
+  );
+  return found ? getWalletRecord(found.index, meta) : null;
+}
+
+/**
  * Get list of derived user wallets
  * @returns {Array<{index: number, name: string, address: string, type: string}>}
  */
@@ -2338,6 +2357,7 @@ module.exports = {
   HARDWARE_INDEX_BASE,
   isHardwareWalletIndex,
   getWalletRecord,
+  findWalletRecordByAddress,
   getDerivedWallets,
   getActiveWalletIndex,
   setActiveWalletIndex,

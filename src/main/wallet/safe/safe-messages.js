@@ -78,6 +78,17 @@ const store = {
   signed: async (safeIndex, entry) => {
     if (entry.signatures.length >= entry.threshold) await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
   },
+  // The caller's last check, kept with the session (a page's standing rule,
+  // for a message it answers): every owner's signer awaits it right before
+  // it signs, the free ones' as the session opens and each later owner's
+  // from the board.
+  lastCheck: (entry) => entry.beforeSign,
+  // Its refusal ends the session there: its approval ended, then the
+  // session dropped. If the end fails, it stays ended for the next drop.
+  refused: (safeIndex, entry) =>
+    endAndDiscard(safeIndex, entry).catch((err) => {
+      console.warn('[SafeMessages] a refused signature request is kept, ended, for now:', err.message);
+    }),
 };
 
 /**
@@ -300,10 +311,12 @@ function getSafeMessageState(safeIndex, token) {
  *   the request's `safe-message` token or its site's rule gave (design
  *   0012): held for the session, and ended if none opens for it
  * @param {() => Promise<void>} [params.beforeSign] - The caller's last
- *   check (a page's standing rule, for a message it answers): awaited
- *   inside each free owner's signer, after the request's preparation and
- *   right before that owner signs. Its refusal ends the session, nothing
- *   more signed, and rejects with the caller's own error.
+ *   check (a page's standing rule, for a message it answers), kept with the
+ *   session: awaited inside every owner's signer right before that owner
+ *   signs, a free owner's here (after the request's preparation) and a later
+ *   owner's from the board (`signSafeMessage`). Its refusal ends the
+ *   session (its approval ended first), nothing more signed, and rejects
+ *   with the caller's own error.
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
 async function startSafeMessage({ safeIndex, request, display, requester, owner = null, approval, beforeSign = null }) {
@@ -326,18 +339,22 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
   if (!isMarkedDeployed(initial, DEPLOY_CHAIN_ID)) {
     throw new Error('Activate this account on Gnosis before signing for apps');
   }
-  // Hashing awaits the identity core: watch the requesting page meanwhile,
-  // since its lifecycle listeners are only attached to the session later.
+  // Every wait until the session holds its approval (the core's hash, a
+  // leftover's drop, the approval's hold) is watched for the requesting
+  // page, since its lifecycle listeners are only attached to the session.
   const watch = watchRequester(requester);
-  let digest;
   try {
-    digest = await requestDigest(request.method, request.params);
+    return await openWatched({ safeIndex, request, display, requester, mainOwned, approval, beforeSign, progress, initial, watch });
   } finally {
     watch.stop();
   }
-  if (watch.gone()) {
-    throw new Error('The requesting page went away before the signature request opened');
-  }
+}
+
+const pageWentAway = () => new Error('The requesting page went away before the signature request opened');
+
+async function openWatched({ safeIndex, request, display, requester, mainOwned, approval, beforeSign, progress, initial, watch }) {
+  const digest = await requestDigest(request.method, request.params);
+  if (watch.gone()) throw pageWentAway();
   // The account may have changed meanwhile (deleted: getSafeRecord throws).
   const record = getSafeRecord(safeIndex);
   if (
@@ -390,6 +407,9 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
         SAFE_MESSAGE_EXISTS
       );
     }
+    // That drop was a wait (its end asked again, maybe): this page may have
+    // gone meanwhile, and gets no session.
+    if (watch.gone()) throw pageWentAway();
   }
 
   acquire(safeIndex);
@@ -412,18 +432,31 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
       signatures: [],
       createdAt: Date.now(),
       mainOwned,
+      beforeSign: typeof beforeSign === 'function' ? beforeSign : null,
     };
     // Held first: a session opens only with its approval.
     await safeApprovals.hold(MESSAGE, safeIndex, approval, hash);
     progress.held = true;
+    if (watch.gone()) {
+      // The page went while its approval was being held: ended here, and
+      // no session opens. (An end that fails leaves it in the Safe's slot,
+      // presented by nothing; the next hold or the Safe's deletion ends it.)
+      await safeApprovals.end(MESSAGE, safeIndex, hash).catch((err) => {
+        console.warn("[SafeMessages] a gone page's approval is kept for now:", err.message);
+      });
+      throw pageWentAway();
+    }
+    // From here the session's own listeners watch the page (same run).
     setSession(safeIndex, entry);
     attachRequesterLifecycle(safeIndex, entry);
+    watch.stop();
     try {
-      await collectFreeSignatures(store, safeIndex, record.owners, null, { beforeSign });
+      await collectFreeSignatures(store, safeIndex, record.owners);
     } catch (err) {
-      // The caller's last check refused: the session ends here (its
-      // approval ended first), and what it collected goes with it. If the
-      // end fails, it stays ended for the next drop to finish.
+      // The caller's last check refused (the store ended the session, its
+      // approval first), or the sweep failed: the session ends, and what it
+      // collected goes with it. If the end fails, it stays ended for the
+      // next drop to finish.
       await endAndDiscard(safeIndex, entry).catch((endError) => {
         console.warn('[SafeMessages] a refused signature request is kept, ended, for now:', endError.message);
       });

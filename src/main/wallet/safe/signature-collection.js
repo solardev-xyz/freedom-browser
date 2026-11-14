@@ -24,6 +24,13 @@
  * `ended(entry)`, if the adapter has it, says the entry has ended for good
  * (a SafeMessage whose page went away, kept only until its approval's end):
  * no owner signs it, and a signature that lands for it is dropped.
+ * `lastCheck(entry)`, if the adapter has it, names the caller's last check
+ * kept with the entry (a page's standing rule, for the Safe message it
+ * answers), or null: every owner's signer awaits it right before it signs,
+ * a free owner's in a sweep and a chosen owner's alike. When it refuses,
+ * `refused(safeIndex, entry)` ends the entry (a SafeMessage's approval
+ * ended, then its session dropped), still under the Safe's step, and only
+ * then does the caller hear the refusal.
  */
 
 const { collectOwnerSignature } = require('./safe-executor');
@@ -63,6 +70,29 @@ function isBusy(safeIndex) {
   return stepRunning(safeIndex);
 }
 
+/**
+ * The caller's last check kept with the entry (`store.lastCheck`), as the
+ * owner's signer awaits it (`beforeSign`), or null; `refused(err)` tells its
+ * refusal from the signer's own failure.
+ */
+function lastCheckOf(store, entry) {
+  const check = store.lastCheck?.(entry) || null;
+  if (typeof check !== 'function') return { beforeSign: null, refused: () => false };
+  const refusals = new WeakSet();
+  return {
+    beforeSign: async () => {
+      try {
+        await check();
+      } catch (err) {
+        const refusal = err && typeof err === 'object' ? err : new Error(String(err));
+        refusals.add(refusal);
+        throw refusal;
+      }
+    },
+    refused: (err) => refusals.has(err),
+  };
+}
+
 const hasSigned = (signatures, address) =>
   Boolean(address) &&
   signatures.some((sig) => sig.signer.toLowerCase() === address.toLowerCase());
@@ -87,26 +117,15 @@ function ownersView(ownerIndexes, signatures) {
  * again when the board (re)opens (covers a vault that was locked the
  * first time). With `expectedId`, only that entry is signed.
  *
- * `beforeSign`, the caller's last check (a page's standing rule for the
- * Safe message it answers), is awaited inside each owner's signer right
- * before it signs; its refusal stops the sweep and is the caller's to hear.
+ * The entry's last check (`store.lastCheck`: a page's standing rule for the
+ * Safe message it answers) is awaited inside each owner's signer right
+ * before it signs. Its refusal stops the sweep: the entry is ended
+ * (`store.refused`), and the refusal is the caller's to hear.
  */
-async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId = null, { beforeSign = null } = {}) {
+async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId = null) {
   if (!(await isVaultUnlocked())) {
     return;
   }
-  const refusals = new WeakSet();
-  const lastCheck = beforeSign
-    ? async () => {
-        try {
-          await beforeSign();
-        } catch (err) {
-          const refusal = err && typeof err === 'object' ? err : new Error(String(err));
-          refusals.add(refusal);
-          throw refusal;
-        }
-      }
-    : null;
   for (const ownerIndex of ownerIndexes) {
     const entry = store.get(safeIndex);
     if (!entry || entry.superseded || ended(store, entry) || entry.signatures.length >= entry.threshold) break;
@@ -119,16 +138,20 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     // owners stay rows.
     const approval = store.approvalOf(safeIndex, entry);
     if (!approval) break;
+    const check = lastCheckOf(store, entry);
     let signature;
     try {
       signature = await collectOwnerSignature({
         typedData: entry.typedData,
         ownerIndex,
         approval,
-        ...(lastCheck ? { beforeSign: lastCheck } : {}),
+        ...(check.beforeSign ? { beforeSign: check.beforeSign } : {}),
       });
     } catch (err) {
-      if (refusals.has(err)) throw err;
+      if (check.refused(err)) {
+        await store.refused?.(safeIndex, entry);
+        throw err;
+      }
       if (approvalGone(err)) {
         store.forgetApproval(safeIndex, entry);
         break;
@@ -168,7 +191,9 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
  * owns membership, idempotency, mutual exclusion, and the
  * identity re-check after a ceremony that may have taken minutes. With
  * `expectedId`, the caller's entry is the one signed: another one is
- * refused (SAFE_DISCARDED) before any ceremony starts.
+ * refused (SAFE_DISCARDED) before any ceremony starts. The entry's last
+ * check (`store.lastCheck`) is the chosen owner's too, right before it
+ * signs; its refusal ends the entry (`store.refused`) before it is thrown.
  */
 async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expectedId = null }) {
   if (ownerIndex == null) {
@@ -194,13 +219,26 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
   const approval = store.approvalOf(safeIndex, entry);
   if (!approval) throw approvalNeeded();
 
+  const check = lastCheckOf(store, entry);
+
   acquire(safeIndex);
   try {
     const signedId = store.idOf(entry);
     let signature;
     try {
-      signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex, approval });
+      signature = await collectOwnerSignature({
+        typedData: entry.typedData,
+        ownerIndex,
+        approval,
+        ...(check.beforeSign ? { beforeSign: check.beforeSign } : {}),
+      });
     } catch (err) {
+      if (check.refused(err)) {
+        // The caller's last check withdrew it: the entry ends here, under
+        // the Safe's step, before the refusal is heard.
+        await store.refused?.(safeIndex, entry);
+        throw err;
+      }
       if (!approvalGone(err)) throw err;
       store.forgetApproval(safeIndex, entry);
       throw approvalNeeded();

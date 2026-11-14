@@ -75,8 +75,14 @@ jest.mock('./signers', () => ({
     mockSigners[index] &&
     require('../../../test/helpers/simulated-approvals').coreCheckedSigner(mockApprovals, mockSigners[index], index, authorized),
 }));
+// The Safe a held Safe execution calls, while it is in the wallet list.
+let mockSafeRecord = null;
 jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
+  findWalletRecordByAddress: (address) =>
+    mockSafeRecord && typeof address === 'string' && address.toLowerCase() === mockSafeRecord.address.toLowerCase()
+      ? mockSafeRecord
+      : null,
   getActiveWalletIndex: () => mockActiveIndex,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
@@ -107,6 +113,7 @@ beforeEach(() => {
   mockSigners = { 0: signerFor(ALICE), 1: signerFor(BOB) };
   mockApprovals.reset();
   mockActiveIndex = 0;
+  mockSafeRecord = null;
   mockRequest.mockReset().mockImplementation(async (_chainId, method) => {
     if (method === 'eth_getTransactionReceipt') {
       return { result: { status: '0x1', blockNumber: '0x1', gasUsed: '0x5208' }, source: 'direct' };
@@ -1966,5 +1973,179 @@ describe("Couldn't confirm, and closing by hand (#94)", () => {
       code: 'SIGNING_NOT_CONFIRMED',
     });
     expect(running.store.get(sent.intentId).state).toBe('held');
+  });
+});
+
+// Review of #1245, round 3: a held Safe execution sent again or replaced
+// takes its Safe's step through the broadcast, as the execution does, so its
+// Safe's deletion can't run alongside it, and nothing is sent for a Safe
+// that is being deleted or is gone.
+describe("a held Safe execution, sent again or replaced, and its Safe's deletion", () => {
+  const SAFE_INDEX = 9;
+  const SAFE = '0x' + '5e'.repeat(20);
+  const safeTxHash = '0x' + '5d'.repeat(32);
+  const intentKey = `safe-exec:100:${safeTxHash}`;
+
+  function startHeld() {
+    const running = start();
+    require('./intent-ipc').registerIntentIpc({ windows: () => [] });
+    const handlers = Object.fromEntries(require('electron').ipcMain.handle.mock.calls);
+    return {
+      ...running,
+      // The instance main's modules share since start() reset them.
+      safeApprovals: require('./safe/safe-approvals'),
+      confirm: (kind, index, payload, options) =>
+        handlers['wallet:confirm-signing']({}, kind, index, payload, options),
+      resend: (...args) => handlers['wallet:intent-resend']({}, ...args),
+      replace: (...args) => handlers['wallet:intent-replace']({}, ...args),
+    };
+  }
+
+  // Alice executed the Safe's SafeTx; the node refused it over its fee, so
+  // the execution is held at its nonce.
+  async function heldExecution(running) {
+    mockSafeRecord = { index: SAFE_INDEX, address: SAFE, type: 'safe' };
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('transaction underpriced'), { outcome: 'rejected' });
+    });
+    const params = { chainId: 100, to: SAFE, value: '0', data: '0x6a761202', gasLimit: '21000', gasPrice: '1000000000' };
+    await expect(
+      require('./tx-recorder').signAndRecord(params, mockSigners[0], { kind: 'safe-send' }, { intentKey, walletIndex: 0 })
+    ).rejects.toMatchObject({ outcome: 'rejected' });
+    const held = running.store.byKey(intentKey);
+    expect(held).toMatchObject({ state: 'held', context: { walletIndex: 0 } });
+    return held;
+  }
+
+  const resendBindingOf = (view) => ({
+    intentId: view.intentId,
+    chainId: view.chainId,
+    sender: view.sender,
+    nonce: view.nonce,
+    hash: view.hash,
+  });
+  const FEES = { gasPrice: '1100000000' };
+  const replaceBindingOf = (view) => ({
+    intentId: view.intentId,
+    chainId: view.chainId,
+    sender: view.sender,
+    nonce: view.nonce,
+    to: view.fields.to,
+    value: view.fields.value,
+    data: view.fields.data,
+    gasLimit: view.fields.gasLimit,
+    ...FEES,
+  });
+
+  // Each action, confirmed by the user as it is asked.
+  const ACTIONS = {
+    resend: async (running, view) => {
+      const { token } = await running.confirm('intent-resend', null, resendBindingOf(view));
+      return running.resend(view.intentId, { confirmation: token });
+    },
+    replace: async (running, view) => {
+      const minted = await running.confirm('intent-replace', null, replaceBindingOf(view));
+      expect(minted.success).toBe(true);
+      return running.replace(view.intentId, FEES, { confirmation: minted.token });
+    },
+  };
+
+  const waitForBroadcasts = async (count) => {
+    for (let i = 0; i < 400 && mockBroadcast.mock.calls.length < count; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
+
+  describe.each(Object.keys(ACTIONS))('%s', (action) => {
+    test('while its Safe is being deleted: refused (SAFE_BUSY), and once deleted (SAFE_DELETED); nothing sent', async () => {
+      const running = startHeld();
+      const view = await heldExecution(running);
+      const before = mockBroadcast.mock.calls.length;
+
+      // The deletion's exclusion first (deleteDerivedWallet takes it before
+      // it ends the Safe's approvals and removes its record).
+      const deletion = running.safeApprovals.beginDeletion(SAFE_INDEX);
+      await expect(ACTIONS[action](running, view)).resolves.toMatchObject({
+        success: false,
+        code: 'SAFE_BUSY',
+        intent: { intentId: view.intentId, state: 'held' },
+      });
+      // The record goes, then the exclusion.
+      mockSafeRecord = null;
+      deletion.release();
+      await expect(ACTIONS[action](running, view)).resolves.toMatchObject({
+        success: false,
+        code: 'SAFE_DELETED',
+        intent: { intentId: view.intentId, state: 'held' },
+      });
+      expect(mockBroadcast).toHaveBeenCalledTimes(before);
+      expect(mockSigners[0].signTransaction).toHaveBeenCalledTimes(1);
+      expect(running.store.get(view.intentId).hashes).toEqual(view.hashes);
+      // Nothing of it holds the Safe's step.
+      expect(running.safeApprovals.stepRunning(SAFE_INDEX)).toBe(false);
+    });
+
+    test('under way: its Safe can\'t be deleted until its broadcast has ended', async () => {
+      const running = startHeld();
+      const view = await heldExecution(running);
+      const before = mockBroadcast.mock.calls.length;
+      let answer;
+      mockBroadcast.mockImplementationOnce(
+        (_chainId, raw) =>
+          new Promise((resolve) => {
+            answer = () => resolve({ result: keccak256(raw), source: 'direct' });
+          })
+      );
+      const acting = ACTIONS[action](running, view);
+      await waitForBroadcasts(before + 1);
+      expect(mockBroadcast).toHaveBeenCalledTimes(before + 1);
+
+      // The deletion is refused while the bytes are being handed off.
+      expect(() => running.safeApprovals.beginDeletion(SAFE_INDEX)).toThrow(
+        expect.objectContaining({ code: 'SAFE_BUSY' })
+      );
+      answer();
+      await expect(acting).resolves.toMatchObject({ success: true, outcome: 'sent' });
+      // Then the step is the Safe's again, and its deletion may begin.
+      expect(running.safeApprovals.stepRunning(SAFE_INDEX)).toBe(false);
+      expect(() => running.safeApprovals.beginDeletion(SAFE_INDEX).release()).not.toThrow();
+    });
+
+    test('a step of the Safe already running (an execution, a ceremony): refused, nothing sent', async () => {
+      const running = startHeld();
+      const view = await heldExecution(running);
+      const before = mockBroadcast.mock.calls.length;
+      running.safeApprovals.beginStep(SAFE_INDEX);
+      await expect(ACTIONS[action](running, view)).resolves.toMatchObject({ success: false, code: 'SAFE_BUSY' });
+      expect(mockBroadcast).toHaveBeenCalledTimes(before);
+      running.safeApprovals.endStep(SAFE_INDEX);
+    });
+
+    test('a refused broadcast gives the step back', async () => {
+      const running = startHeld();
+      const view = await heldExecution(running);
+      mockBroadcast.mockImplementationOnce(async () => {
+        throw Object.assign(new Error('nonce too low'), { outcome: 'rejected' });
+      });
+      await expect(ACTIONS[action](running, view)).resolves.toMatchObject({ success: false });
+      expect(running.safeApprovals.stepRunning(SAFE_INDEX)).toBe(false);
+      expect(() => running.safeApprovals.beginDeletion(SAFE_INDEX).release()).not.toThrow();
+    });
+  });
+
+  test("another account's intent takes no Safe's step", async () => {
+    const running = startHeld();
+    await heldExecution(running);
+    // A wallet payment to the Safe's address is not its execution.
+    mockBroadcast.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('transaction underpriced'), { outcome: 'rejected' });
+    });
+    const tx = { chainId: 100, to: SAFE, value: '1', gasLimit: '21000', gasPrice: '1000000000' };
+    const sent = await running.walletSend({}, tx, {}, await authorize(running, 1, tx));
+    expect(sent.success).toBe(false);
+    const view = running.store.get(sent.intentId);
+    const deletion = running.safeApprovals.beginDeletion(SAFE_INDEX);
+    await expect(ACTIONS.resend(running, view)).resolves.toMatchObject({ success: true });
+    deletion.release();
   });
 });

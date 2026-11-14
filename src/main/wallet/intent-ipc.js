@@ -33,6 +33,12 @@
  *   those hashes: a replacement committed meanwhile closes nothing. The
  *   intent is retired durably, and its history row says its payment is
  *   unconfirmed. Refusals carry the intent's current summary.
+ * - A Safe's execution (`safe-exec:<chain>:<safeTxHash>`) is sent again or
+ *   replaced only under its Safe's step (`safe/safe-approvals.js`), held
+ *   through the broadcast as its execution's is, so a deletion of the Safe
+ *   can't run alongside: refused (SAFE_BUSY) while the Safe is being deleted
+ *   or another step of it runs, and (SAFE_DELETED) once it is no longer in
+ *   the wallet list. Closing one needs no step: it sends nothing.
  * - `wallet:intents-changed`: to the chrome windows whenever the records
  *   change, or what the finality tracker saw of a held intent does.
  */
@@ -55,6 +61,9 @@ const { withAccountLock } = require('./nonce-reservations');
 const { getTxExplorerUrl } = require('./chains');
 const { redactedHandler } = require('./rpc-errors');
 const { forSenderWindow } = require('../windows/request-window');
+const { findWalletRecordByAddress, WALLET_TYPES } = require('../identity-manager');
+const { beginStep, endStep } = require('./safe/safe-approvals');
+const { codedError, SAFE_DELETED } = require('./safe/errors');
 
 const OUTCOME_ATTENTION = Object.freeze({
   rejected: 'refused',
@@ -265,18 +274,51 @@ function heldView(store, intentId) {
   return view;
 }
 
+// The intent keys of a Safe's execution (safe-executor.js's execIntentKey).
+const SAFE_EXEC_KEY = /^safe-exec:/;
+
+/**
+ * The Safe's step for a held Safe execution (`safe-exec:<chain>:<hash>`),
+ * taken before its confirmation is spent and held until its broadcast has
+ * ended, as the execution's own is (`safe-approvals.js`): a deletion of the
+ * Safe is refused while it runs, and it is refused (SAFE_BUSY) while one
+ * runs or another step of the Safe does. Its Safe is the account its
+ * transaction calls (`execTransaction` goes to the Safe), and an address
+ * names one record at most; with none, the Safe was deleted (SAFE_DELETED).
+ * Taken in the same run as that lookup. Returns the step's end, or a no-op
+ * for any other intent.
+ */
+function takeSafeStep(view) {
+  if (!SAFE_EXEC_KEY.test(view.context?.key ?? '')) return () => {};
+  const safe = findWalletRecordByAddress(view.fields?.to);
+  if (safe?.type !== WALLET_TYPES.SAFE) {
+    throw codedError(
+      "This payment's Safe account is no longer in your wallet, so it can't be sent again or replaced.",
+      SAFE_DELETED
+    );
+  }
+  beginStep(safe.index);
+  return () => endStep(safe.index);
+}
+
 async function resendHeldIntent(intentId, authorization) {
   const store = getIntentStore();
   await store.ready;
   const view = heldView(store, intentId);
-  // The user confirmed this intent as main records it; nothing the caller
-  // submits takes part.
-  // Nothing is signed: the identity core spends the token (design 0012,
-  // `approval.spend`, advised).
-  await spendConfirmation(
-    confirmationFor(authorization?.confirmation, CONFIRM_KINDS.INTENT_RESEND, null, resendBinding(view))
-  );
-  return resendAndRecord(view.intentId, { hash: view.hash });
+  // A Safe's execution: its Safe's step, through the broadcast.
+  const endSafeStep = takeSafeStep(view);
+  try {
+    // The user confirmed this intent as main records it; nothing the caller
+    // submits takes part.
+    // Nothing is signed: the identity core spends the token (design 0012,
+    // `approval.spend`, advised).
+    await spendConfirmation(
+      confirmationFor(authorization?.confirmation, CONFIRM_KINDS.INTENT_RESEND, null, resendBinding(view))
+    );
+    return await resendAndRecord(view.intentId, { hash: view.hash });
+  } finally {
+    endSafeStep();
+  }
 }
 
 // What an intent-replace confirmation binds: the payment from main's
@@ -323,9 +365,16 @@ async function replaceHeldIntent(intentId, fees, authorization) {
   const confirmed = Object.fromEntries(
     Object.entries(submitted).filter(([, value]) => value !== undefined && value !== null)
   );
-  return withConfirmation(confirmation.token, () =>
-    replaceAndRecord(view.intentId, confirmed, getSigner(walletIndex, { confirmation }))
-  );
+  // A Safe's execution: its Safe's step, through the replacement's
+  // broadcast.
+  const endSafeStep = takeSafeStep(view);
+  try {
+    return await withConfirmation(confirmation.token, () =>
+      replaceAndRecord(view.intentId, confirmed, getSigner(walletIndex, { confirmation }))
+    );
+  } finally {
+    endSafeStep();
+  }
 }
 
 // What an intent-close confirmation of `view` binds: the intent, and every
