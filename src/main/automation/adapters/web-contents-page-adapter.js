@@ -7,6 +7,7 @@ const { OwnedFrameObserver } = require('./owned-frame-observer');
 const { NativeDialogs } = require('./native-dialogs');
 const { VisualTargets } = require('./visual-targets');
 const { PageTools } = require('./page-tools');
+const { readPageMarkdown, markdownLinks } = require('./page-markdown');
 
 const AUTOMATION_WORLD_ID = 1001;
 const MAX_PAGE_TEXT_LENGTH = 12_000;
@@ -1655,6 +1656,20 @@ class WebContentsPageAdapter extends EventEmitter {
       await session.key({ type: 'keyUp', ...params });
       return { pressed: true, ref, key: input.key };
     });
+  }
+
+  async readMarkdown({ source = 'page', signal } = {}) {
+    this.#assertAvailable();
+    const navigationId = this.navigationId, documentId = this.documentId;
+    const pageUrl = this.getState().url;
+    const links = await this.#execute(markdownLinks, [], false);
+    const isCurrent = () => !this.webContents.isDestroyed() && !this.navigationInProgress &&
+      navigationId === this.navigationId && documentId === this.documentId && this.getState().url === pageUrl;
+    if (!isCurrent()) throw this.#staleReferenceError();
+    if (typeof this.webContents.session?.fetch !== 'function')
+      throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE, 'Markdown reading is unavailable; use browser_snapshot');
+    return readPageMarkdown({ pageUrl, links, kind: source, signal, isCurrent,
+      fetch: (url, options) => this.webContents.session.fetch(url, options) });
   }
 
   async snapshot(options = {}) {
