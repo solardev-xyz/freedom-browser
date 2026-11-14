@@ -144,19 +144,15 @@ describe.each(STORES)('%s', (name, _store, writes) => {
 
 // Scripts run beside main, not through it: one that wrote a file the core
 // owns would write behind the core, which holds the grants in memory and
-// writes them back. None writes, renames or deletes a permission file, nor
-// loads a store's module to write through it.
+// writes them back. The surface is closed rather than pattern-matched: no
+// file under scripts/ names a permission file at all, but the refusing
+// dapp:reset script, which is run below; and no npm script, lifecycle hooks
+// included, names one or reaches that script but `dapp:reset` itself.
 describe('scripts/ writes no permission file', () => {
   const ROOT = path.join(__dirname, '..', '..');
   const SCRIPTS = path.join(ROOT, 'scripts');
-  const PERMISSION_FILE = /\b(?:dapp|swarm|radicle|x402)-permissions\b/;
-  const JS_WRITES =
-    /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|unlink|unlinkSync|rm|rmSync|rmdir|rmdirSync|rename|renameSync|copyFile|copyFileSync|cp|cpSync|truncate|truncateSync|createWriteStream|writeFileAtomicSync|grantPermission|revokePermission|revokePermissionsForWalletIndex|setAutoApprove|grantMessaging|revokeMessaging|grantSigning|grant|revoke|revokeAllForOrigin|charge|refund|updatePermission)\s*\(/;
-  const SHELL_WRITES =
-    /\b(?:rm|mv|cp|del|erase|move|copy|Remove-Item|Move-Item|Copy-Item|Rename-Item|Set-Content|Add-Content|Out-File|Clear-Content|remove|unlink|rename|truncate|shutil)\b|>/;
-  const JS = new Set(['.js', '.cjs', '.mjs', '.ts']);
-  const writesPermissionFile = (text, ext) =>
-    PERMISSION_FILE.test(text) && (JS.has(ext) ? JS_WRITES : SHELL_WRITES).test(text);
+  const PERMISSION_FILE = /(?:dapp|swarm|radicle|x402)-permissions/;
+  const RESET = 'scripts/reset-dapp-permissions.js';
 
   function* files(dir) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -166,20 +162,26 @@ describe('scripts/ writes no permission file', () => {
     }
   }
 
-  test('the check finds the write the old dapp:reset made, and none in the scripts now', () => {
-    expect(writesPermissionFile("fs.unlinkSync(path.join(dir, 'dapp-permissions.json'));", '.js')).toBe(true);
-    expect(writesPermissionFile('rm -f "$HOME/.config/Freedom/swarm-permissions.json"', '.sh')).toBe(true);
-    expect(writesPermissionFile("console.log('dapp-permissions.json');", '.js')).toBe(false);
-    const writers = [];
+  test('no script names a permission file but the refusing dapp:reset', () => {
+    const naming = [];
     let read = 0;
     for (const file of files(SCRIPTS)) {
       const bytes = fs.readFileSync(file);
       if (bytes.includes(0)) continue;
       read += 1;
-      if (writesPermissionFile(bytes.toString('utf8'), path.extname(file))) writers.push(path.relative(ROOT, file));
+      const rel = path.relative(ROOT, file).split(path.sep).join('/');
+      if (PERMISSION_FILE.test(bytes.toString('utf8')) || PERMISSION_FILE.test(rel)) naming.push(rel);
     }
     expect(read).toBeGreaterThan(100);
-    expect(writers).toEqual([]);
+    expect(naming).toEqual([RESET]);
+  });
+
+  test('no npm script, hook or alias reaches a permission file but dapp:reset, exactly', () => {
+    const { scripts } = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const reaching = Object.entries(scripts)
+      .filter(([name, command]) => PERMISSION_FILE.test(command) || /^(?:pre|post)dapp:reset$/.test(name))
+      .map(([name, command]) => [name, command]);
+    expect(reaching).toEqual([['dapp:reset', `node ${RESET}`]]);
   });
 
   test('npm run dapp:reset refuses: it exits non-zero, says why, and leaves the file as it was', () => {
