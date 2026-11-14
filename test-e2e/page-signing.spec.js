@@ -142,11 +142,17 @@ const guestOf = (win, url) =>
 const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_TEST_PAGE_REQUESTS__.trace.slice());
 const grantOf = (win, key) => win.evaluate((k) => window.dappPermissions.getPermission(k), key);
 
-// A connection, written in main as main writes one (PRQ-4).
+// A connection, written as main writes one (PRQ-4): by the identity core,
+// under the page's PageContext (design 0012, APB-2).
 const grant = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, 0, 100);
-  }, { root: repoRoot, key });
+  electronApp.evaluate((_electron, args) =>
+    process.mainModule
+      .require(`${args.root}/src/main/wallet/dapp-permissions`)
+      .grantPermission(args.key, 0, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
+  { root: repoRoot, key });
+// A signing rule stored for the site: Q9's limited one "Always allow" writes
+// (APB-2), or today's flag.
+const signingRuleOf = (grant) => grant?.autoApprove?.signing === true || Boolean(grant?.autoApprove?.limited?.signing);
 
 async function openIn(win, url) {
   const address = win.locator('[data-test="address-input"]');
@@ -223,7 +229,7 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
     return out;
   }, KEY_A);
   expect(ruleWrites).toEqual({ set: 'refused', clear: true });
-  expect((await grantOf(win, KEY_A)).autoApprove?.signing).not.toBe(true);
+  expect(signingRuleOf(await grantOf(win, KEY_A))).toBe(false);
 
   // personal_sign: main's prompt, rendered with main's site and message.
   const windowId = await chromeWindowId(electronApp);
@@ -281,7 +287,8 @@ test('signing through main: its prompt, its own token, the rule it reads, and th
   await expect.poll(async () => (await outcome(win, KEY_A, 'typed'))?.ok || null, { timeout: 15_000 }).toMatch(/^0x[0-9a-f]{130}$/i);
   const { EIP712Domain: _domain, ...types } = TYPED.types;
   expect(verifyTypedData(TYPED.domain, types, TYPED.message, (await outcome(win, KEY_A, 'typed')).ok)).toBe(account);
-  await expect.poll(async () => (await grantOf(win, KEY_A)).autoApprove?.signing).toBe(true);
+  await expect.poll(async () => (await grantOf(win, KEY_A)).autoApprove?.limited?.signing?.grantedAt > 0).toBe(true);
+  expect((await grantOf(win, KEY_A)).autoApprove.signing).toBe(false);
 
   // The rule, read by main: the next message signs with no prompt.
   const promptsBefore = (await promptsOf(electronApp, 'eth.sign')).length;

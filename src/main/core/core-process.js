@@ -87,6 +87,9 @@ async function startCore() {
   // `{ verify }` plans' `dweb.verify`, and `dweb.forget` as a private
   // partition closes.
   attachDwebVerify(client, dwebShell);
+  // The dApp grants, which the core writes (design 0012, APB-2): main's
+  // copy read at each handshake, and again for each change the core sends.
+  require('../wallet/dapp-permissions').attachCore(client);
   const starting = client;
   let hello;
   try {

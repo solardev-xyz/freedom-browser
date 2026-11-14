@@ -447,29 +447,31 @@ describe('identity-manager wallet deletion', () => {
     expect(readVaultMeta().activeWalletIndex).toBe(0);
   });
 
-  test('revokes dApp permissions bound to the deleted wallet', async () => {
+  test('revokes dApp permissions bound to the deleted wallet, through the identity core', async () => {
     // A permission is a standing authorisation to sign with one account
     // (plus its auto-approve rules). Left behind, its walletIndex dangles
     // — for a deleted hardware account, at an index with no signer at all.
-    fs.writeFileSync(
-      path.join(tmpDir, 'dapp-permissions.json'),
-      JSON.stringify({
-        'https://swap.example': {
-          origin: 'https://swap.example',
-          walletIndex: 2,
-          chainId: 1,
-          autoApprove: { signing: true, transactions: [] },
-        },
-        'https://keep.example': {
-          origin: 'https://keep.example',
-          walletIndex: 0,
-          chainId: 1,
-          autoApprove: { signing: false, transactions: [] },
-        },
-      }, null, 2),
-      'utf-8'
+    // The core writes the dApp file from APB-2 (freedom-core design 0012):
+    // main asks it to forget the account, and waits for it.
+    let forgotten = null;
+    const revokePermissionsForWalletIndex = jest.fn(
+      (index) =>
+        new Promise((resolve) => {
+          setImmediate(() => {
+            forgotten = index;
+            resolve(['https://swap.example']);
+          });
+        })
     );
-
+    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./swarm/feed-store')]: () => ({
+          getEthereumWalletIdentityReferences: (...args) => mockGetEthereumWalletIdentityReferences(...args),
+        }),
+        [require.resolve('./wallet/dapp-permissions')]: () => ({ revokePermissionsForWalletIndex }),
+      },
+    }).mod;
     writeVaultMeta({
       activeWalletIndex: 0,
       derivedWallets: [
@@ -480,10 +482,9 @@ describe('identity-manager wallet deletion', () => {
 
     await identityManager.deleteDerivedWallet(2);
 
-    const stored = JSON.parse(
-      fs.readFileSync(path.join(tmpDir, 'dapp-permissions.json'), 'utf-8')
-    );
-    expect(Object.keys(stored)).toEqual(['https://keep.example']);
+    expect(revokePermissionsForWalletIndex).toHaveBeenCalledWith(2);
+    expect(forgotten).toBe(2);
+    expect(fs.existsSync(path.join(tmpDir, 'dapp-permissions.json'))).toBe(false);
   });
 });
 

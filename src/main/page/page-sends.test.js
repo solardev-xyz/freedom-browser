@@ -161,9 +161,10 @@ function backends() {
     paused: false,
     // The core's own fee check under a rule (its evidence): false refuses.
     coreFee: true,
-    // The core's reply for a flagged dApp send it signed (design 0012):
-    // before the dApp file moves, no rule written.
-    coreRule: { added: false, reason: 'not_moved' },
+    // The core's reply for a flagged dApp send it signed (design 0012,
+    // APB-2), when a test gives one; otherwise it writes the rule and says
+    // so.
+    coreRule: undefined,
     quoteFails: false,
     prices: { type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' },
     verdict: PASSING,
@@ -240,9 +241,6 @@ function backends() {
         return { covered: true, reason: null };
       }),
       rulePaused: jest.fn(async () => state.paused),
-      addTransactionAutoApprove: jest.fn((key, to, selector, chainId, value) => {
-        state.txRules.push([key, to.toLowerCase(), selector, chainId, value]);
-      }),
       estimateGas: jest.fn(async () => {
         if (state.quoteFails) throw new Error('Gas estimation failed: execution reverted');
         return { gasLimit: '60000' };
@@ -285,8 +283,18 @@ function backends() {
           return { hash: PHONE_HASH };
         }
         if (state.signerHold) await state.signerHold.promise;
-        // The core signed a vault account's send: a flagged one's reply.
-        if (chosen.authorized?.confirmation) chosen.authorized.onRule?.(state.coreRule);
+        // The core signed a vault account's send: a flagged one's rule, which
+        // the core writes as it signs (design 0012, APB-2), and its reply
+        // (`state.coreRule` when a test gives one).
+        if (chosen.authorized?.confirmation) {
+          const issued = mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1)?.params;
+          const flagged = issued?.payload?.remember === true;
+          const rule = state.coreRule !== undefined ? state.coreRule : flagged ? { added: true } : null;
+          if (flagged && rule?.added === true) {
+            state.txRules.push([context.origin, tx.to.toLowerCase(), tx.data.slice(0, 10).toLowerCase(), tx.chainId, BigInt(tx.value || 0).toString()]);
+          }
+          chosen.authorized.onRule?.(rule);
+        }
         const commit = async () => {
           state.committed.push(tx);
           return { intentId: 'intent-1' };
@@ -526,7 +534,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     // A confirmed send isn't a use of the rule: no last-used write; and no
     // rule without "always allow".
     expect(env.state.lastUsed).toEqual([]);
-    expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
+    expect(env.state.txRules).toEqual([]);
     // The fee was judged again at the press.
     expect(env.deps.sends.checkAtApproval).toHaveBeenCalledWith(expect.objectContaining({ gasLimit: '60000' }), {
       acknowledged: false,
@@ -630,12 +638,13 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     expect(env.prompts()).toEqual([]);
   });
 
-  test('"always allow" records the contract rule for the requester\'s key, with the confirmed send\'s value', async () => {
+  test('"always allow": the core writes the contract rule as it signs the confirmed send, for the requester\'s key; main writes none (APB-2)', async () => {
     const env = setup();
     env.connect();
     const page = env.tab();
     const answer = page.send({ ...CALL, value: '0x2386f26fc10000' });
     await flush();
+    expect(env.lastPrompt().view.alwaysAllow).toBe(true);
     // A decision with anything but the prompt's choices is refused.
     expect(await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true, site: KEY_B })).toEqual({
       ok: false,
@@ -644,11 +653,14 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     expect(await env.decide(env.lastPrompt().handle, true, { alwaysAllow: 'yes' })).toEqual({ ok: false, reason: 'invalid' });
     await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
     expect(await answer).toEqual({ result: HASH });
-    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledWith(KEY_A, CONTRACT, SELECTOR, 100, '10000000000000000');
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload.remember).toBe(true);
+    expect(env.state.txRules).toEqual([[KEY_A, CONTRACT, SELECTOR, 100, '10000000000000000']]);
   });
 
-  test('"always allow" is minted into the token, and main writes the rule only on the core\'s `not_moved` (design 0012, APB-1)', async () => {
+  test('"always allow" is minted into the token, and what the core said of the rule is reported (design 0012, APB-2)', async () => {
     const issued = () => mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload;
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
     const env = setup();
     env.connect();
     const page = env.tab();
@@ -656,39 +668,48 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
       env.state.coreRule = coreRule;
       // Each on its prompt: no rule written before answers it.
       env.state.txRules = [];
+      warn.mockClear();
+      errorLog.mockClear();
       const answer = page.send(CALL);
       await flush();
       await env.decide(env.lastPrompt().handle, true, choices);
       expect(await answer).toEqual({ result: HASH });
     };
-    // Ticked: the flag rides with the token; the core signed, wrote nothing
-    // (the dApp file hasn't moved to it) and said so: main writes today's rule.
-    await confirmed({ alwaysAllow: true }, { added: false, reason: 'not_moved' });
+    // Ticked: the flag rides with the token, and the core wrote the rule.
+    await confirmed({ alwaysAllow: true }, { added: true });
     expect(issued()).toEqual({ tx: expect.any(Object), remember: true });
-    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledTimes(1);
-    // Not ticked: no flag, no rule.
-    await confirmed({ alwaysAllow: false }, null);
-    expect(issued()).toEqual({ tx: expect.any(Object) });
-    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledTimes(1);
-    // Any other reply of the core's (a rule it wrote, another reason, none)
-    // leaves main's file alone.
-    for (const reply of [{ added: true }, { added: false, reason: 'not_exposed' }, null, undefined]) {
+    expect(warn).not.toHaveBeenCalled();
+    expect(errorLog).not.toHaveBeenCalled();
+    // Written, but not durable: warned.
+    await confirmed({ alwaysAllow: true }, { added: true, durable: false });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('may not survive a power loss'));
+    // Not written, with the core's reason (none at all, too): logged as a
+    // failed save; main writes nothing.
+    for (const reply of [{ added: false, reason: 'not_saved' }, { added: false, reason: 'not_exposed' }, null]) {
       await confirmed({ alwaysAllow: true }, reply);
-      expect(issued().remember).toBe(true);
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}`));
+      expect(env.state.txRules).toEqual([]);
     }
-    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+    // Not ticked: no flag, no rule, nothing to report.
+    await confirmed({ alwaysAllow: false }, undefined);
+    expect(issued()).toEqual({ tx: expect.any(Object) });
+    expect(env.state.txRules).toEqual([]);
+    expect(errorLog).not.toHaveBeenCalled();
   });
 
-  test('"always allow" on a Ledger send: the device signs, the core writes nothing, and main records the rule', async () => {
+  test('"always allow" is not offered for a Ledger send: the device signs, and no rule can be written for it', async () => {
     const env = setup();
     env.connect(KEY_A, LEDGER_INDEX);
     const page = env.tab();
     const answer = page.send(CALL);
     await flush();
+    expect(env.lastPrompt().view.alwaysAllow).toBe(false);
     await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
     expect(await answer).toEqual({ result: HASH });
-    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload.remember).toBe(true);
-    expect(env.deps.sends.addTransactionAutoApprove).toHaveBeenCalledWith(KEY_A, CONTRACT, SELECTOR, 100, '0');
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).not.toHaveProperty(
+      'remember'
+    );
+    expect(env.state.txRules).toEqual([]);
   });
 
   test('"always allow" records nothing for a plain transfer, or when the send fails', async () => {
@@ -704,7 +725,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     await flush();
     await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
     expect(await answer).toEqual({ error: { code: -32603, message: 'insufficient funds for gas * price + value' } });
-    expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
+    expect(env.state.txRules).toEqual([]);
   });
 
   test('a fee newly above the threshold at the press is asked again, and sent once confirmed again', async () => {
@@ -1365,7 +1386,7 @@ describe('a DNS name over IPNS that moves off its key', () => {
     expect(await answer).toEqual(NO_ADDRESS);
     expect(env.state.records).toEqual([]);
     expect(env.minted()).toEqual([]);
-    expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
+    expect(env.state.txRules).toEqual([]);
   });
 
   test("moved while the rule's unlock prompt is open: refused, nothing sent", async () => {
@@ -1395,7 +1416,7 @@ describe('a DNS name over IPNS that moves off its key', () => {
     env.state.signerHold.resolve();
     expect(await answer).toEqual(NO_ADDRESS);
     expect(env.state.committed).toEqual([]);
-    expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
+    expect(env.state.txRules).toEqual([]);
   });
 
   // Main's gate is before the send. A payment that passed it and went out
@@ -1447,7 +1468,10 @@ describe('a DNS name over IPNS that moves off its key', () => {
     expect(env.state.lastUsed).toEqual([]);
   });
 
-  test('moved after the send went out, before its rule is written: no rule, and the hash is the page\'s', async () => {
+  // The core writes the rule as it signs (design 0012, APB-2), past main's
+  // checks of the name, the grant and the key in the same run: a name that
+  // moves after that undoes neither the payment nor the rule.
+  test('moved after the send went out: the rule the core wrote as it signed stands, and the hash is the page\'s', async () => {
     const env = setup();
     const page = named(env);
     const answer = page.send(CALL);
@@ -1462,7 +1486,7 @@ describe('a DNS name over IPNS that moves off its key', () => {
     await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
     expect(await answer).toEqual({ result: HASH });
     expect(env.state.committed).toHaveLength(1);
-    expect(env.deps.sends.addTransactionAutoApprove).not.toHaveBeenCalled();
+    expect(env.state.txRules).toHaveLength(1);
   });
 });
 
@@ -1957,6 +1981,7 @@ describe('a tab the agent holds: its send inside the request', () => {
           attested: options.attested,
           beforeEffect: options.beforeEffect,
           effectAllowed: options.effectAllowed,
+          pageContext: options.pageContext,
         },
         request
       );

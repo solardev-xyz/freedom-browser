@@ -457,10 +457,13 @@ const vaultBackend = {
     },
     /**
      * The permission files' write methods (design 0012, API), for a file in
-     * the hello's `grant_moved` (core/grants.js). `caller` is a page's
-     * PageContext (its own key), `'chrome'` (a narrowing) or null (`shell`,
-     * main's own). `{ store, change }` → `{ grant, durable? }`.
+     * the hello's `grant_moved`: `dapp` from APB-2 (wallet/dapp-permissions.js),
+     * `swarm` and `radicle` from APB-3 (core/grants.js). `caller` is a page's
+     * PageContext (its own key), `'chrome'` (a narrowing from the chrome's
+     * settings) or null (`shell`, main's own: an account deleted, a manifest's
+     * projection).
      */
+    /** `{ store, change }` → `{ grant, durable? }` */
     grant(params, caller = null) {
       return call('approval.grant', params, caller);
     },
@@ -468,11 +471,15 @@ const vaultBackend = {
     revoke(params, caller = null) {
       return call('approval.revoke', params, caller);
     },
-    /** A page's last use: `{ store }` → `{ durable? }` (always under `page`). */
+    /** A page's last use: `{ store, chain_id? }` → `{ durable? }`, always under `page` */
     touch(params, page) {
       return call('approval.touch', params, page);
     },
-    /** A store's records as the core holds them: `{ store, key? }` → `{ records }`. */
+    /** `{ wallet_index }` → `{ keys, durable? }`, main's own */
+    forgetAccount(walletIndex) {
+      return call('approval.forget_account', { wallet_index: walletIndex });
+    },
+    /** `{ store, key? }` → `{ records }`, the store as the core holds it */
     grants(params) {
       return call('approval.grants', params);
     },

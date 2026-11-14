@@ -1962,11 +1962,13 @@ async function deleteDerivedWallet(index) {
   // A dApp permission is a standing authorisation to sign with this one
   // account (plus any auto-approve rules on top). It cannot outlive the
   // account: the stored index would dangle, and for a hardware account it
-  // would dangle into an index that has no signer at all.
-  // Lazy require: dapp-permissions pulls in electron's `app` for its
-  // storage path, which identity-manager must not need at load time.
+  // would dangle into an index that has no signer at all. The identity core
+  // revokes them (`approval.forget_account`, design 0012, APB-2); a failure
+  // is logged, as a failed save was.
+  // Lazy require: dapp-permissions pulls in electron's `ipcMain`, which
+  // identity-manager must not need at load time.
   const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
-  revokePermissionsForWalletIndex(index);
+  await revokePermissionsForWalletIndex(index);
 }
 
 /**

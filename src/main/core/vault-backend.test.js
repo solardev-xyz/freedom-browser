@@ -384,6 +384,23 @@ describe('vaultBackend', () => {
     });
   });
 
+  // Design 0012, API: `approval.revoke` is open to a page (its own key), to
+  // the chrome (its settings' narrowing) and to main itself.
+  test("a revoke's caller: a page under its PageContext, the chrome's as chrome, main's own as shell", async () => {
+    const core = new FakeCore(() => ({ revoked: true }));
+    const { vaultBackend } = load(core);
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 1, agent: false };
+    const params = { store: 'dapp', key: 'https://app.example', what: 'grant' };
+    await vaultBackend.approval.revoke(params, page);
+    await vaultBackend.approval.revoke(params, 'chrome');
+    await vaultBackend.approval.revoke(params);
+    expect(core.calls.map(({ method, context }) => [method, context])).toEqual([
+      ['approval.revoke', { caller: 'page', page }],
+      ['approval.revoke', { caller: 'chrome' }],
+      ['approval.revoke', { caller: 'shell' }],
+    ]);
+  });
+
   test.each([
     ['no_vault', 'No vault exists'],
     ['vault_locked', 'Vault is locked'],
@@ -481,9 +498,14 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.discard('t');
     await vaultBackend.approval.end('s');
     await vaultBackend.approval.check({ request: {} }, { origin: 'https://app.example', agent: false });
+    await vaultBackend.approval.grant({ store: 'dapp', change: {} }, { origin: 'https://app.example', agent: false });
     await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, { origin: 'https://app.example' });
+    await vaultBackend.approval.revoke({ store: 'dapp', key: 'https://app.example', what: 'grant' });
     await vaultBackend.approval.revoke({ store: 'swarm', key: 'https://app.example', what: 'grant' }, 'chrome');
+    await vaultBackend.approval.touch({ store: 'dapp' }, { origin: 'https://app.example', agent: false });
     await vaultBackend.approval.touch({ store: 'radicle' }, { origin: 'https://app.example' });
+    await vaultBackend.approval.forgetAccount(0);
+    await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
     await vaultBackend.typedDataHash({});
     await vaultBackend.deleteVault('password2');

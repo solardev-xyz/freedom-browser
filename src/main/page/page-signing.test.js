@@ -1679,6 +1679,7 @@ describe('a tab the agent holds: its signature inside the request', () => {
           attested: options.attested,
           beforeEffect: options.beforeEffect,
           effectAllowed: options.effectAllowed,
+          pageContext: options.pageContext,
         },
         request
       );
