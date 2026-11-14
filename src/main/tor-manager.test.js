@@ -881,6 +881,97 @@ describe('tor-manager Tor window sessions (#473)', () => {
   });
 });
 
+describe('tor-manager .onion addresses outside Tor windows (#1248)', () => {
+  const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
+  const loadExternalTorManager = (overrides = {}) =>
+    loadTorManager({
+      enableTorIntegration: true,
+      socksProbeResult: true,
+      activeProfile: {
+        metadata: {
+          nodes: {
+            tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' },
+          },
+        },
+      },
+      ...overrides,
+    });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('.onion is routed only while Tor runs, on a session whose PAC points there', async () => {
+    const targetSession = createSessionMock();
+    const privateSession = createSessionMock();
+    const stranger = createSessionMock();
+    const { mod } = loadExternalTorManager();
+    const liveWhenTold = [];
+    mod.onOnionRoutingLive(() => liveWhenTold.push(mod.isOnionRouteLive(targetSession)));
+
+    // Not started: no session goes out through Tor yet.
+    expect(mod.isOnionRouteLive(targetSession)).toBe(false);
+
+    await mod.startTor({ targetSession });
+    await flushMicrotasks();
+    expect(mod.isOnionRouteLive(targetSession)).toBe(true);
+    expect(mod.isOnionRouteLive(stranger)).toBe(false);
+    expect(liveWhenTold).toEqual([true]);
+
+    // A private window opened while Tor runs: live once its PAC is in place,
+    // and the held-back loads are told.
+    mod.registerOnionRoutingSession('private-a', privateSession);
+    expect(mod.isOnionRouteLive(privateSession)).toBe(false);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mod.isOnionRouteLive(privateSession)).toBe(true);
+    expect(liveWhenTold).toEqual([true, true]);
+
+    // A deliberate stop sets `.onion` DIRECT, which the gate never lets through.
+    await mod.stopTor();
+    expect(mod.isOnionRouteLive(targetSession)).toBe(false);
+    expect(mod.isOnionRouteLive(privateSession)).toBe(false);
+
+    mod.unregisterOnionRoutingSession('private-a');
+    expect(mod.isOnionRouteLive(privateSession)).toBe(false);
+  });
+
+  test('an .onion load starts Tor only if it is on, unless the user asked', async () => {
+    const off = loadExternalTorManager({ enableTorIntegration: false });
+    expect(off.mod.ensureTorForOnion()).toBe(false);
+    expect(off.saveSettings).not.toHaveBeenCalled();
+    expect(off.mod.getStatus().status).toBe('stopped');
+
+    expect(off.mod.ensureTorForOnion({ turnOn: true })).toBe(true);
+    expect(off.saveSettings).toHaveBeenCalledWith({ enableTorIntegration: true });
+    expect(['starting', 'running']).toContain(off.mod.getStatus().status);
+    await flushMicrotasks();
+    await off.mod.stopTor();
+
+    const on = loadExternalTorManager();
+    expect(on.mod.ensureTorForOnion()).toBe(true);
+    expect(on.saveSettings).not.toHaveBeenCalled();
+    expect(['starting', 'running']).toContain(on.mod.getStatus().status);
+    await flushMicrotasks();
+    await on.mod.stopTor();
+  });
+
+  test('TOR_START_FOR_ONION turns Tor on and starts it; TOR_START still does not', async () => {
+    const ipcMain = createIpcMainMock();
+    const { mod, saveSettings } = loadExternalTorManager({ ipcMain, enableTorIntegration: false });
+    mod.registerTorIpc();
+
+    const refused = await ipcMain.invoke(IPC.TOR_START);
+    expect(refused.error).toMatch(/disabled/i);
+    expect(saveSettings).not.toHaveBeenCalled();
+
+    const res = await ipcMain.invoke(IPC.TOR_START_FOR_ONION);
+    expect(saveSettings).toHaveBeenCalledWith({ enableTorIntegration: true });
+    expect(['starting', 'running']).toContain(res.status);
+    await flushMicrotasks();
+    await mod.stopTor();
+  });
+});
+
 describe('tor-manager: an apply that completes after a stop or a restart', () => {
   // A port probe that always finds the port free, so a start never waits on
   // a real socket under fake timers.

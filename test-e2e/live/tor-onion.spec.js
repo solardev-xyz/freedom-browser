@@ -188,4 +188,45 @@ test.describe('live Tor onion access', () => {
       `Waiting for onion page content from ${ONION_URL}`
     );
   });
+
+  // #1248: with Tor off, an onion address typed into the address bar turns
+  // Tor on and starts it; the tab waits on the notice meanwhile, with the
+  // address still in the bar, and the page opens by itself once Tor is up.
+  test('with Tor off, a typed onion address starts Tor and opens once it is connected', async ({
+    window,
+  }) => {
+    test.setTimeout(TOR_START_TIMEOUT_MS + PAGE_RENDER_TIMEOUT_MS + 60_000);
+    await window.evaluate(() =>
+      window.electronAPI.saveSettings({ enableTorIntegration: false, startTorAtLaunch: false })
+    );
+    const escaped = ONION_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const input = window.locator('[data-test="address-input"]');
+    await input.click();
+    await input.fill(ONION_URL);
+    await input.press('Enter');
+    await expect
+      .poll(
+        async () =>
+          (await window.evaluate(() => window.electronAPI.getSettings())).enableTorIntegration,
+        {
+          timeout: SETTINGS_TIMEOUT_MS,
+        }
+      )
+      .toBe(true);
+    await expect(input).toHaveValue(new RegExp(`^${escaped}`));
+
+    await expect
+      .poll(async () => (await window.evaluate(() => window.tor.getStatus())).status, {
+        message: 'Waiting for Tor to start for the onion address',
+        timeout: TOR_START_TIMEOUT_MS,
+        intervals: [1000, 2000, 5000],
+      })
+      .toBe('running');
+    await waitForWebviewCondition(
+      window,
+      ONION_RENDER_SNIFFER,
+      `Waiting for ${ONION_URL} to open once Tor is connected`
+    );
+  });
 });

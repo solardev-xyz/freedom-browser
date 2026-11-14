@@ -12,7 +12,8 @@ const {
   isTorWebContents,
   isTorPartition,
 } = require('./private/private-windows');
-const { applyTorWebRtcPolicy, trackTorWindowNavigation } = require('./tor-window');
+const { applyTorWebRtcPolicy } = require('./tor-window');
+const { trackTabNavigation } = require('./tor-held-loads');
 const { WEBVIEW_BOOT_SWITCH, buildWebviewBootSwitch } = require('./webview-boot');
 const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
 const { requestOpenExternal } = require('./permissions/permissions-manager');
@@ -221,13 +222,13 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
     // TOR WINDOW GUARD (#473): no WebRTC UDP outside the SOCKS proxy, set
     // before anything in the page runs (tor-window.js).
     try {
-      if (isTorSession(contents.session)) {
-        applyTorWebRtcPolicy(contents);
-        trackTorWindowNavigation(contents);
-      }
+      if (isTorSession(contents.session)) applyTorWebRtcPolicy(contents);
     } catch (err) {
       log.warn('[tor-window] could not set the WebRTC policy:', err?.message || err);
     }
+    // A page load held back until Tor is connected opens only while it's
+    // still the tab's latest navigation (tor-held-loads.js; #473, #1248).
+    trackTabNavigation(contents);
     let previousRtcPolicy;
     contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
       if (!isMainFrame) return;

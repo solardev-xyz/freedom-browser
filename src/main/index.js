@@ -442,6 +442,7 @@ const {
   installTorWindowGate,
   TOR_DENIED_PERMISSIONS,
 } = require('./tor-window');
+const { installOnionGate } = require('./tor-onion-gate');
 const {
   registerIdentityIpc,
   hasVault,
@@ -756,8 +757,10 @@ async function bootstrap() {
   // Runs in test mode too — it is browser policy, like onchain-app-guard.
   // The Tor window gate (#473) cancels a Tor window's requests while its
   // route through Tor isn't live; it goes ahead of anything that could
-  // rewrite them.
+  // rewrite them. The `.onion` gate (#1248) does the same for `.onion`
+  // addresses in normal and private windows while Tor isn't routing them.
   installTorWindowGate();
+  installOnionGate();
   installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before

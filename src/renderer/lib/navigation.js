@@ -30,6 +30,7 @@ import {
   formatOnchainAppUrl,
   formatOnchainAppDisplayUrl,
   looksLikeOnchainAppInput,
+  isOnionAddress,
 } from './url-utils.js';
 import { buildSearchUrl } from './search-utils.js';
 import { isModalDialogOpen } from './modal-dialog.js';
@@ -1514,6 +1515,24 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(torBlockedPageUrl());
     return;
   }
+  // An `.onion` address the user asked for (#1248): typed, picked from the
+  // suggestions, a bookmark or a menu item. While Tor isn't running, main
+  // holds the load back (tor-onion-gate.js) and starts Tor only if it's on in
+  // Settings; the user's own address turns it on first. A page's link or
+  // redirect (`pageInitiated`), a navigation's second leg, a re-run and a
+  // load into a given tab (automation) don't: a site mustn't start Tor.
+  if (
+    !targetWebview &&
+    !options.pageInitiated &&
+    !options.continuesNavigation &&
+    !options.keepsAddressBarEdit &&
+    !isTorWindow() &&
+    state.currentTorStatus !== 'running' &&
+    isOnionAddress(value)
+  ) {
+    pushDebug('[Tor] Starting Tor for an .onion address');
+    window.tor?.startForOnion?.()?.catch?.(() => {});
+  }
   // Swarm base bookkeeping follows the navigated tab too: a background page's
   // own `bzz://` navigation must record its base on that tab and its guest,
   // not on the tab the user is looking at (#969).
@@ -1581,6 +1600,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     !options.externalProtocolChecked &&
     EXTERNAL_PROTOCOL_INPUT.test(value.trim()) &&
     !BROWSER_HANDLED_INPUT.test(value.trim()) &&
+    // `abc.onion:8080` reads as a scheme, but it's an onion address (#1248).
+    !isOnionAddress(value) &&
     window.externalProtocol?.openFromAddressBar
   ) {
     const typed = value.trim();

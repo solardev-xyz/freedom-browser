@@ -144,6 +144,7 @@ const INTERNAL_CHANNELS = [
   'swarm:publish-file',
   'swarm:setup-get-state',
   'tokens:get-tokens',
+  'tor:start-for-onion',
   'window:get-platform',
 ];
 

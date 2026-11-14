@@ -77,7 +77,8 @@ explicitly allows multiple bundle instances so profile launching can use
 ## Tor `.onion` Access (Experimental)
 
 - **Onion-only routing**: When enabled, Freedom routes only `.onion` hosts through the profile's Arti SOCKS5 proxy; clearnet and decentralized protocols remain direct. A Tor window sends everything through it (see [Tor Windows](#tor-windows)).
-- **Fail-closed behavior**: If Arti stops unexpectedly, `.onion` requests fail instead of falling back to direct DNS.
+- **Fail-closed behavior**: An `.onion` request goes out only through a running Tor. While Tor is off, starting, stopped or crashed, normal and private windows hold `.onion` requests back instead of handing the name to the system resolver.
+- **Starts when needed**: An `.onion` address opened in a normal or private window while Tor isn't running shows a "Waiting for Tor" notice, keeping the address in the address bar, and opens once Tor is connected. If Settings > Advanced > Enable Tor is on, Tor starts by itself. If it's off, an address you typed or opened from a bookmark turns it on and starts it; a page that links or redirects to an `.onion` address shows a notice with a Start Tor button instead, since starting Tor shows on your network. A form isn't sent again by itself.
 - **Profile isolation**: Managed Tor state, cache, endpoint, and private-window routing are profile-scoped.
 - **Optional binary**: Source builds require `npm run tor:download`; the release workflow bundles Tor for macOS arm64, Linux x64/arm64 and Windows x64. Windows x64 bundling landed in September 2026, so only releases cut after that carry Arti on Windows — an earlier Windows install has none.
 - **Bundled or nothing**: Arti is compiled host-only from crates.io, so each release runner builds its own platform's binary. The Tor rows are hidden from Settings (Advanced, and Tor's startup row under Nodes) on any build that carries no Arti binary (a source build that skipped `npm run tor:download`, or a Windows release cut before Windows bundling landed), unless the integration is already enabled — an external Tor SOCKS proxy needs no bundled binary. No Windows ARM64 build is published; it would need the same build step on an ARM64 Windows runner.
@@ -305,7 +306,7 @@ Right-click on pages for context-sensitive actions:
 - **Page Context**: Back, Forward, Reload (a hard reload — it bypasses the cache, unlike the toolbar Reload button), View Page Source, Inspect
 - **Link Context**: Open Link in New Tab, Open Link in New Window, Copy Link Address
 - **Selection Context**: Copy selected text; **Search &lt;Engine&gt; for "&lt;selection&gt;"** — searches the selection with the engine configured under **Settings → Search** (built-in or custom), in a new tab, or behind the current one on a Ctrl/Cmd-click. Offered for selections in editable fields too, and withheld whenever the selection cannot be published safely: over a password field (whose "selection" is only the masking bullets), and over any field the browser cannot identify at all — a form control inside a closed shadow root, which no API outside the component can reach.
-- **Image Context**: Open Image in New Tab, Save Image As, Copy Image, Copy Image Address
+- **Image Context**: Open Image in New Tab, Save Image As, Copy Image, Copy Image Address. Save and Copy fetch the image again through the window's own session, as the page loaded it, so an `.onion` image goes through Tor and a Tor window's through its own route.
 - **View Page Source**: Opens `view-source:` URL in a new tab
 
 ## Request Rewriting

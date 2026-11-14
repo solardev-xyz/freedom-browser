@@ -1330,6 +1330,11 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getServiceRegistry: guardInternal('getServiceRegistry', () =>
     ipcRenderer.invoke('service-registry:get')
   ),
+  // The error page's Start Tor button, on the notice an .onion page load gets
+  // while Tor is off: turns Tor on and starts it (#1248).
+  startTorForOnion: guardInternal('startTorForOnion', () =>
+    ipcRenderer.invoke('tor:start-for-onion')
+  ),
   getMyotisStatus: guardInternal('getMyotisStatus', (chainId) =>
     chainId == null
       ? ipcRenderer.invoke('myotis:getStatus')

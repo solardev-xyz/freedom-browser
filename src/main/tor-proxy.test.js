@@ -26,6 +26,13 @@ describe('buildOnionPacScript', () => {
     expect(find('http://sub.abc.onion/', 'sub.abc.onion')).toContain('SOCKS5 127.0.0.1:9150');
   });
 
+  test('routes a fully qualified .onion host (trailing dot) through it too (#1248)', () => {
+    const find = compilePac(pac);
+    expect(find('http://abc.onion./', 'abc.onion.')).toContain('SOCKS5 127.0.0.1:9150');
+    expect(find('wss://ABC.ONION./ws', 'ABC.ONION.')).toContain('SOCKS5 127.0.0.1:9150');
+    expect(find('https://example.com./', 'example.com.')).toBe('DIRECT');
+  });
+
   test('returns DIRECT for clearnet hosts', () => {
     const find = compilePac(pac);
     expect(find('https://example.com/', 'example.com')).toBe('DIRECT');

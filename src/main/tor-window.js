@@ -38,12 +38,11 @@
 // Starting Tor: opening a Tor window starts it (openTorWindow), and so does a
 // page load the gate holds back, should Tor have stopped since. The tab shows
 // the Tor page's "waiting for Tor" notice meanwhile, and the page it asked
-// for opens once Tor is connected (notifyHeldBack, resumeHeldBack). All of
-// that runs here in main, in one order, so a notice can't land on a page that
-// already opened.
+// for opens once Tor is connected (tor-held-loads.js, with TOR_WINDOW_HOLD).
 
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { holdLoad, resumeHeldLoads } = require('./tor-held-loads');
 
 const TOR_BLOCKED_SCHEMES = ['bzz', 'ipfs', 'ipns', 'rad', 'radapi', 'web3'];
 
@@ -145,101 +144,26 @@ function makeTorWindowGate({ isTorSession, isRouteLive, onHeldBack = () => {} })
   };
 }
 
-// The main-frame navigation each Tor window tab started last, by webContents
-// id: a held-back load is only shown or opened while it's still the tab's.
-const lastNavigationStart = new Map();
+// A held-back page load in a Tor window (tor-held-loads.js): it starts Tor,
+// turning it on if it's off, and waits on the Tor page's notice.
+const TOR_WINDOW_HOLD = Object.freeze({
+  prepare: ({ promptWindow }) => {
+    require('./tor-manager').ensureTorForTorWindow({ promptWindow });
+  },
+  isLive: (targetSession) => require('./tor-manager').isTorWindowRouteLive(targetSession),
+  noticeUrl: () => TOR_WAITING_PAGE_URL,
+  isNotice: (url) => isWaitingNotice(url),
+});
 
-// The page load each tab had held back while Tor wasn't connected, by
-// webContents id. Only the tab's latest counts: a newer one replaces it.
-const heldBack = new Map();
-
-/** Follow a Tor window tab's main-frame navigations (webcontents-setup.js). */
-function trackTorWindowNavigation(contents) {
-  const id = contents?.id;
-  if (!id || typeof contents.on !== 'function') return;
-  contents.on('did-start-navigation', (details, url, _isInPlace, isMainFrame) => {
-    const mainFrame = details?.isMainFrame ?? isMainFrame;
-    if (mainFrame) lastNavigationStart.set(id, details?.url ?? url);
-  });
-  contents.once?.('destroyed', () => {
-    lastNavigationStart.delete(id);
-    heldBack.delete(id);
-  });
-}
-
-/**
- * The gate held back a tab's page load. It is noted at once, so Tor coming up
- * right after can't miss it (resumeHeldBack); a turn later, Tor is started
- * should it have stopped, and the tab shows the waiting notice, unless the
- * load isn't pending any more: the user moved on, a newer load replaced it,
- * or Tor came up in between and it opened.
- */
-function notifyHeldBack(details) {
-  const id = details?.webContentsId;
-  if (!id || !details.url) return;
-  // Only a GET opens again by itself: a form sent again unasked could act
-  // twice, or act at all when the user has given up on it.
-  const hold = { url: details.url, reopen: (details.method || 'GET') === 'GET', waiting: false };
-  heldBack.set(id, hold);
-  setImmediate(() => showHeldBack(id, hold));
-}
-
-function showHeldBack(id, hold) {
-  const { BrowserWindow, webContents } = require('electron');
-  const { ensureTorForTorWindow, isTorWindowRouteLive } = require('./tor-manager');
-  const guest = webContents.fromId(id);
-  if (!guest || guest.isDestroyed()) {
-    heldBack.delete(id);
-    return;
-  }
-  const host = guest.hostWebContents;
-  ensureTorForTorWindow({
-    promptWindow: host && !host.isDestroyed() ? BrowserWindow.fromWebContents(host) : null,
-  });
-  if (heldBack.get(id) !== hold) return;
-  if (lastNavigationStart.get(id) !== hold.url) {
-    heldBack.delete(id);
-    return;
-  }
-  if (hold.reopen && isTorWindowRouteLive(guest.session)) {
-    heldBack.delete(id);
-    guest.loadURL(hold.url).catch(() => {});
-    return;
-  }
-  if (hold.reopen) hold.waiting = true;
-  else heldBack.delete(id);
-  guest.loadURL(TOR_WAITING_PAGE_URL).catch(() => {});
-}
-
-/**
- * Tor windows are routed through a running Tor again: open what each tab held
- * back, if the tab is still on that load or on the notice shown for it. A tab
- * the user has sent somewhere else since keeps its page.
- */
-function resumeHeldBack() {
-  const { webContents } = require('electron');
-  const { isTorWindowRouteLive } = require('./tor-manager');
-  for (const [id, hold] of heldBack) {
-    const guest = webContents.fromId(id);
-    const latest = lastNavigationStart.get(id);
-    const pending = latest === hold.url || (hold.waiting && isWaitingNotice(latest));
-    if (!guest || guest.isDestroyed() || !pending) {
-      heldBack.delete(id);
-      continue;
-    }
-    // A form waits for showHeldBack's notice, and isn't sent again.
-    if (!hold.reopen || !isTorWindowRouteLive(guest.session)) continue;
-    heldBack.delete(id);
-    guest.loadURL(hold.url).catch(() => {});
-  }
-}
+/** The gate held back a Tor window tab's page load. */
+const notifyHeldBack = (details) => holdLoad(details, TOR_WINDOW_HOLD);
 
 /** Register the gate; before attachWebRequestDispatcher, first in the chain. */
 function installTorWindowGate() {
   const { registerWebRequestHandler } = require('./webrequest-dispatcher');
   const { isTorSession } = require('./private/private-windows');
   const { isTorWindowRouteLive, onTorWindowsLive } = require('./tor-manager');
-  onTorWindowsLive(resumeHeldBack);
+  onTorWindowsLive(resumeHeldLoads);
   registerWebRequestHandler(
     'onBeforeRequest',
     'tor-window-gate',
@@ -278,9 +202,7 @@ async function openTorWindow(initialUrl = null) {
 
 module.exports = {
   openTorWindow,
-  trackTorWindowNavigation,
   notifyHeldBack,
-  resumeHeldBack,
   TOR_WAITING_PAGE_URL,
   makeTorWindowGate,
   installTorWindowGate,

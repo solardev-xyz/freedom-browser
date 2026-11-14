@@ -263,6 +263,9 @@ const loadNavigationModule = async (options = {}) => {
       if (/^bzz:/i.test(raw)) return true;
       return /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(raw.split('/')[0]);
     }),
+    isOnionAddress: jest.fn((input) =>
+      /^(?:https?:\/\/)?[a-z0-9.-]+\.onion(?::\d+)?(?:[/?#]|$)/i.test((input || '').trim())
+    ),
     formatRadicleUrl: jest.fn((input) => {
       if (!input.startsWith('rad://')) return null;
       return {
@@ -1691,6 +1694,54 @@ describe('navigation', () => {
   // blocklist, and only a scheme the OS has a handler for). Anything main
   // declines re-enters the ordinary pipeline once — which, with the URL
   // helpers mocked here, ends in the search fallback.
+  // #1248: an .onion address the user asked for turns Tor on and starts it
+  // while Tor isn't running; main's gate holds the load back meanwhile. A
+  // page-driven load, a re-run or a load into a given tab doesn't.
+  describe('an .onion address while Tor is not running', () => {
+    const ONION = 'http://exampleonionaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion/';
+    const load = async (torStatus = 'stopped') => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      ctx.state.currentTorStatus = torStatus;
+      global.window.tor = { startForOnion: jest.fn(() => Promise.resolve({})) };
+      return ctx;
+    };
+
+    test('a typed or bookmarked address starts Tor, and still loads', async () => {
+      const ctx = await load();
+      ctx.mod.loadTarget(ONION, null, null, { commitsAddressBar: true });
+      expect(global.window.tor.startForOnion).toHaveBeenCalledTimes(1);
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(ONION);
+
+      ctx.mod.loadTarget('exampleonionaddressxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion');
+      expect(global.window.tor.startForOnion).toHaveBeenCalledTimes(2);
+    });
+
+    test('an onion address with a port is not taken for an external scheme', async () => {
+      const ctx = await load();
+      global.window.externalProtocol = { openFromAddressBar: jest.fn() };
+      ctx.mod.loadTarget('exampleonion.onion:8080/x', null, null, { commitsAddressBar: true });
+      expect(global.window.externalProtocol.openFromAddressBar).not.toHaveBeenCalled();
+      expect(global.window.tor.startForOnion).toHaveBeenCalledTimes(1);
+    });
+
+    test('nothing else starts it', async () => {
+      const ctx = await load();
+      const webview = ctx.activeRef.tab.webview;
+      ctx.mod.loadTarget(ONION, null, null, { pageInitiated: true });
+      ctx.mod.loadTarget(ONION, null, null, { continuesNavigation: true });
+      ctx.mod.loadTarget(ONION, null, null, { keepsAddressBarEdit: true });
+      ctx.mod.loadTarget(ONION, null, webview);
+      ctx.mod.loadTarget('https://example.com/', null, null, { commitsAddressBar: true });
+      expect(global.window.tor.startForOnion).not.toHaveBeenCalled();
+
+      const running = await load('running');
+      running.mod.loadTarget(ONION, null, null, { commitsAddressBar: true });
+      expect(global.window.tor.startForOnion).not.toHaveBeenCalled();
+    });
+  });
+
   describe('address bar external-protocol URLs', () => {
     const load = async (result) => {
       const ctx = await loadNavigationModule();
