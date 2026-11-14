@@ -30,12 +30,14 @@
  *      request's PageContext, from the file main still writes.
  *   6. The rule answers with no prompt, but a locked vault's unlock
  *      (`vault.unlock`, which the chrome still renders until APS-2). Just
- *      before the effect, after the last wait (the core's view, the name,
- *      the vault), the core reads the rule again, custody is read again and
- *      the document must hold its key: a guest that entered custody
- *      meanwhile is refused (`agent_custody`), with nothing signed. A vault
- *      signature goes under `page` with `{ standing }`, and the core judges
- *      the rule once more as it signs.
+ *      before the effect, after every other wait (the core's view, the
+ *      vault, the name), the core reads the rule again, and in the same run
+ *      as the signature custody is read again and the document must hold
+ *      its key: a guest that entered custody meanwhile is refused
+ *      (`agent_custody`), with nothing signed. For a Ledger, a phone or a
+ *      Safe that reading is the core's verdict; a vault signature goes under
+ *      `page` with `{ standing }`, and the core judges the rule once more as
+ *      it signs.
  *   7. Otherwise main prompts (`eth.sign`, with main's view). On the user's
  *      approval main's own issuer mints the token for that approval, bound
  *      to the prompt's handle and the requester's key, with the account and
@@ -379,10 +381,13 @@ function createSigningDispatchers(shared, deps = {}) {
       if (unlock.error) return { error: unlock.error };
       if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
     }
-    // The core reads the rule again after the unlock's wait, then the name;
-    // just before the effect, in the same run, custody and the key.
-    const still = await ruleAnswers(context, ctx);
+    // After the unlock's wait, the name; then the core's last reading of the
+    // rule, the last wait before the effect, so a rule revoked while the name
+    // resolved is seen; then, in the same run as the signature, custody and
+    // the key. For a Ledger, a phone or a Safe this is the core's verdict:
+    // their signatures present no `{ standing }` to judge again.
     if (!(await context.nameHolds(ctx.keyless))) return error(NO_ADDRESS);
+    const still = await ruleAnswers(context, ctx);
     if (custody(requester.guest) || still.reason === 'custody') return error(AGENT_CUSTODY);
     if (!still.covered) return error(RULE_GONE);
     if (!context.holdsKey()) return error(NO_ADDRESS);

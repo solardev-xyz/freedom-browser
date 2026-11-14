@@ -34,13 +34,16 @@
  *      about the send it would sign.
  *   5. The rule answers with no prompt, but a locked vault's unlock
  *      (`vault.unlock`), after which the send is quoted and judged again.
- *      Just before the send, after the last wait (the quote, the fee check,
- *      the site's turn, the name), the core reads the rule again, custody is
- *      read again and the document must hold its key: a guest that entered
- *      custody meanwhile is refused (`agent_custody`), with nothing sent. A
- *      vault signature goes under `page` with `{ standing }`, and the core
- *      judges the rule once more as it signs; a fee it no longer allows
- *      sends the request to its prompt, with nothing signed.
+ *      Just before the send, after every other wait main makes (the quote,
+ *      the fee check, the site's turn, the name), the core reads the rule
+ *      again, custody is read again and the document must hold its key: a
+ *      guest that entered custody meanwhile is refused (`agent_custody`),
+ *      with nothing sent, and a fee the core no longer allows sends the
+ *      request to its prompt, with nothing signed. For a Ledger or a phone
+ *      that reading is the core's verdict; a vault signature goes under
+ *      `page` with `{ standing }`, and the core judges the rule once more as
+ *      it signs, a fee it no longer allows again sending the request to its
+ *      prompt.
  *   6. Otherwise main prompts (`eth.send`) with its own view: the account,
  *      the chain, the transaction in main's form, the quoted fee, the fee
  *      check's verdict and the most the send can cost. On the user's
@@ -628,23 +631,30 @@ function createSendDispatchers(shared, deps = {}) {
       if (!judged.tx) return NEEDS_APPROVAL;
       tx = judged.tx;
     }
-    // Just before the signature, after the last wait, and again after the
-    // signer's: the core's reading of the rule (in the send's own turn, which
-    // a paused site doesn't get: `sendDappPayment`), the name, custody and
-    // the document's key. After the signature the fee is the one judged
-    // before it, fixed in the signed bytes: a `fee_check` answer then (its
-    // evidence aged during a device's wait) still means the rule, the
-    // account and the pause hold, which the core judges first. Before it, a
-    // fee the core no longer allows sends the request to its prompt.
+    // Just before the signature, and again after the signer's wait: the
+    // name, then the core's reading of the rule (in the send's own turn,
+    // which a paused site doesn't get: `sendDappPayment`), the last wait
+    // before the effect, so a rule revoked or fee evidence refreshed while
+    // the name resolved is seen; then, in the same run as the effect,
+    // custody and the document's key. Before the signature this is the
+    // core's verdict for a Ledger or a phone, which present no `{ standing }`
+    // to judge again (a phone signs and broadcasts at once), and a fee the
+    // core no longer allows sends the request to its prompt, nothing signed.
+    // After the signature the fee is the one that verdict passed, fixed in
+    // the signed bytes: a `fee_check` answer then (its evidence aged during
+    // a device's wait) is accepted only past that verdict, and still means
+    // the rule, the account and the pause hold, which the core judges first.
+    let feePassed = false;
     const ruleStillAnswers = (signed) => async (effect) => {
-      const still = await ruleAnswers(context, ctx, tx, false);
       if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
+      const still = await ruleAnswers(context, ctx, tx, false);
       if (custody(requester.guest) || still.reason === 'custody') throw withdrawn(error(AGENT_CUSTODY));
-      if (!still.covered && !(signed && still.reason === 'fee_check')) {
+      if (!still.covered && !(signed && feePassed && still.reason === 'fee_check')) {
         if (!signed && PROMPT_REASONS.has(still.reason)) throw Object.assign(withdrawn(null), { prompt: true });
         throw withdrawn(error(RULE_GONE));
       }
       if (!context.holdsKey()) throw withdrawn(error(NO_ADDRESS));
+      if (!signed) feePassed = true;
       return effect();
     };
     let sent;

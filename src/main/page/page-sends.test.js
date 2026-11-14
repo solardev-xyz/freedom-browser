@@ -1424,6 +1424,109 @@ describe('a DNS name over IPNS that moves off its key', () => {
   });
 });
 
+// The last wait before a rule's send is the core's own reading of the rule,
+// after the name's: a Ledger and a phone present no `{ standing }` the core
+// could judge again as they sign (a phone signs and broadcasts at once), so
+// a rule revoked or fee evidence refreshed while the name resolved is seen
+// there, before the device is asked.
+describe('a rule revoked or fee evidence refreshed while the name resolves just before the send', () => {
+  // The site's contract rule over a DNS name, and the name's resolution in
+  // the send's own turn held: the last wait but the core's reading. `held`
+  // resolves once it waits.
+  function heldAtTheSend(walletIndex) {
+    const env = setup();
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME, walletIndex);
+    env.rule(NAME);
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const hold = deferred();
+    const held = deferred();
+    env.deps.sends.sitePaymentWaiting.mockImplementationOnce(async () => {
+      env.nameHolds.set(NAME, hold);
+      held.resolve();
+      return false;
+    });
+    return { env, page, hold, held };
+  }
+
+  test.each([
+    ['a Ledger', LEDGER_INDEX],
+    ['a phone', PHONE_INDEX],
+    ['the vault', 0],
+  ])('%s: the rule revoked, nothing signed or sent', async (_label, walletIndex) => {
+    const { env, page, hold, held } = heldAtTheSend(walletIndex);
+    const answer = page.send(CALL);
+    await held.promise;
+    await flush();
+    const before = env.deps.sends.checkStanding.mock.calls.length;
+    env.state.txRules = [];
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    // The core read the rule again after the name, and refused.
+    expect(env.deps.sends.checkStanding).toHaveBeenCalledTimes(before + 1);
+    await expect(env.deps.sends.checkStanding.mock.results[before].value).resolves.toEqual({ covered: false, reason: 'no_rule' });
+    expect(env.deps.sends.getSigner).not.toHaveBeenCalled();
+    expect(env.phoneSigner.sendTransaction).not.toHaveBeenCalled();
+    expect(env.state.records).toEqual([]);
+    expect(env.state.committed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test.each([
+    ['a Ledger', LEDGER_INDEX],
+    ['the vault', 0],
+  ])("%s: the core's fee evidence refreshed, the prompt, nothing signed", async (_label, walletIndex) => {
+    const { env, page, hold, held } = heldAtTheSend(walletIndex);
+    const answer = page.send(CALL);
+    await held.promise;
+    await flush();
+    env.state.coreFee = false;
+    hold.resolve();
+    await flush();
+    expect(env.lastPrompt()).toMatchObject({ kind: 'eth.send' });
+    expect(env.deps.sends.getSigner).not.toHaveBeenCalled();
+    expect(env.state.records).toEqual([]);
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await answer).toEqual(REJECTED);
+    expect(env.state.records).toEqual([]);
+    expect(env.state.committed).toEqual([]);
+  });
+
+  test('a rule that holds through the name: the Ledger and the phone send', async () => {
+    for (const [walletIndex, hash] of [
+      [LEDGER_INDEX, HASH],
+      [PHONE_INDEX, PHONE_HASH],
+    ]) {
+      const { env, page, hold, held } = heldAtTheSend(walletIndex);
+      const answer = page.send(CALL);
+      await held.promise;
+      await flush();
+      hold.resolve();
+      expect(await answer).toEqual({ result: hash });
+      expect(env.state.committed).toHaveLength(1);
+    }
+  });
+
+  test("the vault's send still goes with `{ standing }` past that reading, and the core's refusal there stands", async () => {
+    const { env, page, hold, held } = heldAtTheSend(0);
+    const answer = page.send(CALL);
+    await held.promise;
+    await flush();
+    // The rule holds through the name; the core judges it again as it signs.
+    env.deps.sends.signAndRecord.mockImplementationOnce(async () => {
+      const { confirmationError } = require('../wallet/signing-confirmation');
+      throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason: 'no_rule' } }));
+    });
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    expect(env.deps.sends.getSigner).toHaveBeenCalledWith(0, {
+      page: expect.objectContaining({ origin: NAME, agent: false }),
+      standing: { paused: false },
+    });
+    expect(env.state.committed).toEqual([]);
+  });
+});
+
 describe("a Safe's send: a safe-send token for the site, and its board as a second prompt", () => {
   test("the SafeTx starts for the requester's key, and the page gets the execution's hash", async () => {
     const env = setup();

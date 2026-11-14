@@ -1245,6 +1245,96 @@ describe('a DNS name over IPNS that moves off its key', () => {
   });
 });
 
+// The last wait before a rule's signature is the core's own reading of the
+// rule, after the name's: a Ledger, a phone and a Safe present no
+// `{ standing }` the core could judge again as they sign, so a rule revoked
+// while the name resolved is seen there, before the device is asked.
+describe('a rule revoked while the name resolves just before the effect', () => {
+  const PHONE = '0x4444444444444444444444444444444444444444';
+  const PHONE_INDEX = 2000;
+
+  // The site's signing rule over a DNS name, and the name's resolution just
+  // before the effect held: the one after the vault's check, the last wait
+  // but the core's reading. `held` resolves once it waits.
+  function heldAtTheEffect(walletIndex) {
+    const env = setup();
+    env.state.wallets.push({ index: PHONE_INDEX, name: 'Phone', address: PHONE, type: 'remote' });
+    env.names.set(NAME, IPNS_KEY);
+    env.connect(NAME, walletIndex, { autoApprove: { signing: true } });
+    const page = env.tab(`ipns://${IPNS_KEY}/`, { bind: NAME });
+    const hold = deferred();
+    const held = deferred();
+    env.state.unlocked = () => {
+      env.state.unlocked = true;
+      env.nameHolds.set(NAME, hold);
+      held.resolve();
+      return true;
+    };
+    return { env, page, hold, held };
+  }
+
+  const ask = (page, method, address) =>
+    page.ask(method, method === 'personal_sign' ? [MESSAGE, address] : [address, TYPED]);
+
+  test.each([
+    ['a Ledger', 1, LEDGER, 'personal_sign'],
+    ['a Ledger', 1, LEDGER, 'eth_signTypedData_v4'],
+    ['a phone', PHONE_INDEX, PHONE, 'personal_sign'],
+    ['a phone', PHONE_INDEX, PHONE, 'eth_signTypedData_v4'],
+    ['a Safe', SAFE_INDEX, SAFE, 'personal_sign'],
+    ['the vault', 0, ACCOUNT, 'personal_sign'],
+  ])('%s: refused, nothing signed (%s)', async (_label, walletIndex, address, method) => {
+    const { env, page, hold, held } = heldAtTheEffect(walletIndex);
+    const answer = ask(page, method, address);
+    await held.promise;
+    await flush();
+    // The choice's reading only, so far.
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(1);
+    env.state.permissions.get(NAME).autoApprove = { signing: false };
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    // The core read the rule again after the name, and refused.
+    expect(env.deps.signing.checkStanding).toHaveBeenCalledTimes(2);
+    await expect(env.deps.signing.checkStanding.mock.results[1].value).resolves.toEqual({ covered: false, reason: 'no_rule' });
+    expect(env.deps.signing.getSigner).not.toHaveBeenCalled();
+    expect(env.signer.signMessage).not.toHaveBeenCalled();
+    expect(env.signer.signTypedData).not.toHaveBeenCalled();
+    expect(env.state.safe.sessions).toEqual([]);
+    expect(env.state.signed).toEqual([]);
+    expect(env.state.lastUsed).toEqual([]);
+  });
+
+  test('a rule that holds through the name: the Ledger signs', async () => {
+    const { env, page, hold, held } = heldAtTheEffect(1);
+    const answer = ask(page, 'personal_sign', LEDGER);
+    await held.promise;
+    await flush();
+    hold.resolve();
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+    expect(env.state.signed).toEqual([['message', MESSAGE]]);
+  });
+
+  test("the vault's signature still goes with `{ standing }` past that reading, and the core's refusal there stands", async () => {
+    const { env, page, hold, held } = heldAtTheEffect(0);
+    const answer = ask(page, 'personal_sign', ACCOUNT);
+    await held.promise;
+    await flush();
+    // The rule holds through the name; the core judges it again as it signs.
+    env.signer.signMessage.mockImplementationOnce(async () => {
+      const { confirmationError } = require('../wallet/signing-confirmation');
+      throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason: 'no_rule' } }));
+    });
+    hold.resolve();
+    expect(await answer).toEqual(RULE_GONE);
+    expect(env.deps.signing.getSigner).toHaveBeenCalledWith(0, {
+      page: expect.objectContaining({ origin: NAME, agent: false }),
+      standing: {},
+      chainId: 100,
+    });
+    expect(env.state.signed).toEqual([]);
+  });
+});
+
 describe("a Safe's message, in a session main owns", () => {
   test('the vault owners suffice: main opens the session for the requester, and completes it', async () => {
     const env = setup();
