@@ -38,7 +38,16 @@
  *     are the real core's, tested in signing-confirmation.integration);
  *   - a flagged `dapp-send`'s signature writes the limited contract rule for
  *     the page's key when its grant exposes the account, replacing today's
- *     rule for the same call, and replies `{ added: true }` (or why not).
+ *     rule for the same call, and replies `{ added: true }` (or why not);
+ *   - APR-4 (cored 0.16.0): a page's signature needs its authorization (a
+ *     page-kind token, `{ standing }` or `{ safe }`), and a Safe's (typed
+ *     data declaring `SafeTx` or `SafeMessage`, or a call to
+ *     `execTransaction`) a token or `{ safe }` under every caller, main's
+ *     included; without one it is `not_authorized` (`no_token`), before the
+ *     key (so while locked too). Main's own other signatures sign on its
+ *     word. `{ standing }` answers only a page, and never a Safe's
+ *     signature (`no_rule`), and `approval.check` never covers a Safe's
+ *     request but a Safe account's.
  * Every call is recorded in `calls` as `{ method, params, page }`.
  */
 const crypto = require('crypto');
@@ -50,6 +59,27 @@ const MAX_OUTSTANDING = 32;
 const RULE_TTL_MS = 2_592_000_000;
 
 const coded = (message, code) => Object.assign(new Error(message), { code });
+
+// `execTransaction`'s selector: a transaction whose data starts with it is a
+// Safe's, whatever its `to` (cored 0.16.0, APR-4b).
+const EXEC_TRANSACTION = '0x6a761202';
+const SAFE_TYPES = ['SafeTx', 'SafeMessage'];
+
+/**
+ * Whether a signature is a Safe's, as the core tells (APR-4b): typed data
+ * whose `types` declare `SafeTx` or `SafeMessage`, primary or not, or a
+ * transaction whose data calls `execTransaction`.
+ */
+function isSafes(method, request) {
+  if (method === 'sign.transaction') {
+    return typeof request?.tx?.data === 'string' && request.tx.data.toLowerCase().startsWith(EXEC_TRANSACTION);
+  }
+  if (method === 'sign.typed_data') {
+    const types = request?.typed_data?.types;
+    return Boolean(types) && typeof types === 'object' && SAFE_TYPES.some((name) => Object.hasOwn(types, name));
+  }
+  return false;
+}
 
 /**
  * The dApp store as the core holds it once `dapp-permissions.json` has
@@ -316,6 +346,11 @@ function simulatedApprovals() {
       calls.push({ method: 'approval.check', params, page: context });
       if (!context) throw Object.assign(new Error('a standing rule answers only a page'), { code: 'forbidden' });
       const answer = standing(context, params) || noRule();
+      // No rule answers a Safe's signature (APR-4b) but a Safe account's
+      // own: the page's prompt does.
+      const { request = {} } = params;
+      const method = { transaction: 'sign.transaction', typed_data: 'sign.typed_data' }[request.kind];
+      if (answer.covered === true && request.account_kind !== 'safe' && isSafes(method, request)) return noRule();
       return answer.covered === true ? { covered: true } : { covered: false, reason: answer.reason ?? 'no_rule' };
     },
     // The dApp store's writes (APB-2): a page's for its own key, main's own
@@ -390,7 +425,14 @@ function simulatedApprovals() {
    */
   function authorize(method, account, request, { authorization = null, page = null } = {}) {
     calls.push({ method, params: { account, ...request, ...(authorization ? { authorization } : {}) }, page });
-    if (!authorization) return null;
+    const safeSignature = isSafes(method, request);
+    if (!authorization) {
+      // APR-4 (cored 0.16.0): a page's (or the chrome's) signature needs its
+      // authorization, and a Safe's one under every caller; main's own
+      // other signatures sign on its word.
+      if (page || safeSignature) throw refused('no_token');
+      return null;
+    }
     if (authorization.safe !== undefined) {
       // A Safe approval: open, presented by its holder, for an owner's typed
       // data or the executor's transaction, which ends it.
@@ -406,7 +448,9 @@ function simulatedApprovals() {
       return null;
     }
     if (authorization.standing) {
-      if (!page) throw Object.assign(new Error('a standing rule answers only a page'), { code: 'forbidden' });
+      // A standing rule answers only a page, and never a Safe's signature
+      // (cored 0.16.0; `forbidden` from main or the chrome before).
+      if (!page || safeSignature) throw refused('no_rule');
       const kind = method === 'sign.transaction' ? 'transaction' : method === 'sign.message' ? 'message' : 'typed_data';
       const answer = standing(page, { request: { kind, account, ...request }, paused: authorization.standing.paused }) || noRule();
       if (answer.covered !== true) throw refused(answer.reason ?? 'no_rule');

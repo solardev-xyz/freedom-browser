@@ -12,7 +12,7 @@
  *   recovery couldn't finish.
  * - **`grant_root`** (design 0012, "The files (Q10)") is the directory of
  *   the profile's four permission files, as an absolute, normalized path:
- *   the core reads them there at its checks. The pinned core (0.15.0)
+ *   the core reads them there at its checks. The pinned core (0.16.0)
  *   requires it, as every core from 0.14.0 (APR-3) does, and answers a hello
  *   without it, or with a relative path, with `invalid_argument` and exits
  *   76, so a client can't be made without one.
@@ -27,7 +27,7 @@
  *   builds still read it (Q10).
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
- *   (0.15.0) speaks only 2: it answers a hello at any other protocol,
+ *   (0.16.0) speaks only 2: it answers a hello at any other protocol,
  *   1 included, with `protocol_mismatch` and exits 76. A core that answers
  *   another protocol is a mismatch too: main fails, and doesn't restart it.
  *   Protocol 1 is gone (design 0009, Streams in the core), and a client
