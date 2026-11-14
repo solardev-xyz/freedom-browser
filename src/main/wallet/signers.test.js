@@ -357,7 +357,9 @@ describe('getSigner (vault-backed)', () => {
 
   // The real shapes main builds: a SafeTx (as safe-executor's
   // hashSafeTransaction) and a SafeMessage (as safe-messages'), each signed
-  // by a vault owner the way collectOwnerSignature asks for it.
+  // by a vault owner the way collectOwnerSignature asks for it: with the
+  // wallet's Safe approval, without which the core signs neither (cored
+  // 0.16.0, design 0012 APR-4b), main's word included.
   test.each([
     [
       'SafeTx',
@@ -399,9 +401,17 @@ describe('getSigner (vault-backed)', () => {
         };
       },
     ],
-  ])('a vault owner signature over a %s passes its own hash', async (_label, build) => {
+  ])('a vault owner signature over a %s passes its own hash', async (label, build) => {
     const typedData = build();
-    const signature = await getSigner(0).signTypedData(typedData);
+    // Main's word alone: refused before the key.
+    await expect(getSigner(0).signTypedData(typedData)).rejects.toMatchObject({
+      code: 'SIGNING_NOT_CONFIRMED',
+      reason: 'no_token',
+    });
+    mockCore.calls = [];
+    const kind = label === 'SafeTx' ? 'safe-send' : 'safe-message';
+    const id = mockCore.approvals.openSafeApproval({ kind });
+    const signature = await getSigner(0, { safe: { id, page: null } }).signTypedData(typedData);
     const types = { ...typedData.types };
     delete types.EIP712Domain;
     const hash = TypedDataEncoder.hash(typedData.domain, types, typedData.message);

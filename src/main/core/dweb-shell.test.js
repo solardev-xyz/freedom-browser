@@ -862,7 +862,7 @@ class FakeCore extends EventEmitter {
       this.send({
         type: 'response',
         id: message.id,
-        result: { protocol: 2, core_version: '0.15.0', capabilities: ['fragments', 'streams'] },
+        result: { protocol: 2, core_version: '0.16.0', capabilities: ['fragments', 'streams'] },
       });
       this.decoder.setKinds(CORE_STREAM_KINDS);
     } else if (message.method === 'core.shutdown') {

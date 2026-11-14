@@ -1,6 +1,6 @@
 /**
  * The app's core client speaks protocol 2 (freedom-core design 0009, step
- * 6), the only one the pinned core (0.15.0) takes, so `shell.dweb_get` is
+ * 6), the only one the pinned core (0.16.0) takes, so `shell.dweb_get` is
  * registered and the `dweb.verify` verifier attaches.
  * Every 0009 feature in main waits for that verifier: the captured
  * backends' `verify`, `unsupported` and `strict`, the error page, and
@@ -33,7 +33,7 @@ const core = require('./core-process');
 
 const HELLO = {
   protocol: PROTOCOL_VERSION_STREAMS,
-  core_version: '0.15.0',
+  core_version: '0.16.0',
   capabilities: ['streams', 'fragments'],
   node_recovery: null,
 };
@@ -69,6 +69,12 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(verifier).toBeInstanceOf(DwebVerifier);
   expect(verifier.client).toBe(client);
   expect(verifier.shell).toBe(shell);
+  // The key store's `shell.keystore` (freedom-core design 0013, cored
+  // 0.16.0) has no executor in main until PRF-2: the app's client registers
+  // none, so the core's request is answered `unknown_method`
+  // (core-client.test.js), which the core reads as no key store.
+  expect(handle.mock.calls.map(([method]) => method)).not.toContain('shell.keystore');
+  expect(client.handlerFor('shell.keystore', {})).toBeUndefined();
 
   await core.stopCore();
   expect(stop).toHaveBeenCalledTimes(1);

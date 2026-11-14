@@ -509,6 +509,39 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
   });
 
   describe('page kinds, minted by main for a page under `page`', () => {
+    // cored 0.16.0 (design 0012, APR-4a): a page's signature needs its
+    // authorization (its token, `{ standing }` or `{ safe }`), and the
+    // chrome's a wallet-kind token. Without one each is refused `no_token`
+    // before the key, while the vault is locked too. `{ standing }` answers
+    // only a page: from main or the chrome it is `no_rule`.
+    test("a page's or the chrome's signature without its authorization is refused no_token, locked or not", async () => {
+      const typed = toCoreTypedData(TYPED_DATA);
+      const { EIP712Domain: _domain, ...types } = TYPED_DATA.types;
+      const hash = TypedDataEncoder.hash(TYPED_DATA.domain, types, TYPED_DATA.message);
+      const unauthorized = (caller) => [
+        vaultBackend.sign.message(account(), Buffer.from('hello'), { page: caller }),
+        vaultBackend.sign.typedData(account(), typed, hash, { page: caller }),
+        vaultBackend.sign.transaction(account(), wire(DAPP_TX), { page: caller }),
+      ];
+      for (const caller of [PAGE, 'chrome']) {
+        for (const signed of unauthorized(caller)) expect(await reasonOf(signed)).toBe('no_token');
+      }
+      // `{ standing }` from main or the chrome.
+      for (const caller of [null, 'chrome']) {
+        const standing = { page: caller, authorization: { standing: {} } };
+        expect(await reasonOf(vaultBackend.sign.message(account(), Buffer.from('hello'), standing))).toBe('no_rule');
+      }
+      // Locked: still the refusal, not vault_locked.
+      await vaultBackend.lock();
+      try {
+        for (const signed of unauthorized(PAGE)) expect(await reasonOf(signed)).toBe('no_token');
+      } finally {
+        await vaultBackend.unlock('testpass1');
+      }
+      // Main's own, under `shell`, signs on its word.
+      await expect(vaultBackend.sign.message(account(), Buffer.from('hello'))).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+    });
+
     test('a dApp send signs under its page, once, for its document and handle', async () => {
       const confirmation = await pageToken('dapp-send', 0, DAPP_TX);
       expect(calls.find((call) => call.method === 'approval.issue')).toMatchObject({
@@ -1715,6 +1748,41 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       } finally {
         await permissions.revokePermission(SITE);
       }
+    });
+
+    // cored 0.16.0 (design 0012, APR-4b): main's word signs no Safe's
+    // signature. Without its Safe approval or a token that binds it, an
+    // owner's SafeTx or SafeMessage and an executor's execTransaction are
+    // refused `no_token` before the key, while the vault is locked too, and
+    // `{ standing }` answers none (`no_rule`). Main's other typed data still
+    // signs on its word.
+    test("main's word alone signs no Safe's signature: no_token, locked or not; no standing rule answers one", async () => {
+      const bare = getSigner(0);
+      const digest = hashMessage('hello');
+      await expect(notConfirmed(bare.signTypedData(safeTx()))).resolves.toBe('no_token');
+      await expect(notConfirmed(bare.signTypedData(safeMessage(digest)))).resolves.toBe('no_token');
+      const approval = await walletApproval();
+      const ownerSignature = await owner(approval).signTypedData(safeTx());
+      await vaultBackend.approval.end(approval.id);
+      const send = buildTransaction({ ...execSend([ownerSignature]), nonce: 7 });
+      await expect(notConfirmed(bare.signTransaction(send))).resolves.toBe('no_token');
+      expect(calls.at(-1)).toMatchObject({ method: 'sign.transaction', context: { caller: 'shell' } });
+      expect(calls.at(-1).params).not.toHaveProperty('authorization');
+      const hashOf = (typed) => {
+        const { EIP712Domain: _domain, ...types } = typed.types;
+        return TypedDataEncoder.hash(typed.domain, types, typed.message);
+      };
+      const shellSafeTx = (options) =>
+        vaultBackend.sign.typedData(account(), toCoreTypedData(safeTx()), hashOf(safeTx()), options);
+      expect(await reasonOf(shellSafeTx({ authorization: { standing: {} } }))).toBe('no_rule');
+      expect(await reasonOf(shellSafeTx({ page: PAGE, authorization: { standing: {} } }))).toBe('no_rule');
+      await vaultBackend.lock();
+      try {
+        expect(await reasonOf(shellSafeTx())).toBe('no_token');
+      } finally {
+        await vaultBackend.unlock('testpass1');
+      }
+      await expect(bare.signTypedData(TYPED_DATA)).resolves.toMatch(/^0x[0-9a-f]{130}$/);
     });
 
     // Review of #1245, round 1: main ends a held approval through the core
