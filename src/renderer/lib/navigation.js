@@ -51,6 +51,7 @@ import {
   setWebviewEventHandler,
   updateActiveTabTitle,
   updateTabFavicon,
+  isSameFaviconSite,
   setTabLoading,
   getTabs,
   getTabById,
@@ -299,7 +300,9 @@ const runFaviconFetch = (tab) => {
   electronAPI
     ?.fetchFaviconWithKey?.(load.internalUrl, load.displayUrl, reported.iconUrl)
     ?.then((favicon) => {
-      if (favicon) {
+      // The tab may have gone on to another site while main fetched; its
+      // strip belongs to that site now, so this one's icon stays out of it.
+      if (favicon && isSameFaviconSite(tab.url, load.pageUrl)) {
         updateTabFavicon(tab.id, load.displayUrl);
       }
     })
