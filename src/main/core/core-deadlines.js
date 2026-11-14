@@ -83,7 +83,7 @@ const METHOD_CLASSES = Object.freeze({
   // its tokens through the first four (APB-1). cored-v0.16.0 adds two
   // methods, both `page` only: `approval.radicle_write` (a page's Radicle
   // write counted in R-6) and `approval.remember` (a device send's "Always
-  // allow", from `approval.spend`'s receipt). Main doesn't send either yet.
+  // allow", from `approval.spend`'s receipt).
   'approval.issue': IMMEDIATE,
   'approval.discard': IMMEDIATE,
   'approval.spend': IMMEDIATE,
@@ -92,6 +92,7 @@ const METHOD_CLASSES = Object.freeze({
   'approval.grant': IMMEDIATE,
   'approval.revoke': IMMEDIATE,
   'approval.touch': IMMEDIATE,
+  // Asked by radicle-provider-ipc.js before a rule-answered write.
   'approval.radicle_write': IMMEDIATE,
   'approval.grants': IMMEDIATE,
   'approval.forget_account': IMMEDIATE,

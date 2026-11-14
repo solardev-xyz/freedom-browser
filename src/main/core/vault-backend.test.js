@@ -504,6 +504,7 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.revoke({ store: 'swarm', key: 'https://app.example', what: 'grant' }, 'chrome');
     await vaultBackend.approval.touch({ store: 'dapp' }, { origin: 'https://app.example', agent: false });
     await vaultBackend.approval.touch({ store: 'radicle' }, { origin: 'https://app.example' });
+    await vaultBackend.approval.radicleWrite({ key: 'https://app.example' }, { origin: 'https://app.example', agent: false });
     await vaultBackend.approval.forgetAccount(0);
     await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
@@ -539,6 +540,7 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.revoke({ store: 'radicle', key: page.origin, what: 'grant' }, 'chrome');
     await vaultBackend.approval.touch({ store: 'radicle' }, page);
     await vaultBackend.approval.grants({ store: 'swarm' });
+    await vaultBackend.approval.radicleWrite({ key: page.origin }, page);
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page, authorization });
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk);
     expect(core.calls.map(({ method, context, params }) => [method, context, params.authorization])).toEqual([
@@ -547,6 +549,9 @@ describe('vaultBackend', () => {
       ['approval.revoke', { caller: 'chrome' }, undefined],
       ['approval.touch', { caller: 'page', page }, undefined],
       ['approval.grants', { caller: 'shell' }, undefined],
+      // A page's Radicle write, counted in R-6 (design 0012, "A page's
+      // Radicle write"): under its page, for its own key.
+      ['approval.radicle_write', { caller: 'page', page }, undefined],
       ['swarm.sign_soc', { caller: 'page', page }, authorization],
       ['swarm.sign_soc', { caller: 'shell' }, undefined],
     ]);

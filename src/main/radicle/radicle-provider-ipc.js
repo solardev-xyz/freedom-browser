@@ -26,8 +26,9 @@
  *
  * Signed writes (the COB methods) each need the user's approval: main's
  * per-write prompt, or the site's "always allow writes" rule
- * (autoApprove.signing), which this module rate-limits per origin. See
- * SIGNED_WRITE_METHODS below. Each runs under the page's guard, just before
+ * (autoApprove.signing), whose writes the identity core judges and
+ * rate-limits per origin (R-6, `approval.radicle_write`, freedom-core
+ * design 0012 "A page's Radicle write"). See SIGNED_WRITE_METHODS below. Each runs under the page's guard, just before
  * the add-on signs and writes it (`page.effect`).
  *
  * Seeding is honest about replication: radicle_seed writes the policy and
@@ -66,8 +67,6 @@ const {
 } = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
-const { createAutoWriteLimiter } = require('./auto-write-limiter');
-const { normalizeOrigin } = require('../../shared/origin-utils');
 const { redactForLog } = require('../private/private-log-context');
 
 const SPEC_VERSION = '0.2';
@@ -80,6 +79,20 @@ const ERRORS = {
   INVALID_PARAMS: { code: -32602, message: 'Invalid params' },
   INTERNAL: { code: -32603, message: 'Internal error' },
 };
+
+// Why the identity core didn't cover a rule-answered write (`approval.
+// radicle_write`, design 0012 "A page's Radicle write"), as main refused it
+// before: R-6's limit (the dispatcher asks the user instead), no rule
+// (connected, the signing grant and its rule, as the core holds them), or a
+// tab in Agent custody, as main's page dispatcher answers one.
+const AUTO_WRITE_REFUSALS = Object.freeze({
+  rate_limited: Object.freeze({
+    message: 'This site has used up its automatic writes for now; this one needs the user\'s approval',
+    reason: 'auto_write_limit',
+  }),
+  no_rule: Object.freeze({ message: 'This write needs the user\'s approval', reason: 'approval_required' }),
+  custody: Object.freeze({ message: 'A page in Agent custody needs approval for this action', reason: 'agent_custody' }),
+});
 
 function providerError(base, message, data) {
   const err = { code: base.code, message: message || base.message };
@@ -192,15 +205,15 @@ const KNOWN_METHODS = new Set(Object.keys(METHOD_TIERS));
 // COB writes sign with the user's node identity and publish irrevocably.
 // Each needs the user's approval for that write ('user': main showed the
 // per-write prompt), or the site's "always allow writes" rule, whose
-// writes autoWriteLimiter counts. Anything else is automatic, and is
-// refused unless the rule exists and the limit admits it (R-6).
+// writes the identity core counts (`approval.radicle_write`). Anything else
+// is automatic, and is refused unless the rule exists and the core covers
+// it (R-6).
 const SIGNED_WRITE_METHODS = new Set([
   'radicle_createIssue',
   'radicle_commentIssue',
   'radicle_editIssueState',
   'radicle_commentPatch',
 ]);
-const autoWriteLimiter = createAutoWriteLimiter();
 const PUSH_METHODS = new Set(['radicle_seed', 'radicle_sync', 'radicle_getSeedStatus']);
 // The node actions a page's request runs under main's guard (PRQ-8b).
 const NODE_ACTIONS = new Set(['radicle_seed', 'radicle_unseed', 'radicle_sync']);
@@ -507,8 +520,9 @@ const cobWrite = (write) => (p, guard) => (guard ? write(p, { guard }) : write(p
  *   prompt; page.effect: the guard a node action or signed write runs under;
  *   pageContext: the requester's PageContext, read as main sends the
  *   identity core the site's last use or its disconnect (design 0012,
- *   APB-3: the core writes the grants). A private window never reaches
- *   this (main's attestation refuses one).
+ *   APB-3: the core writes the grants), and as it asks the core about a
+ *   rule-answered write (`approval.radicle_write`). A private window never
+ *   reaches this (main's attestation refuses one).
  */
 async function executeRadicleMethod(
   method,
@@ -565,13 +579,9 @@ async function executeRadicleMethod(
           reason: 'approval_required',
         });
       }
-      if (!autoWriteLimiter.admit(normalizeOrigin(origin))) {
-        throw providerError(
-          ERRORS.UNAUTHORIZED,
-          'This site has used up its automatic writes for now; this one needs the user\'s approval',
-          { reason: 'auto_write_limit' }
-        );
-      }
+      // Asked last, after main's own checks, so a write refused for another
+      // reason isn't counted.
+      await admitAutoWrite(origin, pageContext);
     }
     // A page's guarded effect records it in its guard's run; any other
     // request now, sent to the core and not waited for.
@@ -609,8 +619,8 @@ async function executeRadicleMethod(
         origin,
         typeof pageContext === 'function' ? { page: pageContext() } : {}
       );
+      // The revoke forgets the key's R-6 count in the core.
       removeSeedStatusBroadcaster(origin);
-      autoWriteLimiter.forget(normalizeOrigin(origin));
       return { connected: false };
     case 'radicle_getIdentity':
       return handleCobWrite(method, () => cob.getIdentity(), params);
@@ -626,6 +636,39 @@ async function executeRadicleMethod(
     default:
       throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
   }
+}
+
+/**
+ * A rule-answered COB write, judged and counted by the identity core
+ * (freedom-core design 0012, "A page's Radicle write"): `approval.
+ * radicle_write { key }` under `page`, with the requester's PageContext.
+ * Main asks after its own checks (the connection, the signing grant, the
+ * node running, `needs_vault`, the rule), just before the write goes to
+ * the add-on under the page's guard, as the limiter it replaces counted
+ * there. A covered write is counted, and goes on; one counted and then
+ * failing stays counted, as before. Otherwise it is refused as main
+ * refused it before (`AUTO_WRITE_REFUSALS`): past R-6's limit with
+ * `auto_write_limit`, which sends the request to its prompt. Anything else
+ * the core answers (`not_moved`, which can't happen while `radicle` is in
+ * the hello's `grant_moved`, an unknown reason, or no core to ask) is an
+ * internal error, with nothing counted or written.
+ */
+async function admitAutoWrite(origin, pageContext) {
+  let answer;
+  try {
+    if (typeof pageContext !== 'function') throw new Error('a rule-answered write needs its page');
+    answer = await permissions.admitAutoWrite(origin, { page: pageContext() });
+  } catch (err) {
+    log.error('[radicle-provider] the identity core did not judge an automatic write:', redactForLog(err?.code || err?.message || String(err)));
+    throw providerError(ERRORS.INTERNAL);
+  }
+  if (answer?.covered === true) return;
+  const refusal = AUTO_WRITE_REFUSALS[answer?.reason];
+  if (!refusal) {
+    log.error('[radicle-provider] the identity core answered an automatic write with no known reason:', redactForLog(String(answer?.reason)));
+    throw providerError(ERRORS.INTERNAL);
+  }
+  throw providerError(ERRORS.UNAUTHORIZED, refusal.message, { reason: refusal.reason });
 }
 
 // A site's last use, for its page (the core takes it only under `page`):
@@ -694,5 +737,4 @@ module.exports = {
   executeRadicleForPage,
   setSeedStatusSink,
   registerRadicleProviderIpc,
-  _resetAutoWriteLimiter: () => autoWriteLimiter.reset(),
 };

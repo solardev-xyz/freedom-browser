@@ -2,7 +2,8 @@
 // chrome (freedom-core design 0011, PRQ-8c), against the PRQ-8 row. Main's
 // real request path (page-documents, page-requests, its prompts) runs the
 // dispatcher (page-radicle.js) over main's real executeRadicleMethod,
-// cob-service, auto-write limiter and Radicle permission store; the add-on's
+// cob-service and Radicle permission store, with the identity core's grants
+// and its R-6 count (`approval.radicle_write`) simulated; the add-on's
 // signed writes are in memory, and a test can hold one. Each guest's main
 // frame records what main sends it (`page:event`).
 
@@ -302,8 +303,8 @@ const changedInCore = (key, change) => {
 beforeEach(async () => {
   jest.clearAllMocks();
   core = await useSimulatedGrantCore();
+  // A new simulated core: every R-6 count starts full, as at a core's start.
   permissions.onRevoke(null);
-  provider._resetAutoWriteLimiter();
   require('../radicle/cob-service').clearIdentityCache();
   mockAddon.writes = [];
   mockAddon.hold = null;
@@ -490,9 +491,16 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
     const prompt = await env.shown();
     expect(prompt.view).toMatchObject({ mode: 'write', agentHeld: false, alwaysAllow: true });
     expect(mockAddon.writes).toHaveLength(5);
+    // The identity core judged each (design 0012, "A page's Radicle write"):
+    // asked under the requester's page, for its key; the sixth was past R-6.
+    expect(core.calls.filter((call) => call.method === 'approval.radicle_write')).toEqual(
+      Array(6).fill({ method: 'approval.radicle_write', params: { key: KEY_A }, caller: 'page' })
+    );
     expect(await env.decide(prompt.handle, true, { alwaysAllow: false })).toEqual({ ok: true });
     expect(await answer).toEqual(WRITTEN);
     expect(mockAddon.writes).toHaveLength(6);
+    // The write the user approved went as the user's, unasked and uncounted.
+    expect(core.calls.filter((call) => call.method === 'approval.radicle_write')).toHaveLength(6);
     expect(permissions.getAutoApprove(KEY_A, 'signing')).toBe(false);
   });
 

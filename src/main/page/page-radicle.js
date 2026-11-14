@@ -75,9 +75,10 @@
  *     under the key, answered keyless once the name has moved.
  *   - Each COB write needs the user's approval: main's per-write prompt
  *     (`radicle.sign`, write mode), showing exactly what the write signs, or
- *     the site's "always allow writes" rule, rate-limited per site, which
- *     never answers for a tab in Agent custody, read live. A rule-answered
- *     write past the limit falls back to the prompt. "Always allow", the
+ *     the site's "always allow writes" rule, rate-limited per site by the
+ *     identity core (R-6, `approval.radicle_write`), which never answers
+ *     for a tab in Agent custody, read live. A rule-answered write past the
+ *     limit falls back to the prompt. "Always allow", the
  *     prompt's one choice outside custody, sets or clears the rule, by main.
  *   - Each write is its effect: the add-on signs and publishes in one call,
  *     so the guard runs just before it, after every wait main controls, and
@@ -586,9 +587,13 @@ function createRadicleDispatchers(deps = {}) {
     const agentHeld = custody(requester.guest);
     const ruleOn = !agentHeld && getAutoApprove(key, 'signing') === true;
     if (ruleOn) {
+      // The identity core judges the rule's write and counts it in R-6
+      // (design 0012, "A page's Radicle write"), under this request's
+      // PageContext.
       const out = await execute(method, params, key, {
         approval: 'auto',
         page: { effect: (run) => guardWrite(context, nameCheck, true, run) },
+        ...asPage(context),
       });
       // Past the rule's limit, the write asks the user instead.
       if (out?.error?.data?.reason !== 'auto_write_limit') return out;
