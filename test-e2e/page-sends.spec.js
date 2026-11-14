@@ -12,7 +12,9 @@
 // No chain runs here: main's quote and its signAndRecord are replaced in
 // main for this app instance (the spec's stubs below): the vault account's
 // sends are signed by the identity core, which checks and spends what each
-// presents (its token, or the site's rule), and none is broadcast. The fee
+// presents (its token, or the site's rule), a Ledger's by main's own Ledger
+// backend over a fake HID device, after its token's spend through the core,
+// and none is broadcast. The fee
 // check reads the harness's fee fixture, but where the site's rule answers:
 // there the core judges the fee on evidence of its own (freedom-core design
 // 0012, APB-1b), which main asks the core for, from two loopback endpoints
@@ -27,6 +29,7 @@ const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
 const { startFeeRpcStub } = require('./fee-rpc-stub');
+const { Wallet } = require('ethers');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -35,10 +38,12 @@ const VAULT_PASSWORD = 'Freedom-E2E-Page-Sends-2026!';
 const KEY_A = `bzz://${'a'.repeat(64)}`;
 const KEY_B = `bzz://${'b'.repeat(64)}`;
 const KEY_C = `bzz://${'c'.repeat(64)}`;
+// The fake Ledger's key (`fakeLedger`): a test key, never funded.
+const LEDGER_KEY = '0x' + '4c'.repeat(32);
 const LEDGER = {
   index: 1000000,
   name: 'Ledger 1',
-  address: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+  address: new Wallet(LEDGER_KEY).address,
   type: 'ledger',
   path: "44'/60'/0'/0/0",
 };
@@ -204,8 +209,10 @@ function stubChain(electronApp) {
     recorder.signAndRecord = async (tx, signer, context, options) => {
       globalThis.__sends.push({ tx, context, walletIndex: options?.walletIndex });
       // The vault account's send is signed by the core, which checks and
-      // spends what the signer presents (design 0012); a Ledger has no device.
-      if (options?.walletIndex === 0) await signer.signTransaction(service.buildTransaction({ ...tx, nonce: 0 }));
+      // spends what the signer presents (design 0012); a Ledger's by main's
+      // Ledger backend over the fake device, once its signer has spent the
+      // token through the core (`fakeLedger`).
+      await signer.signTransaction(service.buildTransaction({ ...tx, nonce: 0 }));
       if (globalThis.__holdDevice) await globalThis.__holdDevice;
       if (options?.guardCommit) await options.guardCommit(async () => ({ intentId: 'intent-e2e' }));
       options?.onCommitted?.();
@@ -214,6 +221,41 @@ function stubChain(electronApp) {
   }, { root: repoRoot, hash: HASH });
 }
 const sends = (electronApp) => electronApp.evaluate(() => globalThis.__sends.slice());
+
+// A Ledger in main over a fake HID device: main's own Ledger backend and
+// transport (its device queue, its open, its address check), and a device
+// that signs with LEDGER_KEY, or refuses as the device's own "reject" while
+// `__ledgerRefuses` is set. ledger/transport.js loads the HID transport and
+// hw-app-eth lazily, so their fakes go into main's module cache first.
+const fakeLedger = (electronApp) =>
+  electronApp.evaluate((_electron, args) => {
+    // Resolved as ledger/transport.js resolves them.
+    const req = process.mainModule.require('module').createRequire(`${args.root}/src/main/wallet/ledger/transport.js`);
+    const { Wallet: KeyWallet, Transaction, Signature } = req('ethers');
+    const key = new KeyWallet(args.key);
+    globalThis.__ledgerSigned = 0;
+    globalThis.__ledgerRefuses = false;
+    const fake = (name, exports) => {
+      const file = req.resolve(name);
+      req.cache[file] = { id: file, filename: file, loaded: true, exports, children: [], paths: [] };
+    };
+    fake('@ledgerhq/hw-transport-node-hid', { default: { open: async () => ({ close: async () => {} }) } });
+    fake('@ledgerhq/hw-app-eth', {
+      default: class FakeEth {
+        async getAddress() {
+          return { address: key.address };
+        }
+        async signTransaction(_path, rawHex) {
+          if (globalThis.__ledgerRefuses) throw Object.assign(new Error('Condition of use not satisfied'), { statusCode: 0x6985 });
+          globalThis.__ledgerSigned += 1;
+          const signed = Transaction.from(await key.signTransaction(Transaction.from('0x' + rawHex)));
+          const sig = Signature.from(signed.signature.serialized);
+          return { r: sig.r.slice(2), s: sig.s.slice(2), v: sig.v };
+        }
+      },
+    });
+  }, { root: repoRoot, key: LEDGER_KEY });
+const ledgerSigned = (electronApp) => electronApp.evaluate(() => globalThis.__ledgerSigned);
 // The fee check's evidence, through the harness (null restores its default).
 const feeReference = (electronApp, reply) =>
   electronApp.evaluate((_electron, value) => globalThis.__FREEDOM_TEST_HARNESS__.setFeeReferenceFixture(value), reply);
@@ -255,6 +297,7 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   await harness.setContentFixture(`${KEY_B}/`, page('dapp b'));
   await harness.setContentFixture(`${KEY_C}/`, page('dapp c'));
   await stubChain(electronApp);
+  await fakeLedger(electronApp);
   expect(await win.evaluate((pw) => window.identity.unlock(pw), VAULT_PASSWORD)).toMatchObject({ success: true });
   const account = (await win.evaluate(() => window.wallet.getDerivedWallets())).wallets[0].address;
   await grant(electronApp, KEY_A);
@@ -422,6 +465,39 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   await expect.poll(async () => (await outcome(win, KEY_C, 'ledger'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
   await expect.poll(async () => (await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, waiting: null });
   expect((await sends(electronApp)).at(-1)).toMatchObject({ walletIndex: LEDGER.index, context: { origin: KEY_C } });
+  expect(await ledgerSigned(electronApp)).toBe(1);
+
+  // "Always allow" on a Ledger's contract call (freedom-core design 0012, "A
+  // device send's rule"): offered. Refused at the device, it leaves no rule.
+  await electronApp.evaluate(() => {
+    globalThis.__ledgerRefuses = true;
+  });
+  await send(win, KEY_C, 'ledger-refused', CALL);
+  await expectPanel(panel, 'Confirm Transaction', KEY_C);
+  await expect(panel.getByLabel(ALWAYS_ALLOW)).toHaveCount(1);
+  await decideInPanel(electronApp, { check: [ALWAYS_ALLOW], panel, windowId });
+  await expect.poll(() => outcome(win, KEY_C, 'ledger-refused'), { timeout: 15_000 }).toEqual(REJECTED);
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, waiting: null });
+  expect(await ruleCovers(electronApp, KEY_C)).toBe(false);
+  await electronApp.evaluate(() => {
+    globalThis.__ledgerRefuses = false;
+  });
+  // Signed by the device: the core's receipt for the spent token, presented
+  // once the send is recorded, wrote the rule for the requester's key.
+  await send(win, KEY_C, 'ledger-call', CALL);
+  await expectPanel(panel, 'Confirm Transaction', KEY_C);
+  await decideInPanel(electronApp, { check: [ALWAYS_ALLOW], panel, windowId });
+  await expect.poll(async () => (await outcome(win, KEY_C, 'ledger-call'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
+  await expect.poll(async () => (await approvalsState(electronApp))[windowId]).toMatchObject({ visible: false, waiting: null });
+  expect(await ledgerSigned(electronApp)).toBe(2);
+  expect(await ruleCovers(electronApp, KEY_C)).toBe(true);
+  // The same call again: no prompt and no token, the rule answering, and the
+  // Ledger signs it.
+  const ledgerPrompts = (await promptsOf(electronApp, 'eth.send')).length;
+  await send(win, KEY_C, 'ledger-ruled', CALL);
+  await expect.poll(async () => (await outcome(win, KEY_C, 'ledger-ruled'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
+  expect((await promptsOf(electronApp, 'eth.send')).length).toBe(ledgerPrompts);
+  expect(await ledgerSigned(electronApp)).toBe(3);
 
   // Every send went to main; none took the chrome's old path.
   const methods = (await trace(electronApp))

@@ -96,6 +96,7 @@ const METHOD_CLASSES = Object.freeze({
   'approval.radicle_write': IMMEDIATE,
   'approval.grants': IMMEDIATE,
   'approval.forget_account': IMMEDIATE,
+  // Sent by page-sends.js once a device's flagged send is recorded.
   'approval.remember': IMMEDIATE,
   'dweb.open': SESSION,
   'dweb.verify': HEAD,
