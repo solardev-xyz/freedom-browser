@@ -10,8 +10,13 @@
 // locked.
 //
 // No chain runs here: main's quote and its signAndRecord are replaced in
-// main for this app instance (the spec's stubs below), and the fee check
-// reads the harness's fee fixture. Everything between the page and the
+// main for this app instance (the spec's stubs below): the vault account's
+// sends are signed by the identity core, which checks and spends what each
+// presents (its token, or the site's rule), and none is broadcast. The fee
+// check reads the harness's fee fixture, but where the site's rule answers:
+// there the core judges the fee on evidence of its own (freedom-core design
+// 0012, APB-1b), which main asks the core for, from two loopback endpoints
+// of this spec's (fee-rpc-stub.js). Everything between the page and the
 // signer is the app's own.
 
 const { _electron: electron } = require('@playwright/test');
@@ -21,6 +26,7 @@ const os = require('os');
 const { test: base, expect } = require('./fixtures');
 const { closeApp } = require('./close-app');
 const { approvalsPage, approvalsState, chromeWindowId, decideInPanel, panelArmed } = require('./approvals-fixtures');
+const { startFeeRpcStub } = require('./fee-rpc-stub');
 
 const repoRoot = path.resolve(__dirname, '..');
 const identity = require(path.join(repoRoot, 'test', 'legacy-identity'));
@@ -75,6 +81,21 @@ const test = base.extend({
       }),
       'utf-8'
     );
+    // Gnosis's fee quote, for the core's own evidence: the stubs' gas price,
+    // the fixture's, from two endpoints of this spec's (fee-rpc-stub.js).
+    const fees = await startFeeRpcStub({ chainId: 100, gasPrice: '1000000000' });
+    fs.writeFileSync(
+      path.join(userDataDir, 'network-config.json'),
+      JSON.stringify({
+        endpointSources: {
+          'e2e-fees-a': { role: 'rpc', keyed: false, coverage: { 100: fees.urls[0] } },
+          'e2e-fees-b': { role: 'rpc', keyed: false, coverage: { 100: fees.urls[1] } },
+        },
+        removedSources: ['gno-gnosischain', 'gno-publicnode', 'gno-drpc-public'],
+        networks: { 100: { access: { readOrder: ['quorum', 'direct'] } } },
+      }),
+      'utf-8'
+    );
     const app = await electron.launch({
       args: ['.'],
       cwd: repoRoot,
@@ -85,11 +106,15 @@ const test = base.extend({
         FREEDOM_IDENTITY_DATA: identityDir,
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
+        // Test-only seam (src/main/networks/e2e-provider-identities.js):
+        // the two loopback endpoints count as two providers.
+        FREEDOM_E2E_PROVIDER_IDENTITIES: JSON.stringify({ [fees.urls[0]]: 'e2e-fees-a', [fees.urls[1]]: 'e2e-fees-b' }),
       },
       timeout: 20_000,
     });
     await use(app);
     await closeApp(app);
+    await fees.close();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   },
 });
@@ -170,8 +195,11 @@ function stubChain(electronApp) {
     service.getGasPrices = async () => ({ type: 'legacy', gasPrice: '1000000000', effectiveGasPrice: '1000000000' });
     globalThis.__sends = [];
     globalThis.__holdDevice = null;
-    recorder.signAndRecord = async (tx, _signer, context, options) => {
+    recorder.signAndRecord = async (tx, signer, context, options) => {
       globalThis.__sends.push({ tx, context, walletIndex: options?.walletIndex });
+      // The vault account's send is signed by the core, which checks and
+      // spends what the signer presents (design 0012); a Ledger has no device.
+      if (options?.walletIndex === 0) await signer.signTransaction(service.buildTransaction({ ...tx, nonce: 0 }));
       if (globalThis.__holdDevice) await globalThis.__holdDevice;
       if (options?.guardCommit) await options.guardCommit(async () => ({ intentId: 'intent-e2e' }));
       options?.onCommitted?.();
@@ -306,7 +334,9 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   ]);
   expect(await ruleCovers(electronApp, KEY_A)).toBe(true);
 
-  // The rule, read by main: the same call sends with no prompt and no token.
+  // The rule, which main wrote and the core reads: the same call sends with
+  // no prompt and no token, its fee judged on the core's own evidence.
+  await feeReference(electronApp, 'core');
   const promptsBefore = (await promptsOf(electronApp, 'eth.send')).length;
   await send(win, KEY_A, 'ruled', CALL);
   await expect.poll(async () => (await outcome(win, KEY_A, 'ruled'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
@@ -337,7 +367,7 @@ test('sends through main: its prompt and fee check, its own token, the contract 
   expect(await outcome(win, KEY_A, 'above')).toEqual({ pending: true });
   await decideInPanel(electronApp, { panel, windowId });
   await expect.poll(async () => (await outcome(win, KEY_A, 'above'))?.ok || null, { timeout: 15_000 }).toBe(HASH);
-  await feeReference(electronApp, null);
+  await feeReference(electronApp, 'core');
 
   // A locked vault under the rule: main asks for the unlock first, for the
   // site it attested, and sends once the vault is open.

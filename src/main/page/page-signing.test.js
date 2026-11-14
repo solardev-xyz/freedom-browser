@@ -63,6 +63,9 @@ const REJECTED = { error: { code: 4001, message: 'User rejected the request' } }
 const CUSTODY = {
   error: { code: 4100, message: 'The origin is not authorized for this operation', data: { reason: 'agent_custody' } },
 };
+const RULE_GONE = {
+  error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
+};
 
 let nextId = 1;
 let nextNonce = 1;
@@ -193,6 +196,18 @@ function backends() {
       }),
       signsRawHash,
       getSigner: jest.fn(() => signer),
+      // The identity core's `approval.check` (design 0012), simulated from
+      // the same state: the grant exposing the account and its signing rule,
+      // outside custody, never 32 bytes nor a warned view.
+      checkStanding: jest.fn(async (page, request) => {
+        const refused = (reason) => ({ covered: false, reason });
+        if (page?.agent !== false) return refused('custody');
+        const permission = state.permissions.get(page.origin);
+        if (permission?.walletIndex !== request.account || permission.autoApprove?.signing !== true) return refused('no_rule');
+        if (request.kind === 'message' && signsRawHash(request.payload)) return refused('warning');
+        if (request.kind === 'typed_data' && state.typedWarnings.length > 0) return refused('warning');
+        return { covered: true, reason: null };
+      }),
       setSigningAutoApprove: jest.fn((key, enabled) => {
         state.rules.push([key, enabled]);
         const permission = state.permissions.get(key);
@@ -788,13 +803,56 @@ describe("the site's rule, read by main for the request it holds", () => {
       ['typed', TYPED, { expectedHash: TYPED_HASH }],
     ]);
     expect(env.state.lastUsed).toEqual([[KEY_A], [KEY_A]]);
-    // A page's signature, never main's own: under its PageContext (design
-    // 0012), with no token until `{ standing }` (APB-1b).
+    // A page's signature, never main's own: under its PageContext, as the
+    // site's rule (`{ standing }`), the typed data's view on the page's chain
+    // (design 0012).
     const pageContext = expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false });
     expect(env.deps.signing.getSigner.mock.calls).toEqual([
-      [0, { page: pageContext }],
-      [0, { page: pageContext }],
+      [0, { page: pageContext, standing: {}, chainId: 100 }],
+      [0, { page: pageContext, standing: {}, chainId: 100 }],
     ]);
+    // The core chose each (`approval.check`), and read it again just before
+    // the signature: what the request signs, for the account the grant
+    // exposes, on the page's chain.
+    expect(env.deps.signing.checkStanding.mock.calls.map(([context, request]) => [context.origin, request])).toEqual([
+      [KEY_A, { kind: 'message', account: 0, accountType: 'mnemonic', payload: MESSAGE, chainId: 100 }],
+      [KEY_A, { kind: 'message', account: 0, accountType: 'mnemonic', payload: MESSAGE, chainId: 100 }],
+      [KEY_A, { kind: 'typed_data', account: 0, accountType: 'mnemonic', payload: TYPED, chainId: 100 }],
+      [KEY_A, { kind: 'typed_data', account: 0, accountType: 'mnemonic', payload: TYPED, chainId: 100 }],
+    ]);
+  });
+
+  test("a rule the core doesn't hold sends the request to its prompt; one it refuses at the signature answers as before", async () => {
+    const env = setup();
+    ruled(env);
+    const page = env.tab();
+    // The core reads no rule (its file, its account): the prompt.
+    env.deps.signing.checkStanding.mockImplementationOnce(async () => ({ covered: false, reason: 'no_rule' }));
+    const prompted = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await prompted).toEqual(REJECTED);
+    // A check that fails reads as not covered.
+    env.deps.signing.checkStanding.mockImplementationOnce(async () => {
+      throw new Error('core gone');
+    });
+    const failed = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(env.lastPrompt().kind).toBe('eth.sign');
+    await env.decide(env.lastPrompt().handle, false);
+    expect(await failed).toEqual(REJECTED);
+    // The core refuses the signature itself under `{ standing }`.
+    const refusing = (reason) =>
+      env.signer.signMessage.mockImplementationOnce(async () => {
+        const { confirmationError } = require('../wallet/signing-confirmation');
+        throw confirmationError(Object.assign(new Error('refused'), { code: 'not_authorized', data: { reason } }));
+      });
+    refusing('custody');
+    expect(await page.ask('personal_sign', [MESSAGE, ACCOUNT])).toEqual(CUSTODY);
+    refusing('no_rule');
+    expect(await page.ask('personal_sign', [MESSAGE, ACCOUNT])).toEqual(RULE_GONE);
+    expect(env.state.signed).toEqual([]);
   });
 
   test('a warned request always prompts: a 32-byte message, and typed data the view warns about', async () => {

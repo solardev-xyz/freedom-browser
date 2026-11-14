@@ -19,19 +19,23 @@
  *      document's wallet slot, is withdrawn when main answers the request,
  *      and signs only once main's checks pass just before the signature.
  *   3. The site must be connected; a Safe signs only on Gnosis.
- *   4. The site's signing rule ("always allow"), read by main for the
- *      requester's key, is chosen only outside Agent custody, read live,
- *      and never for a 32-byte message (#89).
- *   5. What the request signs, from main and the identity core (#88): the
+ *   4. What the request signs, from main and the identity core (#88): the
  *      bytes of a message, or the core's view of typed data, before any
  *      prompt. One main can't show is refused, unprompted, and one the view
  *      warns about always prompts, rule or not.
+ *   5. The site's signing rule ("always allow") is chosen only outside
+ *      Agent custody, read live, and never for a 32-byte message (#89):
+ *      the identity core reads it (design 0012, APB-1, `approval.check`),
+ *      for the requester's key and the account its grant exposes, under the
+ *      request's PageContext, from the file main still writes.
  *   6. The rule answers with no prompt, but a locked vault's unlock
  *      (`vault.unlock`, which the chrome still renders until APS-2). Just
  *      before the effect, after the last wait (the core's view, the name,
- *      the vault), custody is read again, the rule read again and the
- *      document must hold its key: a guest that entered custody meanwhile
- *      is refused (`agent_custody`), with nothing signed.
+ *      the vault), the core reads the rule again, custody is read again and
+ *      the document must hold its key: a guest that entered custody
+ *      meanwhile is refused (`agent_custody`), with nothing signed. A vault
+ *      signature goes under `page` with `{ standing }`, and the core judges
+ *      the rule once more as it signs.
  *   7. Otherwise main prompts (`eth.sign`, with main's view). On the user's
  *      approval main's own issuer mints the token for that approval, bound
  *      to the prompt's handle and the requester's key, with the account and
@@ -112,6 +116,8 @@ function defaultSigningDependencies() {
     typedDataView: (typedData, chainId) => require('../wallet/wallet-ipc').typedDataViewFor(typedData, chainId),
     signsRawHash: (message) => require('../wallet/signing-utils').signsRawHash(message),
     getSigner: (walletIndex, authorized) => require('../wallet/signers').getSigner(walletIndex, authorized),
+    // The site's standing rule, as the identity core reads it (design 0012).
+    checkStanding: (page, request) => require('../wallet/signing-confirmation').checkStanding(page, request),
     // A Safe message's token, spent through the identity core (design 0012).
     spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
     discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
@@ -141,6 +147,7 @@ function createSigningDispatchers(shared, deps = {}) {
     typedDataView,
     signsRawHash,
     getSigner,
+    checkStanding,
     spendSafe,
     discardToken,
     setSigningAutoApprove,
@@ -217,15 +224,38 @@ function createSigningDispatchers(shared, deps = {}) {
     };
   }
 
-  // Whether the site's signing rule would answer this request: main's own
-  // reading, for the requester's key and the account its grant exposes.
-  // Never a personal_sign of exactly 32 bytes, whatever the account (#89),
-  // nor, once main has viewed it, a warned request (#88).
-  function ruleCovers(key, walletIndex, method, params, prepared = null) {
-    const permission = grantExposes(key, walletIndex);
-    if (!permission || permission.autoApprove?.signing !== true) return false;
-    if (prepared?.warned) return false;
-    return !(method === 'personal_sign' && signsRawHash(params?.[0]));
+  // Whether the site's signing rule answers this request now: the identity
+  // core's reading (design 0012, `approval.check`) for the requester's key
+  // and the account its grant exposes, under the request's PageContext
+  // (custody read live), the typed data viewed on the page's chain. Never a
+  // personal_sign of exactly 32 bytes, whatever the account (#89), nor a
+  // warned request (#88): main's own view gates both first. Advice: a vault
+  // signature is judged again as the core signs. One the core can't judge
+  // is not covered.
+  async function ruleAnswers(context, ctx) {
+    if (ctx.prepared.warned) return { covered: false, reason: 'warning' };
+    if (context.method === 'personal_sign' && signsRawHash(context.params?.[0])) return { covered: false, reason: 'warning' };
+    try {
+      const answer = await checkStanding(context.pageContext(), {
+        kind: context.method === 'personal_sign' ? 'message' : 'typed_data',
+        account: ctx.walletIndex,
+        accountType: ctx.account.type,
+        payload: ctx.prepared.payload,
+        chainId: ctx.chainId,
+      });
+      return answer?.covered === true ? { covered: true, reason: null } : { covered: false, reason: answer?.reason ?? null };
+    } catch {
+      return { covered: false, reason: null };
+    }
+  }
+
+  // A standing rule's signature the core refused (`{ standing }`): custody
+  // as the dispatcher answers it, a rule gone as before, anything else in
+  // the core's words.
+  function standingFailure(err) {
+    if (err?.reason === 'custody') return error(AGENT_CUSTODY);
+    if (err?.reason === 'no_rule') return error(RULE_GONE);
+    return failure(err);
   }
 
   const accountView = (account) => ({
@@ -339,7 +369,7 @@ function createSigningDispatchers(shared, deps = {}) {
 
   // The site's rule answers: no prompt but a locked vault's unlock.
   async function autoSign(context, ctx) {
-    const { requester, method, params } = context;
+    const { requester, method } = context;
     if (!(await vaultUnlocked())) {
       const unlock = await context.prompt({
         kind: 'vault.unlock',
@@ -349,23 +379,29 @@ function createSigningDispatchers(shared, deps = {}) {
       if (unlock.error) return { error: unlock.error };
       if (unlock.closed || unlock.approve !== true) return error(UNLOCK_CANCELLED);
     }
+    // The core reads the rule again after the unlock's wait, then the name;
+    // just before the effect, in the same run, custody and the key.
+    const still = await ruleAnswers(context, ctx);
     if (!(await context.nameHolds(ctx.keyless))) return error(NO_ADDRESS);
-    // Just before the effect, after the last wait.
-    if (custody(requester.guest)) return error(AGENT_CUSTODY);
-    if (!ruleCovers(requester.key, ctx.walletIndex, method, params, ctx.prepared)) return error(RULE_GONE);
+    if (custody(requester.guest) || still.reason === 'custody') return error(AGENT_CUSTODY);
+    if (!still.covered) return error(RULE_GONE);
     if (!context.holdsKey()) return error(NO_ADDRESS);
     let out;
     if (ctx.safe) {
       out = await safeMessage(context, ctx);
     } else {
       try {
+        // Under `page` with `{ standing }`: the core judges the site's rule
+        // as it signs, the typed data viewed on the page's chain.
         out = {
           result: await signWith(ctx.walletIndex, method, ctx.prepared, ctx.prepared.typedData?.hash, {
             page: context.pageContext(),
+            standing: {},
+            chainId: ctx.chainId,
           }),
         };
       } catch (err) {
-        return failure(err);
+        return standingFailure(err);
       }
     }
     if (out.error) return out;
@@ -498,7 +534,7 @@ function createSigningDispatchers(shared, deps = {}) {
     // A request that goes to its prompt keeps it, whatever custody does
     // next; one the rule answers reads custody again just before its effect,
     // after every wait (the core's view, the name, the vault).
-    const ruled = !custody(requester.guest) && ruleCovers(requester.key, walletIndex, method, params);
+    const outsideCustody = !custody(requester.guest);
     let prepared;
     try {
       prepared = await prepare(method, params, chainId);
@@ -507,8 +543,12 @@ function createSigningDispatchers(shared, deps = {}) {
     }
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     const ctx = { keyless, walletIndex, chainId, account: accountView(account), safe, prepared };
-    // A warned request always shows its prompt, rule or not (#88).
-    if (ruled && !prepared.warned) return autoSign(context, ctx);
+    // The prompt or none: the core's reading of the rule. A warned request
+    // always shows its prompt, rule or not (#88).
+    if (outsideCustody && !prepared.warned && (await ruleAnswers(context, ctx)).covered) {
+      if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
+      return autoSign(context, ctx);
+    }
     return promptedSign(context, ctx);
   }
 

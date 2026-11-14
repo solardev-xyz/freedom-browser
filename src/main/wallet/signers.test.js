@@ -448,6 +448,84 @@ describe('getSigner (vault-backed)', () => {
   });
 });
 
+// A site's standing rule (freedom-core design 0012, APB-1b): the page's
+// signature presents `{ standing }` under its PageContext, and the core
+// judges it; a flagged dApp send's `rule` reply reaches the dispatcher.
+describe('getSigner: a standing rule, and "Always allow"', () => {
+  const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+  const approvals = () => mockCore.approvals;
+  const signed = (method) => approvals().calls.filter((call) => call.method === method).at(-1);
+  const TYPED = {
+    domain: { name: 'Permit', chainId: 100, verifyingContract: '0x' + '11'.repeat(20) },
+    types: { Permit: [{ name: 'value', type: 'uint256' }] },
+    primaryType: 'Permit',
+    message: { value: '1' },
+  };
+
+  beforeEach(() => {
+    mockCore.approvals?.reset();
+  });
+
+  test('a rule\'s signature goes under its page with `{ standing }`, its typed data viewed on the page\'s chain', async () => {
+    approvals().setStanding(() => ({ covered: true }));
+    const signer = getSigner(0, { page: PAGE, standing: {}, chainId: 100 });
+    const signature = await signer.signMessage('hello');
+    expect(verifyMessage('hello', signature)).toBe(testWallet.address);
+    expect(signed('sign.message')).toMatchObject({ page: PAGE, params: { authorization: { standing: {} } } });
+    const hash = TypedDataEncoder.hash(TYPED.domain, TYPED.types, TYPED.message);
+    await signer.signTypedData(TYPED, { expectedHash: hash });
+    expect(signed('sign.typed_data')).toMatchObject({
+      page: PAGE,
+      params: { primary_type: 'Permit', chain_id: '100', authorization: { standing: {} } },
+    });
+    // A send's pause rides with it.
+    await getSigner(0, { page: PAGE, standing: { paused: false } }).signTransaction({
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '0',
+      data: '0x095ea7b3',
+      gasLimit: '50000',
+      gasPrice: '7',
+      nonce: 1,
+      chainId: 100,
+      type: 0,
+    });
+    expect(signed('sign.transaction')).toMatchObject({ page: PAGE, params: { authorization: { standing: { paused: false } } } });
+  });
+
+  test('a rule the core refuses is a confirmation refused, with its reason; no page, no rule', async () => {
+    approvals().setStanding(() => ({ covered: false, reason: 'custody' }));
+    const refused = await getSigner(0, { page: PAGE, standing: {} })
+      .signMessage('hello')
+      .catch((err) => err);
+    expect(refused).toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'custody' });
+    expect(refused.message).toBe('Signing was not confirmed: the agent holds this tab');
+    // `{ standing }` without a page is never sent: a rule answers only a page.
+    await getSigner(0, { standing: {} }).signMessage('hello');
+    expect(signed('sign.message')).toMatchObject({ page: null, params: { account: 0 } });
+    expect(signed('sign.message').params).not.toHaveProperty('authorization');
+  });
+
+  test('a flagged dApp send: the core\'s `rule` reply reaches `onRule` once signed', async () => {
+    const confirmations = require('./signing-confirmation');
+    const send = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '0',
+      data: '0x095ea7b3',
+      gasLimit: '50000',
+      gasPrice: '7',
+      chainId: 100,
+      origin: PAGE.origin,
+    };
+    const page = { handle: 'c'.repeat(64), context: PAGE };
+    const heard = [];
+    for (const remember of [true, false]) {
+      const confirmation = await confirmations.issuePageConfirmation('dapp-send', 0, send, page, { remember });
+      await getSigner(0, { confirmation, onRule: (rule) => heard.push(rule) }).signTransaction({ ...send, nonce: 1, type: 0 });
+    }
+    expect(heard).toEqual([{ added: false, reason: 'not_moved' }, null]);
+  });
+});
+
 describe('getSigner (ledger-backed dispatch)', () => {
   const LEDGER_RECORD = {
     index: 2,

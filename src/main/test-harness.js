@@ -1193,9 +1193,18 @@ const DEFAULT_FEE_REFERENCE = Object.freeze({
   },
 });
 let feeReferenceFixture = DEFAULT_FEE_REFERENCE;
+// `setFeeReferenceFixture('core')`: main asks the core's own
+// `chain.fee_reference`, so the core has evidence of its own, which a site's
+// standing rule needs to answer a send (freedom-core design 0012: a figure
+// main sends is never used). The spec points the chain at endpoints of its
+// own first (test-e2e/fee-rpc-stub.js).
+const CORE_FEE_REFERENCE = 'core';
 
 function installFeeReferenceFixture() {
-  globalThis.__FREEDOM_TEST_FEE_REFERENCE__ = async () => feeReferenceFixture;
+  globalThis.__FREEDOM_TEST_FEE_REFERENCE__ = async (chainId, options) =>
+    feeReferenceFixture === CORE_FEE_REFERENCE
+      ? require('./networks/chain-data').getFeeReference(chainId, options)
+      : feeReferenceFixture;
 }
 
 // Expose a synchronous shim on the main-process global so the Playwright
@@ -1215,8 +1224,9 @@ function exposeGlobalShim(agentRuntime) {
       probeFixtures.set(hash, outcome ?? { ok: true });
     },
     resetFixtures,
-    // The fee check's evidence (see installFeeReferenceFixture). Evidence is
-    // kept for up to 60 s, so a new fixture clears what was kept.
+    // The fee check's evidence (see installFeeReferenceFixture), or 'core'
+    // for the core's own. Evidence is kept for up to 60 s, so a new fixture
+    // clears what was kept.
     setFeeReferenceFixture: (reply) => {
       feeReferenceFixture = reply ?? DEFAULT_FEE_REFERENCE;
       require('./wallet/fee-check')._shared.clear();

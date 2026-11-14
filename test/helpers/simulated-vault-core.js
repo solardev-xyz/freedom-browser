@@ -35,7 +35,8 @@ function simulatedVaultBackend(identity, core) {
     },
     sign: {
       transaction: async (key, tx, options = {}) => {
-        approvals.authorize('sign.transaction', key.index, { tx }, options);
+        // A flagged dApp send's `rule` reply (design 0012).
+        const rule = approvals.authorize('sign.transaction', key.index, { tx }, options);
         admit('sign.transaction', key, tx);
         const fees =
           tx.type === 0
@@ -54,7 +55,7 @@ function simulatedVaultBackend(identity, core) {
           data: tx.data,
           ...fees,
         });
-        return { raw };
+        return rule ? { raw, rule } : { raw };
       },
       message: async (key, bytes, options = {}) => {
         approvals.authorize('sign.message', key.index, { message: '0x' + Buffer.from(bytes).toString('hex') }, options);

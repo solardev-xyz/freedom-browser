@@ -37,6 +37,7 @@ const {
   normalizeTypedData,
   toCoreTypedData,
   toCoreTransaction,
+  typedDataViewOptions,
   assertBoundedTypeGraph,
 } = require('./signing-utils');
 const { signingAuthorization, spendConfirmation, confirmationError } = require('./signing-confirmation');
@@ -63,11 +64,29 @@ const { signingAuthorization, spendConfirmation, confirmationError } = require('
 /**
  * What a vault signature sends beside its request (freedom-core design
  * 0012, API): the confirmation's `authorization`, which the core checks and
- * spends before any key is derived, and a page's PageContext, under which a
- * page's request is sent; none from main itself.
+ * spends before any key is derived; for a page's request a standing rule
+ * answers, `{ standing: { paused? } }`, which the core judges against the
+ * site's rule; and a page's PageContext, under which a page's request is
+ * sent. None from main itself.
  */
-function signOptions({ confirmation = null, page = null } = {}) {
-  return confirmation ? signingAuthorization(confirmation) : { page };
+function signOptions({ confirmation = null, page = null, standing = null } = {}) {
+  if (confirmation) return signingAuthorization(confirmation);
+  if (page && standing) return { authorization: { standing: { ...standing } }, page };
+  return { page };
+}
+
+/**
+ * For a standing rule's typed data: what the core is told beside it, the
+ * page's `primaryType` and chain (`typedDataViewOptions`), in the form a
+ * minted token's payload carries them.
+ */
+function standingView(typedData, { standing = null, chainId } = {}) {
+  if (!standing) return {};
+  const options = typedDataViewOptions(typedData, chainId);
+  return {
+    ...(options.primaryType !== undefined ? { primary_type: options.primaryType } : {}),
+    ...(options.chainId !== undefined ? { chain_id: String(options.chainId) } : {}),
+  };
 }
 
 /** The core's refusal of a confirmation, in today's words, or null. */
@@ -105,16 +124,21 @@ function createVaultBackend(walletIndex, authorized = {}) {
         if (from != null && getAddress(from) !== expected) {
           throw new Error('transaction from address mismatch');
         }
-        let raw;
+        let reply;
         try {
-          ({ raw } = await vaultBackend.sign.transaction(key, tx, options));
+          reply = await vaultBackend.sign.transaction(key, tx, options);
         } catch (err) {
           throw refusal(err) || err;
         }
+        const { raw } = reply;
         const signed = Transaction.from(raw);
         if (signed.unsignedHash !== unsigned.unsignedHash || signed.from !== expected) {
           throw mismatch();
         }
+        // What became of a flagged dApp send's "Always allow" (design 0012):
+        // its reply's `rule`, for the dispatcher, which writes today's rule
+        // itself on `not_moved`.
+        if (typeof authorized.onRule === 'function') authorized.onRule(reply.rule ?? null);
         return raw;
       }),
     signMessage: (message) =>
@@ -145,8 +169,10 @@ function createVaultBackend(walletIndex, authorized = {}) {
           // ethers' (whose type walk is exponential on some graphs).
           digest = expectedHash ?? (await vaultBackend.typedDataHash(data));
           // The view a typed-data token binds is made again from what the
-          // core was told beside the data when it was minted.
-          const bound = authorized.confirmation?.payload ?? {};
+          // core was told beside the data when it was minted; a standing
+          // rule's is the page's view, on the page's chain, which the core
+          // judges for warnings as it did for `approval.check`.
+          const bound = authorized.confirmation?.payload ?? standingView(typedData, authorized);
           signature = await vaultBackend.sign.typedData(key, data, digest, {
             ...options,
             ...(bound.primary_type !== undefined ? { primaryType: bound.primary_type } : {}),
@@ -175,12 +201,17 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * design 0012, APB-1): a vault account's signature presents it to the core,
  * which spends it there; a device's (Ledger, phone) spends it through the
  * core first (`approval.spend`), and its device signs only after. A page's
- * request without a token (a site's standing rule) carries the page's
- * PageContext, so it is sent under `page`, never as main's own.
+ * request a site's standing rule answers carries the page's PageContext and
+ * `{ standing }`, so it is sent under `page`, never as main's own, and a
+ * vault signature is judged by the core against the site's rule; a device
+ * signs it as today (the core's `approval.check` advised the choice).
  *
  * @param {number} walletIndex
- * @param {{confirmation?: object, page?: object}} [authorized] the
- *   confirmation (`signing-confirmation.js`) or a page's PageContext
+ * @param {{confirmation?: object, page?: object, standing?: {paused?: boolean},
+ *   chainId?: number, onRule?: (rule: object|null) => void}} [authorized]
+ *   the confirmation (`signing-confirmation.js`), or a page's PageContext
+ *   with, for a rule's answer, `standing` and the page's chain (typed
+ *   data's view); `onRule` hears a vault send's `rule` reply
  * @returns {Signer}
  */
 function getSigner(walletIndex, authorized = {}) {
