@@ -264,7 +264,7 @@ describe('CoreClient', () => {
     expect(error.message).toBe('Vault is locked');
   });
 
-  // freedom-core design 0012, APR-3: the pinned core (0.15.0, as every core
+  // freedom-core design 0012, APR-3: the pinned core (0.16.0, as every core
   // from 0.14.0) requires `grant_root`, the permission files' directory; APB-2
   // moves the dApp file to the core and APB-3 Swarm's and Radicle's
   // (`grant_moved`), x402's staying main's.
@@ -1190,6 +1190,42 @@ describe('CoreClient', () => {
         { type: 'response', id: 1, error: { code: 'refused', message: 'Refused' } },
         { type: 'response', id: 2, error: { code: 'internal', message: 'Internal error' } },
       ]);
+    });
+
+    test("`shell.keystore`, which main has no executor for yet, is answered unknown_method, and the core goes on", async () => {
+      // freedom-core design 0013 (PRF-1b, cored 0.16.0): the core's key store
+      // asks main through `shell.keystore`. Main's executor is PRF-2's; until
+      // then the request finds no handler among main's `shell.*` executors
+      // and is answered `unknown_method`, which the core reads as its key
+      // store being unavailable. Nothing else changes: no protocol fault, the
+      // core keeps running, and its other requests are served.
+      const rpc = jest.fn(async () => ({ status: 200 }));
+      const { send, replies, core, client } = await served((c) => {
+        c.handle('shell.rpc', rpc);
+        for (const method of ['shell.tezos', 'shell.gateway', 'shell.prefetch', 'shell.verified']) {
+          c.handle(method, async () => ({}));
+        }
+        c.handle('shell.dweb_get', async () => ({}), { streams: true });
+      });
+      expect(client.handlerFor('shell.keystore', {})).toBeUndefined();
+      const item = 'ab'.repeat(16);
+      const replyKey = Buffer.alloc(32, 7).toString('base64');
+      send({
+        id: 1,
+        method: 'shell.keystore',
+        params: { op: 'open', policy: 'unattended', item, reply_key: replyKey, reason: 'quick_unlock' },
+      });
+      send({ id: 2, method: 'shell.keystore', params: { op: 'forget', policy: 'unattended', item } });
+      send({ id: 3, method: 'shell.rpc', params: {} });
+      for (let i = 0; i < 4; i++) await tick();
+      expect(replies().sort((a, b) => a.id - b.id)).toEqual([
+        { type: 'response', id: 1, error: { code: 'unknown_method', message: 'Unknown method' } },
+        { type: 'response', id: 2, error: { code: 'unknown_method', message: 'Unknown method' } },
+        { type: 'response', id: 3, result: { status: 200 } },
+      ]);
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(core.killed).toBeNull();
+      expect(client.state).toBe('ready');
     });
 
     test('a cancel aborts the handler, which still replies once', async () => {
