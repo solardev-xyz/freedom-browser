@@ -289,11 +289,13 @@ const PATHS = [
     want: (text) => ({ result: shape(publicStatus(text)) }),
   })),
   {
+    // A site's disconnect waits for the permission store's revoke (which
+    // the identity core writes: design 0012, APB-3).
     label: 'the catch-all (an io error from the permission store)',
-    method: 'radicle_getNodeStatus',
+    method: 'radicle_disconnect',
     texts: ['io'],
     fail: (text) =>
-      permissions.updateLastUsed.mockImplementationOnce(() => {
+      permissions.revokePermission.mockImplementationOnce(async () => {
         throw Object.assign(new Error(text), { code: 'EACCES' });
       }),
     want: () => ({ error: { code: -32603, message: INTERNAL } }),

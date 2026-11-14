@@ -29,8 +29,11 @@ function getIdentityMode(identity) {
 /**
  * @typedef {Object} SwarmSigner
  * @property {string} owner - checksummed owner address
- * @property {(chunk: { identifier: Uint8Array|string, payload: Uint8Array, span?: bigint }) =>
+ * @property {(chunk: { identifier: Uint8Array|string, payload: Uint8Array, span?: bigint },
+ *   options?: { page?: object, authorization?: object }) =>
  *   Promise<{ span: bigint, chunkAddress: string, signature: string, owner: string, socAddress: string }>} signSoc
+ *   `options`: a page's SOC, sent under `page` with its authorization
+ *   (core/vault-backend.js `sign.soc`); none for main's own.
  */
 
 /**
@@ -42,9 +45,9 @@ function createSwarmSigner(key, owner) {
   const expectedOwner = getAddress(owner);
   return {
     owner: expectedOwner,
-    async signSoc({ identifier, payload, span }) {
+    async signSoc({ identifier, payload, span }, options = {}) {
       const id = new Identifier(identifier).toUint8Array();
-      const result = await vaultBackend.sign.soc(key, { identifier: id, payload, span });
+      const result = await vaultBackend.sign.soc(key, { identifier: id, payload, span }, options);
       // bee-js's own construction of the same chunk: span 0 or absent is
       // the payload length there too.
       const cac = getBee().makeContentAddressedChunk(payload, span || undefined);

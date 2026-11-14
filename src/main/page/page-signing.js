@@ -27,7 +27,8 @@
  *      Agent custody, read live, and never for a 32-byte message (#89):
  *      the identity core reads it (design 0012, APB-1, `approval.check`),
  *      for the requester's key and the account its grant exposes, under the
- *      request's PageContext, from the file main still writes.
+ *      request's PageContext, from the dApp file the core writes (APB-2):
+ *      only Q9's limited rule answers, never today's flag.
  *   6. The rule answers with no prompt, but a locked vault's unlock
  *      (`vault.unlock`, which the chrome still renders until APS-2). Just
  *      before the effect, after every other wait (the core's view, the
@@ -48,7 +49,10 @@
  *      payload main holds, and the dispatcher spends it just before the
  *      signature, once the name, the grant and the document have been
  *      checked again. "Always allow", the prompt's one choice, sets the
- *      site's signing rule after the signature, for the requester's key.
+ *      site's signing rule after the signature, for the requester's key:
+ *      Q9's limited rule, which the core writes under the request's
+ *      PageContext (`approval.grant`), clearing today's flag in the same
+ *      write.
  *
  * Device steps keep today's paths after the decision: a Ledger signs in
  * main, a phone account's job goes through main's bridge to the chrome's
@@ -130,7 +134,10 @@ function defaultSigningDependencies() {
     spendStandingSafe: (page, safeIndex, request) =>
       require('../wallet/signing-confirmation').spendStandingSafeMessage(page, safeIndex, request),
     discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
-    setSigningAutoApprove: (key, enabled) => require('../wallet/dapp-permissions').setSigningAutoApprove(key, enabled),
+    // "Always allow": Q9's limited rule, which the identity core writes for
+    // the page's key under its PageContext (design 0012, APB-2).
+    setSigningAutoApprove: (key, enabled, page) =>
+      require('../wallet/dapp-permissions').setSigningAutoApprove(key, enabled, page),
     startSafeMessage: (options) => require('../wallet/safe/safe-messages').startSafeMessage(options),
     completeSafeMessage: (safeIndex, token) => require('../wallet/safe/safe-messages').completeSafeMessage(safeIndex, token),
     cancelSafeMessage: (safeIndex, token) => require('../wallet/safe/safe-messages').cancelSafeMessage(safeIndex, token),
@@ -141,8 +148,9 @@ function defaultSigningDependencies() {
 
 /**
  * @param {object} shared from page-ethereum.js: `getPermission`,
- *   `updateLastUsed`, `walletList`, `chainIdOf`, `chainName`, `networks`
- *   and `agentAnswer`.
+ *   `updateLastUsed` (`(context, chainId?)`: the request's last use, written
+ *   by the core under its PageContext), `walletList`, `chainIdOf`,
+ *   `chainName`, `networks` and `agentAnswer`.
  * @param {object} [deps] injected for tests; each defaults to main's own.
  * @returns {Record<string, (context: object) => Promise<object>>} keyed
  *   `ethereum:<method>`.
@@ -325,8 +333,10 @@ function createSigningDispatchers(shared, deps = {}) {
     // From here to the write, one run: no other check can end the binding.
     if (!context.holdsKey()) return false;
     if (write && grantExposes(context.requester.key, ctx.walletIndex)) {
+      // Sent to the identity core in this run; the signature stands whatever
+      // becomes of it (a failed write is logged where it is made).
       try {
-        write();
+        Promise.resolve(write()).catch(() => {});
       } catch {
         // The signature stands; the write didn't happen.
       }
@@ -412,7 +422,7 @@ function createSigningDispatchers(shared, deps = {}) {
 
   // The site's rule answers: no prompt but a locked vault's unlock.
   async function autoSign(context, ctx) {
-    const { requester, method } = context;
+    const { method } = context;
     if (!(await vaultUnlocked())) {
       const unlock = await context.prompt({
         kind: 'vault.unlock',
@@ -467,7 +477,7 @@ function createSigningDispatchers(shared, deps = {}) {
     if (out.error) return out;
     // After the signature's wait: the name again, and the site's last use
     // only while it still answers. A name that moved gets no signature.
-    if (!(await recheckThen(context, ctx, () => updateLastUsed(requester.key)))) return error(NO_ADDRESS);
+    if (!(await recheckThen(context, ctx, () => updateLastUsed(context)))) return error(NO_ADDRESS);
     return out;
   }
 
@@ -566,7 +576,10 @@ function createSigningDispatchers(shared, deps = {}) {
     // gets no signature, and no rule. "Always allow", the site's rule for the
     // requester's key from the prompt the user just approved, is written only
     // while it still answers.
-    const alwaysAllow = decision.choices?.alwaysAllow === true ? () => setSigningAutoApprove(requester.key, true) : null;
+    const alwaysAllow =
+      decision.choices?.alwaysAllow === true
+        ? () => setSigningAutoApprove(requester.key, true, context.pageContext())
+        : null;
     if (!(await recheckThen(context, ctx, alwaysAllow))) return error(NO_ADDRESS);
     return out;
   }

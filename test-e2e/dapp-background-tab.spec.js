@@ -122,18 +122,24 @@ function request(win, url, id, method, params = []) {
 
 const outcome = (win, url, id) => inTab(win, url, `window.__r && window.__r[${JSON.stringify(id)}]`);
 
-// A connection, written in main as main writes one (freedom-core design
-// 0011, PRQ-4): the chrome's own grant write is refused.
+// A connection, written as main writes one (freedom-core design 0011,
+// PRQ-4): by the identity core, under the page's PageContext (design 0012,
+// APB-2); the chrome's own grant write is refused.
 const grant = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, 0, 100);
-  }, { root: repoRoot, key });
+  electronApp.evaluate((_electron, args) =>
+    process.mainModule
+      .require(`${args.root}/src/main/wallet/dapp-permissions`)
+      .grantPermission(args.key, 0, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
+  { root: repoRoot, key });
 // A site's signing rule, as main sets it from a prompt's "always allow"
-// (PRQ-5a): the chrome may only clear one.
+// (PRQ-5a): Q9's limited rule, which the core writes (APB-2); the chrome may
+// only clear one.
 const signingRule = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).setSigningAutoApprove(args.key, true);
-  }, { root: repoRoot, key });
+  electronApp.evaluate((_electron, args) =>
+    process.mainModule
+      .require(`${args.root}/src/main/wallet/dapp-permissions`)
+      .setSigningAutoApprove(args.key, true, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
+  { root: repoRoot, key });
 
 async function openIn(win, url) {
   const address = win.locator('[data-test="address-input"]');

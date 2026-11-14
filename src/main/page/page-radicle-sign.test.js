@@ -7,6 +7,7 @@
 // frame records what main sends it (`page:event`).
 
 const os = require('os');
+const { useSimulatedGrantCore, attachedCoreClient, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -108,6 +109,9 @@ const AGENT_CUSTODY = {
 };
 const RULE_OFF = { error: { code: 4100, message: "This action needs the user's approval", data: { reason: 'not_auto_approved' } } };
 const WRITTEN = { result: { id: 'c'.repeat(40) } };
+const GRANTS_UNAVAILABLE = {
+  error: { code: 4900, message: 'Radicle permissions are not available', data: { reason: 'grants_unavailable' } },
+};
 // Under the Radicle service, a node running with a throwaway key (plan B10).
 const THROWAWAY_KEY = {
   reason: 'needs_vault',
@@ -272,10 +276,10 @@ function setup({ deps = {} } = {}) {
   return { requests, documents, sent, trace, tab, greet, named, names, resolutions, gate, prompts, pending, decide, shown, guests, hooks, stopEvents, fire, custody };
 }
 
-const connect = (key, { signing = false, rule = false } = {}) => {
-  permissions.grantPermission(key);
-  if (signing) permissions.grantSigning(key);
-  if (rule) permissions.setAutoApprove(key, 'signing', true);
+const connect = async (key, { signing = false, rule = false } = {}) => {
+  await permissions.grantPermission(key, { page: testPage(key) });
+  if (signing) await permissions.grantSigning(key, { page: testPage(key) });
+  if (rule) await permissions.setAutoApprove(key, 'signing', true, { page: testPage(key) });
 };
 const deferred = () => {
   let resolve;
@@ -285,10 +289,19 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-beforeEach(() => {
+// The simulated identity core main's grants come from.
+let core;
+// A change the core makes and reports (`approval.changed`), its key's read
+// held: main has forgotten the key and has no answer for it yet.
+const changedInCore = (key, change) => {
+  core.holdKeyReads();
+  change(core.entries.radicle, key);
+  attachedCoreClient().changed('radicle', key);
+};
+
+beforeEach(async () => {
   jest.clearAllMocks();
-  permissions._resetCache();
-  fs.rmSync(path.join(mockUserData, 'radicle-permissions.json'), { force: true });
+  core = await useSimulatedGrantCore();
   permissions.onRevoke(null);
   provider._resetAutoWriteLimiter();
   require('../radicle/cob-service').clearIdentityCache();
@@ -319,8 +332,8 @@ describe('the signing methods main serves (0011 PRQ-8c)', () => {
 describe('the signing grant and radicle_getIdentity through main (0011 PRQ-8c)', () => {
   test('a connected site is asked for the signing grant once; main writes it for the attested key, and discloses the identity', async () => {
     const env = setup();
-    connect(KEY_A);
-    connect(KEY_B);
+    await connect(KEY_A);
+    await connect(KEY_B);
     const page = env.tab();
     const answer = page.ask('radicle_getIdentity');
     const prompt = await env.shown();
@@ -344,7 +357,7 @@ describe('the signing grant and radicle_getIdentity through main (0011 PRQ-8c)',
 
   test('a rejected grant prompt grants nothing and discloses nothing', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     const answer = page.ask('radicle_getIdentity');
     const prompt = await env.shown();
@@ -356,7 +369,7 @@ describe('the signing grant and radicle_getIdentity through main (0011 PRQ-8c)',
 
   test('a name that moves off its IPNS key while the grant prompt is open gets no grant', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     const answer = page.ask('radicle_getIdentity');
     const prompt = await env.shown();
@@ -369,7 +382,7 @@ describe('the signing grant and radicle_getIdentity through main (0011 PRQ-8c)',
 
   test('after the name has moved, radicle_getIdentity discloses nothing; one whose name moves during its read answers keyless', async () => {
     const env = setup();
-    connect(NAME, { signing: true });
+    await connect(NAME, { signing: true });
     const page = await env.named();
     let release;
     embedded.identity.mockImplementationOnce(
@@ -393,7 +406,7 @@ describe('the signing grant and radicle_getIdentity through main (0011 PRQ-8c)',
 describe('the COB writes through main (0011 PRQ-8c)', () => {
   test('a write without the signing grant asks for it first, then shows exactly what it signs; main writes on approval', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const granted = permissions.getPermission(KEY_A);
     granted.lastUsed = Date.now() - 120_000;
     const stale = granted.lastUsed;
@@ -428,7 +441,7 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
 
   test('each write prompts with its own fields; a rejection writes nothing; params the write refuses get no prompt', async () => {
     const env = setup();
-    connect(KEY_A, { signing: true });
+    await connect(KEY_A, { signing: true });
     const page = env.tab();
     for (const [method, params] of Object.entries(WRITES)) {
       const answer = page.ask(method, params);
@@ -453,7 +466,7 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
 
   test('"always allow" turns the site\'s rule on, by main; the rule then answers with no prompt', async () => {
     const env = setup();
-    connect(KEY_A, { signing: true });
+    await connect(KEY_A, { signing: true });
     const page = env.tab();
     const answer = page.ask('radicle_commentIssue', WRITES.radicle_commentIssue);
     const prompt = await env.shown();
@@ -468,7 +481,7 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
 
   test('past the rule\'s limit a write falls back to its prompt, which can turn the rule off', async () => {
     const env = setup();
-    connect(KEY_A, { signing: true, rule: true });
+    await connect(KEY_A, { signing: true, rule: true });
     const page = env.tab();
     // A burst of five.
     for (let i = 0; i < 5; i += 1) expect(await page.ask('radicle_createIssue', WRITES.radicle_createIssue)).toEqual(WRITTEN);
@@ -485,7 +498,7 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
 
   test('the rule is never chosen for a tab in Agent custody, whose prompt offers no rule; the user\'s approval still writes', async () => {
     const env = setup();
-    connect(KEY_A, { signing: true, rule: true });
+    await connect(KEY_A, { signing: true, rule: true });
     const page = env.tab();
     env.custody.add(page.guest.id);
     const answer = page.ask('radicle_editIssueState', WRITES.radicle_editIssueState);
@@ -508,15 +521,23 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
     ['enters Agent custody', (env, page) => env.custody.add(page.guest.id), AGENT_CUSTODY],
     ['has its rule turned off', () => permissions.setAutoApprove(NAME, 'signing', false), RULE_OFF],
     ['loses its connection', () => permissions.revokePermission(NAME), CONNECTION_GONE],
-    ['loses its signing grant', () => {
-      permissions.revokePermission(NAME);
-      permissions.grantPermission(NAME);
-      permissions.setAutoApprove(NAME, 'signing', true);
+    ['loses its signing grant', async () => {
+      await permissions.revokePermission(NAME);
+      await permissions.grantPermission(NAME, { page: testPage(NAME) });
+      await permissions.setAutoApprove(NAME, 'signing', true, { page: testPage(NAME) });
     }, SIGNING_GONE],
     ['has its name move off its IPNS key', (env) => env.names.set(NAME, OTHER_IPNS_KEY), NO_ADDRESS],
+    // The core's change, before main has read the key again (review of #1252).
+    ['has its rule turned off by the core, not yet read back', () => changedInCore(NAME, (all, key) => {
+      all[key].autoApprove.signing = false;
+    }), CONNECTION_GONE],
+    ['loses its signing grant in the core, not yet read back', () => changedInCore(NAME, (all, key) => {
+      all[key].signing = false;
+    }), CONNECTION_GONE],
+    ['outlives the core process it was checked under', () => attachedCoreClient().emit('exit', { code: 1 }), CONNECTION_GONE],
   ])('a rule-answered write whose tab %s before its guard signs nothing', async (_label, change, refusal) => {
     const env = setup();
-    connect(NAME, { signing: true, rule: true });
+    await connect(NAME, { signing: true, rule: true });
     const page = await env.named();
     const guardCheck = deferred();
     // The dispatcher's own check answers; the guard's waits.
@@ -524,16 +545,60 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
     const answer = page.ask('radicle_createIssue', WRITES.radicle_createIssue);
     await flush();
     expect(env.resolutions).toEqual([NAME, NAME]);
-    change(env, page);
+    await change(env, page);
     guardCheck.resolve();
     expect(await answer).toEqual(refusal);
     expect(mockAddon.writes).toEqual([]);
     expect(env.prompts()).toEqual([]);
   });
 
+  test('a change the core reported reads as no grant until its read lands: a write is refused meanwhile; the rule answers again once it is back', async () => {
+    const env = setup();
+    await connect(KEY_A, { signing: true, rule: true });
+    const page = env.tab();
+    const reads = core.holdKeyReads();
+    attachedCoreClient().changed('radicle', KEY_A);
+    expect(await page.ask('radicle_createIssue', ISSUE)).toEqual(NOT_CONNECTED);
+    expect(mockAddon.writes).toEqual([]);
+    reads.release();
+    await flush();
+    expect(await page.ask('radicle_createIssue', ISSUE)).toEqual(WRITTEN);
+    expect(env.prompts()).toEqual([]);
+    expect(mockAddon.writes).toHaveLength(1);
+  });
+
+  test('between core processes a write waits for the next one\'s grants; once the core gives up, it is refused with nothing signed', async () => {
+    const env = setup();
+    await connect(KEY_A, { signing: true, rule: true });
+    const page = env.tab();
+    const client = attachedCoreClient();
+    client.emit('exit', { code: 1 });
+    let answered = false;
+    const waiting = page.ask('radicle_createIssue', ISSUE).then((out) => {
+      answered = true;
+      return out;
+    });
+    await flush();
+    expect(answered).toBe(false);
+    expect(env.prompts()).toEqual([]);
+    // The next process holds the signing grant without the rule.
+    core.entries.radicle[KEY_A].autoApprove.signing = false;
+    client.emit('ready');
+    const prompt = await env.shown();
+    expect(prompt.view.mode).toBe('write');
+    expect(await env.decide(prompt.handle, false)).toEqual({ ok: true });
+    expect(await waiting).toEqual(REJECTED);
+    // The core gives up.
+    env.sent.length = 0;
+    client.emit('failed', 'three crashes within a minute');
+    expect(await page.ask('radicle_createIssue', ISSUE)).toEqual(GRANTS_UNAVAILABLE);
+    expect(env.prompts()).toEqual([]);
+    expect(mockAddon.writes).toEqual([]);
+  });
+
   test('a name that moves off its IPNS key while the write prompt is open signs nothing', async () => {
     const env = setup();
-    connect(NAME, { signing: true });
+    await connect(NAME, { signing: true });
     const page = await env.named();
     const answer = page.ask('radicle_commentIssue', WRITES.radicle_commentIssue);
     const prompt = await env.shown();
@@ -547,7 +612,7 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
 
   test('a write that went out after its guard answers as written, even if the name moves while the add-on writes', async () => {
     const env = setup();
-    connect(NAME, { signing: true, rule: true });
+    await connect(NAME, { signing: true, rule: true });
     const page = await env.named();
     const hold = deferred();
     mockAddon.hold = hold.promise;
@@ -563,7 +628,7 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
 
   test('after the name has moved, every write is refused with no prompt and nothing signed', async () => {
     const env = setup();
-    connect(NAME, { signing: true });
+    await connect(NAME, { signing: true });
     const page = await env.named();
     env.names.set(NAME, OTHER_IPNS_KEY);
     for (const [method, params] of Object.entries(WRITES)) {
@@ -587,8 +652,8 @@ describe('a node running with a throwaway key (radicled B10)', () => {
   test('every write is refused with no prompt, nothing signed and no rule slot spent; the identity is still disclosed', async () => {
     manager.radicleWriteRefusal.mockReturnValue(THROWAWAY_KEY);
     const env = setup();
-    connect(KEY_A, { signing: true });
-    connect(KEY_B, { signing: true, rule: true });
+    await connect(KEY_A, { signing: true });
+    await connect(KEY_B, { signing: true, rule: true });
     const page = env.tab();
     const ruled = env.tab(`${KEY_B}/app`);
     for (const [method, params] of Object.entries(WRITES)) {
@@ -611,7 +676,7 @@ describe('a node running with a throwaway key (radicled B10)', () => {
 
   test('a restart with a throwaway key while the write prompt is open: the approved write is refused, nothing signed', async () => {
     const env = setup();
-    connect(KEY_A, { signing: true });
+    await connect(KEY_A, { signing: true });
     const page = env.tab();
     const answer = page.ask('radicle_commentIssue', WRITES.radicle_commentIssue);
     const prompt = await env.shown();
@@ -624,7 +689,7 @@ describe('a node running with a throwaway key (radicled B10)', () => {
 
   test("a restart with a throwaway key while the guard waits: refused in the guard's run, nothing signed", async () => {
     const env = setup();
-    connect(NAME, { signing: true, rule: true });
+    await connect(NAME, { signing: true, rule: true });
     const page = await env.named();
     const guardCheck = deferred();
     // The dispatcher's own check answers; the guard's waits.
@@ -642,9 +707,9 @@ describe('a node running with a throwaway key (radicled B10)', () => {
 });
 
 describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () => {
-  test('the chrome\'s grant-signing and turning the signing rule on are refused for every site; turning it off and revoking stay open', () => {
+  test('the chrome\'s grant-signing and turning the signing rule on are refused for every site; turning it off and revoking stay open', async () => {
     const chrome = { sender: { id: 501 } };
-    connect(KEY_A, { signing: false, rule: false });
+    await connect(KEY_A, { signing: false, rule: false });
     for (const site of [KEY_A, 'name.eth', 'https://other.example']) {
       expect(() => mockIpcHandlers[IPC.RADICLE_GRANT_SIGNING](chrome, site)).toThrow(
         'The Radicle signing grant is given only from its own prompt'
@@ -657,11 +722,11 @@ describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () 
     }
     expect(permissions.hasSigningGrant(KEY_A)).toBe(false);
     expect(permissions.getAutoApprove(KEY_A, 'signing')).toBe(false);
-    permissions.grantSigning(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'signing', true);
-    expect(mockIpcHandlers[IPC.RADICLE_SET_AUTO_APPROVE](chrome, KEY_A, 'signing', false)).toBe(true);
+    await permissions.grantSigning(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'signing', true, { page: testPage(KEY_A) });
+    expect(await mockIpcHandlers[IPC.RADICLE_SET_AUTO_APPROVE](chrome, KEY_A, 'signing', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'signing')).toBe(false);
-    expect(mockIpcHandlers[IPC.RADICLE_REVOKE_PERMISSION](chrome, KEY_A)).toBe(true);
+    expect(await mockIpcHandlers[IPC.RADICLE_REVOKE_PERMISSION](chrome, KEY_A)).toBe(true);
   });
 
   test('nothing the chrome can call widens a Radicle grant (a sweep over every radicle: channel)', async () => {
@@ -704,11 +769,11 @@ describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () 
       Object.keys(SITES).filter((label) =>
         ['connected', 'signing', 'node', 'rule'].some((field) => after[label][field] && !before[label][field])
       );
-    const reset = () => {
-      for (const site of Object.values(SITES)) permissions.revokePermission(site);
-      permissions.grantPermission(SITES.connected);
-      permissions.grantPermission(SITES.signing);
-      permissions.grantSigning(SITES.signing);
+    const reset = async () => {
+      for (const site of Object.values(SITES)) await permissions.revokePermission(site);
+      await permissions.grantPermission(SITES.connected, { page: testPage(SITES.connected) });
+      await permissions.grantPermission(SITES.signing, { page: testPage(SITES.signing) });
+      await permissions.grantSigning(SITES.signing, { page: testPage(SITES.signing) });
     };
     // Every argument shape a grant write took, and the chrome's old route's.
     const shapes = (site) => [
@@ -726,7 +791,7 @@ describe('no Radicle route or grant write left to the chrome (0011 PRQ-8c)', () 
     for (const channel of registered) {
       for (const site of Object.values(SITES)) {
         for (const args of shapes(site)) {
-          reset();
+          await reset();
           const before = state();
           try {
             await mockIpcHandlers[channel](chrome, ...args);

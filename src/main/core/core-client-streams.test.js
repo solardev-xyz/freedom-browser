@@ -317,6 +317,7 @@ describe('the hello at protocol 2', () => {
       auto_lock_ms: 900000,
       frames: ['fragment', 'stream'],
       grant_root: path.resolve(os.tmpdir()),
+      grant_moved: ['dapp', 'swarm', 'radicle'],
     });
     expect(client.streamStats()).toEqual({
       outstanding: 0,

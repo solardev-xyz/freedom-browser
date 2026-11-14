@@ -56,16 +56,15 @@ function client() {
  * One core request under its watchdog: from main itself (caller `shell`), or
  * for a page's request under `page` with its PageContext (freedom-core
  * designs 0011 and 0012, "PageContext"): `{ origin, top_origin, frame,
- * navigation, agent }`.
+ * navigation, agent }`. `'chrome'` relays the chrome's own request (a
+ * grant's narrowing from its settings: design 0012, "The model").
  */
 async function call(method, params = {}, page = null) {
+  let context;
+  if (page === 'chrome') context = { caller: 'chrome' };
+  else context = page ? { caller: 'page', page } : { caller: 'shell' };
   try {
-    return await client().request(
-      method,
-      params,
-      page ? { caller: 'page', page } : { caller: 'shell' },
-      { watchdogMs: watchdogMs(method) }
-    );
+    return await client().request(method, params, context, { watchdogMs: watchdogMs(method) });
   } catch (err) {
     if (err instanceof VaultBackendError) throw err;
     throw new VaultBackendError(err.code || CORE_UNAVAILABLE, err.message, err.data);
@@ -406,16 +405,22 @@ const vaultBackend = {
     /**
      * A Swarm single-owner chunk; the core computes the chunk address from
      * the payload. `span` defaults to the payload length (as does 0).
+     * A page's SOC (design 0012, "A page's SOC") goes under `page` with its
+     * PageContext and `authorization: { swarm, soc }`, which the core checks
+     * against the page's Swarm grant before any key is derived; main's own,
+     * with neither, as `shell`.
      * @param {{ identifier: Uint8Array, payload: Uint8Array, span?: bigint }} chunk
+     * @param {{ page?: object, authorization?: { swarm: 'user'|'auto', soc: 'feed'|'raw' } }} [options]
      * @returns {{ signature, owner, chunk_address, soc_address, span }}
      */
-    soc(key, { identifier, payload, span }) {
-      return call('swarm.sign_soc', {
+    soc(key, { identifier, payload, span }, options = {}) {
+      const params = {
         key,
         identifier: '0x' + Buffer.from(identifier).toString('hex'),
         payload: '0x' + Buffer.from(payload).toString('hex'),
         ...(span !== undefined && span !== null ? { span: String(span) } : {}),
-      });
+      };
+      return call('swarm.sign_soc', signed(params, options), options.page || null);
     },
   },
 
@@ -449,6 +454,34 @@ const vaultBackend = {
      */
     check(params, page) {
       return call('approval.check', params, page);
+    },
+    /**
+     * The permission files' write methods (design 0012, API), for a file in
+     * the hello's `grant_moved`: `dapp` from APB-2 (wallet/dapp-permissions.js),
+     * `swarm` and `radicle` from APB-3 (core/grants.js). `caller` is a page's
+     * PageContext (its own key), `'chrome'` (a narrowing from the chrome's
+     * settings) or null (`shell`, main's own: an account deleted, a manifest's
+     * projection).
+     */
+    /** `{ store, change }` → `{ grant, durable? }` */
+    grant(params, caller = null) {
+      return call('approval.grant', params, caller);
+    },
+    /** `{ store, key, what }` → `{ revoked, durable? }` */
+    revoke(params, caller = null) {
+      return call('approval.revoke', params, caller);
+    },
+    /** A page's last use: `{ store, chain_id? }` → `{ durable? }`, always under `page` */
+    touch(params, page) {
+      return call('approval.touch', params, page);
+    },
+    /** `{ wallet_index }` → `{ keys, durable? }`, main's own */
+    forgetAccount(walletIndex) {
+      return call('approval.forget_account', { wallet_index: walletIndex });
+    },
+    /** `{ store, key? }` → `{ records }`, the store as the core holds it */
+    grants(params) {
+      return call('approval.grants', params);
     },
   },
 

@@ -157,10 +157,13 @@ const trace = (electronApp) => electronApp.evaluate(() => globalThis.__FREEDOM_T
 
 // A connection, written in main as main writes one: the chrome's own grant
 // write is refused from PRQ-4.
+// By the identity core, under the page's PageContext (design 0012, APB-2).
 const grant = (electronApp, key) =>
-  electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/wallet/dapp-permissions`).grantPermission(args.key, 0, 100);
-  }, { root: repoRoot, key });
+  electronApp.evaluate((_electron, args) =>
+    process.mainModule
+      .require(`${args.root}/src/main/wallet/dapp-permissions`)
+      .grantPermission(args.key, 0, 100, { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false }),
+  { root: repoRoot, key });
 
 /** Count every request a page sends the chrome on the old path, in every tab. */
 const watchOldPath = (win) =>

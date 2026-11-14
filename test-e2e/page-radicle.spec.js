@@ -179,8 +179,11 @@ test('reads, connecting and disconnecting through main: main\'s prompt in the si
   ]);
 
   // Revoking from the chrome stays open, and main tells the site's page.
-  await electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/radicle/radicle-permissions`).grantPermission(args.key);
+  // The identity core writes it (design 0012, APB-3), for the site's page.
+  await electronApp.evaluate(async (_electron, args) => {
+    await process.mainModule
+      .require(`${args.root}/src/main/radicle/radicle-permissions`)
+      .grantPermission(args.key, { page: { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false } });
   }, { root: repoRoot, key: DAPP });
   expect(await win.evaluate((k) => window.radiclePermissions.revokePermission(k), DAPP)).toBe(true);
   await expect.poll(() => heard(win, DAPP)).toEqual([

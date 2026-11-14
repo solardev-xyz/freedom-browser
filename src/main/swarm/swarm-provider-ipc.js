@@ -1191,7 +1191,7 @@ async function handleWriteSingleOwnerChunk(params, origin, meta) {
   }
   let signerKey;
   try {
-    signerKey = await resolveSignerKey(activeIdentity);
+    signerKey = pageSocSigner(await resolveSignerKey(activeIdentity), meta, 'raw');
   } catch (err) {
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
@@ -1361,6 +1361,41 @@ function getFeedIdentity(originEntry, feed) {
  */
 function resolveSignerKey(identity) {
   return resolveSwarmSigner(identity);
+}
+
+// How main approved a page's write: on its prompt, or by the site's rule.
+const SOC_APPROVALS = new Set(['user', 'auto']);
+const PAGE_SOC_REFUSED = 'A site\'s chunk is signed only for its page';
+
+/**
+ * A page's signer (freedom-core design 0012, "A page's SOC"; APB-3): each
+ * SOC it signs goes to the identity core under `page`, with the
+ * requester's PageContext read as it is sent (`meta.page.soc.pageContext`)
+ * and the authorization `{ swarm, soc }`: `swarm` is how main approved the
+ * request (`user`, its prompt; `auto`, the site's rule), and `soc` what it
+ * is (`feed`, a feed write; `raw`, a raw SOC). The core checks the site's
+ * Swarm grant before any key is derived. Every method here is a page's
+ * (page/page-swarm.js), so a SOC with no page behind it is refused, never
+ * signed as main's own: those (the Agent's publications) sign elsewhere,
+ * as `shell`.
+ * @param {import('./swarm-signer').SwarmSigner} signer
+ * @param {object} [meta] - the request's, from main's page dispatcher
+ * @param {'feed'|'raw'} soc
+ */
+function pageSocSigner(signer, meta, soc) {
+  const pageSoc = meta?.page?.soc;
+  return {
+    ...signer,
+    signSoc(chunk) {
+      if (typeof pageSoc?.pageContext !== 'function' || !SOC_APPROVALS.has(pageSoc.approval)) {
+        return Promise.reject(new Error(PAGE_SOC_REFUSED));
+      }
+      return signer.signSoc(chunk, {
+        page: pageSoc.pageContext(),
+        authorization: { swarm: pageSoc.approval, soc },
+      });
+    },
+  };
 }
 
 /**
@@ -1570,7 +1605,7 @@ async function handleUpdateFeed(params, origin, meta) {
 
   let signerKey;
   try {
-    signerKey = await resolveSignerKey(feedIdentity);
+    signerKey = pageSocSigner(await resolveSignerKey(feedIdentity), meta, 'feed');
   } catch (err) {
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }
@@ -1675,7 +1710,7 @@ async function handleWriteFeedEntry(params, origin, meta) {
 
   let signerKey;
   try {
-    signerKey = await resolveSignerKey(feedIdentity);
+    signerKey = pageSocSigner(await resolveSignerKey(feedIdentity), meta, 'feed');
   } catch (err) {
     return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
   }

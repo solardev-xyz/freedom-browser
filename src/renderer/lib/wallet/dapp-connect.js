@@ -372,9 +372,7 @@ export async function updateConnectionBanner(permissionKey = null) {
         dappConnectionWallet.textContent = walletName;
       }
 
-      const hasAutoApprove = permission.autoApprove?.signing
-        || (permission.autoApprove?.transactions?.length > 0);
-      dappAutoApproveBadge?.classList.toggle('hidden', !hasAutoApprove);
+      dappAutoApproveBadge?.classList.toggle('hidden', !storesAutoApproveRule(permission));
 
       currentBannerPermissionKey = permissionKey;
       dappConnectionBanner.classList.remove('hidden');
@@ -388,6 +386,22 @@ export async function updateConnectionBanner(permissionKey = null) {
     dappConnectionBanner.classList.add('hidden');
     currentBannerPermissionKey = null;
   }
+}
+
+/**
+ * Whether a site stores a standing rule, for the banner's badge: Q9's limited
+ * signing or contract rules, which "Always allow" writes (freedom-core design
+ * 0012, APB-2), or today's, which an older build still answers. The same
+ * rules the permission screen lists (permission-manage.js); the core judges
+ * whether one answers a request.
+ */
+function storesAutoApproveRule(permission) {
+  const rules = permission?.autoApprove;
+  const some = (list) => Array.isArray(list) && list.length > 0;
+  return rules?.signing === true
+    || Boolean(rules?.limited?.signing)
+    || some(rules?.transactions)
+    || some(rules?.limited?.transactions);
 }
 
 export async function disconnectDapp(permissionKey = null) {

@@ -383,6 +383,24 @@ describe('permission-manage: the signing rule can only be turned off here (0011 
     expect(toggle.disabled).toBe(true);
   });
 
+  // freedom-core design 0012, Q9 (APB-2): "Always allow" stores the limited
+  // rule, which shows as on, and turns off here like today's flag.
+  test('a limited signing rule shows on, and turns off', async () => {
+    const ctx = await loadPermissionManage();
+    const toggle = ctx.elements['dapp-perms-signing-toggle'];
+    global.window.dappPermissions.getPermission.mockResolvedValue({
+      walletIndex: 0,
+      autoApprove: { signing: false, transactions: [], limited: { signing: { grantedAt: 1 }, transactions: [] } },
+    });
+    await ctx.mod.showDappPermissions('https://app.example');
+    expect(toggle.checked).toBe(true);
+    expect(toggle.disabled).toBe(false);
+    toggle.checked = false;
+    await toggle.fire('change');
+    await Promise.resolve();
+    expect(global.window.dappPermissions.setSigningAutoApprove).toHaveBeenCalledWith('https://app.example', false);
+  });
+
   test('turning it on asks main for nothing', async () => {
     const ctx = await loadPermissionManage();
     const toggle = ctx.elements['dapp-perms-signing-toggle'];

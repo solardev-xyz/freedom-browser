@@ -139,8 +139,9 @@ jest.mock('./feed-store', () => ({
 const mockGetDerivedKeys = jest.fn();
 const mockGetPublisherKey = jest.fn();
 const mockGetUserWalletKey = jest.fn();
+const mockSignSoc = jest.fn(async () => ({}));
 jest.mock('./swarm-signer', () => {
-  const signerOf = (key) => ({ key, owner: mockGetSignerAddress(key) });
+  const signerOf = (key) => ({ key, owner: mockGetSignerAddress(key), signSoc: mockSignSoc });
   return {
     getIdentityMode: (identity) => identity?.mode || identity?.identityMode || null,
     resolveSwarmSigner: async (identity) => {
@@ -1285,6 +1286,36 @@ describe('swarm-provider-ipc', () => {
         expect(result.error.data.reason).toBe('unsupported_option');
         expect(mockReadDataRoot).not.toHaveBeenCalled();
       });
+    });
+
+    // Design 0012, "A page's SOC" (APB-3): the signer the write gets signs
+    // under the requester's page with main's approval, and refuses with no
+    // page behind it: never as main's own.
+    test('the SOC signer signs under the page, with its approval, and never without one', async () => {
+      mockFeedCapability('myapp.eth');
+      mockPreFlightOk();
+      mockGetPublisherKey.mockResolvedValue({ privateKey: '0xkey' });
+      mockWriteSingleOwnerChunk.mockResolvedValue({ reference: VALID_REF, owner: VALID_OWNER, identifier: VALID_IDENTIFIER, batchIdUsed: 'b' });
+      const pageContext = { origin: 'myapp.eth', top_origin: 'myapp.eth', frame: 3, navigation: 4, agent: false };
+      const chunk = { identifier: VALID_IDENTIFIER, payload: Buffer.from('hello') };
+
+      await invokeProvider('swarm_writeSingleOwnerChunk', { identifier: VALID_IDENTIFIER, data: 'hello' }, 'myapp.eth', {
+        page: { soc: { pageContext: () => pageContext, approval: 'auto' } },
+      });
+      await mockWriteSingleOwnerChunk.mock.calls.at(-1)[0].signSoc(chunk);
+      expect(mockSignSoc).toHaveBeenLastCalledWith(chunk, { page: pageContext, authorization: { swarm: 'auto', soc: 'raw' } });
+
+      mockSignSoc.mockClear();
+      for (const meta of [undefined, { page: {} }, { page: { soc: { pageContext: () => pageContext, approval: 'rule' } } }]) {
+        mockWriteSingleOwnerChunk.mockClear();
+        mockPreFlightOk();
+        await invokeProvider('swarm_writeSingleOwnerChunk', { identifier: VALID_IDENTIFIER, data: 'hello' }, 'myapp.eth', meta);
+        expect(mockWriteSingleOwnerChunk).toHaveBeenCalledTimes(1);
+        await expect(mockWriteSingleOwnerChunk.mock.calls[0][0].signSoc(chunk)).rejects.toThrow(
+          "A site's chunk is signed only for its page"
+        );
+      }
+      expect(mockSignSoc).not.toHaveBeenCalled();
     });
 
     test('writes an SOC with feed signing identity', async () => {

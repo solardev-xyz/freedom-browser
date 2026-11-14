@@ -23,6 +23,7 @@
  */
 
 const fs = require('fs');
+const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
 const os = require('os');
 const path = require('path');
 const { loadMainModule } = require('../../../test/helpers/main-process-test-utils');
@@ -129,7 +130,7 @@ async function waitUntil(predicate, timeoutMs = 5000) {
   if (!predicate()) throw new Error('timed out waiting');
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-service-writes-'));
   const home = path.join(root, 'R');
   fs.mkdirSync(home, { recursive: true });
@@ -146,7 +147,7 @@ beforeEach(() => {
   process.env.FREEDOM_RADICLE_ADDON = path.join(root, 'no-such', 'libradicle.node');
   writeAnswers = [];
   unseedAnswers = [];
-  load();
+  await load();
 });
 
 afterEach(async () => {
@@ -225,8 +226,13 @@ function load() {
   cob = require('./cob-service');
   embedded = require('../radicle-embedded');
   permissions = require('./radicle-permissions');
-  permissions.grantPermission(ORIGIN);
-  permissions.grantSigning(ORIGIN);
+  // Connected, with the signing grant, in the identity core's store (design
+  // 0012, APB-3).
+  return useSimulatedGrantCore({
+    radicle: {
+      [ORIGIN]: { origin: ORIGIN, connectedAt: 1, lastUsed: 1, signing: true, autoApprove: { node: false, signing: false } },
+    },
+  });
 }
 
 /** The service's success for `op`, as libradicle's writes answer it. */
@@ -383,7 +389,7 @@ describe("each code mapped (0008, Errors and Writes; deviation 'outcome-unknown'
   });
 
   test("radicle_unseed is rad.unseed; outcome_unknown is the same answer, and its other errors the unseed's", async () => {
-    permissions.setAutoApprove(ORIGIN, 'node', true);
+    await permissions.setAutoApprove(ORIGIN, 'node', true, { page: testPage(ORIGIN) });
     await startNode();
     await expect(run('radicle_unseed', { rid: RID })).resolves.toEqual({
       result: { rid: RID, seeded: false },
@@ -438,7 +444,7 @@ describe('no retry after outcome_unknown (0008, Writes: "Main never retries one"
   });
 
   test('an unseed in flight when the process crashes is outcome_unknown, and not sent again', async () => {
-    permissions.setAutoApprove(ORIGIN, 'node', true);
+    await permissions.setAutoApprove(ORIGIN, 'node', true, { page: testPage(ORIGIN) });
     await startNode();
     const first = live();
     unseedAnswers.push(() => setImmediate(() => first.child.exit(70)));
@@ -632,8 +638,8 @@ describe('private windows (R-9, #953): refused before anything is sent', () => {
   }
 
   test("a private window's COB writes and unseed send nothing; a public window's go to the service", async () => {
-    permissions.setAutoApprove(ORIGIN, 'signing', true);
-    permissions.setAutoApprove(ORIGIN, 'node', true);
+    await permissions.setAutoApprove(ORIGIN, 'signing', true, { page: testPage(ORIGIN) });
+    await permissions.setAutoApprove(ORIGIN, 'node', true, { page: testPage(ORIGIN) });
     await startNode();
     const { tab } = pagePath();
     const privateTab = tab(true);

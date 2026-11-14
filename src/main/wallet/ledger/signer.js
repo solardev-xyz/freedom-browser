@@ -11,6 +11,14 @@
  * then asks for an on-device confirmation. Errors surface with stable
  * LEDGER_* codes (see ./errors.js) — user rejection included.
  *
+ * The caller's last check (`beforeSign`, freedom-core design 0012: a page's
+ * standing rule read again, or the Agent's decision) runs inside that
+ * device session, after the queue, the transport's open and the address
+ * check, right before each signing APDU: those waits can be long, and
+ * nothing may change between the check and the request the device signs.
+ * A refusal sends no signing APDU, closes the transport (the device is
+ * free for the next), and reaches the caller as its own error.
+ *
  * The device's answer is never trusted: every signature must recover to
  * the account's address over exactly what was asked — the transaction
  * the caller built, the message's EIP-191 hash, the typed data's EIP-712
@@ -90,21 +98,37 @@ function checkedSignature(record, sig, recover) {
 
 /**
  * @param {{address: string, path: string}} record - Ledger wallet record from vault-meta
- * @param {{onAddressCheck?: (matched: boolean) => void}} [options]
+ * @param {{onAddressCheck?: (matched: boolean) => void, beforeSign?: () => Promise<void>}} [options]
  *   `onAddressCheck` hears whether the device derived the record's address
  *   at its path, so the record's check state (#1065) can be kept.
+ *   `beforeSign`, the caller's last check, is awaited in the device session
+ *   right before each signing APDU, and throws to refuse.
  * @returns {import('../signers').Signer}
  */
-function createLedgerBackend(record, { onAddressCheck } = {}) {
+function createLedgerBackend(record, { onAddressCheck, beforeSign = null } = {}) {
   /**
    * Run a device task after verifying the attached Ledger derives this
    * account's address at the stored path — signing with a different
    * device/seed must fail, not silently produce a foreign signature.
    * This is also the check of a record added before main read addresses
    * back from the device: it can't sign until a device matches it.
+   *
+   * The task gets `lastCheck`, which it awaits right before each signing
+   * APDU: the caller's `beforeSign`, after every wait of the session's. Its
+   * refusal reaches the caller as it is, not as a device error.
    */
-  const withVerifiedDevice = (task) =>
-    withEthApp(async (eth) => {
+  const withVerifiedDevice = (task) => {
+    let refused = null;
+    const lastCheck = async () => {
+      if (typeof beforeSign !== 'function') return;
+      try {
+        await beforeSign();
+      } catch (err) {
+        refused = { err };
+        throw err;
+      }
+    };
+    return withEthApp(async (eth) => {
       const { address } = await eth.getAddress(record.path, false);
       const matched = address.toLowerCase() === record.address.toLowerCase();
       if (onAddressCheck) {
@@ -118,8 +142,11 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
       if (!matched) {
         throw createLedgerError(LEDGER_ERROR_CODES.WRONG_DEVICE);
       }
-      return task(eth);
+      return task(eth, lastCheck);
+    }).catch((err) => {
+      throw refused ? refused.err : err;
     });
+  };
 
   return {
     getAddress: async () => record.address,
@@ -130,7 +157,8 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
       const unsigned = Transaction.from(tx);
       const rawHex = unsigned.unsignedSerialized.slice(2);
 
-      return withVerifiedDevice(async (eth) => {
+      return withVerifiedDevice(async (eth, lastCheck) => {
+        await lastCheck();
         const sig = await eth.signTransaction(record.path, rawHex, null);
         let raw;
         let signed;
@@ -153,7 +181,8 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
       const bytes = messageToBytes(message);
       const messageHex = bytes.toString('hex');
 
-      return withVerifiedDevice(async (eth) => {
+      return withVerifiedDevice(async (eth, lastCheck) => {
+        await lastCheck();
         const sig = await eth.signPersonalMessage(record.path, messageHex);
         return checkedSignature(record, sig, (serialized) => verifyMessage(bytes, serialized));
       });
@@ -169,8 +198,9 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
       // The device wants the full EIP-712 wire payload.
       const { domain, strippedTypes, payload } = getEip712WirePayload(typedData);
 
-      return withVerifiedDevice(async (eth) => {
+      return withVerifiedDevice(async (eth, lastCheck) => {
         let sig;
+        await lastCheck();
         try {
           sig = await eth.signEIP712Message(record.path, payload);
         } catch (err) {
@@ -179,6 +209,9 @@ function createLedgerBackend(record, { onAddressCheck } = {}) {
           if (err?.statusCode !== 0x6d00) throw err;
           const domainSeparator = TypedDataEncoder.hashDomain(payload.domain);
           const structHash = TypedDataEncoder.from(strippedTypes).hash(typedData.message);
+          // The device's refusal was a wait: the caller's check again,
+          // right before the second signing APDU.
+          await lastCheck();
           sig = await eth.signEIP712HashedMessage(record.path, domainSeparator.slice(2), structHash.slice(2));
         }
         // Recovered over the EIP-712 hash of the typed data itself, never

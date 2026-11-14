@@ -16,6 +16,7 @@ jest.mock('electron-log', () => ({ info: jest.fn(), warn: jest.fn(), error: jest
 // so a wrong key shows in the answer itself.
 const mockState = { permissions: new Map(), feeds: new Map(), ready: true };
 jest.mock('../swarm/swarm-permissions', () => ({
+  whenLoaded: async () => true,
   getPermission: (key) => mockState.permissions.get(key) || null,
   hasMessagingGrant: () => false,
   onRevoke: () => {},

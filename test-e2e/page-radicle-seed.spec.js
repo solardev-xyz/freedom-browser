@@ -210,8 +210,11 @@ test('seeding through main: main\'s node prompt in the sidebar, each node action
   await harness.setContentFixture(`${DAPP}/`, page('forge'));
   expect(await startFakeRadicle(electronApp)).toMatchObject({ status: 'running' });
   // Connected already, as main writes a connection.
-  await electronApp.evaluate((_electron, args) => {
-    process.mainModule.require(`${args.root}/src/main/radicle/radicle-permissions`).grantPermission(args.key);
+  // The identity core writes it (design 0012, APB-3), for the site's page.
+  await electronApp.evaluate(async (_electron, args) => {
+    await process.mainModule
+      .require(`${args.root}/src/main/radicle/radicle-permissions`)
+      .grantPermission(args.key, { page: { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false } });
   }, { root: repoRoot, key: DAPP });
   await openIn(win, `${DAPP}/`);
   await watchOldPath(win);

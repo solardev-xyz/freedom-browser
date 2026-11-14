@@ -370,6 +370,41 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
     expect(page.guest.events).toEqual([]);
   });
 
+  // freedom-core design 0012, APB-2: the identity core writes the grant,
+  // under the request's PageContext; one it doesn't write (a widening whose
+  // write failed isn't applied) answers the dApp as a failed save, with no
+  // event to it or to the key's other documents.
+  test("the core writes the grant under the request's PageContext; one it refuses answers the dApp, and tells no one", async () => {
+    const env = setup();
+    const page = env.tab();
+    const other = env.tab(`${KEY_A}/other`, { front: false });
+    let answer = page.ask('eth_requestAccounts');
+    await flush();
+    await env.decide(env.prompts()[0].handle, true, { walletIndex: 0 });
+    expect(await answer).toEqual({ result: [ACCOUNT] });
+    expect(env.deps.grantPermission.mock.calls[0]).toEqual([
+      KEY_A,
+      0,
+      100,
+      expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false }),
+    ]);
+    // The first grant's accountsChanged reaches the page's other tab first.
+    await flush();
+    env.state.permissions.clear();
+    page.guest.events.length = 0;
+    other.guest.events.length = 0;
+    env.deps.grantPermission.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('The permission file could not be written'), { code: 'storage' });
+    });
+    answer = page.ask('eth_requestAccounts');
+    await flush();
+    await env.decide(env.prompts().at(-1).handle, true, { walletIndex: 0 });
+    expect(await answer).toEqual({ error: { code: -32603, message: 'Failed to save the connection' } });
+    await flush();
+    expect(page.guest.events).toEqual([]);
+    expect(other.guest.events).toEqual([]);
+  });
+
   test('a tab the agent holds is answered by the agent service, with no prompt', async () => {
     const env = setup();
     env.state.agent = async () => ({ handled: true, result: [SECOND] });
@@ -384,6 +419,10 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
         beforeEffect: expect.any(Function),
         effectAllowed: expect.any(Function),
         grantWritten: expect.any(Function),
+        // Main's issuer for the Agent's decision on a signature or a send
+        // (design 0012, APB-1d); a connect mints nothing.
+        pageToken: { mint: expect.any(Function), present: expect.any(Function), holds: expect.any(Function), discard: expect.any(Function) },
+        pageContext: expect.any(Function),
       }
     );
     expect(env.prompts()).toEqual([]);
@@ -441,6 +480,7 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
             beforeEffect: options.beforeEffect,
             effectAllowed: options.effectAllowed,
             grantWritten: options.grantWritten,
+            pageContext: options.pageContext,
           },
           request
         );

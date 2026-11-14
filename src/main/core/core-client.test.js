@@ -265,9 +265,10 @@ describe('CoreClient', () => {
   });
 
   // freedom-core design 0012, APR-3: the pinned core (0.15.0, as every core
-  // from 0.14.0) requires `grant_root`, the permission files' directory, and
-  // main has moved none of them to the core.
-  test('the hello names grant_root, absolute and normalized, and no grant_moved', async () => {
+  // from 0.14.0) requires `grant_root`, the permission files' directory; APB-2
+  // moves the dApp file to the core and APB-3 Swarm's and Radicle's
+  // (`grant_moved`), x402's staying main's.
+  test('the hello names grant_root, absolute and normalized, and the moved files in grant_moved', async () => {
     const profile = path.join(os.tmpdir(), 'freedom-profile');
     const given = `${profile}${path.sep}.${path.sep}x${path.sep}..${path.sep}`;
     const { client, children } = makeClient([helloHandler()], { grantRoot: given });
@@ -276,7 +277,7 @@ describe('CoreClient', () => {
     const hello = children[0].requests[0];
     expect(hello.method).toBe('core.hello');
     expect(hello.params.grant_root).toBe(path.resolve(profile));
-    expect(hello.params).not.toHaveProperty('grant_moved');
+    expect([...hello.params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm']);
   });
 
   test('a client is never made without an absolute grantRoot', () => {

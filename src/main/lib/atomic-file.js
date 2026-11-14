@@ -3,11 +3,12 @@
  * "Writes and durability": the single-file write).
  *
  * For files another process reads while main writes them. From the APR-3 pin
- * on, freedom-cored reads the four permission files (`dapp-permissions.json`,
- * `swarm-permissions.json`, `radicle-permissions.json`,
- * `x402-permissions.json`) at each of its checks, while main is still their
- * only writer (design 0012, "The files (Q10)"). It reads a file that doesn't
- * parse as an empty store, so a read must never see a half-written one.
+ * on, freedom-cored reads the four permission files at each of its checks,
+ * and main is still the only writer of `dapp-permissions.json` and
+ * `x402-permissions.json` (design 0012, "The files (Q10)"; the core writes
+ * `swarm-permissions.json` and `radicle-permissions.json` from APB-3, and
+ * main writes them nowhere). It reads a file that doesn't parse as an empty
+ * store, so a read must never see a half-written one.
  *
  * - **The temp file** is new, in the target's directory, made exclusively
  *   (`wx`, so a name already there, a link included, fails the write instead
