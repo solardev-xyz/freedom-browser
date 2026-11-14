@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { OPERATIONS, validateOperationInput } = require('./contract/operations');
 const { AutomationError, ERROR_CODES, toErrorPayload } = require('./contract/errors');
 const { PageRegistry } = require('./page-registry');
-const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+const { setAgentPageCustody, isAgentPage } = require('../wallet/agent-tab-custody');
 
 function opaqueId(prefix) {
   return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -169,6 +169,11 @@ class AutomationController {
   setPageAgentCustody(tabId, owned) {
     try { setAgentPageCustody(this.pages.require(tabId).adapter.webContents, owned); }
     catch { /* A closed page cannot sign. */ }
+  }
+
+  isPageAgentCustody(tabId) {
+    try { return isAgentPage(this.pages.require(tabId).adapter.webContents); }
+    catch { return false; }
   }
 
   // The automation tab bound to a guest, so main can follow a page's own

@@ -2,7 +2,7 @@
 
 const IPC = require('../../shared/ipc-channels');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
-const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
+const { AGENT_ERROR_CODES, FreedomAgentError, agentHeldWalletRefusal } = require('./freedom-agent-service');
 
 const AGENT_IPC_ERROR_CODES = Object.freeze({
   TAB_NOT_BOUND: 'AGENT_TAB_NOT_BOUND',
@@ -74,17 +74,24 @@ function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
 }
 
-function registerUnavailableAgentIpc({ ipcMain, isTrustedSender, isProviderSettingsSender, isAgentLauncherSender }) {
+function inactiveWalletResponse({ isTrustedSender, automationTabIdForRenderer, isAgentHeldTab }, event, payload = {}) {
+  if (!payload || typeof payload !== 'object' || !isTrustedSender(event?.sender) || !Number.isSafeInteger(payload.rendererTabId) || payload.rendererTabId < 1) return { handled: false };
+  const tabId = automationTabIdForRenderer?.(event.sender, payload.rendererTabId);
+  return tabId && isAgentHeldTab?.(tabId) === true ? agentHeldWalletRefusal() : { handled: false };
+}
+
+function registerUnavailableAgentIpc(options) {
+  const { ipcMain, isTrustedSender, isProviderSettingsSender, isAgentLauncherSender } = options;
   const channels = Object.entries(IPC)
     .filter(([name]) => name.startsWith('AGENT_') && !name.endsWith('_EVENT'))
     .map(([, channel]) => channel);
   for (const channel of channels) {
-    ipcMain.handle(channel, (event) => {
+    ipcMain.handle(channel, (event, payload) => {
       const settingsRequest = channel.startsWith('agent:provider:') && isProviderSettingsSender?.(event);
       const launcherRequest = [IPC.AGENT_OPEN, IPC.AGENT_SETUP_STATE].includes(channel) && (isAgentLauncherSender?.(event) || isProviderSettingsSender?.(event));
       if (!isTrustedSender(event.sender) && !settingsRequest && !launcherRequest)
         return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Agent requests require trusted browser chrome');
-      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
+      if (channel === IPC.AGENT_WALLET_REQUEST) return inactiveWalletResponse(options, event, payload);
       return errorEnvelope(
         'AGENT_STORAGE_UNAVAILABLE',
         'Agent storage is unavailable. Restart Freedom; if this persists, check profile-folder access or restore Agent data from a backup.'
@@ -680,7 +687,8 @@ function registerFreedomAgentIpc(options = {}) {
     }
     const tabId = automationTabIdForRenderer(event.sender, payload.rendererTabId);
     if (!tabId) return { handled: false };
-    return service.handleWalletRequest(tabId, payload.request);
+    const result = await service.handleWalletRequest(tabId, payload.request);
+    return result?.handled ? result : inactiveWalletResponse(options, event, payload);
   };
 
   const handleGetState = (event) => {
@@ -1422,7 +1430,7 @@ function registerFreedomAgentIpc(options = {}) {
   ]);
   const handle = (channel, handler) => ipcMain.handle(channel, (event, payload) => {
     if (!isEnabled() && !availableWhileOff.has(channel)) {
-      if (channel === IPC.AGENT_WALLET_REQUEST) return { handled: false };
+      if (channel === IPC.AGENT_WALLET_REQUEST) return inactiveWalletResponse(options, event, payload);
       return disabled();
     }
     return handler(event, payload);
