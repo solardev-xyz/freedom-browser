@@ -59,6 +59,7 @@ function createResolver(selection = null, options = {}) {
               providerId: selection.providerId,
               modelId: selection.modelId,
               baseUrl: selection.baseUrl,
+              organizationPolicyAcknowledged: selection.organizationPolicyAcknowledged,
             },
           ]
         : [],
@@ -647,9 +648,53 @@ test('Claude subscription uses the installed login without reading or creating O
   await expect(resolver.loginSubscription({ providerId: 'anthropic-claude', modelId: 'unknown' }, { signal })).rejects.toMatchObject({ code: 'AGENT_MODEL_INVALID' });
 });
 
+test('listing providers never starts an unconnected Claude installation', async () => {
+  const discoverClaudeModels = jest.fn();
+  const { resolver } = createResolver(null, { discoverClaudeModels });
+  const catalog = await resolver.getCatalog();
+  expect(catalog.find(provider => provider.providerId === 'anthropic-claude').models).toHaveLength(3);
+  expect(discoverClaudeModels).not.toHaveBeenCalled();
+});
+
+test('Claude discovery configuration conflicts prevent connecting without breaking unrelated provider lists', async () => {
+  const conflict = Object.assign(new Error('Fixture tool conflict'), { code: 'AGENT_CLAUDE_CONFIGURATION' });
+  const { resolver, store } = createResolver(null, {
+    checkClaudeLogin: jest.fn(async () => '/native/claude'),
+    discoverClaudeModels: jest.fn(async () => { throw conflict; }),
+  });
+  await expect(resolver.loginSubscription({ providerId: 'anthropic-claude', modelId: 'sonnet' })).rejects.toBe(conflict);
+  expect(store.saveSubscription).not.toHaveBeenCalled();
+  await expect(resolver.getCatalog()).resolves.toEqual(expect.any(Array));
+});
+
+test('existing Claude connections require reviewing the disclosure before any CLI discovery or run', async () => {
+  const discoverClaudeModels = jest.fn();
+  const checkClaudeLogin = jest.fn();
+  const { resolver } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'sonnet' },
+    { discoverClaudeModels, checkClaudeLogin });
+  await resolver.getCatalog();
+  await resolver.refreshModels({ providerId: 'anthropic-claude' });
+  await expect(resolver.resolveModel()).rejects.toMatchObject({ code: 'AGENT_CLAUDE_RECONNECT_REQUIRED' });
+  await expect(resolver.selectModel({ providerId: 'anthropic-claude', modelId: 'sonnet' })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_RECONNECT_REQUIRED' });
+  expect(discoverClaudeModels).not.toHaveBeenCalled();
+  expect(checkClaudeLogin).not.toHaveBeenCalled();
+});
+
+test('Claude configuration failures are cached briefly and retried on explicit refresh', async () => {
+  const conflict = Object.assign(new Error('Fixture conflict'), { code: 'AGENT_CLAUDE_CONFIGURATION' });
+  const discoverClaudeModels = jest.fn(async () => { throw conflict; });
+  const { resolver } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus', organizationPolicyAcknowledged: true }, { discoverClaudeModels });
+  await resolver.getCatalog();
+  await resolver.getCatalog();
+  await expect(resolver.resolveModel()).rejects.toBe(conflict);
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(1);
+  await resolver.refreshModels({ providerId: 'anthropic-claude' });
+  expect(discoverClaudeModels).toHaveBeenCalledTimes(2);
+});
+
 test('Claude runtime never falls back to a Pi API transport', async () => {
   const checkClaudeLogin = jest.fn(async () => '/native/claude');
-  const { resolver, runtime } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus' }, { checkClaudeLogin });
+  const { resolver, runtime } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus', organizationPolicyAcknowledged: true }, { checkClaudeLogin });
   const resolved = await resolver.resolveModel();
   expect(resolved.model.provider).toBe('anthropic-claude');
   expect(typeof resolved.modelRuntime.createFreedomSession).toBe('function');
@@ -666,7 +711,7 @@ test('Claude catalogue discovery is shared, preserves alias selections, and refr
     { value: 'claude-sonnet-5', displayName: 'Sonnet 5' },
   ]);
   const discoverClaudeModels = jest.fn(async () => discovered);
-  const { resolver, store } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus' },
+  const { resolver, store } = createResolver({ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'opus', organizationPolicyAcknowledged: true },
     { discoverClaudeModels, checkClaudeLogin: jest.fn(async () => '/native/claude') });
   const [first, second] = await Promise.all([resolver.getCatalog(), resolver.getCatalog()]);
   expect(discoverClaudeModels).toHaveBeenCalledTimes(1);

@@ -54,23 +54,8 @@ describe('Claude local tool bridge', () => {
 });
 
 
-test('refuses local or cached managed policies before starting Claude', async () => {
-  const { assertUnmanagedClaude } = require('./claude-cli');
-  const exec = jest.fn(async () => { throw Object.assign(new Error('absent'), { code: 1 }); });
-  await assertUnmanagedClaude({ platform: 'darwin', exists: async () => false, exec });
-  expect(exec).toHaveBeenCalledWith('/usr/bin/defaults', ['read', 'com.anthropic.claudecode'], expect.any(Object));
-  await expect(assertUnmanagedClaude({ platform: 'linux', exists: async p => p.endsWith('remote-settings.json'), exec })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
-  await expect(assertUnmanagedClaude({ platform: 'darwin', exists: async () => false, exec: async () => ({ stdout: '{}' }) })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
-  await expect(assertUnmanagedClaude({ platform: 'linux', exists: async () => { throw new Error('unreadable'); } })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
-  await expect(assertUnmanagedClaude({ platform: 'win32', exists: async file => /ClaudeCode[\\/]managed-settings\.json$/i.test(file), exec })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
-  // The required modern CLI no longer reads the legacy ProgramData location.
-  await expect(assertUnmanagedClaude({ platform: 'win32', exists: async file => file.includes('ProgramData'), exec })).resolves.toBeUndefined();
-});
-
-
 test('requires native subscription authentication and a compatible CLI without API fallback', async () => {
   const { checkClaudeLogin } = require('./claude-cli');
-  const checkPolicy = jest.fn(async () => {});
   const status = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: 'max' };
   const run = jest.fn(async (_file, args, options) => {
     const fs = require('fs');
@@ -80,13 +65,18 @@ test('requires native subscription authentication and a compatible CLI without A
     expect(args.slice(0, 3)).toEqual(['--restricted', '--setting-sources', '']);
     return { stdout: args.includes('--version') ? '2.1.290 (Claude Code)' : JSON.stringify(status) };
   });
-  const options = { executable: '/native/claude', run, checkPolicy };
+  const options = { executable: '/native/claude', run };
   await expect(checkClaudeLogin(options)).resolves.toBe('/native/claude');
   expect(require('fs').existsSync(run.mock.calls[0][2].cwd)).toBe(false);
   status.authMethod = 'api_key';
   await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_UNAVAILABLE' });
-  status.authMethod = 'claude.ai'; status.subscriptionType = 'team';
-  await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
+  status.authMethod = 'claude.ai';
+  for (const plan of ['pro', 'max', 'team', 'enterprise']) {
+    status.subscriptionType = plan;
+    await expect(checkClaudeLogin(options)).resolves.toBe('/native/claude');
+  }
+  status.subscriptionType = 'free';
+  await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED' });
   run.mockResolvedValueOnce({ stdout: '2.1.100' });
   await expect(checkClaudeLogin(options)).rejects.toMatchObject({ code: 'AGENT_CLAUDE_VERSION' });
 });
@@ -104,7 +94,7 @@ test.each([false, true])('retires owned CLI scratch files on shutdown or failed 
   const onClose = jest.fn();
   const starting = startClaudeProcess({
     executable: '/native/claude', model: 'sonnet', systemPrompt: 'Synthetic prompt', tools: [],
-    signal: new AbortController().signal, checkLogin: async () => {}, checkPolicy: async () => {}, onEvent: () => {}, onClose,
+    signal: new AbortController().signal, checkLogin: async () => {}, onEvent: () => {}, onClose,
     spawnProcess: (_executable, _args, options) => {
       directory = options.cwd;
       expect(fs.readFileSync(path.join(directory, 'system.txt'), 'utf8')).toBe('Synthetic prompt');
@@ -141,36 +131,62 @@ test('model discovery validates entries without guessing versions or duplicating
   expect(() => normalizeClaudeModels({})).toThrow('model catalogue');
 });
 
-test.each(['before-spawn', 'after-spawn', 'next-input', 'idle'])('revokes Claude when managed policy appears %s', async phase => {
-  const { EventEmitter } = require('events');
-  const { PassThrough } = require('stream');
-  const { startClaudeProcess } = require('./claude-cli');
-  const child = new EventEmitter();
-  child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
-  const input = jest.fn(); child.stdin.on('data', input);
-  child.kill = jest.fn(() => { queueMicrotask(() => child.emit('close', 0)); return true; });
-  let managed = false;
-  const spawnProcess = jest.fn(() => { if (phase === 'after-spawn') managed = true; return child; });
-  const starting = startClaudeProcess({ executable: '/native/claude', model: 'sonnet', systemPrompt: 'Owned fixture', tools: [],
-    signal: new AbortController().signal, onEvent: () => {}, onClose: () => {}, spawnProcess,
-    checkLogin: async () => { if (phase === 'before-spawn') managed = true; },
-    checkPolicy: async () => { if (managed) throw Object.assign(new Error('Managed policy appeared'), { code: 'AGENT_CLAUDE_MANAGED' }); },
-  });
-  if (phase === 'before-spawn' || phase === 'after-spawn') {
-    await expect(starting).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
-    if (phase === 'before-spawn') expect(spawnProcess).not.toHaveBeenCalled();
-  } else {
-    const connection = await starting;
-    managed = true;
-    if (phase === 'next-input') await expect(connection.write({ type: 'user', message: 'must not send' })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_MANAGED' });
-    else await new Promise(resolve => child.once('close', resolve));
-    await connection.close();
+test.each(['compatible', 'extra-tool', 'missing-tool', 'api-auth'])(
+  'subscription transport keeps Freedom tool authority (%s)', async configuration => {
+    const { EventEmitter } = require('events');
+    const { PassThrough } = require('stream');
+    const fs = require('fs');
+    const { startClaudeProcess } = require('./claude-cli');
+    const child = new EventEmitter();
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = jest.fn(() => { queueMicrotask(() => child.emit('close', 0)); return true; });
+    const execute = jest.fn(async () => ({ content: [{ type: 'text', text: 'Allowed by controller' }] }));
+    const onClose = jest.fn();
+    const onEvent = jest.fn();
+    let endpoint;
+    const connection = await startClaudeProcess({ executable: '/native/claude', model: 'sonnet',
+      systemPrompt: 'Owned fixture', signal: new AbortController().signal,
+      tools: [{ name: 'probe', parameters: { type: 'object' }, execute }],
+      checkLogin: async () => {}, onEvent, onClose,
+      spawnProcess: (_file, args, options) => {
+        expect(args.slice(0, 6)).toEqual(['-p', '--restricted', '--tools', '', '--setting-sources', '']);
+        expect(JSON.parse(args[args.indexOf('--settings') + 1]).disableAllHooks).toBe(true);
+        expect(args).toContain('--strict-mcp-config');
+        expect(args[args.indexOf('--allowedTools') + 1]).toBe('mcp__freedom__probe');
+        expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
+        endpoint = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8')).mcpServers.freedom;
+        return child;
+      },
+    });
+    const call = () => fetch(endpoint.url, { method: 'POST', headers: endpoint.headers,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'probe' } }) });
+    try {
+      expect((await call()).status).toBe(409);
+      expect(execute).not.toHaveBeenCalled();
+      child.stdout.write(JSON.stringify({ type: 'system', subtype: 'init',
+        apiKeySource: configuration === 'api-auth' ? 'environment' : 'none',
+        tools: configuration === 'extra-tool' ? ['mcp__freedom__probe', 'Bash']
+          : configuration === 'missing-tool' ? [] : ['mcp__freedom__probe', 'EndConversation'],
+      }) + '\n');
+      if (configuration === 'compatible') {
+        expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ subtype: 'init' }));
+        expect((await (await call()).json()).result.content[0].text).toBe('Allowed by controller');
+        execute.mockRejectedValueOnce(Object.assign(new Error('Declined'), { code: 'USER_CANCELLED' }));
+        expect((await (await call()).json()).result.isError).toBe(true);
+        expect(execute).toHaveBeenCalledTimes(2);
+        await connection.write({ type: 'user', message: 'Next turn' });
+      } else {
+        await connection.close();
+        expect(execute).not.toHaveBeenCalled();
+        expect(onEvent).not.toHaveBeenCalled();
+        expect(onClose).toHaveBeenCalledWith(expect.objectContaining({ code: 'AGENT_CLAUDE_CONFIGURATION' }));
+      }
+    } finally { await connection.close(); }
     expect(child.kill).toHaveBeenCalled();
   }
-  expect(input).not.toHaveBeenCalled();
-});
+);
 
-test('discovery sends only initialization, ignores unrelated responses, and closes its child', async () => {
+test('discovery checks bridge status without inference, ignores unrelated responses, and closes its child', async () => {
   const { discoverClaudeModels } = require('./claude-cli');
   const close = jest.fn(async () => {});
   const write = jest.fn();
@@ -178,6 +194,11 @@ test('discovery sends only initialization, ignores unrelated responses, and clos
     expect(options.tools).toEqual([]);
     write.mockImplementation(message => {
       expect(message.type).toBe('control_request');
+      if (message.request.subtype === 'mcp_status') {
+        options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
+          response: { mcpServers: [{ name: 'freedom', status: 'connected' }] } } });
+        return;
+      }
       expect(message.request.subtype).toBe('initialize');
       options.onEvent({ type: 'control_response', response: { request_id: 'foreign', subtype: 'success' } });
       options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
@@ -187,7 +208,7 @@ test('discovery sends only initialization, ignores unrelated responses, and clos
   });
   const models = await discoverClaudeModels({ startProcess, findExecutable: async () => '/native/claude' });
   expect(models[0].name).toBe('Claude Sonnet 5.5');
-  expect(write).toHaveBeenCalledTimes(1);
+  expect(write).toHaveBeenCalledTimes(2);
   expect(close).toHaveBeenCalledTimes(1);
   expect(startProcess.mock.calls[0][0].signal.aborted).toBe(true);
 });
@@ -205,4 +226,70 @@ test('discovery closes on cancellation and protocol failure', async () => {
     })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_UNAVAILABLE' });
     expect(close).toHaveBeenCalledTimes(1);
   }
+});
+
+
+test.each([[], [{ name: 'freedom', status: 'disabled' }], [{ name: 'other', status: 'connected' }]].map(servers => [servers]))(
+  'discovery rejects a blocked or replaced Freedom bridge (%j)', async mcpServers => {
+    const { discoverClaudeModels } = require('./claude-cli');
+    const close = jest.fn();
+    await expect(discoverClaudeModels({ findExecutable: async () => '/native/claude', startProcess: async options => ({ close,
+      write(message) {
+        options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
+          response: message.request.subtype === 'initialize'
+            ? { models: [{ value: 'sonnet', displayName: 'Sonnet' }] } : { mcpServers } } });
+      },
+    }) })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_CONFIGURATION' });
+    expect(close).toHaveBeenCalledTimes(1);
+  }
+);
+
+
+test('discovery waits for a pending bridge to connect without sending a user message', async () => {
+  const { discoverClaudeModels } = require('./claude-cli');
+  let checks = 0;
+  const writes = [];
+  const models = await discoverClaudeModels({ findExecutable: async () => '/native/claude', startProcess: async options => ({ close() {},
+    write(message) {
+      writes.push(message);
+      options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
+        response: message.request.subtype === 'initialize' ? { models: [{ value: 'sonnet', displayName: 'Sonnet' }] }
+          : { mcpServers: [{ name: 'freedom', status: ++checks === 1 ? 'pending' : 'connected' }] } } });
+    },
+  }) });
+  expect(models[0].id).toBe('sonnet');
+  expect(checks).toBe(2);
+  expect(writes.every(message => message.type === 'control_request')).toBe(true);
+});
+
+
+test('discovery reports unsupported bridge status as a CLI compatibility issue', async () => {
+  const { discoverClaudeModels } = require('./claude-cli');
+  await expect(discoverClaudeModels({ findExecutable: async () => '/native/claude', startProcess: async options => ({ close() {},
+    write(message) {
+      options.onEvent({ type: 'control_response', response: message.request.subtype === 'initialize'
+        ? { request_id: message.request_id, subtype: 'success', response: { models: [{ value: 'sonnet', displayName: 'Sonnet' }] } }
+        : { request_id: message.request_id, subtype: 'error', error: 'Unsupported fixture protocol' } });
+    },
+  }) })).rejects.toMatchObject({ code: 'AGENT_CLAUDE_VERSION' });
+});
+
+test('discovery cannot save an alias-only connection when its bridge never becomes ready', async () => {
+  jest.useFakeTimers();
+  try {
+    const { discoverClaudeModels } = require('./claude-cli');
+    const close = jest.fn();
+    const pending = discoverClaudeModels({ findExecutable: async () => '/native/claude', startProcess: async options => ({ close,
+      write(message) {
+        options.onEvent({ type: 'control_response', response: { request_id: message.request_id, subtype: 'success',
+          response: message.request.subtype === 'initialize' ? { models: [{ value: 'sonnet', displayName: 'Sonnet' }] }
+            : { mcpServers: [{ name: 'freedom', status: 'pending' }] } } });
+      },
+    }) });
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'AGENT_CLAUDE_CONFIGURATION' });
+    await jest.advanceTimersByTimeAsync(15000);
+    await assertion;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
+  } finally { jest.useRealTimers(); }
 });

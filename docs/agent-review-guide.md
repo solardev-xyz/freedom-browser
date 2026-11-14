@@ -49,7 +49,7 @@ current implementation contract.
 | Product behavior and deliberate limits | [Active roadmap](../research/freedom-agent-cli-roadmap.md), this guide | Does the shipped scope match the user-facing claims? Are unqualified paths explicit? |
 | Runtime and orchestration | `src/main/agent/runtime.js`, `freedom-agent-service.js`, `pi-session-factory.js`; [subagents](agent-subagents.md) | Are turns, steering, Stop, provider changes and helper ownership coherent? Can late work escape its original run? |
 | ChatGPT sign-in | `src/main/agent/chatgpt-login.js`, `provider-resolver.js`, `provider-runtime.test.js` | Freedom owns the name hint, loopback callback pages and initial code exchange because Pi 1.0.2 hardcodes its branding. Pi retains credential storage, refresh and model transport. Compare the adapter with Pi's `auth/oauth/openai-chatgpt.js` when upgrading; preserve PKCE, issued client IDs, direct-token scopes, state checks (including denial callbacks), cancellation and retry. |
-| Claude subscription | [Contract and qualification](agent-claude-subscription.md); `src/main/agent/claude-cli.js`, `claude-session.js` (the tool bridge is in `claude-cli.js`) | Are built-in CLI tools disabled, environment/configuration constrained, managed policies refused and only the session's approved Freedom tools exposed? Does cancellation retire the process and bridge? |
+| Claude subscription | [Contract and qualification](agent-claude-subscription.md); `src/main/agent/claude-cli.js`, `claude-session.js` (the tool bridge is in `claude-cli.js`) | Are built-in CLI tools disabled, environment/configuration constrained, organization automation disclosed and only the session's approved Freedom tools exposed? Does cancellation retire the process and bridge? |
 | Custom endpoints and credentials | [Connection contract](agent-openai-compatible-spike.md); `src/main/agent/compatible-provider.js`, `provider-resolver.js`, `provider-store.js`; `test-e2e/custom-provider.spec.js` | Can endpoint edits, redirects, model refresh or key rotation misroute a credential or conversation? Are capabilities explicit, checks opt-in and results tied to their model/settings? |
 | Conversation privacy | [Privacy contract](agent-session-privacy.md); `src/main/agent/session-privacy.js`, `privacy-request.js`, `privacy-attestation.js`; `src/renderer/lib/agent-privacy.js` | Do displayed guarantees match observed requests? Are encryption fallback, hardware advisories, CLI visibility limits and OpenRouter retention constraints represented accurately? |
 | Codemode and connected services | `pi-codemode.js`, `mcp-connections.js`, `pi-mcp-tools.js`; [integration boundaries](agent-codemode-mcp.md) | Do nested calls retain scope, approvals, Stop and partial-effect receipts? Are OAuth credentials isolated and service responses untrusted? |
@@ -149,7 +149,7 @@ Useful reviewer smoke tests, in disposable projects:
     first-use OpenRouter disclosure, editable text updates, cancellation and local
     model download/recording without Ollama. Subscription sign-in alone must not
     imply transcription access.
-11. Connect an installed, authenticated personal Claude Code account. Check discovered
+11. Connect an installed, authenticated Claude Code account with trusted organization automation. Check discovered
    model names, a normal chat, an approved browser action and Stop. Follow the CLI
    contract's setup requirements rather than copying its OAuth credentials.
 12. Add a custom provider using a disposable fixture or a server you are authorized

@@ -99,3 +99,19 @@ test('privacy symbols distinguish conditional encryption, retention policy and l
   expect(kinds('venice', {})).toEqual(['unknown']);
   expect(modelPrivacyInfo('venice', { e2ee: true }).symbols[0].detail).toContain('fall back to HTTPS');
 });
+
+
+test('Claude privacy details disclose organization access alongside Anthropic and CLI diagnostics', () => {
+  const element = tag => { const node = createElement(tag); node.append = (...items) => items.forEach(item => node.appendChild(item)); return node; };
+  global.document = createDocument({ createElementOverride: element });
+  global.window = { addEventListener: jest.fn() };
+  try {
+    const button = element('button'), panel = element('section');
+    const view = createAgentPrivacy(button, panel);
+    view.update({ version: 1, routes: [{ providerId: 'anthropic-claude', modelId: 'sonnet', requests: 1 }] });
+    button.dispatch('click');
+    const text = node => [node.textContent, ...node.children.map(text)].join(' ');
+    expect(text(panel)).toContain('Organization-configured automation and telemetry may also receive your messages and the content Agent reads.');
+    expect(text(panel)).toContain('Claude may keep its own diagnostics locally');
+  } finally { delete global.document; delete global.window; }
+});

@@ -5,11 +5,19 @@ const IPC = require('../../shared/ipc-channels');
 const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
 const {
   AGENT_IPC_ERROR_CODES,
+  safeProviderError,
   OPENAI_DEVICE_VERIFICATION_URL,
   normalizeSubscriptionAuthEvent,
   registerFreedomAgentIpc,
   registerUnavailableAgentIpc,
 } = require('./ipc');
+
+test('Claude configuration conflicts explain the incompatibility without exposing CLI output', () => {
+  expect(safeProviderError({ code: 'AGENT_CLAUDE_CONFIGURATION', message: 'private CLI diagnostic' })).toEqual({
+    ok: false, error: { code: 'AGENT_CLAUDE_CONFIGURATION',
+      message: 'Claude Code’s configuration blocks Freedom’s tool bridge, exposes additional tools or uses API authentication. Check your organization’s Claude policies or use the separate Anthropic API connection.' },
+  });
+});
 
 function createIpcMain() {
   const handlers = new Map();
@@ -1549,6 +1557,16 @@ describe('Freedom agent IPC', () => {
     expect(service.stop).toHaveBeenCalledWith('run_late');
     expect(service.clearConversation).toHaveBeenCalledTimes(1);
   });
+
+  test.each(['AGENT_CLAUDE_RECONNECT_REQUIRED', 'AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED', 'AGENT_CLAUDE_VERSION'])(
+    'explains Claude connection failures when starting a chat (%s)', async code => {
+      const ctx = register({ resolveModel: jest.fn(async () => { throw Object.assign(new Error('private CLI diagnostic'), { code }); }) });
+      const response = await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+      expect(response).toEqual(safeProviderError({ code }));
+      expect(response.error.code).toBe(code);
+      expect(JSON.stringify(response)).not.toContain('private CLI diagnostic');
+    }
+  );
 
   test('redacts model resolver and unexpected service failures', async () => {
     const modelFailure = register({

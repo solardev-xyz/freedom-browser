@@ -2001,6 +2001,71 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-provider-detail'].hidden).toBe(true);
   });
 
+  test('Claude discloses organization automation before connecting and keeps it visible afterward', async () => {
+    const connected = { configured: true, providerId: 'anthropic-claude', modelId: 'sonnet',
+      connections: [{ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'sonnet', organizationPolicyAcknowledged: true }] };
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'anthropic', name: 'Anthropic', authType: 'api_key', models: [{ id: 'claude-sonnet', name: 'Claude Sonnet' }] },
+        { providerId: 'anthropic-claude', name: 'Anthropic · Claude subscription', authType: 'subscription', models: [{ id: 'sonnet', name: 'Claude Sonnet' }] },
+      ] }),
+      loginSubscriptionAgentProvider: jest.fn().mockResolvedValue({ ok: true, status: connected }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    ctx.elements['agent-provider-add'].dispatch('click');
+    const choice = ctx.elements['agent-provider-choices'].children.flatMap(item => item.children || [])
+      .find(item => item.getAttribute('aria-label') === 'Anthropic');
+    choice.dispatch('click');
+    ctx.elements['agent-provider-chatgpt'].dispatch('click');
+    const note = ctx.elements['agent-subscription-note'];
+    const fields = ctx.elements['agent-subscription-fields'];
+    expect(note.hidden).toBe(false);
+    expect(fields.classList.contains('hidden')).toBe(false);
+    expect(note.textContent).toContain('Pro, Max, Team and Enterprise');
+    expect(note.textContent).toContain('Organization scripts may run outside Freedom’s approval controls and receive your messages and the content Agent reads.');
+    ctx.elements['agent-provider-login'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.loginSubscriptionAgentProvider).toHaveBeenCalledWith('anthropic-claude', 'sonnet');
+    expect(note.hidden).toBe(false);
+    expect(fields.classList.contains('hidden')).toBe(false);
+    expect(note.textContent).toContain('Organization scripts may run outside Freedom’s approval controls and receive your messages and the content Agent reads.');
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(true);
+    ctx.elements['agent-provider-api'].dispatch('click');
+    expect(fields.classList.contains('hidden')).toBe(true);
+  });
+
+  test('existing Claude connections offer reconnect beside the organization disclosure', async () => {
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentProviderCatalog: jest.fn().mockResolvedValue({ ok: true, catalog: [
+        { providerId: 'anthropic', name: 'Anthropic', authType: 'api_key', models: [] },
+        { providerId: 'anthropic-claude', name: 'Anthropic · Claude subscription', authType: 'subscription', models: [{ id: 'sonnet', name: 'Claude Sonnet' }] },
+      ] }),
+      getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: {
+        configured: true, providerId: 'anthropic-claude', modelId: 'sonnet',
+        connections: [{ kind: 'subscription', providerId: 'anthropic-claude', modelId: 'sonnet' }],
+      } }),
+    } });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('Reconnect required');
+    expect(ctx.elements['agent-provider-status'].classList.contains('active')).toBe(false);
+    expect(ctx.elements['agent-connected-provider-list'].children[0].children[1].children[1].textContent).toContain('Reconnect required');
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-login'].textContent).toBe('Reconnect installed Claude');
+    expect(ctx.elements['agent-subscription-fields'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['agent-subscription-note'].hidden).toBe(false);
+    expect(ctx.elements['agent-subscription-note'].textContent).toContain('receive your messages and the content Agent reads');
+    ctx.elements['agent-provider-add'].dispatch('click');
+    const choice = ctx.elements['agent-provider-choices'].children.flatMap(item => item.children || [])
+      .find(item => item.getAttribute('aria-label') === 'Anthropic');
+    expect(choice.children[2].title).toBe('Reconnect required');
+    choice.dispatch('click');
+    expect(ctx.elements['agent-provider-chatgpt-state'].textContent).toBe('Reconnect required');
+  });
+
   test('OpenAI summarizes the subscription connection and keeps API setup free of model selection', async () => {
     const ctx = await loadAgentUi({ electronAPI: {
       getAgentProviderStatus: jest.fn().mockResolvedValue({ ok: true, status: {

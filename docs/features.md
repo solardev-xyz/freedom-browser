@@ -363,9 +363,10 @@ Access built-in browser pages using the `freedom://` protocol:
 ### Experimental Claude subscription connection
 
 The Agent's Anthropic setup also offers an installed Claude Code connection for
-personal Pro/Max subscriptions. It uses the CLI's existing login and Freedom's
-normal tools, approvals, helpers, codemode and conversation UI. Managed installations
-are not supported. See [setup and qualification](agent-claude-subscription.md).
+Pro, Max, Team and Enterprise subscriptions. It uses the CLI's existing login and
+Freedom's normal tools, approvals, helpers, codemode and conversation UI. Organization
+policies apply, and organization scripts may run outside Freedom's approval controls;
+this is disclosed before connecting and in the connection settings. See [setup and qualification](agent-claude-subscription.md).
 
 ### Experimental custom AI connections
 

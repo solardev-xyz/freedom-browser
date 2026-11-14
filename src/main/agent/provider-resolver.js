@@ -123,7 +123,10 @@ class AgentProviderResolver {
 
   async getClaudeModels() {
     this.assertEnabled();
-    if (this.claudeCatalog?.expiresAt > Date.now()) return this.claudeCatalog.models;
+    if (this.claudeCatalog?.expiresAt > Date.now()) {
+      if (this.claudeCatalog.error) throw this.claudeCatalog.error;
+      return this.claudeCatalog.models;
+    }
     if (!this.claudeCatalogPending) {
       const enabledSignal = this.featureSignal();
       this.claudeCatalogPending = this.discoverClaudeModels({ signal: enabledSignal }).then(models => {
@@ -133,6 +136,10 @@ class AgentProviderResolver {
         return models;
       }).catch(error => {
         if (enabledSignal?.aborted) throw error;
+        if (['AGENT_CLAUDE_CONFIGURATION', 'AGENT_CLAUDE_VERSION'].includes(error.code)) {
+          this.claudeCatalog = { error, expiresAt: Date.now() + 30_000 };
+          throw error;
+        }
         // No CLI/login or discovery unavailable: honest alias labels, never a
         // guessed/stale version, and no failure of unrelated provider pickers.
         this.claudeCatalog = { models: CLAUDE_MODELS, expiresAt: Date.now() + 30_000 };
@@ -145,7 +152,11 @@ class AgentProviderResolver {
   async getCatalog() {
     this.assertEnabled();
     const enabledSignal = this.featureSignal();
-    const [runtime, claudeModels] = await Promise.all([this.#createRuntime(), this.getClaudeModels()]);
+    // Starting Claude may run organization-managed automation. Listing other
+    // providers must not launch an unconnected Claude installation.
+    const claudeConnected = this.getStatus().connections.some(connection => connection.providerId === CLAUDE_PROVIDER_ID && connection.organizationPolicyAcknowledged === true);
+    const [runtime, claudeModels] = await Promise.all([this.#createRuntime(),
+      claudeConnected ? this.getClaudeModels().catch(() => CLAUDE_MODELS) : CLAUDE_MODELS]);
     enabledSignal?.throwIfAborted();
     this.assertEnabled();
     const catalogProviders = [
@@ -376,6 +387,7 @@ class AgentProviderResolver {
     if (!connection) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not configured');
     }
+    if (providerId === CLAUDE_PROVIDER_ID && connection.organizationPolicyAcknowledged !== true) throw new AgentProviderError('AGENT_CLAUDE_RECONNECT_REQUIRED', 'Reconnect Claude in Settings → AI → Models & providers to review how organization policies apply.');
     if (providerId === CLAUDE_PROVIDER_ID && !(await this.getClaudeModels()).some(model => model.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
     if (connection.kind === 'compatible' && !connection.models.some(m => m.id === modelId)) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a configured model');
     if (providerId !== 'ollama' && providerId !== CLAUDE_PROVIDER_ID && connection.kind !== 'compatible') {
@@ -608,6 +620,7 @@ class AgentProviderResolver {
       return resolved;
     }
     if (selection.providerId === CLAUDE_PROVIDER_ID && selection.kind === 'subscription') {
+      if (selection.organizationPolicyAcknowledged !== true) throw new AgentProviderError('AGENT_CLAUDE_RECONNECT_REQUIRED', 'Reconnect Claude in Settings → AI → Models & providers to review how organization policies apply.');
       const model = (await this.getClaudeModels()).find(model => model.id === selection.modelId);
       if (!model) throw new AgentProviderError('AGENT_MODEL_INVALID', 'Choose a supported Claude model');
       const executable = await this.checkClaudeLogin();

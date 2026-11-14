@@ -1,6 +1,7 @@
 'use strict';
 
-// Claude owns subscription authentication. Freedom owns every executable tool.
+// Claude owns subscription authentication and organization automation.
+// Freedom owns the model tools exposed through its bridge.
 // Never read credentials or launch through a shell.
 const http = require('http');
 const { randomBytes, randomUUID } = require('crypto');
@@ -150,22 +151,43 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
   const controller = new AbortController();
   const ownedSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   const requestId = randomUUID();
-  let child, resolve, reject;
+  const statusRequestId = randomUUID();
+  let child, resolve, reject, models, statusTimer;
   const result = new Promise((yes, no) => { resolve = yes; reject = no; });
   // Attach immediately: abort/startup may reject before the process is ready.
   result.catch(() => {});
   const abort = () => reject(cliError('Claude model discovery was interrupted.'));
   ownedSignal.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(() => controller.abort(), 15000);
+  const timer = setTimeout(() => {
+    // A bridge that never connects must not turn into a successful alias-only connection.
+    if (models) reject(configurationError());
+    controller.abort();
+  }, 15000);
   try {
     ownedSignal.throwIfAborted();
     child = await startProcess({ executable: await findExecutable(), model: 'sonnet',
       systemPrompt: 'Model discovery only.', tools: [], signal: ownedSignal,
       onEvent(event) {
-        if (event.type !== 'control_response' || event.response?.request_id !== requestId) return;
+        if (event.type !== 'control_response' || ![requestId, statusRequestId].includes(event.response?.request_id)) return;
         try {
-          if (event.response.subtype !== 'success') throw cliError('Claude model discovery failed.');
-          resolve(normalizeClaudeModels(event.response.response?.models));
+          if (event.response.subtype !== 'success') {
+            if (event.response.request_id === requestId) throw cliError('Claude model discovery failed.');
+            throw Object.assign(new Error('Update Claude Code to a current native version with MCP status support.'), { code: 'AGENT_CLAUDE_VERSION' });
+          }
+          if (event.response.request_id === requestId) {
+            models = normalizeClaudeModels(event.response.response?.models);
+          } else {
+            const servers = event.response.response?.mcpServers;
+            if (!Array.isArray(servers) || servers.length !== 1 || servers[0].name !== 'freedom') throw configurationError();
+            if (servers[0].status === 'connected') { resolve(models); return; }
+            if (servers[0].status !== 'pending') throw configurationError();
+          }
+          // The CLI status API waits for the actual bridge connection, without
+          // an inference prompt or giving discovery any executable tools.
+          const check = () => { void Promise.resolve(child.write({ type: 'control_request', request_id: statusRequestId,
+            request: { subtype: 'mcp_status' } })).catch(reject); };
+          if (event.response.request_id === requestId) check();
+          else statusTimer = setTimeout(check, 100);
         } catch (error) { reject(error); }
       },
       onClose(error) { reject(error || cliError('Claude closed before returning its model catalogue.')); },
@@ -174,11 +196,16 @@ async function discoverClaudeModels({ signal, startProcess = startClaudeProcess,
     return await result;
   } finally {
     clearTimeout(timer);
+    clearTimeout(statusTimer);
     ownedSignal.removeEventListener('abort', abort);
     controller.abort();
     await child?.close();
   }
 }
+function configurationError() {
+  return Object.assign(new Error('Claude’s authentication or tool configuration is incompatible with Freedom. Check organization policies for additional tools, a blocked Freedom bridge or API authentication.'), { code: 'AGENT_CLAUDE_CONFIGURATION' });
+}
+
 function cliError(message) {
   return Object.assign(new Error(message), { code: 'AGENT_CLAUDE_UNAVAILABLE' });
 }
@@ -204,34 +231,7 @@ async function findClaudeExecutable({ home = os.homedir(), env = process.env, pl
   throw cliError('Install Claude Code using its native installer, run claude auth login in a terminal, then connect again.');
 }
 
-// Managed hooks cannot be disabled by command-line settings. Refuse managed
-// installations instead of claiming the tool inventory also constrains hooks.
-async function assertUnmanagedClaude({ platform = process.platform, home = os.homedir(),
-  exists = async file => { try { await fs.promises.lstat(file); return true; } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
-    throw error;
-  } }, exec = execFileAsync } = {}) {
-  const root = platform === 'darwin' ? '/Library/Application Support/ClaudeCode'
-    : platform === 'win32' ? 'C:\\Program Files\\ClaudeCode' : '/etc/claude-code';
-  const paths = ['managed-settings.json', 'managed-settings.d', 'managed-mcp.json', 'CLAUDE.md'].map(name => path.join(root, name));
-  paths.push(path.join(home, '.claude', 'remote-settings.json'));
-  if (platform === 'darwin') paths.push('/Library/Managed Preferences/com.anthropic.claudecode.plist');
-  const refused = () => Object.assign(new Error('Managed Claude installations are not supported by this connection. Use the Anthropic API connection instead.'), { code: 'AGENT_CLAUDE_MANAGED' });
-  try {
-    for (const file of paths) if (await exists(file)) throw refused();
-    const probes = platform === 'darwin' ? [['/usr/bin/defaults', ['read', 'com.anthropic.claudecode']]]
-      : platform === 'win32' ? ['HKLM', 'HKCU'].map(hive => [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe'),
-        ['query', `${hive}\\SOFTWARE\\Policies\\ClaudeCode`, '/v', 'Settings']]) : [];
-    for (const [file, args] of probes) {
-      try { await exec(file, args, { timeout: 5000, maxBuffer: 1024 * 1024, windowsHide: true }); }
-      catch (error) { if (error.code === 1) continue; throw refused(); }
-      throw refused();
-    }
-  } catch { throw refused(); }
-}
-
-async function checkClaudeLogin({ signal, executable, run = execFileAsync, checkPolicy = assertUnmanagedClaude } = {}) {
-  await checkPolicy();
+async function checkClaudeLogin({ signal, executable, run = execFileAsync } = {}) {
   executable ||= await findClaudeExecutable();
   const directory = await createClaudeDirectory('freedom-claude-auth-');
   let status;
@@ -257,8 +257,8 @@ async function checkClaudeLogin({ signal, executable, run = execFileAsync, check
   if (status.loggedIn !== true || status.authMethod !== 'claude.ai' || status.apiProvider !== 'firstParty') {
     throw cliError('Sign in to Claude Code with your Claude subscription using claude auth login, then try again. API billing is not used by this connection.');
   }
-  if (!['pro', 'max'].includes(status.subscriptionType)) {
-    throw Object.assign(new Error('This experimental connection supports personal Claude Pro and Max subscriptions. Managed Team and Enterprise accounts are not supported.'), { code: 'AGENT_CLAUDE_MANAGED' });
+  if (!['pro', 'max', 'team', 'enterprise'].includes(status.subscriptionType)) {
+    throw Object.assign(new Error('Sign in to Claude Code with a Pro, Max, Team or Enterprise subscription, then connect again.'), { code: 'AGENT_CLAUDE_SUBSCRIPTION_REQUIRED' });
   }
   return executable;
 }
@@ -266,19 +266,12 @@ async function checkClaudeLogin({ signal, executable, run = execFileAsync, check
 // One child per live session. Stream input keeps Claude's context in memory;
 // --no-session-persistence prevents a second conversation archive in Claude.
 async function startClaudeProcess({ executable, model, systemPrompt, tools, signal: ownerSignal, onEvent, onClose,
-  checkLogin = checkClaudeLogin, checkPolicy = assertUnmanagedClaude, spawnProcess = spawn }) {
-  await checkPolicy();
+  checkLogin = checkClaudeLogin, spawnProcess = spawn }) {
   await checkLogin({ executable, signal: ownerSignal });
   const localAbort = new AbortController();
   const signal = AbortSignal.any([ownerSignal, localAbort.signal]);
   const directory = await createClaudeDirectory('freedom-claude-');
-  let ready = false, child, bridge, killTimer, closed = false, failure, completion, policyTimer, policyCheck;
-  const verifyPolicy = () => {
-    policyCheck ||= Promise.resolve().then(() => checkPolicy()).catch(error => {
-      failure = error; ready = false; localAbort.abort(); throw error;
-    }).finally(() => { policyCheck = null; });
-    return policyCheck;
-  };
+  let ready = false, child, bridge, killTimer, closed = false, failure, completion;
   const config = path.join(directory, 'mcp.json');
   const promptFile = path.join(directory, 'system.txt');
   const revoke = async () => {
@@ -289,11 +282,7 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
   try {
     await fs.promises.chmod(directory, 0o700);
     signal.throwIfAborted();
-    bridge = await createToolBridge(tools.map(tool => ({ ...tool, async execute(...args) {
-      await verifyPolicy();
-      signal.throwIfAborted();
-      return tool.execute(...args);
-    } })), signal, undefined, () => ready);
+    bridge = await createToolBridge(tools, signal, undefined, () => ready);
     await fs.promises.writeFile(config, JSON.stringify(bridge.config), { mode: 0o600 });
     await fs.promises.writeFile(promptFile, systemPrompt, { mode: 0o600 });
     signal.throwIfAborted();
@@ -304,7 +293,6 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--model', model, '--system-prompt-file', promptFile];
     if (tools.length) args.push('--allowedTools', tools.map(t => `mcp__freedom__${t.name}`).join(','));
-    await verifyPolicy();
     signal.throwIfAborted();
     child = spawnProcess(executable, args, { cwd: directory, env: claudeEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -337,20 +325,19 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
             if (event.apiKeySource !== 'none' || !Array.isArray(event.tools) ||
                 event.tools.some(name => !expected.has(name) && name !== 'EndConversation') ||
                 ![...expected].every(name => event.tools.includes(name))) {
-              throw cliError('Claude’s authentication or tool configuration is incompatible with Freedom. Update the CLI and check its managed settings.');
+              throw configurationError();
             }
             ready = true;
           }
           if (signal.aborted || failure) continue;
           onEvent(event);
-        } catch (error) { failure = error.code === 'AGENT_CLAUDE_UNAVAILABLE' ? error : cliError('Claude returned an invalid protocol message.'); stop(); }
+        } catch (error) { failure = ['AGENT_CLAUDE_UNAVAILABLE', 'AGENT_CLAUDE_CONFIGURATION'].includes(error.code) ? error : cliError('Claude returned an invalid protocol message.'); stop(); }
       }
     });
     child.once('error', () => { failure = cliError('Could not start Claude Code. Update its native installation and reconnect.'); });
     completion = new Promise(resolve => child.once('close', async code => {
       closed = true;
       clearTimeout(killTimer);
-      clearInterval(policyTimer);
       signal.removeEventListener('abort', stop);
       ready = false;
       const unexpected = !signal.aborted;
@@ -360,15 +347,9 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
       onClose(failure || (unexpected ? cliError(`Claude Code exited unexpectedly (${code}). Check your CLI login and subscription availability.`) : null));
       resolve();
     }));
-    // Managed policy can reload into an existing CLI. Revoke idle connections
-    // too, and check synchronously with each input/tool dispatch via verifyPolicy.
-    policyTimer = setInterval(() => { void verifyPolicy().catch(() => {}); }, 2000);
-    policyTimer.unref?.();
-    await verifyPolicy();
     return {
       get closed() { return closed; },
       async write(message) {
-        await verifyPolicy();
         signal.throwIfAborted();
         if (closed) throw cliError('The Claude connection is closed.');
         child.stdin.write(JSON.stringify(message) + '\n');
@@ -377,12 +358,11 @@ async function startClaudeProcess({ executable, model, systemPrompt, tools, sign
     };
   } catch (error) {
     localAbort.abort();
-    clearInterval(policyTimer);
     await completion;
     await bridge?.close(); await revoke().catch(() => {}); throw error;
   }
 }
 
 module.exports = { MAX_BRIDGE_REQUEST_BYTES, CLAUDE_PROVIDER_ID, CLAUDE_MODELS, cliError, claudeEnvironment,
-  findClaudeExecutable, checkClaudeLogin, assertUnmanagedClaude, createToolBridge, startClaudeProcess,
+  findClaudeExecutable, checkClaudeLogin, createToolBridge, startClaudeProcess,
   normalizeClaudeModels, discoverClaudeModels };
