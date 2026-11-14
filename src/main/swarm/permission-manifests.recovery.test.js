@@ -22,6 +22,8 @@ jest.mock('../identity-manager', () => ({
 jest.mock('./bzz-protocol', () => ({ handleBzzRequest: jest.fn() }));
 
 const { app } = require('electron');
+const { simulatedGrantCore } = require('../../../test/helpers/simulated-grant-core');
+const grants = require('../core/grants');
 const permissions = require('./swarm-permissions');
 const feeds = require('./feed-store');
 const manifests = require('./permission-manifests');
@@ -35,6 +37,9 @@ const ALL_CAPABILITIES = {
 };
 
 let tempDir;
+// The identity core, which holds the Swarm grants (design 0012, APB-3):
+// the same one across a restart of main.
+let core;
 
 function responseForManifest() {
   return new Response(JSON.stringify({
@@ -52,14 +57,15 @@ async function createConsent() {
   }, { fetchManifest: async () => responseForManifest() });
 }
 
-function simulateRestart() {
+// Main restarts; the core keeps its store, which main reads again.
+async function simulateRestart() {
   manifests._resetForTests();
-  permissions._resetCache();
+  await grants._useBackendForTests(core);
   feeds._resetCache();
 }
 
-function expectFullyRecovered() {
-  const record = manifests.getRecord(ORIGIN);
+async function expectFullyRecovered() {
+  const record = await manifests.getRecord(ORIGIN);
   const permission = permissions.getPermission(ORIGIN);
   expect(record.acknowledged).toMatchObject({
     publish: { decision: 'managed' },
@@ -92,10 +98,11 @@ function failRename(fileName, occurrence) {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-recovery-'));
   app.getPath.mockReturnValue(tempDir);
-  simulateRestart();
+  core = simulatedGrantCore();
+  await simulateRestart();
   permissions.onRevoke(null);
 });
 
@@ -109,22 +116,30 @@ describe('permission manifest durable recovery with real stores', () => {
     const consent = await createConsent();
     const rename = failRename('swarm-manifest-grants.json', 1);
 
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('injected');
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow('injected');
     rename.mockRestore();
-    expect(manifests.decideManifest(consent.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
-    expectFullyRecovered();
+    expect(await manifests.decideManifest(consent.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    await expectFullyRecovered();
   });
 
+  // The decision's Swarm grants, each written by the identity core: one
+  // that the core couldn't save isn't applied, and the decision replays.
   test.each([1, 2, 3, 4, 5, 6])(
-    'recovers after permission-store atomic write %i fails',
+    'recovers after the core\'s Swarm grant write %i fails',
     async (occurrence) => {
       const consent = await createConsent();
-      const rename = failRename('swarm-permissions.json', occurrence);
+      core.failNext(
+        '*',
+        Object.assign(new Error(`injected swarm grant write failure ${occurrence}`), {
+          code: 'storage',
+          data: { store: 'swarm', applied: false },
+        }),
+        { skip: occurrence - 1 }
+      );
 
-      expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('injected');
-      rename.mockRestore();
-      simulateRestart();
-      expectFullyRecovered();
+      await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow('injected');
+      await simulateRestart();
+      await expectFullyRecovered();
     }
   );
 
@@ -132,20 +147,20 @@ describe('permission manifest durable recovery with real stores', () => {
     const consent = await createConsent();
     const rename = failRename('swarm-feeds.json', occurrence);
 
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('injected');
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow('injected');
     rename.mockRestore();
-    simulateRestart();
-    expectFullyRecovered();
+    await simulateRestart();
+    await expectFullyRecovered();
   });
 
   test('recovers when the final manifest commit cannot replace the journal', async () => {
     const consent = await createConsent();
     const rename = failRename('swarm-manifest-grants.json', 2);
 
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('injected');
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow('injected');
     rename.mockRestore();
-    simulateRestart();
-    expectFullyRecovered();
+    await simulateRestart();
+    await expectFullyRecovered();
   });
 
   test('replays the connection grant an individual decision makes', async () => {
@@ -159,13 +174,13 @@ describe('permission manifest durable recovery with real stores', () => {
       if (point === 'after-journal') throw new Error('simulated crash at after-journal');
     });
 
-    expect(() => manifests.decideManifest(consent.token, 'individual')).toThrow('simulated crash');
+    await expect(manifests.decideManifest(consent.token, 'individual')).rejects.toThrow('simulated crash');
     expect(permissions.getPermission(ORIGIN)).toBeNull();
 
     manifests._setFaultInjectorForTests(null);
-    simulateRestart();
+    await simulateRestart();
 
-    const record = manifests.getRecord(ORIGIN);
+    const record = await manifests.getRecord(ORIGIN);
     expect(permissions.getPermission(ORIGIN)).not.toBeNull();
     expect(record.acknowledged).toMatchObject({
       publish: { decision: 'individual' },
@@ -194,9 +209,9 @@ describe('permission manifest durable recovery with real stores', () => {
       if (point === boundary) throw new Error(`simulated crash at ${point}`);
     });
 
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('simulated crash');
-    simulateRestart();
-    expectFullyRecovered();
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow('simulated crash');
+    await simulateRestart();
+    await expectFullyRecovered();
   });
 });
 
@@ -237,16 +252,16 @@ describe('permission manifests and a stored ethereum-wallet identity', () => {
     const consent = await createConsent();
     expect(consent.kind).toBe('consent');
 
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow(UNAVAILABLE);
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow(UNAVAILABLE);
     expectNothingGranted();
     // Nothing else of the decision happened either: no connection, no
     // auto-approve, no managed record, no journal left to replay.
     expect(permissions.getPermission(ORIGIN)).toBeNull();
-    expect(manifests.getRecord(ORIGIN)?.managed ?? {}).toEqual({});
+    expect((await manifests.getRecord(ORIGIN))?.managed ?? {}).toEqual({});
     const store = JSON.parse(fs.readFileSync(path.join(tempDir, 'swarm-manifest-grants.json'), 'utf8'));
     expect(store.pending).toBeUndefined();
 
-    simulateRestart();
+    await simulateRestart();
     expectNothingGranted();
     expect(permissions.getPermission(ORIGIN)).toBeNull();
   });
@@ -254,11 +269,11 @@ describe('permission manifests and a stored ethereum-wallet identity', () => {
   test('after an explicit identity switch, the same consent is allowed', async () => {
     storeWalletIdentity();
     const consent = await createConsent();
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow(UNAVAILABLE);
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow(UNAVAILABLE);
 
     feeds.createAppScopedIdentity(ORIGIN, { activate: true });
     const again = await createConsent();
-    expect(manifests.decideManifest(again.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    expect(await manifests.decideManifest(again.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
     expect(feeds.hasFeedGrant(ORIGIN)).toBe(true);
     expect(feeds.getOriginEntry(ORIGIN).identityMode).toBe('app-scoped');
   });
@@ -270,14 +285,14 @@ describe('permission manifests and a stored ethereum-wallet identity', () => {
     manifests._setFaultInjectorForTests((point) => {
       if (point === 'after-journal') throw new Error('simulated crash at after-journal');
     });
-    expect(() => manifests.decideManifest(consent.token, 'allow')).toThrow('simulated crash');
+    await expect(manifests.decideManifest(consent.token, 'allow')).rejects.toThrow('simulated crash');
     manifests._setFaultInjectorForTests(null);
     // Before the restart, the origin's identity is a stored ethereum-wallet
     // one, as that build could have made it.
     storeWalletIdentity();
-    simulateRestart();
+    await simulateRestart();
 
-    const record = manifests.getRecord(ORIGIN);
+    const record = await manifests.getRecord(ORIGIN);
     expectNothingGranted();
     // The identity-bound projections are neither applied nor managed.
     const permission = permissions.getPermission(ORIGIN);
@@ -292,8 +307,8 @@ describe('permission manifests and a stored ethereum-wallet identity', () => {
     expect(permissions.hasMessagingGrant(ORIGIN)).toBe(true);
     expect(record.managed.connection).toEqual(['publish', 'feeds', 'signing', 'messaging']);
     // Replayed once: nothing pending, and a later read changes nothing.
-    simulateRestart();
-    expect(manifests.getRecord(ORIGIN)).toEqual(record);
+    await simulateRestart();
+    expect(await manifests.getRecord(ORIGIN)).toEqual(record);
     expectNothingGranted();
   });
 });

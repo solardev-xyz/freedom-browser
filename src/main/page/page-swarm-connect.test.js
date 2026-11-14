@@ -7,6 +7,7 @@
 // main sends it (`page:event`), so a test sees which document heard what.
 
 const os = require('os');
+const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -282,11 +283,10 @@ function setup() {
   return { requests, documents, state, sent, trace, tab, greet, named, names, resolutions, gate, prompts, decide, shown, guests, hooks, stopEvents, fire };
 }
 
-const connect = (key) => permissions.grantPermission(key);
+const connect = (key) => permissions.grantPermission(key, { page: testPage(key) });
 
-beforeEach(() => {
-  permissions._resetCache();
-  fs.rmSync(path.join(mockUserData, 'swarm-permissions.json'), { force: true });
+beforeEach(async () => {
+  await useSimulatedGrantCore();
   registry._reset();
   mockNode.sockets.clear();
   mockNode.sent = [];
@@ -332,7 +332,7 @@ describe('swarm_requestAccess through main (0011 PRQ-7b)', () => {
     expect(await answer).toEqual({ error: { code: 4001, message: 'User rejected Swarm access' } });
     expect(permissions.getPermission(KEY_A)).toBeNull();
 
-    connect(KEY_A);
+    await connect(KEY_A);
     const before = permissions.getPermission(KEY_A).lastUsed;
     await new Promise((resolve) => setTimeout(resolve, 5));
     const count = env.prompts().length;
@@ -374,8 +374,8 @@ describe('the permission manifest, checked by main (0011 PRQ-7b)', () => {
     const env = setup();
     env.state.manifest = async () => CONSENT;
     // The manifest's "allow" connects the site.
-    env.state.decide = (key, token, outcome) => {
-      connect(key);
+    env.state.decide = async (key, token, outcome) => {
+      await connect(key);
       return { allowed: true, mode: outcome };
     };
     const page = env.tab(`${KEY_A}/app/index.html`);
@@ -417,8 +417,8 @@ describe('the permission manifest, checked by main (0011 PRQ-7b)', () => {
 
   test('messaging checks lazily, once per document; an unresolved check answers 4900 and is tried again', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     env.state.manifest = async () => ({ kind: 'unresolved' });
     expect(await page.ask('swarm_getMessagingIdentity')).toEqual({
@@ -504,7 +504,7 @@ describe('messaging through main (0011 PRQ-7b)', () => {
     expect(await page.ask('swarm_getMessagingIdentity')).toEqual(NOT_CONNECTED);
     expect(env.prompts()).toEqual([]);
 
-    connect(KEY_A);
+    await connect(KEY_A);
     const answer = page.ask('swarm_getMessagingIdentity');
     const prompt = await env.shown('swarm.messaging');
     expect(prompt.view).toEqual({ method: 'swarm_getMessagingIdentity', grantMode: true });
@@ -523,8 +523,8 @@ describe('messaging through main (0011 PRQ-7b)', () => {
 
   test('a send asks per message; "always allow" sets the rule, by main, and the rule then answers', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const answer = page.ask('swarm_sendGsoc', { topic: 'lobby', data: 'hi' });
     const prompt = await env.shown('swarm.messaging');
@@ -540,9 +540,9 @@ describe('messaging through main (0011 PRQ-7b)', () => {
 
   test('custody read live: no rule answers a tab in custody, the user\'s own approval counts there, and one that enters custody while a rule-answered send waits sends nothing', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'messaging', true);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'messaging', true, { page: testPage(KEY_A) });
     const page = env.tab();
     env.state.custody.add(page.guest.id);
     const prompted = page.ask('swarm_sendPss', PSS);
@@ -572,9 +572,9 @@ describe('messaging through main (0011 PRQ-7b)', () => {
 
   test('a name that moves while a send under its rule waits, or a messaging grant revoked meanwhile: nothing sent', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
-    permissions.setAutoApprove(NAME, 'messaging', true);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
+    await permissions.setAutoApprove(NAME, 'messaging', true, { page: testPage(NAME) });
     const page = await env.named();
     let ready;
     mockNode.readiness = new Promise((resolve) => {
@@ -590,8 +590,8 @@ describe('messaging through main (0011 PRQ-7b)', () => {
     // A send the user approved, whose messaging grant is revoked while it
     // waits on the node.
     const other = env.tab(`${KEY_A}/`);
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     mockNode.readiness = new Promise((resolve) => {
       ready = resolve;
     });
@@ -599,20 +599,20 @@ describe('messaging through main (0011 PRQ-7b)', () => {
     const prompt = await env.shown('swarm.messaging');
     const decided = env.decide(prompt.handle, true);
     await flush();
-    permissions.revokeMessaging(KEY_A);
+    await permissions.revokeMessaging(KEY_A);
     ready({ ok: true });
     expect((await revoked).error).toMatchObject({ code: 4100, data: { reason: 'messaging_not_granted' } });
     expect(await decided).toEqual({ ok: true });
     expect(mockNode.sent).toEqual([]);
     // A rule-answered send whose rule went off meanwhile sends nothing either.
-    permissions.grantMessaging(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'messaging', true);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'messaging', true, { page: testPage(KEY_A) });
     mockNode.readiness = new Promise((resolve) => {
       ready = resolve;
     });
     const ruleOff = other.ask('swarm_sendPss', PSS);
     await flush();
-    permissions.setAutoApprove(KEY_A, 'messaging', false);
+    await permissions.setAutoApprove(KEY_A, 'messaging', false);
     ready({ ok: true });
     expect((await ruleOff).error).toMatchObject({ code: 4100, data: { reason: 'not_auto_approved' } });
     expect(mockNode.sent).toEqual([]);
@@ -620,8 +620,8 @@ describe('messaging through main (0011 PRQ-7b)', () => {
 
   test('after the name has moved: the messaging identity is refused, with nothing disclosed', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
     const page = await env.named();
     env.names.set(NAME, OTHER_IPNS_KEY);
     expect(await page.ask('swarm_getMessagingIdentity')).toEqual(NO_ADDRESS);
@@ -646,8 +646,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('a message goes to the document that subscribed, with its nonce, and to no other', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const sibling = env.tab(`${KEY_A}/other`, { front: false });
     const { subscriptionId, key } = await subscribed(env, page);
@@ -669,8 +669,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('a navigated document\'s subscription ends, and a late message reaches no page', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const { key } = await subscribed(env, page);
     const socket = mockNode.sockets.get(`pss:${key}`);
@@ -686,8 +686,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('PRQ-2\'s replaced-document race for message: the event carries the old document\'s nonce, which the new document drops', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const { key } = await subscribed(env, page);
     let release;
@@ -713,8 +713,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('a name that moves off its IPNS key before the next message: no event, and the subscription ends', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
     const page = await env.named();
     const { key } = await subscribed(env, page);
     const socket = mockNode.sockets.get(`pss:${key}`);
@@ -733,8 +733,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('a name that moves while the subscription establishes: it is closed, and the page gets the keyless answer', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
     const page = await env.named();
     let established;
     mockNode.establish = new Promise((resolve) => {
@@ -753,8 +753,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
   test('a fast producer while the name\'s resolution is held: past the bound the subscription closes, and nothing more waits', async () => {
     const { PAGE_DELIVERY_LIMITS } = require('../swarm/swarm-provider-ipc');
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
     const page = await env.named();
     const { key } = await subscribed(env, page);
     const socket = mockNode.sockets.get(`pss:${key}`);
@@ -784,8 +784,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('the bytes waiting are bounded too', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
     const page = await env.named();
     const { key } = await subscribed(env, page);
     const socket = mockNode.sockets.get(`pss:${key}`);
@@ -800,8 +800,8 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('a document that ends while its messages wait on the name: what waits is dropped, and nothing is resolved for or sent', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
     const page = await env.named();
     const { key } = await subscribed(env, page);
     const socket = mockNode.sockets.get(`pss:${key}`);
@@ -826,10 +826,10 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('swarm_unsubscribe ends only the document\'s own, and runs with no resolution after the name has moved', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantMessaging(NAME);
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(NAME);
+    await permissions.grantMessaging(NAME, { page: testPage(NAME) });
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = await env.named();
     const other = env.tab(`${KEY_A}/`);
     const own = await subscribed(env, page);
@@ -848,17 +848,17 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('a revoked grant: its subscriptions end, and every live document of the key hears disconnect; messaging revoked alone tells nothing', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantMessaging(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const sibling = env.tab(`${KEY_A}/x`, { front: false });
     const stranger = env.tab(`${KEY_B}/`, { front: false });
     await subscribed(env, page);
-    permissions.revokeMessaging(KEY_A);
+    await permissions.revokeMessaging(KEY_A);
     await flush();
     expect(registry.countByOrigin(KEY_A)).toBe(0);
     expect(page.heard()).toEqual([]);
-    permissions.revokePermission(KEY_A);
+    await permissions.revokePermission(KEY_A);
     await flush();
     expect(page.heard()).toEqual([['disconnect', { origin: KEY_A }]]);
     expect(sibling.heard()).toEqual([['disconnect', { origin: KEY_A }]]);
@@ -867,10 +867,10 @@ describe('subscriptions bound to their document (0011 PRQ-7b)', () => {
 
   test('after the name has moved, no disconnect reaches the document', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     env.names.set(NAME, OTHER_IPNS_KEY);
-    permissions.revokePermission(NAME);
+    await permissions.revokePermission(NAME);
     await flush();
     expect(page.heard()).toEqual([]);
     expect(env.resolutions).toEqual([NAME]);
@@ -885,12 +885,12 @@ describe('the chrome\'s grant writes (0011 PRQ-7b, "Grants")', () => {
       expect(() => invoke('swarm:grant-permission', site)).toThrow('A Swarm connection is granted only from its own prompt');
       expect(permissions.getPermission(site)).toBeNull();
     }
-    connect(KEY_A);
+    await connect(KEY_A);
     for (const site of [KEY_A, 'name.eth']) {
       expect(() => invoke('swarm:grant-messaging', site)).toThrow('Swarm messaging is granted only from its own prompt');
     }
     expect(permissions.hasMessagingGrant(KEY_A)).toBe(false);
-    permissions.grantMessaging(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
     expect(await invoke('swarm:revoke-messaging', KEY_A)).toBe(true);
     expect(permissions.hasMessagingGrant(KEY_A)).toBe(false);
     expect(await invoke('swarm:revoke-permission', KEY_A)).toBe(true);
@@ -898,13 +898,13 @@ describe('the chrome\'s grant writes (0011 PRQ-7b, "Grants")', () => {
   });
 
   test('swarm:set-auto-approve refused for turning messaging on, accepted for turning it off', async () => {
-    connect(KEY_A);
+    await connect(KEY_A);
     expect(() => invoke('swarm:set-auto-approve', KEY_A, 'messaging', true)).toThrow(
       'Messaging auto-approve is turned on only from a messaging prompt'
     );
     expect(() => invoke('swarm:set-auto-approve', KEY_A, 'messaging', 1)).toThrow();
     expect(permissions.getAutoApprove(KEY_A, 'messaging')).toBe(false);
-    permissions.setAutoApprove(KEY_A, 'messaging', true);
+    await permissions.setAutoApprove(KEY_A, 'messaging', true, { page: testPage(KEY_A) });
     expect(await invoke('swarm:set-auto-approve', KEY_A, 'messaging', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'messaging')).toBe(false);
     // Every other rule is main's too from PRQ-7c and 7d

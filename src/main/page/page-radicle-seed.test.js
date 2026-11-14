@@ -7,6 +7,7 @@
 // guest's main frame records what main sends it (`page:event`).
 
 const os = require('os');
+const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -279,7 +280,7 @@ function setup({ deps = {} } = {}) {
   return { requests, documents, sent, trace, tab, greet, named, names, resolutions, gate, prompts, pending, decide, shown, guests, hooks, stopEvents, fire, custody };
 }
 
-const connect = (key) => permissions.grantPermission(key);
+const connect = (key) => permissions.grantPermission(key, { page: testPage(key) });
 // A fetch's next status, to every listener the node holds.
 const emit = (status) => {
   for (const listener of [...mockNode.listeners]) listener(status);
@@ -293,10 +294,9 @@ const deferred = () => {
 };
 const seedStatuses = (page) => page.heard().filter(([event]) => event === 'seedStatus').map(([, data]) => data);
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
-  permissions._resetCache();
-  fs.rmSync(path.join(mockUserData, 'radicle-permissions.json'), { force: true });
+  await useSimulatedGrantCore();
   permissions.onRevoke(null);
   mockNode.actions = [];
   mockNode.listeners.clear();
@@ -362,7 +362,7 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
 
   test('an unseed prompts too; a rejection does nothing; an invalid repository id is refused with no prompt', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     const unseed = page.ask('radicle_unseed', { rid: RID });
     const prompt = await env.shown();
@@ -387,8 +387,8 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
 
   test('the site\'s node rule answers with no prompt; it is never chosen for a tab in Agent custody, whose user\'s approval still counts', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'node', true);
+    await connect(KEY_A);
+    await permissions.setAutoApprove(KEY_A, 'node', true, { page: testPage(KEY_A) });
     const page = env.tab();
     expect((await page.ask('radicle_seed', { rid: RID })).result.seeded).toBe(true);
     expect(env.prompts()).toEqual([]);
@@ -413,8 +413,8 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
     ['has its name move off its IPNS key', (env) => env.names.set(NAME, OTHER_IPNS_KEY), NO_ADDRESS],
   ])('a rule-answered seed whose tab %s while it waits does nothing', async (_label, change, refusal) => {
     const env = setup();
-    connect(NAME);
-    permissions.setAutoApprove(NAME, 'node', true);
+    await connect(NAME);
+    await permissions.setAutoApprove(NAME, 'node', true, { page: testPage(NAME) });
     const page = await env.named();
     const guardCheck = deferred();
     // The dispatcher's own check answers; the guard's waits.
@@ -422,7 +422,7 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
     const answer = page.ask('radicle_seed', { rid: RID });
     await flush();
     expect(env.resolutions).toEqual([NAME, NAME]);
-    change(env, page);
+    await change(env, page);
     // The guard's resolution answers as the name stands now.
     guardCheck.resolve();
     expect(await answer).toEqual(refusal);
@@ -432,7 +432,7 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
 
   test('a name that moves off its IPNS key while the node prompt is open: nothing seeded', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     const answer = page.ask('radicle_seed', { rid: RID });
     const prompt = await env.shown();
@@ -445,7 +445,7 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
 
   test('a background tab\'s node prompt waits for its tab, and closes at main\'s deadline with nothing done', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     env.tab(`${KEY_B}/`);
     const page = env.tab(`${KEY_A}/app`, { front: false });
     const seed = page.ask('radicle_seed', { rid: RID });
@@ -468,7 +468,7 @@ describe('radicle_seed and radicle_unseed through main (0011 PRQ-8b)', () => {
 describe('radicle_sync and radicle_getSeedStatus through main (0011 PRQ-8b)', () => {
   test('a sync restarts a seeded repository\'s fetch with no prompt; one it doesn\'t seed is refused with nothing fetched', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     expect(await page.ask('radicle_sync', { rid: RID })).toEqual({ result: { rid: RID, status: mockStatusOf(RID, 'fetching') } });
     expect(env.prompts()).toEqual([]);
@@ -481,7 +481,7 @@ describe('radicle_sync and radicle_getSeedStatus through main (0011 PRQ-8b)', ()
 
   test('a name that moves while a sync reads the seeding policy: nothing fetched', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     const policies = deferred();
     mockNode.policies = policies.promise;
@@ -496,13 +496,13 @@ describe('radicle_sync and radicle_getSeedStatus through main (0011 PRQ-8b)', ()
 
   test('a connection revoked while a sync reads the seeding policy: nothing fetched', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     const policies = deferred();
     mockNode.policies = policies.promise;
     const answer = page.ask('radicle_sync', { rid: RID });
     await flush();
-    permissions.revokePermission(KEY_A);
+    await permissions.revokePermission(KEY_A);
     policies.resolve();
     expect(await answer).toEqual(CONNECTION_GONE);
     expect(mockNode.actions).toEqual([]);
@@ -510,7 +510,7 @@ describe('radicle_sync and radicle_getSeedStatus through main (0011 PRQ-8b)', ()
 
   test('after the name has moved: sync and getSeedStatus are refused, nothing fetched and no seedStatus; seed and unseed get no prompt', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     env.names.set(NAME, OTHER_IPNS_KEY);
     for (const method of RADICLE_SEED_METHODS) {
@@ -528,7 +528,7 @@ describe('radicle_sync and radicle_getSeedStatus through main (0011 PRQ-8b)', ()
 
   test('a seed status read answers keyless once the name moves during it', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     let release;
     manager.getSeedFetchStatus.mockImplementationOnce(async (rid, onStatus) => {
@@ -549,8 +549,8 @@ describe('radicle_sync and radicle_getSeedStatus through main (0011 PRQ-8b)', ()
 describe('seedStatus from main (0011 PRQ-8b)', () => {
   test('a fetch\'s statuses reach every live document of the key, and no other', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'node', true);
+    await connect(KEY_A);
+    await permissions.setAutoApprove(KEY_A, 'node', true, { page: testPage(KEY_A) });
     const page = env.tab(`${KEY_A}/app`);
     const sibling = env.tab(`${KEY_A}/other`, { front: false });
     const stranger = env.tab(`${KEY_B}/`, { front: false });
@@ -566,7 +566,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
 
   test('a name-keyed document hears them only while the name answers its key', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     expect((await page.ask('radicle_getSeedStatus', { rid: RID })).result).toEqual(mockStatusOf(RID, 'fetching'));
     emit(mockStatusOf(RID, 'fetching'));
@@ -585,7 +585,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
 
   test('PRQ-2\'s replaced-document race for seedStatus: the event carries the old document\'s nonce, which the new document drops', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     await page.ask('radicle_getSeedStatus', { rid: RID });
     let release;
@@ -605,7 +605,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
 
   test('each document\'s queue holds the statuses of at most its bound of repositories, sent one at a time', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     await page.ask('radicle_getSeedStatus', { rid: RID });
     // The first status's delivery waits on the name's resolution.
@@ -633,7 +633,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
   // gives way to a later fetch's status.
   test('an ending waiting for a document is kept ahead of a later fetch another document starts', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab(`${KEY_A}/app`);
     const other = env.tab(`${KEY_A}/other`, { front: false });
     await page.ask('radicle_getSeedStatus', { rid: RID });
@@ -661,7 +661,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
 
   test('a newer ending replaces the one waiting, and the steps between', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     await page.ask('radicle_getSeedStatus', { rid: RID });
     const held = deferred();
@@ -682,7 +682,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
 
   test('a navigated document hears no later status, and a disconnect ends the site\'s subscription', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     const other = env.tab(`${KEY_A}/x`, { front: false });
     await page.ask('radicle_getSeedStatus', { rid: RID });
@@ -701,7 +701,7 @@ describe('seedStatus from main (0011 PRQ-8b)', () => {
 
 describe('the chrome\'s node rule writes (0011 PRQ-8b)', () => {
   test('radicle:set-auto-approve refuses turning the node rule on, and still turns it off; revoking stays open', async () => {
-    connect(KEY_A);
+    await connect(KEY_A);
     const chrome = { sender: { id: 501 } };
     for (const enabled of [true, 1, 'yes', null, undefined]) {
       expect(() => mockIpcHandlers['radicle:set-auto-approve'](chrome, KEY_A, 'node', enabled)).toThrow(
@@ -709,9 +709,9 @@ describe('the chrome\'s node rule writes (0011 PRQ-8b)', () => {
       );
     }
     expect(permissions.getAutoApprove(KEY_A, 'node')).toBe(false);
-    permissions.setAutoApprove(KEY_A, 'node', true);
-    expect(mockIpcHandlers['radicle:set-auto-approve'](chrome, KEY_A, 'node', false)).toBe(true);
+    await permissions.setAutoApprove(KEY_A, 'node', true, { page: testPage(KEY_A) });
+    expect(await mockIpcHandlers['radicle:set-auto-approve'](chrome, KEY_A, 'node', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'node')).toBe(false);
-    expect(mockIpcHandlers['radicle:revoke-permission'](chrome, KEY_A)).toBe(true);
+    expect(await mockIpcHandlers['radicle:revoke-permission'](chrome, KEY_A)).toBe(true);
   });
 });

@@ -1,10 +1,13 @@
 /**
  * Main's writes of the four permission files (freedom-core design 0012, "The
- * APR-3 pin"). From the pin of cored-v0.14.0 on, the core reads them at its
- * checks while main is still their only writer, so main writes each by a
- * temp file and a rename (lib/atomic-file.js), never in place. Every write
- * each store makes goes through the helper, and nothing else writes the
- * file: a spy on the helper and on `fs`.
+ * APR-3 pin" and APB-3). From the pin of cored-v0.14.0 on, the core reads
+ * them at its checks. Main is still the only writer of
+ * `dapp-permissions.json` and `x402-permissions.json`, and writes each by a
+ * temp file and a rename (lib/atomic-file.js), never in place: a spy on the
+ * helper and on `fs`. `swarm-permissions.json` and
+ * `radicle-permissions.json` are the core's (APB-3: both in the hello's
+ * `grant_moved`): main writes neither anywhere, and each of their stores'
+ * writes goes to the core's write methods.
  */
 
 const fs = require('fs');
@@ -28,6 +31,7 @@ jest.mock('./lib/atomic-file', () => {
 
 const { app } = require('electron');
 const { writeFileAtomicSync } = require('./lib/atomic-file');
+const { useSimulatedGrantCore, testPage } = require('../../test/helpers/simulated-grant-core');
 const dapp = require('./wallet/dapp-permissions');
 const swarm = require('./swarm/swarm-permissions');
 const radicle = require('./radicle/radicle-permissions');
@@ -42,7 +46,7 @@ let tmpDir;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'permission-files-'));
   app.getPath.mockReturnValue(tmpDir);
-  for (const store of [dapp, swarm, radicle, x402]) store._resetCache();
+  for (const store of [dapp, x402]) store._resetCache();
   jest.spyOn(console, 'log').mockImplementation(() => {});
 });
 
@@ -69,30 +73,6 @@ const STORES = [
       dapp.grantPermission(ORIGIN, 0, 1);
       expect(dapp.revokePermission(ORIGIN)).toBe(true);
       return 9;
-    },
-  ],
-  [
-    'swarm-permissions.json',
-    swarm,
-    () => {
-      swarm.grantPermission(ORIGIN);
-      swarm.updateLastUsed(ORIGIN);
-      expect(swarm.setAutoApprove(ORIGIN, 'publish', true)).toBe(true);
-      expect(swarm.grantMessaging(ORIGIN)).toBe(true);
-      expect(swarm.revokeMessaging(ORIGIN)).toBe(true);
-      expect(swarm.revokePermission(ORIGIN)).toBe(true);
-      return 6;
-    },
-  ],
-  [
-    'radicle-permissions.json',
-    radicle,
-    () => {
-      radicle.grantPermission(ORIGIN);
-      expect(radicle.grantSigning(ORIGIN)).toBe(true);
-      expect(radicle.setAutoApprove(ORIGIN, 'signing', true)).toBe(true);
-      expect(radicle.revokePermission(ORIGIN)).toBe(true);
-      return 4;
     },
   ],
   [
@@ -152,5 +132,76 @@ describe.each(STORES)('%s', (name, _store, writes) => {
     // The file is whole JSON, as JSON.stringify(…, null, 2) wrote it.
     const text = fs.readFileSync(target, 'utf-8');
     expect(JSON.stringify(JSON.parse(text), null, 2)).toBe(text);
+  });
+});
+
+// The files the core writes (APB-3): every write fs makes while each store
+// changes, none of them to the grant root.
+const MOVED = [
+  [
+    'swarm-permissions.json',
+    'swarm',
+    async (page) => {
+      await swarm.grantPermission(ORIGIN, { page });
+      expect(await swarm.updateLastUsed(ORIGIN, { page })).toBe(true);
+      expect(await swarm.setAutoApprove(ORIGIN, 'publish', true, { page })).toBe(true);
+      expect(await swarm.grantMessaging(ORIGIN, { page })).toBe(true);
+      expect(await swarm.setAutoApprove(ORIGIN, 'publish', false)).toBe(true);
+      expect(await swarm.revokeMessaging(ORIGIN)).toBe(true);
+      expect(await swarm.revokePermission(ORIGIN)).toBe(true);
+      // A manifest's projection, as main's own.
+      await swarm.grantPermission(ORIGIN, { source: 'manifest' });
+      expect(await swarm.revokePermission(ORIGIN, { source: 'manifest' })).toBe(true);
+      return 9;
+    },
+  ],
+  [
+    'radicle-permissions.json',
+    'radicle',
+    async (page) => {
+      await radicle.grantPermission(ORIGIN, { page });
+      expect(await radicle.grantSigning(ORIGIN, { page })).toBe(true);
+      expect(await radicle.setAutoApprove(ORIGIN, 'signing', true, { page })).toBe(true);
+      expect(await radicle.setAutoApprove(ORIGIN, 'node', false, { caller: 'chrome' })).toBe(true);
+      expect(await radicle.revokePermission(ORIGIN, { caller: 'chrome' })).toBe(true);
+      return 5;
+    },
+  ],
+];
+
+describe.each(MOVED)('%s (the core\'s)', (name, store, writes) => {
+  test('main writes it nowhere: each change goes to the core', async () => {
+    const core = await useSimulatedGrantCore();
+    const spies = [
+      'writeFileSync',
+      'appendFileSync',
+      'truncateSync',
+      'copyFileSync',
+      'renameSync',
+      'unlinkSync',
+      'rmSync',
+      'openSync',
+      'writeFile',
+      'rename',
+    ].map((method) => jest.spyOn(fs, method));
+    const promises = ['writeFile', 'rename', 'open', 'appendFile', 'copyFile', 'unlink'].map((method) =>
+      jest.spyOn(fs.promises, method)
+    );
+
+    const changes = await writes(testPage(ORIGIN));
+
+    for (const spy of [...spies, ...promises]) {
+      for (const [file] of spy.mock.calls) {
+        expect(path.resolve(String(file)).startsWith(tmpDir)).toBe(false);
+      }
+    }
+    expect(writeFileAtomicSync).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(tmpDir, name))).toBe(false);
+    expect(core.calls.filter((call) => call.params.store === store)).toHaveLength(changes);
+  });
+
+  test('its store reads and writes no file itself', () => {
+    const source = fs.readFileSync(path.join(__dirname, store, `${store}-permissions.js`), 'utf8');
+    expect(source).not.toMatch(/require\('fs'\)|require\("fs"\)|atomic-file|getFreedomDataPath/);
   });
 });

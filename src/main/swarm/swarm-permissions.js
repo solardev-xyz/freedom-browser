@@ -5,7 +5,7 @@
  * the user's Swarm node. Separate from dApp wallet permissions — Swarm
  * permissions consume storage/bandwidth, wallet permissions expose accounts.
  *
- * Permissions are persisted to disk. Schema per origin:
+ * Schema per origin (`swarm-permissions.json`):
  *   { origin, connectedAt, lastUsed,
  *     autoApprove: { publish: false, feeds: false, signing: false, messaging: false },
  *     messaging?: { grantedAt } }
@@ -13,17 +13,27 @@
  * `messaging` is the messaging-tier grant (PSS/GSOC subscribe + send +
  * identity disclosure); `autoApprove.messaging` additionally skips the
  * per-send prompt for granted origins.
+ *
+ * The identity core writes the file (freedom-core design 0012, APB-3:
+ * `swarm` is in the hello's `grant_moved`), and main writes it nowhere.
+ * Reads are the core's store as main last read it (core/grants.js); each
+ * change goes to the core, and resolves once main has read the key back:
+ * - a page's (`{ page }`, its PageContext) under `page`, for its own key;
+ * - the chrome's narrowing (`source: 'user'` with no page: a revoke, a rule
+ *   turned off) as `chrome`;
+ * - a manifest's projection (`source: 'manifest'`) as `shell`, naming the
+ *   key (design 0012, "The model").
+ * A widening with neither a page nor a manifest behind it is refused here.
  */
-
 const { ipcMain } = require('electron');
-const { getFreedomDataPath } = require('../freedom-root');
-const fs = require('fs');
-const { writeFileAtomicSync } = require('../lib/atomic-file');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
 const { withOriginLock } = require('./origin-mutation-lock');
+const { grantStore } = require('../core/grants');
 
-const PERMISSIONS_FILE = 'swarm-permissions.json';
+const store = () => grantStore('swarm');
+// A widening that is neither a page's nor a manifest's (see above).
+const NO_DECISION = 'A Swarm grant is written only from its prompt or a manifest';
 
 // The chrome's grant writes main refuses (freedom-core design 0011,
 // "Grants"; PRQ-7b): main writes them itself, for the key it attested, from
@@ -45,45 +55,24 @@ const RULES_ONLY_FROM_MAIN = Object.freeze({
   signing: SIGNING_RULE_REFUSED,
 });
 
-let permissionsCache = null;
-
-function getPermissionsPath() {
-  return getFreedomDataPath(PERMISSIONS_FILE);
+/**
+ * Who makes a change (core/grants.js): a page's own (its PageContext), a
+ * manifest's projection (`shell`), or the chrome's narrowing. A page writes
+ * only its own key.
+ */
+function callerFor(key, { page = null, source = 'user' } = {}, widening = false) {
+  if (page) {
+    if (page.origin !== key) throw new Error('A page changes only its own Swarm grant');
+    return page;
+  }
+  if (source === 'manifest') return null;
+  if (widening) throw new Error(NO_DECISION);
+  return 'chrome';
 }
 
-function loadPermissions() {
-  if (permissionsCache !== null) {
-    return permissionsCache;
-  }
-
-  try {
-    const filePath = getPermissionsPath();
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      permissionsCache = JSON.parse(data);
-    } else {
-      permissionsCache = {};
-    }
-  } catch (err) {
-    console.error('[SwarmPermissions] Failed to load permissions:', err);
-    permissionsCache = {};
-  }
-
-  return permissionsCache;
-}
-
-// By a temp file and a rename: freedom-cored reads the file at its checks
-// (design 0012, "The files (Q10)").
-function savePermissions() {
-  try {
-    const { durable } = writeFileAtomicSync(getPermissionsPath(), JSON.stringify(permissionsCache, null, 2));
-    if (!durable) {
-      console.warn('[SwarmPermissions] Saved, but the save may not survive a power loss yet (the flush after the rename failed)');
-    }
-  } catch (err) {
-    permissionsCache = null;
-    throw err;
-  }
+// A grant main names the key of (`shell`), as the core's API has it.
+function withKey(change, caller, key) {
+  return caller === null ? { ...change, key } : change;
 }
 
 /**
@@ -92,56 +81,39 @@ function savePermissions() {
  * @returns {Object|null} Permission data or null
  */
 function getPermission(origin) {
-  const permissions = loadPermissions();
-  const key = normalizeOrigin(origin);
-  return permissions[key] || null;
+  return store().get(normalizeOrigin(origin));
 }
 
 /**
- * Grant Swarm publishing permission to an origin.
+ * Grant Swarm publishing permission to an origin: a new connection, with
+ * no rule, replacing any it had.
  * @param {string} origin
- * @returns {Object} The created permission
+ * @param {{ page?: object, source?: string }} [options]
+ * @returns {Promise<Object>} The created permission
  */
-function grantPermission(origin) {
-  const permissions = loadPermissions();
+async function grantPermission(origin, options = {}) {
   const key = normalizeOrigin(origin);
-  const now = Date.now();
-
-  const permission = {
-    origin: key,
-    connectedAt: now,
-    lastUsed: now,
-    autoApprove: DEFAULT_AUTO_APPROVE(),
-  };
-
-  permissions[key] = permission;
-  permissionsCache = permissions;
-  savePermissions();
-
+  const caller = callerFor(key, options, true);
+  await store().grant(withKey({ op: 'connect' }, caller, key), caller);
   console.log('[SwarmPermissions] Granted permission to:', key);
-  return permission;
+  return getPermission(key);
 }
 
 /**
  * Revoke Swarm publishing permission for an origin.
  * @param {string} origin
- * @returns {boolean} True if permission was revoked
+ * @param {{ page?: object, source?: string }} [options]
+ * @returns {Promise<boolean>} True if permission was revoked
  */
-function revokePermission(origin, { source = 'user' } = {}) {
-  const permissions = loadPermissions();
+async function revokePermission(origin, options = {}) {
   const key = normalizeOrigin(origin);
-
-  if (permissions[key]) {
-    delete permissions[key];
-    permissionsCache = permissions;
-    savePermissions();
-    notifyRevokeListeners(key);
-    if (source === 'user') notifyManifestMutation(key, 'connection');
-    console.log('[SwarmPermissions] Revoked permission for:', key);
-    return true;
-  }
-
-  return false;
+  if (!getPermission(key)) return false;
+  await store().revoke(key, 'grant', callerFor(key, options));
+  if (getPermission(key)) return false;
+  notifyRevokeListeners(key);
+  if ((options.source ?? 'user') === 'user') notifyManifestMutation(key, 'connection');
+  console.log('[SwarmPermissions] Revoked permission for:', key);
+  return true;
 }
 
 // Revocation hook — this module is a pure permission store; live-resource
@@ -183,41 +155,30 @@ function notifyRevokeListeners(origin) {
  * @returns {Object[]} Array of permission objects, sorted by lastUsed desc
  */
 function getAllPermissions() {
-  const permissions = loadPermissions();
-  return Object.values(permissions).sort((a, b) => b.lastUsed - a.lastUsed);
+  return store().all();
 }
 
 /**
- * Update the last used timestamp for an origin.
+ * Update the last used timestamp for an origin: a page's own use, under
+ * `page` (the core takes it from no other caller).
  * @param {string} origin
- * @returns {boolean} True if updated
+ * @param {{ page?: object }} [options]
+ * @returns {Promise<boolean>} True if updated
  */
-function updateLastUsed(origin) {
-  const permissions = loadPermissions();
+async function updateLastUsed(origin, { page = null } = {}) {
   const key = normalizeOrigin(origin);
-
-  if (permissions[key]) {
-    permissions[key].lastUsed = Date.now();
-    permissionsCache = permissions;
-    savePermissions();
-    return true;
-  }
-
-  return false;
+  if (!getPermission(key) || !page) return false;
+  if (page.origin !== key) throw new Error('A page changes only its own Swarm grant');
+  await store().touch(page);
+  return true;
 }
 
 const VALID_AUTO_APPROVE_TYPES = new Set(['publish', 'feeds', 'signing', 'messaging']);
-const DEFAULT_AUTO_APPROVE = () => ({
-  publish: false,
-  feeds: false,
-  signing: false,
-  messaging: false,
-});
 
 /**
  * Check if an auto-approve type is enabled for an origin.
  * @param {string} origin
- * @param {'publish'|'feeds'} type
+ * @param {'publish'|'feeds'|'signing'|'messaging'} type
  * @returns {boolean}
  */
 function getAutoApprove(origin, type) {
@@ -227,64 +188,51 @@ function getAutoApprove(origin, type) {
 }
 
 /**
- * Set an auto-approve type for an origin.
+ * Set an auto-approve type for an origin: on as a grant (`flag`), off as a
+ * revoke of the flag.
  * @param {string} origin
- * @param {'publish'|'feeds'} type
+ * @param {'publish'|'feeds'|'signing'|'messaging'} type
  * @param {boolean} enabled
- * @returns {boolean} True if updated
+ * @param {{ page?: object, source?: string }} [options]
+ * @returns {Promise<boolean>} True if updated
  */
-function setAutoApprove(origin, type, enabled, { source = 'user' } = {}) {
+async function setAutoApprove(origin, type, enabled, options = {}) {
   if (!VALID_AUTO_APPROVE_TYPES.has(type)) return false;
-
-  const permissions = loadPermissions();
   const key = normalizeOrigin(origin);
+  if (!getPermission(key)) return false;
+  const on = enabled === true;
+  const caller = callerFor(key, options, on);
+  if (on) await store().grant(withKey({ op: 'flag', flag: type }, caller, key), caller);
+  else await store().revoke(key, { flag: type }, caller);
+  if ((options.source ?? 'user') === 'user') notifyManifestMutation(key, `autoApprove.${type}`);
 
-  if (!permissions[key]) return false;
-
-  if (!permissions[key].autoApprove) {
-    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
-  }
-
-  permissions[key].autoApprove[type] = enabled;
-  permissionsCache = permissions;
-  savePermissions();
-  if (source === 'user') notifyManifestMutation(key, `autoApprove.${type}`);
-
-  console.log(`[SwarmPermissions] Auto-approve ${type} ${enabled ? 'enabled' : 'disabled'} for:`, key);
+  console.log(`[SwarmPermissions] Auto-approve ${type} ${on ? 'enabled' : 'disabled'} for:`, key);
   return true;
 }
 
 /**
  * Grant the messaging tier (PSS/GSOC) to an already-connected origin.
  * @param {string} origin
- * @returns {boolean} True if granted
+ * @param {{ page?: object, source?: string }} [options]
+ * @returns {Promise<boolean>} True if granted
  */
-function grantMessaging(origin, { source = 'user' } = {}) {
-  const permissions = loadPermissions();
+async function grantMessaging(origin, options = {}) {
   const key = normalizeOrigin(origin);
-
-  if (!permissions[key]) return false;
-
-  permissions[key].messaging = { grantedAt: Date.now() };
-  permissionsCache = permissions;
-  savePermissions();
-  if (source === 'user') notifyManifestMutation(key, 'messagingGrant');
+  if (!getPermission(key)) return false;
+  const caller = callerFor(key, options, true);
+  await store().grant(withKey({ op: 'messaging' }, caller, key), caller);
+  if ((options.source ?? 'user') === 'user') notifyManifestMutation(key, 'messagingGrant');
 
   console.log('[SwarmPermissions] Messaging granted for:', key);
   return true;
 }
 
-function revokeMessaging(origin, { source = 'user' } = {}) {
-  const permissions = loadPermissions();
+async function revokeMessaging(origin, options = {}) {
   const key = normalizeOrigin(origin);
-  if (!permissions[key]?.messaging) return false;
-
-  delete permissions[key].messaging;
-  if (permissions[key].autoApprove) permissions[key].autoApprove.messaging = false;
-  permissionsCache = permissions;
-  savePermissions();
+  if (!getPermission(key)?.messaging) return false;
+  await store().revoke(key, 'messaging', callerFor(key, options));
   notifyRevokeListeners(key);
-  if (source === 'user') notifyManifestMutation(key, 'messagingGrant');
+  if ((options.source ?? 'user') === 'user') notifyManifestMutation(key, 'messagingGrant');
   return true;
 }
 
@@ -296,6 +244,11 @@ function revokeMessaging(origin, { source = 'user' } = {}) {
 function hasMessagingGrant(origin) {
   const permission = getPermission(origin);
   return !!permission?.messaging;
+}
+
+/** Resolves once the core's store has been read (core/grants.js). */
+function whenLoaded() {
+  return store().whenLoaded();
 }
 
 /**
@@ -352,11 +305,6 @@ function registerSwarmPermissionsIpc() {
   console.log('[SwarmPermissions] IPC handlers registered');
 }
 
-// Exported for testing
-function _resetCache() {
-  permissionsCache = null;
-}
-
 module.exports = {
   getPermission,
   grantPermission,
@@ -371,5 +319,5 @@ module.exports = {
   onRevoke,
   onManifestMutation,
   registerSwarmPermissionsIpc,
-  _resetCache,
+  whenLoaded,
 };

@@ -7,6 +7,9 @@
 // (`page:event`), so a test sees which document heard what.
 
 const os = require('os');
+const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
+// The identity core's grant stores (design 0012, APB-3), fresh for each test.
+let grantCore;
 const fs = require('fs');
 const path = require('path');
 
@@ -254,12 +257,11 @@ function setup({ deps = {} } = {}) {
   return { requests, documents, sent, trace, tab, greet, named, names, resolutions, gate, prompts, pending, decide, shown, guests, hooks, stopEvents, fire };
 }
 
-const connect = (key) => permissions.grantPermission(key);
+const connect = (key) => permissions.grantPermission(key, { page: testPage(key) });
 
-beforeEach(() => {
+beforeEach(async () => {
   jest.clearAllMocks();
-  permissions._resetCache();
-  fs.rmSync(path.join(mockUserData, 'radicle-permissions.json'), { force: true });
+  grantCore = await useSimulatedGrantCore();
   permissions.onRevoke(null);
   mockNode.status = 'running';
   mockNode.disabled = false;
@@ -320,8 +322,8 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
       expect(await page.ask('radicle_disconnect')).toEqual(NOT_CONNECTED);
       expect(manager.getConnections).not.toHaveBeenCalled();
       expect(embedded.listSeededRepos).not.toHaveBeenCalled();
-      connect(key);
-      permissions.grantSigning(key);
+      await connect(key);
+      await permissions.grantSigning(key, { page: testPage(key) });
       expect({ url, answer: await page.ask('radicle_getCapabilities') }).toEqual({ url, answer: { result: CAPABILITIES(null) } });
       expect(await page.ask('radicle_getNodeStatus')).toEqual({
         result: { running: true, status: 'running', peers: 3, alias: 'me', nid: 'z6MkTest' },
@@ -350,7 +352,7 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
   test('the node stopped: the capabilities say so, and connecting still works', async () => {
     const env = setup();
     mockNode.status = 'stopped';
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     expect(await page.ask('radicle_getCapabilities')).toEqual({ result: CAPABILITIES('node-stopped') });
     expect(await page.ask('radicle_getNodeStatus')).toEqual({ result: { running: false, status: 'stopped' } });
@@ -366,7 +368,7 @@ describe('the methods main serves (0011 PRQ-8a)', () => {
 describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
   test('the reads resolve the name before and after their wait, the capabilities once', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     expect(await page.ask('radicle_getCapabilities')).toEqual({ result: CAPABILITIES(null) });
     expect(env.resolutions).toEqual([NAME]);
@@ -380,8 +382,8 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
 
   test('after the name has moved: radicle_disconnect runs with no resolution, and every name-revalidated method is refused with nothing done', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantSigning(NAME);
+    await connect(NAME);
+    await permissions.grantSigning(NAME, { page: testPage(NAME) });
     const page = await env.named();
     env.names.set(NAME, OTHER_IPNS_KEY);
     // Disconnecting gives up the name's grants, with no resolution of its
@@ -398,8 +400,8 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
     env.resolutions.length = 0;
     // The document is keyless now: every method is refused, resolving
     // nothing more.
-    connect(NAME);
-    permissions.grantSigning(NAME);
+    await connect(NAME);
+    await permissions.grantSigning(NAME, { page: testPage(NAME) });
     for (const method of RADICLE_PAGE_METHODS) {
       expect({ method, answer: await page.ask(method) }).toEqual({ method, answer: NO_ADDRESS });
     }
@@ -437,7 +439,7 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
           },
         });
         box.env = env;
-        connect(NAME);
+        await connect(NAME);
         const page = await env.named();
         box.guest = page.guest.id;
         const honest = deferred();
@@ -461,8 +463,8 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
 
   test('a name found moved by the read itself: refused with nothing read', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantSigning(NAME);
+    await connect(NAME);
+    await permissions.grantSigning(NAME, { page: testPage(NAME) });
     for (const method of RADICLE_READ_METHODS) {
       const page = await env.named();
       env.names.set(NAME, OTHER_IPNS_KEY);
@@ -476,8 +478,8 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
 
   test('a name that moves while the node status waits: the answer, node id and all, is withheld', async () => {
     const env = setup();
-    connect(NAME);
-    permissions.grantSigning(NAME);
+    await connect(NAME);
+    await permissions.grantSigning(NAME, { page: testPage(NAME) });
     const page = await env.named();
     let release;
     mockNode.connections = new Promise((resolve) => {
@@ -493,7 +495,7 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
 
   test('another request\'s check ends the binding while a read\'s answer waits: it goes out keyless', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
     let release;
     mockNode.connections = new Promise((resolve) => {
@@ -511,6 +513,21 @@ describe('a DNS name over IPNS (0011 PRQ-8a)', () => {
 });
 
 describe('radicle_requestAccess through main (0011 PRQ-8a)', () => {
+  // Design 0012, APB-3: the identity core writes the grant, under the
+  // requester's page; main writes no file.
+  test('the connection goes to the identity core under the requester\'s PageContext', async () => {
+    const env = setup();
+    const page = env.tab(`${KEY_A}/app`);
+    const answer = page.ask('radicle_requestAccess');
+    const prompt = await env.shown();
+    expect(await env.decide(prompt.handle, true)).toEqual({ ok: true });
+    expect((await answer).result).toMatchObject({ connected: true, origin: KEY_A });
+    expect(grantCore.calls).toEqual([
+      { method: 'approval.grant', params: { store: 'radicle', change: { op: 'connect' } }, caller: 'page' },
+    ]);
+    expect(grantCore.entries.radicle[KEY_A]).toEqual(permissions.getPermission(KEY_A));
+  });
+
   test('main prompts, writes the grant for the attested key on approval, and every live document of the key hears connect, the asker first', async () => {
     const env = setup();
     const page = env.tab(`${KEY_A}/app`);
@@ -564,8 +581,8 @@ describe('radicle_requestAccess through main (0011 PRQ-8a)', () => {
     const page = env.tab();
     const answer = page.ask('radicle_requestAccess');
     const prompt = await env.shown();
-    connect(KEY_A);
-    permissions.grantSigning(KEY_A);
+    await connect(KEY_A);
+    await permissions.grantSigning(KEY_A, { page: testPage(KEY_A) });
     expect(await env.decide(prompt.handle, true)).toEqual({ ok: true });
     expect((await answer).result.connected).toBe(true);
     expect(permissions.hasSigningGrant(KEY_A)).toBe(true);
@@ -632,10 +649,10 @@ describe('radicle_requestAccess through main (0011 PRQ-8a)', () => {
 describe('radicle_disconnect and disconnect from main (0011 PRQ-8a)', () => {
   test('a page gives up its own grants, connection and signing, and every live document of the key hears disconnect', async () => {
     const env = setup();
-    connect(KEY_A);
-    permissions.grantSigning(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'signing', true);
-    connect(KEY_B);
+    await connect(KEY_A);
+    await permissions.grantSigning(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'signing', true, { page: testPage(KEY_A) });
+    await connect(KEY_B);
     const page = env.tab(`${KEY_A}/app`);
     const sibling = env.tab(`${KEY_A}/other`, { front: false });
     const stranger = env.tab(`${KEY_B}/`, { front: false });
@@ -660,29 +677,29 @@ describe('radicle_disconnect and disconnect from main (0011 PRQ-8a)', () => {
       );
       expect(permissions.getPermission(site)).toBeNull();
     }
-    connect(KEY_A);
-    expect(mockIpcHandlers['radicle:revoke-permission']({ sender: { id: 501 } }, KEY_A)).toBe(true);
+    await connect(KEY_A);
+    expect(await mockIpcHandlers['radicle:revoke-permission']({ sender: { id: 501 } }, KEY_A)).toBe(true);
     expect(permissions.getPermission(KEY_A)).toBeNull();
     await flush();
     expect(page.heard()).toEqual([['disconnect', { origin: KEY_A }]]);
     expect(other.heard()).toEqual([]);
     // Nothing to revoke tells nothing.
-    expect(mockIpcHandlers['radicle:revoke-permission']({ sender: { id: 501 } }, KEY_A)).toBe(false);
+    expect(await mockIpcHandlers['radicle:revoke-permission']({ sender: { id: 501 } }, KEY_A)).toBe(false);
     await flush();
     expect(page.heard()).toHaveLength(1);
   });
 
   test('a name-keyed document hears disconnect only while the name answers its key', async () => {
     const env = setup();
-    connect(NAME);
+    await connect(NAME);
     const page = await env.named();
-    permissions.revokePermission(NAME);
+    await permissions.revokePermission(NAME);
     await flush();
     expect(page.heard()).toEqual([['disconnect', { origin: NAME }]]);
     expect(env.resolutions).toEqual([NAME]);
-    connect(NAME);
+    await connect(NAME);
     env.names.set(NAME, OTHER_IPNS_KEY);
-    permissions.revokePermission(NAME);
+    await permissions.revokePermission(NAME);
     await flush();
     expect(page.heard()).toHaveLength(1);
     expect(env.trace.filter((e) => e.kind === 'event-refused').map((e) => e.reason)).toEqual(['name-moved']);
@@ -728,7 +745,7 @@ describe('radicle_disconnect and disconnect from main (0011 PRQ-8a)', () => {
     await flush();
     // The asker's connect is held; the site is revoked meanwhile.
     env.hooks.beforeEventSend = undefined;
-    permissions.revokePermission(KEY_A);
+    await permissions.revokePermission(KEY_A);
     await flush();
     expect(sibling.heard()).toEqual([]);
     release();
@@ -759,8 +776,8 @@ describe('PRQ-2\'s replaced-document race, for connect and disconnect (0011 PRQ-
       await env.decide(prompt.handle, true);
       await answer;
     } else {
-      connect(KEY_A);
-      permissions.revokePermission(KEY_A);
+      await connect(KEY_A);
+      await permissions.revokePermission(KEY_A);
     }
     await flush();
     // Main has checked the document and holds the send; the frame reloads,
@@ -782,8 +799,8 @@ describe('PRQ-2\'s replaced-document race, for connect and disconnect (0011 PRQ-
     const page = env.tab();
     page.guest.commit(`${KEY_B}/`);
     const next = env.greet(page.guest);
-    connect(KEY_A);
-    permissions.revokePermission(KEY_A);
+    await connect(KEY_A);
+    await permissions.revokePermission(KEY_A);
     await flush();
     expect(page.guest.delivered).toEqual([]);
     expect(next.heard()).toEqual([]);

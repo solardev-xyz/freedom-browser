@@ -8,6 +8,7 @@
 // chunk-service.js run it, and stops on the request's signal.
 
 const os = require('os');
+const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -38,7 +39,7 @@ jest.mock('../identity-manager', () => ({
 
 // The identity core and the node: what was signed and written, and the
 // waits a test may hold.
-const mockNode = { writes: [], signals: [], sign: null, write: null, readiness: null };
+const mockNode = { writes: [], signals: [], socs: [], sign: null, write: null, readiness: null };
 function mockAborted(signal) {
   return new Promise((_resolve, reject) => {
     const stop = () => {
@@ -52,8 +53,11 @@ function mockAborted(signal) {
 }
 // As the services: the identity core's signature (for a signed write), then
 // the write under the caller's guard, which resolves null to write nothing.
-async function mockWrite(kind, signed, options = {}, result = {}) {
+async function mockWrite(kind, signed, options = {}, result = {}, signer = null) {
   mockNode.signals.push(options.signal);
+  // The chunk's signature, through the signer the provider gave: a page's
+  // goes under `page` with its authorization (design 0012, APB-3).
+  if (signed) await signer.signSoc({ identifier: new Uint8Array(32), payload: new Uint8Array(1) });
   if (signed && mockNode.sign) await Promise.race([mockNode.sign, mockAborted(options.signal)]);
   const send = async () => {
     mockNode.writes.push(kind);
@@ -72,16 +76,16 @@ jest.mock('../swarm/feed-service', () => ({
       manifestReference: 'cd'.repeat(32),
       bzzUrl: `bzz://${'cd'.repeat(32)}`,
     }),
-  updateFeed: (signer, topic, reference, batchId, options) => mockWrite('updateFeed', true, options, { index: 3 }),
+  updateFeed: (signer, topic, reference, batchId, options) => mockWrite('updateFeed', true, options, { index: 3 }, signer),
   writeFeedPayload: (signer, topic, data, options) => {
     if (typeof data === 'string') options?.copied?.('payload');
-    return mockWrite('writeFeedEntry', true, options, { index: 4 });
+    return mockWrite('writeFeedEntry', true, options, { index: 4 }, signer);
   },
   readFeedPayload: jest.fn(),
 }));
 jest.mock('../swarm/chunk-service', () => ({
   writeSingleOwnerChunk: async (signer, identifier, payload, options) => {
-    const out = await mockWrite('writeSingleOwnerChunk', true, options, 'ef'.repeat(32));
+    const out = await mockWrite('writeSingleOwnerChunk', true, options, 'ef'.repeat(32), signer);
     return out === null ? null : { reference: out, owner: signer.owner, identifier, batchIdUsed: 'batch' };
   },
 }));
@@ -90,7 +94,13 @@ jest.mock('../swarm/swarm-signer', () => ({
     if (!mockVault.unlocked) throw new Error('Vault must be unlocked');
     const mode = identity?.mode || identity?.identityMode;
     if (mode === 'ethereum-wallet') throw new Error('The Ethereum wallet identity mode was removed');
-    return { owner: mode === 'bee-wallet' ? '0xBee0000000000000000000000000000000000000' : `0xPublisher${identity.publisherKeyIndex}` };
+    return {
+      owner: mode === 'bee-wallet' ? '0xBee0000000000000000000000000000000000000' : `0xPublisher${identity.publisherKeyIndex}`,
+      signSoc: async (_chunk, options) => {
+        mockNode.socs.push(options);
+        return {};
+      },
+    };
   },
   getIdentityMode: (identity) => identity?.mode || identity?.identityMode || null,
 }));
@@ -308,22 +318,24 @@ function setup() {
 }
 
 /** A site with feed access, an app-scoped identity, its rules, and the feed `blog`. */
-function grantFeeds(key, { feeds: feedsRule = false, signing = false } = {}) {
-  if (!permissions.getPermission(key)) permissions.grantPermission(key);
+async function grantFeeds(key, { feeds: feedsRule = false, signing = false } = {}) {
+  const page = { page: testPage(key) };
+  if (!permissions.getPermission(key)) await permissions.grantPermission(key, page);
   feeds.createAppScopedIdentity(key, { activate: true, source: 'manifest' });
   feeds.grantFeedAccess(key, { source: 'manifest' });
   feeds.setFeed(key, 'blog', { topic: 'ab'.repeat(32), owner: '0xPublisher0', manifestReference: 'cd'.repeat(32), identityId: feeds.getOriginEntry(key).activeIdentityId });
-  if (feedsRule) permissions.setAutoApprove(key, 'feeds', true);
-  if (signing) permissions.setAutoApprove(key, 'signing', true);
+  if (feedsRule) await permissions.setAutoApprove(key, 'feeds', true, page);
+  if (signing) await permissions.setAutoApprove(key, 'signing', true, page);
 }
 
-beforeEach(() => {
-  permissions._resetCache();
+beforeEach(async () => {
+  await useSimulatedGrantCore();
   feeds._resetCache();
-  for (const file of ['swarm-permissions.json', 'swarm-feeds.json']) fs.rmSync(path.join(mockUserData, file), { force: true });
+  fs.rmSync(path.join(mockUserData, 'swarm-feeds.json'), { force: true });
   mockVault.unlocked = true;
   mockNode.writes = [];
   mockNode.signals = [];
+  mockNode.socs = [];
   mockNode.sign = null;
   mockNode.write = null;
   mockNode.readiness = null;
@@ -336,7 +348,7 @@ afterAll(() => {
 describe('feeds and signing through main (0011 PRQ-7d)', () => {
   test('main\'s feed prompt carries the site\'s identities and their owners; on approval main makes the pick the site\'s, grants feed access and the rule, and writes', async () => {
     const env = setup();
-    permissions.grantPermission(KEY_A);
+    await permissions.grantPermission(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const answer = page.ask('swarm_createFeed', { name: 'blog' });
     const prompt = await env.shown('swarm.feed');
@@ -381,9 +393,31 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
     expect(mockNode.writes).toEqual(['createFeed', 'writeFeedEntry', 'updateFeed']);
   });
 
+  // Design 0012, "A page's SOC" (APB-3): each chunk a page's write signs
+  // goes to the identity core under `page`, with the requester's
+  // PageContext and how main approved it, never as main's own.
+  test('each SOC a page signs goes under page, with its approval: the rule\'s (auto) or the prompt\'s (user), a feed write or a raw one', async () => {
+    const env = setup();
+    await grantFeeds(KEY_A, { feeds: true });
+    const page = env.tab();
+    const context = { origin: KEY_A, top_origin: KEY_A, frame: expect.any(Number), navigation: expect.any(Number), agent: false };
+    expect((await page.ask('swarm_writeFeedEntry', { name: 'blog', data: 'hi' })).result).toEqual({ index: 4 });
+    expect((await page.ask('swarm_updateFeed', { feedId: 'blog', reference: REFERENCE })).result).toMatchObject({ index: 3 });
+    // The signing rule is off: a raw chunk is the prompt's.
+    const answer = page.ask('swarm_writeSingleOwnerChunk', CASES.swarm_writeSingleOwnerChunk.params);
+    const prompt = await env.shown('swarm.feed');
+    expect(await env.decide(prompt.handle, true, { identity: prompt.view.activeIdentityId })).toEqual({ ok: true });
+    expect((await answer).result).toMatchObject({ reference: 'ef'.repeat(32) });
+    expect(mockNode.socs).toEqual([
+      { page: context, authorization: { swarm: 'auto', soc: 'feed' } },
+      { page: context, authorization: { swarm: 'auto', soc: 'feed' } },
+      { page: context, authorization: { swarm: 'user', soc: 'raw' } },
+    ]);
+  });
+
   test('the pick: the Ant wallet\'s identity, or one the site has, made active; a raw single-owner chunk is refused a shared one', async () => {
     const env = setup();
-    permissions.grantPermission(KEY_A);
+    await permissions.grantPermission(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     let answer = page.ask('swarm_createFeed', { name: 'blog' });
     let prompt = await env.shown('swarm.feed');
@@ -413,7 +447,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
   // Codex round 1 on #1201: the user approves exactly the identity shown.
   test('a new identity whose key another one takes while its prompt is open is never granted: the prompt shows again, with the key now next', async () => {
     const env = setup();
-    permissions.grantPermission(KEY_A);
+    await permissions.grantPermission(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     const answer = page.ask('swarm_writeSingleOwnerChunk', { identifier: IDENTIFIER, data: 'x' });
     const first = await env.shown('swarm.feed');
@@ -441,7 +475,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a feed that exists already is answered under the guard too: custody begun, or the rule turned off, during the vault\'s unlock answers nothing', async () => {
     const env = setup();
-    grantFeeds(KEY_A, { feeds: true });
+    await grantFeeds(KEY_A, { feeds: true });
     const page = env.tab();
     for (const [label, change, refusal] of [
       ['custody', () => env.state.custody.add(page.guest.id), AGENT_CUSTODY],
@@ -450,13 +484,13 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
       mockVault.unlocked = false;
       const answer = page.ask('swarm_createFeed', { name: 'blog' });
       const unlock = await env.shown('vault.unlock');
-      change();
+      await change();
       mockVault.unlocked = true;
       const decided = env.decide(unlock.handle, true);
       expect({ label, answer: await answer }).toEqual({ label, answer: refusal });
       expect(await decided).toEqual({ ok: true });
       env.state.custody.delete(page.guest.id);
-      permissions.setAutoApprove(KEY_A, 'feeds', true);
+      await permissions.setAutoApprove(KEY_A, 'feeds', true, { page: testPage(KEY_A) });
     }
     // Without a wait, the rule still answers it.
     expect((await page.ask('swarm_createFeed', { name: 'blog' })).result).toMatchObject({ feedId: 'blog' });
@@ -465,7 +499,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a locked vault is unlocked first, on main\'s own prompt, for the prompt and for the rule; cancelled, nothing is granted or written', async () => {
     const env = setup();
-    permissions.grantPermission(KEY_A);
+    await permissions.grantPermission(KEY_A, { page: testPage(KEY_A) });
     const page = env.tab();
     mockVault.unlocked = false;
     let answer = page.ask('swarm_createFeed', { name: 'blog' });
@@ -489,7 +523,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
     expect(mockNode.writes).toEqual([]);
 
     // The rule answers, with only the unlock.
-    grantFeeds(KEY_A, { signing: true });
+    await grantFeeds(KEY_A, { signing: true });
     mockVault.unlocked = false;
     answer = page.ask('swarm_writeSingleOwnerChunk', { identifier: IDENTIFIER, data: 'x' });
     unlock = await env.shown('vault.unlock');
@@ -514,7 +548,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test.each(SWARM_FEED_METHODS)('custody read live for %s: no rule answers a tab in custody, the user\'s approval counts there, one that enters custody while a rule-answered write waits writes nothing, and leaving gives the rule back', async (method) => {
     const env = setup();
-    grantFeeds(KEY_A, { feeds: true, signing: true });
+    await grantFeeds(KEY_A, { feeds: true, signing: true });
     const page = env.tab();
     // Fresh params for each ask (a create names a new feed each time).
     const params = () => CASES[method].params;
@@ -547,7 +581,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a signed write whose tab enters custody, or whose name moves, while the identity core signs writes nothing: the guard owns the write', async () => {
     const env = setup();
-    grantFeeds(KEY_A, { feeds: true, signing: true });
+    await grantFeeds(KEY_A, { feeds: true, signing: true });
     const page = env.tab();
     for (const method of ['swarm_updateFeed', 'swarm_writeFeedEntry', 'swarm_writeSingleOwnerChunk']) {
       const gate = held();
@@ -562,7 +596,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
     expect(mockNode.writes).toEqual([]);
 
     const env2 = setup();
-    grantFeeds(NAME, { feeds: true, signing: true });
+    await grantFeeds(NAME, { feeds: true, signing: true });
     const named = await env2.named();
     for (const method of ['swarm_updateFeed', 'swarm_writeFeedEntry', 'swarm_writeSingleOwnerChunk']) {
       env2.names.set(NAME, IPNS_KEY);
@@ -579,7 +613,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a name that moves while the feed prompt is open: no identity changed, no grant, no rule, nothing written', async () => {
     const env = setup();
-    permissions.grantPermission(NAME);
+    await permissions.grantPermission(NAME, { page: testPage(NAME) });
     const page = await env.named();
     const answer = page.ask('swarm_createFeed', { name: 'blog' });
     const prompt = await env.shown('swarm.feed');
@@ -594,7 +628,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('after the name has moved: a feed created, updated or written, a single-owner chunk and the signing identity are refused, with nothing signed, written or disclosed', async () => {
     const env = setup();
-    grantFeeds(NAME, { feeds: true, signing: true });
+    await grantFeeds(NAME, { feeds: true, signing: true });
     const page = await env.named();
     env.names.set(NAME, OTHER_IPNS_KEY);
     for (const method of SWARM_FEED_METHODS) {
@@ -607,7 +641,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a write that went out answers as written though the name moves during it; the feed\'s record is kept only while the name answers', async () => {
     const env = setup();
-    grantFeeds(NAME, { feeds: true });
+    await grantFeeds(NAME, { feeds: true });
     const page = await env.named();
     const gate = held();
     mockNode.write = gate.promise;
@@ -622,7 +656,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a feed grant revoked, the connection revoked, or the rule turned off while a write waits: nothing written', async () => {
     const env = setup();
-    grantFeeds(KEY_A, { feeds: true, signing: true });
+    await grantFeeds(KEY_A, { feeds: true, signing: true });
     const page = env.tab();
     const waits = [
       ['feed grant revoked', () => feeds.revokeFeedAccess(KEY_A), { code: 4100, data: { reason: 'feed_not_granted' } }],
@@ -633,20 +667,20 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
       mockNode.sign = gate.promise;
       const answer = page.ask('swarm_writeFeedEntry', CASES.swarm_writeFeedEntry.params);
       await flush();
-      change();
+      await change();
       gate.release();
       expect({ label, error: (await answer).error }).toEqual({ label, error: expect.objectContaining(refusal) });
-      grantFeeds(KEY_A, { feeds: true, signing: true });
+      await grantFeeds(KEY_A, { feeds: true, signing: true });
     }
     // The connection, for a prompted write.
-    permissions.setAutoApprove(KEY_A, 'feeds', false);
+    await permissions.setAutoApprove(KEY_A, 'feeds', false);
     const gate = held();
     mockNode.sign = gate.promise;
     const answer = page.ask('swarm_updateFeed', CASES.swarm_updateFeed.params);
     const prompt = await env.shown('swarm.feed');
     const decided = env.decide(prompt.handle, true, { identity: prompt.view.activeIdentityId });
     await flush();
-    permissions.revokePermission(KEY_A);
+    await permissions.revokePermission(KEY_A);
     gate.release();
     expect((await answer).error).toMatchObject({ code: 4100, data: { reason: 'not_connected' } });
     expect(await decided).toEqual({ ok: true });
@@ -655,7 +689,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a stored identity of the removed mode (#89) is never granted feed access by main', async () => {
     const env = setup();
-    permissions.grantPermission(KEY_A);
+    await permissions.grantPermission(KEY_A, { page: testPage(KEY_A) });
     // As feed-store.test.js stores one: an origin whose active identity is
     // an Ethereum wallet's, its grant revoked.
     const file = path.join(mockUserData, 'swarm-feeds.json');
@@ -680,7 +714,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a navigation, or main\'s deadline, during a stalled write stops it: the request\'s signal reaches the write', async () => {
     const env = setup();
-    grantFeeds(KEY_A, { feeds: true });
+    await grantFeeds(KEY_A, { feeds: true });
     const page = env.tab();
     const gate = held();
     mockNode.write = gate.promise;
@@ -707,7 +741,7 @@ describe('feeds and signing through main (0011 PRQ-7d)', () => {
 
   test('a feed entry\'s copies are reported with its charge in place; a write the node refuses for setup routes to the setup screen', async () => {
     const env = setup();
-    grantFeeds(KEY_A, { feeds: true });
+    await grantFeeds(KEY_A, { feeds: true });
     const page = env.tab();
     await page.ask('swarm_writeFeedEntry', { name: 'blog', data: new Uint8Array(100) });
     await page.ask('swarm_writeFeedEntry', { name: 'blog', data: 'text' });
@@ -731,7 +765,7 @@ describe('nothing the chrome can call writes a Swarm grant (0011 PRQ-7d, "Grants
   });
 
   test('swarm:set-auto-approve refused for turning any rule on, accepted for turning one off; swarm:set-feed-identity refused', async () => {
-    permissions.grantPermission(KEY_A);
+    await permissions.grantPermission(KEY_A, { page: testPage(KEY_A) });
     for (const type of ['publish', 'feeds', 'signing', 'messaging', 'other']) {
       for (const enabled of [true, 1, 'yes', null]) {
         expect(() => invoke('swarm:set-auto-approve', KEY_A, type, enabled)).toThrow(/auto-approve is turned on only from/);
@@ -740,7 +774,7 @@ describe('nothing the chrome can call writes a Swarm grant (0011 PRQ-7d, "Grants
     expect(() => invoke('swarm:set-auto-approve', KEY_A, 'feeds', true)).toThrow('Feed auto-approve is turned on only from a feed prompt');
     expect(() => invoke('swarm:set-auto-approve', KEY_A, 'signing', true)).toThrow('Signing auto-approve is turned on only from a signing prompt');
     for (const type of ['feeds', 'signing']) {
-      permissions.setAutoApprove(KEY_A, type, true);
+      await permissions.setAutoApprove(KEY_A, type, true, { page: testPage(KEY_A) });
       expect(await invoke('swarm:set-auto-approve', KEY_A, type, false)).toBe(true);
       expect(permissions.getAutoApprove(KEY_A, type)).toBe(false);
     }

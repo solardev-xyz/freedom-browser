@@ -502,16 +502,19 @@ const cobWrite = (write) => (p, guard) => (guard ? write(p, { guard }) : write(p
  * @param {string} method
  * @param {object} params
  * @param {string} origin - the page's key, main's attested one
- * @param {{onSeedStatus?: Function, approval?: string, page?: {effect?: Function}}} [options]
+ * @param {{onSeedStatus?: Function, approval?: string, page?: {effect?: Function}, pageContext?: Function}} [options]
  *   approval: 'user' when the user approved this signed write on its
- *   prompt; page.effect: the guard a node action or signed write runs under.
- *   A private window never reaches this (main's attestation refuses one).
+ *   prompt; page.effect: the guard a node action or signed write runs under;
+ *   pageContext: the requester's PageContext, read as main sends the
+ *   identity core the site's last use or its disconnect (design 0012,
+ *   APB-3: the core writes the grants). A private window never reaches
+ *   this (main's attestation refuses one).
  */
 async function executeRadicleMethod(
   method,
   params = {},
   origin,
-  { onSeedStatus, approval, page = null } = {}
+  { onSeedStatus, approval, page = null, pageContext = null } = {}
 ) {
   // A page's node action (PRQ-8b) or signed write (PRQ-8c), from main's
   // dispatcher: its guard checks the page again just before the effect,
@@ -570,8 +573,9 @@ async function executeRadicleMethod(
         );
       }
     }
-    // A page's guarded effect records it in its guard's run.
-    if (!effect) permissions.updateLastUsed(origin);
+    // A page's guarded effect records it in its guard's run; any other
+    // request now, sent to the core and not waited for.
+    if (!effect) markUsed(origin, pageContext);
   }
 
   switch (method) {
@@ -600,7 +604,11 @@ async function executeRadicleMethod(
     case 'radicle_disconnect':
       // An origin may relinquish its own grant (connection AND signing) —
       // the inverse of requestAccess, no consent needed.
-      permissions.revokePermission(origin);
+      // The page's own revoke, under `page`; main's (`shell`) without it.
+      await permissions.revokePermission(
+        origin,
+        typeof pageContext === 'function' ? { page: pageContext() } : {}
+      );
       removeSeedStatusBroadcaster(origin);
       autoWriteLimiter.forget(normalizeOrigin(origin));
       return { connected: false };
@@ -617,6 +625,17 @@ async function executeRadicleMethod(
     /* istanbul ignore next -- KNOWN_METHODS guard makes this unreachable */
     default:
       throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
+  }
+}
+
+// A site's last use, for its page (the core takes it only under `page`):
+// written at most once a minute, and a failure changes nothing else.
+function markUsed(origin, pageContext) {
+  if (typeof pageContext !== 'function') return;
+  try {
+    Promise.resolve(permissions.updateLastUsed(origin, { page: pageContext() })).catch(() => {});
+  } catch {
+    // The timestamp didn't change.
   }
 }
 

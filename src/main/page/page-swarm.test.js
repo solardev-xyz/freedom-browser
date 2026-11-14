@@ -4,6 +4,13 @@ const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { CLASS, methodRow } = require('./page-methods');
+const { useSimulatedGrantCore } = require('../../../test/helpers/simulated-grant-core');
+
+// The site's grants, as main reads them from the identity core (design
+// 0012, APB-3): none here.
+beforeEach(async () => {
+  await useSimulatedGrantCore();
+});
 const {
   SWARM_READ_METHODS,
   SWARM_CONNECT_METHODS,

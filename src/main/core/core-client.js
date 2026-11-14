@@ -15,9 +15,13 @@
  *   the core reads them there at its checks. The pinned core (0.15.0)
  *   requires it, as every core from 0.14.0 (APR-3) does, and answers a hello
  *   without it, or with a relative path, with `invalid_argument` and exits
- *   76, so a client can't be made without one. Main sends no
- *   `grant_moved`: it still writes all four files itself (by a temp file and
- *   a rename, lib/atomic-file.js), and the core only reads them.
+ *   76, so a client can't be made without one.
+ * - **`grant_moved`** names the files the core writes (design 0012, "One
+ *   writer per file"): `swarm` and `radicle` (APB-3). Main writes neither
+ *   of them, and reads and changes them only through the core
+ *   (core/grants.js). It still writes `dapp-permissions.json` and
+ *   `x402-permissions.json` itself, by a temp file and a rename
+ *   (lib/atomic-file.js), which the core only reads.
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
  *   (0.15.0) speaks only 2: it answers a hello at any other protocol,
@@ -132,9 +136,10 @@ const CORE_SERVICE = Object.freeze({
     // Main takes fragmented responses (the handshake grants the core
     // main's bulk credit) and stream frames, which the core requires.
     frames: ['fragment', 'stream'],
-    // Where the permission files are (design 0012, APR-3); none has moved
-    // to the core, so no `grant_moved`.
+    // Where the permission files are (design 0012, APR-3), and those the
+    // core writes, which main writes nowhere (APB-3: Swarm's and Radicle's).
     grant_root: client.grantRoot,
+    grant_moved: ['swarm', 'radicle'],
   }),
   validHello,
   shutdownMethod: 'core.shutdown',

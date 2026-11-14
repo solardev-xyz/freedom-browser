@@ -481,6 +481,10 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.discard('t');
     await vaultBackend.approval.end('s');
     await vaultBackend.approval.check({ request: {} }, { origin: 'https://app.example', agent: false });
+    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, { origin: 'https://app.example' });
+    await vaultBackend.approval.revoke({ store: 'swarm', key: 'https://app.example', what: 'grant' }, 'chrome');
+    await vaultBackend.approval.touch({ store: 'radicle' }, { origin: 'https://app.example' });
+    await vaultBackend.approval.grants({ store: 'radicle' });
     await vaultBackend.typedDataHash({});
     await vaultBackend.deleteVault('password2');
 
@@ -497,6 +501,33 @@ describe('vaultBackend', () => {
         { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : 15_000 },
       ]);
     }
+  });
+
+  // Design 0012, APB-3: the moved files' write methods name their caller (a
+  // page's own under `page`, the chrome's narrowing, main's own as `shell`),
+  // and a page's SOC goes under `page` with its authorization.
+  test('grant writes and SOCs go as the page, the chrome or main itself', async () => {
+    const core = new FakeCore(() => ({}));
+    const { vaultBackend } = load(core);
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const chunk = { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) };
+    const authorization = { swarm: 'user', soc: 'raw' };
+    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect' } }, page);
+    await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect', key: page.origin } });
+    await vaultBackend.approval.revoke({ store: 'radicle', key: page.origin, what: 'grant' }, 'chrome');
+    await vaultBackend.approval.touch({ store: 'radicle' }, page);
+    await vaultBackend.approval.grants({ store: 'swarm' });
+    await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page, authorization });
+    await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk);
+    expect(core.calls.map(({ method, context, params }) => [method, context, params.authorization])).toEqual([
+      ['approval.grant', { caller: 'page', page }, undefined],
+      ['approval.grant', { caller: 'shell' }, undefined],
+      ['approval.revoke', { caller: 'chrome' }, undefined],
+      ['approval.touch', { caller: 'page', page }, undefined],
+      ['approval.grants', { caller: 'shell' }, undefined],
+      ['swarm.sign_soc', { caller: 'page', page }, authorization],
+      ['swarm.sign_soc', { caller: 'shell' }, undefined],
+    ]);
   });
 
   // A Safe approval lives in the memory of the core process that gave it

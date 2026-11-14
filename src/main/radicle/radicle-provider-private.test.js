@@ -74,9 +74,8 @@ const ORIGIN = 'https://forge.example';
 const WATCHED = 'https://watched.example';
 const RID = 'rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 const AN_HOUR_AGO = Date.now() - 60 * 60 * 1000;
-const storePath = path.join(mockUserDataDir, 'radicle-permissions.json');
 // Existing grants, last used an hour ago: a read that recorded its use
-// would rewrite them.
+// would rewrite them. The identity core holds them (design 0012, APB-3).
 const grant = (origin) => ({
   origin,
   connectedAt: AN_HOUR_AGO,
@@ -84,11 +83,12 @@ const grant = (origin) => ({
   signing: true,
   autoApprove: { node: false, signing: false },
 });
-fs.writeFileSync(
-  storePath,
-  JSON.stringify({ [ORIGIN]: grant(ORIGIN), [WATCHED]: grant(WATCHED) }, null, 2)
-);
+let core;
+beforeAll(async () => {
+  core = await useSimulatedGrantCore({ radicle: { [ORIGIN]: grant(ORIGIN), [WATCHED]: grant(WATCHED) } });
+});
 
+const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
 const IPC = require('../../shared/ipc-channels');
 const manager = require('../radicle-manager');
 const cob = require('./cob-service');
@@ -105,7 +105,7 @@ const {
 registerRadicleProviderIpc();
 registerRadiclePermissionsIpc();
 
-const storeBytes = () => fs.readFileSync(storePath, 'utf8');
+const storeBytes = () => core.file('radicle');
 const backendCalls = () =>
   [
     manager.seedRepository,
@@ -162,21 +162,28 @@ test('grants and rules from a private window are refused; from any sender, a gra
   // A private (or unclassifiable) sender records nothing, not even a rule
   // turned off.
   for (const event of [privateEvent, {}]) {
-    expect(mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)(event, ORIGIN, 'signing', false)).toBe(false);
+    expect(await mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)(event, ORIGIN, 'signing', false)).toBe(false);
   }
   expect(storeBytes()).toBe(before);
 });
 
 // Last: these write the store.
 test('main\'s page path runs a public page\'s requests and records their use', async () => {
-  const status = await executeRadicleForPage('radicle_getSeedStatus', { rid: RID }, ORIGIN);
+  const asPage = { pageContext: () => testPage(ORIGIN) };
+  const status = await executeRadicleForPage('radicle_getSeedStatus', { rid: RID }, ORIGIN, asPage);
   expect(status).toEqual({ result: mockStatus });
+  // Sent to the core as the page's own, and not waited for.
+  await new Promise((resolve) => setImmediate(resolve));
   expect(JSON.parse(storeBytes())[ORIGIN].lastUsed).toBeGreaterThan(AN_HOUR_AGO);
-  const seeded = await executeRadicleForPage('radicle_seed', { rid: RID }, ORIGIN);
+  const seeded = await executeRadicleForPage('radicle_seed', { rid: RID }, ORIGIN, asPage);
   expect(seeded.result).toMatchObject({ rid: RID, seeded: true });
   expect(manager.seedRepository).toHaveBeenCalledTimes(1);
   // A public sender may still turn a rule off, and revoke.
-  expect(mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)({ sender: mockFixture.publicSender() }, ORIGIN, 'signing', false)).toBe(true);
-  expect(mockHandlers.get(IPC.RADICLE_REVOKE_PERMISSION)({ sender: mockFixture.publicSender() }, WATCHED)).toBe(true);
+  expect(await mockHandlers.get(IPC.RADICLE_SET_AUTO_APPROVE)({ sender: mockFixture.publicSender() }, ORIGIN, 'signing', false)).toBe(true);
+  expect(await mockHandlers.get(IPC.RADICLE_REVOKE_PERMISSION)({ sender: mockFixture.publicSender() }, WATCHED)).toBe(true);
+  expect(core.calls.slice(-2).map(({ method, caller }) => [method, caller])).toEqual([
+    ['approval.revoke', 'chrome'],
+    ['approval.revoke', 'chrome'],
+  ]);
   expect(JSON.parse(storeBytes())[WATCHED]).toBeUndefined();
 });
