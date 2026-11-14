@@ -2195,23 +2195,6 @@ function repairIdentityFiles() {
  */
 function registerIdentityIpc() {
   repairIdentityFiles();
-  // Check if vault exists
-  ipcMain.handle(IPC.IDENTITY_HAS_VAULT, async () => {
-    try {
-      return { hasVault: await hasVault() };
-    } catch (err) {
-      return { hasVault: false, error: err.message };
-    }
-  });
-
-  // Check if vault is unlocked
-  ipcMain.handle(IPC.IDENTITY_IS_UNLOCKED, async () => {
-    try {
-      return { isUnlocked: await isVaultUnlocked() };
-    } catch (err) {
-      return { isUnlocked: false, error: err.message };
-    }
-  });
 
   // Generate mnemonic (without saving vault)
   ipcMain.handle(IPC.IDENTITY_GENERATE_MNEMONIC, async (_event, strength) => {
