@@ -8,6 +8,41 @@ file covers scope, the pitfalls a refresh has hit, and the pull request
 format. [#830](https://github.com/solardev-xyz/freedom-browser/pull/830) is
 the worked example.
 
+## Security gate — before installation
+
+User approval to update a package does not replace this review. Complete it
+before installing a new version or running any of its lifecycle scripts, for
+direct dependencies and the changed transitive dependency tree. The purpose is
+to catch compromised releases as well as known vulnerabilities.
+
+1. **Establish provenance.** Check the exact package name, upstream repository,
+   release tag, registry publisher/maintainer history and publication date. Look
+   for unexpected ownership changes, anomalous releases or security notices.
+   Verify registry signatures/provenance where available; record missing evidence
+   rather than treating a popular name, download count or clean audit as proof.
+2. **Inspect without executing.** Retrieve metadata and tarballs with lifecycle
+   scripts disabled. Compare the candidate with the installed version and the
+   matching upstream source/release. Review new or changed install scripts,
+   executable/native code, bundled or obfuscated code, download destinations,
+   credential/environment access and unexpected network activity. Unpack only
+   in a disposable review directory, never over the working tree.
+3. **Review the resolved tree.** Resolve a candidate lockfile without installing
+   packages or executing scripts. Inspect newly added and changed transitives,
+   their integrity/provenance and lifecycle scripts, prioritising code that runs
+   during installation or with application privileges. Check vulnerability
+   advisories against both the current and candidate locks. Do not hide an
+   unrelated dependency refresh in the change.
+4. **Decide before execution.** If provenance or changed code is suspicious,
+   stop that upgrade and report the evidence; seek user input if a real tradeoff
+   remains. Otherwise record what was checked and its limits, install in an
+   isolated worktree with lifecycle scripts disabled, and run only reviewed,
+   necessary build steps explicitly. Then run compatibility and native tests.
+
+A successful `npm audit`, signature check or test run does not establish that a
+package is free of malicious code. The PR must summarise provenance, source/tree
+review, scripts executed and remaining uncertainty. Never claim a retrospective
+review happened before installation.
+
 ## Scope
 
 An update covers all three, not only npm:
