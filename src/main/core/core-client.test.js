@@ -264,9 +264,9 @@ describe('CoreClient', () => {
     expect(error.message).toBe('Vault is locked');
   });
 
-  // freedom-core design 0012, APR-3: the pinned core (0.14.0) requires
-  // `grant_root`, the permission files' directory, and main has moved none
-  // of them to the core.
+  // freedom-core design 0012, APR-3: the pinned core (0.15.0, as every core
+  // from 0.14.0) requires `grant_root`, the permission files' directory, and
+  // main has moved none of them to the core.
   test('the hello names grant_root, absolute and normalized, and no grant_moved', async () => {
     const profile = path.join(os.tmpdir(), 'freedom-profile');
     const given = `${profile}${path.sep}.${path.sep}x${path.sep}..${path.sep}`;
