@@ -18,18 +18,37 @@ function fixture(namespace = 'eth', available = false) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-domain-service-'));
   const store = new DomainOperationStore({ directory, safeStorage });
   const parsed = parseName(`freedom-fixture.${namespace}`);
-  const state = { ...parsed, available, active: !available, owner: available ? ZeroAddress : address, manager: address,
+  const state = { ...parsed, ensVersion: namespace === 'eth' ? available ? 2 : 1 : undefined, available, active: !available, owner: available ? ZeroAddress : address, manager: address,
     recordOwner: address, resolver: namespace === 'eth' ? ADDRESSES.resolver : ADDRESSES[namespace],
     supportedResolver: true, expiry: '99999999', records: { contenthash: '0x', address, text: { description: 'before' } } };
   const clock = { tag: '0x100', hash, timestamp: 1000 };
   let wire;
   let nonce = 5;
   let committedAt = 0n;
+  const wires = new Map();
+  const v2 = { allowance: 100n, balance: 1000000n, deployed: true, price: 100n, uniqueHashes: false };
   const chain = {
     snapshot: jest.fn(async () => ({ ...clock })),
     inspect: jest.fn(async () => structuredClone({ ...state, snapshot: clock })),
     checkCode: jest.fn(async () => {}), simulate: jest.fn(async () => {}),
     call: jest.fn(async (role, method, args) => {
+      if (method === 'predictProxyAddress') return ['0x000000000000000000000000000000000000cafE'];
+      if (method === 'verifyContract') return [ADDRESSES.ensResolverImpl];
+      if (method === 'BASE_REGISTRAR') return [ADDRESSES.base];
+      if (method === 'NAME_WRAPPER') return [ADDRESSES.wrapper];
+      if (method === 'WRAPPED_CONTROLLER') return [ADDRESSES.wrappedController];
+      if (method === 'ETH_REGISTRY') return [ADDRESSES.ensRegistry];
+      if (method === 'rentPriceOracle') return [ADDRESSES.ensOracle];
+      if (method === 'isPaymentToken' || method === 'hasRootRoles') return [true];
+      if (method === 'decimals') return [role === 'dai' ? 18n : 6n];
+      if (method === 'balanceOf') return [v2.balance];
+      if (method === 'allowance') return [v2.allowance];
+      if (method === 'getRegisterPrice') return [v2.price, 0n];
+      if (method === 'getRenewPrice') return [v2.price];
+      if (method === 'MIN_REGISTER_DURATION') return [2419200n];
+      if (method === 'MIN_COMMITMENT_AGE') return [60n];
+      if (method === 'MAX_COMMITMENT_AGE') return [86400n];
+      if (method === 'commitmentAt') return [committedAt];
       if (method === 'computeId') return [BigInt(parseName(args[0]).tokenId)];
       if (method === 'normalize') return [args[0]];
       if (method === 'rentPrice') return [{ base: 100n, premium: 0n }];
@@ -42,8 +61,19 @@ function fixture(namespace = 'eth', available = false) {
       if (method === 'controllers' || method === 'valid') return [true];
       return [false];
     }),
-    receipt: jest.fn(async () => wire ? ({ blockHash: hash, blockNumber: '0x100', status: '0x1' }) : null),
-    request: jest.fn(async method => method === 'eth_getTransactionCount' ? `0x${nonce.toString(16)}` : wire),
+    receipt: jest.fn(async requested => {
+      const tx = wires.get(requested);
+      if (!tx) return null;
+      const role = Object.keys(ADDRESSES).find(role => ADDRESSES[role].toLowerCase() === tx.to.toLowerCase());
+      const iface = namespace === 'eth' ? ABI[role] || ABI.ensResolverImpl : ABI.nft;
+      const call = iface.parseTransaction({ data: tx.input });
+      const logs = [];
+      if (call.name === 'approve') logs.push({ address: tx.to, ...iface.encodeEventLog(iface.getEvent('Approval'), [address, ...call.args]) });
+      if (call.name === 'deployProxy') logs.push({ address: tx.to, ...iface.encodeEventLog(iface.getEvent('ProxyDeployed'), [address, '0x000000000000000000000000000000000000cafE', call.args[1], call.args[0]]) });
+      return { blockHash: hash, blockNumber: '0x100', status: '0x1', logs };
+    }),
+    callAt: jest.fn(async () => [true]),
+    request: jest.fn(async (method, params) => method === 'eth_getCode' ? v2.deployed ? '0x01' : '0x' : method === 'eth_getTransactionCount' ? `0x${nonce.toString(16)}` : wires.get(params?.[0]) || wire),
   };
   const account = { index: 0, address, type: 'mnemonic' };
   const wallet = { account: jest.fn(async () => account),
@@ -53,19 +83,25 @@ function fixture(namespace = 'eth', available = false) {
     await context.revalidate();
     await context.beforeSend();
     wire = { from: address, to: plan.to, value: plan.value, input: plan.data, nonce: `0x${(nonce++).toString(16)}` };
-    const iface = namespace === 'eth' ? (plan.to === ADDRESSES.resolver ? ABI.resolver : ABI.controller) : ABI.nft;
+    const role = Object.keys(ADDRESSES).find(role => ADDRESSES[role].toLowerCase() === plan.to.toLowerCase());
+    const iface = namespace === 'eth' ? ABI[role] || ABI.ensResolverImpl : ABI.nft;
     const decoded = iface.parseTransaction({ data: plan.data });
+    if (decoded.name === 'approve') v2.allowance = BigInt(decoded.args[1]);
+    if (decoded.name === 'deployProxy') v2.deployed = true;
     if (decoded.name === 'commit') committedAt = BigInt(clock.timestamp);
-    else if (decoded.name === 'register' || decoded.name === 'reveal') { state.available = false; state.active = true; state.owner = address; }
+    else if (decoded.name === 'register' || decoded.name === 'reveal') { state.available = false; state.active = true; state.owner = address; if (namespace === 'eth') { state.ensVersion = 2; state.resolver = decoded.args[4]; state.resolverRole = 'ensResolverImpl'; } }
     else if (decoded.name === 'renew') state.expiry = (BigInt(state.expiry) + 31536000n).toString();
     else if (decoded.name === 'setContenthash') state.records.contenthash = decoded.args[1];
     else if (decoded.name === 'setText') state.records.text[decoded.args[1]] = decoded.args[2];
     else if (decoded.name === 'setAddr') state.records.address = decoded.args[1];
-    return { hash };
+    else if (decoded.name === 'setAddress') state.records.address = decoded.args[2];
+    const transactionHash = v2.uniqueHashes ? `0x${nonce.toString(16).padStart(64, '0')}` : hash;
+    wires.set(transactionHash, wire);
+    return { hash: transactionHash };
   }) };
   const options = { store, chain, wallet, executeWaitMs: 0, pollMs: 1, verifyResolution: jest.fn(async () => true),
     getPublication: jest.fn(async () => ({ publicationId, target: 'public', public: true, reference: '12'.repeat(32), state: 'completed', verified: true, indexDocument: 'index.html' })) };
-  return { service: new DomainService(options), options, state, chain, wallet, clock, store,
+  return { service: new DomainService(options), options, state, chain, wallet, clock, store, v2,
     context: { conversationId: 'conversation', requestApproval: jest.fn(async () => 'approved') }, getSecret: () => secret, getWire: () => wire };
 }
 
@@ -158,7 +194,7 @@ test.each(['missing receipt', 'reverted receipt', 'changed block', 'different tr
     if (failure === 'different transaction') f.chain.request.mockResolvedValue({ from: address, to: ADDRESSES.base, input: '0x', value: '0' });
     if (failure === 'missing commitment') {
       const call = f.chain.call.getMockImplementation();
-      f.chain.call.mockImplementation((role, method, args) => method === 'commitments' ? [0n] : call(role, method, args));
+      f.chain.call.mockImplementation((role, method, args) => ['commitments', 'commitmentAt'].includes(method) ? [0n] : call(role, method, args));
     }
     expect(await f.service.status({ operationId: plan.operationId })).toMatchObject({ state: 'verification_needed' });
     await f.service.execute(plan.operationId, f.context);
@@ -528,7 +564,7 @@ test('a lost commitment before reveal blocks another purchase until reconciled',
   f.clock.timestamp += 61;
   await f.service.status({ operationId: plan.operationId });
   const call = f.chain.call.getMockImplementation();
-  f.chain.call.mockImplementation((role, method, args) => method === 'commitments' ? [0n] : call(role, method, args));
+  f.chain.call.mockImplementation((role, method, args) => ['commitments', 'commitmentAt'].includes(method) ? [0n] : call(role, method, args));
   expect(await f.service.execute(plan.operationId, f.context)).toMatchObject({ state: 'verification_needed' });
   expect(await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).toMatchObject({ operationId: plan.operationId, state: 'verification_needed' });
   expect(f.wallet.send).toHaveBeenCalledTimes(1);
@@ -559,34 +595,32 @@ test('a provably unsent step can resume with a fresh approval without discarding
   expect(f.wallet.send).toHaveBeenCalledTimes(2);
 });
 
-test('register approvals describe the name, term, ETH price and pinned contract as typed rows', async () => {
+test('ENS registration approvals show stablecoin payment separately from ETH gas', async () => {
   const f = fixture('eth', true);
   const plan = await f.service.prepare({ name: f.state.name, intent: 'register', durationSeconds: 2 * 31536000 }, f.context);
+  expect(plan).not.toHaveProperty('priceWei');
+  expect(plan.payment).toMatchObject({ symbol: 'USDC', quotedAmount: '100' });
   await f.service.execute(plan.operationId, f.context);
   const commit = f.wallet.send.mock.calls[0][0];
-  expect(commit.presentation).toEqual({ format: 'freedom-domain-approval/1', action: 'register_commit',
-    name: 'freedom-fixture.eth', durationSeconds: 2 * 31536000, priceWei: '100',
-    contract: { address: ADDRESSES.controller, name: 'ENS ETHRegistrarController' },
-    items: [
-      { label: 'Name', value: 'freedom-fixture.eth' },
-      { label: 'Step', value: expect.stringMatching(/^1 of 2: commit\./) },
-      { label: 'Term', value: '2 years (730 days)' },
-      { label: 'Price', value: '0.0000000000000001 ETH, paid at step 2, plus network fees' },
-    ] });
-  expect(commit.summary.split('\n')).toHaveLength(commit.presentation.items.length);
-  expect(commit.summary).not.toMatch(/wei|seconds/);
+  expect(commit.presentation).toMatchObject({ format: 'freedom-domain-approval/1', action: 'register_commit',
+    name: 'freedom-fixture.eth', durationSeconds: 2 * 31536000,
+    contract: { address: ADDRESSES.ensRegistrar, name: 'ENSv2 ETH Registrar' } });
+  expect(commit.presentation.items).toContainEqual({ label: 'Term', value: '2 years (730 days)' });
+  expect(commit.presentation.items).toContainEqual({ label: 'Price', value: '0.0001 USDC; ETH network fees are separate.' });
+  expect(commit.value).toBe('0');
   f.clock.timestamp += 61;
   await f.service.status({ operationId: plan.operationId });
   await f.service.execute(plan.operationId, f.context);
   const reveal = f.wallet.send.mock.calls[1][0];
-  expect(reveal.presentation).toMatchObject({ action: 'register', contract: { address: ADDRESSES.controller } });
-  expect(reveal.presentation.items).toContainEqual({ label: 'Step', value: '2 of 2: register and pay for the name.' });
+  expect(reveal.presentation).toMatchObject({ action: 'register', contract: { address: ADDRESSES.ensRegistrar } });
+  expect(reveal.value).toBe('0');
+  expect(reveal.presentation.items.map(item => item.label)).not.toContain('Price buffer');
 });
 
 test.each([
   ['set_address', { address: '0x000000000000000000000000000000000000bEEF' }, 'ENS PublicResolver', 'ETH address'],
   ['clear_website', {}, 'ENS PublicResolver', 'Website (content hash)'],
-  ['renew', {}, 'ENS ETHRegistrarController', null],
+  ['renew', {}, 'ENS Legacy Renewer', null],
 ])('%s approvals name their action and pinned contract', async (intent, input, contractName, record) => {
   const f = fixture('eth');
   const plan = await f.service.prepare({ name: f.state.name, intent, ...input }, f.context);
@@ -595,7 +629,7 @@ test.each([
   expect(sent.presentation).toMatchObject({ action: intent, name: f.state.name, contract: { address: sent.to, name: contractName } });
   if (record) expect(sent.presentation.items).toContainEqual({ label: 'Record', value: record });
   else expect(sent.presentation.items).toEqual(expect.arrayContaining([{ label: 'Term', value: '1 year (365 days)' },
-    { label: 'Price', value: '0.0000000000000001 ETH, plus network fees' }]));
+    { label: 'Price', value: '0.0001 USDC; ETH network fees are separate.' }]));
 });
 
 test('NameNFT approvals name the namespace contract', async () => {
@@ -649,7 +683,7 @@ test('a slow status poll cannot erase a dispatched reveal or re-offer it for app
   expect(f.wallet.send).toHaveBeenCalledTimes(2);
 });
 
-test.each(['eth', 'wei', 'gwei'])('%s register and renew send the quote plus a disclosed, refunded 2%% buffer', async namespace => {
+test.each(['wei', 'gwei'])('%s register and renew send the quote plus a disclosed, refunded 2%% buffer', async namespace => {
   const f = fixture(namespace, true);
   const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
   await f.service.execute(operationId, f.context);
@@ -669,20 +703,20 @@ test.each(['eth', 'wei', 'gwei'])('%s register and renew send the quote plus a d
 });
 
 test('a quote that drops after preparation still renews with the approved buffered amount', async () => {
-  const f = fixture('eth');
+  const f = fixture('gwei');
   const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
   const call = f.chain.call.getMockImplementation();
-  f.chain.call.mockImplementation((role, method, args) => method === 'rentPrice' ? [{ base: 90n, premium: 0n }] : call(role, method, args));
+  f.chain.call.mockImplementation((role, method, args) => method === 'getFee' ? [90n] : call(role, method, args));
   expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed' });
   expect(f.wallet.send.mock.calls[0][0].value).toBe('102');
 });
 
 test('a renewal price rise inside the buffer still renews; one past it is stale', async () => {
   for (const [base, outcome] of [[102n, 'completed'], [103n, 'stale']]) {
-    const f = fixture('eth');
+    const f = fixture('gwei');
     const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
     const call = f.chain.call.getMockImplementation();
-    f.chain.call.mockImplementation((role, method, args) => method === 'rentPrice' ? [{ base, premium: 0n }] : call(role, method, args));
+    f.chain.call.mockImplementation((role, method, args) => method === 'getFee' ? [base] : call(role, method, args));
     expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: outcome });
     if (outcome === 'completed') expect(f.wallet.send.mock.calls[0][0].value).toBe('102');
     else expect(f.wallet.send).not.toHaveBeenCalled();
@@ -693,7 +727,7 @@ test('a renewal prepared before the price buffer still executes with the buffere
   const { keccak256, toUtf8Bytes } = require('ethers');
   const digestOf = value => keccak256(toUtf8Bytes(JSON.stringify(value)));
   for (const legacy of [true, false]) {
-    const f = fixture('eth');
+    const f = fixture('gwei');
     const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
     const saved = f.store.get(operationId);
     // The renew call itself does not depend on the value, so the plan's
@@ -706,7 +740,7 @@ test('a renewal prepared before the price buffer still executes with the buffere
     f.store.save({ ...saved, planDigest: forged ?? 'pending' });
     // Compute the legacy digest from the transaction the service builds.
     if (legacy) {
-      const probe = fixture('eth');
+      const probe = fixture('gwei');
       const p = await probe.service.prepare({ name: probe.state.name, intent: 'renew' }, probe.context);
       await probe.service.execute(p.operationId, probe.context);
       const tx = probe.wallet.send.mock.calls[0][0];
@@ -768,4 +802,256 @@ test.each([
   expect(f.wallet.ownWallet).toHaveBeenCalledWith(value);
   expect(sent.presentation.items.at(-1)).toEqual({ label: 'Belongs to', value: belongsTo });
   expect(sent.summary).toContain(`Belongs to: ${belongsTo}`);
+});
+
+
+test('ENSv2 journals token approval and resolver setup without claiming a purchase, then resumes after restart', async () => {
+  const f = fixture('eth', true);
+  f.v2.allowance = 0n; f.v2.deployed = false; f.v2.uniqueHashes = true;
+  const prepared = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  const id = prepared.operationId;
+  await f.service.execute(id, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId: id });
+  expect(await f.service.execute(id, f.context)).toMatchObject({ state: 'ready', step: 'reveal', operationId: id });
+  const approval = f.wallet.send.mock.calls[1][0];
+  expect(approval.presentation.action).toBe('approve_payment');
+  expect(ABI.usdc.parseTransaction({ data: approval.data }).args[0].toLowerCase()).toBe(ADDRESSES.ensRegistrar.toLowerCase());
+  expect(ABI.usdc.parseTransaction({ data: approval.data }).args[1]).toBe(100n);
+  expect(approval.value).toBe('0');
+  expect(f.state.available).toBe(true);
+  const reopened = new DomainOperationStore({ directory: path.dirname(f.store.filename), safeStorage: f.store.safeStorage });
+  f.service.close();
+  const service = new DomainService({ ...f.options, store: reopened });
+  expect(await service.execute(id, f.context)).toMatchObject({ state: 'ready', step: 'reveal' });
+  expect(f.wallet.send.mock.calls[2][0].presentation.action).toBe('setup_resolver');
+  expect(f.state.available).toBe(true);
+  expect(await service.execute(id, f.context)).toMatchObject({ state: 'completed' });
+  expect(f.context.requestApproval).toHaveBeenCalledTimes(4);
+  expect(reopened.get(id).encryptedSecret).toBeUndefined();
+  await service.execute(id, f.context);
+  expect(f.wallet.send).toHaveBeenCalledTimes(4);
+});
+
+test('ENSv2 replaces an unrelated unlimited allowance with an exact bounded approval', async () => {
+  const f = fixture('eth'); f.v2.allowance = (1n << 256n) - 1n;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'ready', step: 'renew' });
+  const plan = f.wallet.send.mock.calls[0][0];
+  expect(plan.to).toBe(ADDRESSES.usdc);
+  expect(ABI.usdc.parseTransaction({ data: plan.data }).args[0].toLowerCase()).toBe(ADDRESSES.ensRenewerV1.toLowerCase());
+  expect(ABI.usdc.parseTransaction({ data: plan.data }).args[1]).toBe(100n);
+  expect(plan.presentation.items.find(item => item.label === 'Permission').value).toContain('up to 0.0001 USDC');
+  expect(f.state.expiry).toBe('99999999');
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed' });
+});
+
+test('ENSv2 supports DAI without accepting an arbitrary payment contract', async () => {
+  const f = fixture('eth');
+  const plan = await f.service.prepare({ name: f.state.name, intent: 'renew', paymentToken: 'DAI' }, f.context);
+  expect(plan.payment).toMatchObject({ symbol: 'DAI', token: ADDRESSES.dai, decimals: 18 });
+  await f.service.execute(plan.operationId, f.context);
+  const tx = f.wallet.send.mock.calls[0][0];
+  expect(ABI.ensRenewerV1.parseTransaction({ data: tx.data }).args[1]).toBe(ADDRESSES.dai);
+  const invalid = fixture('eth');
+  await expect(invalid.service.prepare({ name: invalid.state.name, intent: 'renew', paymentToken: 'constructor' }, invalid.context)).rejects.toMatchObject({ code: 'DOMAIN_INVALID' });
+  expect(invalid.wallet.send).not.toHaveBeenCalled();
+});
+
+test('insufficient ENS payment tokens are refused before a paid commitment', async () => {
+  const f = fixture('eth', true); f.v2.balance = 0n;
+  await expect(f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).rejects.toMatchObject({ code: 'DOMAIN_BALANCE' });
+  expect(f.wallet.send).not.toHaveBeenCalled();
+  expect(f.context.requestApproval).not.toHaveBeenCalled();
+});
+
+test('a price increase after committing keeps the commitment and requires a new bounded token approval', async () => {
+  const f = fixture('eth', true); f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  f.clock.timestamp += 61;
+  await f.service.status({ operationId });
+  f.v2.price = 120n;
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'ready', step: 'reveal', payment: { quotedAmount: '120', maxAmount: '120' } });
+  const tx = f.wallet.send.mock.calls[1][0];
+  expect(tx.presentation.action).toBe('approve_payment');
+  expect(tx.presentation.items.find(item => item.label === 'Price change').value).toContain('At commit: 0.0001 USDC');
+  expect(f.store.get(operationId).transactions.filter(tx => tx.step === 'commit')).toHaveLength(1);
+});
+
+test('an allowance change during approval cannot change the transaction or force a second commitment', async () => {
+  const f = fixture('eth', true); f.v2.allowance = 0n;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context);
+  f.clock.timestamp += 61; await f.service.status({ operationId });
+  const commit = f.getWire();
+  f.context.requestApproval.mockImplementationOnce(async () => { f.v2.allowance = 100n; return 'approved'; });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'ready', operationId });
+  expect(f.getWire()).toEqual(commit);
+  expect(await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).toMatchObject({ operationId });
+});
+
+test('retired ENSv1 plans explain migration while uncertain broadcasts remain blocked', async () => {
+  const f = fixture('eth', true);
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  const old = f.store.get(operationId); delete old.protocol; f.store.save(old);
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'stale', message: expect.stringContaining('ENSv2') });
+  expect(f.wallet.send).not.toHaveBeenCalled();
+  const unknown = { ...f.store.get(operationId), state: 'dispatch_unknown' }; f.store.save(unknown);
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'dispatch_unknown' });
+  expect(await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).toMatchObject({ operationId, state: 'dispatch_unknown' });
+});
+
+test('a changed saved resolver cannot substitute a different registration preimage', async () => {
+  const f = fixture('eth', true);
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  const saved = f.store.get(operationId); saved.ensResolver = ADDRESSES.resolver; f.store.save(saved);
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'stale' });
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('permissioned ENS records require the actual wallet role and a qualified resolver implementation', async () => {
+  const f = fixture('eth'); f.state.ensVersion = 2; f.state.resolverRole = 'ensResolverImpl';
+  f.chain.callAt.mockResolvedValue([false]);
+  await expect(f.service.prepare({ name: f.state.name, intent: 'set_text', key: 'description', value: 'after' }, f.context)).rejects.toThrow('cannot edit');
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('read-only ENS inspection survives a changed oracle while transaction preparation fails closed', async () => {
+  const f = fixture('eth', true);
+  f.chain.checkCode.mockRejectedValue(new DomainError('DOMAIN_UNSUPPORTED', 'Unqualified deployment'));
+  expect(await f.service.inspect({ name: f.state.name })).toMatchObject({ available: true, quoteUnavailable: expect.any(String) });
+  await expect(f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).rejects.toThrow('Unqualified deployment');
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('an existing resolver with changed permissions is refused before paying for a commitment', async () => {
+  const f = fixture('eth', true);
+  f.chain.callAt.mockResolvedValue([false]);
+  await expect(f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).rejects.toThrow('permissions changed');
+  expect(f.wallet.send).not.toHaveBeenCalled();
+});
+
+test('an ENS approval is verified from its receipt without archive state after another payment consumed the allowance', async () => {
+  const f = fixture('eth'); f.v2.allowance = 0n;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const send = f.wallet.send.getMockImplementation();
+  f.wallet.send.mockImplementationOnce(async (...args) => {
+    const result = await send(...args);
+    f.clock.tag = '0x101'; f.v2.allowance = 0n;
+    return result;
+  });
+  const call = f.chain.call.getMockImplementation();
+  f.chain.call.mockImplementation(async (role, method, args, snapshot) => (() => { if (method === 'allowance' && snapshot.tag === '0x100' && f.clock.tag === '0x101') throw new Error('Archive unavailable'); return call(role, method, args, snapshot); })());
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'ready', step: 'renew' });
+  // It needs another explicit approval; the service cannot assume the allowance remains.
+  const result = await f.service.execute(operationId, f.context);
+  expect(result.state).toBe('ready');
+  expect(f.wallet.send.mock.calls[1][0].presentation.action).toBe('approve_payment');
+});
+
+test.each(['register', 'renew'])('a missing canonical ENS setup receipt blocks repeats and recovers the same %s operation', async intent => {
+  const f = fixture('eth', intent === 'register'); f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent }, f.context);
+  if (intent === 'register') {
+    await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+  }
+  await f.service.execute(operationId, f.context);
+  const approvalHash = f.store.get(operationId).transactions.find(tx => tx.step === 'approve_payment').hash;
+  const receipt = f.chain.receipt.getMockImplementation();
+  f.chain.receipt.mockImplementation(async candidate => candidate === approvalHash ? null : receipt(candidate));
+  const sends = f.wallet.send.mock.calls.length;
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed' });
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'verification_needed' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(sends);
+  f.chain.receipt.mockImplementation(receipt);
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', operationId });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed', operationId });
+});
+
+test('ENS setup receipt evidence can be retried without duplicate journal entries or transactions', async () => {
+  const f = fixture('eth'); f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const receipt = f.chain.receipt.getMockImplementation();
+  f.chain.receipt.mockImplementation(async hash => ({ ...await receipt(hash), logs: [] }));
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed', step: 'approve_payment' });
+  f.chain.receipt.mockImplementation(receipt);
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', step: 'renew' });
+  expect(f.store.get(operationId).transactions).toHaveLength(1);
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+});
+
+test('wrapped legacy renewal verifies the synchronized absolute wrapper expiry', async () => {
+  const f = fixture('eth'); f.state.wrapped = true; f.state.wrapperExpiry = '999999999';
+  const send = f.wallet.send.getMockImplementation();
+  f.wallet.send.mockImplementation(async (...args) => {
+    const result = await send(...args);
+    f.state.wrapperExpiry = (BigInt(f.state.expiry) + 7776000n).toString();
+    return result;
+  });
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed' });
+});
+
+test('registration setup recovery cannot adopt an older identical pending token approval', async () => {
+  const f = fixture('eth', true); f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+  const request = f.chain.request.getMockImplementation();
+  f.chain.request.mockImplementation(async (method, args) => method === 'eth_getTransactionCount'
+    ? args[1] === 'pending' ? '0x7' : '0x6' : request(method, args));
+  const send = f.wallet.send.getMockImplementation();
+  let approvalHash;
+  f.wallet.send.mockImplementationOnce(async (...args) => { approvalHash = (await send(...args)).hash; throw new Error('lost reply'); });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'dispatch_unknown', step: 'approve_payment' });
+  await expect(f.service.status({ operationId, transactionHash: approvalHash })).rejects.toThrow('before this domain operation');
+  expect(f.store.get(operationId).transactions.filter(tx => tx.step === 'commit')).toHaveLength(1);
+});
+
+test('a reverted ENS setup keeps the paid commitment and resumes only through another explicit execute', async () => {
+  const f = fixture('eth', true); f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+  const send = f.wallet.send.getMockImplementation();
+  const receipt = f.chain.receipt.getMockImplementation();
+  f.wallet.send.mockImplementationOnce(async (...args) => {
+    const result = await send(...args); f.v2.allowance = 0n;
+    f.chain.receipt.mockImplementation(async candidate => candidate === result.hash ? { ...await receipt(candidate), status: '0x0' } : receipt(candidate));
+    return result;
+  });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'declined', step: 'approve_payment' });
+  expect(await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context)).toMatchObject({ operationId, state: 'declined' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(2);
+  expect(await f.service.execute(operationId, { ...f.context, resume: true })).toMatchObject({ state: 'ready', step: 'reveal' });
+  expect(f.wallet.send.mock.calls[2][0].presentation.action).toBe('approve_payment');
+  expect(f.store.get(operationId).transactions.filter(tx => tx.step === 'commit')).toHaveLength(1);
+});
+
+test.each(['approve_payment', 'deploy_resolver'])('a registration recovers canonical evidence while paused at %s without another commit', async step => {
+  const f = fixture('eth', true); f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'register' }, f.context);
+  await f.service.execute(operationId, f.context); f.clock.timestamp += 61; await f.service.status({ operationId });
+  const saved = f.store.get(operationId); saved.step = step; f.store.save(saved);
+  const receipt = f.chain.receipt.getMockImplementation();
+  f.chain.receipt.mockResolvedValue(null);
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed', step });
+  f.chain.receipt.mockImplementation(receipt);
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', step });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'completed' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(2);
+});
+
+test.each(['owner', 'spender', 'value', 'token', 'removed'])('a token approval cannot confirm from mismatched %s event evidence', async field => {
+  const f = fixture('eth'); f.v2.allowance = 0n; f.v2.uniqueHashes = true;
+  const { operationId } = await f.service.prepare({ name: f.state.name, intent: 'renew' }, f.context);
+  const receipt = f.chain.receipt.getMockImplementation();
+  f.chain.receipt.mockImplementation(async hash => {
+    const result = await receipt(hash);
+    const args = [field === 'owner' ? ADDRESSES.resolver : address, field === 'spender' ? ADDRESSES.resolver : ADDRESSES.ensRenewerV1, field === 'value' ? 101n : 100n];
+    return { ...result, logs: [{ address: field === 'token' ? ADDRESSES.dai : ADDRESSES.usdc, removed: field === 'removed', ...ABI.usdc.encodeEventLog(ABI.usdc.getEvent('Approval'), args) }] };
+  });
+  expect(await f.service.execute(operationId, f.context)).toMatchObject({ state: 'verification_needed', step: 'approve_payment' });
+  expect(f.wallet.send).toHaveBeenCalledTimes(1);
+  f.chain.receipt.mockImplementation(receipt);
+  expect(await f.service.status({ operationId })).toMatchObject({ state: 'ready', step: 'renew' });
 });

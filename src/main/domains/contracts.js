@@ -1,8 +1,9 @@
 'use strict';
 
-// Mainnet v1 / NameNFT deployments. Versioned ABIs are bundled, never supplied
+// Pinned mainnet ENSv1/ENSv2 and NameNFT deployments. Versioned ABIs are bundled, never supplied
 // by a model, page, downloaded ABI or transaction request.
 const { Interface, AbiCoder, ZeroAddress, ZeroHash, keccak256, toUtf8Bytes, concat } = require('ethers');
+const { V2_ADDRESSES, V2_CODE_HASHES, V2_ABI, V2_CONTRACT_NAMES } = require('./ens-v2-contracts');
 const { ens_normalize } = require('@adraffy/ens-normalize');
 
 class DomainError extends Error {
@@ -10,6 +11,7 @@ class DomainError extends Error {
 }
 function refuse(message, code = 'DOMAIN_UNAVAILABLE') { throw new DomainError(code, message); }
 const ADDRESSES = Object.freeze({
+  ...V2_ADDRESSES,
   registry: '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e',
   base: '0x57f1887a8BF19b14fC0dF6Fd9B2acc9Af147eA85',
   controller: '0x59E16fcCd424Cc24e280Be16E11Bcd56fb0CE547',
@@ -22,6 +24,7 @@ const ADDRESSES = Object.freeze({
 // What the approval card calls each pinned deployment. Keyed like ADDRESSES,
 // so a label can only ever name an address Freedom itself selected.
 const CONTRACT_NAMES = Object.freeze({
+  ...V2_CONTRACT_NAMES,
   registry: 'ENS Registry',
   base: 'ENS BaseRegistrar',
   controller: 'ENS ETHRegistrarController',
@@ -33,6 +36,7 @@ const CONTRACT_NAMES = Object.freeze({
 });
 const REGISTRATION = '(string label,address owner,uint256 duration,bytes32 secret,address resolver,bytes[] data,uint8 reverseRecord,bytes32 referrer)';
 const ABI = Object.freeze({
+  ...V2_ABI,
   registry: new Interface(['function owner(bytes32) view returns(address)', 'function resolver(bytes32) view returns(address)']),
   base: new Interface(['function ownerOf(uint256) view returns(address)', 'function nameExpires(uint256) view returns(uint256)', 'function controllers(address) view returns(bool)']),
   wrapper: new Interface(['function getData(uint256) view returns(address owner,uint32 fuses,uint64 expiry)', 'function controllers(address) view returns(bool)']),
@@ -69,6 +73,7 @@ const ABI = Object.freeze({
 // Pinned observed immutable runtime identities, rechecked on chain for writes.
 // See docs/agent-domain-skills-research.md; no arbitrary resolver/proxy writes.
 const CODE_HASHES = Object.freeze({
+  ...V2_CODE_HASHES,
   registry: '0xd6bfd5d6f1384a1f6ea57b8a8412de5552f138d42021cf7c4941e33206f529e4',
   wrapper: '0xb2d3098f0579718d88a04ee65d3c6827a76823316ceed387945ad993fc6dbb6c',
   wrappedController: '0x56aa3e2c09a6a30222598db1cffa6e657a5e5e6eef765d3cd60e44372d005cab',
@@ -109,6 +114,9 @@ function registrationTuple(operation, secret) {
 }
 function commitmentFor(operation, secret) {
   const coder = AbiCoder.defaultAbiCoder();
+  if (operation.protocol === 'ensv2') return keccak256(coder.encode(
+    ['string', 'address', 'bytes32', 'address', 'address', 'uint64', 'bytes32'],
+    [operation.label, operation.account.address, secret, ZeroAddress, operation.ensResolver, operation.duration, ZeroHash]));
   return operation.namespace === 'eth'
     ? keccak256(coder.encode([REGISTRATION], [registrationTuple(operation, secret)]))
     : keccak256(coder.encode(['bytes', 'address', 'bytes32'], [toUtf8Bytes(operation.label), operation.account.address, secret]));

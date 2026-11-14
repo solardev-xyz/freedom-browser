@@ -53,6 +53,8 @@ test('ENS registrant and record manager are distinct authorities', async () => {
     const abi = ABI[role];
     const call = abi.parseTransaction({ data: tx.data });
     const values = {
+      'ensRegistry.getState': [[1n, 1000000n, ZeroAddress, BigInt(parsed.tokenId), BigInt(parsed.tokenId)]],
+      'ensRegistrar.isAvailable': [false],
       'registry.owner': [manager], 'registry.resolver': [ADDRESSES.resolver],
       'base.ownerOf': [registrant], 'base.nameExpires': [1000000n], 'controller.available': [false],
       'resolver.contenthash': ['0x'], 'resolver.addr': [ZeroAddress],
@@ -71,4 +73,51 @@ test('network errors are not interpreted as missing tokens or available names', 
     throw new Error('RPC unavailable');
   });
   await expect(new DomainChain({ request }).inspect(parseName('freedom.wei'))).rejects.toThrow('RPC unavailable');
+});
+
+describe('ENSv2 ownership and resolver inspection', () => {
+  function fixture(resolver = ADDRESSES.ensPublicResolver, name = 'freedom.eth') {
+    const parsed = parseName(name);
+    const chain = new DomainChain({ request: jest.fn(async () => '0x01') });
+    chain.snapshot = jest.fn(async () => ({ tag: '0x100', hash: 'block', timestamp: 1000 }));
+    chain.call = jest.fn(async (role, method) => {
+      if (method === 'getState') return [{ status: 2n, expiry: 1000000n, latestOwner: ADDRESSES.usdc, tokenId: BigInt(parsed.tokenId), resource: 42n }];
+      if (method === 'isAvailable') return [false];
+      if (method === 'getResolver') return [resolver];
+      if (method === 'verifyContract') return [ADDRESSES.ensResolverImpl];
+      if (method === 'contenthash') return ['0x'];
+      if (method === 'addr(bytes32)') return [ZeroAddress];
+      throw new Error(`Unexpected legacy read: ${role}.${method}`);
+    });
+    return { chain, parsed };
+  }
+  test('v2 registry owner and expiry replace legacy registrar authority', async () => {
+    const { chain, parsed } = fixture();
+    expect(await chain.inspect(parsed)).toMatchObject({ ensVersion: 2, owner: ADDRESSES.usdc, expiry: '1000000', registryResource: '42' });
+    expect(chain.call.mock.calls.some(([role]) => role === 'base' || role === 'registry')).toBe(false);
+  });
+  test('an explicit factory rejection permits renewal inspection without inventing empty records', async () => {
+    const resolver = ADDRESSES.resolver;
+    const { chain, parsed } = fixture(resolver);
+    const call = chain.call.getMockImplementation();
+    chain.call.mockImplementation(async (...args) => {
+      if (args[1] === 'verifyContract') throw Object.assign(new Error('reverted'), { data: ABI.ensFactory.encodeErrorResult('VerificationFailed', [resolver]) });
+      return call(...args);
+    });
+    expect(await chain.inspect(parsed)).toMatchObject({ active: true, supportedResolver: false, resolverRole: null, records: {} });
+    chain.call.mockImplementation(async (...args) => {
+      if (args[1] === 'verifyContract') throw new Error('RPC offline');
+      return call(...args);
+    });
+    await expect(chain.inspect(parsed)).rejects.toThrow('RPC offline');
+  });
+  test('permissioned records support ENS labels longer than DNS’s 63-byte default', async () => {
+    const { chain, parsed } = fixture(ADDRESSES.usdc, `${'a'.repeat(64)}.eth`);
+    chain.callAt = jest.fn(async (_role, _to, _method, [name, data]) => {
+      expect(name.slice(0, 4)).toBe('0x40');
+      const decoded = ABI.resolver.parseTransaction({ data });
+      return [ABI.resolver.encodeFunctionResult(decoded.name, [decoded.name === 'addr' ? ZeroAddress : '0x'])];
+    });
+    expect(await chain.inspect(parsed)).toMatchObject({ supportedResolver: true, records: { contenthash: '0x', address: ZeroAddress } });
+  });
 });

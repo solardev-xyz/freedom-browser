@@ -1,0 +1,29 @@
+{
+  "addresses": {
+    "ensRenewerV1": "0xf2ece44980778966b8a0fccb3a9e339440f6e045",
+    "ensRegistry": "0xd4ebcbbdf463c9c45784603db0ddd499bc44a8b4",
+    "ensRegistrar": "0xf633e7fc17e2bbe0d0965d18ec1821dcb754a3d3",
+    "usdc": "0x240b0316df57887dbbe58b586508b19e633a14aa",
+    "ensFactory": "0xda70306c98e97ece36f997a21368e53298572991",
+    "dai": "0xf6fac8a58a0be13b9197f27c41b73162fe32572b",
+    "ensPublicResolver": "0xdc4a563d00f5c3012b699794eb9e13a561be386f",
+    "ensOracle": "0x8196665d4ca7488b6474a9ec8e7d2719fb42263a",
+    "ensResolverImpl": "0x115eb53f0c60696633855f90b138178fb40b2b2c"
+  },
+  "codeHashes": {
+    "ensRenewerV1": "0x402e0e299429c139b8be4ec9fa626831d06dc13b03c4c31e2cfb10d5e79718d3",
+    "ensRegistry": "0xddb7698fc2857f7a9e726491025fead241791f113a19714149db8cbf87688e98",
+    "ensRegistrar": "0xb025a7edb8e81862c2d28857211a7a91c1fb2b17c5bcf28b983987067f083c2a",
+    "usdc": "0xa9a4749f886f5035336f6e16dce5ca6f339ae73f76e94ad4b8f46a447dc335f3",
+    "ensFactory": "0x141dc0d5ee8c60ae9b9cce12c870d3babc28719602238ee0f77016a9f1916265",
+    "dai": "0x951cd0a95008826dc60d6ac8fd817ede568a8b482fa171aa0c9f71430b3cddef",
+    "ensPublicResolver": "0x04359a1efd638740104492646990972a028c2f74da718798545b9a5c4f4ff860",
+    "ensOracle": "0x69ea77f5ed37a8fd60ee59d82fbaad59dbd02995d59b462139c02f0cc0009f88",
+    "ensResolverImpl": "0x02d6c15c6443251e5d3c5acbd971d66057c8e13ee0d0f046d5c65cd27a20b007"
+  },
+  "namespaces": [
+    "eth"
+  ],
+  "legacyNames": [],
+  "universalResolver": false
+}

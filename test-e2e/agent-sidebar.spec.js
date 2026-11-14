@@ -997,6 +997,63 @@ test('domain approval card names the action, lists the summary and labels the co
   }
 });
 
+// Exercise the production ENSv2 presentation builder, including non-purchase
+// steps. All events and chain responses are disposable fixtures; no wallet.
+test('ENSv2 approval cards distinguish token permission, resolver setup and purchase', async ({ electronApp, window, ollamaServer }, testInfo) => {
+  const ens = require('../src/main/domains/ens-v2');
+  const { ADDRESSES } = require('../src/main/domains/contracts');
+  await configureOllamaAgent(window, ollamaServer);
+  const account = { index: 0, address: '0x1111111111111111111111111111111111111111', type: 'mnemonic' };
+  const operation = { name: 'freedom-fixture.eth', label: 'freedom-fixture', intent: 'register', step: 'reveal', duration: 31536000,
+    commitment: `0x${'42'.repeat(32)}`, paymentToken: 'USDC', account };
+  let allowance = 0n;
+  let deployed = false;
+  const resolver = '0x2222222222222222222222222222222222222222';
+  const chain = { snapshot: async () => ({ tag: '0x100' }), checkCode: async () => {}, request: async () => deployed ? '0x01' : '0x', callAt: async () => [true],
+    call: async (_role, method) => {
+      const results = { ETH_REGISTRY: [ADDRESSES.ensRegistry], rentPriceOracle: [ADDRESSES.ensOracle], isPaymentToken: [true],
+        MIN_REGISTER_DURATION: [2419200n], getRegisterPrice: [8000000n, 0n], decimals: [6n], balanceOf: [10000000n],
+        allowance: [allowance], predictProxyAddress: [resolver], verifyContract: [ADDRESSES.ensResolverImpl] };
+      if (!results[method]) throw new Error(`Unexpected call: ${method}`);
+      return results[method];
+    } };
+  await ens.prepare(chain, operation, {});
+  const send = event => electronApp.evaluate(({ BrowserWindow }, event) => {
+    BrowserWindow.getAllWindows().find(win => !win.isDestroyed()).webContents.send('agent:event', event);
+  }, event);
+  await send({ type: 'run_started', runId: 'run_ensv2_approval' });
+  for (const action of ['approve_payment', 'setup_resolver', 'register']) {
+    const plan = await ens.build(chain, operation, { snapshot: { tag: '0x100' } }, true, `0x${'24'.repeat(32)}`);
+    expect(plan.presentation.action).toBe(action);
+    await send({ type: 'approval_requested', runId: 'run_ensv2_approval', approvalId: `approval_ensv2_${action}`,
+      action: 'wallet_transaction', operation: 'domain_execute', inputPreview: 'Owned ENSv2 fixture',
+      wallet: { kind: 'transaction', chainId: 1, chainName: 'Ethereum', account, to: plan.to, value: '0.0 ETH',
+        maxFee: '0.000412 ETH', data: plan.data, domain: plan.presentation, requiresUnlock: false } });
+    const heading = action === 'approve_payment' ? 'Approve token payment for freedom-fixture.eth?'
+      : action === 'setup_resolver' ? 'Set up ENS records for freedom-fixture.eth?' : 'Register freedom-fixture.eth for 1 year?';
+    await expect(window.locator('#agent-approval-action')).toHaveText(heading);
+    await expect(window.locator('#agent-wallet-approval-summary')).toContainText('8.0 USDC');
+    for (const width of [1000, 600]) {
+      await electronApp.evaluate(({ BrowserWindow }, width) => {
+        const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed()); win.setMinimumSize(320, 300); win.setContentSize(width, 800);
+      }, width);
+      for (const theme of ['dark', 'light']) {
+        await window.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme);
+        await window.locator('#agent-approval-approve').scrollIntoViewIfNeeded();
+        expect(await window.evaluate(() => {
+          const button = document.getElementById('agent-approval-approve');
+          const bounds = button.getBoundingClientRect();
+          return document.documentElement.scrollWidth <= document.documentElement.clientWidth &&
+            document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)?.closest('#agent-approval-approve') !== null;
+        })).toBe(true);
+        await window.screenshot({ animations: 'disabled', path: testInfo.outputPath(`ensv2-${action}-${width}-${theme}.png`) });
+      }
+    }
+    allowance = 8000000n;
+    if (action === 'setup_resolver') deployed = true;
+  }
+});
+
 test('existing project picker and access controls work in both layouts and themes', async ({ electronApp, window, ollamaServer }, testInfo) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-project-ui-'));
   const project = path.join(root, 'Existing project'); fs.mkdirSync(project);

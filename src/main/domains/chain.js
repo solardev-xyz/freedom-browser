@@ -1,6 +1,6 @@
 'use strict';
 
-const { keccak256, toQuantity } = require('ethers');
+const { keccak256, toQuantity, dnsEncode } = require('ethers');
 const { ADDRESSES, ABI, CODE_HASHES, refuse, ZeroAddress } = require('./contracts');
 const sameAddress = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
 const boundedRecord = value => {
@@ -12,6 +12,8 @@ class DomainChain {
   constructor(options = {}) {
     // Uses the same node/proxy/privacy policy as Freedom's wallet. No private
     // public-RPC fallback or endpoint chosen by the model.
+    this.addresses = { ...ADDRESSES, ...options.addresses };
+    this.codeHashes = { ...CODE_HASHES, ...options.codeHashes };
     this.request = options.request || ((method, params) => require('../networks/chain-data-router').request(1, method, params).then(response => response.result));
   }
   async snapshot(receipt) {
@@ -30,20 +32,34 @@ class DomainChain {
   }
   async call(role, method, args, snapshot, from) {
     const abi = ABI[role] || ABI.nft;
-    const to = ADDRESSES[role];
+    const to = this.addresses[role];
     if (!abi || !to) refuse('Unsupported domain contract.');
+    return this.callAt(role, to, method, args, snapshot, from);
+  }
+  async callAt(role, to, method, args, snapshot, from) {
+    const abi = ABI[role] || ABI.nft;
     const data = abi.encodeFunctionData(method, args);
     const result = await this.request('eth_call', [{ to, data, ...(from && { from }) }, snapshot.tag]);
     return abi.decodeFunctionResult(method, result);
   }
   async checkCode(role, snapshot) {
-    const code = await this.request('eth_getCode', [ADDRESSES[role], snapshot.tag]);
-    if (!CODE_HASHES[role] || keccak256(code) !== CODE_HASHES[role]) refuse('The domain contract version has changed or is unsupported. Use its official app until Freedom has qualified it.', 'DOMAIN_UNSUPPORTED');
+    const code = await this.request('eth_getCode', [this.addresses[role], snapshot.tag]);
+    if (!this.codeHashes[role] || keccak256(code) !== this.codeHashes[role]) refuse('The domain contract version has changed or is unsupported. Use its official app until Freedom has qualified it.', 'DOMAIN_UNSUPPORTED');
   }
   async inspect(parsed, keys = [], receipt) {
     const snapshot = await this.snapshot(receipt);
     const role = parsed.namespace;
     if (role === 'eth') {
+      let v2;
+      if (parsed.topLevel) {
+        [v2] = await this.call('ensRegistry', 'getState', [parsed.tokenId], snapshot);
+        const [available] = await this.call('ensRegistrar', 'isAvailable', [parsed.label], snapshot);
+        // RESERVED entries are premigrated v1 names. An expired reservation
+        // still uses the legacy renewer during its contract-defined grace.
+        if (v2.status !== 1n && !(v2.status === 0n && v2.latestOwner === ZeroAddress && v2.expiry > 0n && !available)) {
+          return this.inspectV2(parsed, keys, snapshot, v2, available);
+        }
+      }
       const [manager] = await this.call('registry', 'owner', [parsed.node], snapshot);
       const [resolver] = await this.call('registry', 'resolver', [parsed.node], snapshot);
       let owner = manager;
@@ -57,16 +73,18 @@ class DomainChain {
       let wrapperExpiry;
       let fuses;
       if (wrapped) [owner, fuses, wrapperExpiry] = await this.call('wrapper', 'getData', [parsed.node], snapshot);
-      const available = parsed.topLevel ? (await this.call('controller', 'available', [parsed.label], snapshot))[0] : false;
+      const available = false;
       const records = {};
-      const supportedResolver = sameAddress(resolver, ADDRESSES.resolver);
+      const resolverRole = sameAddress(resolver, this.addresses.resolver) ? 'resolver'
+        : sameAddress(resolver, this.addresses.ensPublicResolver) ? 'ensPublicResolver' : null;
+      const supportedResolver = Boolean(resolverRole);
       if (supportedResolver) {
-        records.contenthash = boundedRecord((await this.call('resolver', 'contenthash', [parsed.node], snapshot))[0]);
-        records.address = (await this.call('resolver', 'addr', [parsed.node], snapshot))[0];
+        records.contenthash = boundedRecord((await this.call(resolverRole, 'contenthash', [parsed.node], snapshot))[0]);
+        records.address = (await this.call(resolverRole, 'addr(bytes32)', [parsed.node], snapshot))[0];
         records.text = Object.create(null);
-        for (const key of keys) records.text[key] = boundedRecord((await this.call('resolver', 'text', [parsed.node, key], snapshot))[0]);
+        for (const key of keys) records.text[key] = boundedRecord((await this.call(resolverRole, 'text', [parsed.node, key], snapshot))[0]);
       }
-      return { ...parsed, owner, manager, recordOwner: wrapped ? owner : manager, resolver, supportedResolver, wrapped, fuses: fuses?.toString(),
+      return { ...parsed, ensVersion: 1, resolverRole, registryResource: v2?.resource.toString(), owner, manager, recordOwner: wrapped ? owner : manager, resolver, supportedResolver, wrapped, fuses: fuses?.toString(),
         wrapperExpiry: wrapperExpiry?.toString(), expiry: expiry?.toString() || null, available,
         active: manager !== ZeroAddress && (expiry === null || expiry > BigInt(snapshot.timestamp)), records, snapshot };
     }
@@ -85,6 +103,42 @@ class DomainChain {
     return { ...parsed, owner, manager: owner, resolver: ADDRESSES[role], supportedResolver: true,
       available, active: resolvedAddress !== ZeroAddress, expiry: record.expiresAt.toString(),
       epoch: epoch.toString(), parentEpoch: record.parentEpoch.toString(), records, snapshot };
+  }
+  async inspectV2(parsed, keys, snapshot, state, available) {
+    const owner = state.status === 2n && state.expiry > BigInt(snapshot.timestamp) ? state.latestOwner : ZeroAddress;
+    const [resolver] = await this.call('ensRegistry', 'getResolver', [parsed.label], snapshot);
+    let resolverRole = sameAddress(resolver, this.addresses.ensPublicResolver) ? 'ensPublicResolver' : null;
+    if (!resolverRole && resolver !== ZeroAddress) {
+      if (await this.request('eth_getCode', [resolver, snapshot.tag]) !== '0x') {
+        try {
+          const [implementation] = await this.call('ensFactory', 'verifyContract', [resolver], snapshot);
+          if (sameAddress(implementation, this.addresses.ensResolverImpl)) resolverRole = 'ensResolverImpl';
+        } catch (error) {
+          // Only this factory's explicit rejection means an unsupported resolver.
+          // Transport failures and malformed responses must still surface.
+          const data = error.data ?? error.info?.error?.data;
+          const expected = ABI.ensFactory.encodeErrorResult('VerificationFailed', [resolver]);
+          if (typeof data !== 'string' || data.toLowerCase() !== expected.toLowerCase()) throw error;
+        }
+      }
+    }
+    const records = resolverRole ? { text: Object.create(null) } : {};
+    if (resolverRole === 'ensPublicResolver') {
+      records.contenthash = boundedRecord((await this.call(resolverRole, 'contenthash', [parsed.node], snapshot))[0]);
+      records.address = (await this.call(resolverRole, 'addr(bytes32)', [parsed.node], snapshot))[0];
+      for (const key of keys) records.text[key] = boundedRecord((await this.call(resolverRole, 'text', [parsed.node, key], snapshot))[0]);
+    } else if (resolverRole) {
+      const read = async (method, args) => {
+        const [result] = await this.callAt(resolverRole, resolver, 'resolve', [dnsEncode(parsed.name, 255), ABI.resolver.encodeFunctionData(method, args)], snapshot);
+        return ABI.resolver.decodeFunctionResult(method, result)[0];
+      };
+      records.contenthash = boundedRecord(await read('contenthash', [parsed.node]));
+      records.address = await read('addr', [parsed.node]);
+      for (const key of keys) records.text[key] = boundedRecord(await read('text', [parsed.node, key]));
+    }
+    return { ...parsed, ensVersion: 2, registryResource: state.resource.toString(), registryTokenId: state.tokenId.toString(),
+      owner, manager: state.latestOwner, recordOwner: owner, resolver, resolverRole, supportedResolver: Boolean(resolverRole),
+      wrapped: false, expiry: state.expiry.toString(), available, active: owner !== ZeroAddress, records, snapshot };
   }
   async simulate(tx, snapshot) {
     await this.request('eth_call', [{ from: tx.from, to: tx.to, data: tx.data, value: toQuantity(BigInt(tx.value)) }, snapshot.tag]);

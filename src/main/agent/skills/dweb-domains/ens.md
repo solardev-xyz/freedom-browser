@@ -1,21 +1,38 @@
 # ENS .eth
 
-Freedom's initial direct adapter supports the pinned ENSv1 mainnet registrar and
-current public resolver. Deployed v2 contracts do not imply v2 registration is
-active or supported. Changed versions/controllers are refused, not guessed.
+New .eth registrations use ENSv2 on Ethereum mainnet. Unmigrated v1 names renew
+through the qualified legacy renewer; migrated/new names renew through the v2
+registrar. Freedom chooses the route from chain state. Never use the retired v1
+registration controller or replay an old v1 commitment against v2.
 
-Only top-level .eth registration/renewal is supported. Normalize with ENSIP-15;
-Freedom checks contract validity and minimum duration. Default term is 31,536,000
-seconds (365 days); quote exact seconds, price and network fees. Current tuple
-registration creates an unwrapped name, owned by the selected wallet, with no
-primary-name change. Commit/reveal have separate approvals and a chain-time wait.
+Inspect the exact normalized name and intended term first. ENS payments use USDC
+by default; DAI can be requested with paymentToken. Network fees still require
+ETH. Quote the actual token amount and separate ETH fees; never substitute ETH
+for the token or exchange currencies without a separate user instruction.
+Only top-level registration/renewal is supported. The default term is 365 days.
 
-Existing names use their actual resolver. Only qualified public-resolver writes
-are supported; an owner, manager or authorized resolver delegate must be allowed
-by the contract. Wrapped renewal follows its own controller and preserves wrapper
-expiry/ownership; unavailable qualification must be reported rather than renewed
-through the wrong controller. Do not automatically wrap, burn fuses, migrate a
-resolver or buy through a marketplace.
+Register to the selected Freedom wallet. Commit spends network fees but does not
+reserve or buy the name. Preserve the operationId through the chain-time wait.
+Additional ready steps can approve a bounded token allowance and deploy the
+wallet's official ENS records contract. Each requires a separate wallet approval;
+none of them buys a name. The final reveal/register also requires approval.
+Always continue the same operation ID; follow its returned state and step.
+The token allowance is capped, never unlimited. A price decrease can leave unused
+allowance; do not claim ENS refunds tokens or applies the legacy ETH price buffer.
 
-set_website uses a verified Swarm publication; set_address changes only the ETH
+New registrations use a qualified wallet-controlled permissioned resolver that
+can be reused for later names. The setup approval explains its record permissions
+and upgrade authority. Do not replace an existing name's custom resolver, migrate
+an owned name, wrap, burn fuses or buy through a marketplace as a workaround.
+
+Existing records use their actual qualified resolver and its authorization rules.
+set_website needs a verified Swarm publication; set_address changes only the ETH
 address; set_text changes one explicit key. Other records stay untouched.
+Renewing extends expiry and preserves ownership/records. Grace/renewability comes
+from the current contracts; never apply v1's old 90-day rule to v2 names.
+
+Report completed ownership only after the final registration receipt and state
+verification. Token approval, resolver setup, a commitment, or a ready reveal is
+not a completed purchase. After Stop, decline or uncertainty, inspect the journal
+and require the user's request before resuming; never buy a second commitment to
+work around a failed setup step or an unclear broadcast.
