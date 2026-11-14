@@ -239,7 +239,9 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * signer was built. It is awaited after every other wait of the signer's
  * (the address, the core's hash, a token's spend), right before the device
  * is asked or the core signs, and throws to refuse: nothing is signed, and
- * the caller hears its own error.
+ * the caller hears its own error. A Ledger's backend awaits it inside its
+ * device session, after the device queue, the transport's open and the
+ * address check, right before each signing APDU (`ledger/signer.js`).
  *
  * @param {number} walletIndex
  * A Safe's owner or executor carries the Safe approval (`safe`: `{ id,
@@ -284,12 +286,18 @@ function getSigner(walletIndex, authorized = {}) {
   }
   let backend;
   let vaultSigned = false;
+  // A Ledger's backend runs the caller's last check itself, in its device
+  // session (after the queue, the transport and the address check), right
+  // before each signing APDU (`ledger/signer.js`).
+  let backendChecks = false;
   if (record && record.type === WALLET_TYPES.LEDGER) {
     backend = createLedgerBackend(record, {
       // What the device said about a record no device has matched yet
       // (#1065): kept on the record.
       onAddressCheck: (matched) => recordLedgerAddressCheck(walletIndex, matched),
+      ...(authorized?.beforeSign ? { beforeSign: authorized.beforeSign } : {}),
     });
+    backendChecks = true;
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record, {
       // What the phone's answer showed about the record (#1078): kept on
@@ -306,8 +314,10 @@ function getSigner(walletIndex, authorized = {}) {
   // The caller's last check (`beforeSign`), after the token's spend: a
   // device's signature is never judged by the core, so it is awaited right
   // before the device is asked, after every other wait of the signer's,
-  // whether a token answers it or not.
-  const beforeSign = vaultSigned ? null : authorized?.beforeSign || null;
+  // whether a token answers it or not. A phone's backend asks the phone in
+  // the same run as it is called; a Ledger's waits on its device session
+  // first, so its backend runs the check there, right before the APDU.
+  const beforeSign = vaultSigned || backendChecks ? null : authorized?.beforeSign || null;
   const spendAndCheck = async () => {
     if (confirmation) await spendConfirmation(confirmation);
     if (beforeSign) await beforeSign();

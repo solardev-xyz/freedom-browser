@@ -39,13 +39,16 @@ const HANDLE = 'c'.repeat(64);
 const OTHER_HANDLE = 'd'.repeat(64);
 const SAFE_INDEX = 5000;
 const SAFE_ADDRESS = '0x' + 'aa'.repeat(20);
-// A Ledger's and a phone's accounts, whose devices (`devices`) a test sets:
-// main's signers ask them after the core's hash and spend.
+// A Ledger's and a phone's accounts. A phone's backend is a test's fake
+// (`devices.phone`); a Ledger's is main's real backend and transport, over
+// a fake HID device (`devices.ledger`: its open, its address and its
+// signing APDUs), so its device queue, open and address check run as they
+// do in the app.
 const LEDGER_INDEX = 1000000;
 const PHONE_INDEX = 1000001;
 const DEVICE_ADDRESS = new Wallet(ABANDON_KEY).address;
 const DEVICE_RECORDS = Object.freeze({
-  [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: DEVICE_ADDRESS },
+  [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: DEVICE_ADDRESS, path: "44'/60'/0'/0/0" },
   [PHONE_INDEX]: { index: PHONE_INDEX, type: 'remote', address: DEVICE_ADDRESS },
 });
 const devices = { ledger: {}, phone: {} };
@@ -124,7 +127,23 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     // Main's own signers (`signers.js`): the vault's through the core, a
     // device's through a test's fake device, asked after the core's spend.
     jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
-    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => devices.ledger }));
+    jest.doMock('@ledgerhq/hw-transport-node-hid', () => ({ default: { open: (...args) => devices.ledger.open(...args) } }));
+    jest.doMock('@ledgerhq/hw-app-eth', () => ({
+      default: class FakeEth {
+        getAddress(...args) {
+          return devices.ledger.getAddress(...args);
+        }
+        signPersonalMessage(...args) {
+          return devices.ledger.signPersonalMessage(...args);
+        }
+        signEIP712Message(...args) {
+          return devices.ledger.signEIP712Message(...args);
+        }
+        signTransaction(...args) {
+          return devices.ledger.signTransaction(...args);
+        }
+      },
+    }));
     jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => devices.phone }));
     // Main's dApp file, written where the core reads it (its grant root).
     jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
@@ -778,6 +797,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     // asked.
     let serviceWait;
     let deviceAsked;
+    // DNS names over IPNS the page documents resolve: name -> IPNS key.
+    const names = new Map();
 
     class Guest extends EventEmitter {
       constructor() {
@@ -863,7 +884,8 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         isChromeIndexUrl: (url) => url === CHROME_URL,
         isAgentPage: () => false,
         windowIdOf: () => 1,
-        resolveEnsContent: async () => ({ type: 'not_found' }),
+        resolveEnsContent: async (name) =>
+          names.has(name) ? { type: 'ok', protocol: 'ipns', decoded: names.get(name) } : { type: 'not_found' },
       });
       const inCustody = (guestId) => custody.has(guestId);
       requests = createPageRequests({
@@ -895,7 +917,18 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
               },
               request
             )),
-          signing: { inCustody },
+          // Main's own signing path for a tab the Agent doesn't hold (a
+          // site's standing rule, APB-1b): the real signers and the core's
+          // `approval.check`; the message's view made here, without the IPC
+          // module.
+          signing: {
+            inCustody,
+            isVaultUnlocked: async () => true,
+            messageView: (message) => {
+              const { messageToBytes, normalizeMessage, signsRawHash } = require('./signing-utils');
+              return { hex: '0x' + messageToBytes(normalizeMessage(message)).toString('hex'), rawHash: signsRawHash(message) };
+            },
+          },
           sends: { inCustody },
         }),
         chromeWindowOf: (contents) => (contents?.id === 501 ? 1 : null),
@@ -918,6 +951,31 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     function device(name) {
       const key = new Wallet(ABANDON_KEY);
       const asked = (method) => deviceAsked.push([name, method]);
+      if (name === 'ledger') {
+        // The HID device under main's Ledger backend: what hw-app-eth asks.
+        const answer = async (signature) => {
+          const sig = require('ethers').Signature.from(await signature);
+          return { r: sig.r.slice(2), s: sig.s.slice(2), v: sig.v };
+        };
+        return {
+          open: async () => ({ close: async () => {} }),
+          getAddress: async () => ({ address: DEVICE_ADDRESS }),
+          signPersonalMessage: async (_path, hex) => {
+            asked('signMessage');
+            return answer(key.signMessage(Buffer.from(hex, 'hex')));
+          },
+          signEIP712Message: async (_path, payload) => {
+            asked('signTypedData');
+            const { EIP712Domain: _domain, ...types } = payload.types;
+            return answer(key.signTypedData(payload.domain, types, payload.message));
+          },
+          signTransaction: async (_path, rawHex) => {
+            asked('signTransaction');
+            const signed = Transaction.from(await key.signTransaction(Transaction.from('0x' + rawHex)));
+            return answer(signed.signature.serialized);
+          },
+        };
+      }
       return {
         getAddress: async () => DEVICE_ADDRESS,
         signMessage: async (message) => {
@@ -960,28 +1018,36 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       // is under `page`, in the Agent's tab, with a token.
       const signs = calls.filter((call) => call.method.startsWith('sign.'));
       for (const call of signs) {
-        expect(call.context).toEqual({ caller: 'page', page: expect.objectContaining({ origin: SITE, agent: true }) });
+        expect(call.context).toEqual({ caller: 'page', page: expect.objectContaining({ origin: expect.stringMatching(/^(https:\/\/app\.example|example\.com)$/), agent: true }) });
         expect(call.params.authorization).toEqual(expect.objectContaining({ token: expect.stringMatching(/^[0-9a-f]{64}$/) }));
         expect(call.params.authorization).not.toHaveProperty('standing');
       }
     });
 
-    // A page in a tab the Agent holds, and its requests.
-    function agentTab() {
+    // A page in a tab the Agent holds (or, `held: false`, one it doesn't),
+    // and its requests; `name`: a DNS name over IPNS bound to the tab, at
+    // its IPNS key.
+    function agentTab({ held = true, name = null } = {}) {
       const guest = new Guest();
       guests.set(guest.id, guest);
       requests.track(guest);
-      guest.commit(`${SITE}/app`);
+      if (name) {
+        expect(requests.bindName({ sender: guest.hostWebContents }, { guest: guest.id, name, key: names.get(name) })).toBe(true);
+        guest.commit(`ipns://${names.get(name)}/`);
+      } else {
+        guest.commit(`${SITE}/app`);
+      }
       const nonce = (nextNonce++).toString(16).padStart(32, '0');
       const event = { sender: guest, senderFrame: guest.mainFrame };
       expect(requests.hello(event, { nonce }).ok).toBe(true);
-      custody.add(guest.id);
+      if (held) custody.add(guest.id);
+      const origin = name || SITE;
       const page = {
-        origin: SITE,
-        top_origin: SITE,
+        origin,
+        top_origin: origin,
         frame: guest.mainFrame.frameTreeNodeId,
         navigation: expect.any(Number),
-        agent: true,
+        agent: held,
       };
       return {
         guest,
@@ -1255,6 +1321,147 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         } finally {
           hold.restore();
         }
+      });
+    });
+
+    // Codex round 2 on #1246: a Ledger's backend waits again after the
+    // signer's own steps (its device queue, the transport's open, the
+    // device's address check), so the caller's last check runs inside that
+    // session, right before the signing APDU. Main's real Ledger backend
+    // and transport here, over a fake HID device.
+    describe("a Ledger's device session: the last check after its queue, its open and its address", () => {
+      const NAME = 'example.com';
+      const IPNS_KEY = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3ng7n3i46uzyxzyqj2xjonzllnv0v8';
+      const OTHER_IPNS_KEY = 'k51qzi5uqu5dh71qgwangrt6r0nd4094i88nsady6qgd1dhjcyfsaqmpp143ab';
+      const tick = async () => {
+        for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      };
+      // The step held, and how to tell the request has reached it: the
+      // device queue held by another device task (the request queued once
+      // its token's spend, or the core's verdict, has settled), the
+      // transport's open, or the device's address check.
+      const HOLDS = {
+        'the device queue': (settled) => {
+          const gate = deferred();
+          const blocker = require('./ledger/transport').withEthApp(() => gate.promise);
+          return { reached: settled().then(tick), release: gate.resolve, done: blocker };
+        },
+        "the transport's open": () => {
+          const gate = deferred();
+          const reached = deferred();
+          const open = devices.ledger.open;
+          devices.ledger.open = async (...args) => {
+            reached.resolve();
+            await gate.promise;
+            return open(...args);
+          };
+          return { reached: reached.promise, release: gate.resolve, done: Promise.resolve() };
+        },
+        "the device's address check": () => {
+          const gate = deferred();
+          const reached = deferred();
+          const getAddress = devices.ledger.getAddress;
+          devices.ledger.getAddress = async (...args) => {
+            reached.resolve();
+            await gate.promise;
+            return getAddress(...args);
+          };
+          return { reached: reached.promise, release: gate.resolve, done: Promise.resolve() };
+        },
+      };
+      const until = async (found) => {
+        for (let i = 0; i < 200 && !found(); i += 1) await new Promise((resolve) => setImmediate(resolve));
+        return found();
+      };
+      // The `nth` call of `method` settled: the last wait before the signer.
+      const settledCall = (method, nth = 1) => async () => {
+        const call = await until(() => calls.filter((entry) => entry.method === method)[nth - 1]);
+        await call.reply.catch(() => {});
+      };
+
+      beforeEach(() => {
+        names.set(NAME, IPNS_KEY);
+      });
+
+      afterEach(() => {
+        names.clear();
+        permissions.revokePermission(NAME);
+      });
+
+      describe.each(Object.keys(HOLDS))('%s held', (held) => {
+        test.each([
+          ['personal_sign', 'signMessage'],
+          ['eth_signTypedData_v4', 'signTypedData'],
+          ['eth_sendTransaction', 'signTransaction'],
+        ])("the Agent's %s: the tab left, the document gone or the name moved there sends no signing APDU; unchanged, one", async (method, apdu) => {
+          for (const [change, act, refused] of [
+            ['the Agent leaves the tab', (tab) => custody.delete(tab.guest.id), { error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } }],
+            ['the document navigates', (tab) => tab.guest.commit(`ipns://${IPNS_KEY}/next`), { gone: true }],
+            ['the name moves', () => names.set(NAME, OTHER_IPNS_KEY), { error: { code: 4100, message: 'This page has no address to connect from yet' } }],
+            ['nothing changes', () => {}, null],
+          ]) {
+            calls.length = 0;
+            deviceAsked = [];
+            running = [];
+            names.set(NAME, IPNS_KEY);
+            permissions.grantPermission(NAME, LEDGER_INDEX, 100);
+            const tab = agentTab({ name: NAME });
+            const hold = HOLDS[held](settledCall('approval.spend'));
+            const asking = tab.ask(...ASKS[method](DEVICE_ADDRESS));
+            await hold.reached;
+            // Past the token's spend, in the device session: no APDU yet.
+            expect({ change, spent: calls.filter((call) => call.method === 'approval.spend').length, asked: deviceAsked }).toEqual({ change, spent: 1, asked: [] });
+            act(tab);
+            hold.release();
+            await hold.done;
+            const answer = await asking;
+            await Promise.allSettled(running);
+            if (refused) {
+              expect({ change, answer }).toEqual({ change, answer: refused });
+              expect({ change, asked: deviceAsked }).toEqual({ change, asked: [] });
+            } else {
+              expect({ change, answer }).toEqual({ change, answer: { result: expect.stringMatching(/^0x[0-9a-f]+$/) } });
+              expect({ change, asked: deviceAsked }).toEqual({ change, asked: [['ledger', apdu]] });
+            }
+            expect(calls.filter((call) => call.method.startsWith('sign.'))).toEqual([]);
+            // The device is free for the next.
+            await expect(require('./ledger/transport').withEthApp(async () => 'free')).resolves.toBe('free');
+          }
+        });
+
+        test("a site's signing rule on a Ledger (APB-1b): revoked there sends no signing APDU; unchanged, one", async () => {
+          for (const revoke of [true, false]) {
+            calls.length = 0;
+            deviceAsked = [];
+            permissions.grantPermission(SITE, LEDGER_INDEX, 100);
+            permissions.setSigningAutoApprove(SITE, true);
+            const tab = agentTab({ held: false });
+            // The core's verdict for the choice, then again just before the
+            // signer (APB-1b): the device session comes after the second.
+            const hold = HOLDS[held](settledCall('approval.check', 2));
+            const asking = tab.ask('personal_sign', ['0x68656c6c6f', DEVICE_ADDRESS]);
+            await hold.reached;
+            // The rule answered (no prompt, no Agent), and the device session waits.
+            expect({ revoke, approvals, asked: deviceAsked }).toEqual({ revoke, approvals: [], asked: [] });
+            if (revoke) permissions.setSigningAutoApprove(SITE, false);
+            hold.release();
+            await hold.done;
+            const answer = await asking;
+            if (revoke) {
+              expect(answer).toEqual({
+                error: { code: -32603, message: "Signing was not confirmed: this request is not covered by the site's auto-approve rules" },
+              });
+              expect(deviceAsked).toEqual([]);
+            } else {
+              expect(require('ethers').verifyMessage('hello', answer.result)).toBe(DEVICE_ADDRESS);
+              expect(deviceAsked).toEqual([['ledger', 'signMessage']]);
+            }
+            // The core's verdict: for the choice, just before the signer, and
+            // inside the device session, last.
+            expect(calls.filter((call) => call.method === 'approval.check')).toHaveLength(3);
+            permissions.setSigningAutoApprove(SITE, false);
+          }
+        });
       });
     });
   });

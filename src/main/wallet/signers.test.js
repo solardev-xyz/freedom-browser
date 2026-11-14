@@ -840,8 +840,43 @@ describe("getSigner: the caller's last check, right before the signature", () =>
   };
   const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+  // A Ledger's backend runs the caller's check itself, in its device
+  // session right before the APDU (`ledger/signer.js`, tested there against
+  // a held queue, transport and address check); this one does it as the
+  // real one does, so the order seen here is the signer's.
+  let ledgerChecks;
+  beforeEach(() => {
+    ledgerChecks = [];
+    mockCreateLedgerBackend.mockClear();
+    mockCreateLedgerBackend.mockImplementation((_record, options = {}) => {
+      ledgerChecks.push(typeof options.beforeSign === 'function');
+      const checked = (method) => async (...args) => {
+        if (options.beforeSign) await options.beforeSign();
+        return mockLedgerBackend[method](...args);
+      };
+      return {
+        getAddress: mockLedgerBackend.getAddress,
+        signTransaction: checked('signTransaction'),
+        signMessage: checked('signMessage'),
+        signTypedData: checked('signTypedData'),
+      };
+    });
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
+    mockCreateLedgerBackend.mockImplementation(() => mockLedgerBackend);
+  });
+
+  test("a Ledger's backend is handed the caller's check; the signer doesn't run it before the device session", async () => {
+    const [record] = DEVICES.ledger;
+    mockGetWalletRecord.mockReturnValue(record);
+    const beforeSign = jest.fn(async () => {});
+    getSigner(record.index, { page: PAGE, standing: {}, chainId: 100, beforeSign });
+    getSigner(record.index, { page: PAGE, standing: {}, chainId: 100 });
+    expect(ledgerChecks).toEqual([true, false]);
+    expect(mockCreateLedgerBackend.mock.calls[0][1].beforeSign).toBe(beforeSign);
+    expect(mockCreateLedgerBackend.mock.calls[1][1]).not.toHaveProperty('beforeSign');
   });
 
   describe.each(Object.keys(DEVICES))('on a %s', (device) => {
