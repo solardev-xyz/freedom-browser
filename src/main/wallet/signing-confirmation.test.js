@@ -520,6 +520,57 @@ describe("signing-confirmation: the core's kinds", () => {
   });
 });
 
+// A device send's "Always allow" (cored 0.16.0, design 0012 "A device send's
+// rule"): the flagged dApp send's spend under the page gives a finalize
+// receipt, which main presents through `approval.remember` under that page.
+describe("signing-confirmation: a device send's finalize receipt", () => {
+  const sc = require('./signing-confirmation');
+  const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+  const HANDLE = 'c'.repeat(64);
+  const flagged = (remember = true) =>
+    sc.issuePageConfirmation(KINDS.DAPP_SEND, 3, TX, { handle: HANDLE, context: PAGE }, { remember, phone: true });
+
+  beforeEach(() => {
+    _reset();
+    mockCore.reset();
+  });
+
+  test("a flagged spend's receipt is held with the page it was spent under; no other spend gives one", async () => {
+    const spent = await sc.spendConfirmation(await flagged());
+    expect(spent).toEqual({ bound: true, receipt: expect.stringMatching(/^[0-9a-f]{32}$/) });
+    expect(sc.finalizeReceiptOf(spent, PAGE)).toEqual({ receipt: spent.receipt, page: PAGE });
+    expect(sc.finalizeReceiptOf(await sc.spendConfirmation(await flagged(false)), PAGE)).toBeNull();
+    // None without a page, or in a form the core doesn't send.
+    expect(sc.finalizeReceiptOf(spent, null)).toBeNull();
+    for (const receipt of [undefined, 'AB'.repeat(16), 'ab'.repeat(15), 7]) {
+      expect(sc.finalizeReceiptOf({ bound: true, receipt }, PAGE)).toBeNull();
+    }
+  });
+
+  test('presented under its page, once: the rule written; a second presentation, another document, or an expired one refused', async () => {
+    mockCore.dapp.connect(PAGE.origin, 3, 100);
+    const held = sc.finalizeReceiptOf(await sc.spendConfirmation(await flagged()), PAGE);
+    await expect(sc.rememberDeviceSend(held)).resolves.toEqual({ added: true });
+    expect(mockCore.calls.at(-1)).toEqual({ method: 'approval.remember', params: { receipt: held.receipt }, page: PAGE });
+    expect(mockCore.dapp.transactionRule(PAGE.origin, TX.to, TX.data.slice(0, 10), 100, TX.value)).toBe(true);
+    // Taken at its first presentation.
+    await expect(sc.rememberDeviceSend(held)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'unknown_token' });
+    // Another document's presentation takes it too.
+    const other = sc.finalizeReceiptOf(await sc.spendConfirmation(await flagged()), PAGE);
+    await expect(sc.rememberDeviceSend({ ...other, page: { ...PAGE, navigation: 3 } })).rejects.toMatchObject({ reason: 'mismatch' });
+    await expect(sc.rememberDeviceSend(other)).rejects.toMatchObject({ reason: 'unknown_token' });
+    // Ten minutes of the vault's clock.
+    const late = sc.finalizeReceiptOf(await sc.spendConfirmation(await flagged()), PAGE);
+    const start = Date.now();
+    mockCore.setNow(() => start + 600_000);
+    await expect(sc.rememberDeviceSend(late)).rejects.toMatchObject({ reason: 'expired' });
+    // Nothing to present: refused before the core is asked.
+    const before = mockCore.calls.length;
+    await expect(sc.rememberDeviceSend(null)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    expect(mockCore.calls).toHaveLength(before);
+  });
+});
+
 // A site's standing rule (freedom-core design 0012, APB-1b): `approval.check`
 // under the page, in the core's forms, and what main does with the core's
 // `rule` reply to an "Always allow" send.

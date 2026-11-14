@@ -176,6 +176,9 @@ function backends() {
     records: [],
     committed: [],
     sendFails: null,
+    // Thrown at the device, after its token's spend: its own refusal (a
+    // Ledger's or a phone's "declined") or a failed signature.
+    deviceFails: null,
     // Held at the device (a Ledger or the core's signature), before the
     // commit; and a phone's own send, which signs and broadcasts at once.
     signerHold: null,
@@ -256,13 +259,15 @@ function backends() {
       // The vault account's signer hears the core's `rule` reply as it signs
       // (`onRule`), a Ledger's doesn't.
       // A device's signer keeps the dispatcher's last check (`beforeSign`),
-      // which it awaits right before the device is asked (`signers.js`).
+      // which it awaits right before the device is asked, and spends its
+      // token through the core first, handing on a flagged one's finalize
+      // receipt (`signers.js`).
       getSigner: jest.fn((index, authorized) =>
         index === PHONE_INDEX
-          ? { ...phoneSigner, beforeSign: authorized?.beforeSign }
+          ? { ...phoneSigner, beforeSign: authorized?.beforeSign, device: authorized }
           : index === 0
             ? { ...signer, authorized }
-            : { ...signer, beforeSign: authorized?.beforeSign }
+            : { ...signer, beforeSign: authorized?.beforeSign, device: authorized }
       ),
       signAndRecord: jest.fn(async (tx, chosen, context, options) => {
         state.records.push({ tx, context, walletIndex: options.walletIndex });
@@ -274,9 +279,17 @@ function backends() {
           state.serviceWaits += 1;
           await state.serviceHold.promise;
         }
+        // A device's token: spent through the core before the device is
+        // asked, as main's signers do; a flagged one gives a receipt.
+        const confirmation = chosen.device?.confirmation;
+        if (confirmation) {
+          const spentReply = await confirmations.spendConfirmation(confirmation);
+          chosen.device.onReceipt?.(confirmations.finalizeReceiptOf(spentReply, confirmation.page));
+        }
         const last = chosen.beforeSign ?? (chosen.authorized?.confirmation ? null : chosen.authorized?.beforeSign);
         if (last) await last();
         state.signerAsked += 1;
+        if (chosen.device && state.deviceFails) throw state.deviceFails;
         if (typeof chosen.sendTransaction === 'function') {
           // A phone: it signs and broadcasts in one step.
           if (state.phoneHold) await state.phoneHold.promise;
@@ -703,19 +716,158 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     expect(errorLog).not.toHaveBeenCalled();
   });
 
-  test('"always allow" is not offered for a Ledger send: the device signs, and no rule can be written for it', async () => {
-    const env = setup();
-    env.connect(KEY_A, LEDGER_INDEX);
-    const page = env.tab();
-    const answer = page.send(CALL);
-    await flush();
-    expect(env.lastPrompt().view.alwaysAllow).toBe(false);
-    await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
-    expect(await answer).toEqual({ result: HASH });
-    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1).params.payload).not.toHaveProperty(
-      'remember'
-    );
-    expect(env.state.txRules).toEqual([]);
+  // Design 0012, "A device send's rule" (cored 0.16.0): a device's flagged
+  // token, spent through the core before the device is asked, gives a
+  // finalize receipt and writes nothing; main presents it once the device
+  // signed and the send is recorded, under the PageContext it was spent
+  // under, and the core writes the rule then.
+  describe('"always allow" for a Ledger\'s or a phone\'s send: a receipt, presented once the send is recorded', () => {
+    const issued = () => mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1);
+    const spends = () => mockApprovals.calls.filter((call) => call.method === 'approval.spend');
+    const remembers = () => mockApprovals.calls.filter((call) => call.method === 'approval.remember');
+    // The core's dApp store, which the receipt's write reads (APB-2).
+    const coreRule = (index) => mockApprovals.dapp.transactionRule(KEY_A, CONTRACT, SELECTOR, 100, '0') && mockApprovals.dapp.exposes(KEY_A, index);
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    test.each([
+      ['a Ledger', LEDGER_INDEX, HASH],
+      ['a phone', PHONE_INDEX, PHONE_HASH],
+    ])('%s: offered; ticked, the spend gives a receipt and writes nothing, and the receipt is presented after the record', async (_label, index, hash) => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = setup();
+      env.connect(KEY_A, index);
+      mockApprovals.dapp.connect(KEY_A, index, 100);
+      // What had been recorded when the receipt was presented.
+      const remember = mockApprovals.approval.remember;
+      let recordedAtRemember = null;
+      jest.spyOn(mockApprovals.approval, 'remember').mockImplementation(async (...args) => {
+        recordedAtRemember = env.state.committed.length;
+        expect(coreRule(index)).toBe(false);
+        return remember(...args);
+      });
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      expect(env.lastPrompt().view.alwaysAllow).toBe(true);
+      await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      expect(await answer).toEqual({ result: hash });
+      // Minted flagged, under the page; spent under that same page by the
+      // device's signer, which got a receipt.
+      expect(issued().params.payload.remember).toBe(true);
+      const [spend] = spends();
+      expect(spend.page).toEqual(issued().page);
+      expect(spend.params.payload.remember).toBe(true);
+      // Presented once, after the send was recorded, under the PageContext
+      // the token was spent under; the core wrote the rule, and it's gone.
+      expect(remembers()).toEqual([{ method: 'approval.remember', params: { receipt: expect.stringMatching(/^[0-9a-f]{32}$/) }, page: spend.page }]);
+      expect(recordedAtRemember).toBe(1);
+      expect(coreRule(index)).toBe(true);
+      expect(mockApprovals.openReceipts()).toBe(0);
+      expect(errorLog).not.toHaveBeenCalled();
+      // Main writes no rule of its own.
+      expect(env.state.txRules).toEqual([]);
+    });
+
+    test('not ticked: no flag, no receipt, nothing presented', async () => {
+      const env = setup();
+      env.connect(KEY_A, LEDGER_INDEX);
+      mockApprovals.dapp.connect(KEY_A, LEDGER_INDEX, 100);
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      await env.decide(env.lastPrompt().handle, true, { alwaysAllow: false });
+      expect(await answer).toEqual({ result: HASH });
+      expect(issued().params.payload).not.toHaveProperty('remember');
+      expect(spends()).toHaveLength(1);
+      expect(mockApprovals.openReceipts()).toBe(0);
+      expect(remembers()).toEqual([]);
+      expect(coreRule(LEDGER_INDEX)).toBe(false);
+    });
+
+    test.each([
+      ["the Ledger's own refusal", LEDGER_INDEX, Object.assign(new Error('declined'), { code: 'LEDGER_USER_REJECTED' }), REJECTED],
+      ["the phone's own refusal", PHONE_INDEX, Object.assign(new Error('declined'), { code: 'REMOTE_USER_REJECTED' }), REJECTED],
+      ['a failed signature', LEDGER_INDEX, new Error('The device was disconnected'), { error: { code: -32603, message: 'The device was disconnected' } }],
+    ])('%s: nothing presented, the receipt left to expire, no rule', async (_label, index, failure, answered) => {
+      const env = setup();
+      env.connect(KEY_A, index);
+      mockApprovals.dapp.connect(KEY_A, index, 100);
+      env.state.deviceFails = failure;
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      expect(await answer).toEqual(answered);
+      // The spend gave its receipt; main never presented it.
+      expect(mockApprovals.openReceipts()).toBe(1);
+      expect(remembers()).toEqual([]);
+      expect(coreRule(index)).toBe(false);
+    });
+
+    test('a document gone while the phone has the job: nothing is presented, and the receipt expires', async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = setup();
+      env.connect(KEY_A, PHONE_INDEX);
+      mockApprovals.dapp.connect(KEY_A, PHONE_INDEX, 100);
+      env.state.phoneHold = deferred();
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      const decided = env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      await flush();
+      // The phone has the job, its token spent into a receipt; the tab
+      // navigates away before it answers.
+      expect(mockApprovals.openReceipts()).toBe(1);
+      page.guest.commit(`${KEY_B}/`);
+      env.state.phoneHold.resolve();
+      await decided;
+      await answer;
+      await flush();
+      expect(env.state.committed).toHaveLength(1);
+      expect(mockApprovals.openReceipts()).toBe(1);
+      expect(remembers()).toEqual([]);
+      expect(coreRule(PHONE_INDEX)).toBe(false);
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('the site no longer holds the send'));
+    });
+
+    test("what the core said of the receipt's rule is reported, as a vault send's is", async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = setup();
+      env.connect(KEY_A, LEDGER_INDEX);
+      const page = env.tab();
+      const confirmed = async () => {
+        const answer = page.send(CALL);
+        await flush();
+        await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+        expect(await answer).toEqual({ result: HASH });
+      };
+      // The core's grant doesn't expose the account: not written.
+      await confirmed();
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: not_exposed`));
+      // Written, but not durable: warned.
+      mockApprovals.dapp.connect(KEY_A, LEDGER_INDEX, 100);
+      jest.spyOn(mockApprovals.approval, 'remember').mockResolvedValueOnce({ rule: { added: true, durable: false } });
+      await confirmed();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('may not survive a power loss'));
+      // A receipt the core refuses (here, expired): logged with its reason.
+      errorLog.mockClear();
+      jest.spyOn(mockApprovals.approval, 'remember').mockRejectedValueOnce(
+        Object.assign(new Error('not authorized: expired'), { code: 'not_authorized', data: { reason: 'expired' } })
+      );
+      await confirmed();
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: expired`));
+      // A spend that gave no receipt (a core before 0.16.0): nothing to present.
+      errorLog.mockClear();
+      jest.spyOn(mockApprovals.approval, 'spend').mockResolvedValueOnce({ bound: true });
+      const before = remembers().length;
+      await confirmed();
+      expect(remembers()).toHaveLength(before);
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: no receipt`));
+    });
   });
 
   test('"always allow" records nothing for a plain transfer, or when the send fails', async () => {
@@ -842,6 +994,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     expect(env.deps.sends.getSigner).toHaveBeenCalledWith(LEDGER_INDEX, {
       confirmation: expect.objectContaining({ kind: 'dapp-send', account: LEDGER_INDEX, page: expect.objectContaining({ origin: KEY_A }) }),
       onRule: expect.any(Function),
+      onReceipt: expect.any(Function),
     });
     env.state.sendFails = Object.assign(new Error('Rejected on device'), { code: 'LEDGER_USER_REJECTED' });
     answer = page.send(CALL);

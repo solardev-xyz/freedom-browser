@@ -834,6 +834,131 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         },
       });
     });
+    // Design 0012, "A device send's rule" (cored 0.16.0): a Ledger's or a
+    // phone's flagged dApp send is spent through the core before the device
+    // is asked (main's real signers here, over a fake device). The spend
+    // writes nothing and gives a finalize receipt, which main presents under
+    // the page it was spent under once the device signed and the send is
+    // recorded; only then is the rule written. A send the device refused
+    // presents nothing, and leaves no rule.
+    describe.each([
+      ['a phone', PHONE_INDEX, 'remote'],
+      ['a Ledger', LEDGER_INDEX, 'ledger'],
+    ])('"Always allow" on %s\'s send: a finalize receipt', (_label, index, type) => {
+      const key = new Wallet(ABANDON_KEY);
+      let refuse;
+      const deviceSend = (confirmation, onReceipt) => {
+        const signer = getSigner(index, { confirmation, onReceipt });
+        const built = buildTransaction({ ...SEND, nonce: 7 });
+        return type === 'remote' ? signer.sendTransaction(built) : signer.signTransaction(built);
+      };
+      // Minted flagged for the page, as main's issuer mints a confirmed
+      // send, and spent by the device's signer; the receipt it handed on.
+      async function spentForDevice(page = PAGE) {
+        const confirmation = await pageToken('dapp-send', index, { ...SEND, origin: page.origin }, page, HANDLE, {
+          remember: true,
+          phone: type === 'remote',
+        });
+        let held = null;
+        await deviceSend(confirmation, (receipt) => {
+          held = receipt;
+        }).catch((err) => {
+          if (!refuse) throw err;
+        });
+        return held;
+      }
+      const sendCheck = () =>
+        sc.checkStanding(PAGE, { kind: 'transaction', account: index, accountType: type, payload: SEND, paused: false });
+      // A phone picks its own fee, so the rule alone covers its send; a
+      // Ledger's also needs the core's own fee evidence, which this test has
+      // none of (`fee_check`, past the rule).
+      const COVERED = type === 'remote' ? { covered: true, reason: null } : { covered: false, reason: 'fee_check' };
+
+      beforeEach(() => {
+        refuse = false;
+        devices.phone = {
+          getAddress: async () => DEVICE_ADDRESS,
+          sendTransaction: async () => {
+            if (refuse) throw Object.assign(new Error('declined'), { code: 'REMOTE_USER_REJECTED' });
+            return '0x' + 'ab'.repeat(32);
+          },
+        };
+        devices.ledger = {
+          open: async () => ({ close: async () => {} }),
+          getAddress: async () => ({ address: DEVICE_ADDRESS }),
+          signTransaction: async (_path, rawHex) => {
+            if (refuse) throw Object.assign(new Error('Ledger device: Condition of use not satisfied (0x6985)'), { statusCode: 0x6985 });
+            const signed = Transaction.from(await key.signTransaction(Transaction.from('0x' + rawHex)));
+            const sig = signed.signature;
+            return { r: sig.r.slice(2), s: sig.s.slice(2), v: sig.v };
+          },
+        };
+      });
+
+      test('the spend writes nothing; the receipt presented under its page writes the rule, and the next identical call is covered by it', async () => {
+        await permissions.grantPermission(SITE, index, 100, PAGE);
+        const held = await spentForDevice();
+        expect(held).toEqual({ receipt: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE });
+        const spend = calls.find((call) => call.method === 'approval.spend');
+        expect(spend).toMatchObject({ context: { caller: 'page', page: PAGE }, params: { kind: 'dapp-send', account: index } });
+        expect((await spend.reply).receipt).toBe(held.receipt);
+        // Spent, signed and recorded: still no rule until main presents it.
+        expect(await sendCheck()).toEqual({ covered: false, reason: 'no_rule' });
+        expect(await sc.rememberDeviceSend(held)).toEqual({ added: true });
+        expect(calls.find((call) => call.method === 'approval.remember')).toMatchObject({
+          context: { caller: 'page', page: PAGE },
+          params: { receipt: held.receipt },
+        });
+        expect(await sendCheck()).toEqual(COVERED);
+        // Q9's limited rule, as a vault send's "Always allow" writes it.
+        const file = JSON.parse(fs.readFileSync(path.join(root, 'dapp-permissions.json'), 'utf8'));
+        expect(file[SITE].autoApprove.limited.transactions).toEqual([
+          { to: TX.to.toLowerCase(), selector: SELECTOR, chainId: 100, maxValue: TX.value, grantedAt: expect.any(Number) },
+        ]);
+        // Presented once: taken at its first presentation.
+        expect(await reasonOf(vaultBackend.approval.remember({ receipt: held.receipt }, PAGE))).toBe('unknown_token');
+      });
+
+      test('a send the device refused presents nothing: no rule', async () => {
+        await permissions.grantPermission(SITE, index, 100, PAGE);
+        refuse = true;
+        const held = await spentForDevice();
+        // The spend gave its receipt; the device refused, so main never
+        // presents it, and nothing is written.
+        expect(held).toEqual({ receipt: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE });
+        expect(calls.filter((call) => call.method === 'approval.remember')).toEqual([]);
+        expect(await sendCheck()).toEqual({ covered: false, reason: 'no_rule' });
+        const file = JSON.parse(fs.readFileSync(path.join(root, 'dapp-permissions.json'), 'utf8'));
+        expect(file[SITE].autoApprove.limited?.transactions ?? []).toEqual([]);
+      });
+
+      test('another document, a narrowing, or no grant: nothing written', async () => {
+        await permissions.grantPermission(SITE, index, 100, PAGE);
+        // Another document of the same site: refused, and the receipt gone.
+        const other = await spentForDevice();
+        expect(await reasonOf(vaultBackend.approval.remember({ receipt: other.receipt }, { ...PAGE, navigation: PAGE.navigation + 1 }))).toBe(
+          'mismatch'
+        );
+        expect(await reasonOf(vaultBackend.approval.remember({ receipt: other.receipt }, PAGE))).toBe('unknown_token');
+        // The chrome or main itself: refused by the method table, the receipt kept for its page.
+        const kept = await spentForDevice();
+        await expect(vaultBackend.approval.remember({ receipt: kept.receipt }, 'chrome')).rejects.toMatchObject({ code: 'forbidden' });
+        await expect(vaultBackend.approval.remember({ receipt: kept.receipt }, null)).rejects.toMatchObject({ code: 'forbidden' });
+        // A narrowing (the signing rule turned off, main's own) drops the
+        // key's receipts.
+        await permissions.setSigningAutoApprove(SITE, false);
+        expect(calls.filter((call) => call.method === 'approval.revoke').at(-1)).toMatchObject({ params: { store: 'dapp', key: SITE, what: 'signing' } });
+        expect(await reasonOf(vaultBackend.approval.remember({ receipt: kept.receipt }, PAGE))).toBe('unknown_token');
+        expect(await sendCheck()).toEqual({ covered: false, reason: 'no_rule' });
+        // A grant that no longer exposes the account (moved to another): not written.
+        const moved = await spentForDevice();
+        await permissions.revokePermission(SITE);
+        await permissions.grantPermission(SITE, 0, 100, PAGE);
+        expect(await reasonOf(vaultBackend.approval.remember({ receipt: moved.receipt }, PAGE))).toBe('unknown_token');
+        const fresh = await spentForDevice();
+        expect(await sc.rememberDeviceSend(fresh)).toEqual({ added: false, reason: 'not_exposed' });
+      });
+    });
   });
 
   // Design 0012 (as amended by freedom-core #368), "A page request the Agent

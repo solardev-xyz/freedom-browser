@@ -61,8 +61,13 @@
  *      the prompt's choices, is minted into the token (`remember`), and the
  *      core writes the contract rule for the requester's key as it signs
  *      (Q9's limited rule, which clears today's for the same call in the
- *      same write), and says so in its reply; main writes none (APB-2). It
- *      is offered only for a vault account's send, the one the core signs.
+ *      same write), and says so in its reply; main writes none (APB-2). A
+ *      device's send (a Ledger, a phone) isn't signed by the core: its
+ *      flagged token's spend gives a finalize receipt instead, which main
+ *      presents (`approval.remember`) once the device signed and main
+ *      recorded the send, and the core writes the same rule then (design
+ *      0012, "A device send's rule"). It is offered for a contract call
+ *      from any account but a Safe, whose send goes to its board.
  *
  * After the signer's wait (a Ledger, the core), and before the signed bytes
  * are recorded or sent, main checks the name, the grant (or the rule and
@@ -177,22 +182,27 @@ function selectorOf(data) {
   return typeof data === 'string' && /^0x[0-9a-fA-F]{8}/.test(data) ? data.slice(0, 10).toLowerCase() : null;
 }
 
+// The accounts whose send can carry "Always allow": a vault account's, which
+// the core signs and writes the rule for as it signs (APB-2), and a
+// device's, whose rule the core writes from the receipt main presents once
+// the device signed and the send is recorded (design 0012, "A device send's
+// rule").
+const REMEMBERING_ACCOUNTS = new Set(['mnemonic', 'ledger', 'remote']);
+
 /**
- * Whether "Always allow" can be offered for a send: a contract call a vault
- * account sends, the one the identity core signs and writes the rule for as
- * it signs (design 0012, APB-2). A device's send (a Ledger, a phone) is
- * signed outside the core, which writes no rule for it, and main writes the
- * dApp file nowhere; a Safe's goes to its board.
+ * Whether "Always allow" can be offered for a send: a contract call from a
+ * vault account, a Ledger or a phone. A Safe's goes to its board, and a
+ * plain transfer has no rule.
  */
 function rememberable(ctx) {
-  return !ctx.safe && ctx.account?.type === 'mnemonic' && Boolean(selectorOf(ctx.tx?.data));
+  return !ctx.safe && REMEMBERING_ACCOUNTS.has(ctx.account?.type) && Boolean(selectorOf(ctx.tx?.data));
 }
 
 /**
  * What the core said of the contract rule a flagged send asked for (the
- * `sign.transaction` reply's `rule`, design 0012, API), logged as today's
- * rule writes are: written; written but not durable; or not written, with
- * the core's reason.
+ * `sign.transaction` reply's `rule`, design 0012, API, or a device send's
+ * `approval.remember` reply's), logged as today's rule writes are: written;
+ * written but not durable; or not written, with the core's reason.
  */
 function reportRule(key, rule) {
   if (rule?.added === true) {
@@ -401,6 +411,9 @@ function defaultSendDependencies() {
     // A Safe send's token, spent through the identity core (design 0012),
     // and a token a request ended before presenting, burnt.
     spendSafe: (confirmation) => require('../wallet/signing-confirmation').spendSafeConfirmation(confirmation),
+    // A device send's finalize receipt, presented once it is recorded
+    // (design 0012, "A device send's rule").
+    rememberDeviceSend: (held) => require('../wallet/signing-confirmation').rememberDeviceSend(held),
     discardToken: (token) => require('../wallet/signing-confirmation').discardConfirmation(token),
   };
 }
@@ -562,9 +575,9 @@ function createSendDispatchers(shared, deps = {}) {
       feeCheck: verdict ? { ...verdict } : null,
       // Main asked again at the press: the fee is newly above the threshold.
       feeAskAgain: askAgain === true,
-      // "Always allow" is offered for a contract call a vault account sends:
-      // the core writes its rule as it signs (design 0012, APB-2), and it
-      // signs no device's send and no Safe's.
+      // "Always allow" is offered for a contract call from a vault account
+      // or a device: the core writes its rule as it signs a vault's (design
+      // 0012, APB-2), or from a device's receipt; never for a Safe's.
       alwaysAllow: rememberable(ctx),
     };
   }
@@ -757,11 +770,15 @@ function createSendDispatchers(shared, deps = {}) {
     // evidence moved past main's check at the press (another request
     // refreshed it, or it aged), and the user is asked again with it.
     let feeAskAgain = null;
-    // "Always allow" for a contract call a vault account sends: minted into
-    // the token, and the core writes the rule as it signs (design 0012,
-    // APB-2), saying what became of it.
+    // "Always allow" for a contract call: minted into the token. The core
+    // writes the rule as it signs a vault account's send (design 0012,
+    // APB-2), saying what became of it; a device's spend gives a finalize
+    // receipt instead, held here with the PageContext the token was spent
+    // under, in memory only ("A device send's rule").
     const remember = choices.alwaysAllow === true && rememberable(ctx);
+    const deviceSend = ctx.account?.type === 'ledger' || ctx.account?.type === 'remote';
     let coreRule = null;
+    let receipt = null;
     const mintedAndHeld = (run) =>
       stillHeld(null)(async () => {
         // The core judges the fee as it mints (design 0012): a fee the user
@@ -800,6 +817,9 @@ function createSendDispatchers(shared, deps = {}) {
             onRule: (rule) => {
               coreRule = rule;
             },
+            onReceipt: (held) => {
+              receipt = held;
+            },
           }),
         },
         paymentDeps
@@ -816,10 +836,52 @@ function createSendDispatchers(shared, deps = {}) {
     // requester's key, from the transaction the user just confirmed, so it
     // covers only a (contract, selector, chain) the user saw, with no more
     // value than this send's (design 0012, APB-2). Main writes none; it
-    // reports what the core said. The hash is the page's either way: the
-    // payment has gone out.
-    if (remember) reportRule(requester.key, coreRule);
+    // reports what the core said. A device's send has its receipt presented
+    // now, and the core writes the same rule. The hash is the page's either
+    // way: the payment has gone out.
+    if (remember && deviceSend) await rememberDeviceSend(context, ctx, receipt);
+    else if (remember) reportRule(requester.key, coreRule);
     return { result: sent.hash };
+  }
+
+  /**
+   * A device's flagged send, once the device signed and main recorded it
+   * (design 0012, "A device send's rule"): its finalize receipt presented
+   * through the core (`approval.remember`), under the PageContext the token
+   * was spent under, and only while the name, the document's key and the
+   * grant hold, in the same run as those checks (`recheckThen`), as today's
+   * rule was written. "Recorded" is `signAndRecord` resolving, the point
+   * main wrote the rule before APB-2: the intent journal holds the signed
+   * bytes and the broadcast's outcome (sent, or possibly sent), and the
+   * payment's row is written; a phone's own broadcast answered with its
+   * hash. A send that failed, was rejected at the device, or was withdrawn
+   * never gets here, and its receipt expires unused, as does one whose
+   * document has gone. Main waits for the reply, so the rule stands before
+   * the page hears the hash, and reports it as the vault path does.
+   */
+  async function rememberDeviceSend(context, ctx, held) {
+    const { key } = context.requester;
+    if (!held) {
+      reportRule(key, { added: false, reason: 'no receipt' });
+      return;
+    }
+    let presented = null;
+    await recheckThen(context, ctx, () => {
+      presented = d.rememberDeviceSend(held);
+      return presented;
+    });
+    // The name, the document or the grant no longer held: nothing presented.
+    if (!presented) {
+      reportRule(key, { added: false, reason: 'the site no longer holds the send' });
+      return;
+    }
+    let rule;
+    try {
+      rule = await presented;
+    } catch (err) {
+      rule = { added: false, reason: err?.reason || err?.code || 'no reply' };
+    }
+    reportRule(key, rule);
   }
 
   // A SafeTx's outcome, from main's own record of it: executed, discarded,

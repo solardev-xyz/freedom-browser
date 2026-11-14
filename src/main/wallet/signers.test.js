@@ -558,6 +558,43 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
     // signs, and this page's grant doesn't expose the account.
     expect(heard).toEqual([{ added: false, reason: 'not_exposed' }, null]);
   });
+
+  // Design 0012, "A device send's rule" (cored 0.16.0): a device's token is
+  // spent before the device is asked, and a flagged one's spend gives a
+  // finalize receipt, handed on with the PageContext it was spent under.
+  test.each([
+    ['a phone', { index: 1000001, type: 'remote', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' }, 'sendTransaction'],
+    ['a Ledger', { index: 1000000, type: 'ledger', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', path: "44'/60'/0'/0/0" }, 'signTransaction'],
+  ])("%s's flagged dApp send: the spend's receipt reaches `onReceipt`, with the page it was spent under, before the device", async (_label, record, method) => {
+    const confirmations = require('./signing-confirmation');
+    mockGetWalletRecord.mockReturnValue(record);
+    const backend = method === 'sendTransaction' ? mockRemoteBackend : mockLedgerBackend;
+    const order = [];
+    backend[method].mockReset().mockImplementation(async () => {
+      order.push('device');
+      return '0xdone';
+    });
+    const send = { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', data: '0x095ea7b3', gasLimit: '50000', gasPrice: '7', chainId: 100, origin: PAGE.origin };
+    const page = { handle: 'c'.repeat(64), context: PAGE };
+    const heard = [];
+    for (const remember of [true, false]) {
+      const confirmation = await confirmations.issuePageConfirmation('dapp-send', record.index, send, page, { remember, phone: record.type === 'remote' });
+      const signer = getSigner(record.index, {
+        confirmation,
+        onReceipt: (held) => {
+          order.push('receipt');
+          heard.push(held);
+        },
+      });
+      await signer[method]({ ...send, nonce: 1, type: 0 });
+    }
+    expect(heard).toEqual([{ receipt: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE }, null]);
+    expect(order).toEqual(['receipt', 'device', 'receipt', 'device']);
+    // Spent under the page; nothing written (the receipt waits for main).
+    expect(approvals().calls.filter((call) => call.method === 'approval.spend').map((call) => call.page)).toEqual([PAGE, PAGE]);
+    expect(approvals().openReceipts()).toBe(1);
+    expect(approvals().calls.filter((call) => call.method === 'approval.remember')).toEqual([]);
+  });
 });
 
 describe('getSigner (ledger-backed dispatch)', () => {

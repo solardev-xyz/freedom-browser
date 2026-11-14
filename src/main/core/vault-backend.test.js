@@ -495,6 +495,7 @@ describe('vaultBackend', () => {
     await vaultBackend.sign.soc(key, { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) });
     await vaultBackend.approval.issue({ kind: 'wallet-send', account: 0, payload: { tx: {} } });
     await vaultBackend.approval.spend({ token: 't', kind: 'intent-close', payload: {} });
+    await vaultBackend.approval.remember({ receipt: 'r' }, { origin: 'https://app.example', agent: false });
     await vaultBackend.approval.discard('t');
     await vaultBackend.approval.end('s');
     await vaultBackend.approval.check({ request: {} }, { origin: 'https://app.example', agent: false });
@@ -538,6 +539,7 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.grant({ store: 'swarm', change: { op: 'connect', key: page.origin } });
     await vaultBackend.approval.revoke({ store: 'radicle', key: page.origin, what: 'grant' }, 'chrome');
     await vaultBackend.approval.touch({ store: 'radicle' }, page);
+    await vaultBackend.approval.remember({ receipt: 'e'.repeat(32) }, page);
     await vaultBackend.approval.grants({ store: 'swarm' });
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk, { page, authorization });
     await vaultBackend.sign.soc({ kind: 'bee_wallet' }, chunk);
@@ -546,6 +548,9 @@ describe('vaultBackend', () => {
       ['approval.grant', { caller: 'shell' }, undefined],
       ['approval.revoke', { caller: 'chrome' }, undefined],
       ['approval.touch', { caller: 'page', page }, undefined],
+      // A device send's receipt (design 0012, "A device send's rule"): under
+      // the page it was spent for.
+      ['approval.remember', { caller: 'page', page }, undefined],
       ['approval.grants', { caller: 'shell' }, undefined],
       ['swarm.sign_soc', { caller: 'page', page }, authorization],
       ['swarm.sign_soc', { caller: 'shell' }, undefined],
