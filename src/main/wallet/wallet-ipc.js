@@ -42,7 +42,10 @@ const {
   isPageKind,
   bindingFor,
   issueConfirmation,
-  consumeConfirmation,
+  confirmationFor,
+  discardConfirmation,
+  spendSafeConfirmation,
+  withConfirmation,
 } = require('./signing-confirmation');
 const {
   FEE_CHECK_ASK_AGAIN,
@@ -52,7 +55,6 @@ const {
   feeNotShownError,
 } = require('./fee-check');
 const { guestHostedBy } = require('./agent-tab-custody');
-const { normalizeOrigin } = require('../../shared/origin-utils');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -162,10 +164,16 @@ function messageViewFor(message) {
 
 /**
  * Gate every signing handler (security audit O-7). A request is signed only
- * when the caller presents `{ confirmation }`: a token main issued through
- * `wallet:confirm-signing` for exactly this request (single use,
- * short-lived — see signing-confirmation.js). Anything else throws
+ * when the caller presents `{ confirmation }`: a token the identity core
+ * issued through `wallet:confirm-signing` for exactly this request (single
+ * use, short-lived — see signing-confirmation.js). Anything else throws
  * SIGNING_NOT_CONFIRMED before a key is touched.
+ *
+ * Returns the confirmation, read as the core binds it (freedom-core design
+ * 0012, APB-1): the handler's signer presents it to the core with the
+ * signature, which spends it there, or spends it first for a device; the
+ * handler burns it once its request has ended (`withConfirmation`), so a
+ * token is never presented twice.
  *
  * The chrome's `{ autoApprove, webContentsId }` claim of a site's rule is
  * refused for every kind (freedom-core design 0011, PRQ-5): a page's rules,
@@ -173,15 +181,15 @@ function messageViewFor(message) {
  * request it holds (page/page-signing.js, page/page-sends.js), and the
  * wallet's own kinds have none.
  *
- * @returns {Promise<'confirmed'>}
+ * @returns {Promise<object>} the confirmation (`signing-confirmation.js`)
  */
 async function authorizeSigning(authorization, kind, accountIndex, payload) {
   if (authorization?.autoApprove !== undefined) {
+    if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
     throw notAuthorized("main reads a page's rules itself");
   }
   if (authorization?.confirmation) {
-    consumeConfirmation(authorization.confirmation, kind, accountIndex, payload);
-    return 'confirmed';
+    return confirmationFor(authorization.confirmation, kind, accountIndex, payload);
   }
   throw notAuthorized('no confirmation token');
 }
@@ -207,6 +215,21 @@ function phoneSigner(walletIndex) {
   }
 }
 
+/**
+ * The account that signs a held intent again: main's record of it, which
+ * an intent-replace token binds (freedom-core design 0012, "Replacing an
+ * intent"). Null when unknown: its replacement is refused when signed.
+ */
+function intentAccount(intentId) {
+  try {
+    const view = typeof intentId === 'string' ? require('./intent-store').getIntentStore().get(intentId) : null;
+    const walletIndex = view?.context?.walletIndex;
+    return Number.isSafeInteger(walletIndex) && walletIndex >= 0 ? walletIndex : null;
+  } catch {
+    return null;
+  }
+}
+
 // The wallet's own send. A dApp's is main's, for a page's request it holds
 // (page/page-sends.js), confirmed by main's own issuer and recorded under
 // the requester's key.
@@ -217,19 +240,22 @@ async function handleSendTransaction(walletIndex, params, context = {}, authoriz
       return { success: false, error: 'Missing required parameters: to, chainId, gasLimit' };
     }
     const tx = { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId };
-    await authorizeSigning(authorization, CONFIRM_KINDS.WALLET_SEND, walletIndex, tx);
-    // Main never signs fees the user didn't see: a send that doesn't name
-    // its own would be given today's after its confirmation
-    // (resolveFeeParams). It goes back to its screen instead, with nothing
-    // signed. A phone picks its own fees.
-    if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShownError();
-    const result = await signAndRecord(
-      tx,
-      getSigner(walletIndex),
-      buildTxRecordContext(PAYMENT_KINDS.WALLET_SEND, context),
-      { walletIndex }
-    );
-    return { success: true, ...result };
+    const confirmation = await authorizeSigning(authorization, CONFIRM_KINDS.WALLET_SEND, walletIndex, tx);
+    return await withConfirmation(confirmation.token, async () => {
+      // Main never signs fees the user didn't see: a send that doesn't name
+      // its own would be given today's after its confirmation
+      // (resolveFeeParams). It goes back to its screen instead, with nothing
+      // signed. A phone picks its own fees.
+      if (!namesOwnFees(tx) && !phoneSigner(walletIndex)) throw feeNotShownError();
+      // The core spends the token as it signs exactly this send.
+      const result = await signAndRecord(
+        tx,
+        getSigner(walletIndex, { confirmation }),
+        buildTxRecordContext(PAYMENT_KINDS.WALLET_SEND, context),
+        { walletIndex }
+      );
+      return { success: true, ...result };
+    });
   } catch (err) {
     console.error('[WalletIPC] wallet-send transaction failed:', err);
     // A send that got as far as an intent reports it (its id, outcome and a
@@ -456,7 +482,12 @@ function registerWalletIpc() {
       const index =
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
           ? getActiveWalletIndex()
-          : accountIndex;
+          : kind === CONFIRM_KINDS.INTENT_REPLACE
+            ? intentAccount(payload?.intentId)
+            : accountIndex;
+      // A phone account's send: the phone picks its fee, so the core's fee
+      // check at minting skips it, as main's does.
+      const phone = kind === CONFIRM_KINDS.WALLET_SEND && phoneSigner(index);
       // With the approvals document on (design 0011, APS-3), the wallet's own
       // kinds are minted only on the user's approval in the window's
       // approvals document, which shows main's view of exactly the request
@@ -480,7 +511,7 @@ function registerWalletIpc() {
             payload,
             feeChecked: FEE_CHECKED_KINDS.has(kind) && !phoneSigner(index),
           },
-          () => issueConfirmation(kind, index, payload)
+          ({ feeAcknowledged } = {}) => issueConfirmation(kind, index, payload, { feeAcknowledged, phone })
         );
         if (!outcome.approved) return { success: false, error: outcome.error, code: outcome.code };
         return { success: true, token: outcome.token, expiresAt: outcome.expiresAt };
@@ -495,11 +526,18 @@ function registerWalletIpc() {
         }
       }
       // Typed data, whose token binds the core's digest, is a page kind:
-      // main's own issuer mints it (page/page-signing.js).
-      const { token, expiresAt } = issueConfirmation(kind, index, payload);
+      // main's own issuer mints it (page/page-signing.js). The core runs
+      // its own fee check at minting, on the evidence main's check read.
+      const { token, expiresAt } = await issueConfirmation(kind, index, payload, {
+        feeAcknowledged: options?.feeAcknowledged === true,
+        phone,
+      });
       return { success: true, token, expiresAt };
     } catch (err) {
-      return { success: false, error: err.message };
+      if (err?.code === FEE_CHECK_ASK_AGAIN) {
+        return { success: false, error: err.message, code: err.code, feeCheck: err.feeCheck };
+      }
+      return { success: false, error: err.message, ...(err?.code === NOT_CONFIRMED ? { code: NOT_CONFIRMED } : {}) };
     }
   });
 
@@ -601,8 +639,15 @@ function registerWalletIpc() {
       // payment is recorded under that site and takes the site's turn
       // (D12), so the token binds it. A wallet's own SafeTx has none.
       const site = display?.site ?? undefined;
-      await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId, origin: site });
-      const bound = site === undefined ? display : { ...display, site: normalizeOrigin(site) };
+      if (site !== undefined) {
+        // A site's Safe send is a page's, confirmed for its page by main's
+        // own issuer (page/page-sends.js): never on the chrome's token.
+        if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
+        throw notAuthorized('request differs from what was confirmed');
+      }
+      const confirmation = await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId });
+      await spendSafeConfirmation(confirmation);
+      const bound = display;
       const { startSafeSend } = require('./safe/safe-transactions');
       return startSafeSend({ safeIndex, tx, display: bound, chainId });
     })

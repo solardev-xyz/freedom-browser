@@ -228,6 +228,56 @@ function toCoreTransaction(request) {
   return { tx, unsigned, from };
 }
 
+/**
+ * Build a transaction object, as main builds every send it signs
+ * (transaction-service.js): EIP-1559 when both its fees are named, legacy
+ * with a gas price. A confirmation binds a send built the same way
+ * (signing-confirmation.js), so what was confirmed is what is signed.
+ * @param {Object} params - Transaction parameters
+ * @returns {Object} Unsigned transaction
+ */
+function buildTransaction({
+  to,
+  value,
+  data,
+  gasLimit,
+  maxFeePerGas,
+  maxPriorityFeePerGas,
+  gasPrice,
+  nonce,
+  chainId,
+}) {
+  const tx = {
+    to,
+    value: value || '0',
+    gasLimit,
+    chainId,
+  };
+
+  if (data) {
+    tx.data = data;
+  }
+
+  if (nonce !== undefined) {
+    tx.nonce = nonce;
+  }
+
+  // EIP-1559 or legacy
+  if (maxFeePerGas != null && maxPriorityFeePerGas != null) {
+    if (BigInt(maxPriorityFeePerGas) > BigInt(maxFeePerGas)) {
+      throw new Error('Invalid transaction fees: priority fee exceeds maximum fee');
+    }
+    tx.maxFeePerGas = maxFeePerGas;
+    tx.maxPriorityFeePerGas = maxPriorityFeePerGas;
+    tx.type = 2; // EIP-1559
+  } else if (gasPrice) {
+    tx.gasPrice = gasPrice;
+    tx.type = 0; // Legacy
+  }
+
+  return tx;
+}
+
 /** EIP-191 personal messages sign over bytes; utf8-encode plain strings. */
 function messageToBytes(message) {
   return Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8');
@@ -265,6 +315,7 @@ module.exports = {
   withoutDomainType,
   toCoreTypedData,
   toCoreTransaction,
+  buildTransaction,
   assertBoundedTypeGraph,
   getEip712WirePayload,
   messageToBytes,

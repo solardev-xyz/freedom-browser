@@ -56,7 +56,7 @@ const {
   feeCheckError,
   feeNotShownError,
 } = require('../fee-check');
-const { KINDS: CONFIRM_KINDS, consumeConfirmation } = require('../signing-confirmation');
+const { KINDS: CONFIRM_KINDS, confirmationFor, withConfirmation } = require('../signing-confirmation');
 const { getWalletRecord, WALLET_TYPES } = require('../../identity-manager');
 const { getEip1193Provider } = require('../provider-manager');
 const { codedError, SAFE_UNSUPPORTED } = require('./errors');
@@ -412,10 +412,12 @@ async function quotedExecutorSend({ chainId, to, data, executorIndex, from }) {
 function confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmation }) {
   const fees = confirmedFees(feeConfirmation.fees);
   const params = { to, value: '0', data, gasLimit: feeConfirmation.gasLimit, ...fees, chainId };
-  consumeConfirmation(feeConfirmation.confirmation, CONFIRM_KINDS.EXECUTOR_SEND, executorIndex, params);
+  // Read as the identity core binds it: the executor's signature presents
+  // it, and the core spends it there (freedom-core design 0012, APB-1).
+  const confirmation = confirmationFor(feeConfirmation.confirmation, CONFIRM_KINDS.EXECUTOR_SEND, executorIndex, params);
   // A confirmation of no fee would be given today's as it is signed.
   if (!namesOwnFees(params)) throw feeNotShownError();
-  return params;
+  return { params, confirmation };
 }
 
 /**
@@ -444,14 +446,25 @@ async function sendViaExecutor({
   feeConfirmation = null,
   guardCommit = null,
 }) {
-  const executor = getSigner(executorIndex);
-  const from = await executor.getAddress();
+  // A fee confirmation is burnt once this send has ended, whatever became
+  // of it: a held execution sends its bytes again without it.
+  return withConfirmation(feeConfirmation?.confirmation, () =>
+    sendConfirmedViaExecutor({ chainId, to, data, executorIndex, record, intentKey, feeConfirmation, guardCommit })
+  );
+}
+
+async function sendConfirmedViaExecutor({ chainId, to, data, executorIndex, record, intentKey, feeConfirmation, guardCommit }) {
+  const from = await getSigner(executorIndex).getAddress();
   let params = { to, value: '0', data, chainId };
+  let confirmation = null;
   if (!(await heldIntentFor(intentKey))) {
-    params = feeConfirmation
-      ? confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmation })
-      : await quotedExecutorSend({ chainId, to, data, executorIndex, from });
+    if (feeConfirmation) {
+      ({ params, confirmation } = confirmedExecutorSend({ chainId, to, data, executorIndex, feeConfirmation }));
+    } else {
+      params = await quotedExecutorSend({ chainId, to, data, executorIndex, from });
+    }
   }
+  const executor = getSigner(executorIndex, confirmation ? { confirmation } : {});
   if (record) {
     // A site's payment (a dApp's Safe transaction) takes the site's turn
     // until it is committed, as its other dApp payments do, so a silent

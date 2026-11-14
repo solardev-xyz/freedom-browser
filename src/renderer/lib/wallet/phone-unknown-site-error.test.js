@@ -67,6 +67,16 @@ jest.mock('../../../main/networks/chain-data', () => ({
 }));
 jest.mock('../../../main/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('../../../main/wallet/signers', () => ({ getSigner: (index) => mockSigners[index] }));
+// The identity core's approval tokens (design 0012, APB-1), simulated: main's
+// issuer mints through it.
+const mockApprovals = require('../../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../../../main/core/vault-backend', () => ({
+  vaultBackend: {
+    get approval() {
+      return mockApprovals.approval;
+    },
+  },
+}));
 jest.mock('../../../main/identity-manager', () => ({
   getWalletRecord: () => null,
   getActiveWalletIndex: () => 0,
@@ -261,7 +271,7 @@ async function start(options = {}) {
   )['ethereum:eth_sendTransaction'];
   const prompts = [];
   let approved = null;
-  const page = { key: SITE };
+  const page = { origin: SITE, top_origin: SITE, frame: 1, navigation: 1, agent: false };
   const context = {
     requester: { key: SITE, guest: 31, window: 7, navigation: 1, chain: null },
     method: 'eth_sendTransaction',
@@ -277,10 +287,10 @@ async function start(options = {}) {
       approved = 'a'.repeat(64);
       return { approve: true, choices: { alwaysAllow: false, feeAcknowledged: false } };
     },
-    confirm: (kind, index, payload) =>
-      confirmations.issuePageConfirmation(kind, index, payload, { ...page, handle: approved }).token,
-    spend: (token, kind, index, payload) =>
-      confirmations.consumePageConfirmation(token, kind, index, payload, { ...page, handle: approved }),
+    pageContext: () => page,
+    confirm: (kind, index, payload, options) =>
+      confirmations.issuePageConfirmation(kind, index, payload, { handle: approved, context: page }, options),
+    spend: (confirmation) => confirmation,
     signal: new AbortController().signal,
     leaveWalletSlot: () => {},
   };

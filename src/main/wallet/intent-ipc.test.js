@@ -59,7 +59,22 @@ jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn
 const { fakeFinalityChain } = require('../../../test/helpers/fake-finality-chain');
 // The finality tracker reads only while the core serves chain data.
 jest.mock('../core/chain', () => ({ chainDriver: () => ({ client: { state: 'ready' } }) }));
-jest.mock('./signers', () => ({ getSigner: (index) => mockSigners[index] }));
+// The identity core's approval tokens (design 0012, APB-1), simulated: the
+// wallet's kinds are minted through it, and each signer presents its
+// confirmation to it as it signs.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    get approval() {
+      return mockApprovals.approval;
+    },
+  },
+}));
+jest.mock('./signers', () => ({
+  getSigner: (index, authorized) =>
+    mockSigners[index] &&
+    require('../../../test/helpers/simulated-approvals').coreCheckedSigner(mockApprovals, mockSigners[index], index, authorized),
+}));
 jest.mock('../identity-manager', () => ({
   getWalletRecord: () => null,
   getActiveWalletIndex: () => mockActiveIndex,
@@ -90,6 +105,7 @@ const broadcasts = () => mockBroadcast.mock.calls.map(([, raw]) => Transaction.f
 beforeEach(() => {
   mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'intent-ipc-'));
   mockSigners = { 0: signerFor(ALICE), 1: signerFor(BOB) };
+  mockApprovals.reset();
   mockActiveIndex = 0;
   mockRequest.mockReset().mockImplementation(async (_chainId, method) => {
     if (method === 'eth_getTransactionReceipt') {
@@ -159,9 +175,9 @@ async function heldDeployment(running, safeAddress = '0x' + '5a'.repeat(20)) {
 // confirmed. A dApp's send is main's (freedom-core design 0011,
 // page/page-sends.js), which builds its record context itself and names no
 // intent key: the wallet's own send is the renderer's route left.
-function authorize(running, walletIndex, tx) {
+async function authorize(running, walletIndex, tx) {
   mockActiveIndex = walletIndex;
-  return { confirmation: running.confirmations.issueConfirmation('wallet-send', walletIndex, tx).token };
+  return { confirmation: (await running.confirmations.issueConfirmation('wallet-send', walletIndex, tx)).token };
 }
 
 const call = (chainId) => ({
@@ -179,7 +195,7 @@ describe('a wallet send whose context names an intent key', () => {
     const running = start();
     const { key, held } = await heldDeployment(running);
     const tx = call(1);
-    const reply = await running.walletSend({}, tx, { intentKey: key }, authorize(running, 1, tx));
+    const reply = await running.walletSend({}, tx, { intentKey: key }, await authorize(running, 1, tx));
 
     expect(reply).toMatchObject({ success: true, chainId: 1, from: BOB.address });
     expect(reply.intentId).not.toBe(held.intentId);
@@ -199,7 +215,7 @@ describe('a wallet send whose context names an intent key', () => {
     const running = start();
     const { key, held } = await heldDeployment(running);
     const tx = call(1);
-    const reply = await running.walletSend({}, tx, { intentKey: key }, authorize(running, 0, tx));
+    const reply = await running.walletSend({}, tx, { intentKey: key }, await authorize(running, 0, tx));
 
     expect(reply).toMatchObject({ success: true, chainId: 1, from: ALICE.address });
     expect(reply.intentId).not.toBe(held.intentId);
@@ -213,7 +229,7 @@ describe('a wallet send whose context names an intent key', () => {
     const futureKey = `safe-deploy:100:${future}`;
     const tx = call(100);
     for (const name of ['intentKey', 'intent_key', 'key', 'KEY']) {
-      const reply = await running.walletSend({}, tx, { [name]: futureKey }, authorize(running, 1, tx));
+      const reply = await running.walletSend({}, tx, { [name]: futureKey }, await authorize(running, 1, tx));
       expect(reply.success).toBe(true);
       expect(running.store.get(reply.intentId).context.key).toBeNull();
     }
@@ -286,7 +302,7 @@ test('the wallet send handler drops a renderer key too', async () => {
     gasLimit: '21000',
     gasPrice: '1000000000',
   };
-  const { token } = running.confirmations.issueConfirmation('wallet-send', 0, {
+  const { token } = await running.confirmations.issueConfirmation('wallet-send', 0, {
     ...tx,
     data: undefined,
     maxFeePerGas: undefined,
@@ -636,6 +652,7 @@ describe('held payments over IPC (4b)', () => {
       const failed = await refusedSend(running);
       let clock = 1_000_000;
       running.confirmations._setNow(() => clock);
+      mockApprovals.setNow(() => clock);
       const { token } = await running.confirm('intent-resend', null, bindingOf(failed.intent));
       clock += running.confirmations.CONFIRMATION_TTL_MS;
 
@@ -853,14 +870,17 @@ describe('replacement at the same nonce (9)', () => {
 
   // `options`: the fee check's answer (design 0005, A), for fees far above
   // today's that the user confirmed again.
+  // A request the core can't confirm (one whose fees can't form a
+  // transaction) gets no token: its refusal is the answer.
   async function replaceConfirmed(running, intent, fees, options) {
-    const { token } = await running.confirm(
+    const minted = await running.confirm(
       'intent-replace',
       null,
       replacementOf(intent, fees),
       options
     );
-    return running.replace(intent.intentId, fees, { confirmation: token });
+    if (!minted.success) return minted;
+    return running.replace(intent.intentId, fees, { confirmation: minted.token });
   }
 
   test('an underpriced refusal is offered a replacement: same payment, nonce and account, higher fee', async () => {
@@ -1119,8 +1139,10 @@ describe('replacement fees (9)', () => {
     return running.store.get(reply.intentId);
   }
 
+  // A request the core can't confirm (one whose fees can't form a
+  // transaction) gets no token: its refusal is the answer.
   async function replaceConfirmed(running, intent, fees, options) {
-    const { token } = await running.confirm(
+    const minted = await running.confirm(
       'intent-replace',
       null,
       {
@@ -1136,7 +1158,8 @@ describe('replacement fees (9)', () => {
       },
       options
     );
-    return running.replace(intent.intentId, fees, { confirmation: token });
+    if (!minted.success) return minted;
+    return running.replace(intent.intentId, fees, { confirmation: minted.token });
   }
 
   test("the offer is today's quote when that is higher than the 10% bump", async () => {
@@ -1256,12 +1279,17 @@ describe('replacement fees (9)', () => {
       gasLimit: 21000n,
       gasPrice: 1100000000n,
     });
+    // Spent: presented again, nothing more is signed. Main no longer holds
+    // the kind it minted the token as, so it refuses it before the core is
+    // asked (the core would refuse it too, at the signature).
+    const sent = mockBroadcast.mock.calls.length;
     await expect(
       running.replace(intent.intentId, fees, { confirmation: token })
     ).resolves.toMatchObject({
       success: false,
       code: 'SIGNING_NOT_CONFIRMED',
     });
+    expect(mockBroadcast.mock.calls).toHaveLength(sent);
   });
 
   test('two replacements at once with the same fees sign once: the second meets the new floor', async () => {

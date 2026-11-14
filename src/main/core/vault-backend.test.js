@@ -476,6 +476,10 @@ describe('vaultBackend', () => {
     await vaultBackend.sign.message(key, Uint8Array.from([1]));
     await vaultBackend.sign.typedData(key, {});
     await vaultBackend.sign.soc(key, { identifier: Buffer.alloc(32), payload: Buffer.alloc(1) });
+    await vaultBackend.approval.issue({ kind: 'wallet-send', account: 0, payload: { tx: {} } });
+    await vaultBackend.approval.spend({ token: 't', kind: 'intent-close', payload: {} });
+    await vaultBackend.approval.discard('t');
+    await vaultBackend.approval.end('s');
     await vaultBackend.typedDataHash({});
     await vaultBackend.deleteVault('password2');
 

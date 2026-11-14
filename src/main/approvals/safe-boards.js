@@ -576,7 +576,8 @@ async function confirmExecutorFee(windowId, offer) {
   }
   const outcome = await approvals.confirm(
     { windowId, kind: signing.KINDS.EXECUTOR_SEND, index: executorIndex, payload, feeChecked: true },
-    () => signing.issueConfirmation(signing.KINDS.EXECUTOR_SEND, executorIndex, payload)
+    ({ feeAcknowledged } = {}) =>
+      signing.issueConfirmation(signing.KINDS.EXECUTOR_SEND, executorIndex, payload, { feeAcknowledged })
   );
   if (!outcome?.approved || typeof outcome.token !== 'string') return null;
   const fees =

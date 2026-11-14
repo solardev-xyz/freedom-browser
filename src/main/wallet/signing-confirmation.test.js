@@ -3,13 +3,21 @@ const {
   MAX_OUTSTANDING,
   KINDS,
   NOT_CONFIRMED,
-  issueConfirmation,
+  issueMainConfirmation,
   consumeConfirmation,
   discardConfirmation,
   _reset,
   _setNow,
   _outstandingCount,
 } = require('./signing-confirmation');
+
+// The core's approval tokens, simulated (test/helpers/simulated-approvals.js);
+// the real core's in signing-confirmation.integration.test.js.
+const mockCore = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockCore.approval } }));
+jest.mock('../identity-manager', () => ({
+  getWalletRecord: (index) => (index === 9 ? { index, type: 'safe', address: '0x' + 'AA'.repeat(20) } : null),
+}));
 
 const TX = Object.freeze({
   chainId: 100,
@@ -30,6 +38,21 @@ const TYPED_DATA = Object.freeze({
   message: { value: '1' },
 });
 
+const PAYMENT = Object.freeze({
+  webContentsId: 42,
+  detectionId: 'req-9100',
+  url: 'https://api.example/article',
+  acceptIndex: 0,
+  accept: {
+    scheme: 'exact',
+    network: 'eip155:8453',
+    amount: '10000',
+    asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+  },
+  grant: null,
+});
+
 function refusal(fn) {
   try {
     fn();
@@ -39,343 +62,68 @@ function refusal(fn) {
   throw new Error('expected a refusal');
 }
 
-describe('signing-confirmation', () => {
+async function rejection(promise) {
+  try {
+    await promise;
+  } catch (err) {
+    return err;
+  }
+  throw new Error('expected a refusal');
+}
+
+// x402's two kinds stay main's, minted and spent in JS (design 0012: until
+// X402-1 can spend a payment, and X402-2 replaces the cap edit's token).
+describe("signing-confirmation: main's own kinds (x402)", () => {
   let clock;
 
   beforeEach(() => {
     _reset();
+    mockCore.reset();
     clock = 1_000_000;
     _setNow(() => clock);
   });
 
   afterAll(() => _reset());
 
-  test('a token signs exactly the request it was issued for, once', () => {
-    const { token, expiresAt } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
+  test('a token pays exactly the payment it was issued for, once, and never asks the core', () => {
+    const { token, expiresAt } = issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
     expect(token).toMatch(/^[0-9a-f]{64}$/);
     expect(expiresAt).toBe(clock + CONFIRMATION_TTL_MS);
-
-    expect(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX })).not.toThrow();
-  });
-
-  test('reuse refuses: a token is burnt by its first presentation', () => {
-    const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-    consumeConfirmation(token, KINDS.DAPP_SEND, 3, TX);
-
-    const err = refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, TX));
-    expect(err.code).toBe(NOT_CONFIRMED);
-    expect(err.message).toMatch(/unknown or already used/);
+    expect(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 3, { ...PAYMENT })).not.toThrow();
+    expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 3, PAYMENT)).message).toMatch(/already used/);
+    expect(mockCore.calls).toEqual([]);
   });
 
   test('a mismatched presentation also burns the token (no retry to probe)', () => {
-    const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-    expect(refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, value: '1' })).code)
-      .toBe(NOT_CONFIRMED);
-
-    expect(refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, TX)).message)
-      .toMatch(/unknown or already used/);
+    const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
+    expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 4, PAYMENT)).message).toMatch(/differs/);
+    expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 3, PAYMENT)).message).toMatch(/already used/);
   });
 
-  test('expiry refuses', () => {
-    const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
+  test('expiry refuses; just inside the lifetime still pays', () => {
+    const stale = issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
     clock += CONFIRMATION_TTL_MS;
-
-    const err = refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, TX));
-    expect(err.code).toBe(NOT_CONFIRMED);
-    expect(err.message).toMatch(/expired/);
-  });
-
-  test('just inside the lifetime still signs', () => {
-    const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
+    expect(refusal(() => consumeConfirmation(stale.token, KINDS.X402_PAYMENT, 3, PAYMENT)).message).toMatch(/expired/);
+    const fresh = issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
     clock += CONFIRMATION_TTL_MS - 1;
-    expect(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, TX)).not.toThrow();
+    expect(() => consumeConfirmation(fresh.token, KINDS.X402_PAYMENT, 3, PAYMENT)).not.toThrow();
   });
 
-  test('no token, an empty token or an unknown token refuses', () => {
-    for (const token of [undefined, null, '', 'f'.repeat(64), 42]) {
-      expect(refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, TX)).code)
-        .toBe(NOT_CONFIRMED);
+  test('no token, an empty token or an unknown token refuses; a core kind is never spent here', () => {
+    for (const token of [undefined, '', 'f'.repeat(64)]) {
+      expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 3, PAYMENT)).code).toBe(NOT_CONFIRMED);
     }
-  });
-
-  describe('every bound transaction field refuses on mismatch', () => {
-    const changes = {
-      chainId: 1,
-      to: '0x' + '22'.repeat(20),
-      value: '1000000000000001',
-      data: '0xa9059cbb' + '00'.repeat(64),
-      gasLimit: '21001',
-      maxFeePerGas: '2000000001',
-      maxPriorityFeePerGas: '1000000001',
-      gasPrice: '1',
-    };
-    for (const [field, value] of Object.entries(changes)) {
-      test(field, () => {
-        const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-        const err = refusal(() =>
-          consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, [field]: value }));
-        expect(err.code).toBe(NOT_CONFIRMED);
-        expect(err.message).toMatch(/differs from what was confirmed/);
-      });
-    }
-
-    test('a gas field dropped after confirming', () => {
-      const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-      const { maxPriorityFeePerGas: _dropped, ...rest } = TX;
-      expect(refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 3, rest)).code)
-        .toBe(NOT_CONFIRMED);
-    });
-
-    test('the signing account (from)', () => {
-      const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-      expect(refusal(() => consumeConfirmation(token, KINDS.DAPP_SEND, 4, TX)).code)
-        .toBe(NOT_CONFIRMED);
-    });
-
-    test('the confirmation kind (a dApp-send token cannot authorise a wallet send)', () => {
-      const { token } = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-      expect(refusal(() => consumeConfirmation(token, KINDS.WALLET_SEND, 3, TX)).code)
-        .toBe(NOT_CONFIRMED);
-    });
-  });
-
-  // A dApp payment is recorded under its site, which "Always allow"'s pause
-  // reads (D12), so its confirmation binds the site as a permission key.
-  // Review of #788, round 2: a dApp payment without a site would be outside
-  // every site's pause, so its confirmation can't be issued or spent.
-  test('codex r2: a dapp-send confirmation without a site is refused', () => {
-    for (const origin of [undefined, null, '', '   ', 42]) {
-      expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin })).toThrow(
-        'A dApp payment needs the site it is for'
-      );
-    }
-    const token = issueConfirmation(KINDS.DAPP_SEND, 3, TX).token;
-    const err = refusal(() =>
-      consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, origin: '' })
-    );
-    expect(err.code).toBe(NOT_CONFIRMED);
-    expect(err.message).toContain('A dApp payment needs the site it is for');
-  });
-
-  test('a dapp-send binds the site it is for; a wallet-send has none', () => {
-    const SITE = 'https://swap.example';
-    const issue = (origin) => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, origin }).token;
-    const use = (token, origin) =>
-      consumeConfirmation(token, KINDS.DAPP_SEND, 3, { ...TX, origin });
-
-    expect(() => use(issue(SITE), `${SITE}/trade?x=1`)).not.toThrow();
-    expect(refusal(() => use(issue(SITE), 'https://other.example')).code).toBe(NOT_CONFIRMED);
-    expect(refusal(() => use(issue(SITE), undefined)).code).toBe(NOT_CONFIRMED);
-
-    const wallet = issueConfirmation(KINDS.WALLET_SEND, 3, { ...TX, origin: SITE }).token;
-    expect(() =>
-      consumeConfirmation(wallet, KINDS.WALLET_SEND, 3, { ...TX, origin: 'https://other.example' })
-    ).not.toThrow();
-  });
-
-  // Review of #788, round 3: a dApp's SafeTx binds its site; the wallet's
-  // own has none.
-  test('codex r3: a safe-send binds its site if it has one', () => {
-    const SITE = 'https://swap.example';
-    const SAFE = { tx: { to: TX.to, value: '0', data: '0x' }, chainId: 100 };
-    const issue = (origin) =>
-      issueConfirmation(KINDS.SAFE_SEND, 2, { ...SAFE, ...(origin && { origin }) }).token;
-    const use = (token, origin) =>
-      consumeConfirmation(token, KINDS.SAFE_SEND, 2, { ...SAFE, ...(origin && { origin }) });
-
-    expect(() => use(issue(SITE), `${SITE}/swap`)).not.toThrow();
-    expect(() => use(issue(undefined), undefined)).not.toThrow();
-    for (const [issued, used] of [
-      [SITE, 'https://other.example'],
-      [undefined, SITE],
-      [SITE, undefined],
-    ]) {
-      expect(refusal(() => use(issue(issued), used)).code).toBe(NOT_CONFIRMED);
-    }
-    expect(() => issueConfirmation(KINDS.SAFE_SEND, 2, { ...SAFE, origin: '' })).toThrow(
-      'A dApp payment needs the site it is for'
+    expect(refusal(() => consumeConfirmation('a'.repeat(64), KINDS.WALLET_SEND, 3, TX)).message).toMatch(
+      /identity core spends/
     );
   });
 
-  // Design 0005, A: a Safe executor's transaction the fee check stopped is
-  // signed only with the fee the user confirmed on the Safe's screen.
-  test("an executor-send binds the executor and the fee shown, and no other kind's", () => {
-    const { origin: _site, ...EXEC } = TX;
-    const issue = () => issueConfirmation(KINDS.EXECUTOR_SEND, 0, EXEC).token;
-    expect(() => consumeConfirmation(issue(), KINDS.EXECUTOR_SEND, 0, { ...EXEC })).not.toThrow();
-    for (const [index, payload] of [
-      [0, { ...EXEC, maxFeePerGas: '2000000001' }],
-      [0, { ...EXEC, maxPriorityFeePerGas: '1000000001' }],
-      [0, { ...EXEC, gasLimit: '21001' }],
-      [0, { ...EXEC, data: '0x' }],
-      [2, EXEC],
-    ]) {
-      expect(refusal(() => consumeConfirmation(issue(), KINDS.EXECUTOR_SEND, index, payload)).code)
-        .toBe(NOT_CONFIRMED);
-    }
-    // A wallet send's token is not an executor's, nor the other way round.
-    const wallet = issueConfirmation(KINDS.WALLET_SEND, 0, EXEC).token;
-    expect(refusal(() => consumeConfirmation(wallet, KINDS.EXECUTOR_SEND, 0, EXEC)).code)
-      .toBe(NOT_CONFIRMED);
-    expect(refusal(() => consumeConfirmation(issue(), KINDS.WALLET_SEND, 0, EXEC)).code)
-      .toBe(NOT_CONFIRMED);
+  test('a discarded token no longer pays', async () => {
+    const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
+    await discardConfirmation(token);
+    expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 3, PAYMENT)).message).toMatch(/already used/);
   });
 
-  test('equivalent encodings of the same transaction match', () => {
-    const { token } = issueConfirmation(KINDS.WALLET_SEND, 0, TX);
-    expect(() =>
-      consumeConfirmation(token, KINDS.WALLET_SEND, 0, {
-        ...TX,
-        to: TX.to.toLowerCase(),
-        value: '0x' + BigInt(TX.value).toString(16),
-        data: TX.data.toUpperCase().replace('0X', '0x'),
-        gasLimit: 21000,
-      })
-    ).not.toThrow();
-  });
-
-  test('value and data default the same way at issue and at use', () => {
-    const { token } = issueConfirmation(KINDS.WALLET_SEND, 0, { chainId: 1, to: TX.to, gasLimit: '21000', gasPrice: '1' });
-    expect(() =>
-      consumeConfirmation(token, KINDS.WALLET_SEND, 0, {
-        chainId: 1, to: TX.to, value: '0', data: '0x', gasLimit: '21000', gasPrice: '1',
-      })
-    ).not.toThrow();
-  });
-
-  describe('messages and typed data bind their content hash', () => {
-    test('personal_sign: the exact message', () => {
-      const ok = issueConfirmation(KINDS.SIGN_MESSAGE, 0, '0x68656c6c6f');
-      expect(() => consumeConfirmation(ok.token, KINDS.SIGN_MESSAGE, 0, '0x68656c6c6f')).not.toThrow();
-
-      const other = issueConfirmation(KINDS.SIGN_MESSAGE, 0, '0x68656c6c6f');
-      expect(refusal(() => consumeConfirmation(other.token, KINDS.SIGN_MESSAGE, 0, '0x68656c6c70')).code)
-        .toBe(NOT_CONFIRMED);
-    });
-
-    // freedom-core #88: the core's hash of the data, bound with it.
-    const HASH = '0x' + 'ab'.repeat(32);
-
-    test('typed data: key order does not matter, content does', () => {
-      const ok = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { hash: HASH });
-      const reordered = {
-        message: TYPED_DATA.message,
-        primaryType: TYPED_DATA.primaryType,
-        types: TYPED_DATA.types,
-        domain: { verifyingContract: TYPED_DATA.domain.verifyingContract, chainId: 100, name: 'Permit' },
-      };
-      expect(consumeConfirmation(ok.token, KINDS.SIGN_TYPED_DATA, 0, reordered)).toEqual({ hash: HASH });
-
-      const other = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { hash: HASH });
-      expect(refusal(() => consumeConfirmation(other.token, KINDS.SIGN_TYPED_DATA, 0, {
-        ...TYPED_DATA,
-        domain: { ...TYPED_DATA.domain, chainId: 1 },
-      })).code).toBe(NOT_CONFIRMED);
-    });
-
-    test('a typed-data token carries the confirmed hash, and needs one', () => {
-      const upper = '0x' + 'AB'.repeat(32);
-      const { token } = issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { hash: upper });
-      expect(consumeConfirmation(token, KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA)).toEqual({ hash: HASH });
-      for (const bound of [undefined, {}, { hash: '0x12' }, { hash: 'ab'.repeat(32) }]) {
-        expect(() => issueConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, bound)).toThrow(
-          'Invalid typed data hash'
-        );
-      }
-      // Other kinds bind nothing more.
-      const message = issueConfirmation(KINDS.SIGN_MESSAGE, 0, 'hello', { hash: HASH });
-      expect(consumeConfirmation(message.token, KINDS.SIGN_MESSAGE, 0, 'hello')).toEqual({});
-    });
-
-    test('a message token cannot sign typed data carrying the same string', () => {
-      const { token } = issueConfirmation(KINDS.SIGN_MESSAGE, 0, 'hello');
-      expect(refusal(() => consumeConfirmation(token, KINDS.SIGN_TYPED_DATA, 0, 'hello')).code)
-        .toBe(NOT_CONFIRMED);
-    });
-  });
-
-  describe('Safe requests', () => {
-    const SAFE_TX = { tx: { to: TX.to, value: '5', data: '0x' }, chainId: 100 };
-
-    test('safe-send binds the Safe, chain, to, value and data', () => {
-      const ok = issueConfirmation(KINDS.SAFE_SEND, 7, SAFE_TX);
-      expect(() => consumeConfirmation(ok.token, KINDS.SAFE_SEND, 7, SAFE_TX)).not.toThrow();
-
-      for (const changed of [
-        [8, SAFE_TX],
-        [7, { ...SAFE_TX, chainId: 1 }],
-        [7, { ...SAFE_TX, tx: { ...SAFE_TX.tx, to: '0x' + '33'.repeat(20) } }],
-        [7, { ...SAFE_TX, tx: { ...SAFE_TX.tx, value: '6' } }],
-        [7, { ...SAFE_TX, tx: { ...SAFE_TX.tx, data: '0x01' } }],
-      ]) {
-        const { token } = issueConfirmation(KINDS.SAFE_SEND, 7, SAFE_TX);
-        expect(refusal(() => consumeConfirmation(token, KINDS.SAFE_SEND, ...changed)).code)
-          .toBe(NOT_CONFIRMED);
-      }
-    });
-
-    test('safe-message binds the method and params', () => {
-      const request = { method: 'personal_sign', params: ['0xdead', '0xsafe'] };
-      const ok = issueConfirmation(KINDS.SAFE_MESSAGE, 7, request);
-      expect(() => consumeConfirmation(ok.token, KINDS.SAFE_MESSAGE, 7, request)).not.toThrow();
-
-      const other = issueConfirmation(KINDS.SAFE_MESSAGE, 7, request);
-      expect(refusal(() => consumeConfirmation(other.token, KINDS.SAFE_MESSAGE, 7, {
-        ...request,
-        params: ['0xbeef', '0xsafe'],
-      })).code).toBe(NOT_CONFIRMED);
-    });
-  });
-
-  // freedom-core design 0005, "State history" (#94): closing by hand binds
-  // the intent and every hash it has, in order: the revision the user saw.
-  test('an intent-close binds the intent and each of its hashes, in order', () => {
-    const CLOSE = {
-      intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a07',
-      chainId: 100,
-      sender: '0x' + 'AB'.repeat(20),
-      nonce: 7,
-      hashes: ['0x' + 'A1'.repeat(32), '0x' + 'b2'.repeat(32)],
-    };
-    const lower = {
-      ...CLOSE,
-      sender: CLOSE.sender.toLowerCase(),
-      hashes: CLOSE.hashes.map((h) => h.toLowerCase()),
-    };
-    const ok = issueConfirmation(KINDS.INTENT_CLOSE, null, CLOSE);
-    expect(() => consumeConfirmation(ok.token, KINDS.INTENT_CLOSE, null, lower)).not.toThrow();
-
-    for (const changed of [
-      { hashes: [CLOSE.hashes[0]] },
-      { hashes: [...CLOSE.hashes].reverse() },
-      { hashes: [...CLOSE.hashes, '0x' + 'c3'.repeat(32)] },
-      { nonce: 8 },
-      { chainId: 1 },
-      { intentId: '7b0c6c1e-0c62-4a6e-9a49-0d6a3f6d1a08' },
-      { sender: '0x' + 'cd'.repeat(20) },
-    ]) {
-      const { token } = issueConfirmation(KINDS.INTENT_CLOSE, null, CLOSE);
-      expect(
-        refusal(() =>
-          consumeConfirmation(token, KINDS.INTENT_CLOSE, null, { ...CLOSE, ...changed })
-        ).code
-      ).toBe(NOT_CONFIRMED);
-    }
-    // Not a confirmation of a resend of the same intent.
-    const resend = issueConfirmation(KINDS.INTENT_RESEND, null, {
-      ...CLOSE,
-      hash: CLOSE.hashes[1],
-    });
-    expect(
-      refusal(() => consumeConfirmation(resend.token, KINDS.INTENT_CLOSE, null, CLOSE)).code
-    ).toBe(NOT_CONFIRMED);
-
-    for (const hashes of [[], undefined, ['0x12'], Array(65).fill(CLOSE.hashes[0])]) {
-      expect(() => issueConfirmation(KINDS.INTENT_CLOSE, null, { ...CLOSE, hashes })).toThrow(
-        /hash/i
-      );
-    }
-  });
   describe('x402 payments bind the detection, the entry, the account and the grant', () => {
     const ACCEPT = Object.freeze({
       scheme: 'exact',
@@ -396,7 +144,7 @@ describe('signing-confirmation', () => {
     });
 
     test('the payment as confirmed signs, once', () => {
-      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
       expect(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, {
         ...PAYMENT,
         // Key order and an absent grant are not differences.
@@ -422,14 +170,14 @@ describe('signing-confirmation', () => {
     };
     for (const [name, change] of Object.entries(changes)) {
       test(name, () => {
-        const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+        const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
         expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, { ...PAYMENT, ...change })).code)
           .toBe(NOT_CONFIRMED);
       });
     }
 
     test('the account', () => {
-      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
       expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 1, PAYMENT)).code)
         .toBe(NOT_CONFIRMED);
     });
@@ -441,7 +189,7 @@ describe('signing-confirmation', () => {
         { capAmount: '10000000', windowSeconds: 31536000 },
         null,
       ]) {
-        const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, GRANTED);
+        const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, GRANTED);
         expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, { ...GRANTED, grant })).code)
           .toBe(NOT_CONFIRMED);
       }
@@ -449,7 +197,7 @@ describe('signing-confirmation', () => {
 
     test('a V1 entry binds maxAmountRequired as its amount', () => {
       const V1 = { ...PAYMENT, accept: { scheme: 'exact', network: 'base', maxAmountRequired: '10000', asset: ACCEPT.asset, payTo: ACCEPT.payTo } };
-      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, V1);
+      const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, V1);
       expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, {
         ...V1,
         accept: { ...V1.accept, maxAmountRequired: '20000' },
@@ -457,12 +205,11 @@ describe('signing-confirmation', () => {
     });
 
     test('no other kind spends it, and it spends no other kind', () => {
-      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
       expect(refusal(() => consumeConfirmation(token, KINDS.SIGN_TYPED_DATA, 0, PAYMENT)).code)
         .toBe(NOT_CONFIRMED);
-      const other = issueConfirmation(KINDS.SIGN_MESSAGE, 0, 'pay');
-      expect(refusal(() => consumeConfirmation(other.token, KINDS.X402_PAYMENT, 0, PAYMENT)).code)
-        .toBe(NOT_CONFIRMED);
+      // The core's kinds are never minted here.
+      expect(() => issueMainConfirmation(KINDS.SIGN_MESSAGE, 0, 'pay')).toThrow(/main's own/);
     });
 
     test('a malformed payment is not issued a token', () => {
@@ -480,13 +227,13 @@ describe('signing-confirmation', () => {
         [{ acceptIndex: 0.5 }, /payment option/],
         [{ grant: 'all of it' }, /grant/],
       ]) {
-        expect(() => issueConfirmation(KINDS.X402_PAYMENT, 0, { ...PAYMENT, ...change })).toThrow(message);
+        expect(() => issueMainConfirmation(KINDS.X402_PAYMENT, 0, { ...PAYMENT, ...change })).toThrow(message);
       }
       expect(_outstandingCount()).toBe(0);
     });
 
     test('a discarded token no longer spends', () => {
-      const { token } = issueConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
+      const { token } = issueMainConfirmation(KINDS.X402_PAYMENT, 0, PAYMENT);
       discardConfirmation(token);
       expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, 0, PAYMENT)).message)
         .toMatch(/unknown or already used/);
@@ -508,7 +255,7 @@ describe('signing-confirmation', () => {
     });
 
     test('the edit as confirmed applies, once', () => {
-      const { token } = issueConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
+      const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
       // Another spelling of the same site is not a difference.
       expect(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, {
         ...EDIT,
@@ -533,14 +280,14 @@ describe('signing-confirmation', () => {
     };
     for (const [name, change] of Object.entries(changes)) {
       test(name, () => {
-        const { token } = issueConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
+        const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
         expect(refusal(() => consumeConfirmation(token, KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).code)
           .toBe(NOT_CONFIRMED);
       });
     }
 
     test('no other kind spends it', () => {
-      const { token } = issueConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
+      const { token } = issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, EDIT);
       expect(refusal(() => consumeConfirmation(token, KINDS.X402_PAYMENT, null, EDIT)).code)
         .toBe(NOT_CONFIRMED);
     });
@@ -563,88 +310,172 @@ describe('signing-confirmation', () => {
         [{ windowSeconds: 0 }, /window/],
         [{ windowSeconds: '86400' }, /window/],
       ]) {
-        expect(() => issueConfirmation(KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).toThrow(message);
+        expect(() => issueMainConfirmation(KINDS.X402_CAP_UPDATE, null, { ...EDIT, ...change })).toThrow(message);
       }
       expect(_outstandingCount()).toBe(0);
     });
   });
 
-  test('malformed requests are not issued a token', () => {
-    expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, gasLimit: 'lots' })).toThrow(/gasLimit/);
-    expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, chainId: 0 })).toThrow(/chainId/);
-    expect(() => issueConfirmation(KINDS.DAPP_SEND, 3, { ...TX, data: 'nothex' })).toThrow(/data/);
-    expect(() => issueConfirmation(KINDS.DAPP_SEND, -1, TX)).toThrow(/wallet index/);
-    expect(() => issueConfirmation(KINDS.SIGN_MESSAGE, 0, '')).toThrow(/Message/);
-    expect(() => issueConfirmation('export-everything', 0, TX)).toThrow(/Unknown/);
-    expect(_outstandingCount()).toBe(0);
-  });
-
   test('outstanding tokens are capped (oldest dropped) and expired ones pruned', () => {
-    const first = issueConfirmation(KINDS.DAPP_SEND, 3, TX);
-    for (let i = 1; i < MAX_OUTSTANDING; i++) issueConfirmation(KINDS.DAPP_SEND, 3, TX);
+    const first = issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
+    for (let i = 1; i < MAX_OUTSTANDING; i++) issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
     expect(_outstandingCount()).toBe(MAX_OUTSTANDING);
-
-    issueConfirmation(KINDS.DAPP_SEND, 3, TX);
+    issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
     expect(_outstandingCount()).toBe(MAX_OUTSTANDING);
-    expect(refusal(() => consumeConfirmation(first.token, KINDS.DAPP_SEND, 3, TX)).code)
-      .toBe(NOT_CONFIRMED);
-
+    expect(refusal(() => consumeConfirmation(first.token, KINDS.X402_PAYMENT, 3, PAYMENT)).code).toBe(NOT_CONFIRMED);
     clock += CONFIRMATION_TTL_MS;
-    issueConfirmation(KINDS.DAPP_SEND, 3, TX);
+    issueMainConfirmation(KINDS.X402_PAYMENT, 3, PAYMENT);
     expect(_outstandingCount()).toBe(1);
   });
 });
 
-// freedom-core design 0011, "Approval tokens": the page kinds have one
-// issuer, main's page dispatcher, and their binding gains the prompt's handle
-// and the requester's attested key.
-describe('page tokens (0011 PRQ-5a)', () => {
+// The core's kinds (freedom-core design 0012, APB-1): main mints, spends and
+// burns them through the identity core, a spy on whose calls checks the
+// caller and the request in the core's form.
+describe("signing-confirmation: the core's kinds", () => {
   const sc = require('./signing-confirmation');
   const HANDLE = 'c'.repeat(64);
-  const SITE = 'https://app.example';
-  beforeEach(() => sc._reset());
-
-  test('the page kinds: a dApp send, a message, typed data, a Safe message, and a Safe send that names a site', () => {
-    for (const kind of ['dapp-send', 'sign-message', 'sign-typed-data', 'safe-message']) {
-      expect(sc.isPageKind(kind, {})).toBe(true);
-    }
-    expect(sc.isPageKind('safe-send', { origin: SITE })).toBe(true);
-    expect(sc.isPageKind('safe-send', {})).toBe(false);
-    for (const kind of ['wallet-send', 'intent-resend', 'intent-replace', 'intent-close', 'executor-send', 'x402-payment']) {
-      expect(sc.isPageKind(kind, { origin: SITE })).toBe(false);
-    }
+  const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+  const WIRE = Object.freeze({
+    type: 2,
+    chain_id: '100',
+    gas_limit: '21000',
+    to: TX.to,
+    value: '1000000000000000',
+    data: TX.data,
+    max_fee_per_gas: '2000000000',
+    max_priority_fee_per_gas: '1000000000',
   });
 
-  test("main's issuer mints only a page kind, with its handle and key", () => {
-    expect(() => sc.issuePageConfirmation('wallet-send', 0, { chainId: 100, to: SITE }, { handle: HANDLE, key: SITE })).toThrow(
-      /Not a page confirmation kind/
-    );
-    expect(() => sc.issuePageConfirmation('safe-send', 0, { tx: { to: '0x01' }, chainId: 100 }, { handle: HANDLE, key: SITE })).toThrow(
-      /Not a page confirmation kind/
-    );
-    for (const page of [null, {}, { handle: HANDLE }, { key: SITE }, { handle: 'xyz', key: SITE }, { handle: HANDLE, key: '' }]) {
-      expect(() => sc.issuePageConfirmation('sign-message', 0, '0x68', page)).toThrow(/needs its/);
-    }
-    expect(sc._outstandingCount()).toBe(0);
+  beforeEach(() => {
+    sc._reset();
+    mockCore.reset();
   });
 
-  test('a page token is spent once, for its handle, its key and its request', () => {
-    const page = { handle: HANDLE, key: SITE };
-    const mint = () => sc.issuePageConfirmation('sign-message', 0, '0x68', page).token;
-    expect(sc.consumePageConfirmation(mint(), 'sign-message', 0, '0x68', page)).toEqual({});
-    const token = mint();
-    sc.consumePageConfirmation(token, 'sign-message', 0, '0x68', page);
-    expect(() => sc.consumePageConfirmation(token, 'sign-message', 0, '0x68', page)).toThrow(/already used/);
-    for (const [index, payload, other] of [
-      [0, '0x68', { handle: 'd'.repeat(64), key: SITE }],
-      [0, '0x68', { handle: HANDLE, key: 'https://other.example' }],
-      [1, '0x68', page],
-      [0, '0x69', page],
-    ]) {
-      expect(() => sc.consumePageConfirmation(mint(), 'sign-message', index, payload, other)).toThrow(/differs/);
+  test('a request in the form the core binds it: the sign.* parameters but the key', () => {
+    expect(sc.corePayload(KINDS.WALLET_SEND, 3, TX)).toEqual({ account: 3, payload: { tx: WIRE } });
+    expect(sc.corePayload(KINDS.DAPP_SEND, 3, TX)).toEqual({ account: 3, payload: { tx: WIRE } });
+    expect(sc.corePayload(KINDS.EXECUTOR_SEND, 1, { ...TX, maxFeePerGas: undefined, maxPriorityFeePerGas: undefined, gasPrice: '7' }))
+      .toEqual({ account: 1, payload: { tx: { type: 0, chain_id: '100', gas_limit: '21000', to: TX.to, value: WIRE.value, data: TX.data, gas_price: '7' } } });
+    // A message's bytes, its text and hex alike.
+    expect(sc.corePayload(KINDS.SIGN_MESSAGE, 0, 'hi')).toEqual({ account: 0, payload: { message: '0x6869' } });
+    expect(sc.corePayload(KINDS.SIGN_MESSAGE, 0, '0x6869')).toEqual({ account: 0, payload: { message: '0x6869' } });
+    // Typed data with what the core is told beside it for its view.
+    const typed = sc.corePayload(KINDS.SIGN_TYPED_DATA, 0, JSON.stringify(TYPED_DATA), { chainId: 100 });
+    expect(typed.payload).toMatchObject({ primary_type: 'Permit', chain_id: '100' });
+    expect(typed.payload.typed_data).toEqual({ domain: TYPED_DATA.domain, types: TYPED_DATA.types, message: TYPED_DATA.message });
+    // A Safe's address from its record, in lowercase.
+    expect(sc.corePayload(KINDS.SAFE_SEND, 9, { tx: { to: TX.to, value: 5 }, chainId: 100 })).toEqual({
+      account: 9,
+      payload: { safe: '0x' + 'aa'.repeat(20), chain_id: '100', tx: { to: TX.to.toLowerCase(), value: '5', data: '0x' } },
+    });
+    expect(sc.corePayload(KINDS.SAFE_MESSAGE, 9, { method: 'personal_sign', params: ['0x68'] }).payload).toEqual({
+      safe: '0x' + 'aa'.repeat(20),
+      chain_id: '100',
+      method: 'personal_sign',
+      params: ['0x68'],
+    });
+    expect(() => sc.corePayload(KINDS.SAFE_SEND, 8, { tx: { to: TX.to }, chainId: 100 })).toThrow(/Unknown Safe/);
+    const intent = { intentId: 'intent-0001', chainId: 100, sender: '0x' + 'BB'.repeat(20), nonce: 7 };
+    expect(sc.corePayload(KINDS.INTENT_CLOSE, null, { ...intent, hashes: ['0x' + 'AB'.repeat(32)] })).toEqual({
+      payload: { intent_id: 'intent-0001', chain_id: '100', sender: '0x' + 'bb'.repeat(20), nonce: '7', hashes: ['0x' + 'ab'.repeat(32)] },
+    });
+    expect(sc.corePayload(KINDS.INTENT_REPLACE, 2, { ...intent, ...TX })).toEqual({
+      account: 2,
+      payload: { intent_id: 'intent-0001', sender: '0x' + 'bb'.repeat(20), tx: { ...WIRE, nonce: '7' } },
+    });
+    // Main's own checks first, in today's words.
+    expect(() => sc.corePayload(KINDS.DAPP_SEND, 3, { ...TX, origin: undefined })).toThrow(/needs the site/);
+    expect(() => sc.corePayload(KINDS.WALLET_SEND, 3, { ...TX, gasLimit: 'lots' })).toThrow(/gasLimit/);
+    expect(() => sc.corePayload(KINDS.X402_PAYMENT, 3, PAYMENT)).toThrow(/Not a core confirmation kind/);
+  });
+
+  test("a wallet kind is minted by the core from main itself, with the fee's acknowledgement and a phone's send", async () => {
+    const { token, expiresAt } = await sc.issueConfirmation(KINDS.WALLET_SEND, 3, TX, { feeAcknowledged: true, phone: true });
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(expiresAt).toBeGreaterThan(Date.now());
+    expect(mockCore.calls).toEqual([
+      {
+        method: 'approval.issue',
+        params: { kind: 'wallet-send', account: 3, payload: { tx: WIRE }, fee_ack: true, phone: true },
+        page: null,
+      },
+    ]);
+    await expect(sc.issueConfirmation(KINDS.SIGN_MESSAGE, 0, 'hi')).rejects.toThrow(/issued for its page/);
+    await expect(sc.issueConfirmation(KINDS.SAFE_SEND, 9, { tx: { to: TX.to }, chainId: 100, origin: 'https://app.example' })).rejects.toThrow(
+      /issued for its page/
+    );
+    await expect(sc.issueConfirmation(KINDS.WALLET_SEND, 3, { ...TX, chainId: 0 })).rejects.toThrow(/chainId/);
+    expect(mockCore.calls).toHaveLength(1);
+  });
+
+  test("a page kind is minted under `page` with the document's PageContext and the prompt's handle", async () => {
+    const confirmation = await sc.issuePageConfirmation(KINDS.DAPP_SEND, 3, TX, { handle: HANDLE, context: PAGE });
+    expect(confirmation).toEqual({ token: expect.any(String), kind: 'dapp-send', account: 3, payload: { tx: WIRE }, handle: HANDLE, page: PAGE });
+    expect(mockCore.calls[0]).toEqual({
+      method: 'approval.issue',
+      params: { kind: 'dapp-send', account: 3, payload: { tx: WIRE }, handle: HANDLE },
+      page: PAGE,
+    });
+    expect(sc.signingAuthorization(confirmation)).toEqual({ authorization: { token: confirmation.token, handle: HANDLE }, page: PAGE });
+    const typed = await sc.issuePageConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { handle: HANDLE, context: PAGE }, { chainId: 100 });
+    expect(typed.hash).toMatch(/^0x[0-9a-f]{64}$/);
+    for (const page of [null, {}, { handle: HANDLE }, { handle: 'xyz', context: PAGE }, { handle: HANDLE, context: { ...PAGE, origin: '' } }]) {
+      await expect(sc.issuePageConfirmation(KINDS.SIGN_MESSAGE, 0, '0x68', page)).rejects.toThrow(/needs its/);
     }
-    // Typed data keeps the core's hash, handed back when it is spent.
-    const typed = sc.issuePageConfirmation('sign-typed-data', 0, { a: 1 }, page, { hash: `0x${'ee'.repeat(32)}` });
-    expect(sc.consumePageConfirmation(typed.token, 'sign-typed-data', 0, { a: 1 }, page)).toEqual({ hash: `0x${'ee'.repeat(32)}` });
+    await expect(sc.issuePageConfirmation(KINDS.WALLET_SEND, 0, TX, { handle: HANDLE, context: PAGE })).rejects.toThrow(
+      /Not a page confirmation kind/
+    );
+    expect(mockCore.calls).toHaveLength(2);
+  });
+
+  test("the core's refusals in today's words; its fee check asks again with its verdict", async () => {
+    const { token } = await sc.issueConfirmation(KINDS.INTENT_RESEND, null, {
+      intentId: 'intent-0001',
+      chainId: 100,
+      sender: '0x' + 'bb'.repeat(20),
+      nonce: 7,
+      hash: '0x' + 'ab'.repeat(32),
+    });
+    const spend = (payload) => sc.spendConfirmation({ token, kind: KINDS.INTENT_RESEND, payload });
+    const err = await rejection(spend({ intent_id: 'intent-0002' }));
+    expect(err).toMatchObject({ code: NOT_CONFIRMED, message: 'Signing was not confirmed: request differs from what was confirmed' });
+    expect((await rejection(spend({}))).message).toBe('Signing was not confirmed: unknown or already used confirmation');
+    await expect(sc.spendConfirmation({ kind: KINDS.INTENT_RESEND })).rejects.toThrow(/no confirmation token/);
+
+    const verdict = { max_cost: '42', comparable: true, ratio: '12.5', above: true, one_endpoint: false, basis: 'header', auto_approve: false };
+    const issue = jest
+      .spyOn(mockCore.approval, 'issue')
+      .mockRejectedValueOnce(Object.assign(new Error('fee'), { code: 'not_authorized', data: { reason: 'fee_check', fee_check: verdict } }));
+    const asked = await rejection(sc.issueConfirmation(KINDS.WALLET_SEND, 3, TX));
+    expect(asked).toMatchObject({
+      code: 'FEE_CHECK_ASK_AGAIN',
+      feeCheck: { maxCost: '42', comparable: true, ratio: '12.5', above: true, oneEndpoint: false, basis: 'header', autoApprove: false },
+    });
+    issue.mockRestore();
+  });
+
+  test('a token is burnt once its request has ended, whatever became of it', async () => {
+    const { token } = await sc.issueConfirmation(KINDS.WALLET_SEND, 3, TX);
+    await expect(sc.withConfirmation(token, async () => 'done')).resolves.toBe('done');
+    expect(mockCore.outstanding()).toBe(0);
+    const again = await sc.issueConfirmation(KINDS.WALLET_SEND, 3, TX);
+    await expect(sc.withConfirmation(again.token, async () => {
+      throw new Error('nonce');
+    })).rejects.toThrow('nonce');
+    expect(mockCore.outstanding()).toBe(0);
+    // A token the chrome presented for a request main can't read is burnt.
+    const bad = await sc.issueConfirmation(KINDS.WALLET_SEND, 3, TX);
+    expect(() => sc.confirmationFor(bad.token, KINDS.WALLET_SEND, 3, { ...TX, chainId: 0 })).toThrow(/not confirmed: Invalid chainId/);
+    await Promise.resolve();
+    expect(mockCore.outstanding()).toBe(0);
+  });
+
+  test("a Safe's send is spent through the core, and its Safe approval ended until APB-1c", async () => {
+    const request = { tx: { to: TX.to, value: '5', data: '0x' }, chainId: 100 };
+    const { token } = await sc.issueConfirmation(KINDS.SAFE_SEND, 9, request);
+    await expect(sc.spendSafeConfirmation(sc.confirmationFor(token, KINDS.SAFE_SEND, 9, request))).resolves.toEqual({ bound: true });
+    expect(mockCore.calls.map((call) => call.method)).toEqual(['approval.issue', 'approval.spend', 'approval.end']);
+    expect(mockCore.openSafeApprovals()).toBe(0);
   });
 });

@@ -9,9 +9,17 @@
  * `core.calls` as `[method, ...args]`.
  */
 const { Wallet, TypedDataEncoder } = require('ethers');
+const { simulatedApprovals } = require('./simulated-approvals');
 
+/**
+ * `core.approvals` (made here if the test gave none) simulates the core's
+ * approval tokens (`simulated-approvals.js`): `approval.*`, and the check
+ * each `sign.*` makes of the `authorization` it is given, before the key.
+ */
 function simulatedVaultBackend(identity, core) {
   const wallet = () => new Wallet(identity.exportPrivateKey());
+  if (!core.approvals) core.approvals = simulatedApprovals();
+  const approvals = core.approvals;
   const admit = (method, ...args) => {
     core.calls.push([method, ...args]);
     if (!identity.isUnlocked()) {
@@ -26,7 +34,8 @@ function simulatedVaultBackend(identity, core) {
       };
     },
     sign: {
-      transaction: async (key, tx) => {
+      transaction: async (key, tx, options = {}) => {
+        approvals.authorize('sign.transaction', key.index, { tx }, options);
         admit('sign.transaction', key, tx);
         const fees =
           tx.type === 0
@@ -47,14 +56,26 @@ function simulatedVaultBackend(identity, core) {
         });
         return { raw };
       },
-      message: async (key, bytes) => {
+      message: async (key, bytes, options = {}) => {
+        approvals.authorize('sign.message', key.index, { message: '0x' + Buffer.from(bytes).toString('hex') }, options);
         admit('sign.message', key, Buffer.from(bytes).toString('hex'));
         return wallet().signMessage(bytes);
       },
       // The core signs only the confirmed digest (freedom-core #88): any
       // other is invalid_argument, before the key (so also while locked).
-      typedData: async (key, data, expectedHash) => {
+      typedData: async (key, data, expectedHash, options = {}) => {
         core.calls.push(['sign.typed_data', key, data, expectedHash]);
+        approvals.authorize(
+          'sign.typed_data',
+          key.index,
+          {
+            typed_data: data,
+            ...(options.primaryType !== undefined ? { primary_type: options.primaryType } : {}),
+            ...(options.chainId !== undefined ? { chain_id: options.chainId } : {}),
+            expected_hash: expectedHash,
+          },
+          options
+        );
         const hash = TypedDataEncoder.hash(data.domain, data.types, data.message);
         if (expectedHash !== hash) {
           throw Object.assign(
@@ -68,6 +89,7 @@ function simulatedVaultBackend(identity, core) {
         return wallet().signTypedData(data.domain, data.types, data.message);
       },
     },
+    approval: approvals.approval,
     typedDataView: async (data, options = {}) => {
       core.calls.push(['typed_data.hash', data, options]);
       return {

@@ -85,14 +85,33 @@
  * `sign-typed-data`, `safe-message` and a `safe-send` that names a site.
  * Their tokens come from main's own issuer (`issuePageConfirmation`), which
  * the page dispatcher calls on the user's approval of a prompt main showed
- * for a live request; the token never leaves main, and the dispatcher spends
- * it (`consumePageConfirmation`). A page token's binding gains two fields,
- * both from main's request record: the prompt's handle, so a token answers
- * one prompt, and the requester's attested key, so a token minted for one
- * site's request can't sign another's. A page token is never spent on the
- * chrome's route (`consumeConfirmation`), nor a chrome token on a page's.
- * The chrome's `wallet:confirm-signing` refuses each page kind once its
- * methods have moved to main (`wallet-ipc.js`, PRQ-5).
+ * for a live request; the token never leaves main. A page token binds the
+ * prompt's handle and the requesting document (its PageContext: the
+ * attested key, the frame and the document's number), so a token answers
+ * one prompt of one document. The chrome's `wallet:confirm-signing` refuses
+ * each page kind once its methods have moved to main (`wallet-ipc.js`,
+ * PRQ-5).
+ *
+ * Tokens through the core (freedom-core design 0012, APB-1): every kind but
+ * x402's two is minted, checked and spent by the identity core
+ * (`approval.issue`, `approval.spend`, `approval.discard`), never in JS: a
+ * wallet kind from main itself (`shell`), a page kind under `page` with the
+ * request's PageContext. The core binds the request in the form it will
+ * sign it (`corePayload`), so what was confirmed is what is signed: a
+ * signature the core makes presents its token to `sign.*` itself
+ * (`signingAuthorization`), and the core spends it there; a device's
+ * signature (Ledger, phone), and the kinds that sign nothing (a held
+ * intent's resend and close, a Safe's send and message, whose owners sign
+ * later) spend theirs through `approval.spend` (`spendConfirmation`). A
+ * presented token is burnt whatever the outcome, as before, and main
+ * discards one a request ended without presenting (`discardConfirmation`).
+ * The core reads a transaction token's kind from the token, so main keeps
+ * the kind it minted each of its own tokens as, and burns one the chrome
+ * presents on another kind's route before the core is asked to sign
+ * (`confirmationFor`).
+ * `x402-payment` stays main's until the core can spend it (X402-1), and
+ * `x402-cap-update`, the panel's decision, until X402-2: both are minted
+ * and spent here, in JS, as before.
  */
 
 const crypto = require('crypto');
@@ -138,7 +157,18 @@ function isPageKind(kind, payload) {
 // A page token's handle: the 32 random bytes main issued, in hex.
 const HANDLE = /^[0-9a-f]{64}$/;
 
-const outstanding = new Map(); // token -> { kind, digest, expiresAt, bound, page }
+const outstanding = new Map(); // token -> { kind, digest, expiresAt }: x402's kinds only
+
+// The kind main asked the core to mint for each token of its own, which the
+// chrome presents back with a request: token -> { kind, expiresAt }. The
+// core reads a `sign.transaction` token's kind from the token itself (a
+// wallet-send's or an executor-send's), so main checks that kind against the
+// route's before the token is presented, as its own check did before APB-1:
+// the wallet's send route never presents an executor-send token, nor the
+// executor's route a wallet-send token. Bounded as the core bounds its
+// tokens; one main no longer knows is refused, so evicting one can't skip
+// the check.
+const minted = new Map();
 let now = () => Date.now();
 
 function notConfirmed(reason) {
@@ -459,19 +489,17 @@ function bindingFor(kind, accountIndex, payload) {
   }
 }
 
-function digestFor(kind, accountIndex, payload, page = null) {
-  const binding = { kind, ...bindingFor(kind, accountIndex, payload) };
-  if (page) binding.page = page;
-  return sha256(stableStringify(binding));
+function digestFor(kind, accountIndex, payload) {
+  return sha256(stableStringify({ kind, ...bindingFor(kind, accountIndex, payload) }));
 }
 
-/** A page token's two fields from main's request record, checked. */
-function pageBinding(page) {
-  const handle = page?.handle;
-  const key = page?.key;
-  if (typeof handle !== 'string' || !HANDLE.test(handle)) throw new Error('A page confirmation needs its handle');
-  if (typeof key !== 'string' || key.length === 0) throw new Error('A page confirmation needs its key');
-  return { handle, key };
+// The kinds main still mints and spends in JS: x402's (above).
+const MAIN_KINDS = new Set([KINDS.X402_PAYMENT, KINDS.X402_CAP_UPDATE]);
+const ALL_KINDS = new Set(Object.values(KINDS));
+
+/** Whether the identity core mints and spends `kind`'s tokens (APB-1). */
+function isCoreKind(kind) {
+  return ALL_KINDS.has(kind) && !MAIN_KINDS.has(kind);
 }
 
 function pruneExpired() {
@@ -481,44 +509,17 @@ function pruneExpired() {
   }
 }
 
-/** A 0x-prefixed 32-byte hash, lowercase. */
-function digestHex(value) {
-  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
-    throw new Error('Invalid typed data hash');
-  }
-  return value.toLowerCase();
-}
+// ---- main's own kinds: x402's, in JS ----
 
 /**
- * Issue a single-use confirmation token for exactly this request.
- * Throws on a malformed request (nothing is issued).
+ * Issue one of main's own tokens (x402's kinds), at once. Throws on a
+ * malformed request (nothing is issued) and for any other kind.
  *
- * @param {object} [bound] - facts main computed for the request, handed
- *   back when the token is spent: `{ hash }` for sign-typed-data, the
- *   core's EIP-712 hash of the data (required there).
  * @returns {{token: string, expiresAt: number}}
  */
-function issueConfirmation(kind, accountIndex, payload, bound = {}) {
-  return issue(kind, digestFor(kind, accountIndex, payload), bound, false);
-}
-
-/**
- * Main's own issuer for a page's request (design 0011, "Approval tokens"):
- * a token of a page kind, bound to the prompt's handle and the requester's
- * attested key as well. The page dispatcher calls it only on the user's
- * approval of a prompt main showed for a live request record, with the
- * handle and key from that record and the account and payload from the
- * request main holds (`page-requests.js`). Throws for any other kind.
- *
- * @param {{handle: string, key: string}} page
- */
-function issuePageConfirmation(kind, accountIndex, payload, page, bound = {}) {
-  if (!isPageKind(kind, payload)) throw new Error(`Not a page confirmation kind: ${kind}`);
-  return issue(kind, digestFor(kind, accountIndex, payload, pageBinding(page)), bound, true);
-}
-
-function issue(kind, digest, bound, page) {
-  const kept = kind === KINDS.SIGN_TYPED_DATA ? { hash: digestHex(bound?.hash) } : {};
+function issueMain(kind, accountIndex, payload) {
+  if (!MAIN_KINDS.has(kind)) throw new Error(`Not one of main's own confirmation kinds: ${kind}`);
+  const digest = digestFor(kind, accountIndex, payload);
   pruneExpired();
   while (outstanding.size >= MAX_OUTSTANDING) {
     // Map iteration order is insertion order: drop the oldest.
@@ -526,73 +527,451 @@ function issue(kind, digest, bound, page) {
   }
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = now() + CONFIRMATION_TTL_MS;
-  outstanding.set(token, { kind, digest, expiresAt, bound: kept, page });
+  outstanding.set(token, { kind, digest, expiresAt });
   return { token, expiresAt };
 }
 
 /**
- * Spend a confirmation token for the request about to be signed. Burns the
- * token on every presentation. Throws (code SIGNING_NOT_CONFIRMED) unless
- * the token was issued for this kind and this exact request and has not
- * expired.
- *
- * @returns {object} what was bound with it (`{ hash }` for sign-typed-data)
+ * Spend one of main's own tokens (x402's kinds) for the request about to be
+ * paid or applied. Burns the token on every presentation. Throws (code
+ * SIGNING_NOT_CONFIRMED) unless the token was issued for this kind and this
+ * exact request and has not expired. The core's kinds are spent by the core.
  */
 function consumeConfirmation(token, kind, accountIndex, payload) {
-  return consume(token, kind, () => digestFor(kind, accountIndex, payload), false);
-}
-
-/**
- * Spend a page token (main's page dispatcher only): as `consumeConfirmation`,
- * and the token must have been minted by main's own issuer for this handle
- * and this key. A token minted for handle A is refused for handle B, and one
- * minted for one site's request for another's.
- *
- * @param {{handle: string, key: string}} page
- */
-function consumePageConfirmation(token, kind, accountIndex, payload, page) {
-  return consume(token, kind, () => digestFor(kind, accountIndex, payload, pageBinding(page)), true);
-}
-
-function consume(token, kind, digestOf, page) {
   if (typeof token !== 'string' || token.length === 0) {
     throw notConfirmed('no confirmation token');
   }
   const entry = outstanding.get(token);
   outstanding.delete(token);
+  if (!MAIN_KINDS.has(kind)) throw notConfirmed('the identity core spends this confirmation');
   if (!entry) {
     throw notConfirmed('unknown or already used confirmation');
   }
   if (entry.expiresAt <= now()) {
     throw notConfirmed('confirmation expired');
   }
-  // A page token is spent only by main's dispatcher, and a chrome token
-  // never answers a page's request.
-  if (entry.page !== page) {
-    throw notConfirmed(page ? 'not a page confirmation' : 'a page confirmation is spent only by main');
-  }
   let digest;
   try {
-    digest = digestOf();
+    digest = digestFor(kind, accountIndex, payload);
   } catch (err) {
     throw notConfirmed(err.message);
   }
   if (entry.kind !== kind || entry.digest !== digest) {
     throw notConfirmed('request differs from what was confirmed');
   }
-  return { ...entry.bound };
+  return {};
+}
+
+// ---- the core's kinds (freedom-core design 0012, APB-1) ----
+
+function vault() {
+  return require('../core/vault-backend').vaultBackend;
+}
+
+// v1 Safes live on Gnosis (`safe-service.js`, DEPLOY_CHAIN_ID): a Safe
+// message's chain, as main reads it from the Safe's record.
+const SAFE_CHAIN_ID = 100;
+
+// The core's refusals (`not_authorized`, design 0012, API), in today's words.
+const REFUSALS = Object.freeze({
+  no_token: 'no confirmation token',
+  unknown_token: 'unknown or already used confirmation',
+  expired: 'confirmation expired',
+  mismatch: 'request differs from what was confirmed',
+});
+
+/**
+ * A core error as main reports a confirmation's failure: a refusal
+ * (`not_authorized`, or `forbidden` for a caller that can't present it) as
+ * SIGNING_NOT_CONFIRMED, in today's words. Anything else is passed on, a
+ * locked vault's `vault_locked` among them.
+ */
+function confirmationError(err) {
+  if (err?.code === 'not_authorized') return notConfirmed(REFUSALS[err.data?.reason] ?? err.message);
+  if (err?.code === 'forbidden') return notConfirmed(err.message);
+  return err;
+}
+
+/** The core's fee verdict (`fee_check`) in main's words (`fee-check.js`). */
+function feeVerdict(verdict) {
+  return {
+    maxCost: verdict?.max_cost ?? null,
+    comparable: verdict?.comparable === true,
+    ratio: verdict?.ratio ?? null,
+    above: verdict?.above === true,
+    oneEndpoint: verdict?.one_endpoint === true,
+    basis: verdict?.basis ?? null,
+    autoApprove: verdict?.auto_approve === true,
+  };
+}
+
+function coreAddress(value, field) {
+  const lower = address(value, field);
+  if (!lower) throw new Error(`Invalid ${field}`);
+  return lower;
 }
 
 /**
- * Burn a token without spending it: for a call refused before it named a
- * request to check the token against (a stale or unknown payment).
+ * A send's transaction as main will hand it to `sign.transaction`: built as
+ * main builds every send (`buildTransaction`), then in the core's wire form
+ * (`toCoreTransaction`), so the core binds the type and the fee fields it
+ * will sign. Its nonce only when the token binds one (intent-replace).
+ */
+function coreTx(tx, nonceValue) {
+  if (!tx || typeof tx !== 'object') throw new Error('Transaction is required');
+  const { buildTransaction, toCoreTransaction } = require('./signing-utils');
+  const built = buildTransaction({
+    to: tx.to,
+    value: tx.value,
+    data: tx.data,
+    gasLimit: tx.gasLimit,
+    maxFeePerGas: tx.maxFeePerGas,
+    maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+    gasPrice: tx.gasPrice,
+    nonce: nonceValue,
+    chainId: chain(tx.chainId),
+  });
+  const { tx: wire } = toCoreTransaction(built);
+  if (nonceValue === undefined) delete wire.nonce;
+  return wire;
+}
+
+/** A Safe's address, from its record: the Safe a token binds. */
+function safeAddress(safeIndex) {
+  const record = require('../identity-manager').getWalletRecord(safeIndex);
+  if (!record || record.type !== 'safe' || typeof record.address !== 'string') {
+    throw new Error('Unknown Safe account');
+  }
+  return coreAddress(record.address, 'Safe address');
+}
+
+/**
+ * A request of `kind` in the form the core binds it (design 0012, "Tokens";
+ * fc-approval's `bind.rs`): `{ account?, payload }`, the `sign.*`
+ * parameters but the key for a kind the core signs, the core's own form for
+ * the others. Main's own checks of the request come first (`bindingFor`), so
+ * a malformed one fails in today's words.
+ *
+ * @param {object} [options] `chainId`: a page's chain, which a typed-data
+ *   view is made against (`typedDataViewOptions`)
+ */
+function corePayload(kind, accountIndex, payload, { chainId } = {}) {
+  const facts = bindingFor(kind, accountIndex, payload);
+  switch (kind) {
+    case KINDS.WALLET_SEND:
+    case KINDS.EXECUTOR_SEND:
+    case KINDS.DAPP_SEND:
+      return { account: facts.walletIndex, payload: { tx: coreTx(payload) } };
+    case KINDS.SIGN_MESSAGE: {
+      const { normalizeMessage, messageToBytes } = require('./signing-utils');
+      const bytes = typeof payload === 'string' ? messageToBytes(normalizeMessage(payload)) : Buffer.from(payload);
+      return { account: facts.walletIndex, payload: { message: '0x' + bytes.toString('hex') } };
+    }
+    case KINDS.SIGN_TYPED_DATA: {
+      const { normalizeTypedData, toCoreTypedData, typedDataViewOptions } = require('./signing-utils');
+      const typedData = normalizeTypedData(payload);
+      if (!typedData || typeof typedData !== 'object') throw new Error('Typed data is required');
+      const options = typedDataViewOptions(typedData, chainId);
+      const body = { typed_data: toCoreTypedData(typedData) };
+      if (options.primaryType !== undefined) body.primary_type = options.primaryType;
+      if (options.chainId !== undefined) body.chain_id = String(options.chainId);
+      return { account: facts.walletIndex, payload: body };
+    }
+    case KINDS.SAFE_SEND:
+      return {
+        account: facts.safeIndex,
+        payload: {
+          safe: safeAddress(facts.safeIndex),
+          chain_id: String(facts.chainId),
+          tx: { to: coreAddress(facts.to, 'to'), value: facts.value, data: facts.data },
+        },
+      };
+    case KINDS.SAFE_MESSAGE:
+      return {
+        account: facts.safeIndex,
+        payload: {
+          safe: safeAddress(facts.safeIndex),
+          chain_id: String(SAFE_CHAIN_ID),
+          method: payload.method,
+          params: payload.params,
+        },
+      };
+    case KINDS.INTENT_RESEND:
+      return {
+        payload: {
+          intent_id: facts.intentId,
+          chain_id: String(facts.chainId),
+          sender: facts.sender,
+          nonce: String(facts.nonce),
+          hash: facts.hash,
+        },
+      };
+    case KINDS.INTENT_REPLACE:
+      // The account that signs it again, from main's record of the intent:
+      // the core binds it, and `sign.transaction` requires it.
+      return {
+        ...(Number.isInteger(accountIndex) && accountIndex >= 0 ? { account: accountIndex } : {}),
+        payload: { intent_id: facts.intentId, sender: facts.sender, tx: coreTx(payload, facts.nonce) },
+      };
+    case KINDS.INTENT_CLOSE:
+      return {
+        payload: {
+          intent_id: facts.intentId,
+          chain_id: String(facts.chainId),
+          sender: facts.sender,
+          nonce: String(facts.nonce),
+          hashes: facts.hashes,
+        },
+      };
+    default:
+      throw new Error(`Not a core confirmation kind: ${kind}`);
+  }
+}
+
+/**
+ * A confirmation main holds for a request: its token and what the core
+ * bound, to present at the signature (`signingAuthorization`) or to spend
+ * (`spendConfirmation`). A page's names its prompt's handle and the
+ * requesting document's PageContext.
+ *
+ * @typedef {{token: string, kind: string, account?: number, payload: object,
+ *   handle?: string, page?: object, intent?: {id: string}}} Confirmation
+ */
+
+async function issueCore(kind, accountIndex, payload, { page = null, handle, feeAcknowledged, phone, chainId } = {}) {
+  const request = corePayload(kind, accountIndex, payload, { chainId });
+  const params = { kind, payload: request.payload };
+  if (request.account !== undefined) params.account = request.account;
+  if (handle !== undefined) params.handle = handle;
+  if (feeAcknowledged === true) params.fee_ack = true;
+  if (phone === true) params.phone = true;
+  let reply;
+  try {
+    reply = await vault().approval.issue(params, page);
+  } catch (err) {
+    // The core's own fee check at minting (design 0012, "The fee check"):
+    // above its threshold, the user confirms the fee again first.
+    if (err?.code === 'not_authorized' && err.data?.reason === 'fee_check') {
+      const { feeCheckError, FEE_CHECK_ASK_AGAIN } = require('./fee-check');
+      throw feeCheckError(FEE_CHECK_ASK_AGAIN, feeVerdict(err.data.fee_check));
+    }
+    throw confirmationError(err);
+  }
+  const confirmation = { token: reply.token, kind, payload: request.payload };
+  if (request.account !== undefined) confirmation.account = request.account;
+  if (handle !== undefined) confirmation.handle = handle;
+  if (page) confirmation.page = page;
+  return {
+    token: reply.token,
+    expiresAt: Date.now() + (Number(reply.expires_in_ms) || 0),
+    confirmation,
+    ...(typeof reply.hash === 'string' ? { hash: reply.hash, view: reply.view } : {}),
+    ...(reply.fee_check ? { feeCheck: feeVerdict(reply.fee_check) } : {}),
+  };
+}
+
+/**
+ * Issue a single-use confirmation token for exactly this request, from
+ * main itself: a wallet kind through the identity core (`approval.issue`
+ * as `shell`), or one of x402's kinds in JS. Rejects on a malformed request
+ * (nothing is issued), and with FEE_CHECK_ASK_AGAIN and the core's verdict
+ * for a send above the fee check's threshold not acknowledged.
+ *
+ * @param {object} [options] `feeAcknowledged`: the user confirmed a fee
+ *   above the threshold again; `phone`: a phone account's send, whose fee
+ *   the phone picks (the core's fee check skips it)
+ * @returns {Promise<{token: string, expiresAt: number}>}
+ */
+async function issueConfirmation(kind, accountIndex, payload, options = {}) {
+  if (MAIN_KINDS.has(kind)) return issueMain(kind, accountIndex, payload);
+  if (isPageKind(kind, payload)) throw new Error(`A page confirmation is issued for its page: ${kind}`);
+  const { token, expiresAt } = await issueCore(kind, accountIndex, payload, {
+    feeAcknowledged: options.feeAcknowledged,
+    phone: options.phone,
+  });
+  rememberKind(token, kind, expiresAt);
+  return { token, expiresAt };
+}
+
+// Main's record of the kind it minted `token` as (`minted`): the oldest
+// dropped past the bound, expired ones first.
+function rememberKind(token, kind, expiresAt) {
+  if (minted.size >= MAX_OUTSTANDING) {
+    const t = Date.now();
+    for (const [held, entry] of minted) {
+      if (entry.expiresAt <= t) minted.delete(held);
+    }
+  }
+  while (minted.size >= MAX_OUTSTANDING) minted.delete(minted.keys().next().value);
+  minted.set(token, { kind, expiresAt });
+}
+
+/**
+ * Main's own issuer for a page's request (design 0011, "Approval tokens"):
+ * a token of a page kind, minted by the core under `page` with the
+ * requesting document's PageContext and the prompt's handle (design 0012).
+ * The page dispatcher calls it only on the user's approval of a prompt main
+ * showed for a live request record, with the account and payload from the
+ * request main holds (`page-requests.js`). Rejects for any other kind.
+ *
+ * @param {{handle: string, context: object}} page the prompt's handle and
+ *   the document's PageContext (`{ origin, top_origin, frame, navigation,
+ *   agent }`)
+ * @param {object} [options] `chainId`: the page's chain, for typed data;
+ *   for a dApp send, `feeAcknowledged` (the user confirmed a fee above the
+ *   threshold again) and `phone` (a phone account's, whose fee it picks)
+ * @returns {Promise<Confirmation & {hash?: string, view?: object}>}
+ */
+async function issuePageConfirmation(kind, accountIndex, payload, page, options = {}) {
+  if (!isPageKind(kind, payload)) throw new Error(`Not a page confirmation kind: ${kind}`);
+  if (typeof page?.handle !== 'string' || !HANDLE.test(page.handle)) {
+    throw new Error('A page confirmation needs its handle');
+  }
+  if (!page.context || typeof page.context.origin !== 'string' || !page.context.origin) {
+    throw new Error('A page confirmation needs its page');
+  }
+  const issued = await issueCore(kind, accountIndex, payload, {
+    page: page.context,
+    handle: page.handle,
+    chainId: options.chainId,
+    feeAcknowledged: options.feeAcknowledged,
+    phone: options.phone,
+  });
+  return {
+    ...issued.confirmation,
+    ...(issued.hash !== undefined ? { hash: issued.hash, view: issued.view } : {}),
+  };
+}
+
+/**
+ * The confirmation a handler holds for a token the chrome presented with
+ * its request (`wallet:confirm-signing`'s), read as the core binds it.
+ * Throws (SIGNING_NOT_CONFIRMED) for no token, and burns the token, before
+ * anything is asked of the core, for a token main didn't mint as this
+ * route's kind (`minted`: an executor-send token on the wallet's send route,
+ * or the reverse) and for a request that can't be read, as before.
+ *
+ * @returns {Confirmation}
+ */
+function confirmationFor(token, kind, accountIndex, payload, options = {}) {
+  if (typeof token !== 'string' || token.length === 0) throw notConfirmed('no confirmation token');
+  const issued = minted.get(token);
+  minted.delete(token);
+  if (!issued) {
+    discardConfirmation(token);
+    throw notConfirmed('unknown or already used confirmation');
+  }
+  if (issued.kind !== kind) {
+    discardConfirmation(token);
+    throw notConfirmed('request differs from what was confirmed');
+  }
+  let request;
+  try {
+    request = corePayload(kind, accountIndex, payload, options);
+  } catch (err) {
+    discardConfirmation(token);
+    throw notConfirmed(err.message);
+  }
+  const confirmation = { token, kind, payload: request.payload };
+  if (request.account !== undefined) confirmation.account = request.account;
+  return confirmation;
+}
+
+/**
+ * Spend a confirmation through the core (`approval.spend`): for a kind that
+ * signs nothing here (a held intent's resend and close, a Safe's send and
+ * message, whose owners sign later), and for a device's signature (a
+ * Ledger, a phone), which the core advises on. Burns the token whatever the
+ * outcome. Rejects (SIGNING_NOT_CONFIRMED) unless it was issued for this
+ * kind, this request and, for a page's, this document and prompt.
+ *
+ * @param {Confirmation} confirmation
+ * @returns {Promise<{bound: boolean, safe?: string}>} `safe`: the Safe
+ *   approval a Safe's send or message gives (design 0012)
+ */
+async function spendConfirmation(confirmation) {
+  const { token, kind, account, payload, handle, page } = confirmation || {};
+  if (typeof token !== 'string' || token.length === 0) throw notConfirmed('no confirmation token');
+  const params = { token, kind, payload };
+  if (account !== undefined) params.account = account;
+  if (handle !== undefined) params.handle = handle;
+  try {
+    return await vault().approval.spend(params, page || null);
+  } catch (err) {
+    throw confirmationError(err);
+  }
+}
+
+/**
+ * Spend a Safe's send or message confirmation (`spendConfirmation`). The
+ * Safe approval the core gives for it is ended at once: until APB-1c
+ * carries it to each owner's signature and the executor's, nothing presents
+ * it, and an approval nothing holds is one nothing can misuse.
+ *
+ * @param {Confirmation} confirmation
+ */
+async function spendSafeConfirmation(confirmation) {
+  const spent = await spendConfirmation(confirmation);
+  if (typeof spent?.safe === 'string') {
+    try {
+      await vault().approval.end(spent.safe, confirmation.page || null);
+    } catch {
+      // Gone with the core, or dropped among its 64: nothing holds it.
+    }
+  }
+  return { bound: spent?.bound === true };
+}
+
+/**
+ * What a signature the core makes presents (design 0012, API): `sign.*`'s
+ * `authorization`, `{ token, handle? }` or, for an intent-replace,
+ * `{ token, intent: { id } }`, and the PageContext of a page's request,
+ * under which it is sent. The core spends the token there.
+ *
+ * @param {Confirmation} confirmation
+ * @returns {{authorization: object, page: object|null}}
+ */
+function signingAuthorization(confirmation) {
+  const authorization = { token: confirmation.token };
+  if (confirmation.handle !== undefined) authorization.handle = confirmation.handle;
+  if (confirmation.intent) authorization.intent = { id: confirmation.intent.id };
+  return { authorization, page: confirmation.page || null };
+}
+
+/**
+ * Burn a token without spending it: for a request that ended before it
+ * presented its token, or refused before it named a request to check the
+ * token against. The core answers `{}` for a token already spent or
+ * unknown, so this is safe to call after any outcome; it never rejects.
  */
 function discardConfirmation(token) {
-  if (typeof token === 'string') outstanding.delete(token);
+  if (typeof token !== 'string' || token.length === 0) return Promise.resolve();
+  outstanding.delete(token);
+  minted.delete(token);
+  return vault()
+    .approval.discard(token)
+    .then(
+      () => {},
+      () => {}
+    );
+}
+
+/**
+ * Run `fn` holding `token`, and burn the token afterwards, whatever
+ * happened: a token is spent at its first presentation, so one whose
+ * request ended before its signature can't be presented again.
+ */
+async function withConfirmation(token, fn) {
+  try {
+    return await fn();
+  } finally {
+    await discardConfirmation(token);
+  }
 }
 
 function _reset() {
   outstanding.clear();
+  minted.clear();
   now = () => Date.now();
 }
 
@@ -611,12 +990,20 @@ module.exports = {
   PAGE_KINDS,
   NOT_CONFIRMED,
   bindingFor,
+  confirmationError,
+  corePayload,
+  isCoreKind,
   isPageKind,
   issueConfirmation,
+  issueMainConfirmation: issueMain,
   issuePageConfirmation,
+  confirmationFor,
   consumeConfirmation,
-  consumePageConfirmation,
+  spendConfirmation,
+  spendSafeConfirmation,
+  signingAuthorization,
   discardConfirmation,
+  withConfirmation,
   _reset,
   _setNow,
   _outstandingCount,

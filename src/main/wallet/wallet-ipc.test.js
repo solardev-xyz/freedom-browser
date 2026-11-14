@@ -16,7 +16,11 @@ jest.mock('./tx-recorder', () => ({
   signAndRecord: jest.fn(),
   KINDS: { WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' },
 }));
-jest.mock('../identity-manager', () => ({ getActiveWalletIndex: jest.fn(() => 0) }));
+jest.mock('../identity-manager', () => ({
+  getActiveWalletIndex: jest.fn(() => 0),
+  // Safe 7, whose address a safe-send token binds.
+  getWalletRecord: (index) => (index === 7 ? { index, type: 'safe', address: '0x' + '77'.repeat(20) } : null),
+}));
 jest.mock('./rpc-manager', () => ({}));
 jest.mock('./signers', () => ({ getSigner: jest.fn() }));
 jest.mock('./dapp-permissions', () => ({
@@ -52,11 +56,14 @@ jest.mock('../approvals/wallet-approvals', () => {
 // The identity core's typed_data.hash (freedom-core design 0002, #88),
 // simulated with ethers: the digest and the view, with its reports.
 const mockCoreViews = [];
+// Its approval tokens (design 0012, APB-1), simulated too.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
 jest.mock('../core/vault-backend', () => {
   const { TypedDataEncoder } = require('ethers');
   const { simulatedView } = require('../../../test/helpers/simulated-vault-core');
   return {
     vaultBackend: {
+      approval: mockApprovals.approval,
       typedDataView: jest.fn(async (data, options) => {
         mockCoreViews.push([data, options]);
         return {
@@ -146,6 +153,11 @@ describe('signing handlers require a main-side confirmation', () => {
   const dappPermissions = require('./dapp-permissions');
   const { startSafeSend } = require('./safe/safe-transactions');
   const confirmations = require('./signing-confirmation');
+  const { toCoreTransaction, buildTransaction } = require('./signing-utils');
+  // Tokens outstanding: main's own (x402's) and the core's.
+  const outstanding = () => confirmations._outstandingCount() + mockApprovals.outstanding();
+  // What the core signed: a token is checked as it signs (design 0012).
+  let signedTxs = [];
 
   const SITE = 'https://app.example';
   // The chrome window that sends every wallet IPC, and its tab guests by
@@ -176,11 +188,34 @@ describe('signing handlers require a main-side confirmation', () => {
     jest.spyOn(console, 'error').mockImplementation(() => {});
     jest.spyOn(console, 'log').mockImplementation(() => {});
     confirmations._reset();
+    mockApprovals.reset();
+    signedTxs = [];
     ipcMain.handle.mockClear();
     registerWalletIpc();
     handlers = Object.fromEntries(ipcMain.handle.mock.calls.map(([channel, fn]) => [channel, fn]));
-    getSigner.mockReset().mockReturnValue({});
-    signAndRecord.mockReset().mockResolvedValue({ hash: '0xhash' });
+    // The account's signer presents its confirmation to the (simulated)
+    // core as it signs, which spends it there (design 0012, APB-1).
+    getSigner.mockReset().mockImplementation((index, authorized = {}) => ({
+      signTransaction: async (tx) => {
+        try {
+          mockApprovals.authorize(
+            'sign.transaction',
+            index,
+            { tx: toCoreTransaction(tx).tx },
+            authorized.confirmation ? confirmations.signingAuthorization(authorized.confirmation) : {}
+          );
+        } catch (err) {
+          throw confirmations.confirmationError(err);
+        }
+        signedTxs.push(tx);
+      },
+    }));
+    signAndRecord.mockReset().mockImplementation(async (tx, signer) => {
+      // A phone signs and sends in one step.
+      if (signer.sendTransaction) await signer.sendTransaction(tx);
+      else await signer.signTransaction(buildTransaction({ ...tx, nonce: 0 }));
+      return { hash: '0xhash' };
+    });
     getActiveWalletIndex.mockReset().mockReturnValue(0);
     dappPermissions.getPermission.mockReset().mockReturnValue(null);
     dappPermissions.getSigningAutoApprove.mockReset().mockReturnValue(false);
@@ -214,11 +249,33 @@ describe('signing handlers require a main-side confirmation', () => {
       const confirmation = await mint('wallet-send', null, TX);
       const result = await handlers['wallet:send-transaction']({}, TX, {}, { confirmation });
       expect(result).toMatchObject({ success: true, hash: '0xhash' });
-      expect(signAndRecord).toHaveBeenCalledTimes(1);
+      expect(signedTxs).toHaveLength(1);
 
       const replay = await handlers['wallet:send-transaction']({}, TX, {}, { confirmation });
       expect(replay).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signAndRecord).toHaveBeenCalledTimes(1);
+      // Refused by the core as it was presented: nothing signed.
+      expect(signedTxs).toHaveLength(1);
+    });
+
+    test("an executor-send token is refused before any signature, and burnt", async () => {
+      // The core reads a transaction token's kind from the token: main checks
+      // the route's against the kind it minted, as its JS check did.
+      const confirmation = await mint('executor-send', 0, TX);
+      mockApprovals.calls.length = 0;
+      getSigner.mockClear();
+      const result = await handlers['wallet:send-transaction']({}, TX, {}, { confirmation });
+      expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+      expect(result.error).toMatch(/request differs from what was confirmed/);
+      expect(signAndRecord).not.toHaveBeenCalled();
+      expect(getSigner).not.toHaveBeenCalled();
+      expect(signedTxs).toEqual([]);
+      // Nothing asked of the core but the burn.
+      expect(mockApprovals.calls.map((call) => call.method)).toEqual(['approval.discard']);
+      expect(mockApprovals.calls[0].params).toEqual({ token: confirmation });
+      expect(outstanding()).toBe(0);
+      // Burnt: the executor's own route can't present it either.
+      const { confirmationFor } = confirmations;
+      expect(() => confirmationFor(confirmation, 'executor-send', 0, TX)).toThrow(/unknown or already used/);
     });
 
     test('a changed recipient is refused', async () => {
@@ -226,7 +283,7 @@ describe('signing handlers require a main-side confirmation', () => {
       const result = await handlers['wallet:send-transaction'](
         {}, { ...TX, to: '0x' + '66'.repeat(20) }, {}, { confirmation });
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signAndRecord).not.toHaveBeenCalled();
+      expect(signedTxs).toEqual([]);
     });
 
     test('the account active when confirming is the one bound', async () => {
@@ -234,7 +291,7 @@ describe('signing handlers require a main-side confirmation', () => {
       getActiveWalletIndex.mockReturnValue(1);
       const result = await handlers['wallet:send-transaction']({}, TX, {}, { confirmation });
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(signAndRecord).not.toHaveBeenCalled();
+      expect(signedTxs).toEqual([]);
     });
 
     test('main binds the active account, whatever index the renderer names', async () => {
@@ -290,7 +347,7 @@ describe('signing handlers require a main-side confirmation', () => {
       const result = await handlers['wallet:confirm-signing']({}, 'dapp-send', 2, { ...TX, origin: SITE });
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(result.token).toBeUndefined();
-      expect(confirmations._outstandingCount()).toBe(0);
+      expect(outstanding()).toBe(0);
       expect(checkAtApproval).not.toHaveBeenCalled();
     });
 
@@ -328,7 +385,7 @@ describe('signing handlers require a main-side confirmation', () => {
       const result = await handlers['wallet:confirm-signing']({}, kind, 0, payload);
       expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(result.token).toBeUndefined();
-      expect(confirmations._outstandingCount()).toBe(0);
+      expect(outstanding()).toBe(0);
       expect(vaultBackend.typedDataView).not.toHaveBeenCalled();
     });
   });
@@ -373,7 +430,7 @@ describe('signing handlers require a main-side confirmation', () => {
         // A Safe executor's fee, confirmed on the Safe's screen.
         ['executor-send', 0, TX],
       ]) {
-        const outstanding = confirmations._outstandingCount();
+        const tokensBefore = outstanding();
         const asked = await handlers['wallet:confirm-signing']({}, kind, index, payload);
         expect(asked).toEqual({
           success: false,
@@ -382,7 +439,7 @@ describe('signing handlers require a main-side confirmation', () => {
           feeCheck: { ...above, askAgain: true },
         });
         // Nothing was minted.
-        expect(confirmations._outstandingCount()).toBe(outstanding);
+        expect(outstanding()).toBe(tokensBefore);
         const confirmed = await handlers['wallet:confirm-signing']({}, kind, index, payload, {
           feeAcknowledged: true,
         });
@@ -395,7 +452,7 @@ describe('signing handlers require a main-side confirmation', () => {
     });
 
     test("Safe payments and a phone's own payments have no fee to check", async () => {
-      await mint('safe-send', 0, { tx: { to: TX.to, value: '0', data: '0x' }, chainId: 100 });
+      await mint('safe-send', 7, { tx: { to: TX.to, value: '0', data: '0x' }, chainId: 100 });
       // A phone picks and pays its own fee: main signs nothing.
       getSigner.mockReturnValue({ sendTransaction: jest.fn() });
       await mint('wallet-send', null, TX);
@@ -476,21 +533,21 @@ describe('signing handlers require a main-side confirmation', () => {
         confirm: jest.fn(async (request, onApproved) => {
           asked.push(request);
           if (!answer.approved) return answer;
-          const before = confirmations._outstandingCount();
+          const tokensBefore = outstanding();
           const minted = await onApproved();
-          mintedBeforeAnswer = confirmations._outstandingCount() === before + 1;
+          mintedBeforeAnswer = outstanding() === tokensBefore + 1;
           return { ...minted, approved: true };
         }),
       };
       const chromeEvent = { sender: { id: 501 } };
-      const outstanding = confirmations._outstandingCount();
+      const tokensBefore = outstanding();
       const approved = await handlers['wallet:confirm-signing'](chromeEvent, 'wallet-send', null, TX, { feeAcknowledged: true });
       expect(approved).toMatchObject({ success: true, token: expect.any(String), expiresAt: expect.any(Number) });
       expect(mintedBeforeAnswer).toBe(true);
       expect(asked).toEqual([{ sender: chromeEvent.sender, kind: 'wallet-send', index: 0, payload: TX, feeChecked: true }]);
       // The fee is asked in the panel: the chrome's acknowledgement isn't read.
       expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();
-      expect(confirmations._outstandingCount()).toBe(outstanding + 1);
+      expect(outstanding()).toBe(tokensBefore + 1);
 
       answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
       expect(await handlers['wallet:confirm-signing'](chromeEvent, 'intent-close', null, { intentId: 'intent-123', chainId: 100, sender: TX.to, nonce: 1, hashes: [`0x${'ab'.repeat(32)}`] })).toEqual({
@@ -498,7 +555,7 @@ describe('signing handlers require a main-side confirmation', () => {
         error: 'User rejected the request',
         code: 'USER_REJECTED',
       });
-      expect(confirmations._outstandingCount()).toBe(outstanding + 1);
+      expect(outstanding()).toBe(tokensBefore + 1);
 
       // A request the token couldn't bind is refused before anyone is asked.
       const before = asked.length;
@@ -698,13 +755,13 @@ describe('signing handlers require a main-side confirmation', () => {
         origin: SITE,
       });
       expect(refused).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(confirmations._outstandingCount()).toBe(0);
+      expect(outstanding()).toBe(0);
       // A page token, main's own, is never spent here.
-      const { token } = confirmations.issuePageConfirmation(
+      const { token } = await confirmations.issuePageConfirmation(
         'safe-send',
         7,
         { tx: SAFE_TX, chainId: 100, origin: SITE },
-        { handle: 'b'.repeat(64), key: SITE }
+        { handle: 'b'.repeat(64), context: { origin: SITE, top_origin: SITE, frame: 1, navigation: 1, agent: false } }
       );
       await expect(
         handlers['wallet:safe-send']({}, 7, SAFE_TX, { site: SITE }, 100, { confirmation: token })
@@ -762,7 +819,7 @@ describe('signing handlers require a main-side confirmation', () => {
       const minted = await handlers['wallet:confirm-signing']({}, 'safe-message', 7, request);
       expect(minted).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
       expect(minted.token).toBeUndefined();
-      expect(confirmations._outstandingCount()).toBe(0);
+      expect(outstanding()).toBe(0);
     });
   });
 
@@ -823,7 +880,7 @@ describe('signing handlers require a main-side confirmation', () => {
     expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, { ...X402_PAYMENT, webContentsId: undefined }))
       .toEqual(refusal);
     expect(await handlers['wallet:confirm-signing']({}, 'x402-payment', 0, X402_PAYMENT)).toEqual(refusal);
-    expect(confirmations._outstandingCount()).toBe(0);
+    expect(outstanding()).toBe(0);
 
     // The hosting window's sidebar gets its token.
     const token = await mintX402(0);
@@ -898,13 +955,13 @@ describe('signing handlers require a main-side confirmation', () => {
 
       // Rejected in the panel: no token.
       answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
-      const outstanding = confirmations._outstandingCount();
+      const tokensBefore = outstanding();
       expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toEqual({
         success: false,
         error: 'User rejected the request',
         code: 'USER_REJECTED',
       });
-      expect(confirmations._outstandingCount()).toBe(outstanding);
+      expect(outstanding()).toBe(tokensBefore);
     });
 
     test('a payment main can\'t find as asked, or on another window\'s tab, asks nothing', async () => {
@@ -918,7 +975,7 @@ describe('signing handlers require a main-side confirmation', () => {
       guest(42, 'https://api.example/article', { host: { id: 2 } });
       expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, X402_PAYMENT)).toMatchObject({ success: false });
       expect(asked).toEqual([]);
-      expect(confirmations._outstandingCount()).toBe(0);
+      expect(outstanding()).toBe(0);
     });
 
     test('a cap\'s edit asks the panel with the cap main holds, and only its approval mints', async () => {
@@ -931,7 +988,7 @@ describe('signing handlers require a main-side confirmation', () => {
 
       answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
       expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit)).toMatchObject({ success: false, code: 'USER_REJECTED' });
-      expect(confirmations._outstandingCount()).toBe(0);
+      expect(outstanding()).toBe(0);
 
       // A cap main doesn't hold: refused before anyone is asked.
       const saved = mockCapHeld.current;

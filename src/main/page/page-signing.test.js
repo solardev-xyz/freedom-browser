@@ -13,6 +13,23 @@ const { createEthereumDispatchers } = require('./page-ethereum');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
 const confirmations = require('../wallet/signing-confirmation');
 const { normalizeMessage, messageToBytes, signsRawHash } = require('../wallet/signing-utils');
+const { TypedDataEncoder } = require('ethers');
+
+// The identity core's approval tokens (design 0012, APB-1), simulated
+// (test/helpers/simulated-approvals.js): main's issuer mints through it.
+const mockApprovals = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({
+  vaultBackend: {
+    get approval() {
+      return mockApprovals.approval;
+    },
+  },
+}));
+jest.mock('../identity-manager', () => ({
+  ...jest.requireActual('../identity-manager'),
+  // The Safe whose address a Safe message's token binds.
+  getWalletRecord: (index) => (index === 1000 ? { index, type: 'safe', address: '0x' + '33'.repeat(20) } : null),
+}));
 
 const CHROME_URL = 'file:///app/src/renderer/index.html';
 const KEY_A = `bzz://${'a'.repeat(64)}`;
@@ -37,7 +54,8 @@ const TYPED = {
   primaryType: 'Order',
   message: { amount: '1' },
 };
-const TYPED_HASH = `0x${'cd'.repeat(32)}`;
+// The data's EIP-712 hash, which the core binds to its token.
+const TYPED_HASH = TypedDataEncoder.hash(TYPED.domain, { Order: TYPED.types.Order }, TYPED.message);
 const TYPED_VIEW = { primaryType: 'Order', domain: { chainId: '0x64' }, message: [] };
 const NO_ADDRESS = { error: { code: 4100, message: 'This page has no address to connect from yet' } };
 const NOT_CONNECTED = { error: { code: 4100, message: 'Not connected. Call eth_requestAccounts first.' } };
@@ -344,6 +362,7 @@ function setup({ dispatchers: custom, approvalsDocument = false, touchId = false
 
 beforeEach(() => {
   confirmations._reset();
+  mockApprovals.reset();
 });
 
 describe('signing through main, on the prompt main shows (0011 PRQ-5a)', () => {
@@ -371,10 +390,21 @@ describe('signing through main, on the prompt main shows (0011 PRQ-5a)', () => {
     expect(await env.decide(env.lastPrompt().handle, true, {})).toEqual({ ok: true });
     expect(await answer).toEqual({ result: '0xmsgsig' });
     expect(env.state.signed).toEqual([['message', MESSAGE]]);
-    // One token, minted for this approval and spent by main, and none left.
+    // One token, minted by the core for this approval and handed to the
+    // signature, under the page (design 0012), and none left.
     expect(env.minted()).toEqual([expect.objectContaining({ token: 'sign-message' })]);
+    expect(env.deps.signing.getSigner).toHaveBeenCalledTimes(1);
+    expect(env.deps.signing.getSigner).toHaveBeenCalledWith(0, {
+      confirmation: expect.objectContaining({
+        kind: 'sign-message',
+        account: 0,
+        payload: { message: MESSAGE },
+        handle: expect.stringMatching(/^[0-9a-f]{64}$/),
+        page: expect.objectContaining({ origin: KEY_A, agent: false }),
+      }),
+    });
     expect(env.traced.filter((entry) => entry.kind === 'token-spent')).toHaveLength(1);
-    expect(confirmations._outstandingCount()).toBe(0);
+    expect(mockApprovals.outstanding()).toBe(0);
     // A confirmed signature isn't a use of the rule: no last-used write.
     expect(env.state.lastUsed).toEqual([]);
   });
@@ -608,6 +638,14 @@ describe("main's issuer: a page token only for a live record, bound to its handl
     return { answer, ...contexts.at(-1) };
   }
 
+  // The core spends a token as the signature presents it (design 0012):
+  // here, the simulated core's check of `sign.message`.
+  const present = (confirmation, page = confirmation.page) =>
+    mockApprovals.authorize('sign.message', 0, { message: MESSAGE }, {
+      ...confirmations.signingAuthorization(confirmation),
+      page,
+    });
+
   test('no token without an approval of a live record', async () => {
     const { env, contexts } = withContexts();
     const page = env.tab();
@@ -617,23 +655,42 @@ describe("main's issuer: a page token only for a live record, bound to its handl
     await flush();
     const { context, release } = contexts[0];
     // Rejected: nothing to mint on.
-    expect(() => context.confirm('sign-message', 0, MESSAGE)).toThrow(/not confirmed/);
+    await expect(context.confirm('sign-message', 0, MESSAGE)).rejects.toThrow(/not confirmed/);
     release();
     await answer;
     // An answered record mints nothing either.
-    expect(() => context.confirm('sign-message', 0, MESSAGE)).toThrow(/not confirmed/);
-    expect(confirmations._outstandingCount()).toBe(0);
+    await expect(context.confirm('sign-message', 0, MESSAGE)).rejects.toThrow(/not confirmed/);
+    expect(mockApprovals.outstanding()).toBe(0);
+    expect(mockApprovals.calls).toEqual([]);
   });
 
-  test('an approval mints one token, of a page kind only', async () => {
+  test("an approval mints one token, of a page kind only, under `page` with the document's PageContext", async () => {
     const { env, contexts } = withContexts();
     const page = env.tab();
     const { context, answer, release } = await approved(env, contexts, page);
-    expect(() => context.confirm('wallet-send', 0, { chainId: 100, to: ACCOUNT })).toThrow(/Not a page confirmation kind/);
-    const token = context.confirm('sign-message', 0, MESSAGE);
-    expect(token).toMatch(/^[0-9a-f]{64}$/);
-    expect(() => context.confirm('sign-message', 0, MESSAGE)).toThrow(/not confirmed/);
-    expect(context.spend(token, 'sign-message', 0, MESSAGE)).toEqual({});
+    await expect(context.confirm('wallet-send', 0, { chainId: 100, to: ACCOUNT })).rejects.toThrow(
+      /Not a page confirmation kind/
+    );
+    const confirmation = await context.confirm('sign-message', 0, MESSAGE);
+    expect(confirmation.token).toMatch(/^[0-9a-f]{64}$/);
+    const pageContext = {
+      origin: KEY_A,
+      top_origin: KEY_A,
+      frame: context.requester.frame,
+      navigation: context.requester.navigation,
+      agent: false,
+    };
+    expect(context.pageContext()).toEqual(pageContext);
+    expect(mockApprovals.calls).toEqual([
+      {
+        method: 'approval.issue',
+        params: { kind: 'sign-message', account: 0, payload: { message: MESSAGE }, handle: confirmation.handle },
+        page: pageContext,
+      },
+    ]);
+    await expect(context.confirm('sign-message', 0, MESSAGE)).rejects.toThrow(/not confirmed/);
+    expect(context.spend(confirmation)).toBe(confirmation);
+    expect(() => present(confirmation)).not.toThrow();
     release();
     await answer;
   });
@@ -648,35 +705,32 @@ describe("main's issuer: a page token only for a live record, bound to its handl
     const a2 = await approved(env, contexts, pageA2);
     env.requests.foreground({ sender: { id: 501 } }, { guest: pageB.guest.id });
     const b = await approved(env, contexts, pageB);
-    const tokenA = a.context.confirm('sign-message', 0, MESSAGE);
-    const tokenA2 = a2.context.confirm('sign-message', 0, MESSAGE);
-    b.context.confirm('sign-message', 0, MESSAGE);
-    // The same key, another handle: refused, and burnt.
-    expect(() => a2.context.spend(tokenA, 'sign-message', 0, MESSAGE)).toThrow(/differs from what was confirmed/);
-    expect(() => a.context.spend(tokenA, 'sign-message', 0, MESSAGE)).toThrow(/unknown or already used/);
-    // Another key's request: refused, and burnt.
-    expect(() => b.context.spend(tokenA2, 'sign-message', 0, MESSAGE)).toThrow(/differs from what was confirmed/);
-    expect(() => a2.context.spend(tokenA2, 'sign-message', 0, MESSAGE)).toThrow(/unknown or already used/);
+    const tokenA = await a.context.confirm('sign-message', 0, MESSAGE);
+    const tokenA2 = await a2.context.confirm('sign-message', 0, MESSAGE);
+    await b.context.confirm('sign-message', 0, MESSAGE);
+    // Main's own check: another record's confirmation is refused, and burnt.
+    expect(() => a2.context.spend(tokenA)).toThrow(/not the confirmation of this request/);
+    await flush();
+    expect(() => present(tokenA)).toThrow(/unknown_token/);
+    // The core's: presented for another document of the same key, or for
+    // another key's, refused, and burnt.
+    expect(() => present(tokenA2, b.context.pageContext())).toThrow(/mismatch/);
+    expect(() => present(tokenA2)).toThrow(/unknown_token/);
+    const again = await b.context.confirm('sign-message', 0, MESSAGE).catch(() => null);
+    expect(again).toBeNull();
     for (const { release } of contexts) release();
-  });
-
-  test('another key, at the issuer: the same handle and payload for another site is refused', () => {
-    const handle = 'f'.repeat(64);
-    const { token } = confirmations.issuePageConfirmation('sign-message', 0, MESSAGE, { handle, key: KEY_A });
-    expect(() => confirmations.consumePageConfirmation(token, 'sign-message', 0, MESSAGE, { handle, key: KEY_B })).toThrow(
-      /differs from what was confirmed/
-    );
   });
 
   test('a token whose document navigated is refused, and burnt', async () => {
     const { env, contexts } = withContexts();
     const page = env.tab();
     const { context, answer, release } = await approved(env, contexts, page);
-    const token = context.confirm('sign-message', 0, MESSAGE);
+    const confirmation = await context.confirm('sign-message', 0, MESSAGE);
     page.guest.commit(`${KEY_A}/next`);
     expect(await answer).toBe(GONE);
-    expect(() => context.spend(token, 'sign-message', 0, MESSAGE)).toThrow(/the document that asked has gone/);
-    expect(confirmations._outstandingCount()).toBe(0);
+    expect(() => context.spend(confirmation)).toThrow(/the document that asked has gone/);
+    await flush();
+    expect(mockApprovals.outstanding()).toBe(0);
     release();
   });
 
@@ -684,21 +738,25 @@ describe("main's issuer: a page token only for a live record, bound to its handl
     const { env, contexts } = withContexts();
     const page = env.tab();
     const { context, answer, release } = await approved(env, contexts, page);
-    const token = context.confirm('sign-message', 0, MESSAGE);
-    context.spend(token, 'sign-message', 0, MESSAGE);
-    expect(() => context.spend(token, 'sign-message', 0, MESSAGE)).toThrow(/not confirmed/);
+    const confirmation = await context.confirm('sign-message', 0, MESSAGE);
+    context.spend(confirmation);
+    // Refused, and burnt: the signature it was handed to gets nothing.
+    expect(() => context.spend(confirmation)).toThrow(/not confirmed/);
+    await flush();
+    expect(() => present(confirmation)).toThrow(/unknown_token/);
     release();
     await answer;
   });
 
-  test('the chrome route never spends a page token, nor a page a chrome token', () => {
-    const handle = 'e'.repeat(64);
-    const page = confirmations.issuePageConfirmation('sign-message', 0, MESSAGE, { handle, key: KEY_A });
-    expect(() => confirmations.consumeConfirmation(page.token, 'sign-message', 0, MESSAGE)).toThrow(/spent only by main/);
-    const chrome = confirmations.issueConfirmation('sign-message', 0, MESSAGE);
-    expect(() =>
-      confirmations.consumePageConfirmation(chrome.token, 'sign-message', 0, MESSAGE, { handle, key: KEY_A })
-    ).toThrow(/not a page confirmation/);
+  test("a page token never signs as main's own, and main mints no page kind for itself", async () => {
+    const { env, contexts } = withContexts();
+    const page = env.tab();
+    const { context, answer, release } = await approved(env, contexts, page);
+    const confirmation = await context.confirm('sign-message', 0, MESSAGE);
+    expect(() => present({ ...confirmation, handle: undefined }, null)).toThrow(/mismatch/);
+    await expect(confirmations.issueConfirmation('sign-message', 0, MESSAGE)).rejects.toThrow(/issued for its page/);
+    release();
+    await answer;
   });
 });
 
@@ -730,6 +788,13 @@ describe("the site's rule, read by main for the request it holds", () => {
       ['typed', TYPED, { expectedHash: TYPED_HASH }],
     ]);
     expect(env.state.lastUsed).toEqual([[KEY_A], [KEY_A]]);
+    // A page's signature, never main's own: under its PageContext (design
+    // 0012), with no token until `{ standing }` (APB-1b).
+    const pageContext = expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false });
+    expect(env.deps.signing.getSigner.mock.calls).toEqual([
+      [0, { page: pageContext }],
+      [0, { page: pageContext }],
+    ]);
   });
 
   test('a warned request always prompts: a 32-byte message, and typed data the view warns about', async () => {
