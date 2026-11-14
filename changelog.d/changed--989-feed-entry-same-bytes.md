@@ -1,0 +1,3 @@
+- `window.swarm.readFeedEntry` returns the entry's own bytes for the latest entry too, as it does at an index ([#989](https://github.com/solardev-xyz/freedom-browser/issues/989))
+  - A 40-byte timestamp-and-reference entry no longer comes back as the content it points to
+  - A feed whose latest content expired no longer reads as empty
