@@ -719,6 +719,7 @@ describe('copyleft', () => {
       'radicled-v0.1.0': [['colored', '2.2.0']],
       'radicled-v0.1.1': [['colored', '2.2.0']],
       'radicled-v0.1.2': [['colored', '2.2.0']],
+      'radicled-v0.1.3': [['colored', '2.2.0']],
     },
   };
 
