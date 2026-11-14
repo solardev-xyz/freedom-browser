@@ -628,6 +628,14 @@ test.describe('renderer screenshots', () => {
         await snap(surfaces, priv, `${theme}-61-private-sidebar`, {
           mask: [priv.locator('webview')],
         });
+        // A Tor window (#473): its own palette and badge (the recipe keeps
+        // Tor from starting, so it reads "not running"), and its start page.
+        const tor = await recipes.torWindow(ctx);
+        await snap(surfaces, tor, `${theme}-62-tor-window`, {
+          mask: [tor.locator('webview')],
+        });
+        const torPage = await pageFor(electronApp, '/pages/tor.html');
+        await snap(surfaces, torPage, `${theme}-63-tor-page`);
         surfaces.tookEverySurface();
       });
 

@@ -80,7 +80,7 @@ describe('chrome text-field focus', () => {
     const shared = imported.indexOf(SHARED_SHEET);
     // Only the theme/palette sheets, which redefine custom properties rather
     // than focus rules, may come after it.
-    expect(imported.slice(shared + 1)).toEqual(['light-theme.css', 'private.css']);
+    expect(imported.slice(shared + 1)).toEqual(['light-theme.css', 'private.css', 'tor.css']);
   });
 
   test('only inputs.css draws a focus indicator on a text field', () => {

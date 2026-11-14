@@ -588,6 +588,18 @@ for (const theme of ['dark', 'light']) {
       }
     );
 
+    // #473: a Tor window's chrome in its own palette, with its Tor badge (the
+    // recipe keeps Tor from starting). Its start page, like
+    // private.html, stays dark in both themes, so it isn't one of the pages
+    // this walk holds to the profile's theme.
+    test(declare(`Tor window renders legibly in ${theme}`), async ({ electronApp, window }) => {
+      test.setTimeout(180_000);
+      const tw = await recipes.torWindow({ app: electronApp, win: window });
+      await tw.click('[data-test="address-input"]');
+      await tw.keyboard.type('https://example.com/typed');
+      await assertSurface(tw, { label: 'Tor window chrome', theme, minSamples: 2 });
+    });
+
     test(
       declare(`wallet and permission subscreens render legibly in ${theme}`),
       async ({ electronApp, window }) => {

@@ -15,6 +15,8 @@ const {
   redactForLog,
 } = require('./private/private-log-context');
 const { isPrivateSender } = require('./private/private-sender');
+const { isTorWebContents } = require('./private/private-windows');
+const { TOR_NAME_LOOKUP_REFUSAL } = require('./tor-window');
 
 // PRIVATE MODE GUARD (name logging): the name being resolved IS the
 // browsing history of the tab that asked for it, and log.info/warn land in
@@ -2791,6 +2793,14 @@ function privateResolveContext(event) {
 function registerEnsIpc() {
   ipcMain.handle(IPC.ENS_RESOLVE, async (event, payload = {}) => {
     const { name } = payload;
+    // A Tor window (#473) doesn't look names up: the RPC providers that answer
+    // are outside Tor. The wallet's address lookups below aren't page traffic.
+    if (isTorWebContents(event?.sender)) {
+      return {
+        ...TOR_NAME_LOOKUP_REFUSAL,
+        name: String(name || '').trim().toLowerCase(),
+      };
+    }
 
     return runWithPrivateLogContext(privateResolveContext(event), async () => {
       try {

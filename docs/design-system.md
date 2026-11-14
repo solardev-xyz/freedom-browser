@@ -4,7 +4,7 @@ The chrome and the internal pages paint from one set of tokens and draw their co
 
 | File                                        | What it holds                                                                                                                        |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/renderer/pages/styles/tokens.css`      | Colours for both themes and the private window, plus the spacing, radius, type and control-height scales                             |
+| `src/renderer/pages/styles/tokens.css`      | Colours for both themes, the private window and the Tor window, plus the spacing, radius, type and control-height scales             |
 | `src/renderer/pages/styles/ui.css`          | The twelve `ui-` blocks                                                                                                              |
 | `src/renderer/pages/ui-catalog.html`        | Every block and variant in both themes, side by side. `npm run ui:catalog`, or open the file in any browser. Not in packaged builds. |
 | `src/renderer/design-system-inventory.json` | What the renderer still does outside the system, per file; it may only shrink                                                        |

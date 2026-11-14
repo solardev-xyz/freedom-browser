@@ -34,10 +34,14 @@ function validateUrl(url) {
  * match the http(s) paths' protocol.get semantics: it resets on every
  * chunk, so a slow-but-steady transfer is not cut off mid-download.
  */
-async function sessionFetchStream(url, onChunk, { timeout = DEFAULT_TIMEOUT } = {}) {
+async function sessionFetchStream(
+  url,
+  onChunk,
+  { timeout = DEFAULT_TIMEOUT, session: targetSession = null } = {}
+) {
   // Lazy require so the plain http/https paths stay usable in tests that
   // don't mock the electron module.
-  const { session } = require('electron');
+  const fetchSession = targetSession || require('electron').session.defaultSession;
   const controller = new AbortController();
   let timer = setTimeout(() => controller.abort(), timeout);
   const touch = () => {
@@ -45,7 +49,7 @@ async function sessionFetchStream(url, onChunk, { timeout = DEFAULT_TIMEOUT } = 
     timer = setTimeout(() => controller.abort(), timeout);
   };
   try {
-    const response = await session.defaultSession.fetch(url, { signal: controller.signal });
+    const response = await fetchSession.fetch(url, { signal: controller.signal });
     if (!response.ok) {
       // Release the connection — an abandoned body keeps the protocol
       // handler pulling from the gateway until GC collects the stream.
@@ -95,9 +99,19 @@ async function sessionFetchStream(url, onChunk, { timeout = DEFAULT_TIMEOUT } = 
  * Fetch a dweb URL through the default session's protocol handlers and
  * return the body as a Buffer.
  */
-async function sessionFetchBuffer(url, opts) {
+async function sessionFetchBuffer(url, { maxBytes = Infinity, ...opts } = {}) {
   const chunks = [];
-  await sessionFetchStream(url, (chunk) => chunks.push(chunk), opts);
+  let total = 0;
+  await sessionFetchStream(
+    url,
+    (chunk) => {
+      total += chunk.length;
+      // Stops the transfer (sessionFetchStream cancels the reader).
+      if (total > maxBytes) throw new Error(`Response larger than ${maxBytes} bytes`);
+      chunks.push(chunk);
+    },
+    opts
+  );
   return Buffer.concat(chunks);
 }
 
@@ -148,11 +162,16 @@ async function sessionFetchToFile(url, destPath, opts) {
  * Fetch a URL and return the response body as a Buffer.
  * Follows redirects (up to MAX_REDIRECTS) and enforces a timeout.
  */
-async function fetchBuffer(url, { timeout = DEFAULT_TIMEOUT, _redirectCount = 0 } = {}) {
+async function fetchBuffer(
+  url,
+  { timeout = DEFAULT_TIMEOUT, session: targetSession = null, maxBytes, _redirectCount = 0 } = {}
+) {
   validateUrl(url);
 
-  if (isSessionFetchUrl(url)) {
-    return sessionFetchBuffer(url, { timeout });
+  // A caller's session (a Tor window's, #473): everything goes through it, so
+  // its proxy applies; never Node's own stack.
+  if (targetSession || isSessionFetchUrl(url)) {
+    return sessionFetchBuffer(url, { timeout, session: targetSession, maxBytes });
   }
 
   if (_redirectCount > MAX_REDIRECTS) {
@@ -194,11 +213,16 @@ async function fetchBuffer(url, { timeout = DEFAULT_TIMEOUT, _redirectCount = 0 
  * Follows redirects (up to MAX_REDIRECTS) and enforces a timeout.
  * Cleans up partial files on error.
  */
-async function fetchToFile(url, destPath, { timeout = DEFAULT_TIMEOUT, _redirectCount = 0 } = {}) {
+async function fetchToFile(
+  url,
+  destPath,
+  { timeout = DEFAULT_TIMEOUT, session: targetSession = null, _redirectCount = 0 } = {}
+) {
   validateUrl(url);
 
-  if (isSessionFetchUrl(url)) {
-    return sessionFetchToFile(url, destPath, { timeout });
+  // As fetchBuffer: a caller's session carries the whole transfer, streamed.
+  if (targetSession || isSessionFetchUrl(url)) {
+    return sessionFetchToFile(url, destPath, { timeout, session: targetSession });
   }
 
   if (_redirectCount > MAX_REDIRECTS) {

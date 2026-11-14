@@ -77,4 +77,22 @@ describe('private-mode', () => {
       expect(privateMode.shouldLearnAutocomplete()).toBe(false);
     });
   });
+  // #473: a Tor window is a private window with `torWindow=1`.
+  describe('Tor windows', () => {
+    test('parseTorWindow needs the flag and a private partition', () => {
+      expect(privateMode.parseTorWindow('?privatePartition=private-abc&torWindow=1')).toBe(true);
+      expect(privateMode.parseTorWindow('?torWindow=1')).toBe(false);
+      expect(privateMode.parseTorWindow('?privatePartition=private-abc')).toBe(false);
+      expect(privateMode.parseTorWindow('?privatePartition=private-abc&torWindow=yes')).toBe(false);
+    });
+
+    test('a Tor window is private, and every private guard holds in it', () => {
+      privateMode.initPrivateMode('?privatePartition=private-abc&torWindow=1');
+      expect(privateMode.isTorWindow()).toBe(true);
+      expect(privateMode.isPrivateWindow()).toBe(true);
+      expect(privateMode.shouldRecordHistory()).toBe(false);
+      privateMode.initPrivateMode('?privatePartition=private-abc');
+      expect(privateMode.isTorWindow()).toBe(false);
+    });
+  });
 });

@@ -18,6 +18,7 @@
 const PRIVATE_PARTITION_PREFIX = 'private-';
 
 let privatePartition = null;
+let torWindow = false;
 
 /**
  * Parse the private partition out of a window.location.search string.
@@ -35,11 +36,25 @@ export const parsePrivatePartition = (search) => {
   return null;
 };
 
+/**
+ * Whether the query string marks a Tor window (#473). Only a private window
+ * can be one: main sends `torWindow=1` alongside the private partition.
+ */
+export const parseTorWindow = (search) => {
+  try {
+    const params = new URLSearchParams(search || '');
+    return params.get('torWindow') === '1' && parsePrivatePartition(search) !== null;
+  } catch {
+    return false;
+  }
+};
+
 /** Initialize from the window's query string. Called once at import time. */
 export const initPrivateMode = (search) => {
-  privatePartition = parsePrivatePartition(
-    search !== undefined ? search : typeof window !== 'undefined' ? window.location?.search : ''
-  );
+  const query =
+    search !== undefined ? search : typeof window !== 'undefined' ? window.location?.search : '';
+  privatePartition = parsePrivatePartition(query);
+  torWindow = parseTorWindow(query);
   return privatePartition;
 };
 
@@ -47,6 +62,10 @@ export const initPrivateMode = (search) => {
 export const getPrivatePartition = () => privatePartition;
 
 export const isPrivateWindow = () => privatePartition !== null;
+
+// A Tor window: a private window whose session goes through Arti. Every
+// private-window guard holds in it too.
+export const isTorWindow = () => torWindow;
 
 // PRIVATE MODE GUARD (history): no navigation from a private window is
 // ever written to the history database.

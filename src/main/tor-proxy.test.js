@@ -75,3 +75,30 @@ describe('applyOnionProxy / clearOnionProxy', () => {
     await expect(clearOnionProxy({})).resolves.toBeUndefined();
   });
 });
+
+describe('Tor window proxy (#473)', () => {
+  const { buildTorWindowProxyConfig, applyTorWindowProxy } = require('./tor-proxy');
+
+  test('sends everything, loopback included, to SOCKS5 with no fallback', () => {
+    expect(buildTorWindowProxyConfig('127.0.0.1:9150')).toEqual({
+      mode: 'fixed_servers',
+      proxyRules: 'socks5://127.0.0.1:9150',
+      proxyBypassRules: '<-loopback>',
+    });
+  });
+
+  test('applies it and closes connections made before', async () => {
+    const session = {
+      setProxy: jest.fn().mockResolvedValue(undefined),
+      forceReloadProxyConfig: jest.fn().mockResolvedValue(undefined),
+      closeAllConnections: jest.fn().mockResolvedValue(undefined),
+    };
+    await applyTorWindowProxy(session, '127.0.0.1:9150');
+    expect(session.setProxy).toHaveBeenCalledWith(buildTorWindowProxyConfig('127.0.0.1:9150'));
+    expect(session.closeAllConnections).toHaveBeenCalled();
+  });
+
+  test('throws without a session, so the window is refused rather than opened unrouted', async () => {
+    await expect(applyTorWindowProxy(null, '127.0.0.1:9150')).rejects.toThrow();
+  });
+});

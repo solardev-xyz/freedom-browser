@@ -2151,7 +2151,11 @@ describe('webview-preload adblock scriptlets', () => {
     // No wallet provider, no freedomAPI, no other IPC, no listeners.
     expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(1);
     expect(contextBridge.exposeInMainWorld).not.toHaveBeenCalled();
-    expect(ipcRenderer.sendSync).toHaveBeenCalledTimes(1);
+    // The scriptlets, and whether this is a Tor window (#473), asked over sync
+    // IPC only because this renderer has no boot switch.
+    expect(ipcRenderer.sendSync.mock.calls.map(([channel]) => channel).sort()).toEqual(
+      [IPC.ADBLOCK_SCRIPTLETS, IPC.PRIVATE_IS_TOR].sort()
+    );
     expect(ipcRenderer.invoke).not.toHaveBeenCalled();
     expect(ipcRenderer.on).not.toHaveBeenCalled();
     expect(Object.keys(documentHandlers)).toHaveLength(0);
@@ -2675,9 +2679,32 @@ describe('webview-preload adblock scriptlets: child-realm hook vs. a hostile pag
       JSON.parse(/__FREEDOM_PROVIDER_CONFIG__ = (\{.*\});\n/.exec(String(call[0].func))[1]);
     const STATIC_CHANNELS = [
       IPC.PRIVATE_IS_PRIVATE,
+      IPC.PRIVATE_IS_TOR,
       IPC.GET_ETHEREUM_INJECT_SOURCE,
       IPC.GET_INTERNAL_PAGES,
     ];
+
+    // #473: a Tor window's frames lose WebRTC, sub-frames included; other
+    // windows keep it.
+    test.each([
+      ["a Tor window's sub-frame", { isPrivate: true, isTor: true, internalPages }, true],
+      ["a Tor window's top frame", { isPrivate: true, isTor: true, internalPages }, false],
+      ["a normal window's sub-frame", normalBoot, true],
+    ])('WebRTC in %s', (_label, boot, subframe) => {
+      const { contextBridge, ipcRenderer } = loadWebviewPreloadModule({
+        location: { href: 'https://site.example/', protocol: 'https:', pathname: '/' },
+        subframe,
+        argv: ['electron', bootArg(boot)],
+        syncResponses: { [IPC.ADBLOCK_SCRIPTLETS]: { script: '' } },
+      });
+      const removals = contextBridge.executeInMainWorld.mock.calls.filter(([{ func }]) =>
+        String(func).includes('RTCPeerConnection')
+      );
+      expect(removals).toHaveLength(boot.isTor ? 1 : 0);
+      expect(ipcRenderer.sendSync.mock.calls.map(([channel]) => channel)).not.toContain(
+        IPC.PRIVATE_IS_TOR
+      );
+    });
 
     test('an isolated Agent preview stays provider-free with normal-window boot metadata', () => {
       const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({

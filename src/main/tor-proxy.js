@@ -94,8 +94,46 @@ async function clearOnionProxy(targetSession) {
   log.info('[tor-proxy] proxy cleared — connections are direct');
 }
 
+/**
+ * The proxy config for a Tor window's session (#473): every request goes to
+ * Arti's SOCKS5 port, with no PAC, no DIRECT and no fallback. SOCKS5 hands
+ * the hostname to Tor, so nothing is looked up locally. `<-loopback>` takes
+ * back Chromium's implicit loopback bypass: a page in a Tor window can't
+ * reach this machine's own services (127.0.0.1, localhost, [::1]) either,
+ * as in Tor Browser. When nothing listens on the port the request fails;
+ * that is the point (fail closed).
+ *
+ * @param {string} socksHostPort - e.g. '127.0.0.1:9150'
+ */
+function buildTorWindowProxyConfig(socksHostPort) {
+  return {
+    mode: 'fixed_servers',
+    proxyRules: `socks5://${socksHostPort}`,
+    proxyBypassRules: '<-loopback>',
+  };
+}
+
+/**
+ * Point a Tor window's session at Arti for everything. Existing connections
+ * are closed so none made before the apply carries on outside the new route.
+ *
+ * @param {import('electron').Session} targetSession
+ * @param {string} socksHostPort
+ */
+async function applyTorWindowProxy(targetSession, socksHostPort) {
+  if (!targetSession || typeof targetSession.setProxy !== 'function') {
+    throw new Error('session.setProxy unavailable');
+  }
+  await targetSession.setProxy(buildTorWindowProxyConfig(socksHostPort));
+  await targetSession.forceReloadProxyConfig?.();
+  await targetSession.closeAllConnections?.();
+  log.info(`[tor-proxy] Tor window: all traffic via SOCKS5 ${socksHostPort}`);
+}
+
 module.exports = {
   buildOnionPacScript,
   applyOnionProxy,
   clearOnionProxy,
+  buildTorWindowProxyConfig,
+  applyTorWindowProxy,
 };

@@ -126,6 +126,9 @@ function createMainWindow(initialUrl = null, options = {}) {
   const query = new URLSearchParams();
   for (const url of toUrlList(initialUrl)) query.append('initialUrl', url);
   if (privatePartition) query.append('privatePartition', privatePartition);
+  // A Tor window (#473) is a private window whose session goes through Arti;
+  // the flag only changes how the chrome looks and what it lets you open.
+  if (privatePartition && options.tor === true) query.append('torWindow', '1');
   const search = query.toString();
   if (search) {
     window.loadFile(indexPath, { search });

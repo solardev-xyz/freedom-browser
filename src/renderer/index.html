@@ -293,6 +293,25 @@
           </svg>
           Private
         </span>
+        <!-- Shown only in Tor windows (#473), in place of the Private badge:
+             index.js paints Tor's state into it and offers to turn Tor on. -->
+        <span id="tor-badge" class="private-badge tor-badge" data-test="tor-badge" hidden>
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <circle cx="12" cy="12" r="5.5" />
+            <circle cx="12" cy="12" r="2" />
+          </svg>
+          Tor
+          <span id="tor-badge-state" class="tor-badge-state" aria-live="polite"></span>
+        </span>
       </div>
       <form id="nav-form" autocomplete="off">
         <div class="address-bar-container">
@@ -1297,6 +1316,14 @@
           <button id="new-private-window-menu-btn" class="menu-item" type="button">
             <span class="menu-item-label">New Private Window</span>
             <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+Shift+N"></span>
+          </button>
+          <button id="new-tor-window-menu-btn" class="menu-item" type="button">
+            <span class="menu-item-label">New Tor Window</span>
+            <span
+              class="menu-item-shortcut"
+              data-shortcut="Cmd+Alt+N"
+              data-shortcut-other="Alt+Shift+N"
+            ></span>
           </button>
 
           <div class="menu-divider"></div>

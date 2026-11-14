@@ -433,6 +433,10 @@ const profileLaunches = [];
 // installUpdaterRecorder / updater.js).
 const updaterRequests = [];
 
+// Tor starts a Tor window asked for, recorded instead of run once a spec calls
+// recordTorWindowStarts (tor-manager.js#ensureTorForTorWindow).
+let torWindowStarts = 0;
+
 function resetProfileLaunches() {
   profileLaunches.length = 0;
 }
@@ -770,9 +774,16 @@ const answerEnsFixture = async (fixture) => {
   return result;
 };
 
+// The real handlers refuse a Tor window (#473, tor-window.js); the harness's
+// stand-ins do too, so a spec sees what a user gets.
+const fromTorWindow = (event) =>
+  require('./private/private-windows').isTorWebContents(event?.sender);
+
 function overrideEnsIpc() {
-  replaceHandler(IPC.ENS_RESOLVE, async (_event, payload = {}) => {
+  const { TOR_NAME_LOOKUP_REFUSAL } = require('./tor-window');
+  replaceHandler(IPC.ENS_RESOLVE, async (event, payload = {}) => {
     const name = (payload?.name || '').trim().toLowerCase();
+    if (fromTorWindow(event)) return { ...TOR_NAME_LOOKUP_REFUSAL, name };
     if (!name) {
       return { type: 'not_found', name: '', reason: 'EMPTY' };
     }
@@ -806,6 +817,7 @@ function overrideEnsIpc() {
         if (ensFixtures.has(key)) return answerEnsFixture(ensFixtures.get(key));
         return { type: 'not_found', name: key, reason: 'NO_FIXTURE' };
       },
+      isTorSender: (sender) => fromTorWindow({ sender }),
     })
   );
 
@@ -813,8 +825,9 @@ function overrideEnsIpc() {
   // never collide — so a spec drives both name systems through
   // `setEnsFixture`. Without this override a harness spec that navigates to
   // a `.tez` name would reach out to the real public Tezos RPCs.
-  replaceHandler(IPC.TEZOS_DOMAINS_RESOLVE, async (_event, payload = {}) => {
+  replaceHandler(IPC.TEZOS_DOMAINS_RESOLVE, async (event, payload = {}) => {
     const name = (payload?.name || '').trim().toLowerCase();
+    if (fromTorWindow(event)) return { ...TOR_NAME_LOOKUP_REFUSAL, system: 'tezos' };
     if (!name) {
       return { type: 'not_found', reason: 'EMPTY', system: 'tezos' };
     }
@@ -831,8 +844,11 @@ function overrideProbeIpc() {
   const stubProbes = new Map();
   let nextId = 1;
 
-  replaceHandler(IPC.BZZ_START_PROBE, (_event, payload = {}) => {
+  replaceHandler(IPC.BZZ_START_PROBE, (event, payload = {}) => {
     const { hash } = payload;
+    if (fromTorWindow(event)) {
+      return failure('TOR_WINDOW', "Swarm content doesn't open in Tor windows");
+    }
     if (typeof hash !== 'string' || !hash) {
       return failure('INVALID_HASH', 'Missing hash');
     }
@@ -1224,6 +1240,15 @@ function exposeGlobalShim(agentRuntime) {
       release?.();
       return Boolean(release);
     },
+    // Tor windows (#473) start Tor by themselves. A spec that checks one with
+    // Tor not running records those starts instead of spawning Arti.
+    recordTorWindowStarts: () => {
+      torWindowStarts = 0;
+      globalThis.__FREEDOM_TEST_TOR_WINDOW_START__ = () => {
+        torWindowStarts += 1;
+      };
+    },
+    torWindowStarts: () => torWindowStarts,
     updaterRequests: () => [...updaterRequests],
     clearUpdaterRequests: () => {
       updaterRequests.length = 0;

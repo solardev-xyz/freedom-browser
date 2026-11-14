@@ -8,6 +8,7 @@ const {
   createMainWindow,
 } = require('./windows/mainWindow');
 const { createPrivateWindow, isPrivateWebContents } = require('./private/private-windows');
+const { openTorWindow } = require('./tor-window');
 const {
   checkForUpdates,
   getInstallRelaunchMode,
@@ -375,6 +376,15 @@ function buildFileSubmenu(isMac) {
       click: () => {
         log.info('[menu] New Private Window clicked');
         createPrivateWindow();
+      },
+    },
+    {
+      id: 'new-tor-window',
+      label: 'New Tor Window',
+      accelerator: acc('window.newTor'),
+      click: () => {
+        log.info('[menu] New Tor Window clicked');
+        openTorWindow();
       },
     },
     { type: 'separator' },

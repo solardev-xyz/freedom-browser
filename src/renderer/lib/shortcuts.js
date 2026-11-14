@@ -281,6 +281,16 @@ export const SHORTCUTS = [
     editable: true,
   },
   {
+    id: 'window.newTor',
+    description: 'New Tor Window',
+    settingsLabel: 'New Tor window',
+    // Brave's keys for its own Tor window. Mirror of src/shared/shortcuts.js.
+    defaultAccelerator: { darwin: 'Cmd+Alt+N', other: 'Alt+Shift+N' },
+    context: 'both',
+    category: 'Window',
+    editable: true,
+  },
+  {
     id: 'view.fullscreen',
     description: 'Toggle Full Screen',
     settingsLabel: 'Toggle full screen',

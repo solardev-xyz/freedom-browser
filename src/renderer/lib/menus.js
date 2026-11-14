@@ -23,6 +23,7 @@ let downloadsBtn = null;
 let newTabMenuBtn = null;
 let newWindowMenuBtn = null;
 let newPrivateWindowMenuBtn = null;
+let newTorWindowMenuBtn = null;
 let zoomOutBtn = null;
 let zoomInBtn = null;
 let zoomLevelDisplay = null;
@@ -298,6 +299,7 @@ export const initMenus = () => {
   newTabMenuBtn = document.getElementById('new-tab-menu-btn');
   newWindowMenuBtn = document.getElementById('new-window-menu-btn');
   newPrivateWindowMenuBtn = document.getElementById('new-private-window-menu-btn');
+  newTorWindowMenuBtn = document.getElementById('new-tor-window-menu-btn');
   zoomOutBtn = document.getElementById('zoom-out-btn');
   zoomInBtn = document.getElementById('zoom-in-btn');
   zoomLevelDisplay = document.getElementById('zoom-level');
@@ -351,6 +353,12 @@ export const initMenus = () => {
   newPrivateWindowMenuBtn?.addEventListener('click', () => {
     setMenuOpen(false);
     electronAPI?.newPrivateWindow?.();
+  });
+
+  // New Tor Window (#473), for the same reason.
+  newTorWindowMenuBtn?.addEventListener('click', () => {
+    setMenuOpen(false);
+    electronAPI?.newTorWindow?.();
   });
 
   // History button

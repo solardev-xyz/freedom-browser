@@ -314,7 +314,8 @@ describe('renderer colour literals (#261)', () => {
     // The exemption is what makes the guard usable, so it stays small and
     // explicit: a palette file, not "any file with `theme` in the name".
     // The first three are the chrome window's palette; `pages/styles/theme.css`
-    // is the internal pages' one, added by #261 item 2 (#287); and
+    // is the internal pages' one, added by #261 item 2 (#287); `styles/tor.css`
+    // is the Tor window's (#473), beside private.css; and
     // `pages/styles/tokens.css` is the design system's, which both read and
     // which the others shrink into (#1198).
     expect([...TOKEN_FILES].filter((rel) => SOURCES.includes(rel)).sort()).toEqual([
@@ -322,6 +323,7 @@ describe('renderer colour literals (#261)', () => {
       'pages/styles/tokens.css',
       'styles/light-theme.css',
       'styles/private.css',
+      'styles/tor.css',
       'styles/variables.css',
     ]);
     // Every exemption names a file that is actually in the tree: a name listed

@@ -4,6 +4,7 @@ jest.mock('./logger', () => ({ error: jest.fn(), warn: jest.fn(), info: jest.fn(
 // real BrowserWindow, so stub the one predicate this module uses.
 jest.mock('./private/private-windows', () => ({
   isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+  isTorWebContents: (webContents) => webContents?.isTor === true,
 }));
 
 const {
@@ -422,6 +423,16 @@ describe('Tezos Domains private-window logging', () => {
         [TZKT]: record([['web:content_url', 'ipfs://bafyOTHER/site']]),
       },
     });
+  });
+
+  // #473: a Tor window doesn't look names up (tor-window.js).
+  test('a Tor window is refused before any RPC request', async () => {
+    const result = await handlerFor(IPC.TEZOS_DOMAINS_RESOLVE)(
+      { sender: { isPrivate: true, isTor: true } },
+      { name: 'secret.tez' }
+    );
+    expect(result).toMatchObject({ type: 'error', reason: 'TOR_WINDOW', system: 'tezos' });
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

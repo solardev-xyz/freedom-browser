@@ -232,8 +232,8 @@ describe('the markup reader these tests are built on', () => {
     // before its children would move to the end.
     expect(tor.label).toBe('Enable Tor (.onion access) Beta');
     expect(tor.help).toBe(
-      'Routes only .onion addresses through the bundled Tor (Arti) client. ' +
-        'Clearnet traffic stays direct.'
+      'Routes .onion addresses through the bundled Tor (Arti) client. Other ' +
+        'traffic stays direct, except in Tor windows, which send everything through it.'
     );
     expect(index().find((entry) => entry.label.includes('Identity')).label).toBe(
       'Enable Identity & Wallet Beta'

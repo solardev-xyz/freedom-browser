@@ -283,6 +283,8 @@ function loadIpcHandlersModule(options = {}) {
         ? {
             [require.resolve('./private/private-windows')]: () => ({
               isPrivateWebContents: options.isPrivateWebContents,
+              isTorWebContents: options.isTorWebContents || (() => false),
+              getPartitionForWebContents: options.getPartitionForWebContents || (() => null),
             }),
           }
         : {}),
@@ -559,6 +561,109 @@ describe('ipc-handlers', () => {
     ctx.ipcMain.emit(IPC.WINDOW_NEW_WITH_URL, { sender: {} }, 'https://example.com/public');
     expect(onNewWindow).toHaveBeenCalledWith('https://example.com/public');
     expect(onNewPrivateWindow).toHaveBeenCalledTimes(1);
+  });
+
+  // #473: a link opened from a Tor window stays in Tor, ahead of the
+  // private-window rule (a Tor window is a private window too).
+  test('window:new-with-url from a Tor window opens another Tor window, never a private one', () => {
+    const onNewWindow = jest.fn();
+    const onNewPrivateWindow = jest.fn();
+    const onNewTorWindow = jest.fn();
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+      isTorWebContents: (wc) => wc?.isTor === true,
+    });
+    ctx.mod.registerBaseIpcHandlers({ onNewWindow, onNewPrivateWindow, onNewTorWindow });
+
+    ctx.ipcMain.emit(
+      IPC.WINDOW_NEW_WITH_URL,
+      { sender: { isPrivate: true, isTor: true } },
+      'https://example.com/tor'
+    );
+    expect(onNewTorWindow).toHaveBeenCalledWith('https://example.com/tor');
+    expect(onNewPrivateWindow).not.toHaveBeenCalled();
+    expect(onNewWindow).not.toHaveBeenCalled();
+
+    ctx.ipcMain.emit(IPC.WINDOW_NEW_TOR, { sender: {} });
+    expect(onNewTorWindow).toHaveBeenCalledTimes(2);
+  });
+
+  // #473: from a Tor window, Save Image / Copy Image fetch through the
+  // window's own session (proxy and gate), never with Node's stack.
+  test('Save Image and Copy Image in a Tor window fetch through its session', async () => {
+    const torSession = { name: 'tor session' };
+    const fromPartition = jest.fn(() => torSession);
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+      isTorWebContents: (wc) => wc?.isTor === true,
+      getPartitionForWebContents: (wc) => (wc?.isTor ? 'private-tor' : null),
+      electronOverrides: { session: { fromPartition } },
+    });
+    ctx.mod.registerBaseIpcHandlers({});
+    const sender = { isPrivate: true, isTor: true, getOwnerBrowserWindow: () => ({}) };
+    ctx.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: '/tmp/x.png' });
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.CONTEXT_MENU_SAVE_IMAGE)({ sender }, 'https://example.com/x.png')
+    ).resolves.toEqual({ success: true, filePath: '/tmp/x.png' });
+    expect(fromPartition).toHaveBeenCalledWith('private-tor');
+    // Streamed to disk through the Tor window's session, not Node's stack.
+    expect(ctx.fetchToFile).toHaveBeenCalledWith('https://example.com/x.png', '/tmp/x.png', {
+      session: torSession,
+    });
+
+    await ctx.ipcMain.handlers.get('clipboard:copy-image')({ sender }, 'https://example.com/x.png');
+    expect(ctx.fetchBuffer).toHaveBeenCalledWith('https://example.com/x.png', {
+      session: torSession,
+      maxBytes: 50 * 1024 * 1024,
+    });
+
+    // A Tor window whose session can't be found fetches nothing.
+    const lost = { isPrivate: true, isTor: true, getOwnerBrowserWindow: () => ({}) };
+    const ctx2 = loadIpcHandlersModule({
+      isPrivateWebContents: () => true,
+      isTorWebContents: () => true,
+      getPartitionForWebContents: () => null,
+    });
+    ctx2.mod.registerBaseIpcHandlers({});
+    await expect(
+      ctx2.ipcMain.handlers.get('clipboard:copy-image')(
+        { sender: lost },
+        'https://example.com/x.png'
+      )
+    ).resolves.toMatchObject({ success: false });
+    expect(ctx2.fetchBuffer).not.toHaveBeenCalled();
+  });
+
+  test('the Swarm probe refuses a Tor window', async () => {
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+      isTorWebContents: (wc) => wc?.isTor === true,
+    });
+    ctx.mod.registerBaseIpcHandlers({});
+    const result = await ctx.ipcMain.handlers.get(IPC.BZZ_START_PROBE)(
+      { sender: { isPrivate: true, isTor: true } },
+      { hash: 'a'.repeat(64) }
+    );
+    expect(result).toMatchObject({ success: false, error: { code: 'TOR_WINDOW' } });
+  });
+
+  test('window:new-with-url from a Tor window is dropped without a Tor-window factory', () => {
+    const onNewWindow = jest.fn();
+    const onNewPrivateWindow = jest.fn();
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+      isTorWebContents: (wc) => wc?.isTor === true,
+    });
+    ctx.mod.registerBaseIpcHandlers({ onNewWindow, onNewPrivateWindow });
+
+    ctx.ipcMain.emit(
+      IPC.WINDOW_NEW_WITH_URL,
+      { sender: { isPrivate: true, isTor: true } },
+      'https://example.com/tor'
+    );
+    expect(onNewPrivateWindow).not.toHaveBeenCalled();
+    expect(onNewWindow).not.toHaveBeenCalled();
   });
 
   test('window:new-with-url from a private window is dropped, never downgraded', () => {

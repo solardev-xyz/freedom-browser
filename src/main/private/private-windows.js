@@ -68,6 +68,12 @@ const privatePartitions = new Set();
 const everPrivateWindowIds = new Set();
 // Live private session objects, for fast sender.session identity checks.
 const privateSessions = new Set();
+// Tor windows (#473) are private windows whose session sends everything
+// through Arti. The same once-Tor-always-Tor rule as `everPrivateWindowIds`
+// holds for their window ids and sessions.
+const torSessions = new Set();
+const everTorWindowIds = new Set();
+const torPartitions = new Set();
 
 // Configures a freshly created private session (protocol handlers, download
 // hook, permission handlers, webRequest dispatcher). Set once at bootstrap
@@ -157,6 +163,37 @@ function classifyWebContents(webContents) {
   }
 }
 
+/**
+ * True when the given webContents belongs to a Tor window: a webview on a Tor
+ * window's session, or that window's own chrome renderer. Fails closed like
+ * isPrivateWebContents: a window that was ever a Tor window stays one.
+ */
+function isTorWebContents(webContents) {
+  if (!webContents) return false;
+  try {
+    if (webContents.session && torSessions.has(webContents.session)) return true;
+  } catch {
+    // webContents may be destroyed mid-check
+  }
+  try {
+    const host = webContents.hostWebContents || webContents;
+    const win = BrowserWindow.fromWebContents(host);
+    return !!win && everTorWindowIds.has(win.id);
+  } catch {
+    return false;
+  }
+}
+
+/** True for a Tor window's session object. */
+function isTorSession(targetSession) {
+  return !!targetSession && torSessions.has(targetSession);
+}
+
+/** True for any partition this process ever handed to a Tor window. */
+function isTorPartition(partition) {
+  return typeof partition === 'string' && torPartitions.has(partition);
+}
+
 /** Partition name for a private window's webContents, or null. */
 function getPartitionForWebContents(webContents) {
   if (!webContents) return null;
@@ -215,6 +252,13 @@ async function destroyPrivateSession(privateSession, partition) {
  * @returns {Electron.BrowserWindow|null}
  */
 function createPrivateWindow(initialUrl = null) {
+  const prepared = preparePrivateSession({ tor: false });
+  return prepared ? openPreparedWindow(prepared, initialUrl) : null;
+}
+
+// Make and configure a new private session. Returns null, with nothing left
+// registered as live, when it can't be configured.
+function preparePrivateSession({ tor }) {
   const partition = `${PRIVATE_PARTITION_PREFIX}${crypto.randomUUID()}`;
   // No `persist:` prefix — this is the whole point: Electron keeps the
   // session in memory and never writes site data under userData.
@@ -222,30 +266,43 @@ function createPrivateWindow(initialUrl = null) {
 
   privatePartitions.add(partition);
   privateSessions.add(privateSession);
+  if (tor) {
+    torSessions.add(privateSession);
+    torPartitions.add(partition);
+  }
 
+  const kind = tor ? 'Tor' : 'private';
   if (!sessionConfigurator) {
-    log.error('[private] no session configurator installed — refusing to open a private window');
+    log.error(`[private] no session configurator installed — refusing to open a ${kind} window`);
     privateSessions.delete(privateSession);
+    torSessions.delete(privateSession);
     return null;
   }
   try {
-    sessionConfigurator(privateSession, { partition });
+    sessionConfigurator(privateSession, { partition, tor });
   } catch (err) {
     log.error(
-      '[private] session configurator failed — refusing to open a private window:',
+      `[private] session configurator failed — refusing to open a ${kind} window:`,
       err?.message || err
     );
     privateSessions.delete(privateSession);
+    torSessions.delete(privateSession);
     return null;
   }
+  return { partition, privateSession, tor };
+}
 
+function openPreparedWindow({ partition, privateSession, tor }, initialUrl) {
   // The private session (private-log-context.js) is open from here until
   // the last private window has closed.
   openPrivateSession();
-  const window = requireCreateMainWindow()(initialUrl, { privatePartition: partition });
+  const window = requireCreateMainWindow()(initialUrl, { privatePartition: partition, tor });
   privateWindows.set(window.id, { partition, session: privateSession });
   everPrivateWindowIds.add(window.id);
-  log.info(`[private] Opened private window ${window.id} on partition ${partition}`);
+  if (tor) everTorWindowIds.add(window.id);
+  log.info(
+    `[private] Opened ${tor ? 'Tor' : 'private'} window ${window.id} on partition ${partition}`
+  );
 
   window.on('closed', () => {
     privateWindows.delete(window.id);
@@ -255,11 +312,44 @@ function createPrivateWindow(initialUrl = null) {
     runCleanupHooks(partition);
     destroyPrivateSession(privateSession, partition).finally(() => {
       privateSessions.delete(privateSession);
+      torSessions.delete(privateSession);
       log.info(`[private] Private window closed, partition ${partition} cleared`);
     });
   });
 
   return window;
+}
+
+/**
+ * Open a Tor window (#473): a private window whose every request goes
+ * through Arti. `routeThroughTor(partition, session)` must resolve once the
+ * session's proxy is in place, and the window opens only after that, so its
+ * first request can't go out directly. Fails closed like a private window: a
+ * session that can't be configured or routed opens nothing, and resolves
+ * null.
+ *
+ * @param {string|null} initialUrl
+ * @param {{ routeThroughTor: (partition: string, session: Electron.Session) => Promise<void> }} deps
+ * @returns {Promise<Electron.BrowserWindow|null>}
+ */
+async function createTorWindow(initialUrl = null, { routeThroughTor } = {}) {
+  const prepared = preparePrivateSession({ tor: true });
+  if (!prepared) return null;
+  try {
+    if (typeof routeThroughTor !== 'function') throw new Error('no Tor route');
+    await routeThroughTor(prepared.partition, prepared.privateSession);
+  } catch (err) {
+    log.error(
+      '[private] could not route the session through Tor — refusing to open a Tor window:',
+      err?.message || err
+    );
+    runCleanupHooks(prepared.partition);
+    privateSessions.delete(prepared.privateSession);
+    torSessions.delete(prepared.privateSession);
+    destroyPrivateSession(prepared.privateSession, prepared.partition);
+    return null;
+  }
+  return openPreparedWindow(prepared, initialUrl);
 }
 
 function getPrivateWindowCount() {
@@ -272,6 +362,9 @@ function _resetState() {
   privatePartitions.clear();
   everPrivateWindowIds.clear();
   privateSessions.clear();
+  torSessions.clear();
+  everTorWindowIds.clear();
+  torPartitions.clear();
   cleanupHooks.length = 0;
   sessionConfigurator = null;
 }
@@ -279,6 +372,10 @@ function _resetState() {
 module.exports = {
   PRIVATE_PARTITION_PREFIX,
   createPrivateWindow,
+  createTorWindow,
+  isTorWebContents,
+  isTorSession,
+  isTorPartition,
   setPrivateSessionConfigurator,
   registerPrivateCleanup,
   isPrivatePartition,

@@ -37,3 +37,4 @@
 @import './styles/light-theme.css';
 /* Last: private-window tokens must out-cascade the theme files. */
 @import './styles/private.css';
+@import './styles/tor.css';

@@ -580,17 +580,6 @@ window.addEventListener(
   true
 );
 
-// Sub-frames: the main process turns on nodeIntegrationInSubFrames for tab
-// webviews (webcontents-setup.js) only so that iframes — an embedded YouTube
-// player, say — get the scriptlets above, plus the digit-row zoom report.
-// Nothing else in this file is meant for them (wallet providers, freedomAPI,
-// context menu, cosmetic filtering all stay main-frame only, as before), so
-// stop here. Sandboxed preloads run
-// inside a function wrapper, which is what makes this top-level return legal.
-if (globalThis.window && globalThis.window.top !== globalThis.window) {
-  return;
-}
-
 // Per-load constants, delivered with the renderer process (#512): the main
 // process puts them on this webview's command line when it attaches
 // (src/main/webview-boot.js, webcontents-setup.js), so reading them here costs
@@ -622,6 +611,35 @@ function readWebviewBoot() {
 }
 const WEBVIEW_BOOT = readWebviewBoot();
 
+// TOR WINDOW GUARD (#473): no WebRTC in a Tor window. Its
+// TURN and STUN traffic doesn't go through the window's request gate, and a
+// TURN server named by hostname is looked up outside Tor, so the IP handling
+// policy alone (tor-window.js) isn't enough. Taken away in the page's main
+// world before its scripts run, in every frame the preload runs in: it sits
+// above the sub-frame return below for that. A frame's initial empty
+// document (a fresh about:blank iframe) doesn't run the preload, which no
+// switch in this Chromium covers: that gap is #1247.
+const IS_TOR_WINDOW = WEBVIEW_BOOT
+  ? WEBVIEW_BOOT.isTor === true
+  : ipcRenderer.sendSync('private:is-tor') === true;
+if (IS_TOR_WINDOW) contextBridge.executeInMainWorld({ func: () => {
+  for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection']) {
+    Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false });
+  }
+} });
+
+// Sub-frames: the main process turns on nodeIntegrationInSubFrames for tab
+// webviews (webcontents-setup.js) only so that iframes — an embedded YouTube
+// player, say — get the scriptlets above, plus the digit-row zoom report.
+// Nothing else in this file is meant for them (wallet providers, freedomAPI,
+// context menu, cosmetic filtering all stay main-frame only, as before), so
+// stop here. Sandboxed preloads run
+// inside a function wrapper, which is what makes this top-level return legal.
+if (globalThis.window && globalThis.window.top !== globalThis.window) {
+  return;
+}
+
+
 // EIP-6963's uuid is per page session: one per preload run (each document),
 // stable across requestProvider re-announcements, as the sync-IPC path mints
 // it. crypto.randomUUID is secure-context only, so build the v4 uuid by hand.
@@ -645,6 +663,7 @@ function mintUuidV4() {
 const IS_PRIVATE_WINDOW = WEBVIEW_BOOT
   ? WEBVIEW_BOOT.isPrivate
   : ipcRenderer.sendSync('private:is-private') === true;
+
 const IS_ISOLATED_PREVIEW = location.protocol === 'freedom-preview:';
 const PROVIDERS_ENABLED = !IS_PRIVATE_WINDOW && !IS_ISOLATED_PREVIEW;
 

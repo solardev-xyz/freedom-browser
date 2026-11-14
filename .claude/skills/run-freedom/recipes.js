@@ -141,6 +141,33 @@ async function privateWindow({ app, win }) {
   return page;
 }
 
+// A Tor window (#473): New Tor Window from the application menu, returned
+// once its chrome is up. In the harness its badge says Tor is off.
+async function torWindow({ app, win }) {
+  // Opening one starts Tor; keep Arti from starting, so the shot shows the
+  // same badge on every machine.
+  await app.evaluate(() => globalThis.__FREEDOM_TEST_HARNESS__?.recordTorWindowStarts?.());
+  const known = new Set(app.windows().map((p) => p.url()));
+  for (let i = 0; i < 50; i++) {
+    const ready = await app.evaluate(({ Menu }) =>
+      Boolean(Menu.getApplicationMenu()?.getMenuItemById('new-tor-window'))
+    );
+    if (ready) break;
+    await win.waitForTimeout(200);
+  }
+  await menuItem(app, 'new-tor-window');
+  let page;
+  for (let i = 0; i < 50 && !page; i++) {
+    await win.waitForTimeout(300);
+    page = app.windows().find((c) => c.url().includes('torWindow=1') && !known.has(c.url()));
+  }
+  if (!page) throw new Error('Tor window did not open');
+  page.setDefaultTimeout(8_000);
+  await page.waitForSelector('[data-test="tor-badge"]', { state: 'visible' });
+  await page.waitForTimeout(800);
+  return page;
+}
+
 // Open the settings page on a nav entry (profile, appearance, search,
 // downloads, shortcuts, privacy, networks, nodes, advanced, about) and return
 // the settings page. Sub-routes — a panel below the first, such as
@@ -513,6 +540,7 @@ async function profilesPage(theme, names = ['Work', 'Research']) {
 
 module.exports = {
   profilesPage,
+  torWindow,
   HASH_A,
   HASH_B,
   LEDGER,

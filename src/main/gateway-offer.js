@@ -238,12 +238,15 @@ const resolveGatewayOffer = async (url, { resolveContent } = {}) => {
  * The `gateway:offer` IPC handler. A factory so the e2e harness can serve the
  * same logic from its ENS fixtures instead of the network.
  *
- * @param {{ resolveContent: Function, isPrivateSender?: Function }} deps
+ * @param {{ resolveContent: Function, isPrivateSender?: Function, isTorSender?: Function }} deps
  */
 const makeGatewayOfferHandler =
-  ({ resolveContent, isPrivateSender = () => false }) =>
+  ({ resolveContent, isPrivateSender = () => false, isTorSender = () => false }) =>
   async (event, payload = {}) => {
     const url = typeof payload?.url === 'string' ? payload.url : '';
+    // TOR WINDOW GUARD (#473): the offer resolves the name over blockchain RPC,
+    // outside Tor, and a Tor window doesn't open names anyway (tor-window.js).
+    if (isTorSender(event?.sender)) return null;
     // PRIVATE MODE GUARD (name logging): the gateway URL is the tab's
     // browsing history, and the lookup it triggers logs the name — redact
     // them for a private window exactly as `ens:resolve` does.
@@ -265,11 +268,13 @@ function registerGatewayOfferIpc() {
   // Fail closed (#1058): the lookup's Colibri reads stay off the disk store
   // unless the sender is a known public window's.
   const { isPrivateSender } = require('./private/private-sender');
+  const { isTorWebContents } = require('./private/private-windows');
   ipcMain.handle(
     IPC.GATEWAY_OFFER,
     makeGatewayOfferHandler({
       resolveContent: resolveEnsContent,
       isPrivateSender: (sender) => isPrivateSender({ sender }),
+      isTorSender: (sender) => isTorWebContents(sender),
     })
   );
 }

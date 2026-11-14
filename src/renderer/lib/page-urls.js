@@ -146,7 +146,7 @@ export const getInternalPageName = (url) => {
 // an EMPTY address bar and both take focus when the tab is opened — so both
 // names have to derive to an empty display value and both have to satisfy the
 // "this is a fresh empty tab" focus test. See issue #312.
-const NEW_TAB_PAGE_NAMES = new Set(['home', 'private']);
+const NEW_TAB_PAGE_NAMES = new Set(['home', 'private', 'tor']);
 
 // True for an internal page *name* (`home`, `private`, with or without a
 // sub-path) that acts as a new-tab page. The URL form below is derived from

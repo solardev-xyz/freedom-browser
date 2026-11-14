@@ -120,6 +120,11 @@ module.exports = {
   WINDOW_NEW: 'window:new',
   // Private windows (ephemeral, non-persisted partition per window)
   WINDOW_NEW_PRIVATE: 'window:new-private',
+  // A Tor window (#473): a private window whose traffic goes through Arti.
+  WINDOW_NEW_TOR: 'window:new-tor',
+  // Sync, from the tab preload when its boot switch is missing: is this a Tor
+  // window's tab? (the PRIVATE_IS_PRIVATE fallback's sibling)
+  PRIVATE_IS_TOR: 'private:is-tor',
   // Sync (sendSync) — webview preloads ask whether they run inside a
   // private window before injecting the wallet providers.
   PRIVATE_IS_PRIVATE: 'private:is-private',
