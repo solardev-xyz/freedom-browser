@@ -148,8 +148,8 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
       .filter(({ method }) => ['approval.grant', 'approval.revoke', 'approval.touch'].includes(method))
       .map(({ method, context, params }) => [method, context.caller, params]);
 
-  test("the hello moves both files, and main reads the grants an older build left through the core", () => {
-    expect([...core.service.helloParams(core).grant_moved].sort()).toEqual(['radicle', 'swarm']);
+  test("the hello moves both files (with APB-2's dApp file), and main reads the grants an older build left through the core", () => {
+    expect([...core.service.helloParams(core).grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm']);
     expect(swarm.getPermission(OLD)).toEqual(OLD_SWARM[OLD]);
     expect(swarm.getAutoApprove(OLD, 'publish')).toBe(true);
     expect(radicle.getPermission(OLD)).toEqual(OLD_RADICLE[OLD]);
