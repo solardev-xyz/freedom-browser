@@ -4,6 +4,13 @@ const { EventEmitter } = require('events');
 const { createPageDocuments } = require('./page-documents');
 const { createPageRequests } = require('./page-requests');
 const { CLASS, methodRow } = require('./page-methods');
+const { useSimulatedGrantCore } = require('../../../test/helpers/simulated-grant-core');
+
+// The site's grants, as main reads them from the identity core (design
+// 0012, APB-3): none here.
+beforeEach(async () => {
+  await useSimulatedGrantCore();
+});
 const {
   SWARM_READ_METHODS,
   SWARM_CONNECT_METHODS,
@@ -97,7 +104,7 @@ function manualTimers() {
   };
 }
 
-function setup() {
+function setup({ grantsLoaded } = {}) {
   const guests = new Map();
   const resolutions = [];
   const names = new Map();
@@ -134,7 +141,11 @@ function setup() {
   const requests = createPageRequests({
     documents,
     webContentsFromId: (id) => guests.get(id),
-    dispatchers: createSwarmDispatchers({ identityWalletEnabled: () => state.enabled, execute }),
+    dispatchers: createSwarmDispatchers({
+      identityWalletEnabled: () => state.enabled,
+      execute,
+      ...(grantsLoaded ? { grantsLoaded } : {}),
+    }),
     hooks: { onTrace: (entry) => trace.push(entry) },
     setTimer: timers.setTimer,
     clearTimer: timers.clearTimer,
@@ -247,6 +258,21 @@ describe('Swarm reads through main (freedom-core design 0011, PRQ-7a)', () => {
       expect({ method, answer: await page.ask(method, { name: 'chat' }) }).toEqual({ method, answer: NO_ADDRESS });
     }
     expect(env.state.calls.map((c) => c.method)).toEqual(PERMISSION_FREE);
+  });
+
+  test("while the grants can't be read, the reads no grant decides still answer; getCapabilities is refused", async () => {
+    const env = setup({ grantsLoaded: async () => false });
+    const page = env.tab(DAPP);
+    for (const method of PERMISSION_FREE) {
+      expect(await page.ask(method, { reference: 'b'.repeat(64) })).toEqual({ result: { method, key: DAPP_KEY } });
+    }
+    for (const method of ['swarm_readFeedEntry', 'swarm_listFeeds']) {
+      expect(await page.ask(method, { name: 'chat' })).toEqual({ result: { method, key: DAPP_KEY } });
+    }
+    expect(await page.ask('swarm_getCapabilities')).toEqual({
+      error: { code: 4900, message: 'Swarm permissions are not available', data: { reason: 'grants_unavailable' } },
+    });
+    expect(env.state.calls.map((c) => c.method)).toEqual([...PERMISSION_FREE, 'swarm_readFeedEntry', 'swarm_listFeeds']);
   });
 
   test('every method answers 4900 while the Identity & Wallet switch is off, with nothing run', async () => {

@@ -171,10 +171,12 @@ const swarmGrant = (electronApp, key) =>
     return permission ? { autoApprove: permission.autoApprove } : null;
   }, { root: repoRoot, key });
 const connectInMain = (electronApp, key, { publishRule = false } = {}) =>
-  electronApp.evaluate((_electron, args) => {
+  electronApp.evaluate(async (_electron, args) => {
     const permissions = process.mainModule.require(`${args.root}/src/main/swarm/swarm-permissions`);
-    permissions.grantPermission(args.key);
-    if (args.publishRule) permissions.setAutoApprove(args.key, 'publish', true);
+    // The identity core writes them (design 0012, APB-3), for the site's page.
+    const page = { page: { origin: args.key, top_origin: args.key, frame: 1, navigation: 1, agent: false } };
+    await permissions.grantPermission(args.key, page);
+    if (args.publishRule) await permissions.setAutoApprove(args.key, 'publish', true, page);
   }, { root: repoRoot, key, publishRule });
 
 const watchOldPath = (win) =>

@@ -1888,10 +1888,12 @@ test('Pi cannot sign a Radicle write on the site grant without the user', async 
   // The site's standing grants, written in main: the chrome's connection
   // grant is refused (freedom-core design 0011, PRQ-8a), since main writes
   // a connection from its own prompt.
-  await electronApp.evaluate((_electron, args) => {
+  await electronApp.evaluate(async (_electron, args) => {
     const permissions = process.mainModule.require(`${args.root}/src/main/radicle/radicle-permissions`);
-    permissions.grantPermission(args.origin);
-    permissions.grantSigning(args.origin);
+    // The identity core writes them (design 0012, APB-3), for the site's page.
+    const page = { page: { origin: args.origin, top_origin: args.origin, frame: 1, navigation: 1, agent: false } };
+    await permissions.grantPermission(args.origin, page);
+    await permissions.grantSigning(args.origin, page);
   }, { root: path.resolve(__dirname, '..'), origin: RADICLE_WRITE_ORIGIN });
   await prepareAgentFixture(
     window,

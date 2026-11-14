@@ -242,9 +242,14 @@ describe('dispatch and gating', () => {
     expect(result).toEqual({ running: false, status: 'stopped' });
   });
 
-  test('updates lastUsed for permissioned methods', async () => {
+  // The core takes a last use only from the page (design 0012, APB-3).
+  test('updates lastUsed for permissioned methods, under the page', async () => {
+    const page = { origin: ORIGIN, top_origin: ORIGIN, frame: 1, navigation: 2, agent: false };
+    await executeRadicleMethod('radicle_seed', { rid: RID }, ORIGIN, { pageContext: () => page });
+    expect(permissions.updateLastUsed).toHaveBeenCalledWith(ORIGIN, { page });
+    permissions.updateLastUsed.mockClear();
     await executeRadicleMethod('radicle_seed', { rid: RID }, ORIGIN);
-    expect(permissions.updateLastUsed).toHaveBeenCalledWith(ORIGIN);
+    expect(permissions.updateLastUsed).not.toHaveBeenCalled();
   });
 });
 
@@ -323,7 +328,11 @@ describe('node actions', () => {
     manager.getCurrentStatus.mockReturnValue({ status: 'stopped', error: null });
     const result = await executeRadicleMethod('radicle_disconnect', {}, ORIGIN);
     expect(result).toEqual({ connected: false });
-    expect(permissions.revokePermission).toHaveBeenCalledWith(ORIGIN);
+    // Main's own revoke without the page; the page's own under it.
+    expect(permissions.revokePermission).toHaveBeenCalledWith(ORIGIN, {});
+    const page = { origin: ORIGIN, top_origin: ORIGIN, frame: 1, navigation: 2, agent: false };
+    await executeRadicleMethod('radicle_disconnect', {}, ORIGIN, { pageContext: () => page });
+    expect(permissions.revokePermission).toHaveBeenLastCalledWith(ORIGIN, { page });
   });
 
   test('radicle_getSeedStatus validates rid', async () => {

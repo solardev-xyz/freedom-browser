@@ -18,11 +18,13 @@
  *   76, so a client can't be made without one.
  * - **`grant_moved`** names the files that have moved to the core, which is
  *   their only writer from then on (design 0012, "One writer per file"):
- *   `dapp` (APB-2), whose every write main sends to the core's write
- *   methods (wallet/dapp-permissions.js). Main still writes the other three
- *   itself (by a temp file and a rename, lib/atomic-file.js), and the core
- *   only reads them. Reverting the move gives the file back to main: the
- *   core then writes nothing in it, and older builds still read it (Q10).
+ *   `dapp` (APB-2), whose every write main sends to the core's write methods
+ *   (wallet/dapp-permissions.js), and `swarm` and `radicle` (APB-3), which
+ *   main reads and changes only through the core (core/grants.js). Main
+ *   still writes `x402-permissions.json` itself, by a temp file and a rename
+ *   (lib/atomic-file.js), which the core only reads. Reverting a move gives
+ *   the file back to main: the core then writes nothing in it, and older
+ *   builds still read it (Q10).
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
  *   (0.15.0) speaks only 2: it answers a hello at any other protocol,
@@ -138,10 +140,10 @@ const CORE_SERVICE = Object.freeze({
     // main's bulk credit) and stream frames, which the core requires.
     frames: ['fragment', 'stream'],
     // Where the permission files are (design 0012, APR-3), and those that
-    // have moved to the core, which writes them from then on (APB-2: the
-    // dApp file).
+    // have moved to the core, which writes them from then on: the dApp file
+    // (APB-2), Swarm's and Radicle's (APB-3).
     grant_root: client.grantRoot,
-    grant_moved: ['dapp'],
+    grant_moved: ['dapp', 'swarm', 'radicle'],
   }),
   validHello,
   shutdownMethod: 'core.shutdown',

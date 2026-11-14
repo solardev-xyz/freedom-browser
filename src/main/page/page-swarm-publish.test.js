@@ -7,6 +7,7 @@
 // (`guard(send)`), as publish-service.js and chunk-service.js run it.
 
 const os = require('os');
+const { useSimulatedGrantCore, attachedCoreClient, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -151,6 +152,9 @@ const RULE_OFF = {
 const NOT_CONNECTED = { error: { code: 4100, message: 'Origin not authorized. Call swarm_requestAccess first.' } };
 const PUBLISH_REJECTED = { error: { code: 4001, message: 'User rejected publish' } };
 const LIMIT = { error: { code: -32005, message: 'Limit exceeded' } };
+const GRANTS_UNAVAILABLE = {
+  error: { code: 4900, message: 'Swarm permissions are not available', data: { reason: 'grants_unavailable' } },
+};
 
 let nextId = 1;
 let nextNonce = 1;
@@ -311,9 +315,9 @@ function setup() {
   return { requests, state, trace, copies, tab, greet, named, names, prompts, decide, shown, fire };
 }
 
-const connect = (key, { publishRule = false } = {}) => {
-  permissions.grantPermission(key);
-  if (publishRule) permissions.setAutoApprove(key, 'publish', true);
+const connect = async (key, { publishRule = false } = {}) => {
+  await permissions.grantPermission(key, { page: testPage(key) });
+  if (publishRule) await permissions.setAutoApprove(key, 'publish', true, { page: testPage(key) });
 };
 
 /**
@@ -336,9 +340,11 @@ function paramsOfSize(page, method, size, { form = 'u8', payload = null } = {}) 
   return shape(make(payload), 'n'.repeat(size - measure(shape(make(payload), ''))));
 }
 
-beforeEach(() => {
-  permissions._resetCache();
-  fs.rmSync(path.join(mockUserData, 'swarm-permissions.json'), { force: true });
+// The simulated identity core main's grants come from.
+let core;
+
+beforeEach(async () => {
+  core = await useSimulatedGrantCore();
   clearTagOwnership();
   mockNode.uploads = [];
   mockNode.signals = [];
@@ -358,7 +364,7 @@ afterAll(() => {
 describe('publishing through main (0011 PRQ-7c)', () => {
   test('main prompts with its own site and view; on approval the upload goes out for the attested key; "always allow" sets the rule, by main', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab(`${KEY_A}/app`);
     const answer = page.ask('swarm_publishData', DATA);
     const prompt = await env.shown('swarm.publish');
@@ -390,7 +396,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('the publish prompt\'s view: sizes main measured, and the page\'s text only as far as each bound', async () => {
     const env = setup();
-    connect(KEY_A);
+    await connect(KEY_A);
     const page = env.tab();
     const files = [
       { path: 'index.html', bytes: new Uint8Array(10) },
@@ -430,7 +436,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
     expect(env.state.checks).toHaveLength(1);
     // An unresolved manifest check answers 4900 and is tried again.
     const other = env.tab(`${KEY_B}/`);
-    connect(KEY_B, { publishRule: true });
+    await connect(KEY_B, { publishRule: true });
     env.state.manifest = async () => ({ kind: 'unresolved' });
     expect(await other.ask('swarm_publishData', DATA)).toEqual({
       error: { code: 4900, message: 'Could not refresh this app’s permission manifest' },
@@ -443,7 +449,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test.each(UPLOADS)('custody read live for %s: no rule answers a tab in custody, the user\'s approval counts there, one that enters custody while a rule-answered upload waits publishes nothing, and leaving custody gives the rule back', async (method, params, out) => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const page = env.tab();
     env.state.custody.add(page.guest.id);
     const prompted = page.ask(method, params);
@@ -476,13 +482,13 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('a rule turned off, or the connection revoked, while an upload waits: nothing published', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const page = env.tab();
     let gate = held();
     mockNode.readiness = gate.promise.then(() => ({ ok: true }));
     const ruleOff = page.ask('swarm_publishFiles', FILES);
     await flush();
-    permissions.setAutoApprove(KEY_A, 'publish', false);
+    await permissions.setAutoApprove(KEY_A, 'publish', false);
     gate.release();
     expect(await ruleOff).toEqual(RULE_OFF);
 
@@ -493,7 +499,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
     const prompt = await env.shown('swarm.publish');
     const decided = env.decide(prompt.handle, true);
     await flush();
-    permissions.revokePermission(KEY_A);
+    await permissions.revokePermission(KEY_A);
     gate.release();
     expect((await revoked).error).toMatchObject({ code: 4100, data: { reason: 'not_connected' } });
     expect(await decided).toEqual({ ok: true });
@@ -502,9 +508,106 @@ describe('publishing through main (0011 PRQ-7c)', () => {
     expect(mockHistory.map((h) => h.status)).toEqual(['failed', 'failed']);
   });
 
+  test('a rule the core turned off reads as no grant until its read lands: an upload waiting under the rule, and a new one, publish nothing', async () => {
+    const env = setup();
+    await connect(KEY_A, { publishRule: true });
+    const page = env.tab();
+    const client = attachedCoreClient();
+    const gate = held();
+    mockNode.readiness = gate.promise.then(() => ({ ok: true }));
+    const waiting = page.ask('swarm_publishFiles', FILES);
+    await flush();
+    // The core turns the rule off and reports it; main's read of the key is held.
+    const reads = core.holdKeyReads();
+    core.entries.swarm[KEY_A].autoApprove.publish = false;
+    client.changed('swarm', KEY_A);
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    gate.release();
+    expect((await waiting).error).toMatchObject({ code: 4100 });
+    expect(mockNode.uploads).toEqual([]);
+    expect(env.prompts()).toEqual([]);
+    // Once the read lands: connected, with no rule.
+    reads.release();
+    await flush();
+    mockNode.readiness = null;
+    const prompted = page.ask('swarm_publishData', DATA);
+    const prompt = await env.shown('swarm.publish');
+    expect(await env.decide(prompt.handle, false)).toEqual({ ok: true });
+    expect(await prompted).toEqual(PUBLISH_REJECTED);
+    expect(mockNode.uploads).toEqual([]);
+  });
+
+  test('a rule the core turned on answers once its read lands', async () => {
+    const env = setup();
+    await connect(KEY_A);
+    const page = env.tab();
+    const client = attachedCoreClient();
+    const reads = core.holdKeyReads();
+    core.entries.swarm[KEY_A].autoApprove.publish = true;
+    client.changed('swarm', KEY_A);
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    reads.release();
+    await flush();
+    expect((await page.ask('swarm_publishData', DATA)).result.reference).toBe(REFERENCE);
+    expect(env.prompts()).toEqual([]);
+    expect(mockNode.uploads.map((u) => u.kind)).toEqual(['data']);
+  });
+
+  test('a revoke from the chrome hides the connection while the core writes it and reads it back: nothing published meanwhile', async () => {
+    const env = setup();
+    await connect(KEY_A, { publishRule: true });
+    const page = env.tab();
+    const reads = core.holdKeyReads();
+    const revoking = permissions.revokePermission(KEY_A, { caller: 'chrome' });
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    await flush();
+    expect(core.calls.at(-1)).toMatchObject({ method: 'approval.revoke', caller: 'chrome' });
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    reads.release();
+    await revoking;
+    expect(permissions.getPermission(KEY_A)).toBeNull();
+    expect(mockNode.uploads).toEqual([]);
+  });
+
+  test('between core processes an upload waits for the next one\'s grants, and one already waiting publishes nothing; once the core gives up, uploads are refused', async () => {
+    const env = setup();
+    await connect(KEY_A, { publishRule: true });
+    const page = env.tab();
+    const client = attachedCoreClient();
+    const gate = held();
+    mockNode.readiness = gate.promise.then(() => ({ ok: true }));
+    const checked = page.ask('swarm_publishFiles', FILES);
+    await flush();
+    client.emit('exit', { code: 1 });
+    gate.release();
+    expect((await checked).error).toMatchObject({ code: 4100 });
+    // A request now waits for the next process's load.
+    mockNode.readiness = null;
+    let answered = false;
+    const waiting = page.ask('swarm_publishData', DATA).then((out) => {
+      answered = true;
+      return out;
+    });
+    await flush();
+    expect(answered).toBe(false);
+    expect(env.prompts()).toEqual([]);
+    // The next process holds the connection without the rule.
+    core.entries.swarm[KEY_A].autoApprove.publish = false;
+    client.emit('ready');
+    const prompt = await env.shown('swarm.publish');
+    expect(await env.decide(prompt.handle, false)).toEqual({ ok: true });
+    expect(await waiting).toEqual(PUBLISH_REJECTED);
+    // The core gives up.
+    client.emit('failed', 'three crashes within a minute');
+    const before = env.prompts().length;
+    for (const [method, params] of UPLOADS) expect(await page.ask(method, params)).toEqual(GRANTS_UNAVAILABLE);
+    expect(env.prompts()).toHaveLength(before);
+    expect(mockNode.uploads).toEqual([]);
+  });
+
   test('a name that moves off its IPNS key while a rule-answered upload waits, or while its prompt is open: nothing published, no rule', async () => {
     const env = setup();
-    connect(NAME, { publishRule: true });
+    await connect(NAME, { publishRule: true });
     const page = await env.named();
     for (const wait of ['readiness', 'batch']) {
       env.names.set(NAME, IPNS_KEY);
@@ -521,7 +624,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
     // The prompt, for another document of the name.
     const env2 = setup();
-    connect(NAME);
+    await connect(NAME);
     const prompted = await env2.named();
     const answer = prompted.ask('swarm_publishData', DATA);
     const prompt = await env2.shown('swarm.publish');
@@ -535,7 +638,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('after the name has moved: every publishing method refused with nothing done, swarm_getUploadStatus with nothing about the tag', async () => {
     const env = setup();
-    connect(NAME, { publishRule: true });
+    await connect(NAME, { publishRule: true });
     const page = await env.named();
     // The site's own tag, from an upload before the name moved.
     expect((await page.ask('swarm_publishFiles', FILES)).result.tagUid).toBe(7);
@@ -552,7 +655,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('an upload that went out answers with its reference though the name moves during it; the tag\'s owner is recorded only while the name answers', async () => {
     const env = setup();
-    connect(NAME, { publishRule: true });
+    await connect(NAME, { publishRule: true });
     const page = await env.named();
     const gate = held();
     mockNode.upload = gate.promise;
@@ -570,8 +673,8 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('swarm_getUploadStatus: the owner\'s tag, never another site\'s; a name that moves while the read waits gets nothing', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
-    connect(KEY_B);
+    await connect(KEY_A, { publishRule: true });
+    await connect(KEY_B);
     const page = env.tab();
     const other = env.tab(`${KEY_B}/`, { front: false });
     expect((await page.ask('swarm_publishFiles', FILES)).result.tagUid).toBe(7);
@@ -585,7 +688,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
     expect(mockNode.statusReads).toEqual([7]);
 
     const env2 = setup();
-    connect(NAME, { publishRule: true });
+    await connect(NAME, { publishRule: true });
     const named = await env2.named();
     expect((await named.ask('swarm_publishFiles', FILES)).result.tagUid).toBe(7);
     const gate = held();
@@ -599,9 +702,9 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('a write the node refuses because publishing isn\'t set up takes the requesting window to the setup screen, as the chrome did', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
-    permissions.grantMessaging(KEY_A);
-    permissions.setAutoApprove(KEY_A, 'messaging', true);
+    await connect(KEY_A, { publishRule: true });
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'messaging', true, { page: testPage(KEY_A) });
     const page = env.tab();
     mockNode.readiness = { ok: false, reason: 'no-usable-stamps' };
     expect((await page.ask('swarm_publishData', DATA)).error).toMatchObject({ code: 4900, data: { reason: 'no-usable-stamps' } });
@@ -622,7 +725,7 @@ describe('publishing through main (0011 PRQ-7c)', () => {
 
   test('each copy of an upload\'s bytes is reported with its charge already in place', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const page = env.tab();
     await page.ask('swarm_publishData', { data: new Uint8Array(1000), contentType: 'x/y' });
     await page.ask('swarm_publishData', { data: 'text', contentType: 'x/y' });
@@ -645,7 +748,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
 
   test('a swarm_publishFiles of exactly its size, one 50 MiB Uint8Array, passes on its ticket: about 103.6 MiB charged before normalizeBytes copies it, within the document\'s 128 MiB; one byte more is refused', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const page = env.tab();
     const params = paramsOfSize(page, 'swarm_publishFiles', FILES_SIZE, { payload: 50 * MiB });
     expect(params.files[0].bytes.byteLength).toBe(50 * MiB);
@@ -678,7 +781,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
 
   test('swarm_publishData at its size, as a Uint8Array and as a string V8 holds at two bytes a character, on its ticket', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const page = env.tab();
     for (const form of ['u8', 'two-byte']) {
       let params = paramsOfSize(page, 'swarm_publishData', DATA_SIZE, { form, payload: 10 * MiB });
@@ -698,7 +801,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
 
   test('three such uploads from three documents of one window run two at a time within the window\'s 256 MiB; the third waits, and is granted when one ends', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const pages = [env.tab(`${KEY_A}/1`), env.tab(`${KEY_A}/2`, { front: false }), env.tab(`${KEY_A}/3`, { front: false })];
     const gate = held();
     mockNode.upload = gate.promise;
@@ -735,7 +838,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
 
   test('with both turns taken, sixteen more documents\' reservations wait and a seventeenth\'s is refused', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const holders = [env.tab(`${KEY_A}/h1`, { window: 1 }), env.tab(`${KEY_A}/h2`, { window: 2 })];
     const tickets = await Promise.all(holders.map((page) => page.reserve('swarm_publishData', 2 * MiB)));
     expect(tickets.every((t) => typeof t.ticket === 'string')).toBe(true);
@@ -762,7 +865,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
   // and its turn go.
   test('a navigation, or main\'s deadline, during an upload stops it: its charge and turn go, and the next waiting upload gets the turn', async () => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const pages = [env.tab(`${KEY_A}/1`), env.tab(`${KEY_A}/2`, { front: false }), env.tab(`${KEY_A}/3`, { front: false })];
     const gate = held();
     mockNode.upload = gate.promise;
@@ -797,7 +900,7 @@ describe('large uploads on their tickets (0011 PRQ-7c, "Large requests")', () =>
 
   test.each(['swarm_publishData', 'swarm_publishFiles'])('PRQ-2\'s ticket tests for %s: spent once, bound to its document, method and bytes, released when its document goes or after 30 s unused', async (method) => {
     const env = setup();
-    connect(KEY_A, { publishRule: true });
+    await connect(KEY_A, { publishRule: true });
     const page = env.tab();
     const other = env.tab(`${KEY_A}/other`, { front: false });
     const bytes = 1 * MiB + 4 * KiB;
@@ -847,14 +950,14 @@ describe('the chrome\'s grant writes (0011 PRQ-7c, "Grants")', () => {
   const invoke = (channel, ...args) => mockIpcHandlers[channel]({}, ...args);
 
   test('swarm:set-auto-approve refused for turning publishing\'s rule on, accepted for turning it off', async () => {
-    connect(KEY_A);
+    await connect(KEY_A);
     for (const enabled of [true, 1, 'yes', null]) {
       expect(() => invoke('swarm:set-auto-approve', KEY_A, 'publish', enabled)).toThrow(
         'Publish auto-approve is turned on only from a publish prompt'
       );
     }
     expect(permissions.getAutoApprove(KEY_A, 'publish')).toBe(false);
-    permissions.setAutoApprove(KEY_A, 'publish', true);
+    await permissions.setAutoApprove(KEY_A, 'publish', true, { page: testPage(KEY_A) });
     expect(await invoke('swarm:set-auto-approve', KEY_A, 'publish', false)).toBe(true);
     expect(permissions.getAutoApprove(KEY_A, 'publish')).toBe(false);
   });

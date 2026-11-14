@@ -328,10 +328,13 @@ function currentProjectionValue(origin, key) {
   return false;
 }
 
-function applyProjectionValue(origin, key, enabled) {
+// The Swarm grants a projection writes go to the identity core as main's
+// own (`shell`, naming the key: design 0012, "The model"; APB-3), and each
+// resolves once main has read the key back.
+async function applyProjectionValue(origin, key, enabled) {
   if (key === 'connection') {
-    if (enabled && !permissions.getPermission(origin)) permissions.grantPermission(origin);
-    if (!enabled) permissions.revokePermission(origin, { source: 'manifest' });
+    if (enabled && !permissions.getPermission(origin)) await permissions.grantPermission(origin, { source: 'manifest' });
+    if (!enabled) await permissions.revokePermission(origin, { source: 'manifest' });
   } else if (key === 'feedGrant') {
     // `source: 'manifest'` keeps these projections out of the feed store's
     // user-mutation notifications — a manifest applying its own grant must
@@ -343,10 +346,10 @@ function applyProjectionValue(origin, key, enabled) {
       feeds.createAppScopedIdentity(origin, { activate: true, source: 'manifest' });
     }
   } else if (key === 'messagingGrant') {
-    if (enabled) permissions.grantMessaging(origin, { source: 'manifest' });
-    else permissions.revokeMessaging(origin, { source: 'manifest' });
+    if (enabled) await permissions.grantMessaging(origin, { source: 'manifest' });
+    else await permissions.revokeMessaging(origin, { source: 'manifest' });
   } else if (key.startsWith('autoApprove.')) {
-    permissions.setAutoApprove(origin, key.slice(12), enabled, { source: 'manifest' });
+    await permissions.setAutoApprove(origin, key.slice(12), enabled, { source: 'manifest' });
   }
 }
 
@@ -410,13 +413,25 @@ function withoutUnavailableIdentity(origin, record, operations) {
   };
 }
 
-function runTransaction(origin, record, operations) {
+// The store's changes, one at a time: a transaction's journal, its writes
+// to the identity core (each waited for) and its commit run before the
+// next change reads the store, and recovery replays only a journal no
+// running transaction holds.
+let changes = Promise.resolve();
+
+function inOrder(task) {
+  const run = changes.then(task);
+  changes = run.catch(() => {});
+  return run;
+}
+
+async function runTransaction(origin, record, operations) {
   const state = loadStore();
   state.pending = { origin, record, operations };
   saveStore();
   faultInjector?.('after-journal');
   for (const [index, operation] of operations.entries()) {
-    applyProjectionValue(origin, operation.projection, operation.enabled);
+    await applyProjectionValue(origin, operation.projection, operation.enabled);
     faultInjector?.(`after-operation:${index}:${operation.projection}`);
   }
   if (record) state.records[origin] = record;
@@ -426,45 +441,60 @@ function runTransaction(origin, record, operations) {
   saveStore();
 }
 
-function recoverPending() {
+// A journal a transaction left (a crash, a failed write), replayed once the
+// Swarm grants have been read from the core: with none read, every
+// projection would read as off, and a connection replayed over a site's
+// own would replace it. Until then the journal waits for the next change.
+async function replayPending() {
   const state = loadStore();
   if (!state.pending) return;
+  if (!(await permissions.whenLoaded())) return;
   const { origin } = state.pending;
   const { record, operations } = withoutUnavailableIdentity(
     origin,
     state.pending.record,
     state.pending.operations
   );
-  for (const operation of operations) applyProjectionValue(origin, operation.projection, operation.enabled);
+  for (const operation of operations) await applyProjectionValue(origin, operation.projection, operation.enabled);
   if (record) state.records[origin] = record;
   else delete state.records[origin];
   delete state.pending;
   saveStore();
 }
 
-function pruneRecord(origin) {
+function recoverPending() {
+  return inOrder(replayPending);
+}
+
+async function pruneRecord(origin) {
   const state = loadStore();
   const record = state.records[origin];
   if (!record) return;
   const operations = removeOwners(record, CAPABILITY_KEYS);
-  runTransaction(origin, null, operations);
+  await runTransaction(origin, null, operations);
 }
 
 function detachManaged(origin, projection) {
-  recoverPending();
   const key = normalizeOrigin(origin);
-  if (projection === 'connection') {
-    disconnect(key);
-    return;
-  }
-  const state = loadStore();
-  const record = state.records[key];
-  if (!record) return;
-  record.detached ||= {};
-  record.detached[projection] = true;
-  if (record.managed) delete record.managed[projection];
-  record.revision = (record.revision || 0) + 1;
-  runTransaction(key, record, []);
+  if (projection === 'connection') return disconnect(key);
+  return inOrder(async () => {
+    await replayPending();
+    const state = loadStore();
+    const record = state.records[key];
+    if (!record) return;
+    record.detached ||= {};
+    record.detached[projection] = true;
+    if (record.managed) delete record.managed[projection];
+    record.revision = (record.revision || 0) + 1;
+    await runTransaction(key, record, []);
+  });
+}
+
+// A store's report of a user's change, which doesn't wait for it.
+function detachManagedLater(origin, projection) {
+  detachManaged(origin, projection).catch((err) => {
+    console.error('[PermissionManifests] Could not detach a managed permission:', err);
+  });
 }
 
 // `firstContact` is deliberately not compared: the first check of a fresh
@@ -521,7 +551,7 @@ function buildConsentModel(origin, record, manifest, changed, removed) {
  */
 async function checkManifest({ origin, committedUrl, eager = false }, deps = {}) {
   const forPage = deps.owner === 'page';
-  recoverPending();
+  await recoverPending();
   const key = normalizeOrigin(origin);
   const state = loadStore();
   const existing = state.records[key];
@@ -550,7 +580,7 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
   // same displayUrl — but cheap to enforce here.)
   if (normalizeOrigin(committedUrl) !== key) return { kind: 'legacy' };
   if (found.status !== 'found') {
-    if (existing) pruneRecord(key);
+    if (existing) await inOrder(() => pruneRecord(key));
     return { kind: 'legacy', pruned: !!existing, reason: found.status };
   }
 
@@ -579,16 +609,18 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
   record.revision = existing?.revision || 0;
   if (removalOperations.length > 0 || removed.length > 0 || satisfied.length > 0) {
     record.revision += 1;
-    runTransaction(key, record, removalOperations);
+    await inOrder(() => runTransaction(key, record, removalOperations));
   }
   else {
     // `state` was read before the discover() await. `saveStore()` serializes
     // whatever `storeCache` is *now* — a concurrent operation on another
     // origin that failed its save meanwhile has nulled it — so re-read the
     // store and mutate that, exactly as `runTransaction` does.
-    const current = loadStore();
-    current.records[key] = record;
-    saveStore();
+    await inOrder(() => {
+      const current = loadStore();
+      current.records[key] = record;
+      saveStore();
+    });
   }
 
   if (changed.length === 0) return { kind: 'ready' };
@@ -634,8 +666,14 @@ async function checkManifest({ origin, committedUrl, eager = false }, deps = {})
  * which replays a decided token's result. A page's (`owner: 'page'`, from
  * `decidePageManifest` only) comes from main's own pool, once.
  */
-function decideManifest(token, outcome, { owner = null } = {}) {
-  recoverPending();
+function decideManifest(token, outcome, options = {}) {
+  return inOrder(async () => {
+    await replayPending();
+    return decideInOrder(token, outcome, options);
+  });
+}
+
+async function decideInOrder(token, outcome, { owner = null } = {}) {
   const forPage = owner === 'page';
   const pool = forPage ? pageTokens : tokens;
   if (forPage) sweepPageTokens();
@@ -707,9 +745,9 @@ function decideManifest(token, outcome, { owner = null } = {}) {
     });
     record.receipts = record.receipts.slice(-MAX_RECEIPTS);
     record.revision = pending.baseRevision + 1;
-    runTransaction(pending.origin, record, operations);
+    await runTransaction(pending.origin, record, operations);
   } else if (pending.firstContact) {
-    runTransaction(pending.origin, null, []);
+    await runTransaction(pending.origin, null, []);
   }
   const result = { allowed: outcome !== 'deny', mode: outcome };
   pool.delete(token);
@@ -721,10 +759,16 @@ function decideManifest(token, outcome, { owner = null } = {}) {
 }
 
 function useIndividual(origin, capability) {
-  recoverPending();
+  return inOrder(async () => {
+    await replayPending();
+    return useIndividualInOrder(origin, capability);
+  });
+}
+
+async function useIndividualInOrder(origin, capability) {
   if (!CAPABILITY_KEYS.includes(capability)) throw new Error('Unknown capability');
   const key = normalizeOrigin(origin);
-  const record = structuredClone(getRecord(key));
+  const record = structuredClone(loadStore().records[key] || null);
   if (!record?.acknowledged?.[capability]) return false;
   record.detached ||= {};
   record.detached.connection = true;
@@ -736,22 +780,24 @@ function useIndividual(origin, capability) {
     decidedAt: Date.now(),
   };
   record.revision = (record.revision || 0) + 1;
-  runTransaction(key, record, operations);
+  await runTransaction(key, record, operations);
   return true;
 }
 
 function disconnect(origin) {
-  recoverPending();
   const key = normalizeOrigin(origin);
-  runTransaction(key, null, [
-    { projection: 'feedGrant', enabled: false },
-    { projection: 'connection', enabled: false },
-  ]);
-  return true;
+  return inOrder(async () => {
+    await replayPending();
+    await runTransaction(key, null, [
+      { projection: 'feedGrant', enabled: false },
+      { projection: 'connection', enabled: false },
+    ]);
+    return true;
+  });
 }
 
-function getRecord(origin) {
-  recoverPending();
+async function getRecord(origin) {
+  await recoverPending();
   return loadStore().records[normalizeOrigin(origin)] || null;
 }
 
@@ -799,13 +845,15 @@ function decidePageManifest(key, token, outcome, { recheck, holds }) {
 }
 
 function registerPermissionManifestIpc() {
-  recoverPending();
+  recoverPending().catch((err) => {
+    console.error('[PermissionManifests] Could not finish an interrupted change:', err);
+  });
   // Both stores that hold manifest-projected state report user mutations, so
   // a grant the user changes by hand (revoking feed access, switching the
   // publisher identity) drops manifest ownership instead of leaving a record
   // that claims it — and can re-assert it on the next projection.
-  permissions.onManifestMutation(detachManaged);
-  feeds.onManifestMutation(detachManaged);
+  permissions.onManifestMutation(detachManagedLater);
+  feeds.onManifestMutation(detachManagedLater);
   // No check or decide for the chrome (freedom-core design 0011, PRQ-7d):
   // main checks a page's manifest itself, for the document's own key and
   // URL, and decides the consent on its own prompt (checkPageManifest,
@@ -823,6 +871,7 @@ function registerPermissionManifestIpc() {
 }
 
 function _resetForTests() {
+  changes = Promise.resolve();
   storeCache = null;
   storeLoadedFromBackup = false;
   tokens.clear();

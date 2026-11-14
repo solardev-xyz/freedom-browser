@@ -23,6 +23,7 @@
  */
 
 const fs = require('fs');
+const { useSimulatedGrantCore } = require('../../../test/helpers/simulated-grant-core');
 const os = require('os');
 const path = require('path');
 const { loadMainModule } = require('../../../test/helpers/main-process-test-utils');
@@ -155,7 +156,6 @@ let manager;
 let identity;
 let provider;
 let cob;
-let permissions;
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-generation-identity-'));
@@ -235,9 +235,13 @@ function load(vaultState) {
   manager = require('../radicle-manager');
   provider = require('./radicle-provider-ipc');
   cob = require('./cob-service');
-  permissions = require('./radicle-permissions');
-  permissions.grantPermission(ORIGIN);
-  permissions.grantSigning(ORIGIN);
+  // Connected, with the signing grant, in the identity core's store (design
+  // 0012, APB-3).
+  return useSimulatedGrantCore({
+    radicle: {
+      [ORIGIN]: { origin: ORIGIN, connectedAt: 1, lastUsed: 1, signing: true, autoApprove: { node: false, signing: false } },
+    },
+  });
 }
 
 /** The writes that reached the service, every process's. */
@@ -272,7 +276,7 @@ const WRITTEN = { result: { id: 'c'.repeat(40) } };
 
 describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
   test('a throwaway node keeps refusing writes after a vault is created; after a restart the derived identity follows the create', async () => {
-    load({ exists: false, unlocked: false });
+    await load({ exists: false, unlocked: false });
     await startNode();
     expect(manager.activeRadicleIdentity()).toMatchObject(throwaway(1));
     await expect(identity.getIdentityStatus()).resolves.toMatchObject({
@@ -314,7 +318,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
   });
 
   test('a derived node keeps admitting writes after a lock and after a delete; after a restart a throwaway one follows the delete', async () => {
-    load({ exists: true, unlocked: true });
+    await load({ exists: true, unlocked: true });
     await startNode();
     expect(manager.activeRadicleIdentity()).toMatchObject(derived);
     await expect(cob.getIdentity()).resolves.toMatchObject({ did: DERIVED_DID });
@@ -358,7 +362,7 @@ describe('vault changes without a restart (0008, Tests first, "Keys")', () => {
   });
 
   test("each throwaway start is a new identity, and cob-service's identity follows it", async () => {
-    load({ exists: false, unlocked: false });
+    await load({ exists: false, unlocked: false });
     await startNode();
     await expect(cob.getIdentity()).resolves.toMatchObject({ did: throwaway(1).did });
     // Kept while the generation runs: no second read.
@@ -389,7 +393,7 @@ describe("main no longer reads keys/ (0008, Main's side)", () => {
       path.join(home, 'keys', 'radicle.pub'),
       `ssh-ed25519 ${'A'.repeat(68)} ${KEY_FILE_DID}`
     );
-    load({ exists: true, unlocked: false });
+    await load({ exists: true, unlocked: false });
     const exists = jest.spyOn(fs, 'existsSync');
     const reads = jest.spyOn(fs, 'readFileSync');
     try {
@@ -434,8 +438,8 @@ describe('identity changes on the service (0008, "Identity changes")', () => {
    * scripted; each write records whether a process held the gate, the
    * manager's state and main's block on Radicle at that point.
    */
-  function loadForChange(answers = [], { onLockHeld = () => {} } = {}) {
-    load({ exists: true, unlocked: true });
+  async function loadForChange(answers = [], { onLockHeld = () => {} } = {}) {
+    await load({ exists: true, unlocked: true });
     identity.setRadicleLifecycle(manager.createRadicleLifecycle());
     identity._internal.radicleChangeRetry.delaysMs = [0, 0, 0, 0];
     const guard = require('../core/node-identity-guard');
@@ -460,7 +464,7 @@ describe('identity changes on the service (0008, "Identity changes")', () => {
   const atWrite = { spec: { ...SEALED_SPEC, home: 'home' }, holder: false, state: 'stopped' };
 
   test('stop, then the core writes with no process on the home, then start: the new process runs as the derived identity', async () => {
-    const { calls } = loadForChange();
+    const { calls } = await loadForChange();
     await startNode();
     const first = service.children[0];
 
@@ -479,7 +483,7 @@ describe('identity changes on the service (0008, "Identity changes")', () => {
     // Another freedom-radicled on the home, which main neither started nor
     // stops: it ends after the core's first refusal.
     let other = null;
-    const { calls } = loadForChange([], { onLockHeld: () => other.exit(0) });
+    const { calls } = await loadForChange([], { onLockHeld: () => other.exit(0) });
     await startNode();
     other = service.spawn('freedom-radicled', ['serve', '--home', home], {
       env: { HOME: root },
@@ -498,7 +502,7 @@ describe('identity changes on the service (0008, "Identity changes")', () => {
   });
 
   test('pending_recovery, then completion: the node stays stopped and blocked until the retry is installed', async () => {
-    const { calls, guard } = loadForChange([{ status: 'pending_recovery' }]);
+    const { calls, guard } = await loadForChange([{ status: 'pending_recovery' }]);
     await startNode();
 
     await expect(identity.injectRadicleIdentity('FreedomBrowser')).resolves.toEqual({
@@ -515,7 +519,7 @@ describe('identity changes on the service (0008, "Identity changes")', () => {
 
   test('pending_recovery on every try: the node stays stopped, with the reason, and no process is spawned', async () => {
     const pending = { status: 'pending_recovery' };
-    loadForChange([pending, pending, pending, pending, pending]);
+    await loadForChange([pending, pending, pending, pending, pending]);
     await startNode();
 
     await expect(identity.injectRadicleIdentity('FreedomBrowser')).rejects.toThrow(

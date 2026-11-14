@@ -18,6 +18,7 @@ const { attachNaming, detachNaming } = require('./naming');
 const { attachChain, detachChain } = require('./chain');
 const { registerDwebShell } = require('./dweb-shell');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
+const { attachGrants, detachGrants } = require('./grants');
 
 let client = null;
 // `shell.dweb_get`'s executor (design 0009) on the client; null before
@@ -73,6 +74,9 @@ async function startCore() {
     guard.setStartupRecovery(hello.node_recovery);
   });
   client.on('exit', () => guard.setRecoveryUnknown());
+  // The grant stores the core writes (design 0012, APB-3), loaded at each
+  // start: attached before the first.
+  attachGrants(client);
   // Before it starts, so its first handshake configures naming.
   const naming = attachNaming(client);
   // Chain data: its configuration, executors (under naming's bound on
@@ -107,6 +111,7 @@ async function stopCore() {
   detachNaming();
   detachChain();
   detachDwebVerify();
+  detachGrants();
   dwebShell = null;
   if (!client) return;
   const stopping = client;
