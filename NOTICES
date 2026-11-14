@@ -73,7 +73,7 @@ freedom-radicled (Radicle service)
     (sha256 23c7391e4b9f4ffab1a624223cc1d7385ff9a678f490768add717de7ea2f4d89)
   under libgit2/. To relink freedom-radicled against a modified libgit2 or
   LibXDiff, its complete source is https://github.com/solardev-xyz/freedom-core
-  at the tag radicled-v0.1.2 (services/freedom-radicled, with its
+  at the tag radicled-v0.1.3 (services/freedom-radicled, with its
   Cargo.lock; RELEASING.md describes the build).
   It includes colored 2.2.0, unmodified, under the Mozilla Public License
   2.0 (its text and its source's location are in THIRD-PARTY-NOTICES). Its
