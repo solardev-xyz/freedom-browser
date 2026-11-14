@@ -12,7 +12,13 @@ const { createPageRequests, GONE } = require('./page-requests');
 const { createEthereumDispatchers } = require('./page-ethereum');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
 const confirmations = require('../wallet/signing-confirmation');
-const { normalizeMessage, messageToBytes, signsRawHash } = require('../wallet/signing-utils');
+const {
+  normalizeMessage,
+  normalizeTypedData,
+  messageToBytes,
+  signsRawHash,
+  toCoreTypedData,
+} = require('../wallet/signing-utils');
 const { TypedDataEncoder } = require('ethers');
 
 // The identity core's approval tokens (design 0012, APB-1), simulated
@@ -284,7 +290,7 @@ function backends() {
   return { state, deps, signer };
 }
 
-function setup({ dispatchers: custom, approvalsDocument = false, touchId = false } = {}) {
+function setup({ dispatchers: custom, approvalsDocument = false, touchId = false, agentContext = false } = {}) {
   const guests = new Map();
   const names = new Map();
   const nameHolds = new Map(); // name -> deferred: the next resolution waits for it
@@ -353,6 +359,10 @@ function setup({ dispatchers: custom, approvalsDocument = false, touchId = false
       state.unlocked = true;
       return { success: true };
     },
+    // A PageContext's `agent`: the same custody the dispatchers read, for
+    // the Agent's own requests (`agentContext`); otherwise false, so a
+    // test can hold custody apart from what the core reads.
+    isAgentGuest: (guestId) => agentContext && state.custody.has(guestId),
   });
   const unlockAttempts = [];
 
@@ -1622,8 +1632,12 @@ describe('a tab the agent holds: its signature inside the request', () => {
       updateLastUsed: env.deps.updateLastUsed,
       updateWalletIndex: jest.fn(),
       getChain: (chainId) => ({ chainId, name: 'Gnosis Chain', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
-      getSigner: () => env.signer,
+      getSigner: (index, authorized) => {
+        env.state.agentSigners.push([index, authorized]);
+        return agentSigner(env, index, authorized);
+      },
     });
+    env.state.agentSigners = [];
     env.state.agent = (guestId, request, options) =>
       controller.handleRequest(
         {
@@ -1638,14 +1652,53 @@ describe('a tab the agent holds: its signature inside the request', () => {
           attested: options.attested,
           beforeEffect: options.beforeEffect,
           effectAllowed: options.effectAllowed,
+          pageToken: options.pageToken,
         },
         request
       );
     return approvals;
   }
 
+  // The agent's signer as the identity core checks it (simulated): what it
+  // presents (`signers.js`) is checked before the signature, a token for its
+  // kind, page and handle, and burnt there.
+  function agentSigner(env, index, authorized) {
+    const presented = authorized?.confirmation
+      ? confirmations.signingAuthorization(authorized.confirmation)
+      : { page: authorized?.page ?? null };
+    return {
+      signMessage: async (message) => {
+        mockApprovals.authorize(
+          'sign.message',
+          index,
+          { message: `0x${messageToBytes(normalizeMessage(message)).toString('hex')}` },
+          presented
+        );
+        return env.signer.signMessage(message);
+      },
+      signTypedData: async (data, options = {}) => {
+        const bound = authorized?.confirmation?.payload ?? {};
+        mockApprovals.authorize(
+          'sign.typed_data',
+          index,
+          {
+            typed_data: toCoreTypedData(normalizeTypedData(data)),
+            ...(bound.primary_type !== undefined ? { primary_type: bound.primary_type } : {}),
+            ...(bound.chain_id !== undefined ? { chain_id: bound.chain_id } : {}),
+            expected_hash: options.expectedHash,
+          },
+          presented
+        );
+        return env.signer.signTypedData(data, options);
+      },
+    };
+  }
+
+  // Every signature the core was asked for: under `page`, with a token.
+  const signatures = () => mockApprovals.calls.filter((call) => call.method.startsWith('sign.'));
+
   test('it signs under the attested key once approved, holding the document\'s slot', async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const approvals = withAgent(env);
     const page = env.tab();
@@ -1661,8 +1714,146 @@ describe('a tab the agent holds: its signature inside the request', () => {
     expect(env.state.signed).toEqual([['message', MESSAGE]]);
   });
 
+  // Design 0012 (APB-1d): a page request the Agent answers is a page
+  // request. Its decision mints the request's page-kind token through
+  // main's issuer, under `page` with the request's PageContext (`agent:
+  // true`) and a handle main drew for it, and the signature presents that
+  // token under `page`, never as main's own.
+  test.each([
+    ['personal_sign', [MESSAGE, ACCOUNT], 'sign-message', 'sign.message', '0xmsgsig'],
+    ['eth_signTypedData_v4', [ACCOUNT, TYPED], 'sign-typed-data', 'sign.typed_data', '0xtypedsig'],
+  ])("%s: the Agent's decision mints its page-kind token, and the signature presents it under `page` with agent: true", async (method, params, kind, signMethod, signature) => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    const approvals = withAgent(env);
+    const page = env.tab();
+    const answer = page.ask(method, params);
+    await flush();
+    // Nothing is minted before the Agent decides.
+    expect(mockApprovals.calls).toEqual([]);
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ result: signature });
+    const PAGE = { origin: KEY_A, top_origin: KEY_A, frame: page.guest.mainFrame.frameTreeNodeId, navigation: expect.any(Number), agent: true };
+    expect(env.minted()).toEqual([expect.objectContaining({ token: kind, by: 'agent' })]);
+    const [issue] = mockApprovals.calls;
+    expect(issue).toMatchObject({ method: 'approval.issue', params: { kind, account: 0 }, page: PAGE });
+    const handle = issue.params.handle;
+    expect(handle).toMatch(/^[0-9a-f]{64}$/);
+    // The signer was handed that token, under the PageContext read again.
+    expect(env.state.agentSigners).toEqual([
+      [0, { confirmation: expect.objectContaining({ kind, account: 0, handle, page: PAGE }) }],
+    ]);
+    // The core saw one signature, under `page`, with the token: spent there.
+    expect(signatures()).toEqual([
+      expect.objectContaining({ method: signMethod, page: PAGE, params: expect.objectContaining({ authorization: { token: expect.any(String), handle } }) }),
+    ]);
+    expect(signatures().filter((call) => !call.page)).toEqual([]);
+    expect(mockApprovals.outstanding()).toBe(0);
+    if (kind === 'sign-typed-data') {
+      // Viewed on the page's chain; the hash the core bound is the one signed.
+      expect(issue.params.payload).toMatchObject({ primary_type: 'Order', chain_id: '100' });
+      expect(env.state.signed).toEqual([['typed', TYPED, { expectedHash: TYPED_HASH }]]);
+    }
+  });
+
+  test('a standing rule never answers it: the Agent decides, and its token signs', async () => {
+    const env = setup({ agentContext: true });
+    env.connect(KEY_A, 0, { autoApprove: { signing: true } });
+    mockApprovals.setStanding(() => ({ covered: true }));
+    const approvals = withAgent(env);
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    expect(approvals).toHaveLength(1);
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ result: '0xmsgsig' });
+    expect(env.deps.signing.checkStanding).not.toHaveBeenCalled();
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.check')).toEqual([]);
+    expect(signatures()).toEqual([
+      expect.objectContaining({ page: expect.objectContaining({ agent: true }), params: expect.objectContaining({ authorization: expect.objectContaining({ token: expect.any(String) }) }) }),
+    ]);
+  });
+
+  test('declined by the Agent: nothing minted, nothing signed', async () => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    const approvals = withAgent(env);
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    approvals[0].resolve('declined');
+    expect(await answer).toEqual(REJECTED);
+    expect(mockApprovals.calls).toEqual([]);
+    expect(env.state.signed).toEqual([]);
+  });
+
+  test('a tab the agent no longer holds at its decision mints nothing, and signs nothing', async () => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    const approvals = withAgent(env);
+    const page = env.tab();
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    env.state.custody.delete(page.guest.id);
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } });
+    expect(mockApprovals.calls).toEqual([]);
+    expect(env.state.signed).toEqual([]);
+  });
+
+  test('custody ending between the mint and the signature: the token burnt, nothing signed', async () => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    const approvals = withAgent(env);
+    const page = env.tab();
+    const issue = mockApprovals.approval.issue;
+    const spy = jest.spyOn(mockApprovals.approval, 'issue').mockImplementationOnce(async (...args) => {
+      const minted = await issue(...args);
+      env.state.custody.delete(page.guest.id);
+      return minted;
+    });
+    const answer = page.ask('personal_sign', [MESSAGE, ACCOUNT]);
+    await flush();
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ error: { code: -32603, message: 'Signing was not confirmed: the Agent no longer holds this tab' } });
+    spy.mockRestore();
+    expect(signatures()).toEqual([]);
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.discard')).not.toEqual([]);
+    expect(mockApprovals.outstanding()).toBe(0);
+    expect(env.state.signed).toEqual([]);
+  });
+
+  // Main's issuer for the Agent mints only within the request's wallet
+  // operation, once, and only the kinds the Agent answers.
+  test('main mints for the Agent once per request, within its operation, only its kinds', async () => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    const tokens = [];
+    let held = null;
+    env.state.agent = async (_guestId, _request, options) => {
+      held = options.pageToken;
+      await expect(options.pageToken.mint('safe-message', 0, { method: 'personal_sign', params: [] })).rejects.toThrow(
+        /Not a kind the Agent answers/
+      );
+      await expect(options.pageToken.mint('wallet-send', 0, {})).rejects.toThrow(/Not a kind the Agent answers/);
+      tokens.push(await options.pageToken.mint('sign-message', 0, MESSAGE));
+      await expect(options.pageToken.mint('sign-message', 0, MESSAGE)).rejects.toThrow(/this request has been decided/);
+      options.pageToken.discard(tokens[0]);
+      return { handled: true, error: { code: 4001, message: 'User rejected the request' } };
+    };
+    const page = env.tab();
+    env.state.custody.add(page.guest.id);
+    expect(await page.ask('personal_sign', [MESSAGE, ACCOUNT])).toEqual(REJECTED);
+    expect(tokens).toHaveLength(1);
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.issue')).toHaveLength(1);
+    // After the request: nothing more, and the token isn't presented.
+    await expect(held.mint('sign-message', 0, MESSAGE)).rejects.toThrow(/no live request the Agent answers/);
+    expect(() => held.present(tokens[0])).toThrow(/Signing was not confirmed/);
+    expect(mockApprovals.outstanding()).toBe(0);
+  });
+
   test("withdrawn at main's deadline: the agent's later approval signs nothing", async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const approvals = withAgent(env);
     const page = env.tab();
@@ -1680,7 +1871,7 @@ describe('a tab the agent holds: its signature inside the request', () => {
     ['its document navigates', (page) => page.guest.commit(`${KEY_A}/next`)],
     ['its tab closes', (page) => page.guest.destroy()],
   ])('withdrawn when %s: the agent\'s later approval signs nothing', async (_label, end) => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const approvals = withAgent(env);
     const page = env.tab();
@@ -1694,7 +1885,7 @@ describe('a tab the agent holds: its signature inside the request', () => {
   });
 
   test('the name is checked again just before the signature: one that moved gets none', async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.names.set(NAME, IPNS_KEY);
     env.connect(NAME);
     const approvals = withAgent(env);
@@ -1708,7 +1899,7 @@ describe('a tab the agent holds: its signature inside the request', () => {
   });
 
   test('an honest name signs under custody, under its name', async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.names.set(NAME, IPNS_KEY);
     env.connect(NAME);
     const approvals = withAgent(env);

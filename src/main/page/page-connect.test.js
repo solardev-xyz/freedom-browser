@@ -384,6 +384,9 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
         beforeEffect: expect.any(Function),
         effectAllowed: expect.any(Function),
         grantWritten: expect.any(Function),
+        // Main's issuer for the Agent's decision on a signature or a send
+        // (design 0012, APB-1d); a connect mints nothing.
+        pageToken: { mint: expect.any(Function), present: expect.any(Function), discard: expect.any(Function) },
       }
     );
     expect(env.prompts()).toEqual([]);

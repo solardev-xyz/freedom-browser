@@ -16,6 +16,8 @@ const { createEthereumDispatchers } = require('./page-ethereum');
 const { txOf } = require('./page-sends');
 const { AgentWalletController } = require('../agent/agent-wallet-controller');
 const confirmations = require('../wallet/signing-confirmation');
+const { buildTransaction } = require('../wallet/signing-utils');
+const { coreCheckedSigner } = require('../../../test/helpers/simulated-approvals');
 
 // The identity core's approval tokens (design 0012, APB-1), simulated
 // (test/helpers/simulated-approvals.js): main's issuer mints through it.
@@ -345,7 +347,7 @@ function backends() {
   return { state, deps, signer, phoneSigner, settle, executeSafe };
 }
 
-function setup({ approvalsDocument = false } = {}) {
+function setup({ approvalsDocument = false, agentContext = false } = {}) {
   const guests = new Map();
   const names = new Map();
   const nameHolds = new Map(); // name -> deferred: the next resolution waits for it
@@ -386,6 +388,10 @@ function setup({ approvalsDocument = false } = {}) {
     watchWindow: () => {},
     // With the approvals document on (APS-3b): its prompts land in `sent` too.
     approvals: approvalsDocument ? { send: (windowId, channel, payload) => sent.push([windowId, channel, payload]) } : null,
+    // A PageContext's `agent`: the same custody the dispatchers read, for
+    // the Agent's own requests (`agentContext`); otherwise false, so a
+    // test can hold custody apart from what the core reads.
+    isAgentGuest: (guestId) => agentContext && state.custody.has(guestId),
   });
 
   function tab(url = DAPP, { window = 1, bind = null, front = true } = {}) {
@@ -1845,6 +1851,7 @@ describe('a tab the agent holds: its send inside the request', () => {
     };
     const agentSends = [];
     const agentCommitted = [];
+    const agentSigners = [];
     const controller = new AgentWalletController({
       identityManager: { getDerivedWallets: async () => env.state.wallets, getActiveWalletIndex: () => 0 },
       getPermission: (key) => env.state.permissions.get(key) || null,
@@ -1852,14 +1859,20 @@ describe('a tab the agent holds: its send inside the request', () => {
       updateLastUsed: env.deps.updateLastUsed,
       updateWalletIndex: jest.fn(),
       getChain: (chainId) => ({ chainId, name: 'Gnosis Chain', nativeCurrency: { symbol: 'xDAI', decimals: 18 } }),
-      getSigner: () => env.signer,
+      // The agent's signer as the identity core checks it (simulated):
+      // what it presents (`signers.js`) is checked as it signs.
+      getSigner: (index, authorized) => {
+        agentSigners.push([index, authorized]);
+        return coreCheckedSigner(mockApprovals, { signTransaction: async () => '0xsigned' }, index, authorized);
+      },
       estimateGas: async () => ({ gasLimit: '21000' }),
       getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
-      // As the transaction service runs it: the signer's wait, then the
-      // caller's guard, which commits the signed bytes itself or withdraws
-      // them, then the broadcast.
-      signAndRecord: async (tx, _signer, context, options) => {
+      // As the transaction service runs it: the signature at the nonce main
+      // chose, the signer's wait, then the caller's guard, which commits the
+      // signed bytes itself or withdraws them, then the broadcast.
+      signAndRecord: async (tx, signer, context, options) => {
         agentSends.push({ tx, context });
+        await signer.signTransaction(buildTransaction({ ...tx, nonce: 3 }));
         if (env.state.agentSignerHold) await env.state.agentSignerHold.promise;
         const commit = async () => {
           agentCommitted.push(tx);
@@ -1884,14 +1897,18 @@ describe('a tab the agent holds: its send inside the request', () => {
           attested: options.attested,
           beforeEffect: options.beforeEffect,
           effectAllowed: options.effectAllowed,
+          pageToken: options.pageToken,
         },
         request
       );
-    return { approvals, agentSends, agentCommitted };
+    return { approvals, agentSends, agentCommitted, agentSigners };
   }
 
+  // Every signature the core was asked for.
+  const signatures = () => mockApprovals.calls.filter((call) => call.method.startsWith('sign.'));
+
   test("it sends under the attested key once approved, holding the document's slot", async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const { approvals, agentSends } = withAgent(env);
     const page = env.tab();
@@ -1908,8 +1925,89 @@ describe('a tab the agent holds: its send inside the request', () => {
     expect(env.state.records).toEqual([]);
   });
 
+  // Design 0012 (APB-1d): the Agent's decision mints the request's
+  // `dapp-send` token through main's issuer, under `page` with the
+  // request's PageContext (`agent: true`) and a handle main drew for it;
+  // the send presents it under `page`, naming its kind, never as main's own.
+  test.each([
+    ['a vault account', 0, ACCOUNT],
+    ['a phone account, unjudged by the fee check', PHONE_INDEX, PHONE],
+  ])("%s: the Agent's decision mints a dapp-send token, and the send presents it under `page` with agent: true", async (_label, walletIndex) => {
+    const env = setup({ agentContext: true });
+    env.connect(KEY_A, walletIndex);
+    const { approvals, agentSigners } = withAgent(env);
+    const page = env.tab();
+    const answer = page.send(TRANSFER);
+    await flush();
+    expect(mockApprovals.calls).toEqual([]);
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ result: HASH });
+    const PAGE = { origin: KEY_A, top_origin: KEY_A, frame: page.guest.mainFrame.frameTreeNodeId, navigation: expect.any(Number), agent: true };
+    expect(env.minted()).toEqual([expect.objectContaining({ token: 'dapp-send', by: 'agent' })]);
+    const [issue] = mockApprovals.calls;
+    expect(issue).toMatchObject({ method: 'approval.issue', params: { kind: 'dapp-send', account: walletIndex }, page: PAGE });
+    // No "Always allow", no fee acknowledged; a phone's send names itself.
+    expect(issue.params.payload).not.toHaveProperty('remember');
+    expect(issue.params).not.toHaveProperty('fee_ack');
+    expect(issue.params.phone).toBe(walletIndex === PHONE_INDEX ? true : undefined);
+    const handle = issue.params.handle;
+    expect(handle).toMatch(/^[0-9a-f]{64}$/);
+    expect(agentSigners).toEqual([
+      [walletIndex, { confirmation: expect.objectContaining({ kind: 'dapp-send', account: walletIndex, handle, page: PAGE }) }],
+    ]);
+    expect(signatures()).toEqual([
+      expect.objectContaining({
+        method: 'sign.transaction',
+        page: PAGE,
+        params: expect.objectContaining({ authorization: { token: expect.any(String), kind: 'dapp-send', handle } }),
+      }),
+    ]);
+    expect(mockApprovals.outstanding()).toBe(0);
+  });
+
+  test('a contract rule never answers it: the Agent decides, and its token signs', async () => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    env.rule();
+    mockApprovals.setStanding(() => ({ covered: true }));
+    const { approvals } = withAgent(env);
+    const page = env.tab();
+    const answer = page.send(CALL);
+    await flush();
+    expect(approvals).toHaveLength(1);
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ result: HASH });
+    expect(mockApprovals.calls.filter((call) => call.method === 'approval.check')).toEqual([]);
+    expect(signatures()).toEqual([
+      expect.objectContaining({
+        page: expect.objectContaining({ agent: true }),
+        params: expect.objectContaining({ authorization: expect.objectContaining({ token: expect.any(String), kind: 'dapp-send' }) }),
+      }),
+    ]);
+  });
+
+  test("a fee the core's check stops: refused, nothing signed (the Agent confirms no fee again)", async () => {
+    const env = setup({ agentContext: true });
+    env.connect();
+    const { approvals, agentSends } = withAgent(env);
+    const issue = jest.spyOn(mockApprovals.approval, 'issue').mockImplementationOnce(async () => {
+      throw Object.assign(new Error('The fee is above the check\'s threshold: confirm it again'), {
+        code: 'not_authorized',
+        data: { reason: 'fee_check', fee_check: { comparable: true, above: true, ratio: '3.5' } },
+      });
+    });
+    const page = env.tab();
+    const answer = page.send(TRANSFER);
+    await flush();
+    approvals[0].resolve('approved');
+    expect(await answer).toEqual({ error: { code: -32603, message: expect.any(String) } });
+    issue.mockRestore();
+    expect(agentSends).toEqual([]);
+    expect(signatures()).toEqual([]);
+  });
+
   test("withdrawn at main's deadline: the agent's later approval sends nothing", async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const { approvals, agentSends } = withAgent(env);
     const page = env.tab();
@@ -1927,7 +2025,7 @@ describe('a tab the agent holds: its send inside the request', () => {
     ['its document navigates', (page) => page.guest.commit(`${KEY_A}/next`)],
     ['its tab closes', (page) => page.guest.destroy()],
   ])("withdrawn when %s: the agent's later approval sends nothing", async (_label, end) => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const { approvals, agentSends } = withAgent(env);
     const page = env.tab();
@@ -1941,7 +2039,7 @@ describe('a tab the agent holds: its send inside the request', () => {
   });
 
   test("a name that moves after the agent's send went out: the hash is the page's, its last use unwritten", async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.names.set(NAME, IPNS_KEY);
     env.connect(NAME);
     const { approvals, agentSends } = withAgent(env);
@@ -1973,7 +2071,7 @@ describe('a tab the agent holds: its send inside the request', () => {
       { error: { code: -32603, message: expect.stringContaining('no longer connected with this account') } },
     ],
   ])("when %s during the agent's signer wait: nothing is committed or broadcast", async (_label, change, expected) => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.names.set(NAME, IPNS_KEY);
     env.connect(NAME);
     const { approvals, agentSends, agentCommitted } = withAgent(env);
@@ -1993,7 +2091,7 @@ describe('a tab the agent holds: its send inside the request', () => {
   });
 
   test('malformed: refused at once (-32602), the agent never asked; the page\'s from and chainId ignored, as on main\'s path', async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.connect();
     const { approvals, agentSends } = withAgent(env);
     const page = env.tab();
@@ -2020,7 +2118,7 @@ describe('a tab the agent holds: its send inside the request', () => {
   });
 
   test('the name is checked again just before the send: one that moved gets none', async () => {
-    const env = setup();
+    const env = setup({ agentContext: true });
     env.names.set(NAME, IPNS_KEY);
     env.connect(NAME);
     const { approvals, agentSends } = withAgent(env);

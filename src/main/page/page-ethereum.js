@@ -103,7 +103,8 @@ const ETHEREUM_PAGE_METHODS = Object.freeze([
 
 // How main reaches the agent service for a tab it holds (index.js sets it
 // once the agent runtime exists): `(guestId, request, { signal, attested,
-// beforeEffect, effectAllowed }) => ({ handled, result, error })`,
+// beforeEffect, effectAllowed, grantWritten, pageToken }) => ({ handled,
+// result, error })`,
 // `{ handled: false }` for a tab the agent doesn't hold.
 let agentWalletRoute = null;
 
@@ -274,7 +275,11 @@ function createEthereumDispatchers(deps = {}) {
   // deadline, its document gone), and the grant the agent writes waits on
   // main: the request still open, the name checked again, and the document
   // still holding the key in the same run as the write. The agent acts
-  // under the attested key, which for a DNS name over IPNS is the name.
+  // under the attested key, which for a DNS name over IPNS is the name. Its
+  // signature or send is a page's (design 0012, APB-1): the Agent's decision
+  // mints the request's page-kind token through main's issuer, and the
+  // signer presents it under `page`, with the PageContext read live
+  // (`agent: true`); no standing rule answers it, and none goes as `shell`.
   // `params` are the request's own, or the dispatcher's checked form of them.
   async function agentAnswer(context, keyless, params = context.params) {
     const { requester, method } = context;
@@ -288,6 +293,11 @@ function createEthereumDispatchers(deps = {}) {
             attested: { key: requester.key, transportKey: requester.transportKey },
             beforeEffect: async () => open() && (await context.nameHolds(keyless)) && open(),
             effectAllowed: () => open() && context.holdsKey(),
+            // A page request the Agent answers is a page request (design
+            // 0012): its decision mints the request's page-kind token
+            // through main's issuer, and its signature presents it under
+            // `page` with `agent: true`, never as main's own.
+            pageToken: context.agentToken,
             // What the agent's own write did, told inside its guarded run
             // (PRQ-6): a grant it created gets main's new-grant events,
             // queued at that write. One it updated is told by the grant

@@ -40,6 +40,33 @@ const ATTESTED_METHODS = new Set([
   'eth_sendTransaction',
 ]);
 
+// The page kinds the Agent's decision mints (freedom-core design 0012, "A
+// page request the Agent answers"), as main's issuer names them.
+const PAGE_TOKEN_KINDS = Object.freeze({
+  personal_sign: 'sign-message',
+  eth_signTypedData_v4: 'sign-typed-data',
+  eth_sendTransaction: 'dapp-send',
+});
+
+/**
+ * Main's issuer for the Agent's decision on a page request it attested
+ * (design 0012): `mint(kind, walletIndex, payload, options)` has the identity
+ * core mint the request's page-kind token under `page`, `present(token)`
+ * hands it to the signature in the same run as main's last checks, under
+ * the page's live PageContext (`{ confirmation }`, for `getSigner`), and
+ * `discard(token)` burns one the request ended before presenting. Null
+ * when main gave none.
+ */
+function pageTokenOf(context) {
+  const token = context?.pageToken;
+  return token &&
+    typeof token.mint === 'function' &&
+    typeof token.present === 'function' &&
+    typeof token.discard === 'function'
+    ? token
+    : null;
+}
+
 function providerError(code, message) {
   return { code, message };
 }
@@ -523,6 +550,17 @@ class AgentWalletController {
     }
 
     assertSupportedSigningWallet(wallet);
+    // A page's signature or send is the page's (design 0012, APB-1): it
+    // goes under `page` with the token the Agent's decision mints through
+    // main's issuer, never as main's own. A request main didn't attest, or
+    // one it gave no issuer for, has no page to sign under: refused before
+    // anything is asked.
+    if (!context.attested || !pageTokenOf(context)) {
+      throw new AutomationError(
+        ERROR_CODES.POLICY_DENIED,
+        'A page’s wallet request signs only through Freedom’s page dispatcher'
+      );
+    }
     if (payload.method === 'eth_sendTransaction') {
       return this.#sendTransaction(context, payload, permissionKey, chain, wallet);
     }
@@ -612,16 +650,28 @@ class AgentWalletController {
       }
     };
     const record = { kind: KINDS.DAPP_SEND, origin: permissionKey };
+    // The Agent's approval mints the page's `dapp-send` token for this
+    // transaction (design 0012), the phone's unjudged by the core's fee
+    // check as on main's own path; the send presents it under `page`.
     const result = await this.#underMain(context, () => {
-      if (!context.attested) return this.signAndRecord(tx, this.getSigner(wallet.index), record);
       grantStillExposes();
-      return this.signAndRecord(tx, this.getSigner(wallet.index), record, {
-        guardCommit: (commit) =>
-          this.#underMain(context, () => {
-            grantStillExposes();
-            return commit();
-          }),
-      });
+      return this.#withPageToken(
+        context,
+        PAGE_TOKEN_KINDS.eth_sendTransaction,
+        wallet.index,
+        { ...tx, origin: permissionKey },
+        { phone: wallet.type === 'remote' },
+        (authorized) => {
+          grantStillExposes();
+          return this.signAndRecord(tx, this.getSigner(wallet.index, authorized()), record, {
+            guardCommit: (commit) =>
+              this.#underMain(context, () => {
+                grantStillExposes();
+                return commit();
+              }),
+          });
+        }
+      );
     });
     // A grant held under the attested key is touched only while main still
     // holds the request after the send's wait, checked the same way. The
@@ -688,11 +738,25 @@ class AgentWalletController {
     });
     // A request main attested signs only while main still holds it: not
     // answered (its deadline, its page gone), the name checked again, and
-    // the page still under its key in the same run as the signature.
-    const signature = await this.#underMain(context, () => {
-      const signer = this.getSigner(wallet.index);
-      return personal ? signer.signMessage(payload.params?.[0]) : signer.signTypedData(typedData);
-    });
+    // the page still under its key in the same run as the signature, which
+    // presents the page's token the Agent's approval minted (design 0012):
+    // a message's bytes, or typed data viewed on the page's chain, whose
+    // hash the core bound is the one it signs.
+    const signature = await this.#underMain(context, () =>
+      this.#withPageToken(
+        context,
+        PAGE_TOKEN_KINDS[payload.method],
+        wallet.index,
+        personal ? message : typedData,
+        personal ? {} : { chainId: chain.chainId },
+        (authorized, confirmation) => {
+          const signer = this.getSigner(wallet.index, authorized());
+          return personal
+            ? signer.signMessage(message)
+            : signer.signTypedData(typedData, { expectedHash: confirmation.hash });
+        }
+      )
+    );
     // A grant held under the attested key is touched only while main still
     // holds the request after the signature's wait, checked the same way.
     // The signature itself reaches the page only while its name holds, which
@@ -709,6 +773,25 @@ class AgentWalletController {
         },
       },
     };
+  }
+
+  /**
+   * A page's signature or send under the token the Agent's decision mints
+   * (design 0012, "A page request the Agent answers"): main's issuer mints
+   * it for this request, then `sign(authorized, confirmation)` runs, and
+   * `authorized()`, called in the same run as the signer is asked for,
+   * presents it there after main's checks again (the request still open,
+   * its page holding its key, the agent still holding the tab), under the
+   * page's live PageContext. The token is burnt afterwards, spent or not.
+   */
+  async #withPageToken(context, kind, walletIndex, payload, options, sign) {
+    const issuer = pageTokenOf(context);
+    const confirmation = await issuer.mint(kind, walletIndex, payload, options);
+    try {
+      return await sign(() => issuer.present(confirmation), confirmation);
+    } finally {
+      issuer.discard(confirmation);
+    }
   }
 
   /**

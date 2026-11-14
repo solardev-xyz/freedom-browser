@@ -3243,6 +3243,7 @@ class FreedomAgentService {
           beforeEffect: pageRequest.beforeEffect,
           effectAllowed: pageRequest.effectAllowed,
           grantWritten: pageRequest.grantWritten,
+          pageToken: pageRequest.pageToken,
         }),
       },
       payload
