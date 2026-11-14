@@ -45,21 +45,43 @@ async function resize(electronApp, width, height = 800) {
   })).toBe(true);
 }
 
-// Painted colour of one window pixel (CSS px), read back from the compositor:
-// a gradient's stops aren't visible through getComputedStyle.
-async function pixel(electronApp, x, y) {
-  return electronApp.evaluate(async ({ BrowserWindow }, point) => {
+// Read compared pixels from one compositor frame. A reference captured before
+// a theme/overlay repaint must not be compared with a later frame indefinitely.
+async function paintedRow(electronApp, points) {
+  return electronApp.evaluate(async ({ BrowserWindow }, points) => {
     const win = BrowserWindow.getAllWindows().find(win => !win.isDestroyed());
     const image = await win.webContents.capturePage();
-    const scale = image.getSize().width / win.getContentSize()[0];
-    const at = (Math.round(point.y * scale) * image.getSize().width + Math.round(point.x * scale)) * 4;
-    const [b, g, r] = image.toBitmap().subarray(at, at + 3);
-    return [r, g, b];
-  }, { x: Math.round(x), y: Math.round(y) });
+    const { width } = image.getSize();
+    const scale = width / win.getContentSize()[0];
+    const bitmap = image.toBitmap();
+    return points.map(point => {
+      const at = (Math.round(point.y * scale) * width + Math.round(point.x * scale)) * 4;
+      const [b, g, r] = bitmap.subarray(at, at + 3);
+      return [r, g, b];
+    });
+  }, points);
 }
 
 // Gradient stops rasterise a unit or two off a flat fill of the same colour.
 const samePaint = (a, b) => a.every((channel, i) => Math.abs(channel - b[i]) <= 2);
+
+async function expectOverlayPaint(electronApp, points, differentOutside) {
+  // Include actual colours in a failure, rather than a bare false result.
+  await expect(async () => {
+    const [slot, inside, outside] = await paintedRow(electronApp, points);
+    expect({ slot, inside, matches: samePaint(slot, inside) }).toMatchObject({ matches: true });
+    if (differentOutside) expect({ slot, outside, matches: samePaint(slot, outside) }).toMatchObject({ matches: false });
+  }).toPass({ timeout: 7500 });
+}
+
+// Only the sampled surfaces and their pseudo-elements matter. Descendants
+// include perpetual tab-loading spinners unrelated to their paint/geometry.
+async function waitForPaintAnimations(window, selectors) {
+  await expect.poll(() => window.evaluate(selectors => selectors.flatMap(selector =>
+    document.querySelector(selector)?.getAnimations() || []
+  ).filter(animation => animation.playState === 'running' || animation.pending)
+    .map(animation => `${animation.constructor.name}:${animation.effect?.target?.className}`), selectors)).toEqual([]);
+}
 
 async function hit(window, selector) {
   return window.locator(selector).evaluate(element => {
@@ -165,18 +187,20 @@ test('Agent-first compact overlays, address menus and fullscreen restore work in
     await expect(sessions).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)');
     await expect(sessions).toHaveCSS('opacity', '1');
     const sessionsEdge = await sessions.evaluate(el => el.getBoundingClientRect().right);
-    const sessionsSlot = await pixel(electronApp, 4, bar.y);
-    await expect.poll(async () => samePaint(await pixel(electronApp, sessionsEdge - 20, bar.y), sessionsSlot)).toBe(true);
-    expect(samePaint(await pixel(electronApp, sessionsEdge + 20, bar.y), sessionsSlot)).toBe(false);
+    await expectOverlayPaint(electronApp, [
+      { x: 4, y: bar.y }, { x: sessionsEdge - 20, y: bar.y }, { x: sessionsEdge + 20, y: bar.y },
+    ], true);
     await window.locator('#agent-workspace-sidebar-toggle').click();
     await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
     await expect(window.locator('body')).not.toHaveClass(/agent-workspace-sidebar-closed/);
-    await expect(window.locator('#agent-page-surface')).toHaveCSS('transform', 'none');
+    // The overlay opens with margin/opacity, not a transform. Measure its
+    // edge only after that actual transition has finished.
+    await waitForPaintAnimations(window, ['#agent-page-surface', '#agent-first-titlebar']);
     const workspaceEdge = await window.locator('#agent-page-surface').evaluate(el => el.getBoundingClientRect().left);
-    const workspaceSlot = await pixel(electronApp, bar.right - 2, bar.y);
-    await expect.poll(async () => samePaint(await pixel(electronApp, workspaceEdge + 20, bar.y), workspaceSlot)).toBe(true);
     // Dark paints the conversation and the Workspace with the same --bg.
-    if (theme === 'light') expect(samePaint(await pixel(electronApp, workspaceEdge - 20, bar.y), workspaceSlot)).toBe(false);
+    await expectOverlayPaint(electronApp, [
+      { x: bar.right - 2, y: bar.y }, { x: workspaceEdge + 20, y: bar.y }, { x: workspaceEdge - 20, y: bar.y },
+    ], theme === 'light');
     await expect(window.locator('#agent-task-pages')).toBeVisible();
     await expect.poll(() => hit(window, '#address-input')).toBe(true);
     await expect.poll(() => window.evaluate(() => {
@@ -225,6 +249,11 @@ test('Agent-first columns paint like Settings: page background, sidebar tint, ac
   });
   for (const theme of ['dark', 'light']) {
     await window.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
+    // First-send materialisation can still be fading the composer when the
+    // user switches to Agent-first. Assert settled paint, not that transient alpha.
+    await waitForPaintAnimations(window, ['#agent-sidebar', '.agent-workspace-scroll',
+      '.agent-composer-wrap', '.agent-first-titlebar-center',
+      '[data-test="agent-session-sidebar"]', '.agent-first-titlebar-left']);
     const paint = await window.evaluate(() => {
       const bg = selector => getComputedStyle(document.querySelector(selector)).backgroundColor;
       const probe = document.createElement('div');
