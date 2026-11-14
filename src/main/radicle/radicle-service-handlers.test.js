@@ -25,7 +25,12 @@
  * - the COB pages fenced during a repair and under quarantine, the file
  *   reads not;
  * - the statuses and texts by the service's code, `rad:`'s fixed texts
- *   (#1050), and private windows' logs.
+ *   (#1050), and private windows' logs;
+ * - the raw endpoint (0008, "The blob API", "Ranges", "The raw endpoint";
+ *   deviation `blob-api`): one `rad.blob` per request, its range from the
+ *   Range header and `head_only` for a HEAD; 200, 206 and 416 with their
+ *   headers; the inert types; a HEAD answering as its GET; the visibility
+ *   check, admission and cancel as every other path's.
  *
  * The golden vectors on the real binary are the contract suite's handlers
  * (`FREEDOM_RADICLE_CONTRACT_BACKEND=radicled`); the B1 harness replays
@@ -73,6 +78,11 @@ const RAD_HEADERS = [
   ['content-type', 'application/json'],
 ];
 const RADAPI_HEADERS = [['content-type', 'application/json']];
+/** rad:'s own refusals (rad-protocol.js's `{ code, message }`). */
+const RAD_OWN_HEADERS = [
+  ['access-control-allow-origin', '*'],
+  ['content-type', 'application/json; charset=utf-8'],
+];
 
 /** Lets the pipes and promises run. */
 async function settle(turns = 30) {
@@ -126,11 +136,12 @@ afterEach(async () => {
 /**
  * A running node whose service answers each `rad.read` through `read(op,
  * args, message, child)` (by default: the repository is public, and
- * nothing else is answered), named to radicle-embedded.js as the service
- * node.
+ * nothing else is answered), and each of the script's other methods (`{
+ * blob }`) as it says, named to radicle-embedded.js as the service node.
  */
-async function running(read = () => {}) {
+async function running(read = () => {}, script = {}) {
   const service = fakeRadicled({
+    ...script,
     read: (message, child) => {
       const { op, args } = message.params;
       if (read(op, args, message, child) === undefined && op === 'repo_info') {
@@ -892,5 +903,509 @@ describe('statuses and texts', () => {
       '→',
       'cached COB id "x": invalid'
     );
+  });
+});
+
+describe('the raw endpoint', () => {
+  const README = Buffer.from('# Blob fixture\n\nA repository for rad.blob and its ranges.\n');
+  const OID = 'e81bcde11d78341d64424c9269816bd85772d234';
+  const RAW_PATH = `/raw/${REV}/README.md`;
+
+  /** A raw request for `pathname`: `rad:`'s, or with `api` `radapi:`'s. */
+  function raw(pathname, { method = 'GET', range = null, api: viewer = false, signal } = {}) {
+    const headers = range ? { Range: range } : {};
+    if (viewer) {
+      return api.handleRadicleApiRequest(
+        new Request(`radapi://local/api/v1/repos/${encodeURIComponent(RID)}${pathname}`, {
+          method,
+          headers,
+          signal,
+        })
+      );
+    }
+    return rad.handleRadRequest(
+      new Request(`rad://${BARE}${pathname}`, { method, headers, signal })
+    );
+  }
+
+  /** The `rad.blob` requests a child got. */
+  const blobs = (child) => child.sent('rad.blob').map((message) => message.params);
+
+  /** A service whose `rad.blob` serves `bytes` (README.md's by default) as
+   * the service does: the range normalized, `head_only` without a body,
+   * an unsatisfiable range `range_not_satisfiable` with the size. */
+  function serving(bytes = README, oid = OID) {
+    return (message, child) => {
+      const { range, head_only: headOnly } = message.params;
+      const size = bytes.length;
+      let span = null;
+      if (range) {
+        let { start } = range;
+        let end = range.end ?? size - 1;
+        if ('suffix' in range) {
+          if (range.suffix === 0) start = size;
+          else start = Math.max(0, size - range.suffix);
+          end = size - 1;
+        }
+        if (start >= size) {
+          child.errorWithData(message.id, 'range_not_satisfiable', 'range not satisfiable', {
+            size,
+          });
+          return;
+        }
+        span = { start, end: Math.min(end, size - 1) };
+      }
+      const served = span ? bytes.subarray(span.start, span.end + 1) : bytes;
+      child.blobReply(
+        message.id,
+        { oid, size, range: span, body: !headOnly && served.length > 0 },
+        headOnly ? Buffer.alloc(0) : served
+      );
+    };
+  }
+
+  /** Headers sorted by name, as a Response lists them. */
+  const sorted = (headers) => [...headers].sort(([a], [b]) => a.localeCompare(b));
+
+  /** The raw security headers every raw answer carries (`rad:`'s with the
+   * range headers exposed to pages). */
+  const rawSecurity = (cors = true) => [
+    ['content-security-policy', 'sandbox'],
+    ['x-content-type-options', 'nosniff'],
+    ...(cors ? [['access-control-expose-headers', 'Accept-Ranges, Content-Range, ETag']] : []),
+  ];
+
+  /** A raw refusal's headers: its JSON error's, `rad:`'s (`cors`) or
+   * `radapi:`'s, with the raw security headers and `extra`. */
+  const rawRefusal = ({
+    cors = true,
+    extra = [],
+    base = cors ? RAD_HEADERS : RADAPI_HEADERS,
+  } = {}) => sorted([...base, ...rawSecurity(cors), ...extra]);
+
+  /** The headers of a raw answer for `rad:` (`cors`) or `radapi:`. */
+  function rawHeaders({ length, type = 'text/plain; charset=utf-8', range = null, cors = true }) {
+    const headers = [
+      ['accept-ranges', 'bytes'],
+      ...(cors
+        ? [
+            ['access-control-allow-origin', '*'],
+            ['access-control-expose-headers', 'Accept-Ranges, Content-Range, ETag'],
+          ]
+        : []),
+      ['cache-control', 'public, max-age=31536000, immutable'],
+      ['content-length', String(length)],
+      ...(range ? [['content-range', range]] : []),
+      ['content-security-policy', 'sandbox'],
+      ['content-type', type],
+      ['etag', `"${OID}"`],
+      ['x-content-type-options', 'nosniff'],
+    ];
+    return headers;
+  }
+
+  test('the whole blob: one rad.blob, 200 with its bytes and the inert headers', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    const res = await raw(RAW_PATH);
+    expect(res.status).toBe(200);
+    expect([...res.headers]).toEqual(rawHeaders({ length: README.length }));
+    expect(Buffer.from(await res.arrayBuffer()).equals(README)).toBe(true);
+    expect(blobs(child)).toEqual([
+      { rid: RID, revision: REV, path: 'README.md', range: null, head_only: false },
+    ]);
+    expect(reads(child)).toEqual([{ op: 'repo_info', args: { rid: RID } }]);
+    expect(admission.dwebFetchStats().active).toBe(0);
+  });
+
+  test('radapi: serves the viewer the same bytes, with no CORS headers and no visibility read', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    const res = await raw(RAW_PATH, { api: true });
+    expect(res.status).toBe(200);
+    expect([...res.headers]).toEqual(rawHeaders({ length: README.length, cors: false }));
+    expect(Buffer.from(await res.arrayBuffer()).equals(README)).toBe(true);
+    expect(reads(child)).toEqual([]);
+  });
+
+  test('a private repository answers rad: as one that is not stored, and reads no blob', async () => {
+    const { child } = await running(answers({ repo_info: PRIVATE }), { blob: serving() });
+    for (const method of ['GET', 'HEAD']) {
+      const res = await answered(await raw(RAW_PATH, { method }));
+      expect(res).toEqual({
+        status: 404,
+        headers: rawRefusal(),
+        body: method === 'GET' ? JSON.stringify({ error: 'repository not found' }) : null,
+      });
+    }
+    expect(blobs(child)).toEqual([]);
+  });
+
+  test('ranges: one bytes= range is sent; 206 with Content-Range and its bytes', async () => {
+    const size = README.length;
+    const { child } = await running(() => undefined, { blob: serving() });
+    const cases = [
+      ['bytes=0-9', { start: 0, end: 9 }, 0, 9],
+      ['bytes=5-', { start: 5 }, 5, size - 1],
+      ['bytes=-10', { suffix: 10 }, size - 10, size - 1],
+      [`bytes=5-${size + 1000}`, { start: 5, end: size + 1000 }, 5, size - 1],
+    ];
+    for (const [header, sent, start, end] of cases) {
+      const res = await raw(RAW_PATH, { range: header });
+      expect(res.status).toBe(206);
+      expect([...res.headers]).toEqual(
+        rawHeaders({ length: end - start + 1, range: `bytes ${start}-${end}/${size}` })
+      );
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(README.subarray(start, end + 1));
+      expect(blobs(child).pop().range).toEqual(sent);
+    }
+  });
+
+  test('several ranges, or one that does not parse, are ignored: the whole blob, 200', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    for (const header of ['bytes=0-1,4-5', 'bytes=5-2', 'bytes=abc', 'bytes=-', 'items=0-9']) {
+      const res = await raw(RAW_PATH, { range: header });
+      expect(res.status).toBe(200);
+      expect((await res.arrayBuffer()).byteLength).toBe(README.length);
+      expect(blobs(child).pop().range).toBeNull();
+    }
+  });
+
+  test('a range past the end is 416 with the size, and is not logged', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    const page = await answered(await raw(RAW_PATH, { range: 'bytes=58-' }));
+    expect(page).toEqual({
+      status: 416,
+      headers: rawRefusal({ extra: [['content-range', 'bytes */58']] }),
+      body: JSON.stringify({ error: 'range not satisfiable' }),
+    });
+    const viewer = await answered(await raw(RAW_PATH, { range: 'bytes=-0', api: true }));
+    expect(viewer).toEqual({
+      status: 416,
+      headers: rawRefusal({ cors: false, extra: [['content-range', 'bytes */58']] }),
+      body: JSON.stringify({ error: 'range not satisfiable' }),
+    });
+    expect(blobs(child).map((params) => params.range)).toEqual([{ start: 58 }, { suffix: 0 }]);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  test('HEAD: head_only, and the same status and headers as GET, with no body', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    for (const range of [null, 'bytes=0-9', 'bytes=999999-']) {
+      const get = await answered(await raw(RAW_PATH, { range }));
+      const head = await answered(await raw(RAW_PATH, { method: 'HEAD', range }));
+      expect({ ...head, body: get.body }).toEqual(get);
+      expect(head.body).toBeNull();
+    }
+    expect(blobs(child).map((params) => params.head_only)).toEqual([
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+    ]);
+    expect(admission.dwebFetchStats().active).toBe(0);
+  });
+
+  test('a zero-length blob: 200 with no body; any range is 416', async () => {
+    const empty = Buffer.alloc(0);
+    const oid = 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391';
+    await running(() => undefined, { blob: serving(empty, oid) });
+    const whole = await raw(`/raw/${REV}/empty.txt`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get('content-length')).toBe('0');
+    expect(whole.headers.get('etag')).toBe(`"${oid}"`);
+    expect(whole.body).toBeNull();
+    const ranged = await raw(`/raw/${REV}/empty.txt`, { range: 'bytes=0-' });
+    expect(ranged.status).toBe(416);
+    expect(ranged.headers.get('content-range')).toBe('bytes */0');
+    await ranged.arrayBuffer();
+  });
+
+  test('content types come from the inert allowlist, by extension', async () => {
+    await running(() => undefined, { blob: serving() });
+    const types = {
+      'logo.png': 'image/png',
+      'photo.JPG': 'image/jpeg',
+      'clip.webm': 'video/webm',
+      'notes.txt': 'text/plain; charset=utf-8',
+      'index.html': 'text/plain; charset=utf-8',
+      'icon.svg': 'text/plain; charset=utf-8',
+      'app.js': 'text/plain; charset=utf-8',
+      'feed.xml': 'text/plain; charset=utf-8',
+      Makefile: 'text/plain; charset=utf-8',
+      'page.xhtml': 'application/octet-stream',
+      'archive.tar.gz': 'application/octet-stream',
+      link: 'application/octet-stream',
+    };
+    for (const [file, type] of Object.entries(types)) {
+      const res = await raw(`/raw/${REV}/dir/${file}`);
+      expect([file, res.headers.get('content-type')]).toEqual([file, type]);
+      await res.arrayBuffer();
+    }
+  });
+
+  test("a blob over 64 MiB is 413 for GET and HEAD, with main's fixed text on rad:", async () => {
+    const message = '67108865 bytes is over the limit of 67108864';
+    await running(() => undefined, {
+      blob: (msg, child) => child.error(msg.id, 'too_large', message),
+    });
+    for (const method of ['GET', 'HEAD']) {
+      const page = await answered(await raw(`/raw/${REV}/big.bin`, { method }));
+      expect(page).toEqual({
+        status: 413,
+        headers: rawRefusal(),
+        body:
+          method === 'GET'
+            ? JSON.stringify({ error: 'repository data too large to serve here' })
+            : null,
+      });
+    }
+    const viewer = await answered(await raw(`/raw/${REV}/big.bin`, { api: true }));
+    expect(viewer).toEqual({
+      status: 413,
+      headers: rawRefusal({ cors: false }),
+      body: JSON.stringify({ error: message }),
+    });
+  });
+
+  /**
+   * GET and HEAD for `pathname`, through `rad:` or `radapi:` (`api`): the
+   * HEAD has the GET's status and headers and no body, and both carry the
+   * raw security headers. The GET's answer.
+   */
+  async function getAndHead(pathname, { api: viewer = false, request = null } = {}) {
+    const send = (method) => (request ? request(method) : raw(pathname, { method, api: viewer }));
+    const get = await answered(await send('GET'));
+    const head = await answered(await send('HEAD'));
+    expect(head).toEqual({ ...get, body: null });
+    for (const header of rawSecurity(!viewer)) expect(get.headers).toContainEqual(header);
+    return get;
+  }
+
+  const SERVICE_FAILURES = [
+    ['not_found', 'the path does not exist in the given tree', 404, 'not found'],
+    ['failed', 'the read failed somewhere', 500, 'the read failed'],
+    ['deadline', 'past its deadline', 504, 'Radicle read timed out'],
+    ['busy', 'the read pool is full', 503, 'Radicle is busy; try again'],
+    ['cancelled', 'Cancelled', 503, 'request cancelled'],
+    [
+      'quarantined',
+      'quarantined',
+      503,
+      "the repository is quarantined: Radicle couldn't repair it",
+    ],
+  ];
+
+  test.each(SERVICE_FAILURES)(
+    "the service's %s: %#, a raw answer for GET and HEAD at rad: and radapi:",
+    async (code, message, status, publicText) => {
+      await running(() => undefined, { blob: (m, c) => c.error(m.id, code, message) });
+      const page = await getAndHead(RAW_PATH);
+      expect(page).toEqual({
+        status,
+        headers: rawRefusal(),
+        body: JSON.stringify({ error: publicText }),
+      });
+      const viewer = await getAndHead(RAW_PATH, { api: true });
+      expect(viewer.status).toBe(status);
+      expect(viewer.headers).toEqual(rawRefusal({ cors: false }));
+    }
+  );
+
+  test("main's refusals inside the route: a bad path, a missing one, a revision that isn't one", async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    for (const [pathname, error] of [
+      [`/raw/${REV}`, 'missing path'],
+      [`/raw/${REV}/`, 'missing path'],
+      ['/raw/main/README.md', 'missing path'],
+      [`/raw/${REV}/%ZZ`, 'invalid repository path'],
+    ]) {
+      for (const viewer of [false, true]) {
+        const res = await getAndHead(pathname, { api: viewer });
+        // rad: refuses a path it can't decode itself, before the route.
+        const outer = !viewer && pathname.includes('%ZZ');
+        expect([pathname, viewer, res]).toEqual([
+          pathname,
+          viewer,
+          {
+            status: 400,
+            headers: outer ? rawRefusal({ base: RAD_OWN_HEADERS }) : rawRefusal({ cors: !viewer }),
+            body: outer
+              ? JSON.stringify({ code: 400, message: 'invalid rad reference' })
+              : JSON.stringify({ error }),
+          },
+        ]);
+      }
+    }
+    expect(blobs(child)).toEqual([]);
+  });
+
+  test("the handlers' own refusals before the route are raw answers too", async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    // rad:'s reference check: a RID that isn't one.
+    const badRid = await getAndHead(null, {
+      request: (method) =>
+        rad.handleRadRequest(new Request(`rad://nope/raw/${REV}/a.png`, { method })),
+    });
+    expect([badRid.status, badRid.headers]).toEqual([400, rawRefusal({ base: RAD_OWN_HEADERS })]);
+    // radapi:'s RID encoding.
+    const badEncoding = await getAndHead(null, {
+      api: true,
+      request: (method) =>
+        api.handleRadicleApiRequest(
+          new Request(`radapi://local/api/v1/repos/%ZZ/raw/${REV}/a.png`, { method })
+        ),
+    });
+    expect(badEncoding).toEqual({
+      status: 400,
+      headers: rawRefusal({ cors: false }),
+      body: JSON.stringify({ error: 'invalid RID encoding' }),
+    });
+    // radapi:'s referrer check: a page that isn't the viewer.
+    const elsewhere = await getAndHead(null, {
+      api: true,
+      request: (method) =>
+        api.handleRadicleApiRequest({
+          url: `radapi://local/api/v1/repos/${encodeURIComponent(RID)}${RAW_PATH}`,
+          method,
+          referrer: 'https://example.com/',
+          headers: new Headers(),
+        }),
+    });
+    expect([elsewhere.status, elsewhere.headers]).toEqual([403, rawRefusal({ cors: false })]);
+    // Any method but GET and HEAD.
+    const posted = await answered(
+      await rad.handleRadRequest(new Request(`rad://${BARE}${RAW_PATH}`, { method: 'POST' }))
+    );
+    expect([posted.status, posted.headers]).toEqual([405, rawRefusal({ base: RAD_OWN_HEADERS })]);
+    const postedApi = await answered(
+      await api.handleRadicleApiRequest(
+        new Request(`radapi://local/api/v1/repos/${encodeURIComponent(RID)}${RAW_PATH}`, {
+          method: 'POST',
+        })
+      )
+    );
+    expect([postedApi.status, postedApi.headers]).toEqual([405, rawRefusal({ cors: false })]);
+    expect(blobs(child)).toEqual([]);
+  });
+
+  test('the profile gate: Radicle disabled is a raw 403 at rad: and radapi:', async () => {
+    const { isDisabledForProfile } = require('../radicle-manager');
+    isDisabledForProfile.mockReturnValue(true);
+    try {
+      const page = await getAndHead(RAW_PATH);
+      expect([page.status, page.headers]).toEqual([403, rawRefusal({ base: RAD_OWN_HEADERS })]);
+      const viewer = await getAndHead(RAW_PATH, { api: true });
+      expect([viewer.status, viewer.headers]).toEqual([403, rawRefusal({ cors: false })]);
+    } finally {
+      isDisabledForProfile.mockReturnValue(false);
+    }
+  });
+
+  test('a full admission: a raw 503 at rad: and radapi:, and no rad.blob', async () => {
+    const { child } = await running(() => undefined, { blob: serving() });
+    const held = [];
+    for (let i = 0; i < admission.MAX_ACTIVE; i++) held.push(await admission.acquireDwebFetch({}));
+    const waiting = [];
+    for (let i = 0; i < admission.MAX_WAITING; i++) waiting.push(admission.acquireDwebFetch({}));
+    try {
+      const page = await getAndHead(RAW_PATH);
+      expect(page).toEqual({
+        status: 503,
+        headers: rawRefusal({ base: RAD_OWN_HEADERS }),
+        body: JSON.stringify({ code: 503, message: 'Radicle is busy; try again' }),
+      });
+      const viewer = await getAndHead(RAW_PATH, { api: true });
+      expect(viewer).toEqual({
+        status: 503,
+        headers: rawRefusal({ cors: false }),
+        body: JSON.stringify({ error: 'Radicle is busy; try again' }),
+      });
+      expect(blobs(child)).toEqual([]);
+    } finally {
+      const freed = waiting.map((granted) => granted.then((slot) => slot.release()));
+      for (const slot of held) slot.release();
+      await Promise.all(freed);
+    }
+  });
+
+  test('other routes keep their headers: /blob/ and a JSON route, served and refused', async () => {
+    await running(
+      answers({
+        blob_at: (message, c) =>
+          message.params.args.path === 'big.bin'
+            ? c.error(message.id, 'too_large', '67108865 bytes is over the limit of 16777216')
+            : c.readReply(message.id, '{"binary":false,"name":"README.md","content":"x"}'),
+        remotes: '[]',
+      })
+    );
+    for (const pathname of [`/blob/${REV}/README.md`, '/remotes']) {
+      for (const method of ['GET', 'HEAD']) {
+        const page = await answered(await radGet(pathname, { method }));
+        expect([pathname, method, page.status, page.headers]).toEqual([
+          pathname,
+          method,
+          200,
+          RAD_HEADERS,
+        ]);
+        const viewer = await answered(
+          await radapiGet(`/api/v1/repos/${encodeURIComponent(RID)}${pathname}`, { method })
+        );
+        expect([pathname, method, viewer.status, viewer.headers]).toEqual([
+          pathname,
+          method,
+          200,
+          RADAPI_HEADERS,
+        ]);
+      }
+    }
+    const refused = await answered(await radGet(`/blob/${REV}/big.bin`));
+    expect(refused).toEqual({
+      status: 413,
+      headers: RAD_HEADERS,
+      body: JSON.stringify({ error: 'repository data too large to serve here' }),
+    });
+  });
+
+  test('a head unlike the design, or a body longer than its head, fails the read', async () => {
+    const { child } = await running(() => undefined, {
+      blob: (message, c) => {
+        if (message.params.path === 'bad-head') {
+          c.blobReply(message.id, { oid: 'nope', size: 3, range: null }, Buffer.from('abc'));
+        } else {
+          c.blobReply(
+            message.id,
+            { oid: OID, size: 3, range: null, body: true },
+            Buffer.from('abcdef')
+          );
+        }
+      },
+    });
+    const bad = await answered(await raw(`/raw/${REV}/bad-head`));
+    expect([bad.status, JSON.parse(bad.body)]).toEqual([500, { error: 'the read failed' }]);
+    const long = await raw(`/raw/${REV}/long`);
+    expect(long.status).toBe(200);
+    expect(long.headers.get('content-length')).toBe('3');
+    await expect(long.arrayBuffer()).rejects.toBeDefined();
+    await settle();
+    expect(admission.dwebFetchStats().active).toBe(0);
+    expect(blobs(child)).toHaveLength(2);
+  });
+
+  test("the page's abort mid-body: the body fails, cancel goes, the slot is back", async () => {
+    const big = Buffer.alloc(MIB, 7);
+    const { child } = await running(() => undefined, { blob: serving(big) });
+    const controller = new AbortController();
+    const res = await raw(`/raw/${REV}/big.bin`, { api: true, signal: controller.signal });
+    expect(res.status).toBe(200);
+    const reader = res.body.getReader();
+    expect((await reader.read()).value.byteLength).toBeLessThanOrEqual(CHUNK);
+    expect(admission.dwebFetchStats().active).toBe(1);
+    controller.abort();
+    await expect(reader.read()).rejects.toBeDefined();
+    await settle();
+    expect(child.cancels).toEqual([child.sent('rad.blob')[0].id]);
+    expect(admission.dwebFetchStats().active).toBe(0);
+    expect(embedded.streamStats()).toEqual({ streams: 0, buffered: 0 });
   });
 });

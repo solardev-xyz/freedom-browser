@@ -598,6 +598,19 @@ class RadicledNode {
     return this.client.read(active.gen, op, args, { signal });
   }
 
+  /**
+   * `rad.blob { rid, revision, path, range?, head_only? }` on the running
+   * generation (0008, "The blob API"): `{ result, body }`, the head and, when
+   * it says `body: true`, the blob's bytes as a stream (radicled-client.js's
+   * `blob`). `signal` cancels it, before the head or during the body. With
+   * no generation running, `stopped`.
+   */
+  blob(params, { signal = null } = {}) {
+    const active = this.liveActive();
+    if (!active) return Promise.reject(new CoreError('stopped', NOT_RUNNING));
+    return this.client.blob(active.gen, params, { signal });
+  }
+
   /** What main holds for the running generation's streams (the client's
    * `streamStats`), or null. */
   streamStats() {

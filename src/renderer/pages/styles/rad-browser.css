@@ -741,6 +741,25 @@ body {
   font-size: 14px;
   background: var(--shell-panel);
 }
+.file-viewer-header .file-download {
+  color: var(--shell-link-alt);
+  text-decoration: none;
+  font-weight: 500;
+}
+.file-viewer-header .file-download:hover {
+  text-decoration: underline;
+}
+.file-viewer-image {
+  padding: 24px;
+  text-align: center;
+  color: var(--shell-muted);
+  font-size: 14px;
+  background: var(--shell-panel);
+}
+.file-viewer-image img {
+  max-width: 100%;
+  height: auto;
+}
 .file-viewer-plain {
   padding: 16px;
   white-space: pre-wrap;

@@ -47,6 +47,12 @@ const {
   mapWithConcurrency,
   boundedStringify,
   REPO_LIST_CONCURRENCY,
+  isRawRepoPath,
+  rawAnswer,
+  rangeParam,
+  rawContentType,
+  RAW_MEDIA_TYPES,
+  RAW_TEXT_EXTENSIONS,
 } = require('./radicle-api-protocol');
 
 // The real viewer of this checkout — the dev layout. The match is exact
@@ -1050,6 +1056,190 @@ describe('radapi protocol', () => {
         // A throwing guard must cancel, not wave the request through.
         { failClosed: true }
       );
+    });
+  });
+});
+
+// The raw endpoint's request and types (freedom-core design 0008, "Ranges"
+// and "The raw endpoint"); its answers on the service are
+// radicle/radicle-service-handlers.test.js's.
+describe('the raw endpoint', () => {
+  test('/raw/ is an unsupported endpoint on the add-on, which has no rad.blob: a raw 404', async () => {
+    embedded.repoInfo.mockResolvedValue({ visibility: { type: 'public' } });
+    const res = await serveRepoApi(RID, `/raw/${REVISION}/README.md`);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'unsupported endpoint: raw' });
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('content-security-policy')).toBe('sandbox');
+    expect(res.headers.get('access-control-expose-headers')).toBe(
+      'Accept-Ranges, Content-Range, ETag'
+    );
+
+    const head = await handleRadicleApiRequest(
+      new Request(
+        `radapi://local/api/v1/repos/${encodeURIComponent(RID)}/raw/${REVISION}/README.md`,
+        { method: 'HEAD' }
+      )
+    );
+    expect(head.status).toBe(404);
+    expect(head.body).toBeNull();
+    expect(head.headers.get('content-security-policy')).toBe('sandbox');
+    expect(head.headers.get('access-control-expose-headers')).toBeNull();
+  });
+
+  test('isRawRepoPath: the first segment, decoded as the route decodes it, is raw', () => {
+    for (const apiPath of [
+      '/raw',
+      '/raw/',
+      `/raw/${REVISION}/a.png`,
+      '/%72aw/x',
+      '//raw/x',
+      'raw/x',
+    ]) {
+      expect([apiPath, isRawRepoPath(apiPath)]).toEqual([apiPath, true]);
+    }
+    for (const apiPath of ['', '/', '/blob/raw', '/RAW/x', '/raw%2fx', '/rawx', '/%ZZ/raw', null]) {
+      expect([apiPath, isRawRepoPath(apiPath)]).toEqual([apiPath, false]);
+    }
+  });
+
+  test('rawAnswer: the security headers on any answer, a HEAD without its body; twice is once', async () => {
+    let cancelled = false;
+    const streamed = new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+    const head = rawAnswer(rawAnswer(streamed, { method: 'HEAD', cors: true }), {
+      method: 'HEAD',
+      cors: true,
+    });
+    expect(head.body).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(head.status).toBe(500);
+    expect([...head.headers]).toEqual([
+      ['access-control-expose-headers', 'Accept-Ranges, Content-Range, ETag'],
+      ['content-security-policy', 'sandbox'],
+      ['content-type', 'application/json'],
+      ['x-content-type-options', 'nosniff'],
+    ]);
+    const get = rawAnswer(new Response('{"error":"x"}', { status: 404 }), {
+      method: 'GET',
+      cors: false,
+    });
+    expect(await get.text()).toBe('{"error":"x"}');
+    expect(get.headers.get('access-control-expose-headers')).toBeNull();
+    expect(get.headers.get('x-content-type-options')).toBe('nosniff');
+  });
+
+  describe('rangeParam: one bytes= range, or none', () => {
+    test.each([
+      ['bytes=0-9', { start: 0, end: 9 }],
+      ['bytes=5-', { start: 5 }],
+      ['bytes=-10', { suffix: 10 }],
+      ['bytes=0-0', { start: 0, end: 0 }],
+      ['bytes=-0', { suffix: 0 }],
+      ['bytes=999999-', { start: 999999 }],
+      ['bytes=0-9007199254740991', { start: 0, end: 9007199254740991 }],
+      // Past 2^53 - 1, clamped: no blob is that long.
+      ['bytes=0-99999999999999999999', { start: 0, end: Number.MAX_SAFE_INTEGER }],
+      ['bytes=99999999999999999999-', { start: Number.MAX_SAFE_INTEGER }],
+      ['bytes=-99999999999999999999', { suffix: Number.MAX_SAFE_INTEGER }],
+      ['Bytes=1-2', { start: 1, end: 2 }],
+    ])('%s', (header, range) => {
+      expect(rangeParam(header)).toEqual(range);
+    });
+
+    test.each([
+      [null],
+      [''],
+      ['bytes=0-1,4-5'],
+      ['bytes=5-2'],
+      ['bytes=99999999999999999999-9999999999999999999'],
+      ['bytes=abc'],
+      ['bytes=-'],
+      ['bytes=1.5-2'],
+      ['bytes=-1-2'],
+      ['bytes=١-٢'],
+      ['items=0-9'],
+      ['bytes 0-9'],
+    ])('%p is ignored: the whole blob', (header) => {
+      expect(rangeParam(header)).toBeNull();
+    });
+  });
+
+  describe('rawContentType: an inert type by extension', () => {
+    test('images and media as themselves', () => {
+      expect(
+        Object.fromEntries(
+          Object.keys(RAW_MEDIA_TYPES).map((ext) => [ext, rawContentType(`a/b.${ext}`)])
+        )
+      ).toEqual({
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        avif: 'image/avif',
+        ico: 'image/x-icon',
+        mp4: 'video/mp4',
+        webm: 'video/webm',
+        ogg: 'audio/ogg',
+        oga: 'audio/ogg',
+        ogv: 'video/ogg',
+      });
+      expect(rawContentType('LOGO.PNG')).toBe('image/png');
+    });
+
+    test('never HTML, SVG, XML or JavaScript: those are plain text', () => {
+      for (const name of ['index.html', 'page.htm', 'icon.svg', 'feed.xml', 'app.js', 'app.jsx']) {
+        expect([name, rawContentType(name)]).toEqual([name, 'text/plain; charset=utf-8']);
+      }
+      const served = [
+        ...Object.values(RAW_MEDIA_TYPES),
+        'text/plain; charset=utf-8',
+        'application/octet-stream',
+      ];
+      for (const type of served) expect(type).not.toMatch(/html|xml|svg|javascript|ecmascript/i);
+    });
+
+    test('everything else downloads', () => {
+      for (const name of [
+        'link',
+        'page.xhtml',
+        'a.tar.gz',
+        'b.pdf',
+        'c.wasm',
+        'd.mjs',
+        'e.',
+        'f.bmp',
+      ]) {
+        expect([name, rawContentType(name)]).toEqual([name, 'application/octet-stream']);
+      }
+    });
+
+    // The viewer's highlighted extensions (rad-browser.js's getLanguage),
+    // and `txt`, are main's plain text; its images are main's image types.
+    test("the text extensions are the viewer's, and its images main's", () => {
+      const viewer = fs.readFileSync(path.join(PAGES_DIR, 'scripts', 'rad-browser.js'), 'utf8');
+      const map = viewer.match(
+        /function getLanguage\(filename\) \{[\s\S]*?const map = \{([\s\S]*?)\n {2}\};/
+      );
+      expect(map).not.toBeNull();
+      const highlighted = [...map[1].matchAll(/^\s+(\w+):/gm)].map((m) => m[1]);
+      expect(highlighted.length).toBeGreaterThan(50);
+      expect([...RAW_TEXT_EXTENSIONS].sort()).toEqual([...highlighted, 'txt'].sort());
+
+      const images = viewer.match(/const IMAGE_EXTENSIONS = new Set\(\[([^\]]*)\]\)/);
+      expect(images).not.toBeNull();
+      const shown = [...images[1].matchAll(/'(\w+)'/g)].map((m) => m[1]);
+      const served = Object.keys(RAW_MEDIA_TYPES).filter((ext) =>
+        RAW_MEDIA_TYPES[ext].startsWith('image/')
+      );
+      expect(shown.sort()).toEqual(served.sort());
     });
   });
 });

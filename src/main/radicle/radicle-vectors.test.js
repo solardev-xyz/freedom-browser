@@ -321,6 +321,14 @@ const nodeInfoCases = readsVectors?.cases.filter((c) => c.op === 'node_info') ??
  * composition logged (`[RadicleEmbedded] seeders() failed`) is the
  * service's now. The one difference by design: a read past a byte bound is
  * 413 on the service (deviation `size-caps`), where the add-on's was a 500.
+ *
+ * And the raw endpoint, which only the service serves (B17; 0008, "The
+ * blob API", "Ranges", "The raw endpoint"): each radicle-blob.json case's
+ * and error's `/raw/<rev>/<path>`, its method and Range header, over the
+ * fake node's `rad.blob` answering the case's `expect`. Main must send the
+ * case's `params` (the header parsed into `range`, `head_only` for a HEAD)
+ * and answer its `http`: the status, Content-Length and Content-Range, and
+ * for a GET that is served, the case's bytes.
  */
 const blobVectors = vectors['radicle-blob.json'];
 (readsVectors ? describe : describe.skip)(
@@ -411,6 +419,50 @@ const blobVectors = vectors['radicle-blob.json'];
             ? [`[radapi] ${harness.RID} /blob/${harness.REV}/${filePath} → ${answer.error.message}`]
             : []
         );
+      }
+    );
+
+    const rawCases = blobVectors
+      ? [
+          ...blobVectors.cases.map((c) => [`cases/${c.id}`, c]),
+          ...blobVectors.errors.map((error) => [`errors/${error.id}`, error]),
+        ]
+      : [['(no radicle-blob.json)', null]];
+    (blobVectors ? test.each : test.skip.each)(rawCases)(
+      '%s: /raw/ from one rad.blob',
+      async (_id, c) => {
+        const replay = await harness.runServiceRaw(main, c);
+        expect(replay.unscripted).toEqual([]);
+        expect(replay.blobs).toEqual([
+          { rid: harness.RID, revision: harness.REV, path: c.path, ...c.params },
+        ]);
+        expect(replay.http).toStrictEqual(c.http);
+        if (c.method === 'HEAD') {
+          expect(replay.body).toBeNull();
+        } else if (c.expect.head && c.expect.body === null) {
+          expect(replay.body).toBeNull();
+        } else if (c.expect.head) {
+          expect(replay.body.equals(harness.blobBody(c.expect.body))).toBe(true);
+        }
+        // A failure is logged as /blob/'s is; a range past the end is not one.
+        const logged = c.http.status === 500 || c.http.status === 413;
+        expect(replay.warnings).toEqual(
+          logged
+            ? [`[radapi] ${harness.RID} /raw/${harness.REV}/${c.path} → ${c.expect.error.message}`]
+            : []
+        );
+      }
+    );
+
+    (blobVectors ? test : test.skip)(
+      'the raw cases cover 200, 206, 416, 413, 404 and 500, for GET and HEAD',
+      () => {
+        const seen = new Set(
+          [...blobVectors.cases, ...blobVectors.errors].map((c) => `${c.method} ${c.http.status}`)
+        );
+        for (const status of [200, 206, 416, 413, 404, 500]) {
+          for (const method of ['GET', 'HEAD']) expect(seen).toContain(`${method} ${status}`);
+        }
       }
     );
   }

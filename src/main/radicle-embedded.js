@@ -21,10 +21,11 @@
  * design 0008, "Main's side"), the
  * exports keep their shapes, and the reads go to the service node
  * radicle-manager.js runs, through radicle/radicle-service-backend.js:
- * - **`callStream`, `callScoped`**, `collectionBudget` and `streamStats`
- *   are the service's own routes: a head and a body stream for the
- *   handlers' reads, and a parsed value inside a scope for the closed list
- *   of collected results, whose callers use the value there;
+ * - **`callStream`, `callBlob`, `callScoped`**, `collectionBudget` and
+ *   `streamStats` are the service's own routes: a head and a body stream
+ *   for the handlers' reads and the raw endpoint's blobs, and a parsed value
+ *   inside a scope for the closed list of collected results, whose callers
+ *   use the value there;
  * - **`identity` and `status`** are collected and handed out, as 0008 lets
  *   a value under 4 KiB outlive its scope (a larger one is `too_large`);
  * - **the network operations** are the service's methods: `connectSeeds`
@@ -214,6 +215,21 @@ function serviceOnly(name) {
 function callStream(op, args = {}, { signal = null, admitted = false } = {}) {
   try {
     return serviceOnly('callStream').callStream(op, args, { signal, admitted });
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+/**
+ * A blob's raw bytes on the service (0008, "The blob API"): `rad.blob {
+ * rid, revision, path, range?, head_only? }`, `{ head: { oid, size, range,
+ * length }, body }`, `body` a byte stream of `length` bytes, or null when
+ * none follow. For the raw endpoint; `signal` and `admitted` as
+ * callStream's.
+ */
+function callBlob(params, { signal = null, admitted = false } = {}) {
+  try {
+    return serviceOnly('callBlob').callBlob(params, { signal, admitted });
   } catch (err) {
     return Promise.reject(err);
   }
@@ -568,6 +584,7 @@ module.exports = {
   setServiceNodeSource,
   setServiceImport,
   callStream,
+  callBlob,
   callScoped,
   collectionBudget,
   streamStats,

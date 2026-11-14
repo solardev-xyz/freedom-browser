@@ -44,6 +44,11 @@
  *    the service `cancel`, before the head or during the body. The service
  *    bounds each read (60 s to its head, its caps), so main's
  *    MAX_RESPONSE_CHARS and run timeout are the add-on's only.
+ *  - Raw files (0008, "The raw endpoint"; the service only):
+ *    `rad://<rid>/raw/<commit>/<path>` serves a blob's bytes, with one
+ *    `bytes=` Range, under `nosniff` and `Content-Security-Policy:
+ *    sandbox`, typed by an allowlist of inert types
+ *    (radicle-api-protocol.js's `rawContentType`).
  */
 
 const { randomUUID } = require('node:crypto');
@@ -55,7 +60,13 @@ const {
   redactedFailure,
 } = require('../private/private-log-context');
 const { isDisabledForProfile } = require('../radicle-manager');
-const { decodeRepoApiPath, serveRepoApi, serveAdmitted } = require('../radicle-api-protocol');
+const {
+  decodeRepoApiPath,
+  serveRepoApi,
+  serveAdmitted,
+  isRawRepoPath,
+  rawAnswer,
+} = require('../radicle-api-protocol');
 const { createRadReadAdmission, RadReadRefused } = require('./rad-read-admission');
 const { radicleBackendKind } = require('./radicle-backend-kind');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
@@ -193,6 +204,34 @@ function isSafeRepoPath(path) {
 }
 
 /**
+ * Split `rad://<rid>/<path>?<q>` (or `rad:<rid>/<path>?<q>`) into its RID,
+ * its repository path (leading slash included, or '') and its query, none
+ * of them checked; null for a URL that isn't `rad:`.
+ */
+function splitRadUrl(radUrl) {
+  if (typeof radUrl !== 'string' || !radUrl.startsWith('rad:')) return null;
+  const remainder = radUrl.startsWith('rad://') ? radUrl.slice(6) : radUrl.slice(4);
+
+  // Fragments are never sent by Chromium; split off the query untouched.
+  const queryIndex = remainder.indexOf('?');
+  const withoutQuery = queryIndex === -1 ? remainder : remainder.slice(0, queryIndex);
+  const search = queryIndex === -1 ? '' : remainder.slice(queryIndex);
+
+  const slashIndex = withoutQuery.indexOf('/');
+  const rid = slashIndex === -1 ? withoutQuery : withoutQuery.slice(0, slashIndex);
+  const path = slashIndex === -1 ? '' : withoutQuery.slice(slashIndex);
+  return { rid, path, search };
+}
+
+/** Whether a `rad:` URL is the raw endpoint's, `rad://<rid>/raw/…`, read
+ * from its path alone, before any check (radicle-api-protocol.js's
+ * `isRawRepoPath`). */
+function isRawRadUrl(radUrl) {
+  const parts = splitRadUrl(radUrl);
+  return Boolean(parts) && isRawRepoPath(parts.path);
+}
+
+/**
  * Parse and validate `rad://<rid>/<path>?<q>` (or `rad:<rid>/<path>?<q>`).
  *
  * Returns one of:
@@ -208,17 +247,9 @@ function buildRadReference(radUrl) {
     return redactedFailure(403, () => 'Radicle is disabled for this profile');
   }
 
-  if (typeof radUrl !== 'string' || !radUrl.startsWith('rad:')) return null;
-  const remainder = radUrl.startsWith('rad://') ? radUrl.slice(6) : radUrl.slice(4);
-
-  // Fragments are never sent by Chromium; split off the query untouched.
-  const queryIndex = remainder.indexOf('?');
-  const withoutQuery = queryIndex === -1 ? remainder : remainder.slice(0, queryIndex);
-  const search = queryIndex === -1 ? '' : remainder.slice(queryIndex);
-
-  const slashIndex = withoutQuery.indexOf('/');
-  const rid = slashIndex === -1 ? withoutQuery : withoutQuery.slice(0, slashIndex);
-  const path = slashIndex === -1 ? '' : withoutQuery.slice(slashIndex);
+  const parts = splitRadUrl(radUrl);
+  if (!parts) return null;
+  const { rid, path, search } = parts;
 
   if (!RID_RE.test(rid)) return null;
   if (!isSafeRepoPath(path)) return null;
@@ -248,12 +279,25 @@ function jsonErrorResponse(status, message) {
  * session for the add-on's admission; `partition` is a private session's
  * partition (null for the default session), whose dweb admission the read
  * takes on the service.
+ *
+ * Whether the request is a raw one (`/raw/`) is decided first, from its URL
+ * alone: every answer to it, the method's, the reference's, the profile
+ * gate's and admission's refusals included, is then a raw answer
+ * (radicle-api-protocol.js's `rawAnswer`).
  */
-async function handleRadRequest(
+async function handleRadRequest(request, options = {}) {
+  const method = (request.method || 'GET').toUpperCase();
+  const raw = isRawRadUrl(request.url);
+  const answer = await answerRadRequest(request, method, options);
+  return raw ? rawAnswer(answer, { method, cors: true }) : answer;
+}
+
+/** handleRadRequest's answer, before a raw request's is made a raw answer. */
+async function answerRadRequest(
   request,
+  method,
   { session = 'default', webSession = null, partition = null } = {}
 ) {
-  const method = (request.method || 'GET').toUpperCase();
   if (!ALLOWED_METHODS.has(method)) {
     return jsonErrorResponse(405, 'method not allowed');
   }
@@ -282,7 +326,13 @@ async function handleRadRequest(
       return await serveAdmitted(
         { partition, signal, onEnd: release },
         (admitted) =>
-          serveRepoApi(built.rid, built.path, { method, search: built.search, admitted }),
+          serveRepoApi(built.rid, built.path, {
+            method,
+            search: built.search,
+            admitted,
+            // `/raw/` reads one `bytes=` range (0008, Ranges).
+            range: request.headers?.get?.('range') ?? null,
+          }),
         jsonErrorResponse
       );
     } catch (err) {

@@ -2,4 +2,4 @@
   - Profiles without a vault can browse and seed, but not write or import
   - Randomly generated Radicle identities end, and their work can no longer be edited
   - The `rad` command line can't attach to Freedom's Radicle node
-  - Repository files over 16 MiB and answers over 32 MiB are refused
+  - Size caps: 16 MiB to view a file, 64 MiB to download one, 32 MiB per answer
