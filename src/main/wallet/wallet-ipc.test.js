@@ -29,14 +29,34 @@ jest.mock('./dapp-permissions', () => ({
   isTransactionAutoApproved: jest.fn(() => false),
   addTransactionAutoApprove: jest.fn(() => true),
 }));
-jest.mock('./safe/safe-transactions', () => ({
-  startSafeSend: jest.fn(async () => ({ safeTxHash: '0xsafetx' })),
-  assertNoPendingSafeSend: jest.fn(),
-  executeSafePending: jest.fn(async () => ({ status: 'executed' })),
-  signSafePending: jest.fn(async () => ({ collected: 2 })),
-  getSafeSendState: jest.fn(() => null),
-  pendingCall: jest.fn(() => null),
-}));
+jest.mock('./safe/safe-transactions', () => {
+  // The Safe's send slot, reserved as safe-transactions reserves it: one per
+  // Safe, until its release.
+  const reserved = new Set();
+  return {
+    startSafeSend: jest.fn(async () => ({ safeTxHash: '0xsafetx' })),
+    reserveSafeSend: jest.fn((safeIndex) => {
+      if (reserved.has(safeIndex)) {
+        throw Object.assign(new Error('Another transaction for this account is being set up'), {
+          code: 'SAFE_PENDING_EXISTS',
+        });
+      }
+      reserved.add(safeIndex);
+      let held = true;
+      return {
+        safeIndex,
+        release: () => {
+          if (held) reserved.delete(safeIndex);
+          held = false;
+        },
+      };
+    }),
+    executeSafePending: jest.fn(async () => ({ status: 'executed' })),
+    signSafePending: jest.fn(async () => ({ collected: 2 })),
+    getSafeSendState: jest.fn(() => null),
+    pendingCall: jest.fn(() => null),
+  };
+});
 jest.mock('../ens-resolver', () => ({ resolveEnsContent: jest.fn() }));
 jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn(), DEPLOY_CHAIN_ID: 100 }));
 // The fee check at confirmation (design 0005, A): every send's fee passes,
@@ -814,8 +834,8 @@ describe('signing handlers require a main-side confirmation', () => {
     // before the token is spent (the core's new approval would end the
     // pending one's), and the token burnt.
     test('wallet:safe-send while a SafeTx is pending spends nothing', async () => {
-      const { assertNoPendingSafeSend } = require('./safe/safe-transactions');
-      assertNoPendingSafeSend.mockImplementationOnce(() => {
+      const { reserveSafeSend } = require('./safe/safe-transactions');
+      reserveSafeSend.mockImplementationOnce(() => {
         throw Object.assign(new Error('A transaction is already waiting'), { code: 'SAFE_PENDING_EXISTS' });
       });
       const confirmation = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
@@ -824,6 +844,37 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(startSafeSend).not.toHaveBeenCalled();
       await new Promise((resolve) => setImmediate(resolve));
       expect(outstanding()).toBe(0);
+    });
+
+    // Review of #1245, round 1: the Safe's SafeTx is reserved before a
+    // send's token is spent, and held until it has started, so a second
+    // send meanwhile is refused before it spends its token (whose spend
+    // would end the first one's Safe approval in the core).
+    test('two wallet:safe-sends for one Safe at once: one spends, the other is refused, its token burnt, not spent', async () => {
+      let finish;
+      startSafeSend.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+      const first = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
+      const second = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
+      const one = handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 100, { confirmation: first });
+      for (let i = 0; i < 10 && startSafeSend.mock.calls.length === 0; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(startSafeSend).toHaveBeenCalledTimes(1);
+      const two = await handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 100, { confirmation: second });
+      expect(two).toMatchObject({ success: false, code: 'SAFE_PENDING_EXISTS' });
+      finish({ safeTxHash: '0xsafetx' });
+      await expect(one).resolves.toMatchObject({ success: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockApprovals.calls.filter(({ method }) => method === 'approval.spend')).toHaveLength(1);
+      expect(mockApprovals.calls.filter(({ method }) => method === 'approval.discard')).toHaveLength(1);
+      expect(outstanding()).toBe(0);
+      // The first one's Safe approval is still live in the core.
+      const { approval } = startSafeSend.mock.calls[0][0];
+      expect(mockApprovals.isSafeApprovalOpen(approval.id)).toBe(true);
+      // Released with the start: the next send may reserve the Safe.
+      await expect(
+        handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 100, { confirmation: await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 }) })
+      ).resolves.toMatchObject({ success: true });
     });
 
     // An owner with no Safe approval held (a restart since): the board

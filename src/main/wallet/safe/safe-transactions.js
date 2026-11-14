@@ -28,7 +28,9 @@
  * confirms the SafeTx again (SAFE_APPROVAL_NEEDED; `signSafePending`'s
  * `approval`), and the executor needs an 'executor-send' token. Main ends
  * it before the SafeTx's discard, when it is superseded, and once it is
- * executed, before the pending entry is cleared.
+ * executed, before the pending entry is cleared; each waits for the core's
+ * end, and does nothing if it fails (SAFE_APPROVAL_END_FAILED). A new send
+ * reserves the Safe's SafeTx before its token is spent (`reserveSafeSend`).
  */
 
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
@@ -260,12 +262,18 @@ function getSafeSendState(safeIndex) {
  * @param {{id: string, page: object|null}} params.approval - The Safe
  *   approval its `safe-send` token gave (design 0012): held for the SafeTx
  *   once built, and ended if it isn't
+ * @param {Object} params.reservation - The Safe's send slot, reserved
+ *   before that token was spent (`reserveSafeSend`) and held by the caller
+ *   until this returns
  * @returns {Promise<Object>} SafeSendState
  */
-async function startSafeSend({ safeIndex, tx, display, chainId, approval }) {
+async function startSafeSend({ safeIndex, tx, display, chainId, approval, reservation }) {
   let held = false;
   try {
     if (!safeApprovals.isApproval(approval)) throw new Error('This transaction was not confirmed');
+    if (!reservation || sendReservations.get(safeIndex) !== reservation) {
+      throw new Error('This transaction was not reserved before it was confirmed');
+    }
     const record = getSafeRecord(safeIndex);
     const sendChainId = Number(chainId);
     if (!Number.isInteger(sendChainId) || sendChainId !== DEPLOY_CHAIN_ID) {
@@ -276,7 +284,8 @@ async function startSafeSend({ safeIndex, tx, display, chainId, approval }) {
     if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
       throw new Error('Activate this account on Gnosis before sending');
     }
-    assertNoPendingSafeSend(safeIndex);
+    // Under its reservation, no other send starts one meanwhile.
+    if (getPending(safeIndex)) throw pendingExists();
 
     acquire(safeIndex);
     try {
@@ -285,6 +294,9 @@ async function startSafeSend({ safeIndex, tx, display, chainId, approval }) {
         safe: { ...record, owners: resolveOwnerAddresses(record.owners) },
         tx,
       });
+      // Held first: a SafeTx is pending only with its approval.
+      await safeApprovals.hold(SEND, safeIndex, approval, built.safeTxHash);
+      held = true;
       setPending(safeIndex, {
         chainId: sendChainId,
         safeAddress: built.safeAddress,
@@ -296,8 +308,6 @@ async function startSafeSend({ safeIndex, tx, display, chainId, approval }) {
         signatures: [],
         createdAt: Date.now(),
       });
-      await safeApprovals.hold(SEND, safeIndex, approval, built.safeTxHash);
-      held = true;
       await collectFreeSignatures(store, safeIndex, record.owners);
     } finally {
       release(safeIndex);
@@ -309,18 +319,46 @@ async function startSafeSend({ safeIndex, tx, display, chainId, approval }) {
   return getSafeSendState(safeIndex);
 }
 
+function pendingExists() {
+  return codedError(
+    'A transaction is already waiting for signatures — finish or discard it first',
+    SAFE_PENDING_EXISTS
+  );
+}
+
+// The Safes whose next SafeTx a send has reserved (`reserveSafeSend`), by
+// index: the reservation.
+const sendReservations = new Map();
+
 /**
- * Refuses (SAFE_PENDING_EXISTS) while the Safe has a pending SafeTx: one at
- * a time. Asked before a new `safe-send` token is spent, too, since the
- * core's new approval for a Safe ends its older one.
+ * Reserves the Safe's one pending SafeTx for a new send, before its
+ * `safe-send` token is spent: the core's new approval for a Safe ends its
+ * older one, so a second send must be refused before it spends anything.
+ * Refused (SAFE_PENDING_EXISTS) while a SafeTx is pending or another send
+ * holds the reservation. The caller holds it through the spend and
+ * `startSafeSend`, which needs it, and then calls its `release()`
+ * (idempotent); by then the SafeTx is pending with its approval, or the
+ * start failed.
+ *
+ * @param {number} safeIndex
+ * @returns {{ safeIndex: number, release: () => void }}
  */
-function assertNoPendingSafeSend(safeIndex) {
-  if (getPending(safeIndex)) {
+function reserveSafeSend(safeIndex) {
+  if (getPending(safeIndex)) throw pendingExists();
+  if (sendReservations.has(safeIndex)) {
     throw codedError(
-      'A transaction is already waiting for signatures — finish or discard it first',
+      'Another transaction for this account is being set up — finish or discard it first',
       SAFE_PENDING_EXISTS
     );
   }
+  const reservation = Object.freeze({
+    safeIndex,
+    release: () => {
+      if (sendReservations.get(safeIndex) === reservation) sendReservations.delete(safeIndex);
+    },
+  });
+  sendReservations.set(safeIndex, reservation);
+  return reservation;
 }
 
 /**
@@ -426,6 +464,10 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
 
   acquire(safeIndex);
   try {
+    // Executed before, but not finished (its approval's end failed):
+    // finished now, and not executed again.
+    if (pending.executed) return await finishExecuted(safeIndex, pending);
+
     // Nonce guard: a moved nonce means this SafeTx can never execute —
     // an earlier broadcast landed after all, or the Safe was used
     // elsewhere (app.safe.global). Terminal, not retryable.
@@ -501,16 +543,29 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
       throw err;
     }
 
-    const state = getSafeSendState(safeIndex);
-    // Executed: its approval ended (the executor's signature ended it in the
-    // core as well), then the entry cleared.
-    await safeApprovals.end(SEND, safeIndex, pending.safeTxHash);
-    clearPending(safeIndex);
-    settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'executed', hash: result.hash });
-    return { ...state, status: 'executed', executed: { hash: result.hash, explorerUrl: result.explorerUrl } };
+    // Executed: said so on the entry first, durably, so that a finish that
+    // fails leaves it for the next attempt to finish, not to execute again.
+    pending.executed = { hash: result.hash, explorerUrl: result.explorerUrl };
+    if (getPending(safeIndex) === pending) setPending(safeIndex, pending);
+    return await finishExecuted(safeIndex, pending);
   } finally {
     release(safeIndex);
   }
+}
+
+/**
+ * An executed SafeTx finished: its approval ended (the executor's signature
+ * ended it in the core as well), then its entry cleared and its outcome
+ * told. If the end fails (SAFE_APPROVAL_END_FAILED), the entry stays, marked
+ * executed, and the next execution attempt finishes it.
+ */
+async function finishExecuted(safeIndex, pending) {
+  const state = getSafeSendState(safeIndex);
+  await safeApprovals.end(SEND, safeIndex, pending.safeTxHash);
+  if (getPending(safeIndex) === pending) clearPending(safeIndex);
+  const { hash, explorerUrl } = pending.executed;
+  settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'executed', hash });
+  return { ...state, status: 'executed', executed: { hash, explorerUrl } };
 }
 
 /**
@@ -545,12 +600,18 @@ async function cancelSafeSend(safeIndex, { safeTxHash = null } = {}) {
   } finally {
     release(safeIndex);
   }
-  if (pending) settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'discarded' });
+  if (!pending) return;
+  // One executed already (its finish failed) was executed, not discarded.
+  settled(
+    pending.executed
+      ? { safeIndex, safeTxHash: pending.safeTxHash, outcome: 'executed', hash: pending.executed.hash }
+      : { safeIndex, safeTxHash: pending.safeTxHash, outcome: 'discarded' }
+  );
 }
 
 module.exports = {
   startSafeSend,
-  assertNoPendingSafeSend,
+  reserveSafeSend,
   pendingCall,
   signSafePending,
   executeSafePending,

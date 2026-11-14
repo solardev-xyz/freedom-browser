@@ -1920,25 +1920,28 @@ async function deleteDerivedWallet(index) {
   // (Lazy requires — both modules are dependency-light — keep the Safe
   // stack out of ordinary wallet operations.)
   if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
-    // Its Safe approvals with them (freedom-core design 0012): forgotten at
-    // once, and ended in the core.
-    require('./wallet/safe/safe-approvals').endSafe(index);
+    // Its Safe approvals first (freedom-core design 0012): ended in the
+    // core before the state they sign for goes. If an end fails, nothing is
+    // deleted (SAFE_APPROVAL_END_FAILED), and the user tries again.
+    await require('./wallet/safe/safe-approvals').endSafe(index);
     require('./wallet/safe/message-sessions').discardSession(index);
     require('./wallet/safe/pending-store').clearPending(index);
   }
 
-  // Remove from list
-  wallets.splice(walletIndex, 1);
+  // Remove from list, as the meta is now: a Safe's approvals' end was an
+  // await, and a change saved meanwhile stays.
+  const latest = getVaultMeta() || meta;
+  const remaining = getWalletList(latest).filter((w) => w.index !== index);
 
   // If active wallet was deleted, reset to main wallet
-  let activeIndex = meta.activeWalletIndex ?? 0;
+  let activeIndex = latest.activeWalletIndex ?? 0;
   if (activeIndex === index) {
     activeIndex = 0;
   }
 
   saveVaultMeta({
-    ...meta,
-    derivedWallets: wallets,
+    ...latest,
+    derivedWallets: remaining,
     activeWalletIndex: activeIndex,
   });
 

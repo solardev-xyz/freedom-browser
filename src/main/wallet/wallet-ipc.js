@@ -645,21 +645,28 @@ function registerWalletIpc() {
         if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
         throw notAuthorized('request differs from what was confirmed');
       }
-      const { startSafeSend, assertNoPendingSafeSend } = require('./safe/safe-transactions');
-      // One pending SafeTx per Safe, refused before the token is spent: the
-      // core's new approval for a Safe would end the pending one's.
+      const { startSafeSend, reserveSafeSend } = require('./safe/safe-transactions');
+      // One pending SafeTx per Safe: reserved before the token is spent (the
+      // core's new approval for a Safe would end the pending one's), and held
+      // until the SafeTx is pending with its approval. Another send for the
+      // Safe meanwhile is refused, its token burnt, not spent.
+      let reservation;
       try {
-        assertNoPendingSafeSend(safeIndex);
+        reservation = reserveSafeSend(safeIndex);
       } catch (err) {
         if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
         throw err;
       }
-      const confirmation = await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId });
-      // Its Safe approval (design 0012, APB-1c): held for the SafeTx, and
-      // presented by each vault owner's signature and the executor's.
-      const { approval } = await spendSafeConfirmation(confirmation);
-      const bound = display;
-      return startSafeSend({ safeIndex, tx, display: bound, chainId, approval });
+      try {
+        const confirmation = await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId });
+        // Its Safe approval (design 0012, APB-1c): held for the SafeTx, and
+        // presented by each vault owner's signature and the executor's.
+        const { approval } = await spendSafeConfirmation(confirmation);
+        const bound = display;
+        return await startSafeSend({ safeIndex, tx, display: bound, chainId, approval, reservation });
+      } finally {
+        reservation.release();
+      }
     })
   );
 

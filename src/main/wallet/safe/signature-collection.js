@@ -9,7 +9,9 @@
  * over entries shaped `{typedData, threshold, signatures, superseded?}`.
  * `idOf` names the entry's identity (SafeTx hash / SafeMessage hash) so a
  * signature landing after a discard-and-replace is dropped, never
- * attached to the wrong payload.
+ * attached to the wrong payload. `get` answers the same object while an
+ * entry lives, so the free sweep keeps a signature only in the entry it
+ * was made for, never one discarded meanwhile.
  *
  * Every owner's signature presents the Safe approval main holds for the
  * entry (freedom-core design 0012, APB-1c; `safe-approvals.js`): the
@@ -93,14 +95,13 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     if (owner?.type !== WALLET_TYPES.MNEMONIC || hasSigned(entry.signatures, owner.address)) {
       continue;
     }
-    // No approval held: no free signature; the owners stay rows.
+    // No approval held (or it is being ended): no free signature; the
+    // owners stay rows.
     const approval = store.approvalOf(safeIndex, entry);
     if (!approval) break;
+    let signature;
     try {
-      const signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex, approval });
-      entry.signatures = [...entry.signatures, signature];
-      store.set(safeIndex, entry);
-      await store.signed?.(safeIndex, entry);
+      signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex, approval });
     } catch (err) {
       if (approvalGone(err)) {
         store.forgetApproval(safeIndex, entry);
@@ -109,6 +110,23 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
       // Vault locked mid-loop or a derivation hiccup: this owner
       // degrades to a manual row on the board, nothing fails.
       console.warn(`[SafeSign] auto-sign skipped for owner ${ownerIndex}:`, err.message);
+      continue;
+    }
+    // The signature was an await: it is kept only in the entry it was made
+    // for, while that entry is still the store's. One discarded meanwhile
+    // (its page gone, cancelled, its Safe deleted) or replaced is never
+    // written back, and nothing more is signed for it.
+    if (store.get(safeIndex) !== entry) break;
+    entry.signatures = [...entry.signatures, signature];
+    store.set(safeIndex, entry);
+    try {
+      await store.signed?.(safeIndex, entry);
+    } catch (err) {
+      // The approval's end at the threshold wasn't confirmed: the entry
+      // keeps it and the signature, and the next step (the join) ends it
+      // again, failing visibly if it still can't.
+      console.warn('[SafeSign] the approval stays held for now:', err.message);
+      break;
     }
   }
 }

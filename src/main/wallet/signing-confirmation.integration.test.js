@@ -762,5 +762,38 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         permissions.revokePermission(SITE);
       }
     });
+
+    // Review of #1245, round 1: main ends a held approval through the core
+    // and counts a failed end only once the core process that gave it has
+    // ended, since a new process knows none of its approvals. Last: it
+    // restarts the core.
+    test('held by main, ended through the core ({} again once ended); a restarted core knows none', async () => {
+      const safeApprovals = require('./safe/safe-approvals');
+      safeApprovals._reset();
+      const hash = '0x' + '11'.repeat(32);
+      const ended = await walletApproval();
+      await safeApprovals.hold('send', SAFE_INDEX, ended, hash);
+      await safeApprovals.end('send', SAFE_INDEX, hash);
+      expect(calls.at(-1)).toMatchObject({ method: 'approval.end', params: { safe: ended.id }, context: { caller: 'shell' } });
+      await expect(safeApprovals.release(ended)).resolves.toBeUndefined();
+      await expect(notConfirmed(owner(ended).signTypedData(safeTx()))).resolves.toBe('unknown_token');
+
+      const live = await walletApproval();
+      await safeApprovals.hold('send', SAFE_INDEX, live, hash);
+      const mark = vaultBackend.coreProcess();
+      expect(vaultBackend.coreProcessEnded(mark)).toBe(false);
+      // The core process exits (a crash), and main's client starts another.
+      const exited = new Promise((resolve) => core.once('exit', resolve));
+      const restarted = new Promise((resolve) => core.once('ready', resolve));
+      core.current.child.kill('SIGKILL');
+      await exited;
+      expect(vaultBackend.coreProcessEnded(mark)).toBe(true);
+      await restarted;
+      expect(vaultBackend.coreProcessEnded(mark)).toBe(true);
+      expect(vaultBackend.coreProcessEnded(vaultBackend.coreProcess())).toBe(false);
+      await expect(safeApprovals.end('send', SAFE_INDEX, hash)).resolves.toBeUndefined();
+      await vaultBackend.unlock('testpass1');
+      await expect(notConfirmed(owner(live).signTypedData(safeTx()))).resolves.toBe('unknown_token');
+    }, 30_000);
   });
 });

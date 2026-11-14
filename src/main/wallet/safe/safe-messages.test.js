@@ -135,12 +135,16 @@ jest.mock('./safe-executor', () => ({
 const mockTypedDataHash = jest.fn(async ({ domain, types, message }) =>
   require('ethers').TypedDataEncoder.hash(domain, types, message)
 );
-// The core's `approval.end` (freedom-core design 0012).
+// The core's `approval.end` (freedom-core design 0012), and whether the
+// core process that gave an approval has ended since.
 const mockApprovalEnd = jest.fn(async () => ({}));
+const mockProcessEnded = jest.fn(() => false);
 jest.mock('../../core/vault-backend', () => ({
   vaultBackend: {
     typedDataHash: (...args) => mockTypedDataHash(...args),
     approval: { end: (...args) => mockApprovalEnd(...args) },
+    coreProcess: () => ({ process: 'core' }),
+    coreProcessEnded: (...args) => mockProcessEnded(...args),
   },
 }));
 
@@ -199,11 +203,28 @@ const startPersonal = (safeIndex = 5, message = HEX_MESSAGE, requester = TAB_A) 
     requester,
   });
 
+// Microtasks, immediates, and the (zero) waits before an end is asked again.
+const flush = async () => {
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
+const busy = () => Object.assign(new Error('Too many requests'), { code: 'busy' });
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockIsVaultUnlocked.mockResolvedValue(true);
+  mockApprovalEnd.mockReset().mockResolvedValue({});
+  mockProcessEnded.mockReset().mockReturnValue(false);
   for (const index of [5, 6, 7, 8]) discardSession(index);
-  safeApprovals._reset();
+  safeApprovals._reset({ retryDelays: [0, 0] });
   mockWebContentsById.clear();
   fakeWebContents(TAB_A.webContentsId);
   fakeWebContents(TAB_B.webContentsId);
@@ -480,12 +501,14 @@ describe('session lifecycle follows the requesting page', () => {
   test('navigating the requesting page drops its session', async () => {
     const { token } = await startPersonal();
     mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate');
+    await flush();
     expect(getSafeMessageState(5, token)).toBeNull();
   });
 
   test('destroying the requesting page drops its session', async () => {
     const { token } = await startPersonal();
     destroyWebContents(TAB_A.webContentsId);
+    await flush();
     expect(getSafeMessageState(5, token)).toBeNull();
   });
 
@@ -499,6 +522,7 @@ describe('session lifecycle follows the requesting page', () => {
     // a later navigation must not touch the NEXT session on that safe
     const next = await startPersonal(7, 'next message', TAB_B);
     contents.emit('did-navigate');
+    await flush();
     expect(getSafeMessageState(7, next.token)).not.toBeNull();
   });
 });
@@ -774,7 +798,110 @@ describe("a session's Safe approval", () => {
       requester: TAB_A,
     });
     destroyWebContents(TAB_A.webContentsId);
+    await flush();
     expect(endedIds()).toEqual([first.id, second.id]);
+    expect(getSession(5)).toBeNull();
+  });
+
+  // Review of #1245, round 1: the page-gone drop waits for the core's end
+  // (which the core answers after a signature already presenting it), one
+  // drop at a time, and a free signature that lands after it never brings
+  // the session back.
+  describe('a page that goes while a free signature is being made', () => {
+    const begin = (approval) =>
+      startSafeMessage({
+        approval,
+        safeIndex: 5,
+        request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+        display: DISPLAY,
+        requester: TAB_A,
+      });
+
+    test("its approval's end is awaited before the drop, the navigation's and the close's one drop", async () => {
+      const signing = deferred();
+      const ending = deferred();
+      mockCollectOwnerSignature.mockImplementationOnce(() => signing.promise);
+      mockApprovalEnd.mockImplementationOnce(() => ending.promise);
+      const approval = newApproval();
+      const started = begin(approval);
+      await flush();
+      const entry = getSession(5);
+      expect(entry).not.toBeNull();
+      mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate');
+      destroyWebContents(TAB_A.webContentsId);
+      await flush();
+      expect(endedIds()).toEqual([approval.id]);
+      // Not dropped before the core has ended it, and no longer presented.
+      expect(getSession(5)).toBe(entry);
+      expect(safeApprovals.held('message', 5, entry.hash)).toBeNull();
+      // The core answers the signature first, then the end.
+      signing.resolve(signatureOf(0));
+      await flush();
+      ending.resolve({});
+      await started;
+      await flush();
+      expect(getSession(5)).toBeNull();
+      expect(mockApprovalEnd).toHaveBeenCalledTimes(1);
+      expect(mockCollectOwnerSignature).toHaveBeenCalledTimes(1);
+    });
+
+    test('a signature that lands after the drop is dropped too: the session stays gone', async () => {
+      const signing = deferred();
+      mockCollectOwnerSignature.mockImplementationOnce(() => signing.promise);
+      const started = begin(newApproval());
+      await flush();
+      expect(getSession(5)).not.toBeNull();
+      mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate');
+      await flush();
+      expect(getSession(5)).toBeNull();
+      signing.resolve(signatureOf(0));
+      await started;
+      await flush();
+      expect(getSession(5)).toBeNull();
+    });
+
+    test('an end that fails keeps the session and its approval; the next event drops it', async () => {
+      const approval = newApproval();
+      const { hash } = await begin(approval);
+      mockApprovalEnd.mockRejectedValue(busy());
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate');
+      await flush();
+      expect(getSession(5)).not.toBeNull();
+      expect(safeApprovals.held('message', 5, hash)).toEqual({ id: approval.id, page: PAGE });
+      expect(mockApprovalEnd).toHaveBeenCalledTimes(3);
+      mockApprovalEnd.mockReset().mockResolvedValue({});
+      destroyWebContents(TAB_A.webContentsId);
+      await flush();
+      expect(getSession(5)).toBeNull();
+      expect(endedIds()).toEqual([approval.id]);
+      console.warn.mockRestore();
+    });
+  });
+
+  // Review of #1245, round 1: an end the core didn't confirm (and whose
+  // process still runs) is an error, and nothing that waited on it happens.
+  test('an end that fails: no join and no cancel; the session and its approval stay', async () => {
+    const approval = newApproval();
+    const state = await startSafeMessage({
+      approval,
+      safeIndex: 5,
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester: TAB_A,
+    });
+    mockApprovalEnd.mockRejectedValue(busy());
+    await expect(cancelSafeMessage(5, state.token)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    expect(getSession(5)).not.toBeNull();
+    expect(safeApprovals.held('message', 5, state.hash)).toEqual({ id: approval.id, page: PAGE });
+    // The threshold's last signature: kept, with the approval; the board hears the failure.
+    await expect(signSafeMessage(5, 2, state.token)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    expect(getSession(5).signatures).toHaveLength(2);
+    await expect(completeSafeMessage(5, state.token)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    expect(getSession(5)).not.toBeNull();
+    // The core's process ended meanwhile: its approvals went with it.
+    mockProcessEnded.mockReturnValue(true);
+    await expect(completeSafeMessage(5, state.token)).resolves.toMatchObject({ signature: expect.any(String) });
     expect(getSession(5)).toBeNull();
   });
 

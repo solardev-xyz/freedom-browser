@@ -175,7 +175,9 @@ function backends() {
     turns: [],
     paymentWaiting: false,
     turnBusy: false,
-    safe: { started: [], listeners: new Set(), guards: new Map() },
+    // `reserved`: the Safes whose send slot a send holds (reserveSafeSend);
+    // `startHold`: a deferred the next start waits on.
+    safe: { started: [], listeners: new Set(), guards: new Map(), reserved: new Set(), startHold: null },
   };
   const signer = { signTransaction: jest.fn() };
   const phoneSigner = { sendTransaction: jest.fn() };
@@ -253,12 +255,20 @@ function backends() {
         return () => {};
       }),
       sitePaymentWaiting: jest.fn(async () => state.paymentWaiting),
-      assertNoPendingSafeSend: jest.fn(() => {
-        if (state.safe.pendingExists) {
+      // As safe-transactions reserves a Safe's send slot: one per Safe,
+      // refused while a SafeTx is pending, until its release.
+      reserveSafeSend: jest.fn((safeIndex) => {
+        if (state.safe.pendingExists || state.safe.reserved.has(safeIndex)) {
           throw Object.assign(new Error('A transaction is already waiting for signatures'), { code: 'SAFE_PENDING_EXISTS' });
         }
+        state.safe.reserved.add(safeIndex);
+        return { safeIndex, release: () => state.safe.reserved.delete(safeIndex) };
       }),
-      startSafeSend: jest.fn(async (options) => {
+      startSafeSend: jest.fn(async ({ reservation, ...options }) => {
+        // Started only under its Safe's reservation, still held.
+        expect(reservation?.safeIndex).toBe(options.safeIndex);
+        expect(state.safe.reserved.has(options.safeIndex)).toBe(true);
+        if (state.safe.startHold) await state.safe.startHold.promise;
         state.safe.started.push(options);
         return { safeIndex: options.safeIndex, safeTxHash: SAFE_TX_HASH, threshold: 2, collected: 1, status: 'awaiting' };
       }),
@@ -1299,6 +1309,42 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
     expect(out.error).toBeDefined();
     expect(env.state.safe.started).toEqual([]);
     expect(mockApprovals.calls.map(({ method }) => method)).toEqual(['approval.issue', 'approval.discard']);
+  });
+
+  // Review of #1245, round 1: the Safe's SafeTx is reserved before the
+  // token is spent and held until it has started, so a second send for the
+  // Safe meanwhile is refused before it spends its own token (whose spend
+  // would end the first one's Safe approval in the core).
+  test('two sends for one Safe at once: one spends, the other is refused with its token burnt, not spent', async () => {
+    const env = setup();
+    env.connect(KEY_A, SAFE_INDEX);
+    let release;
+    env.state.safe.startHold = { promise: new Promise((resolve) => (release = resolve)) };
+    const first = env.tab().send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    await flush();
+    expect(env.state.safe.reserved.has(SAFE_INDEX)).toBe(true);
+    const second = env.tab().send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    const refused = await second;
+    expect(refused.error).toBeDefined();
+    const page_ = expect.objectContaining({ origin: KEY_A });
+    expect(mockApprovals.calls.map(({ method, page: under }) => [method, under])).toEqual([
+      ['approval.issue', page_],
+      ['approval.spend', page_],
+      ['approval.issue', page_],
+      ['approval.discard', null],
+    ]);
+    release();
+    await flush();
+    expect(env.state.safe.started).toHaveLength(1);
+    expect(env.state.safe.reserved.has(SAFE_INDEX)).toBe(false);
+    // The first one's Safe approval is still live in the core.
+    expect(mockApprovals.isSafeApprovalOpen(env.state.safe.started[0].approval.id)).toBe(true);
+    env.settle({ safeIndex: SAFE_INDEX, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
+    expect(await first).toEqual(REJECTED);
   });
 
   test("the SafeTx starts for the requester's key, and the page gets the execution's hash", async () => {

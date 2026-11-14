@@ -497,4 +497,36 @@ describe('vaultBackend', () => {
       ]);
     }
   });
+
+  // A Safe approval lives in the memory of the core process that gave it
+  // (freedom-core design 0012): main tells that process's end from another
+  // failure of `approval.end` (safe-approvals.js).
+  test("the core process's mark: ended once it exits, or once main stops its client", () => {
+    let current = null;
+    jest.resetModules();
+    const gen = { exited: false };
+    const core = new FakeCore(() => ({}));
+    core.current = gen;
+    core.serves = (g) => g === gen && !g.exited;
+    jest.doMock('./core-process', () => ({ getCoreClient: () => current }));
+    const { vaultBackend } = require('./vault-backend');
+    expect(vaultBackend.coreProcess()).toBeNull();
+    current = core;
+    const mark = vaultBackend.coreProcess();
+    expect(mark).not.toBeNull();
+    expect(vaultBackend.coreProcessEnded(mark)).toBe(false);
+    // None answered: ended. Not a mark: not proof of anything.
+    expect(vaultBackend.coreProcessEnded(null)).toBe(true);
+    expect(vaultBackend.coreProcessEnded(undefined)).toBe(false);
+    expect(vaultBackend.coreProcessEnded({})).toBe(false);
+    // Exited (a crash, a hang killed, a restart under way).
+    gen.exited = true;
+    expect(vaultBackend.coreProcessEnded(mark)).toBe(true);
+    expect(vaultBackend.coreProcess()).toBeNull();
+    // Stopped by main, the process still winding down.
+    gen.exited = false;
+    expect(vaultBackend.coreProcessEnded(mark)).toBe(false);
+    current = null;
+    expect(vaultBackend.coreProcessEnded(mark)).toBe(true);
+  });
 });

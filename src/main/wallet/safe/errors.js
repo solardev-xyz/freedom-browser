@@ -34,6 +34,11 @@ const CODES = {
    * 0012): main restarted since it was confirmed, or the approval ended, so
    * no owner signs it until the user confirms it again. */
   SAFE_APPROVAL_NEEDED: 'SAFE_APPROVAL_NEEDED',
+  /** The identity core didn't confirm the end of the pending item's Safe
+   * approval (`approval.end`), and the process that gave it is still
+   * running: nothing that waits on its end (a discard, a cancel, the join,
+   * clearing an executed SafeTx) was done, and the user tries again. */
+  SAFE_APPROVAL_END_FAILED: 'SAFE_APPROVAL_END_FAILED',
 };
 
 function codedError(message, code) {

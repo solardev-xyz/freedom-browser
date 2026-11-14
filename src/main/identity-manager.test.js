@@ -1323,6 +1323,49 @@ describe('identity-manager safe accounts', () => {
     expect(JSON.parse(fs.readFileSync(pendingFile, 'utf-8'))).toEqual({});
   });
 
+  // Review of #1245, round 1: a Safe's approvals are ended in the core
+  // before its leftovers go, and a failed end deletes nothing.
+  test("a Safe whose approval's end fails isn't deleted; once ended it is, keeping changes saved meanwhile", async () => {
+    await seedOwners();
+    const safe = await addSafe();
+    const { setPending, getPending } = require('./wallet/safe/pending-store');
+    const safeApprovals = require('./wallet/safe/safe-approvals');
+    const { vaultBackend } = require('./core/vault-backend');
+    Object.assign(vaultBackend, {
+      approval: {
+        end: jest.fn(async () => {
+          throw Object.assign(new Error('Too many requests'), { code: 'busy' });
+        }),
+      },
+      coreProcess: () => ({ process: 'core' }),
+      coreProcessEnded: () => false,
+    });
+    safeApprovals._reset({ retryDelays: [0, 0] });
+    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    const approval = { id: 'a'.repeat(32), page: null };
+    await safeApprovals.hold('send', safe.index, approval, '0xdead');
+
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({
+      code: 'SAFE_APPROVAL_END_FAILED',
+    });
+    expect(getPending(safe.index)).not.toBeNull();
+    expect(safeApprovals.held('send', safe.index, '0xdead')).toEqual(approval);
+    expect(readVaultMeta().derivedWallets.map((w) => w.index)).toContain(safe.index);
+
+    // The core ends it, after a rename saved while its end was asked.
+    let answer;
+    vaultBackend.approval.end.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    const deleting = identityManager.deleteDerivedWallet(safe.index);
+    await new Promise((resolve) => setImmediate(resolve));
+    await identityManager.renameDerivedWallet(ownerIndexes[1], 'Renamed Stax');
+    answer({});
+    await deleting;
+    expect(getPending(safe.index)).toBeNull();
+    const after = readVaultMeta().derivedWallets;
+    expect(after.map((w) => w.index)).not.toContain(safe.index);
+    expect(after.find((w) => w.index === ownerIndexes[1]).name).toBe('Renamed Stax');
+  });
+
   test('an account created after deleting the highest-index Safe starts with a clean slate', async () => {
     await seedOwners();
     const safe = await addSafe(); // highest index in the vault

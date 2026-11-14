@@ -34,7 +34,8 @@
  * standing }`), held by the page, under whose PageContext each vault owner
  * signs. Main ends it when the threshold's last signature is made, and
  * again before the signatures are joined, before a cancel, and before a
- * session whose page went away is dropped.
+ * session whose page went away is dropped: each waits for the core's end,
+ * and does nothing if it fails (SAFE_APPROVAL_END_FAILED).
  */
 
 const { randomUUID } = require('crypto');
@@ -76,10 +77,25 @@ const store = {
   },
 };
 
-/** The session's approval ended (`approval.end`), then the session dropped. */
-async function endAndDiscard(safeIndex, entry) {
-  await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
-  if (getSession(safeIndex) === entry) discardSession(safeIndex);
+/**
+ * The session's approval ended (`approval.end`, which the core answers only
+ * after a signature already presenting it), then the session dropped. One
+ * drop at a time per session: its page's close after its navigation, or a
+ * new request that finds its page gone, shares the one under way. If the
+ * end fails, the session stays as it was (its signatures, its approval) and
+ * the drop rejects; the next one tries again.
+ */
+function endAndDiscard(safeIndex, entry) {
+  if (!entry.dropping) {
+    entry.dropping = (async () => {
+      await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+      if (getSession(safeIndex) === entry) discardSession(safeIndex);
+    })().catch((err) => {
+      entry.dropping = null;
+      throw err;
+    });
+  }
+  return entry.dropping;
 }
 
 /**
@@ -183,12 +199,13 @@ function attachRequesterLifecycle(safeIndex, entry) {
     return;
   }
   const drop = () => {
-    if (getSession(safeIndex) === entry) {
-      // Its approval ended first: main forgets it at once and sends its end
-      // to the core, then drops the session.
-      safeApprovals.end(MESSAGE, safeIndex, entry.hash);
-      discardSession(safeIndex);
-    }
+    if (getSession(safeIndex) !== entry) return;
+    // Its approval ended first, then the session dropped. Kept if the end
+    // fails: its page's next event, or the next request for the Safe (which
+    // finds its page gone), drops it again.
+    endAndDiscard(safeIndex, entry).catch((err) => {
+      console.warn('[SafeMessages] a gone page\'s signature request is kept for now:', err.message);
+    });
   };
   contents.on('destroyed', drop);
   contents.on('did-navigate', drop);
@@ -370,8 +387,9 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
       createdAt: Date.now(),
       mainOwned,
     };
-    setSession(safeIndex, entry);
+    // Held first: a session opens only with its approval.
     await safeApprovals.hold(MESSAGE, safeIndex, approval, hash);
+    setSession(safeIndex, entry);
     attachRequesterLifecycle(safeIndex, entry);
     await collectFreeSignatures(store, safeIndex, record.owners);
   } finally {
