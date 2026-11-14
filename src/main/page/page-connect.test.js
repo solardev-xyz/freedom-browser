@@ -377,7 +377,7 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
   test("the core writes the grant under the request's PageContext; one it refuses answers the dApp, and tells no one", async () => {
     const env = setup();
     const page = env.tab();
-    const other = env.tab();
+    const other = env.tab(`${KEY_A}/other`, { front: false });
     let answer = page.ask('eth_requestAccounts');
     await flush();
     await env.decide(env.prompts()[0].handle, true, { walletIndex: 0 });
@@ -388,6 +388,8 @@ describe('eth_requestAccounts through main (0011 PRQ-4)', () => {
       100,
       expect.objectContaining({ origin: KEY_A, top_origin: KEY_A, agent: false }),
     ]);
+    // The first grant's accountsChanged reaches the page's other tab first.
+    await flush();
     env.state.permissions.clear();
     page.guest.events.length = 0;
     other.guest.events.length = 0;
