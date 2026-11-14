@@ -246,7 +246,10 @@ function hasMessagingGrant(origin) {
   return !!permission?.messaging;
 }
 
-/** Resolves once the core's store has been read (core/grants.js). */
+/**
+ * Resolves once the running core's store has been read: true, or false if
+ * it can't be (core/grants.js).
+ */
 function whenLoaded() {
   return store().whenLoaded();
 }

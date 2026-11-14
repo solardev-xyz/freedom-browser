@@ -563,9 +563,10 @@ describe('radicle_requestAccess through main (0011 PRQ-8a)', () => {
     await flush();
     expect(page.heard()).toEqual([]);
 
-    const granted = connect(KEY_A);
+    await connect(KEY_A);
+    // A last use over a minute old, so this one is written.
     const stale = Date.now() - 120_000;
-    granted.lastUsed = stale;
+    grantCore.entries.radicle[KEY_A].lastUsed = stale;
     env.sent.length = 0;
     expect(await page.ask('radicle_requestAccess')).toEqual({
       result: { connected: true, origin: KEY_A, capabilities: CAPABILITIES(null) },

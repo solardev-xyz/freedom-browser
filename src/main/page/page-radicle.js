@@ -182,6 +182,13 @@ const PROFILE_DISABLED = Object.freeze({
   message: 'Radicle is disabled for this profile',
   data: Object.freeze({ reason: 'profile-disabled' }),
 });
+// The answer while main holds no Radicle grants it can use: the identity
+// core's load of them failed, or the core gave up (core/grants.js).
+const GRANTS_UNAVAILABLE = Object.freeze({
+  code: 4900,
+  message: 'Radicle permissions are not available',
+  data: Object.freeze({ reason: 'grants_unavailable' }),
+});
 const INTERNAL_ERROR_CODE = -32603;
 
 const error = (base) => ({ error: { ...base, ...(base.data ? { data: { ...base.data } } : {}) } });
@@ -618,9 +625,10 @@ function createRadicleDispatchers(deps = {}) {
   }
 
   // A request reads the site's grants once main has read them from the
-  // identity core (none before: core/grants.js).
+  // running identity core (none before: core/grants.js), and is refused
+  // while they can't be read.
   const serve = (answer) => async (context) => {
-    await grantsLoaded();
+    if (!(await grantsLoaded())) return error(GRANTS_UNAVAILABLE);
     return answer(context);
   };
 

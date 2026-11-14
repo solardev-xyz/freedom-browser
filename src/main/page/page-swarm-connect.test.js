@@ -7,7 +7,7 @@
 // main sends it (`page:event`), so a test sees which document heard what.
 
 const os = require('os');
-const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
+const { useSimulatedGrantCore, attachedCoreClient, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -100,6 +100,9 @@ const AGENT_CUSTODY = {
 };
 const NOT_CONNECTED = { error: { code: 4100, message: 'Origin not authorized. Call swarm_requestAccess first.' } };
 const REJECTED = { error: { code: 4001, message: 'User rejected the request' } };
+const GRANTS_UNAVAILABLE = {
+  error: { code: 4900, message: 'Swarm permissions are not available', data: { reason: 'grants_unavailable' } },
+};
 
 let nextId = 1;
 let nextNonce = 1;
@@ -285,8 +288,11 @@ function setup() {
 
 const connect = (key) => permissions.grantPermission(key, { page: testPage(key) });
 
+// The simulated identity core main's grants come from.
+let core;
+
 beforeEach(async () => {
-  await useSimulatedGrantCore();
+  core = await useSimulatedGrantCore();
   registry._reset();
   mockNode.sockets.clear();
   mockNode.sent = [];
@@ -615,6 +621,80 @@ describe('messaging through main (0011 PRQ-7b)', () => {
     await permissions.setAutoApprove(KEY_A, 'messaging', false);
     ready({ ok: true });
     expect((await ruleOff).error).toMatchObject({ code: 4100, data: { reason: 'not_auto_approved' } });
+    expect(mockNode.sent).toEqual([]);
+  });
+
+  test('messaging the core revoked reads as no grant until its read lands: a send waiting under the rule, and a new one, send nothing', async () => {
+    const env = setup();
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'messaging', true, { page: testPage(KEY_A) });
+    const page = env.tab(`${KEY_A}/`);
+    const client = attachedCoreClient();
+    let ready;
+    mockNode.readiness = new Promise((resolve) => {
+      ready = resolve;
+    });
+    const waiting = page.ask('swarm_sendPss', PSS);
+    await flush();
+    // The core revokes messaging and reports it; main's read of the key is held.
+    const reads = core.holdKeyReads();
+    delete core.entries.swarm[KEY_A].messaging;
+    core.entries.swarm[KEY_A].autoApprove.messaging = false;
+    client.changed('swarm', KEY_A);
+    expect(await page.ask('swarm_sendGsoc', { topic: 'lobby', data: 'hi' })).toEqual(NOT_CONNECTED);
+    ready({ ok: true });
+    expect((await waiting).error).toMatchObject({ code: 4100 });
+    expect(mockNode.sent).toEqual([]);
+    expect(env.prompts()).toEqual([]);
+    // Once the read lands: connected, asked for messaging again.
+    reads.release();
+    await flush();
+    mockNode.readiness = null;
+    const asked = page.ask('swarm_sendPss', PSS);
+    const prompt = await env.shown('swarm.messaging');
+    expect(prompt.view.grantMode).toBe(true);
+    await env.decide(prompt.handle, false);
+    expect(await asked).toEqual(REJECTED);
+    expect(mockNode.sent).toEqual([]);
+  });
+
+  test('between core processes a send waits for the next one\'s grants; once the core gives up, sends are refused', async () => {
+    const env = setup();
+    await connect(KEY_A);
+    await permissions.grantMessaging(KEY_A, { page: testPage(KEY_A) });
+    await permissions.setAutoApprove(KEY_A, 'messaging', true, { page: testPage(KEY_A) });
+    const page = env.tab(`${KEY_A}/`);
+    const client = attachedCoreClient();
+    let ready;
+    mockNode.readiness = new Promise((resolve) => {
+      ready = resolve;
+    });
+    const checked = page.ask('swarm_sendPss', PSS);
+    await flush();
+    client.emit('exit', { code: 1 });
+    ready({ ok: true });
+    expect((await checked).error).toMatchObject({ code: 4100 });
+    mockNode.readiness = null;
+    let answered = false;
+    const waiting = page.ask('swarm_sendPss', PSS).then((out) => {
+      answered = true;
+      return out;
+    });
+    await flush();
+    expect(answered).toBe(false);
+    // The next process holds the messaging grant without the rule.
+    core.entries.swarm[KEY_A].autoApprove.messaging = false;
+    client.emit('ready');
+    const prompt = await env.shown('swarm.messaging');
+    expect(prompt.view.grantMode).toBe(false);
+    await env.decide(prompt.handle, false);
+    expect(await waiting).toEqual(REJECTED);
+    client.emit('failed', 'three crashes within a minute');
+    const before = env.prompts().length;
+    expect(await page.ask('swarm_sendPss', PSS)).toEqual(GRANTS_UNAVAILABLE);
+    expect(await page.ask('swarm_sendGsoc', { topic: 'lobby', data: 'hi' })).toEqual(GRANTS_UNAVAILABLE);
+    expect(env.prompts()).toHaveLength(before);
     expect(mockNode.sent).toEqual([]);
   });
 

@@ -7,7 +7,7 @@
 // frame records what main sends it (`page:event`).
 
 const os = require('os');
-const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
+const { useSimulatedGrantCore, attachedCoreClient, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -109,6 +109,9 @@ const AGENT_CUSTODY = {
 };
 const RULE_OFF = { error: { code: 4100, message: "This action needs the user's approval", data: { reason: 'not_auto_approved' } } };
 const WRITTEN = { result: { id: 'c'.repeat(40) } };
+const GRANTS_UNAVAILABLE = {
+  error: { code: 4900, message: 'Radicle permissions are not available', data: { reason: 'grants_unavailable' } },
+};
 // Under the Radicle service, a node running with a throwaway key (plan B10).
 const THROWAWAY_KEY = {
   reason: 'needs_vault',
@@ -286,9 +289,19 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+// The simulated identity core main's grants come from.
+let core;
+// A change the core makes and reports (`approval.changed`), its key's read
+// held: main has forgotten the key and has no answer for it yet.
+const changedInCore = (key, change) => {
+  core.holdKeyReads();
+  change(core.entries.radicle, key);
+  attachedCoreClient().changed('radicle', key);
+};
+
 beforeEach(async () => {
   jest.clearAllMocks();
-  await useSimulatedGrantCore();
+  core = await useSimulatedGrantCore();
   permissions.onRevoke(null);
   provider._resetAutoWriteLimiter();
   require('../radicle/cob-service').clearIdentityCache();
@@ -514,6 +527,14 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
       await permissions.setAutoApprove(NAME, 'signing', true, { page: testPage(NAME) });
     }, SIGNING_GONE],
     ['has its name move off its IPNS key', (env) => env.names.set(NAME, OTHER_IPNS_KEY), NO_ADDRESS],
+    // The core's change, before main has read the key again (review of #1252).
+    ['has its rule turned off by the core, not yet read back', () => changedInCore(NAME, (all, key) => {
+      all[key].autoApprove.signing = false;
+    }), CONNECTION_GONE],
+    ['loses its signing grant in the core, not yet read back', () => changedInCore(NAME, (all, key) => {
+      all[key].signing = false;
+    }), CONNECTION_GONE],
+    ['outlives the core process it was checked under', () => attachedCoreClient().emit('exit', { code: 1 }), CONNECTION_GONE],
   ])('a rule-answered write whose tab %s before its guard signs nothing', async (_label, change, refusal) => {
     const env = setup();
     await connect(NAME, { signing: true, rule: true });
@@ -529,6 +550,50 @@ describe('the COB writes through main (0011 PRQ-8c)', () => {
     expect(await answer).toEqual(refusal);
     expect(mockAddon.writes).toEqual([]);
     expect(env.prompts()).toEqual([]);
+  });
+
+  test('a change the core reported reads as no grant until its read lands: a write is refused meanwhile; the rule answers again once it is back', async () => {
+    const env = setup();
+    await connect(KEY_A, { signing: true, rule: true });
+    const page = env.tab();
+    const reads = core.holdKeyReads();
+    attachedCoreClient().changed('radicle', KEY_A);
+    expect(await page.ask('radicle_createIssue', ISSUE)).toEqual(NOT_CONNECTED);
+    expect(mockAddon.writes).toEqual([]);
+    reads.release();
+    await flush();
+    expect(await page.ask('radicle_createIssue', ISSUE)).toEqual(WRITTEN);
+    expect(env.prompts()).toEqual([]);
+    expect(mockAddon.writes).toHaveLength(1);
+  });
+
+  test('between core processes a write waits for the next one\'s grants; once the core gives up, it is refused with nothing signed', async () => {
+    const env = setup();
+    await connect(KEY_A, { signing: true, rule: true });
+    const page = env.tab();
+    const client = attachedCoreClient();
+    client.emit('exit', { code: 1 });
+    let answered = false;
+    const waiting = page.ask('radicle_createIssue', ISSUE).then((out) => {
+      answered = true;
+      return out;
+    });
+    await flush();
+    expect(answered).toBe(false);
+    expect(env.prompts()).toEqual([]);
+    // The next process holds the signing grant without the rule.
+    core.entries.radicle[KEY_A].autoApprove.signing = false;
+    client.emit('ready');
+    const prompt = await env.shown();
+    expect(prompt.view.mode).toBe('write');
+    expect(await env.decide(prompt.handle, false)).toEqual({ ok: true });
+    expect(await waiting).toEqual(REJECTED);
+    // The core gives up.
+    env.sent.length = 0;
+    client.emit('failed', 'three crashes within a minute');
+    expect(await page.ask('radicle_createIssue', ISSUE)).toEqual(GRANTS_UNAVAILABLE);
+    expect(env.prompts()).toEqual([]);
+    expect(mockAddon.writes).toEqual([]);
   });
 
   test('a name that moves off its IPNS key while the write prompt is open signs nothing', async () => {

@@ -16,7 +16,15 @@
  * with the core's error (`storage` with `data.applied`, as the core reports
  * a failed save), applying a narrowing first as the core does.
  * `core.file(store)` is the file's text as the core would write it.
+ * `core.holdKeyReads()` holds the answers to the reads of one key (the
+ * store as it stood when each was asked) until its `release()`.
+ *
+ * `attachedCoreClient()` is a core client as core-process.js attaches it
+ * to the mirrors: `client.changed(store, key)` sends `approval.changed`, as
+ * the core does after a change; `exit`, `ready` and `failed` are its own.
  */
+
+const { EventEmitter } = require('events');
 
 const STORES = ['swarm', 'radicle'];
 
@@ -28,6 +36,8 @@ function simulatedGrantCore({ now = () => Date.now() } = {}) {
   const entries = { swarm: {}, radicle: {} };
   const calls = [];
   const failures = [];
+  // The key reads' answers held by holdKeyReads(), or null.
+  let held = null;
 
   const callerName = (caller) => (caller === 'chrome' ? 'chrome' : caller ? 'page' : 'shell');
 
@@ -62,10 +72,28 @@ function simulatedGrantCore({ now = () => Date.now() } = {}) {
     file(store) {
       return JSON.stringify(entries[store], null, 2);
     },
+    holdKeyReads() {
+      const answers = [];
+      held = answers;
+      return {
+        get count() {
+          return answers.length;
+        },
+        release() {
+          if (held === answers) held = null;
+          for (const answer of answers.splice(0)) answer();
+        },
+      };
+    },
     async grants(params) {
       const store = storeOf(params);
       const all = entries[store];
-      if (params.key !== undefined) return { records: all[params.key] ? [structuredClone(all[params.key])] : [] };
+      if (params.key !== undefined) {
+        const reply = { records: all[params.key] ? [structuredClone(all[params.key])] : [] };
+        if (!held) return reply;
+        const answers = held;
+        return new Promise((resolve) => answers.push(() => resolve(reply)));
+      }
       return {
         records: Object.values(all)
           .sort((a, b) => b.lastUsed - a.lastUsed)
@@ -157,8 +185,17 @@ function simulatedGrantCore({ now = () => Date.now() } = {}) {
 async function useSimulatedGrantCore(seed = {}, options = {}) {
   const core = simulatedGrantCore(options);
   for (const store of STORES) Object.assign(core.entries[store], structuredClone(seed[store] || {}));
-  await require('../../src/main/core/grants')._useBackendForTests(core);
+  const grants = require('../../src/main/core/grants');
+  grants.detachGrants();
+  await grants._useBackendForTests(core);
   return core;
+}
+
+function attachedCoreClient() {
+  const client = new EventEmitter();
+  require('../../src/main/core/grants').attachGrants(client);
+  client.changed = (store, key) => client.emit('event', 'approval.changed', { store, key });
+  return client;
 }
 
 /** A page's PageContext, for a test's own grant writes. */
@@ -166,4 +203,4 @@ function testPage(origin, overrides = {}) {
   return { origin, top_origin: origin, frame: 1, navigation: 1, agent: false, ...overrides };
 }
 
-module.exports = { simulatedGrantCore, useSimulatedGrantCore, testPage };
+module.exports = { simulatedGrantCore, useSimulatedGrantCore, attachedCoreClient, testPage };

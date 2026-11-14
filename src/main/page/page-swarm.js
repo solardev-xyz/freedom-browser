@@ -220,6 +220,13 @@ const IDENTIFIER = /^[0-9a-fA-F]{64}$/;
 
 // The chrome's answer while the Identity & Wallet switch is off.
 const DISCONNECTED = Object.freeze({ code: 4900, message: 'Swarm provider is not available' });
+// The answer while main holds no Swarm grants it can use: the identity
+// core's load of them failed, or the core gave up (core/grants.js).
+const GRANTS_UNAVAILABLE = Object.freeze({
+  code: 4900,
+  message: 'Swarm permissions are not available',
+  data: Object.freeze({ reason: 'grants_unavailable' }),
+});
 // A keyless document's answer to a method that uses the key, as the chrome
 // refused a keyless page's site methods (design 0011, "Keys").
 const NO_ADDRESS = Object.freeze({
@@ -1010,10 +1017,11 @@ function createSwarmDispatchers(deps = {}) {
   }
 
   // A request reads the site's grants once main has read them from the
-  // identity core (none before: core/grants.js).
+  // running identity core (none before: core/grants.js), and is refused
+  // while they can't be read.
   const serve = (answer) => async (context) => {
     if (!identityWalletEnabled()) return error(DISCONNECTED);
-    await grantsLoaded();
+    if (!(await grantsLoaded())) return error(GRANTS_UNAVAILABLE);
     return answer(context);
   };
 

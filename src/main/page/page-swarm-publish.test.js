@@ -7,7 +7,7 @@
 // (`guard(send)`), as publish-service.js and chunk-service.js run it.
 
 const os = require('os');
-const { useSimulatedGrantCore, testPage } = require('../../../test/helpers/simulated-grant-core');
+const { useSimulatedGrantCore, attachedCoreClient, testPage } = require('../../../test/helpers/simulated-grant-core');
 const fs = require('fs');
 const path = require('path');
 
@@ -152,6 +152,9 @@ const RULE_OFF = {
 const NOT_CONNECTED = { error: { code: 4100, message: 'Origin not authorized. Call swarm_requestAccess first.' } };
 const PUBLISH_REJECTED = { error: { code: 4001, message: 'User rejected publish' } };
 const LIMIT = { error: { code: -32005, message: 'Limit exceeded' } };
+const GRANTS_UNAVAILABLE = {
+  error: { code: 4900, message: 'Swarm permissions are not available', data: { reason: 'grants_unavailable' } },
+};
 
 let nextId = 1;
 let nextNonce = 1;
@@ -337,8 +340,11 @@ function paramsOfSize(page, method, size, { form = 'u8', payload = null } = {}) 
   return shape(make(payload), 'n'.repeat(size - measure(shape(make(payload), ''))));
 }
 
+// The simulated identity core main's grants come from.
+let core;
+
 beforeEach(async () => {
-  await useSimulatedGrantCore();
+  core = await useSimulatedGrantCore();
   clearTagOwnership();
   mockNode.uploads = [];
   mockNode.signals = [];
@@ -500,6 +506,103 @@ describe('publishing through main (0011 PRQ-7c)', () => {
     expect(mockNode.uploads).toEqual([]);
     // A refused upload's history row says so.
     expect(mockHistory.map((h) => h.status)).toEqual(['failed', 'failed']);
+  });
+
+  test('a rule the core turned off reads as no grant until its read lands: an upload waiting under the rule, and a new one, publish nothing', async () => {
+    const env = setup();
+    await connect(KEY_A, { publishRule: true });
+    const page = env.tab();
+    const client = attachedCoreClient();
+    const gate = held();
+    mockNode.readiness = gate.promise.then(() => ({ ok: true }));
+    const waiting = page.ask('swarm_publishFiles', FILES);
+    await flush();
+    // The core turns the rule off and reports it; main's read of the key is held.
+    const reads = core.holdKeyReads();
+    core.entries.swarm[KEY_A].autoApprove.publish = false;
+    client.changed('swarm', KEY_A);
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    gate.release();
+    expect((await waiting).error).toMatchObject({ code: 4100 });
+    expect(mockNode.uploads).toEqual([]);
+    expect(env.prompts()).toEqual([]);
+    // Once the read lands: connected, with no rule.
+    reads.release();
+    await flush();
+    mockNode.readiness = null;
+    const prompted = page.ask('swarm_publishData', DATA);
+    const prompt = await env.shown('swarm.publish');
+    expect(await env.decide(prompt.handle, false)).toEqual({ ok: true });
+    expect(await prompted).toEqual(PUBLISH_REJECTED);
+    expect(mockNode.uploads).toEqual([]);
+  });
+
+  test('a rule the core turned on answers once its read lands', async () => {
+    const env = setup();
+    await connect(KEY_A);
+    const page = env.tab();
+    const client = attachedCoreClient();
+    const reads = core.holdKeyReads();
+    core.entries.swarm[KEY_A].autoApprove.publish = true;
+    client.changed('swarm', KEY_A);
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    reads.release();
+    await flush();
+    expect((await page.ask('swarm_publishData', DATA)).result.reference).toBe(REFERENCE);
+    expect(env.prompts()).toEqual([]);
+    expect(mockNode.uploads.map((u) => u.kind)).toEqual(['data']);
+  });
+
+  test('a revoke from the chrome hides the connection while the core writes it and reads it back: nothing published meanwhile', async () => {
+    const env = setup();
+    await connect(KEY_A, { publishRule: true });
+    const page = env.tab();
+    const reads = core.holdKeyReads();
+    const revoking = permissions.revokePermission(KEY_A, { caller: 'chrome' });
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    await flush();
+    expect(core.calls.at(-1)).toMatchObject({ method: 'approval.revoke', caller: 'chrome' });
+    expect(await page.ask('swarm_publishData', DATA)).toEqual(NOT_CONNECTED);
+    reads.release();
+    await revoking;
+    expect(permissions.getPermission(KEY_A)).toBeNull();
+    expect(mockNode.uploads).toEqual([]);
+  });
+
+  test('between core processes an upload waits for the next one\'s grants, and one already waiting publishes nothing; once the core gives up, uploads are refused', async () => {
+    const env = setup();
+    await connect(KEY_A, { publishRule: true });
+    const page = env.tab();
+    const client = attachedCoreClient();
+    const gate = held();
+    mockNode.readiness = gate.promise.then(() => ({ ok: true }));
+    const checked = page.ask('swarm_publishFiles', FILES);
+    await flush();
+    client.emit('exit', { code: 1 });
+    gate.release();
+    expect((await checked).error).toMatchObject({ code: 4100 });
+    // A request now waits for the next process's load.
+    mockNode.readiness = null;
+    let answered = false;
+    const waiting = page.ask('swarm_publishData', DATA).then((out) => {
+      answered = true;
+      return out;
+    });
+    await flush();
+    expect(answered).toBe(false);
+    expect(env.prompts()).toEqual([]);
+    // The next process holds the connection without the rule.
+    core.entries.swarm[KEY_A].autoApprove.publish = false;
+    client.emit('ready');
+    const prompt = await env.shown('swarm.publish');
+    expect(await env.decide(prompt.handle, false)).toEqual({ ok: true });
+    expect(await waiting).toEqual(PUBLISH_REJECTED);
+    // The core gives up.
+    client.emit('failed', 'three crashes within a minute');
+    const before = env.prompts().length;
+    for (const [method, params] of UPLOADS) expect(await page.ask(method, params)).toEqual(GRANTS_UNAVAILABLE);
+    expect(env.prompts()).toHaveLength(before);
+    expect(mockNode.uploads).toEqual([]);
   });
 
   test('a name that moves off its IPNS key while a rule-answered upload waits, or while its prompt is open: nothing published, no rule', async () => {
