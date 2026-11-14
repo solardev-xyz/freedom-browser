@@ -1,0 +1,1 @@
+- Windows project helpers coordinate sandbox startup without serialising their workloads, with separate startup and file-operation deadlines ([#1144](https://github.com/solardev-xyz/freedom-browser/issues/1144))

@@ -843,3 +843,9 @@ describe('workspace execution policy', () => {
     expect(insidePath('/workspace', '/workspace-other/file')).toBe(false);
   });
 });
+
+test('ready observers are host functions carried through request validation, never data supplied by a workload', () => {
+  const onReady = jest.fn();
+  expect(validateExecutionRequest({ command: 'node', args: [], onReady }).onReady).toBe(onReady);
+  expect(() => validateExecutionRequest({ command: 'node', args: [], onReady: 'ready' })).toThrow('onReady must be a function');
+});
