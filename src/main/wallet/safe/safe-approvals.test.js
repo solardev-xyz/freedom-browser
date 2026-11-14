@@ -180,3 +180,80 @@ test('only an approval the core gave is held', async () => {
   await expect(approvals.hold('send', 5, A, '')).rejects.toThrow(/held for its SafeTx/);
   expect(() => approvals.held('other', 5, HASH)).toThrow(/Not a Safe approval kind/);
 });
+
+// Review of #1245, round 2: a Safe's deletion takes its exclusion. It is
+// refused while a step of the Safe runs or a send holds its reservation,
+// and while it runs no step starts, no send reserves the Safe and no
+// approval is held for it; it releases the exclusion when it fails or ends.
+describe("the Safe's exclusion", () => {
+  const codeOf = (fn) => {
+    try {
+      fn();
+    } catch (err) {
+      return err.code;
+    }
+    return null;
+  };
+
+  test('one step per Safe; a reservation per Safe, given up by its own release only', () => {
+    approvals.beginStep(5);
+    expect(codeOf(() => approvals.beginStep(5))).toBe('SAFE_BUSY');
+    expect(approvals.stepRunning(5)).toBe(true);
+    approvals.beginStep(6);
+    approvals.endStep(5);
+    approvals.endStep(6);
+    expect(approvals.stepRunning(5)).toBe(false);
+    const first = approvals.reserveSend(5);
+    expect(approvals.holdsReservation(5, first)).toBe(true);
+    expect(codeOf(() => approvals.reserveSend(5))).toBe('SAFE_PENDING_EXISTS');
+    first.release();
+    const next = approvals.reserveSend(5);
+    first.release();
+    expect(approvals.holdsReservation(5, next)).toBe(true);
+    expect(approvals.holdsReservation(5, first)).toBe(false);
+    next.release();
+  });
+
+  test('a deletion is refused while a step runs or a send holds the Safe', () => {
+    approvals.beginStep(5);
+    expect(codeOf(() => approvals.beginDeletion(5))).toBe('SAFE_BUSY');
+    approvals.endStep(5);
+    const reservation = approvals.reserveSend(5);
+    expect(codeOf(() => approvals.beginDeletion(5))).toBe('SAFE_BUSY');
+    reservation.release();
+    const deletion = approvals.beginDeletion(5);
+    expect(codeOf(() => approvals.beginDeletion(5))).toBe('SAFE_BUSY');
+    deletion.release();
+  });
+
+  test('while it runs, no step, reservation or hold for the Safe; released, all again', async () => {
+    const deletion = approvals.beginDeletion(5);
+    expect(codeOf(() => approvals.beginStep(5))).toBe('SAFE_BUSY');
+    expect(codeOf(() => approvals.reserveSend(5))).toBe('SAFE_BUSY');
+    await expect(approvals.hold('send', 5, A, HASH)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    expect(approvals.held('send', 5, HASH)).toBeNull();
+    // Another Safe's are its own.
+    approvals.beginStep(6);
+    approvals.endStep(6);
+    deletion.release();
+    deletion.release();
+    approvals.beginStep(5);
+    approvals.endStep(5);
+    approvals.reserveSend(5).release();
+    await approvals.hold('send', 5, A, HASH);
+    expect(approvals.held('send', 5, HASH)).toEqual(A);
+  });
+
+  test('a hold that waited while the Safe was deleted is refused, its approval not held', async () => {
+    await approvals.hold('send', 5, B, HASH);
+    let answer;
+    mockEnd.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    // The newer one waits on the older one's end; the Safe is deleted meanwhile.
+    const holding = approvals.hold('send', 5, A, OTHER);
+    await new Promise((resolve) => setImmediate(resolve));
+    approvals.beginDeletion(5).release();
+    answer({});
+    await expect(holding).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    expect(approvals.held('send', 5, OTHER)).toBeNull();
+  });
+});

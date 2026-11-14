@@ -61,14 +61,17 @@ const {
 } = require('./signature-collection');
 const { getSession, setSession, discardSession } = require('./message-sessions');
 const safeApprovals = require('./safe-approvals');
-const { codedError, SAFE_BUSY, SAFE_MESSAGE_EXISTS } = require('./errors');
+const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_MESSAGE_EXISTS } = require('./errors');
 
 const MESSAGE = safeApprovals.KINDS.MESSAGE;
 const store = {
   get: getSession,
   set: setSession,
   idOf: (entry) => entry.hash,
-  approvalOf: (safeIndex, entry) => safeApprovals.held(MESSAGE, safeIndex, entry.hash),
+  approvalOf: (safeIndex, entry) => (entry.dead ? null : safeApprovals.held(MESSAGE, safeIndex, entry.hash)),
+  // Ended for good (its page gone, or its caller's last check refused):
+  // kept only until its approval's end, and nothing more signs it.
+  ended: (entry) => entry.dead === true,
   forgetApproval: (safeIndex, entry) => safeApprovals.forget(MESSAGE, safeIndex, entry.hash),
   // The threshold's last signature ends the approval (design 0012): no
   // owner signs the SafeMessage after it.
@@ -86,6 +89,9 @@ const store = {
  * the drop rejects; the next one tries again.
  */
 function endAndDiscard(safeIndex, entry) {
+  // Ended for good from here, whether or not the end succeeds: no board
+  // action signs it, and a signature landing for it is dropped.
+  entry.dead = true;
   if (!entry.dropping) {
     entry.dropping = (async () => {
       await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
@@ -216,13 +222,17 @@ function attachRequesterLifecycle(safeIndex, entry) {
 }
 
 /** The session, but only for the caller holding its token. */
-function requireSession(safeIndex, token) {
+function requireSession(safeIndex, token, { ended = false } = {}) {
   const entry = getSession(safeIndex);
   if (!entry) {
     throw new Error('No signature request is open for this account');
   }
   if (token !== entry.token) {
     throw new Error('This signature request belongs to a different page');
+  }
+  // One whose page went away is kept only until its approval has ended.
+  if (entry.dead && !ended) {
+    throw codedError('This signature request has ended', SAFE_DISCARDED);
   }
   return entry;
 }
@@ -261,7 +271,7 @@ function sessionState(safeIndex, entry = getSession(safeIndex)) {
  */
 function getSafeMessageState(safeIndex, token) {
   const entry = getSession(safeIndex);
-  if (!entry || token !== entry.token) {
+  if (!entry || token !== entry.token || entry.dead) {
     return null;
   }
   return sessionState(safeIndex, entry);
@@ -351,13 +361,19 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
 
   const existing = getSession(safeIndex);
   if (existing) {
-    if (!mainOwned && !existing.mainOwned && existing.hash === hash && sameRequester(existing.requester, requester)) {
+    if (
+      !existing.dead &&
+      !mainOwned &&
+      !existing.mainOwned &&
+      existing.hash === hash &&
+      sameRequester(existing.requester, requester)
+    ) {
       // The identical request from the SAME page again (retried without
       // navigating) — resume: the collected signatures are still valid
       // for this hash, under the session's own approval.
       return signSafeMessage(safeIndex, undefined, existing.token);
     }
-    if (!requesterGone(existing)) {
+    if (!existing.dead && !requesterGone(existing)) {
       // A different request, or the same digest from a DIFFERENT page:
       // never resume or replace someone else's live ceremony.
       throw codedError(
@@ -365,7 +381,8 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
         SAFE_MESSAGE_EXISTS
       );
     }
-    // The requesting page provably no longer exists — dead leftover.
+    // The requesting page provably no longer exists, or the session ended
+    // and its drop hasn't finished — dead leftover.
     await endAndDiscard(safeIndex, existing);
     if (getSession(safeIndex)) {
       throw codedError(
@@ -377,6 +394,11 @@ async function openSafeMessage({ safeIndex, request, display, requester, owner, 
 
   acquire(safeIndex);
   try {
+    // The account may have changed while a leftover was dropped (deleted:
+    // getSafeRecord throws).
+    if (getAddress(getSafeRecord(safeIndex).address) !== safeAddress) {
+      throw new Error('This account changed while the signature request was opening');
+    }
     const entry = {
       token: randomUUID(),
       requester: requester
@@ -456,7 +478,7 @@ async function completeSafeMessage(safeIndex, token) {
   acquire(safeIndex);
   try {
     await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
-    if (getSession(safeIndex) !== entry) {
+    if (getSession(safeIndex) !== entry || entry.dead) {
       throw new Error('No signature request is open for this account');
     }
     // buildSignatureBytes sorts its input in place — hand it a copy.
@@ -479,7 +501,12 @@ async function cancelSafeMessage(safeIndex, token) {
   if (!getSession(safeIndex)) {
     return; // already gone — cancelling twice is fine
   }
-  const entry = requireSession(safeIndex, token);
+  const entry = requireSession(safeIndex, token, { ended: true });
+  // Ended already (its page gone): its drop, again.
+  if (entry.dead) {
+    await endAndDiscard(safeIndex, entry);
+    return;
+  }
   await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);

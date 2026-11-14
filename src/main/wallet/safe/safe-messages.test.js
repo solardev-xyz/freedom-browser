@@ -965,6 +965,71 @@ describe("a session's Safe approval", () => {
     });
   });
 
+  // Review of #1245, round 2: a session whose page went away has ended for
+  // good, even while its approval's end fails: a device's signature that
+  // lands for it is dropped, no board action signs it, and it is kept only
+  // for the end to be tried again.
+  describe('a session whose page went away, its end failing', () => {
+    test.each([
+      ['a Ledger', 2],
+      ['a phone', 4],
+    ])("%s owner's signature in flight is dropped, and no new one is made", async (_label, ownerIndex) => {
+      const approval = newApproval();
+      const state = await startSafeMessage({
+        approval,
+        safeIndex: 5,
+        request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+        display: DISPLAY,
+        requester: TAB_A,
+      });
+      const device = deferred();
+      mockCollectOwnerSignature.mockImplementationOnce(() => device.promise);
+      const signing = signSafeMessage(5, ownerIndex, state.token);
+      await flush();
+      expect(mockCollectOwnerSignature).toHaveBeenLastCalledWith(expect.objectContaining({ ownerIndex }));
+      // The page leaves; the core doesn't confirm the end, three times.
+      mockApprovalEnd.mockRejectedValue(busy());
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate');
+      await flush();
+      expect(mockApprovalEnd).toHaveBeenCalledTimes(3);
+      const entry = getSession(5);
+      expect(entry).not.toBeNull();
+      // The device answers: dropped, not stored.
+      device.resolve(signatureOf(ownerIndex));
+      await expect(signing).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      expect(entry.signatures).toHaveLength(1);
+      // Nothing more signs it, or shows it, or joins it.
+      mockCollectOwnerSignature.mockClear();
+      for (const owner of [2, 4, undefined]) {
+        await expect(signSafeMessage(5, owner, state.token)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      }
+      expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+      expect(getSafeMessageState(5, state.token)).toBeNull();
+      await expect(completeSafeMessage(5, state.token)).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+      // Kept only for its end: a cancel tries it again, and then drops it.
+      mockApprovalEnd.mockReset().mockResolvedValue({});
+      await cancelSafeMessage(5, state.token);
+      expect(getSession(5)).toBeNull();
+      expect(endedIds()).toEqual([approval.id]);
+      console.warn.mockRestore();
+    });
+
+    test('the same page asking again gets a new session, never the ended one', async () => {
+      const first = await startPersonal();
+      mockApprovalEnd.mockRejectedValue(busy());
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockWebContentsById.get(TAB_A.webContentsId).emit('did-navigate');
+      await flush();
+      expect(getSession(5)?.token).toBe(first.token);
+      mockApprovalEnd.mockReset().mockResolvedValue({});
+      const second = await startPersonal();
+      expect(second.token).not.toBe(first.token);
+      expect(getSession(5).token).toBe(second.token);
+      console.warn.mockRestore();
+    });
+  });
+
   // Review of #1245, round 1: an end the core didn't confirm (and whose
   // process still runs) is an error, and nothing that waited on it happens.
   test('an end that fails: no join and no cancel; the session and its approval stay', async () => {

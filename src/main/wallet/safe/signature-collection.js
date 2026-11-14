@@ -21,11 +21,19 @@
  * no longer knows is forgotten (`forgetApproval`), and refused the same
  * way. `signed(safeIndex, entry)`, if the adapter has it, runs after each
  * signature is kept (a SafeMessage's approval ends at its last).
+ * `ended(entry)`, if the adapter has it, says the entry has ended for good
+ * (a SafeMessage whose page went away, kept only until its approval's end):
+ * no owner signs it, and a signature that lands for it is dropped.
  */
 
 const { collectOwnerSignature } = require('./safe-executor');
 const { getWalletRecord, isVaultUnlocked, WALLET_TYPES } = require('../../identity-manager');
-const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_APPROVAL_NEEDED } = require('./errors');
+const { beginStep, endStep, stepRunning } = require('./safe-approvals');
+const { codedError, SAFE_DISCARDED, SAFE_APPROVAL_NEEDED } = require('./errors');
+
+// An entry ended for good (`store.ended`: a SafeMessage whose page went
+// away), though kept until its approval's end: nothing more signs it.
+const ended = (store, entry) => store.ended?.(entry) === true;
 
 function approvalNeeded() {
   return codedError(
@@ -39,24 +47,20 @@ function approvalNeeded() {
 const approvalGone = (err) => err?.code === 'SIGNING_NOT_CONFIRMED' && err.reason === 'unknown_token';
 
 // One live ceremony/execution per Safe at a time, across sends AND
-// message sessions — a device can't serve two ceremonies at once.
-// In-memory only (a main-process crash clears it, the correct reset);
-// the renderer keeps its own row-level spinner state.
-const inFlight = new Set();
-
+// message sessions — a device can't serve two ceremonies at once — and
+// none while the Safe is being deleted: the Safe's exclusion
+// (`safe-approvals.js`), which a deletion takes too. The renderer keeps its
+// own row-level spinner state.
 function acquire(safeIndex) {
-  if (inFlight.has(safeIndex)) {
-    throw codedError('Another step of this transaction is still running', SAFE_BUSY);
-  }
-  inFlight.add(safeIndex);
+  beginStep(safeIndex);
 }
 
 function release(safeIndex) {
-  inFlight.delete(safeIndex);
+  endStep(safeIndex);
 }
 
 function isBusy(safeIndex) {
-  return inFlight.has(safeIndex);
+  return stepRunning(safeIndex);
 }
 
 const hasSigned = (signatures, address) =>
@@ -105,7 +109,7 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     : null;
   for (const ownerIndex of ownerIndexes) {
     const entry = store.get(safeIndex);
-    if (!entry || entry.superseded || entry.signatures.length >= entry.threshold) break;
+    if (!entry || entry.superseded || ended(store, entry) || entry.signatures.length >= entry.threshold) break;
     if (expectedId != null && store.idOf(entry) !== expectedId) break;
     const owner = getWalletRecord(ownerIndex);
     if (owner?.type !== WALLET_TYPES.MNEMONIC || hasSigned(entry.signatures, owner.address)) {
@@ -138,7 +142,7 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     // for, while that entry is still the store's. One discarded meanwhile
     // (its page gone, cancelled, its Safe deleted) or replaced is never
     // written back, and nothing more is signed for it.
-    if (store.get(safeIndex) !== entry) break;
+    if (store.get(safeIndex) !== entry || ended(store, entry)) break;
     entry.signatures = [...entry.signatures, signature];
     store.set(safeIndex, entry);
     try {
@@ -181,7 +185,7 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
     throw new Error('That account is not an owner of this Safe');
   }
   const entry = store.get(safeIndex);
-  if (!entry || (expectedId != null && store.idOf(entry) !== expectedId)) {
+  if (!entry || ended(store, entry) || (expectedId != null && store.idOf(entry) !== expectedId)) {
     throw codedError('The request was discarded or replaced', SAFE_DISCARDED);
   }
   if (hasSigned(entry.signatures, getWalletRecord(ownerIndex)?.address)) {
@@ -202,10 +206,12 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
       throw approvalNeeded();
     }
 
-    // The ceremony can take minutes: re-validate that THIS payload is
-    // still the pending one before persisting into it.
+    // The ceremony can take minutes (a device's isn't fenced by the
+    // approval's end): re-validate that THIS entry is still the pending
+    // one, and not ended meanwhile (its page gone), before persisting into
+    // it.
     const current = store.get(safeIndex);
-    if (!current || store.idOf(current) !== signedId) {
+    if (!current || current !== entry || store.idOf(current) !== signedId || ended(store, current)) {
       throw codedError(
         'The request was discarded while the signature was being made',
         SAFE_DISCARDED

@@ -271,7 +271,7 @@ async function startSafeSend({ safeIndex, tx, display, chainId, approval, reserv
   let held = false;
   try {
     if (!safeApprovals.isApproval(approval)) throw new Error('This transaction was not confirmed');
-    if (!reservation || sendReservations.get(safeIndex) !== reservation) {
+    if (!safeApprovals.holdsReservation(safeIndex, reservation)) {
       throw new Error('This transaction was not reserved before it was confirmed');
     }
     const record = getSafeRecord(safeIndex);
@@ -326,16 +326,14 @@ function pendingExists() {
   );
 }
 
-// The Safes whose next SafeTx a send has reserved (`reserveSafeSend`), by
-// index: the reservation.
-const sendReservations = new Map();
-
 /**
  * Reserves the Safe's one pending SafeTx for a new send, before its
  * `safe-send` token is spent: the core's new approval for a Safe ends its
  * older one, so a second send must be refused before it spends anything.
  * Refused (SAFE_PENDING_EXISTS) while a SafeTx is pending or another send
- * holds the reservation. The caller holds it through the spend and
+ * holds the reservation, and (SAFE_BUSY) while the Safe is being deleted,
+ * whose deletion is refused while it is held (the Safe's exclusion,
+ * `safe-approvals.js`). The caller holds it through the spend and
  * `startSafeSend`, which needs it, and then calls its `release()`
  * (idempotent); by then the SafeTx is pending with its approval, or the
  * start failed.
@@ -345,20 +343,7 @@ const sendReservations = new Map();
  */
 function reserveSafeSend(safeIndex) {
   if (getPending(safeIndex)) throw pendingExists();
-  if (sendReservations.has(safeIndex)) {
-    throw codedError(
-      'Another transaction for this account is being set up — finish or discard it first',
-      SAFE_PENDING_EXISTS
-    );
-  }
-  const reservation = Object.freeze({
-    safeIndex,
-    release: () => {
-      if (sendReservations.get(safeIndex) === reservation) sendReservations.delete(safeIndex);
-    },
-  });
-  sendReservations.set(safeIndex, reservation);
-  return reservation;
+  return safeApprovals.reserveSend(safeIndex);
 }
 
 /**

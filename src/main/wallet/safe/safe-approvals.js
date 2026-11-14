@@ -28,11 +28,18 @@
  *   fails (SAFE_APPROVAL_END_FAILED): the approval is held again, and the
  *   caller does none of what waited on it.
  *
- * Dependency-light, so a Safe's deletion (identity-manager) can end its
- * approvals without loading the Safe stack.
+ * - **The Safe's exclusion.** One live step per Safe (a signature ceremony,
+ *   an execution through its broadcast, a session's opening), across sends
+ *   and message sessions; the send a Safe has reserved before its token is
+ *   spent; and a Safe's deletion, which waits for neither but is refused
+ *   while either runs, and then lets no step start, no send reserve it and
+ *   no approval be held for it until it ends.
+ *
+ * Dependency-light, so a Safe's deletion (identity-manager) can take its
+ * exclusion and end its approvals without loading the Safe stack.
  */
 
-const { codedError, SAFE_APPROVAL_END_FAILED } = require('./errors');
+const { codedError, SAFE_APPROVAL_END_FAILED, SAFE_BUSY, SAFE_PENDING_EXISTS } = require('./errors');
 
 // `${kind}:${safeIndex}` -> { id, page, subject, core, ending }: `core` the
 // core process when main held it (`vaultBackend.coreProcess()`), `ending`
@@ -113,9 +120,13 @@ async function hold(kind, safeIndex, approval, subject) {
   if (!isApproval(approval)) throw new Error('Not a Safe approval');
   if (typeof subject !== 'string' || !subject) throw new Error('A Safe approval is held for its SafeTx or SafeMessage');
   const key = slotKey(kind, safeIndex);
+  // None for a Safe being deleted, or deleted while this waited.
+  if (deleting.has(safeIndex)) throw deletionUnderWay();
+  const deletion = deletions.get(safeIndex) ?? 0;
   for (let older = slots.get(key); older && older.id !== approval.id; older = slots.get(key)) {
     await end(kind, safeIndex);
   }
+  if (deleting.has(safeIndex) || (deletions.get(safeIndex) ?? 0) !== deletion) throw deletionUnderWay();
   // The process that answers now gave it, or one after that one: its end
   // proves the approval gone, and nothing earlier's would.
   slots.set(key, { id: approval.id, page: approval.page ?? null, subject, core: backend().coreProcess(), ending: null });
@@ -186,9 +197,121 @@ async function endSafe(safeIndex) {
   if (failed) throw failed.reason;
 }
 
+// ---- The Safe's exclusion ----
+
+// The Safes with a live step (`beginStep`). In memory only: a main-process
+// crash clears it, the correct reset.
+const steps = new Set();
+// The send each Safe has reserved (`reserveSend`), by index.
+const sendReservations = new Map();
+// The Safes being deleted (`beginDeletion`), and how many deletions each
+// index has begun, which a hold that waited compares.
+const deleting = new Set();
+const deletions = new Map();
+
+function deletionUnderWay() {
+  return codedError('This account is being deleted', SAFE_BUSY);
+}
+
+/**
+ * A step of the Safe's begins (a signature ceremony, an execution through
+ * its broadcast, a session's opening): refused (SAFE_BUSY) while another
+ * runs, since a device can't serve two at once, or while the Safe is being
+ * deleted. `endStep` ends it.
+ */
+function beginStep(safeIndex) {
+  if (deleting.has(safeIndex)) throw deletionUnderWay();
+  if (steps.has(safeIndex)) throw codedError('Another step of this transaction is still running', SAFE_BUSY);
+  steps.add(safeIndex);
+}
+
+function endStep(safeIndex) {
+  steps.delete(safeIndex);
+}
+
+function stepRunning(safeIndex) {
+  return steps.has(safeIndex);
+}
+
+/**
+ * Reserves the Safe's next SafeTx for a send, before its `safe-send` token
+ * is spent (`safe-transactions.js`): refused (SAFE_PENDING_EXISTS) while
+ * another send holds it, and (SAFE_BUSY) while the Safe is being deleted.
+ * `release()` (idempotent) gives it up, never a later send's.
+ *
+ * @returns {{ safeIndex: number, release: () => void }}
+ */
+function reserveSend(safeIndex) {
+  if (deleting.has(safeIndex)) throw deletionUnderWay();
+  if (sendReservations.has(safeIndex)) {
+    throw codedError(
+      'Another transaction for this account is being set up — finish or discard it first',
+      SAFE_PENDING_EXISTS
+    );
+  }
+  const reservation = Object.freeze({
+    safeIndex,
+    release: () => {
+      if (sendReservations.get(safeIndex) === reservation) sendReservations.delete(safeIndex);
+    },
+  });
+  sendReservations.set(safeIndex, reservation);
+  return reservation;
+}
+
+/** Whether `reservation` is the Safe's live send reservation. */
+function holdsReservation(safeIndex, reservation) {
+  return Boolean(reservation) && sendReservations.get(safeIndex) === reservation;
+}
+
+/**
+ * A Safe's deletion begins: refused (SAFE_BUSY) while a step of it runs or
+ * a send holds its reservation, so nothing of it is cut short (an execution
+ * past its executor's signature included, up to its broadcast). From then
+ * on no step starts, no send reserves it and no approval is held for it,
+ * until `release()`: the deletion calls it once it has failed, or once the
+ * Safe's state and record are gone.
+ *
+ * @returns {{ release: () => void }}
+ */
+function beginDeletion(safeIndex) {
+  if (deleting.has(safeIndex) || steps.has(safeIndex) || sendReservations.has(safeIndex)) {
+    throw codedError('Wait for the current step of this account to finish first', SAFE_BUSY);
+  }
+  deleting.add(safeIndex);
+  deletions.set(safeIndex, (deletions.get(safeIndex) ?? 0) + 1);
+  let open = true;
+  return {
+    release: () => {
+      if (open) deleting.delete(safeIndex);
+      open = false;
+    },
+  };
+}
+
 function _reset({ retryDelays = RETRY_DELAYS_MS } = {}) {
   slots.clear();
+  steps.clear();
+  sendReservations.clear();
+  deleting.clear();
+  deletions.clear();
   retryDelaysMs = retryDelays;
 }
 
-module.exports = { KINDS, isApproval, hold, held, end, release, forget, endSafe, _reset };
+module.exports = {
+  KINDS,
+  isApproval,
+  hold,
+  held,
+  end,
+  release,
+  forget,
+  endSafe,
+  beginStep,
+  endStep,
+  stepRunning,
+  reserveSend,
+  holdsReservation,
+  beginDeletion,
+  _reset,
+};

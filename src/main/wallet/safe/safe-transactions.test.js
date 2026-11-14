@@ -979,6 +979,75 @@ describe("a SafeTx's Safe approval", () => {
       expect(heard).toEqual([expect.objectContaining({ outcome: 'executed', hash: TX_HASH })]);
     });
   });
+  // Review of #1245, round 2: a Safe's deletion takes the Safe's exclusion
+  // (safe-approvals.js), refused while a start holds its reservation or a
+  // step runs, an execution through its broadcast included; while it runs,
+  // nothing of the Safe starts.
+  describe("a Safe's deletion", () => {
+    const codeOf = (fn) => {
+      try {
+        fn();
+      } catch (err) {
+        return err.code;
+      }
+      return null;
+    };
+
+    test('refused while a start awaits its SafeTx: no pending SafeTx or approval is left for a deleted Safe', async () => {
+      const building = deferred();
+      mockBuildSafeTransaction.mockImplementationOnce(async () => {
+        await building.promise;
+        return builtResult;
+      });
+      const started = start();
+      await flushMicrotasks();
+      expect(codeOf(() => safeApprovals.beginDeletion(5))).toBe('SAFE_BUSY');
+      building.resolve();
+      await started;
+      // Started: its deletion now ends its approval and clears it.
+      const deletion = safeApprovals.beginDeletion(5);
+      await safeApprovals.endSafe(5);
+      clearPending(5);
+      deletion.release();
+      expect(endedIds()).toEqual([lastApproval.id]);
+      expect(getPending(5)).toBeNull();
+      expect(safeApprovals.held('send', 5, SAFE_TX_HASH)).toBeNull();
+    });
+
+    test('refused while an execution runs past its executor signature, so nothing broadcasts for a deleted Safe', async () => {
+      await start();
+      await signSafePending(5, 2);
+      const broadcasting = deferred();
+      mockExecTransaction.mockImplementationOnce(async () => {
+        await broadcasting.promise;
+        return { hash: TX_HASH, explorerUrl: `https://gnosisscan.io/tx/${TX_HASH}`, recorded: true };
+      });
+      const executing = executeSafePending(5);
+      await flushMicrotasks();
+      expect(mockExecTransaction).toHaveBeenCalledTimes(1);
+      expect(codeOf(() => safeApprovals.beginDeletion(5))).toBe('SAFE_BUSY');
+      broadcasting.resolve();
+      await expect(executing).resolves.toMatchObject({ status: 'executed' });
+      safeApprovals.beginDeletion(5).release();
+    });
+
+    test('while it runs, no send reserves the Safe and no step of it starts: nothing signs, executes or broadcasts', async () => {
+      await start();
+      await signSafePending(5, 2);
+      mockCollectOwnerSignature.mockClear();
+      const deletion = safeApprovals.beginDeletion(5);
+      await expect(executeSafePending(5)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+      await expect(signSafePending(5)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+      await expect(cancelSafeSend(5)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+      await expect(signSafePending(5, 2, { approval: newApproval() })).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+      expect(mockExecTransaction).not.toHaveBeenCalled();
+      expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+      clearPending(5);
+      expect(codeOf(() => reserveSafeSend(5))).toBe('SAFE_BUSY');
+      deletion.release();
+      reserveSafeSend(5).release();
+    });
+  });
 });
 
 describe('getAllSafeSendStates', () => {

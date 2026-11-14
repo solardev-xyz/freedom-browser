@@ -1366,6 +1366,74 @@ describe('identity-manager safe accounts', () => {
     expect(after.find((w) => w.index === ownerIndexes[1]).name).toBe('Renamed Stax');
   });
 
+  // Review of #1245, round 2: a Safe's deletion takes the Safe's exclusion:
+  // refused while a step of it runs or a send has reserved it; while it
+  // runs, nothing of the Safe starts; released when it fails or ends.
+  test("a Safe's deletion is refused while a step of it runs, and nothing of it starts while it runs", async () => {
+    await seedOwners();
+    const safe = await addSafe();
+    const { setPending, getPending } = require('./wallet/safe/pending-store');
+    const safeApprovals = require('./wallet/safe/safe-approvals');
+    const { vaultBackend } = require('./core/vault-backend');
+    let answer;
+    Object.assign(vaultBackend, {
+      approval: { end: jest.fn(() => new Promise((resolve) => (answer = resolve))) },
+      coreProcess: () => ({ process: 'core' }),
+      coreProcessEnded: () => false,
+    });
+    safeApprovals._reset({ retryDelays: [0, 0] });
+    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    await safeApprovals.hold('send', safe.index, { id: 'a'.repeat(32), page: null }, '0xdead');
+
+    // An execution (or a signature) of the Safe's is running: refused, nothing deleted.
+    safeApprovals.beginStep(safe.index);
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    safeApprovals.endStep(safe.index);
+    const reservation = safeApprovals.reserveSend(safe.index);
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+    reservation.release();
+    expect(getPending(safe.index)).not.toBeNull();
+    expect(vaultBackend.approval.end).not.toHaveBeenCalled();
+
+    // Deleting (its approval's end awaited): no step, send or approval of the Safe starts.
+    const deleting = identityManager.deleteDerivedWallet(safe.index);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(() => safeApprovals.beginStep(safe.index)).toThrow(/being deleted/);
+    expect(() => safeApprovals.reserveSend(safe.index)).toThrow(/being deleted/);
+    await expect(safeApprovals.hold('message', safe.index, { id: 'b'.repeat(32), page: null }, '0xbeef')).rejects.toMatchObject({
+      code: 'SAFE_BUSY',
+    });
+    answer({});
+    await deleting;
+    expect(getPending(safe.index)).toBeNull();
+    expect(readVaultMeta().derivedWallets.map((w) => w.index)).not.toContain(safe.index);
+    // Released once done: an account that reuses the index isn't blocked.
+    safeApprovals.beginStep(safe.index);
+    safeApprovals.endStep(safe.index);
+  });
+
+  test("a Safe's failed deletion releases its exclusion", async () => {
+    await seedOwners();
+    const safe = await addSafe();
+    const safeApprovals = require('./wallet/safe/safe-approvals');
+    const { vaultBackend } = require('./core/vault-backend');
+    Object.assign(vaultBackend, {
+      approval: {
+        end: jest.fn(async () => {
+          throw Object.assign(new Error('Too many requests'), { code: 'busy' });
+        }),
+      },
+      coreProcess: () => ({ process: 'core' }),
+      coreProcessEnded: () => false,
+    });
+    safeApprovals._reset({ retryDelays: [0, 0] });
+    await safeApprovals.hold('send', safe.index, { id: 'a'.repeat(32), page: null }, '0xdead');
+    await expect(identityManager.deleteDerivedWallet(safe.index)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_END_FAILED' });
+    safeApprovals.beginStep(safe.index);
+    safeApprovals.endStep(safe.index);
+    safeApprovals.reserveSend(safe.index).release();
+  });
+
   test('an account created after deleting the highest-index Safe starts with a clean slate', async () => {
     await seedOwners();
     const safe = await addSafe(); // highest index in the vault

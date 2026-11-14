@@ -1919,17 +1919,44 @@ async function deleteDerivedWallet(index) {
   // write so a failure never leaves a deleted record with live state.
   // (Lazy requires — both modules are dependency-light — keep the Safe
   // stack out of ordinary wallet operations.)
-  if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
-    // Its Safe approvals first (freedom-core design 0012): ended in the
-    // core before the state they sign for goes. If an end fails, nothing is
-    // deleted (SAFE_APPROVAL_END_FAILED), and the user tries again.
-    await require('./wallet/safe/safe-approvals').endSafe(index);
-    require('./wallet/safe/message-sessions').discardSession(index);
-    require('./wallet/safe/pending-store').clearPending(index);
+  let deletion = null;
+  try {
+    if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
+      const safeApprovals = require('./wallet/safe/safe-approvals');
+      // The Safe's exclusion first: refused (SAFE_BUSY) while one of its
+      // steps runs (a signature, an execution up to its broadcast) or a
+      // send has reserved it; from here no step, send or approval of it
+      // starts until the deletion ends, failed or done.
+      deletion = safeApprovals.beginDeletion(index);
+      // Its Safe approvals (freedom-core design 0012): ended in the core
+      // before the state they sign for goes. If an end fails, nothing is
+      // deleted (SAFE_APPROVAL_END_FAILED), and the user tries again.
+      await safeApprovals.endSafe(index);
+      require('./wallet/safe/message-sessions').discardSession(index);
+      require('./wallet/safe/pending-store').clearPending(index);
+    }
+    removeWalletRecord(index, meta);
+  } finally {
+    deletion?.release();
   }
 
-  // Remove from list, as the meta is now: a Safe's approvals' end was an
-  // await, and a change saved meanwhile stays.
+  // A dApp permission is a standing authorisation to sign with this one
+  // account (plus any auto-approve rules on top). It cannot outlive the
+  // account: the stored index would dangle, and for a hardware account it
+  // would dangle into an index that has no signer at all.
+  // Lazy require: dapp-permissions pulls in electron's `app` for its
+  // storage path, which identity-manager must not need at load time.
+  const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
+  revokePermissionsForWalletIndex(index);
+}
+
+/**
+ * `deleteDerivedWallet`'s meta write: the record removed from the meta as
+ * it is now (a Safe's approvals' end was an await, and a change saved
+ * meanwhile stays), and the active wallet reset to the main one if it was
+ * this one.
+ */
+function removeWalletRecord(index, meta) {
   const latest = getVaultMeta() || meta;
   const remaining = getWalletList(latest).filter((w) => w.index !== index);
 
@@ -1944,15 +1971,6 @@ async function deleteDerivedWallet(index) {
     derivedWallets: remaining,
     activeWalletIndex: activeIndex,
   });
-
-  // A dApp permission is a standing authorisation to sign with this one
-  // account (plus any auto-approve rules on top). It cannot outlive the
-  // account: the stored index would dangle, and for a hardware account it
-  // would dangle into an index that has no signer at all.
-  // Lazy require: dapp-permissions pulls in electron's `app` for its
-  // storage path, which identity-manager must not need at load time.
-  const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
-  revokePermissionsForWalletIndex(index);
 }
 
 /**
