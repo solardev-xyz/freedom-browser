@@ -182,6 +182,13 @@ const PROFILE_DISABLED = Object.freeze({
   message: 'Radicle is disabled for this profile',
   data: Object.freeze({ reason: 'profile-disabled' }),
 });
+// The answer while main holds no Radicle grants it can use: the identity
+// core's load of them failed, or the core gave up (core/grants.js).
+const GRANTS_UNAVAILABLE = Object.freeze({
+  code: 4900,
+  message: 'Radicle permissions are not available',
+  data: Object.freeze({ reason: 'grants_unavailable' }),
+});
 const INTERNAL_ERROR_CODE = -32603;
 
 const error = (base) => ({ error: { ...base, ...(base.data ? { data: { ...base.data } } : {}) } });
@@ -198,16 +205,20 @@ function defaultDependencies() {
   const provider = () => require('../radicle/radicle-provider-ipc');
   return {
     execute: (method, params, key, options) => provider().executeRadicleForPage(method, params, key, options),
+    // The grants the identity core writes (design 0012, APB-3), read as main
+    // last read them; each write under `page` with the requester's
+    // PageContext.
+    grantsLoaded: () => permissions().whenLoaded(),
     getPermission: (key) => permissions().getPermission(key),
-    grantPermission: (key) => permissions().grantPermission(key),
+    grantPermission: (key, page) => permissions().grantPermission(key, { page }),
     profileDisabled: () => require('../radicle-manager').isDisabledForProfile(),
     getAutoApprove: (key, type) => permissions().getAutoApprove(key, type),
-    updateLastUsed: (key) => permissions().updateLastUsed(key),
+    updateLastUsed: (key, page) => permissions().updateLastUsed(key, { page }),
     validateRid: (rid) => require('../radicle-manager').validateAndNormalizeRid(rid),
     inCustody: (guest) => require('./page-signing').guestInCustody(guest),
     hasSigningGrant: (key) => permissions().hasSigningGrant(key),
-    grantSigning: (key) => permissions().grantSigning(key),
-    setAutoApprove: (key, type, enabled) => permissions().setAutoApprove(key, type, enabled),
+    grantSigning: (key, page) => permissions().grantSigning(key, { page }),
+    setAutoApprove: (key, type, enabled, page) => permissions().setAutoApprove(key, type, enabled, { page }),
     validateWrite: (method, params) => require('../radicle/cob-service').validateWrite(method, params),
     writeRefusal: () => require('../radicle-manager').radicleWriteRefusal(),
   };
@@ -221,6 +232,7 @@ function defaultDependencies() {
 function createRadicleDispatchers(deps = {}) {
   const {
     execute,
+    grantsLoaded,
     getPermission,
     grantPermission,
     profileDisabled,
@@ -261,17 +273,46 @@ function createRadicleDispatchers(deps = {}) {
     }
   };
 
+  // key -> the tail of its grant writes: one at a time per key, so a check
+  // and the write it decides stay together (the core answers each later).
+  const writing = new Map();
+
   /**
-   * A grant write on the user's decision, for the requester's key: the name
-   * checked again, then the document's key and the write in one run.
-   * Resolves false with nothing written. A write that throws rejects.
+   * A grant write on the user's decision, for the requester's key, after the
+   * key's earlier writes: the name checked again, then the document's key,
+   * and in the same run the write leaves for the identity core under
+   * `page`, with the PageContext read there (design 0012, APB-3). Resolves
+   * false with nothing written, or true once the core has answered and main
+   * has read the key back. A write that fails rejects.
    */
-  async function writeUnderKey(context, keyless, write) {
-    if (!(await context.nameHolds(keyless))) return false;
-    if (!context.holdsKey()) return false;
-    write();
-    return true;
+  function writeUnderKey(context, keyless, write) {
+    const key = context.requester.key;
+    const run = (writing.get(key) || Promise.resolve()).then(async () => {
+      if (!(await context.nameHolds(keyless))) return false;
+      if (!context.holdsKey()) return false;
+      await write(context.pageContext());
+      return true;
+    });
+    const tail = run.catch(() => {});
+    writing.set(key, tail);
+    tail.then(() => {
+      if (writing.get(key) === tail) writing.delete(key);
+    });
+    return run;
   }
+
+  // The site's last use, in the guard's run: sent to the core, not waited
+  // for. The effect stands if it fails.
+  function markUsed(context) {
+    try {
+      Promise.resolve(updateLastUsed(context.requester.key, context.pageContext())).catch(() => {});
+    } catch {
+      // The timestamp didn't change.
+    }
+  }
+
+  // A read's options: its PageContext, for the last use the method marks.
+  const asPage = (context) => ({ pageContext: () => context.pageContext() });
 
   // A new connection's `connect`, queued in the key's order at the write
   // itself: once main has answered the request, to the document that asked
@@ -302,7 +343,7 @@ function createRadicleDispatchers(deps = {}) {
     if (!context.holdsKey()) return error(NO_ADDRESS);
     // The chrome refused an unconnected site first, with its own answer.
     if (!NO_WAIT.has(method) && !getPermission(requester.key)) return error(NOT_CONNECTED);
-    const out = await execute(method, params, requester.key);
+    const out = await execute(method, params, requester.key, asPage(context));
     if (!NO_WAIT.has(method) && !(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     return out;
   }
@@ -325,11 +366,11 @@ function createRadicleDispatchers(deps = {}) {
       if (decision.closed || decision.approve !== true) return error(USER_REJECTED);
       let written;
       try {
-        written = await writeUnderKey(context, keyless, () => {
+        written = await writeUnderKey(context, keyless, async (page) => {
           // A grant another document of the key wrote meanwhile is kept,
           // with its signing grant and rules, and was announced by it.
           if (getPermission(key)) return;
-          grantPermission(key);
+          await grantPermission(key, page);
           announceConnect(context);
         });
       } catch (err) {
@@ -339,7 +380,7 @@ function createRadicleDispatchers(deps = {}) {
     }
     // From here to the grant's read and its last use, one run.
     if (!context.holdsKey()) return error(NO_ADDRESS);
-    return execute('radicle_requestAccess', {}, key);
+    return execute('radicle_requestAccess', {}, key, asPage(context));
   }
 
   /**
@@ -356,11 +397,7 @@ function createRadicleDispatchers(deps = {}) {
     if (ruled && custody(requester.guest)) return { refused: error(AGENT_CUSTODY).error };
     if (ruled && getAutoApprove(key, 'node') !== true) return { refused: error(RULE_OFF).error };
     if (!context.holdsKey()) return { refused: error(NO_ADDRESS).error };
-    try {
-      updateLastUsed(key);
-    } catch {
-      // The action stands; the timestamp didn't change.
-    }
+    markUsed(context);
     return { value: await run() };
   }
 
@@ -421,7 +458,7 @@ function createRadicleDispatchers(deps = {}) {
     const { requester } = context;
     if (!requester.key) return error(NO_ADDRESS);
     if (!getPermission(requester.key)) return error(NOT_CONNECTED);
-    return execute('radicle_disconnect', {}, requester.key);
+    return execute('radicle_disconnect', {}, requester.key, asPage(context));
   }
 
   const hasSigning = (key) => {
@@ -453,8 +490,8 @@ function createRadicleDispatchers(deps = {}) {
     try {
       // A grant another document of the key wrote meanwhile is kept. A
       // connection revoked meanwhile takes no signing grant.
-      written = await writeUnderKey(context, nameCheck, () => {
-        if (!hasSigning(key)) grantSigning(key);
+      written = await writeUnderKey(context, nameCheck, async (page) => {
+        if (!hasSigning(key)) await grantSigning(key, page);
       });
     } catch (err) {
       return { error: failure(err, 'Failed to save the signing grant') };
@@ -481,7 +518,7 @@ function createRadicleDispatchers(deps = {}) {
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     // From here to the grants' read and the last use, one run.
     if (!context.holdsKey()) return error(NO_ADDRESS);
-    const out = await execute(method, params, key);
+    const out = await execute(method, params, key, asPage(context));
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     return out;
   }
@@ -501,11 +538,7 @@ function createRadicleDispatchers(deps = {}) {
     if (ruled && custody(requester.guest)) return { refused: error(AGENT_CUSTODY).error };
     if (ruled && getAutoApprove(key, 'signing') !== true) return { refused: error(RULE_OFF).error };
     if (!context.holdsKey()) return { refused: error(NO_ADDRESS).error };
-    try {
-      updateLastUsed(key);
-    } catch {
-      // The write stands; the timestamp didn't change.
-    }
+    markUsed(context);
     return { value: await run() };
   }
 
@@ -579,7 +612,7 @@ function createRadicleDispatchers(deps = {}) {
     if (typeof alwaysAllow === 'boolean' && alwaysAllow !== ruleOn) {
       let written;
       try {
-        written = await writeUnderKey(context, nameCheck, () => setAutoApprove(key, 'signing', alwaysAllow));
+        written = await writeUnderKey(context, nameCheck, (page) => setAutoApprove(key, 'signing', alwaysAllow, page));
       } catch (err) {
         return { error: failure(err, 'Failed to save the signing rule') };
       }
@@ -591,16 +624,24 @@ function createRadicleDispatchers(deps = {}) {
     });
   }
 
+  // A request reads the site's grants once main has read them from the
+  // running identity core (none before: core/grants.js), and is refused
+  // while they can't be read.
+  const serve = (answer) => async (context) => {
+    if (!(await grantsLoaded())) return error(GRANTS_UNAVAILABLE);
+    return answer(context);
+  };
+
   const dispatchers = {};
-  for (const method of RADICLE_READ_METHODS) dispatchers[`radicle:${method}`] = underKey;
-  dispatchers['radicle:radicle_requestAccess'] = requestAccess;
-  dispatchers['radicle:radicle_disconnect'] = disconnect;
-  for (const method of NODE_METHODS) dispatchers[`radicle:${method}`] = nodeAction;
-  dispatchers['radicle:radicle_sync'] = sync;
+  for (const method of RADICLE_READ_METHODS) dispatchers[`radicle:${method}`] = serve(underKey);
+  dispatchers['radicle:radicle_requestAccess'] = serve(requestAccess);
+  dispatchers['radicle:radicle_disconnect'] = serve(disconnect);
+  for (const method of NODE_METHODS) dispatchers[`radicle:${method}`] = serve(nodeAction);
+  dispatchers['radicle:radicle_sync'] = serve(sync);
   // A fetch's state, and the site's subscription to it: a read under the key.
-  dispatchers['radicle:radicle_getSeedStatus'] = underKey;
-  dispatchers['radicle:radicle_getIdentity'] = identity;
-  for (const method of WRITE_METHODS) dispatchers[`radicle:${method}`] = write;
+  dispatchers['radicle:radicle_getSeedStatus'] = serve(underKey);
+  dispatchers['radicle:radicle_getIdentity'] = serve(identity);
+  for (const method of WRITE_METHODS) dispatchers[`radicle:${method}`] = serve(write);
   return dispatchers;
 }
 

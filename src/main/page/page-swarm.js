@@ -177,6 +177,9 @@ const SWARM_PAGE_METHODS = Object.freeze([
 
 // The permission-free ones: the key is a rate, never authority.
 const PERMISSION_FREE = new Set(['swarm_readChunk', 'swarm_readData', 'swarm_readSingleOwnerChunk']);
+// The reads whose answer no grant decides, served while the grants can't be
+// read (`swarm_getCapabilities` reports the grant itself, so it isn't one).
+const GRANT_FREE_READS = new Set([...PERMISSION_FREE, 'swarm_readFeedEntry', 'swarm_listFeeds']);
 
 // A method whose only use of the key comes before any wait: the answer is
 // checked against the key in the same run as it goes out, with nothing to
@@ -220,6 +223,13 @@ const IDENTIFIER = /^[0-9a-fA-F]{64}$/;
 
 // The chrome's answer while the Identity & Wallet switch is off.
 const DISCONNECTED = Object.freeze({ code: 4900, message: 'Swarm provider is not available' });
+// The answer while main holds no Swarm grants it can use: the identity
+// core's load of them failed, or the core gave up (core/grants.js).
+const GRANTS_UNAVAILABLE = Object.freeze({
+  code: 4900,
+  message: 'Swarm permissions are not available',
+  data: Object.freeze({ reason: 'grants_unavailable' }),
+});
 // A keyless document's answer to a method that uses the key, as the chrome
 // refused a keyless page's site methods (design 0011, "Keys").
 const NO_ADDRESS = Object.freeze({
@@ -394,13 +404,17 @@ function defaultDependencies() {
   return {
     identityWalletEnabled: () => require('../settings-store').loadSettings()?.enableIdentityWallet === true,
     execute: (method, params, key, meta) => provider().executeSwarmMethod(method, params, key, meta),
+    // The grants the identity core writes (design 0012, APB-3), read as main
+    // last read them; each write under `page` with the requester's
+    // PageContext.
+    grantsLoaded: () => permissions().whenLoaded(),
     getPermission: (key) => permissions().getPermission(key),
-    grantPermission: (key) => permissions().grantPermission(key),
-    updateLastUsed: (key) => permissions().updateLastUsed(key),
+    grantPermission: (key, page) => permissions().grantPermission(key, { page }),
+    updateLastUsed: (key, page) => permissions().updateLastUsed(key, { page }),
     hasMessagingGrant: (key) => permissions().hasMessagingGrant(key),
-    grantMessaging: (key) => permissions().grantMessaging(key),
+    grantMessaging: (key, page) => permissions().grantMessaging(key, { page }),
     getAutoApprove: (key, type) => permissions().getAutoApprove(key, type),
-    setAutoApprove: (key, type, enabled) => permissions().setAutoApprove(key, type, enabled),
+    setAutoApprove: (key, type, enabled, page) => permissions().setAutoApprove(key, type, enabled, { page }),
     lockOrigin: (key, task) => require('../swarm/origin-mutation-lock').withOriginLock(key, task),
     checkManifest: (request) => manifests().checkPageManifest(request),
     decideManifest: (key, token, outcome, guard) => manifests().decidePageManifest(key, token, outcome, guard),
@@ -440,6 +454,7 @@ function createSwarmDispatchers(deps = {}) {
   const {
     identityWalletEnabled,
     execute,
+    grantsLoaded,
     getPermission,
     grantPermission,
     updateLastUsed,
@@ -502,14 +517,17 @@ function createSwarmDispatchers(deps = {}) {
   /**
    * A grant write on the user's decision, for the requester's key: under the
    * key's lock (as the chrome's writes were), the name checked again inside
-   * it, then the document's key and the write in one run. Resolves false
-   * with nothing written. A write that throws rejects.
+   * it, then the document's key, and in the same run the write leaves for
+   * the identity core under `page`, with the PageContext read there (design
+   * 0012, APB-3). Resolves false with nothing written, or true once the
+   * core has answered and main has read the key back. A write that fails
+   * rejects.
    */
   function writeUnderKey(context, keyless, write) {
     return lockOrigin(context.requester.key, async () => {
       if (!(await context.nameHolds(keyless))) return false;
       if (!context.holdsKey()) return false;
-      write();
+      await write(context.pageContext());
       return true;
     });
   }
@@ -636,7 +654,7 @@ function createSwarmDispatchers(deps = {}) {
     if (manifest.error) return { error: manifest.error };
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     if (getPermission(key)) {
-      if (!(await writeUnderKey(context, keyless, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+      if (!(await writeUnderKey(context, keyless, (page) => updateLastUsed(key, page)))) return error(NO_ADDRESS);
     } else {
       const decision = await context.prompt({
         kind: 'swarm.connect',
@@ -649,8 +667,8 @@ function createSwarmDispatchers(deps = {}) {
       try {
         // A grant another document of the key wrote meanwhile is kept, with
         // its rules.
-        written = await writeUnderKey(context, keyless, () => {
-          if (!getPermission(key)) grantPermission(key);
+        written = await writeUnderKey(context, keyless, async (page) => {
+          if (!getPermission(key)) await grantPermission(key, page);
         });
       } catch (err) {
         return { error: failure(err, 'Failed to save the connection') };
@@ -734,7 +752,7 @@ function createSwarmDispatchers(deps = {}) {
       if (decision.closed || decision.approve !== true) return error(USER_REJECTED);
       let written;
       try {
-        written = await writeUnderKey(context, nameCheck, () => grantMessaging(key));
+        written = await writeUnderKey(context, nameCheck, (page) => grantMessaging(key, page));
       } catch (err) {
         return { error: failure(err, 'Failed to save messaging access') };
       }
@@ -751,7 +769,7 @@ function createSwarmDispatchers(deps = {}) {
       if (decision.choices.alwaysAllow) {
         let written;
         try {
-          written = await writeUnderKey(context, nameCheck, () => setAutoApprove(key, 'messaging', true));
+          written = await writeUnderKey(context, nameCheck, (page) => setAutoApprove(key, 'messaging', true, page));
         } catch (err) {
           return { error: failure(err, 'Failed to save the messaging rule') };
         }
@@ -760,7 +778,7 @@ function createSwarmDispatchers(deps = {}) {
     }
     // The site's last use, as the chrome marked it before each call.
     try {
-      if (!(await writeUnderKey(context, nameCheck, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+      if (!(await writeUnderKey(context, nameCheck, (page) => updateLastUsed(key, page)))) return error(NO_ADDRESS);
     } catch {
       // The request stands; the timestamp didn't change.
     }
@@ -819,7 +837,7 @@ function createSwarmDispatchers(deps = {}) {
       if (decision.choices.alwaysAllow) {
         let written;
         try {
-          written = await writeUnderKey(context, nameCheck, () => setAutoApprove(key, 'publish', true));
+          written = await writeUnderKey(context, nameCheck, (page) => setAutoApprove(key, 'publish', true, page));
         } catch (err) {
           return { error: failure(err, 'Failed to save the publish rule') };
         }
@@ -828,7 +846,7 @@ function createSwarmDispatchers(deps = {}) {
     }
     // The site's last use, as the chrome marked it before each call.
     try {
-      if (!(await writeUnderKey(context, nameCheck, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+      if (!(await writeUnderKey(context, nameCheck, (page) => updateLastUsed(key, page)))) return error(NO_ADDRESS);
     } catch {
       // The request stands; the timestamp didn't change.
     }
@@ -863,7 +881,7 @@ function createSwarmDispatchers(deps = {}) {
     if (!(await context.nameHolds(keyless))) return error(NO_ADDRESS);
     if (!getPermission(key)) return error(NOT_CONNECTED);
     try {
-      if (!(await writeUnderKey(context, keyless, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+      if (!(await writeUnderKey(context, keyless, (page) => updateLastUsed(key, page)))) return error(NO_ADDRESS);
     } catch {
       // The request stands; the timestamp didn't change.
     }
@@ -956,9 +974,9 @@ function createSwarmDispatchers(deps = {}) {
         if (decision.closed || decision.approve !== true) return error(FEED_REJECTED);
         let written;
         try {
-          written = await writeUnderKey(context, nameCheck, () => {
+          written = await writeUnderKey(context, nameCheck, async (page) => {
             grantFeedIdentity(key, decision.choices.identity, view, preview);
-            if (decision.choices.alwaysAllow) setAutoApprove(key, rule, true);
+            if (decision.choices.alwaysAllow) await setAutoApprove(key, rule, true, page);
           });
         } catch (err) {
           if (err?.code === 'identity_taken' && shown < MAX_FEED_PROMPTS) continue;
@@ -970,7 +988,7 @@ function createSwarmDispatchers(deps = {}) {
     }
     // The site's last use, as the chrome marked it before each call.
     try {
-      if (!(await writeUnderKey(context, nameCheck, () => updateLastUsed(key)))) return error(NO_ADDRESS);
+      if (!(await writeUnderKey(context, nameCheck, (page) => updateLastUsed(key, page)))) return error(NO_ADDRESS);
     } catch {
       // The request stands; the timestamp didn't change.
     }
@@ -982,6 +1000,10 @@ function createSwarmDispatchers(deps = {}) {
         copied: (label) => context.copied(label),
         // Aborted once main answers the request: the write's node calls stop.
         signal: context.signal,
+        // A SOC the write signs goes to the identity core under `page`, with
+        // the PageContext read as it is sent, and how main approved it: the
+        // site's rule, or its prompt (design 0012, "A page's SOC").
+        soc: { pageContext: () => context.pageContext(), approval: ruled ? 'auto' : 'user' },
       },
     });
     routeSetupFailure(context, out);
@@ -997,14 +1019,28 @@ function createSwarmDispatchers(deps = {}) {
     });
   }
 
+  // A request reads the site's grants once main has read them from the
+  // running identity core (none before: core/grants.js), and is refused
+  // while they can't be read.
   const serve = (answer) => async (context) => {
+    if (!identityWalletEnabled()) return error(DISCONNECTED);
+    if (!(await grantsLoaded())) return error(GRANTS_UNAVAILABLE);
+    return answer(context);
+  };
+  // The reads no grant decides run without the grants: the permission-free
+  // reads (a missing grant only puts them on the unconnected budget, never a
+  // larger one), and the feed records' reads, which read swarm-feeds.json,
+  // not a grant. A failed load can't make them answer more than the core
+  // holds, so it doesn't refuse them.
+  const servePublic = (answer) => async (context) => {
     if (!identityWalletEnabled()) return error(DISCONNECTED);
     return answer(context);
   };
 
   const dispatchers = {};
   for (const method of SWARM_READ_METHODS) {
-    dispatchers[`swarm:${method}`] = serve(PERMISSION_FREE.has(method) ? permissionFree : underKey);
+    const answer = PERMISSION_FREE.has(method) ? permissionFree : underKey;
+    dispatchers[`swarm:${method}`] = (GRANT_FREE_READS.has(method) ? servePublic : serve)(answer);
   }
   dispatchers['swarm:swarm_requestAccess'] = serve(requestAccess);
   for (const method of SWARM_MESSAGING_METHODS) {

@@ -979,6 +979,14 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, APB-3: the Swarm and Radicle permission
+      # files written by the core, and a page's SOC under `page`.
+      - name: Swarm and Radicle grant files (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/core/grants.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # ── was the `e2e-address-bar-clipboard` job ──
       # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
       - name: Run address-bar clipboard E2E

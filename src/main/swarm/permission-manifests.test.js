@@ -30,6 +30,7 @@ function liveSender() {
 
 const mockPermissionState = {};
 jest.mock('./swarm-permissions', () => ({
+  whenLoaded: jest.fn(async () => true),
   getPermission: jest.fn((origin) => mockPermissionState[origin] || null),
   grantPermission: jest.fn((origin) => {
     mockPermissionState[origin] = { origin, autoApprove: {} };
@@ -92,6 +93,11 @@ const {
 } = require('./permission-manifests');
 const { handleBzzRequest: mockHandleBzzRequest } = require('./bzz-protocol');
 const mockFeeds = require('./feed-store');
+const mockPermissions = require('./swarm-permissions');
+// A few turns of the event loop: a check's queue and its fetch.
+const settle = async () => {
+  for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setImmediate(resolve));
+};
 
 let tempDir;
 
@@ -237,10 +243,10 @@ describe('permission manifests', () => {
 
     expect(check.kind).toBe('consent');
     expect(check.model.createsIdentity).toBe(true);
-    expect(decideManifest(check.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+    expect(await decideManifest(check.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
     expect(mockPermissionState['app.eth'].autoApprove).toMatchObject({ feeds: true, signing: true });
     expect(mockFeedState['app.eth']).toEqual({ identity: true, granted: true });
-    expect(getRecord('app.eth').managed.feedGrant).toEqual(['feeds', 'signing']);
+    expect((await getRecord('app.eth')).managed.feedGrant).toEqual(['feeds', 'signing']);
   });
 
   test('persists individual approvals without batch flags', async () => {
@@ -250,11 +256,11 @@ describe('permission manifests', () => {
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ messaging: { why: 'Receive updates' } })) });
 
-    decideManifest(check.token, 'individual');
+    await decideManifest(check.token, 'individual');
     expect(mockPermissionState['app.eth']).toBeDefined();
     expect(mockPermissionState['app.eth'].messaging).toBeUndefined();
-    expect(getRecord('app.eth').acknowledged.messaging.decision).toBe('individual');
-    expect(getRecord('app.eth').detached.connection).toBe(true);
+    expect((await getRecord('app.eth')).acknowledged.messaging.decision).toBe('individual');
+    expect((await getRecord('app.eth')).detached.connection).toBe(true);
   });
 
   test('does not persist a rejected first-contact observation', async () => {
@@ -263,8 +269,8 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'Publish releases' } })) });
-    decideManifest(check.token, 'deny');
-    expect(getRecord('app.eth')).toBeNull();
+    await decideManifest(check.token, 'deny');
+    expect(await getRecord('app.eth')).toBeNull();
     expect(mockPermissionState['app.eth']).toBeUndefined();
   });
 
@@ -277,11 +283,11 @@ describe('permission manifests', () => {
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'Publish releases' } })) });
 
     expect(check).toEqual({ kind: 'ready' });
-    expect(getRecord('app.eth').acknowledged.publish).toMatchObject({
+    expect((await getRecord('app.eth')).acknowledged.publish).toMatchObject({
       decision: 'individual',
       source: 'existing-grant',
     });
-    expect(getRecord('app.eth').managed).toEqual({});
+    expect((await getRecord('app.eth')).managed).toEqual({});
   });
 
   test('replays a completed token result and ignores wording-only redeploys', async () => {
@@ -290,8 +296,8 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'First wording' } })) });
-    const decision = decideManifest(first.token, 'allow');
-    expect(decideManifest(first.token, 'allow')).toEqual(decision);
+    const decision = await decideManifest(first.token, 'allow');
+    expect(await decideManifest(first.token, 'allow')).toEqual(decision);
 
     const wordingOnly = await checkManifest({
       origin: 'app.eth',
@@ -299,7 +305,7 @@ describe('permission manifests', () => {
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'New wording' } })) });
     expect(wordingOnly).toEqual({ kind: 'ready' });
-    expect(getRecord('app.eth').acknowledged.publish.whyShown).toBe('First wording');
+    expect((await getRecord('app.eth')).acknowledged.publish.whyShown).toBe('First wording');
   });
 
   test('a receipt attests the bytes whose wording the sheet actually showed', async () => {
@@ -313,9 +319,9 @@ describe('permission manifests', () => {
     await checkManifest(request, {
       fetchManifest: async () => responseFor(manifest({ publish: { why: 'New wording' } })),
     });
-    decideManifest(consent.token, 'allow');
+    await decideManifest(consent.token, 'allow');
 
-    const record = getRecord('app.eth');
+    const record = await getRecord('app.eth');
     const receipt = record.receipts.at(-1);
     expect(receipt.rows[0].whyShown).toBe('First wording');
     // Receipt hash and receipt wording come from the same manifest — it must
@@ -328,7 +334,7 @@ describe('permission manifests', () => {
     const request = { origin: 'app.eth', committedUrl: 'bzz://app.eth/', eager: true };
     const fetchManifest = async () => responseFor(manifest({ publish: { why: 'Publish releases' } }));
     const first = await checkManifest(request, { fetchManifest });
-    decideManifest(first.token, 'allow');
+    await decideManifest(first.token, 'allow');
 
     // A concurrent operation on another origin fails its atomic write while
     // discovery is in flight, which drops the module's in-memory store. The
@@ -338,15 +344,15 @@ describe('permission manifests', () => {
       fetchManifest: async () => {
         const blocked = path.join(tempDir, 'swarm-manifest-grants.json.tmp');
         fs.mkdirSync(blocked);
-        expect(() => disconnect('other.eth')).toThrow();
+        await expect(disconnect('other.eth')).rejects.toThrow();
         fs.rmSync(blocked, { recursive: true });
         return fetchManifest();
       },
     });
 
     expect(recheck).toEqual({ kind: 'ready' });
-    expect(getRecord('app.eth')).not.toBeNull();
-    expect(getRecord('app.eth').acknowledged.publish.decision).toBe('managed');
+    expect(await getRecord('app.eth')).not.toBeNull();
+    expect((await getRecord('app.eth')).acknowledged.publish.decision).toBe('managed');
     const onDisk = JSON.parse(fs.readFileSync(path.join(tempDir, 'swarm-manifest-grants.json'), 'utf8'));
     expect(Object.keys(onDisk.records)).toEqual(['app.eth']);
   });
@@ -355,20 +361,22 @@ describe('permission manifests', () => {
     registerPermissionManifestIpc();
     // Both stores that hold projected state report user mutations, so a
     // hand-made change detaches manifest ownership.
-    expect(mockFeeds.onManifestMutation).toHaveBeenCalledWith(detachManaged);
+    // Each detaches as detachManaged does, without the store waiting.
+    expect(mockFeeds.onManifestMutation).toHaveBeenCalledWith(expect.any(Function));
+    expect(mockPermissions.onManifestMutation).toHaveBeenCalledWith(mockFeeds.onManifestMutation.mock.calls.at(-1)[0]);
 
     const check = await checkManifest({
       origin: 'app.eth',
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ feeds: { why: 'Update feed' } })) });
-    decideManifest(check.token, 'allow');
+    await decideManifest(check.token, 'allow');
 
     expect(mockFeeds.grantFeedAccess).toHaveBeenCalledWith('app.eth', { source: 'manifest' });
     expect(mockFeeds.createAppScopedIdentity).toHaveBeenCalledWith('app.eth', { activate: true, source: 'manifest' });
     expect(mockFeeds.revokeFeedAccess).not.toHaveBeenCalled();
 
-    disconnect('app.eth');
+    await disconnect('app.eth');
     expect(mockFeeds.revokeFeedAccess).toHaveBeenCalledWith('app.eth', { source: 'manifest' });
   });
 
@@ -378,12 +386,12 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'Publish releases' } })) });
-    decideManifest(check.token, 'allow');
+    await decideManifest(check.token, 'allow');
 
-    expect(useIndividual('app.eth', 'publish')).toBe(true);
+    expect(await useIndividual('app.eth', 'publish')).toBe(true);
     expect(mockPermissionState['app.eth']).toBeDefined();
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(false);
-    expect(getRecord('app.eth').acknowledged.publish.decision).toBe('individual');
+    expect((await getRecord('app.eth')).acknowledged.publish.decision).toBe('individual');
   });
 
   test('manual toggles detach provenance so a later diff cannot resurrect them', async () => {
@@ -392,9 +400,9 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'Publish releases' } })) });
-    decideManifest(first.token, 'allow');
+    await decideManifest(first.token, 'allow');
     mockPermissionState['app.eth'].autoApprove.publish = false;
-    detachManaged('app.eth', 'autoApprove.publish');
+    await detachManaged('app.eth', 'autoApprove.publish');
 
     const changed = await checkManifest({
       origin: 'app.eth',
@@ -404,9 +412,9 @@ describe('permission manifests', () => {
       publish: { why: 'Publish releases' },
       messaging: { why: 'Receive updates' },
     })) });
-    decideManifest(changed.token, 'allow');
+    await decideManifest(changed.token, 'allow');
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(false);
-    expect(getRecord('app.eth').detached['autoApprove.publish']).toBe(true);
+    expect((await getRecord('app.eth')).detached['autoApprove.publish']).toBe(true);
   });
 
   test('rejects an opaque decision token after a newer manifest was observed', async () => {
@@ -424,7 +432,7 @@ describe('permission manifests', () => {
       feeds: { why: 'Update feed' },
     })) });
 
-    expect(() => decideManifest(oldCheck.token, 'allow')).toThrow('stale');
+    await expect(decideManifest(oldCheck.token, 'allow')).rejects.toThrow('stale');
   });
 
   test('recovers a truncated primary store from the journaled backup', async () => {
@@ -433,11 +441,11 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'Publish releases' } })) });
-    decideManifest(check.token, 'allow');
+    await decideManifest(check.token, 'allow');
     fs.writeFileSync(path.join(tempDir, 'swarm-manifest-grants.json'), '{truncated', 'utf8');
     _resetForTests();
 
-    expect(getRecord('app.eth').acknowledged.publish.decision).toBe('managed');
+    expect((await getRecord('app.eth')).acknowledged.publish.decision).toBe('managed');
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(true);
   });
 
@@ -447,7 +455,7 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ feeds: { why: 'Update feed' } })) });
-    decideManifest(first.token, 'allow');
+    await decideManifest(first.token, 'allow');
 
     const result = await checkManifest({
       origin: 'app.eth',
@@ -457,7 +465,7 @@ describe('permission manifests', () => {
     expect(result).toMatchObject({ kind: 'legacy', pruned: true });
     expect(mockPermissionState['app.eth']).toBeUndefined();
     expect(mockFeedState['app.eth']).toEqual({ identity: true, granted: false });
-    expect(getRecord('app.eth')).toBeNull();
+    expect(await getRecord('app.eth')).toBeNull();
   });
 
   test('applies removals before a mixed-diff rejection and never applies the addition', async () => {
@@ -469,7 +477,7 @@ describe('permission manifests', () => {
       publish: { why: 'Publish releases' },
       feeds: { why: 'Update feed' },
     })) });
-    decideManifest(initial.token, 'allow');
+    await decideManifest(initial.token, 'allow');
 
     const update = await checkManifest({
       origin: 'app.eth',
@@ -482,9 +490,9 @@ describe('permission manifests', () => {
 
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(false);
     expect(mockPermissionState['app.eth'].autoApprove.feeds).toBe(true);
-    decideManifest(update.token, 'deny');
+    await decideManifest(update.token, 'deny');
     expect(mockPermissionState['app.eth'].messaging).toBeUndefined();
-    expect(getRecord('app.eth').acknowledged.publish).toBeUndefined();
+    expect((await getRecord('app.eth')).acknowledged.publish).toBeUndefined();
   });
 
   test('keeps managed grants during transient discovery failure', async () => {
@@ -493,7 +501,7 @@ describe('permission manifests', () => {
       committedUrl: 'bzz://app.eth/',
       eager: true,
     }, { fetchManifest: async () => responseFor(manifest({ publish: { why: 'Publish releases' } })) });
-    decideManifest(initial.token, 'allow');
+    await decideManifest(initial.token, 'allow');
 
     const result = await checkManifest({
       origin: 'app.eth',
@@ -502,7 +510,7 @@ describe('permission manifests', () => {
     }, { fetchManifest: async () => responseFor({}, 503) });
     expect(result).toMatchObject({ kind: 'unresolved', retryAt: expect.any(Number) });
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(true);
-    expect(getRecord('app.eth')).not.toBeNull();
+    expect(await getRecord('app.eth')).not.toBeNull();
   });
 
   test('keeps managed grants when the manifest body dies mid-stream', async () => {
@@ -514,7 +522,7 @@ describe('permission manifests', () => {
       publish: { why: 'Publish releases' },
       feeds: { why: 'Update feed' },
     })) });
-    decideManifest(initial.token, 'allow');
+    await decideManifest(initial.token, 'allow');
     expect(mockFeedState['app.eth'].granted).toBe(true);
 
     const result = await checkManifest({
@@ -527,7 +535,7 @@ describe('permission manifests', () => {
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(true);
     expect(mockPermissionState['app.eth'].autoApprove.feeds).toBe(true);
     expect(mockFeedState['app.eth'].granted).toBe(true);
-    expect(getRecord('app.eth')).not.toBeNull();
+    expect(await getRecord('app.eth')).not.toBeNull();
   });
 
   test('backs off unresolved discovery across rapid committed navigations', async () => {
@@ -599,7 +607,7 @@ describe('permission manifests', () => {
     );
     const request = { key: 'app.eth', url: 'bzz://app.eth/', eager: true };
     const first = checkPageManifest({ ...request, guest: liveSender() });
-    await Promise.resolve();
+    await settle();
 
     mockPrivatePartition = 'private-1';
     const privateSender = liveSender();
@@ -634,9 +642,9 @@ describe('permission manifests', () => {
       .mockResolvedValue(responseFor(manifest({ publish: { why: 'Publish releases' } })));
 
     const first = checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/', guest: liveSender(), eager: true });
-    await Promise.resolve();
+    await settle();
     const second = checkPageManifest({ key: 'app.eth', url: 'bzz://app.eth/other', guest: liveSender(), eager: true });
-    await Promise.resolve();
+    await settle();
 
     expect(mockHandleBzzRequest).toHaveBeenCalledTimes(1);
     releaseFirst(responseFor(manifest({ publish: { why: 'Publish releases' } })));
@@ -657,11 +665,11 @@ describe('permission manifests', () => {
 
     // One sheet, one answer: the second tab's decide replays that answer
     // rather than tripping the revision guard the first decision bumped.
-    const decision = decideManifest(tabA.token, 'allow');
+    const decision = await decideManifest(tabA.token, 'allow');
     expect(decision).toEqual({ allowed: true, mode: 'allow' });
-    expect(decideManifest(tabB.token, 'allow')).toEqual(decision);
+    expect(await decideManifest(tabB.token, 'allow')).toEqual(decision);
     expect(mockPermissionState['app.eth'].autoApprove.publish).toBe(true);
-    expect(getRecord('app.eth').receipts).toHaveLength(1);
+    expect((await getRecord('app.eth')).receipts).toHaveLength(1);
   });
 
   test('a coalescing second tab refreshes the shared consent TTL', async () => {
@@ -677,7 +685,7 @@ describe('permission manifests', () => {
       // Past the ORIGINAL 5 min expiry but within the refreshed window: the
       // reused token must still decide (without the refresh it would throw).
       jest.advanceTimersByTime(1 * 60 * 1000);
-      expect(decideManifest(tabB.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
+      expect(await decideManifest(tabB.token, 'allow')).toEqual({ allowed: true, mode: 'allow' });
     } finally {
       jest.useRealTimers();
     }
@@ -689,10 +697,10 @@ describe('permission manifests', () => {
     const tabA = await checkManifest(request, { fetchManifest });
     const tabB = await checkManifest(request, { fetchManifest });
 
-    const decision = decideManifest(tabA.token, 'deny');
+    const decision = await decideManifest(tabA.token, 'deny');
     expect(decision).toEqual({ allowed: false, mode: 'deny' });
-    expect(decideManifest(tabB.token, 'deny')).toEqual(decision);
-    expect(getRecord('app.eth')).toBeNull();
+    expect(await decideManifest(tabB.token, 'deny')).toEqual(decision);
+    expect(await getRecord('app.eth')).toBeNull();
     expect(mockPermissionState['app.eth']).toBeUndefined();
   });
 
@@ -709,7 +717,7 @@ describe('permission manifests', () => {
     });
 
     expect(tabB.token).not.toBe(tabA.token);
-    expect(() => decideManifest(tabA.token, 'allow')).toThrow('stale');
+    await expect(decideManifest(tabA.token, 'allow')).rejects.toThrow('stale');
   });
 });
 
