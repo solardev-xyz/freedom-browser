@@ -181,18 +181,19 @@ const activeWebviewCan = (method) => {
 // Exported so navigation.js can re-push when Back/Forward availability
 // changes on a commit.
 export const pushTabMenuState = () => {
-  const activeIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
+  const tabs = tabsInCurrentStrip();
+  const activeIndex = tabs.findIndex((t) => t.id === tabState.activeTabId);
   // An Agent-owned tab disables History > Back/Forward and View > Reload the
   // same way it disables the toolbar buttons; the renderer handlers refuse
   // them too, this just keeps the menu rows honest.
   const agentOwned = isTabAgentOwned(tabState.activeTabId);
   electronAPI?.updateTabMenuState?.({
-    tabCount: tabState.tabs.length,
+    tabCount: tabs.length,
     activeIndex,
     hasClosedTabs: closedTabsStack.length > 0,
     canGoBack: !agentOwned && activeWebviewCan('canGoBack'),
     canGoForward: !agentOwned && activeWebviewCan('canGoForward'),
-    canReload: !agentOwned,
+    canReload: activeIndex !== -1 && !agentOwned,
     // PRIVATE MODE GUARD (history menu): a private window's closed tabs
     // never reach the app menu's Recently Closed list. The main process
     // drops a private sender's list too (src/main/menu.js).
@@ -210,6 +211,11 @@ let webviewContainer = null;
 let tabContextMenu = null;
 let projectedTabIds = null;
 let projectedActiveTabId = null;
+let projectedTabContainer = null;
+let projectedTabObserver = null;
+let pendingProjectedTabId = null;
+const pendingProjectedTabIds = new Set();
+let browserTabBeforeProjection = null;
 
 // Context menu state
 let contextMenuTabId = null;
@@ -1539,19 +1545,23 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
 // to run on every scroll event; reads only layout properties the browser has
 // already computed for the scroll.
 const updateTabStripOverflow = () => {
-  if (!tabBar?.classList) return;
-  const scrollLeft = tabBar.scrollLeft || 0;
-  const scrollWidth = tabBar.scrollWidth || 0;
-  const clientWidth = tabBar.clientWidth || 0;
+  const scroller = projectedTabContainer || tabBar;
+  if (!scroller?.classList) return;
+  const scrollLeft = scroller.scrollLeft || 0;
+  const scrollWidth = scroller.scrollWidth || 0;
+  const clientWidth = scroller.clientWidth || 0;
   // 1px slack absorbs sub-pixel layout rounding, which would otherwise leave
   // a permanent fade on a strip that is not actually overflowing.
   const overflowing = scrollWidth - clientWidth > 1;
-  tabBar.classList.toggle('overflow-start', overflowing && scrollLeft > 1);
-  tabBar.classList.toggle(
+  scroller.classList.toggle('overflow-start', overflowing && scrollLeft > 1);
+  scroller.classList.toggle(
     'overflow-end',
     overflowing && scrollLeft + clientWidth < scrollWidth - 1
   );
 };
+
+const tabsInCurrentStrip = () => tabState.tabs.filter(tab =>
+  projectedTabIds === null || projectedTabIds.has(tab.id));
 
 // Keep the active tab reachable. Called from `switchTab` (and after a close
 // promotes another tab) rather than from `renderTabs`, which also runs on
@@ -1644,16 +1654,54 @@ export const setTabStripProjection = ({ container = null, tabIds = null } = {}) 
   if (container) {
     const nextIds = new Set(Array.isArray(tabIds) ? tabIds.filter(Number.isSafeInteger) : []);
     if (tabBar.parentNode === container && projectedTabIds?.size === nextIds.size && [...nextIds].every((id) => projectedTabIds.has(id))) return;
+    if (projectedTabContainer !== container) {
+      if (projectedTabIds === null) browserTabBeforeProjection = tabState.activeTabId;
+      projectedTabContainer?.removeEventListener('scroll', updateTabStripOverflow);
+      projectedTabObserver?.disconnect();
+      projectedTabContainer?.classList.remove('overflow-start', 'overflow-end');
+      projectedTabContainer = container;
+      container.addEventListener('scroll', updateTabStripOverflow, { passive: true });
+      if (typeof ResizeObserver === 'function') {
+        projectedTabObserver = new ResizeObserver(updateTabStripOverflow);
+        projectedTabObserver.observe(container);
+      }
+      tabBar.classList.remove('overflow-start', 'overflow-end');
+    }
     container.appendChild(tabBar);
     projectedActiveTabId = null;
     projectedTabIds = new Set(
       Array.isArray(tabIds) ? tabIds.filter((tabId) => Number.isSafeInteger(tabId)) : []
     );
   } else {
+    const wasProjected = projectedTabIds !== null;
+    projectedTabContainer?.removeEventListener('scroll', updateTabStripOverflow);
+    projectedTabObserver?.disconnect();
+    projectedTabObserver = null;
+    projectedTabContainer?.classList.remove('overflow-start', 'overflow-end');
+    projectedTabContainer = null;
+    pendingProjectedTabId = null;
+    pendingProjectedTabIds.clear();
     tabBarHome?.prepend(tabBar);
     projectedTabIds = null;
+    // Closing a task's last page leaves an empty preview, not an unrelated
+    // browser tab. Restore a browser page when the user leaves full view.
+    if (wasProjected && !getActiveTab()) {
+      const fallback = tabState.tabs.find(tab => tab.id === browserTabBeforeProjection) || tabState.tabs[0];
+      if (fallback) switchTab(fallback.id, { focus: false });
+      else createTab(defaultNewTabUrl());
+    }
+    browserTabBeforeProjection = null;
+  }
+  if (pendingProjectedTabId !== null && projectedTabIds?.has(pendingProjectedTabId)) {
+    const tabId = pendingProjectedTabId;
+    pendingProjectedTabId = null;
+    switchTab(tabId, { focus: false });
+  }
+  for (const tabId of pendingProjectedTabIds) {
+    if (projectedTabIds?.has(tabId)) pendingProjectedTabIds.delete(tabId);
   }
   renderTabs();
+  pushTabMenuState();
 };
 
 // URLs `createTab` is allowed to load directly as the initial webview
@@ -1762,6 +1810,10 @@ export const createTab = (url = null, options = {}) => {
 
   tabState.tabs.push(tab);
   webviewContainer?.appendChild(webview);
+  if (options.background && options.deferUntilProjected && projectedTabIds !== null) {
+    pendingProjectedTabId = tabId;
+    pendingProjectedTabIds.add(tabId);
+  }
 
   // Switch to the new tab — unless it was asked for in the background, in
   // which case the strip still has to pick up the new tab element.
@@ -1829,7 +1881,7 @@ const cleanupWebview = (webview) => {
 };
 
 // Close a tab
-export const closeTab = (tabId) => {
+export const closeTab = (tabId, { focus = true } = {}) => {
   const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
   if (tabIndex === -1) return;
 
@@ -1919,13 +1971,25 @@ export const closeTab = (tabId) => {
 
   // Remove from array
   tabState.tabs.splice(tabIndex, 1);
+  if (pendingProjectedTabId === tabId) pendingProjectedTabId = null;
+  pendingProjectedTabIds.delete(tabId);
 
   // If this was the active tab, switch to another
   if (tabState.activeTabId === tabId) {
-    if (tabState.tabs.length > 0) {
+    if (projectedTabIds !== null) {
+      const remaining = tabState.tabs.filter(tab => projectedTabIds.has(tab.id));
+      const next = remaining.find(tab => tabState.tabs.indexOf(tab) >= tabIndex) || remaining.at(-1);
+      tabState.activeTabId = null;
+      if (next) switchTab(next.id, { focus });
+      else {
+        setActiveWebview(null);
+        document.body.classList.remove('workspace-viewer-active');
+        notifyFindBarTabSwitched();
+      }
+    } else if (tabState.tabs.length > 0) {
       // Switch to the tab at the same index or the last one
       const newIndex = Math.min(tabIndex, tabState.tabs.length - 1);
-      switchTab(tabState.tabs[newIndex].id);
+      switchTab(tabState.tabs[newIndex].id, { focus });
     } else {
       // No more tabs - close window via IPC
       tabState.activeTabId = null;
@@ -1947,7 +2011,7 @@ export const closeTab = (tabId) => {
 
 // Close all tabs except the specified one
 const closeOtherTabs = (tabId) => {
-  const tabsToClose = tabState.tabs.filter((t) => t.id !== tabId && !t.pinned);
+  const tabsToClose = tabsInCurrentStrip().filter((t) => t.id !== tabId && !t.pinned);
   for (const tab of tabsToClose) {
     closeTab(tab.id);
   }
@@ -1956,10 +2020,11 @@ const closeOtherTabs = (tabId) => {
 
 // Close all tabs to the right of the specified one
 const closeTabsToRight = (tabId) => {
-  const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
+  const tabs = tabsInCurrentStrip();
+  const tabIndex = tabs.findIndex((t) => t.id === tabId);
   if (tabIndex === -1) return;
 
-  const tabsToClose = tabState.tabs.slice(tabIndex + 1).filter((t) => !t.pinned);
+  const tabsToClose = tabs.slice(tabIndex + 1).filter((t) => !t.pinned);
   for (const tab of tabsToClose) {
     closeTab(tab.id);
   }
@@ -1987,9 +2052,10 @@ export const reopenLastClosedTab = (entryId) => {
 
 // Move the active tab left or right
 export const moveTab = (direction) => {
-  if (tabState.tabs.length < 2) return;
+  const tabs = tabsInCurrentStrip();
+  if (tabs.length < 2) return;
 
-  const currentIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
+  const currentIndex = tabs.findIndex((t) => t.id === tabState.activeTabId);
   if (currentIndex === -1) return;
 
   let newIndex;
@@ -1997,13 +2063,14 @@ export const moveTab = (direction) => {
     if (currentIndex === 0) return; // Already at the start
     newIndex = currentIndex - 1;
   } else {
-    if (currentIndex === tabState.tabs.length - 1) return; // Already at the end
+    if (currentIndex === tabs.length - 1) return; // Already at the end
     newIndex = currentIndex + 1;
   }
 
   // Swap positions
-  const [tab] = tabState.tabs.splice(currentIndex, 1);
-  tabState.tabs.splice(newIndex, 0, tab);
+  const from = tabState.tabs.indexOf(tabs[currentIndex]);
+  const to = tabState.tabs.indexOf(tabs[newIndex]);
+  [tabState.tabs[from], tabState.tabs[to]] = [tabState.tabs[to], tabState.tabs[from]];
 
   renderTabs();
   pushTabMenuState();
@@ -2012,18 +2079,20 @@ export const moveTab = (direction) => {
 
 // Switch to the next tab (wrapping around)
 export const switchToNextTab = () => {
-  if (tabState.tabs.length <= 1) return;
-  const currentIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
-  const nextIndex = (currentIndex + 1) % tabState.tabs.length;
-  switchTab(tabState.tabs[nextIndex].id);
+  const tabs = tabsInCurrentStrip();
+  if (tabs.length <= 1) return;
+  const currentIndex = tabs.findIndex((t) => t.id === tabState.activeTabId);
+  const nextIndex = (currentIndex + 1) % tabs.length;
+  switchTab(tabs[nextIndex].id);
 };
 
 // Switch to the previous tab (wrapping around)
 export const switchToPrevTab = () => {
-  if (tabState.tabs.length <= 1) return;
-  const currentIndex = tabState.tabs.findIndex((t) => t.id === tabState.activeTabId);
-  const prevIndex = (currentIndex - 1 + tabState.tabs.length) % tabState.tabs.length;
-  switchTab(tabState.tabs[prevIndex].id);
+  const tabs = tabsInCurrentStrip();
+  if (tabs.length <= 1) return;
+  const currentIndex = tabs.findIndex((t) => t.id === tabState.activeTabId);
+  const prevIndex = currentIndex < 0 ? tabs.length - 1 : (currentIndex - 1 + tabs.length) % tabs.length;
+  switchTab(tabs[prevIndex].id);
 };
 
 // Select a tab by position (Cmd/Ctrl+1…8, #717): `position` is 1-based, and
@@ -2031,7 +2100,7 @@ export const switchToPrevTab = () => {
 // the last tab does nothing, as in Chrome. switchTab moves focus to the page
 // the same way every other keyboard switch does (#304).
 export const selectTabAtPosition = (position) => {
-  const { tabs } = tabState;
+  const tabs = tabsInCurrentStrip();
   const tab =
     position === 'last'
       ? tabs[tabs.length - 1]
@@ -2111,15 +2180,16 @@ const showContextMenu = (x, y, tabId) => {
   if (claimBtn) claimBtn.hidden = !agentCustodyByTabId.has(tab.id);
 
   // Disable "Close Tabs to the Right" if there are no tabs to the right (excluding pinned)
-  const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
-  const tabsToRight = tabState.tabs.slice(tabIndex + 1).filter((t) => !t.pinned);
+  const tabs = tabsInCurrentStrip();
+  const tabIndex = tabs.findIndex((t) => t.id === tabId);
+  const tabsToRight = tabs.slice(tabIndex + 1).filter((t) => !t.pinned);
   const closeRightBtn = tabContextMenu.querySelector('[data-action="close-right"]');
   if (closeRightBtn) {
     closeRightBtn.disabled = tabsToRight.length === 0;
   }
 
   // Disable "Close Other Tabs" if there are no other closable tabs
-  const otherTabs = tabState.tabs.filter((t) => t.id !== tabId && !t.pinned);
+  const otherTabs = tabs.filter((t) => t.id !== tabId && !t.pinned);
   const closeOthersBtn = tabContextMenu.querySelector('[data-action="close-others"]');
   if (closeOthersBtn) {
     closeOthersBtn.disabled = otherTabs.length === 0;
@@ -2147,6 +2217,16 @@ export const hideTabContextMenu = () => {
 export const switchTab = (tabId, options = {}) => {
   const tab = tabState.tabs.find((t) => t.id === tabId);
   if (!tab) return;
+  // A following automation focus can arrive before the ownership projection
+  // too. Its deferred page will be activated as soon as registration arrives.
+  if (options.focus === false && pendingProjectedTabIds.has(tabId) &&
+      projectedTabIds !== null && !projectedTabIds.has(tabId)) {
+    pendingProjectedTabId = tabId;
+    return;
+  }
+  // A later user selection or explicit automation focus wins over an older
+  // pending creation, including selecting the page that is already active.
+  if (pendingProjectedTabId !== tabId) pendingProjectedTabId = null;
 
   // Any tab activation dismisses the tab context menu, whatever caused it.
   // A strip *click* already reached the document-click listener; a keyboard

@@ -3656,6 +3656,8 @@ describe('Agent UI', () => {
       },
       { id: 9, kind: 'workspace-viewer', conversationId: 'conversation_restored', title: 'Changes', url: '' },
       { id: 10, kind: 'workspace-viewer', conversationId: 'conversation_other', title: 'Other changes', url: '' },
+      { id: 11, title: 'This conversation popup', url: 'https://example.com/popup' },
+      { id: 12, title: 'Other conversation popup', url: 'https://example.com/other' },
     ];
     const ctx = await loadAgentUi({
       getOpenTabs,
@@ -3688,6 +3690,10 @@ describe('Agent UI', () => {
               },
             ],
             taskTabs: [{ rendererTabId: 8, agentActive: true }],
+            agentTabs: [
+              { rendererTabId: 11, custody: 'agent', conversationId: 'conversation_restored' },
+              { rendererTabId: 12, custody: 'agent', conversationId: 'conversation_other' },
+            ],
           },
         }),
       },
@@ -3707,10 +3713,10 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-session-list'].children[0].classList.contains('active')).toBe(true);
     expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
-    expect(ctx.elements['agent-task-page-count'].textContent).toBe('2');
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('3');
     expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
       container: ctx.elements['agent-task-page-list'],
-      tabIds: [8, 9],
+      tabIds: [8, 11, 9],
     });
     expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith(
       ctx.elements['agent-workspace-address-host']

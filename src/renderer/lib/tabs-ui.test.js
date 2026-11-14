@@ -437,6 +437,154 @@ describe('tabs ui behavior', () => {
     expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
   });
 
+  test('activates a new automation page only after its task projection arrives', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const first = mod.getActiveTab();
+    const host = createElement('div');
+    mod.setTabStripProjection({ container: host, tabIds: [first.id] });
+    const pending = mod.createTab('https://task.example/new', {
+      background: true, deferUntilProjected: true,
+    });
+    const otherPending = mod.createTab('https://task.example/parallel', {
+      background: true, deferUntilProjected: true,
+    });
+    expect(mod.getActiveTab().id).toBe(first.id);
+    mod.switchTab(pending.id, { focus: false });
+    expect(mod.getActiveTab().id).toBe(first.id);
+    mod.setTabStripProjection({ container: host, tabIds: [first.id, pending.id] });
+    expect(mod.getActiveTab().id).toBe(pending.id);
+    mod.setTabStripProjection({ container: host, tabIds: [first.id, pending.id, otherPending.id] });
+    expect(mod.getActiveTab().id).toBe(pending.id);
+  });
+
+  test('a later selection wins over a pending creation, including reselecting the active tab', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const first = mod.getActiveTab();
+    const second = mod.createTab('https://task.example/selected');
+    const host = createElement('div');
+    let ids = [first.id, second.id];
+    mod.setTabStripProjection({ container: host, tabIds: ids });
+    for (const selected of [first, first, second]) {
+      const pending = mod.createTab('https://task.example/pending', { background: true, deferUntilProjected: true });
+      mod.switchTab(selected.id);
+      ids = [...ids, pending.id];
+      mod.setTabStripProjection({ container: host, tabIds: ids });
+      expect(mod.getActiveTab().id).toBe(selected.id);
+    }
+  });
+
+  test('closing projected pages never activates a hidden browser tab or closes an empty task', async () => {
+    const { mod, electronAPI } = await loadTabsModule();
+    await mod.initTabs();
+    const foreign = mod.getActiveTab();
+    const first = mod.createTab('https://task.example/a');
+    const second = mod.createTab('https://task.example/b');
+    mod.createTab('https://unrelated.example', { background: true });
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [first.id, second.id] });
+    const focus = jest.spyOn(first.webview, 'focus');
+    mod.closeTab(second.id);
+    expect(mod.getActiveTab().id).toBe(first.id);
+    expect(focus).toHaveBeenCalled();
+    mod.closeTab(first.id);
+    expect(mod.getActiveTab()).toBeNull();
+    expect(electronAPI.closeWindow).not.toHaveBeenCalled();
+    expect(electronAPI.updateTabMenuState).toHaveBeenLastCalledWith(expect.objectContaining({ tabCount: 0, canReload: false }));
+    mod.setTabStripProjection();
+    expect(mod.getActiveTab().id).toBe(foreign.id);
+  });
+
+  test('automation close preserves composer focus and browser restoration prefers the prior page', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+    const previous = mod.createTab('https://previous.example');
+    const first = mod.createTab('https://task.example/a', { background: true });
+    const task = mod.createTab('https://task.example/b', { background: true });
+    const host = createElement('div');
+    mod.setTabStripProjection({ container: host, tabIds: [first.id, task.id] });
+    mod.switchTab(task.id);
+    const focus = jest.spyOn(first.webview, 'focus');
+    focus.mockClear();
+    mod.closeTab(task.id, { focus: false });
+    expect(focus).not.toHaveBeenCalled();
+    mod.closeTab(first.id, { focus: false });
+    mod.setTabStripProjection();
+    expect(mod.getActiveTab().id).toBe(previous.id);
+  });
+
+  test('keyboard selection and bulk-close commands stay inside the projected strip', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+    const foreign = [mod.getActiveTab()];
+    const first = mod.createTab('https://task.example/a');
+    foreign.push(mod.createTab('https://foreign.example/middle'));
+    const second = mod.createTab('https://task.example/b');
+    foreign.push(mod.createTab('https://foreign.example/last'));
+    mod.switchTab(second.id);
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [first.id, second.id] });
+    mod.switchToNextTab();
+    expect(mod.getActiveTab().id).toBe(first.id);
+    mod.switchToPrevTab();
+    expect(mod.getActiveTab().id).toBe(second.id);
+    mod.selectTabAtPosition(1);
+    expect(mod.getActiveTab().id).toBe(first.id);
+    mod.selectTabAtPosition('last');
+    expect(mod.getActiveTab().id).toBe(second.id);
+    mod.moveTab('left');
+    expect(mod.getTabs().map(tab => tab.id)).toEqual([foreign[0].id, second.id, foreign[1].id, first.id, foreign[2].id]);
+    mod.moveTab('right');
+    expect(mod.getTabs().map(tab => tab.id)).toEqual([foreign[0].id, first.id, foreign[1].id, second.id, foreign[2].id]);
+    const firstEl = findTabElement(elements.tabBar, first.id);
+    const openMenu = () => firstEl.dispatch('contextmenu', {
+      preventDefault: jest.fn(), stopPropagation: jest.fn(), clientX: 20, clientY: 20,
+    });
+    openMenu();
+    elements.tabContextMenu.dispatch('click', { target: elements.closeRightBtn });
+    expect(mod.getTabs().map(tab => tab.id)).toEqual([foreign[0].id, first.id, foreign[1].id, foreign[2].id]);
+    openMenu();
+    expect(elements.closeRightBtn.disabled).toBe(true);
+    expect(elements.closeOthersBtn.disabled).toBe(true);
+    const another = mod.createTab('https://task.example/another', { background: true });
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [first.id, another.id] });
+    openMenu();
+    elements.tabContextMenu.dispatch('click', { target: elements.closeOthersBtn });
+    expect(mod.getTabs().map(tab => tab.id)).toEqual([foreign[0].id, first.id, foreign[1].id, foreign[2].id]);
+  });
+
+  test('leaving an empty task creates a browser page when its last real tab was closed', async () => {
+    const { mod, electronAPI } = await loadTabsModule();
+    await mod.initTabs();
+    const only = mod.getActiveTab();
+    mod.setTabStripProjection({ container: createElement('div'), tabIds: [only.id] });
+    mod.closeTab(only.id);
+    const provider = await import('./dapp-provider.js');
+    expect(provider.getActiveWebview()).toBeNull();
+    expect(mod.getTabs()).toHaveLength(0);
+    expect(electronAPI.closeWindow).not.toHaveBeenCalled();
+    mod.setTabStripProjection();
+    expect(mod.getTabs()).toHaveLength(1);
+    expect(mod.getActiveTab()).not.toBeNull();
+  });
+
+  test('projected overflow follows the host scroller and detaches on return to the browser', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+    const host = createElement('div');
+    host.scrollWidth = 1200;
+    host.clientWidth = 400;
+    host.scrollLeft = 0;
+    mod.setTabStripProjection({ container: host, tabIds: [mod.getActiveTab().id] });
+    expect(host.classList.contains('overflow-end')).toBe(true);
+    expect(elements.tabBar.classList.contains('overflow-end')).toBe(false);
+    host.scrollLeft = 800;
+    host.dispatch('scroll');
+    expect(host.classList.contains('overflow-start')).toBe(true);
+    expect(host.classList.contains('overflow-end')).toBe(false);
+    mod.setTabStripProjection();
+    expect(host.classList.contains('overflow-start')).toBe(false);
+  });
+
   test('createTab loads file:// homeUrl directly without going through onLoadTarget', async () => {
     // Regression: a previous fix replaced "anything not http(s) loads
     // homeUrl, then onLoadTarget(url) overrides ~50 ms later" with

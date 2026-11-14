@@ -1,0 +1,2 @@
+- Agent full view stays open as task tabs open and close, shows same-chat popups, and reveals overflowing tabs ([#920](https://github.com/solardev-xyz/freedom-browser/issues/920))
+  - Tab shortcuts and bulk close stay within the visible task strip

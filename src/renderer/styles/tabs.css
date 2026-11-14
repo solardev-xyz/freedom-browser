@@ -78,17 +78,20 @@ html[data-platform='darwin'] .title-bar-spacer {
    the scrollbar is hidden. Classes are toggled from the live scroll offsets by
    `updateTabStripOverflow()` in tabs.js, so a strip that fits carries neither
    and renders exactly as before. */
-.tabs-container.overflow-start {
+.tabs-container.overflow-start,
+.agent-task-page-list.overflow-start {
   /* theme-literal: mask stop, not a surface: a mask reads only the alpha channel, so the opaque end of the ramp is the same colour on either palette */
   mask-image: linear-gradient(to right, transparent 0, #000 24px);
 }
 
-.tabs-container.overflow-end {
+.tabs-container.overflow-end,
+.agent-task-page-list.overflow-end {
   /* theme-literal: mask stop, not a surface: a mask reads only the alpha channel, so the opaque end of the ramp is the same colour on either palette */
   mask-image: linear-gradient(to left, transparent 0, #000 24px);
 }
 
-.tabs-container.overflow-start.overflow-end {
+.tabs-container.overflow-start.overflow-end,
+.agent-task-page-list.overflow-start.overflow-end {
   /* theme-literal: mask stop, not a surface: a mask reads only the alpha channel, so the opaque end of the ramp is the same colour on either palette */
   mask-image: linear-gradient(
     to right,
