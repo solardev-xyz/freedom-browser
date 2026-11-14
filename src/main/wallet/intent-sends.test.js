@@ -666,6 +666,9 @@ describe('Safe', () => {
         safeTxData: built.safeTxData,
         signatures,
         executorIndex: 0,
+        // The SafeTx's Safe approval, which the executor presents (design
+        // 0012, APB-1c); this test's signer stands in for the core.
+        approval: { id: 'a1'.repeat(16), page: null },
         record: {
           kind: 'safe-send',
           fromAddress: built.safeAddress,

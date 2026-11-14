@@ -19,6 +19,16 @@
  * the pending SafeTx (a broadcast that silently landed, or the user
  * executing via app.safe.global), the pending tx can never execute —
  * it flips to a terminal 'superseded' state instead of retry-looping.
+ *
+ * Every signature of a SafeTx presents its Safe approval (freedom-core
+ * design 0012, APB-1c; `safe-approvals.js`): the one its `safe-send`
+ * token gave when it was confirmed, a page's with that page's PageContext.
+ * Each vault owner's signature and the executor's present it; with none
+ * held (a restart since, or it ended) no owner signs until the user
+ * confirms the SafeTx again (SAFE_APPROVAL_NEEDED; `signSafePending`'s
+ * `approval`), and the executor needs an 'executor-send' token. Main ends
+ * it before the SafeTx's discard, when it is superseded, and once it is
+ * executed, before the pending entry is cleared.
  */
 
 const { KINDS: PAYMENT_KINDS } = require('../tx-recorder');
@@ -36,6 +46,7 @@ const {
   DEPLOY_CHAIN_ID,
 } = require('./safe-service');
 const { getPending, setPending, clearPending, listPendingIndexes } = require('./pending-store');
+const safeApprovals = require('./safe-approvals');
 const {
   codedError,
   SAFE_BUSY,
@@ -55,8 +66,16 @@ const {
 } = require('./signature-collection');
 
 // The signature-collection store over the persisted pending-SafeTx
-// entries; the SafeTx hash is the entry's identity.
-const store = { get: getPending, set: setPending, idOf: (entry) => entry.safeTxHash };
+// entries; the SafeTx hash is the entry's identity, and the Safe approval
+// main holds for it is what its owners present.
+const SEND = safeApprovals.KINDS.SEND;
+const store = {
+  get: getPending,
+  set: setPending,
+  idOf: (entry) => entry.safeTxHash,
+  approvalOf: (safeIndex, entry) => safeApprovals.held(SEND, safeIndex, entry.safeTxHash),
+  forgetApproval: (safeIndex, entry) => safeApprovals.forget(SEND, safeIndex, entry.safeTxHash),
+};
 
 /**
  * The pending SafeTx, refused (SAFE_DISCARDED, nothing done) when the caller
@@ -206,6 +225,12 @@ function getSafeSendState(safeIndex) {
     owners,
     executorIndex,
     display: pending.display,
+    // The call the SafeTx makes, as a new confirmation of it binds it.
+    call: {
+      to: pending.safeTxData?.to ?? null,
+      value: pending.safeTxData?.value ?? null,
+      data: pending.safeTxData?.data ?? null,
+    },
     createdAt: pending.createdAt,
     status: pending.superseded ? 'superseded' : 'awaiting',
   };
@@ -232,49 +257,70 @@ function getSafeSendState(safeIndex) {
  * @param {Object} params.display - Presentation-ready payment facts,
  *   persisted verbatim for the board/card: {toAddress, recipientName?,
  *   asset, amount (atomic), symbol, decimals, formattedAmount}
+ * @param {{id: string, page: object|null}} params.approval - The Safe
+ *   approval its `safe-send` token gave (design 0012): held for the SafeTx
+ *   once built, and ended if it isn't
  * @returns {Promise<Object>} SafeSendState
  */
-async function startSafeSend({ safeIndex, tx, display, chainId }) {
-  const record = getSafeRecord(safeIndex);
-  const sendChainId = Number(chainId);
-  if (!Number.isInteger(sendChainId) || sendChainId !== DEPLOY_CHAIN_ID) {
-    throw new Error('Multi-signature accounts can only send on Gnosis');
+async function startSafeSend({ safeIndex, tx, display, chainId, approval }) {
+  let held = false;
+  try {
+    if (!safeApprovals.isApproval(approval)) throw new Error('This transaction was not confirmed');
+    const record = getSafeRecord(safeIndex);
+    const sendChainId = Number(chainId);
+    if (!Number.isInteger(sendChainId) || sendChainId !== DEPLOY_CHAIN_ID) {
+      throw new Error('Multi-signature accounts can only send on Gnosis');
+    }
+    // Only a verified check's mark counts (#1066): a Safe still pending
+    // verification is refused like one not yet activated.
+    if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
+      throw new Error('Activate this account on Gnosis before sending');
+    }
+    assertNoPendingSafeSend(safeIndex);
+
+    acquire(safeIndex);
+    try {
+      const built = await buildSafeTransaction({
+        chainId: sendChainId,
+        safe: { ...record, owners: resolveOwnerAddresses(record.owners) },
+        tx,
+      });
+      setPending(safeIndex, {
+        chainId: sendChainId,
+        safeAddress: built.safeAddress,
+        safeTxData: built.safeTxData,
+        safeTxHash: built.safeTxHash,
+        typedData: built.typedData,
+        threshold: record.threshold,
+        display,
+        signatures: [],
+        createdAt: Date.now(),
+      });
+      await safeApprovals.hold(SEND, safeIndex, approval, built.safeTxHash);
+      held = true;
+      await collectFreeSignatures(store, safeIndex, record.owners);
+    } finally {
+      release(safeIndex);
+    }
+  } finally {
+    // An approval for no SafeTx main holds: ended.
+    if (!held) await safeApprovals.release(approval);
   }
-  // Only a verified check's mark counts (#1066): a Safe still pending
-  // verification is refused like one not yet activated.
-  if (!isMarkedDeployed(record, DEPLOY_CHAIN_ID)) {
-    throw new Error('Activate this account on Gnosis before sending');
-  }
+  return getSafeSendState(safeIndex);
+}
+
+/**
+ * Refuses (SAFE_PENDING_EXISTS) while the Safe has a pending SafeTx: one at
+ * a time. Asked before a new `safe-send` token is spent, too, since the
+ * core's new approval for a Safe ends its older one.
+ */
+function assertNoPendingSafeSend(safeIndex) {
   if (getPending(safeIndex)) {
     throw codedError(
       'A transaction is already waiting for signatures — finish or discard it first',
       SAFE_PENDING_EXISTS
     );
   }
-
-  acquire(safeIndex);
-  try {
-    const built = await buildSafeTransaction({
-      chainId: sendChainId,
-      safe: { ...record, owners: resolveOwnerAddresses(record.owners) },
-      tx,
-    });
-    setPending(safeIndex, {
-      chainId: sendChainId,
-      safeAddress: built.safeAddress,
-      safeTxData: built.safeTxData,
-      safeTxHash: built.safeTxHash,
-      typedData: built.typedData,
-      threshold: record.threshold,
-      display,
-      signatures: [],
-      createdAt: Date.now(),
-    });
-    await collectFreeSignatures(store, safeIndex, record.owners);
-  } finally {
-    release(safeIndex);
-  }
-  return getSafeSendState(safeIndex);
 }
 
 /**
@@ -291,23 +337,60 @@ async function startSafeSend({ safeIndex, tx, display, chainId }) {
  * refused (SAFE_DISCARDED), and so is a signature whose SafeTx was replaced
  * while it was made.
  *
+ * Each owner presents the Safe approval main holds for the SafeTx. With
+ * none (SAFE_APPROVAL_NEEDED), the board confirms the SafeTx again: a
+ * wallet `safe-send` token for its call, spent through the core, whose
+ * approval comes here as `approval` and is held for this SafeTx (design
+ * 0012: "an owner that hasn't signed needs a new safe-send token from the
+ * board"). It is the wallet's, so it isn't taken for a site's SafeTx whose
+ * request still holds it (`guardSiteSafeSend`): its signatures stay the
+ * page's.
+ *
  * @param {number} safeIndex
  * @param {number} [ownerIndex]
- * @param {{ safeTxHash?: string }} [options]
+ * @param {{ safeTxHash?: string, approval?: {id: string, page: null} }} [options]
  * @returns {Promise<Object>} SafeSendState
  */
-async function signSafePending(safeIndex, ownerIndex, { safeTxHash = null } = {}) {
-  const record = getSafeRecord(safeIndex);
-  const pending = pendingNamed(safeIndex, safeTxHash);
-  if (!pending) {
-    throw new Error('No pending transaction for this account');
-  }
-  if (pending.superseded) {
-    throw new Error('This transaction can no longer be signed — discard it');
-  }
+async function signSafePending(safeIndex, ownerIndex, { safeTxHash = null, approval = null } = {}) {
+  let taken = approval === null;
+  try {
+    const record = getSafeRecord(safeIndex);
+    const pending = pendingNamed(safeIndex, safeTxHash);
+    if (!pending) {
+      throw new Error('No pending transaction for this account');
+    }
+    if (pending.superseded) {
+      throw new Error('This transaction can no longer be signed — discard it');
+    }
+    if (approval !== null) {
+      if (!safeApprovals.isApproval(approval) || approval.page !== null) {
+        throw new Error('This transaction was not confirmed');
+      }
+      if (pending.display?.site && siteGuards.has(pending.safeTxHash)) {
+        throw new Error('The site that asked for this transaction still holds it');
+      }
+      await safeApprovals.hold(SEND, safeIndex, approval, pending.safeTxHash);
+      taken = true;
+    }
 
-  await signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes: record.owners, expectedId: pending.safeTxHash });
+    await signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes: record.owners, expectedId: pending.safeTxHash });
+  } finally {
+    if (!taken) await safeApprovals.release(approval);
+  }
   return getSafeSendState(safeIndex);
+}
+
+/**
+ * The call of the pending SafeTx `safeTxHash` (`{ tx: { to, value, data },
+ * chainId }`), as a wallet `safe-send` token binds it, for confirming it
+ * again (`signSafePending`'s `approval`); null when another one, or none,
+ * is pending.
+ */
+function pendingCall(safeIndex, safeTxHash) {
+  const pending = getPending(safeIndex);
+  if (!pending || pending.safeTxHash !== safeTxHash || !pending.safeTxData) return null;
+  const { to, value, data } = pending.safeTxData;
+  return { tx: { to, value, data }, chainId: pending.chainId };
 }
 
 /**
@@ -348,6 +431,8 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
     // elsewhere (app.safe.global). Terminal, not retryable.
     const chainNonce = await chainSafeNonce(pending.safeAddress);
     if (chainNonce > BigInt(pending.safeTxData.nonce)) {
+      // Superseded: its approval ended first (design 0012).
+      await safeApprovals.end(SEND, safeIndex, pending.safeTxHash);
       pending.superseded = true;
       setPending(safeIndex, pending);
       return getSafeSendState(safeIndex);
@@ -380,6 +465,9 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
         },
         // And again at its last step, after the executor's signature.
         guardCommit: guard,
+        // The executor presents the SafeTx's approval (design 0012), or its
+        // 'executor-send' token.
+        approval: safeApprovals.held(SEND, safeIndex, pending.safeTxHash),
       });
     let result;
     try {
@@ -414,6 +502,9 @@ async function executeSafePending(safeIndex, { feeConfirmation = null, safeTxHas
     }
 
     const state = getSafeSendState(safeIndex);
+    // Executed: its approval ended (the executor's signature ended it in the
+    // core as well), then the entry cleared.
+    await safeApprovals.end(SEND, safeIndex, pending.safeTxHash);
     clearPending(safeIndex);
     settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'executed', hash: result.hash });
     return { ...state, status: 'executed', executed: { hash: result.hash, explorerUrl: result.explorerUrl } };
@@ -438,19 +529,29 @@ function getAllSafeSendStates() {
  * Discard the pending SafeTx (collected signatures are thrown away).
  * Refused while a signature ceremony or the execution is live. With
  * `safeTxHash`, only that SafeTx is discarded: another one pending, or none,
- * is refused (SAFE_DISCARDED), nothing discarded.
+ * is refused (SAFE_DISCARDED), nothing discarded. Its Safe approval is
+ * ended first (design 0012), the Safe held meanwhile, so no step starts
+ * between the two.
  */
-function cancelSafeSend(safeIndex, { safeTxHash = null } = {}) {
+async function cancelSafeSend(safeIndex, { safeTxHash = null } = {}) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
   const pending = pendingNamed(safeIndex, safeTxHash);
-  clearPending(safeIndex);
+  acquire(safeIndex);
+  try {
+    if (pending) await safeApprovals.end(SEND, safeIndex, pending.safeTxHash);
+    clearPending(safeIndex);
+  } finally {
+    release(safeIndex);
+  }
   if (pending) settled({ safeIndex, safeTxHash: pending.safeTxHash, outcome: 'discarded' });
 }
 
 module.exports = {
   startSafeSend,
+  assertNoPendingSafeSend,
+  pendingCall,
   signSafePending,
   executeSafePending,
   getSafeSendState,

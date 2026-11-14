@@ -30,6 +30,10 @@ const CODES = {
   /** The same, but the records couldn't yet be rewritten to say so: the
    * SafeTx still names its site, and the next attempt finishes the move. */
   SAFE_SITE_WITHDRAWING: 'SAFE_SITE_WITHDRAWING',
+  /** No Safe approval is held for the pending item (freedom-core design
+   * 0012): main restarted since it was confirmed, or the approval ended, so
+   * no owner signs it until the user confirms it again. */
+  SAFE_APPROVAL_NEEDED: 'SAFE_APPROVAL_NEEDED',
 };
 
 function codedError(message, code) {

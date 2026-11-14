@@ -93,7 +93,17 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     jest.doMock('../identity-manager', () => ({
       getWalletRecord: (index) =>
         index === SAFE_INDEX ? { index, type: 'safe', address: SAFE_ADDRESS, owners: [0], threshold: 1 } : null,
+      isHardwareWalletIndex: () => false,
+      recordLedgerAddressCheck: () => {},
+      recordRemoteAddressCheck: () => {},
+      WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
     }));
+    // Main's own signers (`signers.js`) for the vault: no device here.
+    jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
+    jest.doMock('./ledger/signer', () => ({ createLedgerBackend: () => ({}) }));
+    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => ({}) }));
+    // Main's dApp file, written where the core reads it (its grant root).
+    jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
     sc = require('./signing-confirmation');
     ({ vaultBackend } = require('../core/vault-backend'));
     ({ buildTransaction } = require('./transaction-service'));
@@ -300,11 +310,13 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         chain_id: '100',
         tx: { to: TX.to.toLowerCase(), value: '5', data: '0x' },
       });
-      await expect(sc.spendSafeConfirmation(confirmation)).resolves.toEqual({ bound: true });
-      // The approval it gave is ended at once, until APB-1c carries it on.
+      const spent = await sc.spendSafeConfirmation(confirmation);
+      expect(spent).toEqual({ bound: true, approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: null } });
+      // The approval it gave is held for its signatures (APB-1c), not ended.
       const spend = calls.find((call) => call.method === 'approval.spend');
       expect(spend.context).toEqual({ caller: 'shell' });
-      expect(calls.some((call) => call.method === 'approval.end')).toBe(true);
+      expect(calls.some((call) => call.method === 'approval.end')).toBe(false);
+      await vaultBackend.approval.end(spent.approval.id);
       for (const change of [
         { chainId: 1 },
         { tx: { ...SAFE_TX.tx, to: '0x' + '33'.repeat(20) } },
@@ -328,7 +340,10 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         /Signing was not confirmed/
       );
       const fresh = await pageToken('safe-send', SAFE_INDEX, { ...SAFE_TX, origin: SITE });
-      await expect(sc.spendSafeConfirmation(fresh)).resolves.toEqual({ bound: true });
+      await expect(sc.spendSafeConfirmation(fresh)).resolves.toEqual({
+        bound: true,
+        approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE },
+      });
       expect(calls.filter((call) => call.method === 'approval.spend').at(-1).context).toEqual({ caller: 'page', page: PAGE });
     });
 
@@ -336,7 +351,10 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       const request = { method: 'personal_sign', params: ['0x68', SAFE_ADDRESS] };
       const confirmation = await pageToken('safe-message', SAFE_INDEX, request);
       expect(confirmation.payload).toEqual({ safe: SAFE_ADDRESS, chain_id: '100', ...request });
-      await expect(sc.spendSafeConfirmation(confirmation)).resolves.toEqual({ bound: true });
+      await expect(sc.spendSafeConfirmation(confirmation)).resolves.toEqual({
+        bound: true,
+        approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE },
+      });
       for (const other of [{ ...request, method: 'eth_signTypedData_v4' }, { ...request, params: ['0x69', SAFE_ADDRESS] }]) {
         const token = await pageToken('safe-message', SAFE_INDEX, request);
         const presented = { ...token, payload: { ...token.payload, method: other.method, params: other.params } };
@@ -542,6 +560,207 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         await expect(sc.issuePageConfirmation('sign-message', 0, '0x68', { handle, context: page })).rejects.toThrow(/needs its/);
       }
       expect(calls.filter((call) => call.method === 'approval.issue')).toEqual([]);
+    });
+  });
+
+  // APB-1c: the Safe approval a Safe's spend gives, presented by each vault
+  // owner's `sign.typed_data` and the executor's `sign.transaction` as
+  // `{ safe }`, under the caller it was recorded for, until main ends it.
+  describe("Safe approvals: each owner's and the executor's signature (APB-1c)", () => {
+    const { Interface, hashMessage, concat } = require('ethers');
+    const ZERO = '0x' + '00'.repeat(20);
+    const OWNER = new Wallet(ABANDON_KEY).address;
+    const SAFE_CALL = Object.freeze({ to: TX.to, value: '5', data: '0x' });
+    const EXEC = new Interface([
+      'function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)',
+    ]);
+    const DOMAIN_TYPE = [
+      { name: 'chainId', type: 'uint256' },
+      { name: 'verifyingContract', type: 'address' },
+    ];
+    // A SafeTx as safe-executor builds one for a call (protocol-kit's
+    // createTransaction): operation 0, no refund.
+    const safeTx = (call = SAFE_CALL, nonce = 3) => ({
+      domain: { chainId: 100, verifyingContract: SAFE_ADDRESS },
+      types: {
+        EIP712Domain: DOMAIN_TYPE,
+        SafeTx: [
+          { name: 'to', type: 'address' },
+          { name: 'value', type: 'uint256' },
+          { name: 'data', type: 'bytes' },
+          { name: 'operation', type: 'uint8' },
+          { name: 'safeTxGas', type: 'uint256' },
+          { name: 'baseGas', type: 'uint256' },
+          { name: 'gasPrice', type: 'uint256' },
+          { name: 'gasToken', type: 'address' },
+          { name: 'refundReceiver', type: 'address' },
+          { name: 'nonce', type: 'uint256' },
+        ],
+      },
+      primaryType: 'SafeTx',
+      message: {
+        ...call,
+        operation: 0,
+        safeTxGas: '0',
+        baseGas: '0',
+        gasPrice: '0',
+        gasToken: ZERO,
+        refundReceiver: ZERO,
+        nonce: String(nonce),
+      },
+    });
+    // A SafeMessage as safe-messages builds one: the digest a verifier
+    // computes for the page's request.
+    const safeMessage = (digest) => ({
+      domain: { chainId: 100, verifyingContract: SAFE_ADDRESS },
+      types: { EIP712Domain: DOMAIN_TYPE, SafeMessage: [{ name: 'message', type: 'bytes' }] },
+      primaryType: 'SafeMessage',
+      message: { message: digest },
+    });
+    // The executor's transaction: execTransaction to the Safe, value 0, the
+    // SafeTx field for field, with the owners' signatures.
+    const execSend = (signatures, call = SAFE_CALL) => ({
+      to: SAFE_ADDRESS,
+      value: '0',
+      data: EXEC.encodeFunctionData('execTransaction', [call.to, call.value, call.data, 0, 0, 0, 0, ZERO, ZERO, concat(signatures)]),
+      chainId: 100,
+      gasLimit: '150000',
+      maxFeePerGas: TX.maxFeePerGas,
+      maxPriorityFeePerGas: TX.maxPriorityFeePerGas,
+    });
+    let getSigner;
+
+    beforeAll(() => {
+      ({ getSigner } = require('./signers'));
+    });
+
+    const owner = (approval) => getSigner(0, { safe: approval });
+    const notConfirmed = async (promise) => {
+      const err = await refusal(promise);
+      expect(err.code).toBe('SIGNING_NOT_CONFIRMED');
+      return err.reason;
+    };
+    const walletApproval = async (call = SAFE_CALL) =>
+      (await sc.spendSafeConfirmation(await walletToken('safe-send', SAFE_INDEX, { tx: call, chainId: 100 }))).approval;
+    const pageApproval = async (kind, payload, page = PAGE) =>
+      (await sc.spendSafeConfirmation(await pageToken(kind, SAFE_INDEX, payload, page))).approval;
+
+    test("a wallet's: its owners sign the SafeTx it approved as main itself, the first fixing it; nothing else", async () => {
+      const approval = await walletApproval();
+      // Another call, or the same call on another chain, is refused.
+      await expect(notConfirmed(owner(approval).signTypedData(safeTx({ ...SAFE_CALL, value: '6' })))).resolves.toBe('mismatch');
+      await expect(
+        notConfirmed(owner(approval).signTypedData({ ...safeTx(), domain: { chainId: 1, verifyingContract: SAFE_ADDRESS } }))
+      ).resolves.toBe('mismatch');
+      // Under a page: not the wallet's caller.
+      await expect(notConfirmed(owner({ ...approval, page: PAGE }).signTypedData(safeTx()))).resolves.toBe('mismatch');
+      // The SafeTx itself, at its nonce, as main: signed, under `shell`.
+      const signature = await owner(approval).signTypedData(safeTx());
+      const { domain, types, message } = safeTx();
+      const { EIP712Domain: _domain, ...signed } = types;
+      expect(require('ethers').verifyTypedData(domain, signed, message, signature)).toBe(OWNER);
+      expect(calls.at(-1)).toMatchObject({
+        method: 'sign.typed_data',
+        context: { caller: 'shell' },
+        params: { authorization: { safe: approval.id } },
+      });
+      // Fixed: the same SafeTx again, but not one at another nonce.
+      await expect(owner(approval).signTypedData(safeTx())).resolves.toBe(signature);
+      await expect(notConfirmed(owner(approval).signTypedData(safeTx(SAFE_CALL, 4)))).resolves.toBe('mismatch');
+      // A message is never a Safe owner's.
+      await expect(notConfirmed(owner(approval).signMessage('hello'))).resolves.toBe('mismatch');
+      // Ended (main's discard): every later use refused, and ending again is {}.
+      await expect(vaultBackend.approval.end(approval.id)).resolves.toEqual({});
+      await expect(notConfirmed(owner(approval).signTypedData(safeTx()))).resolves.toBe('unknown_token');
+      await expect(vaultBackend.approval.end(approval.id)).resolves.toEqual({});
+    });
+
+    test("a page's: signed only under its own PageContext, the document gone or not; never as main's", async () => {
+      const approval = await pageApproval('safe-send', { tx: SAFE_CALL, chainId: 100, origin: SITE });
+      expect(approval.page).toEqual(PAGE);
+      for (const other of [null, { ...PAGE, navigation: PAGE.navigation + 1 }, { ...PAGE, frame: PAGE.frame + 1 }, { ...PAGE, origin: OTHER_SITE, top_origin: OTHER_SITE }]) {
+        await expect(notConfirmed(owner({ ...approval, page: other }).signTypedData(safeTx()))).resolves.toBe('mismatch');
+      }
+      await expect(owner(approval).signTypedData(safeTx())).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+      expect(calls.at(-1)).toMatchObject({
+        method: 'sign.typed_data',
+        context: { caller: 'page', page: PAGE },
+        params: { authorization: { safe: approval.id } },
+      });
+      await vaultBackend.approval.end(approval.id, PAGE);
+      expect(calls.at(-1)).toMatchObject({ method: 'approval.end', context: { caller: 'page', page: PAGE } });
+    });
+
+    test("the executor: the approval while the core's fee check allows it, else an executor-send token; main ends it once executed", async () => {
+      const approval = await walletApproval();
+      const ownerSignature = await owner(approval).signTypedData(safeTx());
+      const send = execSend([ownerSignature]);
+      const executor = (authorized) => getSigner(0, authorized);
+      const signedTx = (built) => buildTransaction({ ...built, nonce: 7 });
+      // Another call than the SafeTx approved: refused whatever the fee.
+      await expect(
+        notConfirmed(executor({ safe: approval }).signTransaction(signedTx(execSend([ownerSignature], { ...SAFE_CALL, value: '6' }))))
+      ).resolves.toBe('mismatch');
+      // No fee evidence served to this core: its fee check stops the
+      // approval, with nothing signed (main asks the fee: safe-executor.js).
+      await expect(notConfirmed(executor({ safe: approval }).signTransaction(signedTx(send)))).resolves.toBe('fee_check');
+      // The user confirms the fee: an executor-send token, named as its kind.
+      const { token } = await sc.issueConfirmation('executor-send', 0, send);
+      const confirmation = sc.confirmationFor(token, 'executor-send', 0, send);
+      const raw = await executor({ confirmation }).signTransaction(signedTx(send));
+      expect(Transaction.from(raw).from).toBe(OWNER);
+      expect(calls.at(-1)).toMatchObject({
+        method: 'sign.transaction',
+        context: { caller: 'shell' },
+        params: { authorization: { kind: 'executor-send' } },
+      });
+      // Executed: main ends the approval, and no owner signs with it again.
+      await vaultBackend.approval.end(approval.id);
+      await expect(notConfirmed(owner(approval).signTypedData(safeTx()))).resolves.toBe('unknown_token');
+    });
+
+    test("a Safe's new send approval ends its older one", async () => {
+      const older = await walletApproval();
+      const newer = await walletApproval();
+      await expect(notConfirmed(owner(older).signTypedData(safeTx()))).resolves.toBe('unknown_token');
+      await expect(owner(newer).signTypedData(safeTx())).resolves.toMatch(/^0x/);
+      await vaultBackend.approval.end(newer.id);
+    });
+
+    test("a page's Safe message: its owners sign the SafeMessage over the request's digest, under its page, until ended", async () => {
+      const request = { method: 'personal_sign', params: ['0x68656c6c6f', SAFE_ADDRESS] };
+      const approval = await pageApproval('safe-message', request);
+      const digest = hashMessage(require('ethers').getBytes('0x68656c6c6f'));
+      await expect(notConfirmed(owner(approval).signTypedData(safeMessage(hashMessage('other'))))).resolves.toBe('mismatch');
+      await expect(notConfirmed(owner({ ...approval, page: null }).signTypedData(safeMessage(digest)))).resolves.toBe('mismatch');
+      await expect(owner(approval).signTypedData(safeMessage(digest))).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+      // The threshold's last signature: main ends it before the join.
+      await vaultBackend.approval.end(approval.id, PAGE);
+      await expect(notConfirmed(owner(approval).signTypedData(safeMessage(digest)))).resolves.toBe('unknown_token');
+    });
+
+    test("a Safe message a site's rule answers: approval.spend { standing } under the page, judged by the core", async () => {
+      const permissions = require('./dapp-permissions');
+      const request = { method: 'personal_sign', params: ['0x68656c6c6f', SAFE_ADDRESS] };
+      try {
+        // No rule for the Safe: refused, no approval.
+        permissions.grantPermission(SITE, SAFE_INDEX, 100);
+        await expect(notConfirmed(sc.spendStandingSafeMessage(PAGE, SAFE_INDEX, request))).resolves.toBe('no_rule');
+        permissions.setSigningAutoApprove(SITE, true);
+        // In custody: the rule never answers.
+        await expect(notConfirmed(sc.spendStandingSafeMessage({ ...PAGE, agent: true }, SAFE_INDEX, request))).resolves.toBe('custody');
+        const approval = await sc.spendStandingSafeMessage(PAGE, SAFE_INDEX, request);
+        expect(approval).toEqual({ id: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE });
+        expect(calls.find((call) => call.method === 'approval.spend' && call.params.standing)).toMatchObject({
+          context: { caller: 'page', page: PAGE },
+          params: { standing: {}, kind: 'safe-message', account: SAFE_INDEX, payload: { safe: SAFE_ADDRESS, chain_id: '100' } },
+        });
+        const digest = hashMessage(require('ethers').getBytes('0x68656c6c6f'));
+        await expect(owner(approval).signTypedData(safeMessage(digest))).resolves.toMatch(/^0x[0-9a-f]{130}$/);
+        await vaultBackend.approval.end(approval.id, PAGE);
+      } finally {
+        permissions.revokePermission(SITE);
+      }
     });
   });
 });

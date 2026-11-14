@@ -1920,6 +1920,9 @@ async function deleteDerivedWallet(index) {
   // (Lazy requires — both modules are dependency-light — keep the Safe
   // stack out of ordinary wallet operations.)
   if (wallets[walletIndex].type === WALLET_TYPES.SAFE) {
+    // Its Safe approvals with them (freedom-core design 0012): forgotten at
+    // once, and ended in the core.
+    require('./wallet/safe/safe-approvals').endSafe(index);
     require('./wallet/safe/message-sessions').discardSession(index);
     require('./wallet/safe/pending-store').clearPending(index);
   }

@@ -31,7 +31,11 @@ jest.mock('./dapp-permissions', () => ({
 }));
 jest.mock('./safe/safe-transactions', () => ({
   startSafeSend: jest.fn(async () => ({ safeTxHash: '0xsafetx' })),
+  assertNoPendingSafeSend: jest.fn(),
   executeSafePending: jest.fn(async () => ({ status: 'executed' })),
+  signSafePending: jest.fn(async () => ({ collected: 2 })),
+  getSafeSendState: jest.fn(() => null),
+  pendingCall: jest.fn(() => null),
 }));
 jest.mock('../ens-resolver', () => ({ resolveEnsContent: jest.fn() }));
 jest.mock('./safe/safe-service', () => ({ activateSafe: jest.fn(), DEPLOY_CHAIN_ID: 100 }));
@@ -736,7 +740,10 @@ describe('signing handlers require a main-side confirmation', () => {
       const ok = await handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 100, { confirmation });
       expect(ok).toMatchObject({ success: true });
       expect(startSafeSend).toHaveBeenCalledTimes(1);
-
+      // With the Safe approval its token gave, the wallet's (design 0012).
+      expect(startSafeSend).toHaveBeenCalledWith(
+        expect.objectContaining({ approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: null } })
+      );
       const again = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
       const wrongChain = await handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 1, { confirmation: again });
       expect(wrongChain).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
@@ -801,6 +808,53 @@ describe('signing handlers require a main-side confirmation', () => {
       await expect(handlers['wallet:activate-safe']({}, 7)).resolves.toMatchObject({
         code: 'NEEDS_FUNDS',
       });
+    });
+
+    // freedom-core design 0012, APB-1c: one pending SafeTx per Safe, refused
+    // before the token is spent (the core's new approval would end the
+    // pending one's), and the token burnt.
+    test('wallet:safe-send while a SafeTx is pending spends nothing', async () => {
+      const { assertNoPendingSafeSend } = require('./safe/safe-transactions');
+      assertNoPendingSafeSend.mockImplementationOnce(() => {
+        throw Object.assign(new Error('A transaction is already waiting'), { code: 'SAFE_PENDING_EXISTS' });
+      });
+      const confirmation = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
+      const result = await handlers['wallet:safe-send']({}, 7, SAFE_TX, {}, 100, { confirmation });
+      expect(result).toMatchObject({ success: false, code: 'SAFE_PENDING_EXISTS' });
+      expect(startSafeSend).not.toHaveBeenCalled();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(outstanding()).toBe(0);
+    });
+
+    // An owner with no Safe approval held (a restart since): the board
+    // confirms the pending SafeTx again, a wallet safe-send token for main's
+    // own call of it, spent here for a new approval.
+    test('wallet:safe-sign with a new confirmation of the pending SafeTx signs with its approval', async () => {
+      const transactions = require('./safe/safe-transactions');
+      transactions.getSafeSendState.mockReturnValue({ safeTxHash: '0xsafetx' });
+      transactions.pendingCall.mockReturnValue({ tx: SAFE_TX, chainId: 100 });
+      try {
+        const confirmation = await mint('safe-send', 7, { tx: SAFE_TX, chainId: 100 });
+        await expect(handlers['wallet:safe-sign']({}, 7, 2, { confirmation })).resolves.toMatchObject({ success: true });
+        expect(transactions.signSafePending).toHaveBeenLastCalledWith(7, 2, {
+          safeTxHash: '0xsafetx',
+          approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: null },
+        });
+        // A token for another call is refused, and signs nothing.
+        transactions.signSafePending.mockClear();
+        const other = await mint('safe-send', 7, { tx: { ...SAFE_TX, value: '6' }, chainId: 100 });
+        await expect(handlers['wallet:safe-sign']({}, 7, 2, { confirmation: other })).resolves.toMatchObject({
+          success: false,
+          code: 'SIGNING_NOT_CONFIRMED',
+        });
+        expect(transactions.signSafePending).not.toHaveBeenCalled();
+        // Without one, as before.
+        await handlers['wallet:safe-sign']({}, 7, 2);
+        expect(transactions.signSafePending).toHaveBeenLastCalledWith(7, 2);
+      } finally {
+        transactions.getSafeSendState.mockReturnValue(null);
+        transactions.pendingCall.mockReturnValue(null);
+      }
     });
 
     test('wallet:safe-send has no auto-approve', async () => {

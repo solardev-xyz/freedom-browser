@@ -146,7 +146,7 @@ function backends() {
     agent: null,
     signed: [],
     signerFails: null,
-    safe: { complete: true, sessions: [], completed: [], cancelled: [] },
+    safe: { complete: true, sessions: [], completed: [], cancelled: [], standing: [] },
   };
   const signer = {
     signMessage: jest.fn(async (message) => {
@@ -197,6 +197,22 @@ function backends() {
         state.rules.push([key, enabled]);
         const permission = state.permissions.get(key);
         if (permission) permission.autoApprove = { ...(permission.autoApprove || {}), signing: enabled };
+      }),
+      // A Safe message a site's rule answers (design 0012, `approval.spend {
+      // standing }`), simulated from the same state: the grant exposing the
+      // Safe and its signing rule, outside custody. It gives the page's Safe
+      // approval.
+      spendStandingSafe: jest.fn(async (page, safeIndex, request) => {
+        const refused = (reason) =>
+          Object.assign(new Error('Signing was not confirmed: no standing rule covers this request'), {
+            code: 'SIGNING_NOT_CONFIRMED',
+            reason,
+          });
+        if (page?.agent !== false) throw refused('custody');
+        const permission = state.permissions.get(page.origin);
+        if (permission?.walletIndex !== safeIndex || permission.autoApprove?.signing !== true) throw refused('no_rule');
+        state.safe.standing.push([page, safeIndex, request]);
+        return { id: 'f0'.repeat(16), page };
       }),
       startSafeMessage: jest.fn(async (options) => {
         state.safe.sessions.push(options);
@@ -1188,6 +1204,22 @@ describe('a DNS name over IPNS that moves off its key', () => {
 });
 
 describe("a Safe's message, in a session main owns", () => {
+  test("a rule the core refuses at its spend opens no session: custody as custody, no rule as the rule gone", async () => {
+    const env = setup();
+    env.connect(KEY_A, SAFE_INDEX, { autoApprove: { signing: true } });
+    const page = env.tab();
+    for (const [reason, answer] of [
+      ['custody', CUSTODY],
+      ['no_rule', { error: expect.objectContaining({ message: expect.stringMatching(/auto-approve|not confirmed/i) }) }],
+    ]) {
+      env.deps.signing.spendStandingSafe.mockImplementationOnce(async () => {
+        throw Object.assign(new Error('Signing was not confirmed'), { code: 'SIGNING_NOT_CONFIRMED', reason });
+      });
+      expect(await page.ask('personal_sign', [MESSAGE, SAFE])).toEqual(answer);
+    }
+    expect(env.state.safe.sessions).toEqual([]);
+  });
+
   test('the vault owners suffice: main opens the session for the requester, and completes it', async () => {
     const env = setup();
     env.connect(KEY_A, SAFE_INDEX);
@@ -1204,6 +1236,9 @@ describe("a Safe's message, in a session main owns", () => {
         display: { kind: 'message', site: KEY_A, method: 'personal_sign' },
         requester: { origin: KEY_A, webContentsId: page.guest.id },
         owner: 'main',
+        // The page's Safe approval its token gave (design 0012, APB-1c),
+        // with the request's PageContext.
+        approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: expect.objectContaining({ origin: KEY_A, agent: false }) },
       },
     ]);
     expect(env.state.safe.completed).toEqual([[SAFE_INDEX, 'session-1']]);
@@ -1272,6 +1307,11 @@ describe("a Safe's message, in a session main owns", () => {
     expect(await page.ask('eth_signTypedData_v4', [SAFE, TYPED])).toEqual({ result: '0xsafesig' });
     expect(env.prompts()).toEqual([]);
     expect(env.minted()).toEqual([]);
+    // No token: `approval.spend { standing }` under the page, for the Safe
+    // approval its owners present (design 0012, APB-1c).
+    const pageContext = expect.objectContaining({ origin: KEY_A, agent: false });
+    expect(env.state.safe.standing).toEqual([[pageContext, SAFE_INDEX, { method: 'eth_signTypedData_v4', params: [SAFE, TYPED] }]]);
+    expect(env.state.safe.sessions[0].approval).toEqual({ id: 'f0'.repeat(16), page: pageContext });
     page.ask('personal_sign', [RAW_HASH, SAFE]);
     await flush();
     expect(env.lastPrompt().kind).toBe('eth.sign');

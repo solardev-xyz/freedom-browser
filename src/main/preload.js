@@ -890,7 +890,12 @@ contextBridge.exposeInMainWorld('wallet', {
   // where state is the board's render model (null when nothing pending).
   safeSend: (safeIndex, tx, display, chainId, authorization) =>
     ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId, authorization),
-  safeSign: (safeIndex, ownerIndex) => ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex),
+  // `authorization`: `{ confirmation }`, a 'safe-send' token confirming the
+  // pending SafeTx again when main holds no Safe approval for it.
+  safeSign: (safeIndex, ownerIndex, authorization) =>
+    authorization === undefined
+      ? ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex)
+      : ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex, authorization),
   safeExecute: (safeIndex, options) =>
     ipcRenderer.invoke('wallet:safe-execute', safeIndex, options),
   safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),

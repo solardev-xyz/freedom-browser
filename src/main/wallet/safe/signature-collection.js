@@ -10,11 +10,31 @@
  * `idOf` names the entry's identity (SafeTx hash / SafeMessage hash) so a
  * signature landing after a discard-and-replace is dropped, never
  * attached to the wrong payload.
+ *
+ * Every owner's signature presents the Safe approval main holds for the
+ * entry (freedom-core design 0012, APB-1c; `safe-approvals.js`): the
+ * adapter's `approvalOf(safeIndex, entry)` names it, or null. With none, no
+ * owner signs: the free sweep signs nothing, and a chosen owner is refused
+ * (SAFE_APPROVAL_NEEDED) before any key or device is asked. One the core
+ * no longer knows is forgotten (`forgetApproval`), and refused the same
+ * way. `signed(safeIndex, entry)`, if the adapter has it, runs after each
+ * signature is kept (a SafeMessage's approval ends at its last).
  */
 
 const { collectOwnerSignature } = require('./safe-executor');
 const { getWalletRecord, isVaultUnlocked, WALLET_TYPES } = require('../../identity-manager');
-const { codedError, SAFE_BUSY, SAFE_DISCARDED } = require('./errors');
+const { codedError, SAFE_BUSY, SAFE_DISCARDED, SAFE_APPROVAL_NEEDED } = require('./errors');
+
+function approvalNeeded() {
+  return codedError(
+    'This request needs your confirmation again before its owners can sign',
+    SAFE_APPROVAL_NEEDED
+  );
+}
+
+// The core no longer knows the approval presented (design 0012): ended,
+// dropped among its 64, or the core restarted.
+const approvalGone = (err) => err?.code === 'SIGNING_NOT_CONFIRMED' && err.reason === 'unknown_token';
 
 // One live ceremony/execution per Safe at a time, across sends AND
 // message sessions — a device can't serve two ceremonies at once.
@@ -73,11 +93,19 @@ async function collectFreeSignatures(store, safeIndex, ownerIndexes, expectedId 
     if (owner?.type !== WALLET_TYPES.MNEMONIC || hasSigned(entry.signatures, owner.address)) {
       continue;
     }
+    // No approval held: no free signature; the owners stay rows.
+    const approval = store.approvalOf(safeIndex, entry);
+    if (!approval) break;
     try {
-      const signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex });
+      const signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex, approval });
       entry.signatures = [...entry.signatures, signature];
       store.set(safeIndex, entry);
+      await store.signed?.(safeIndex, entry);
     } catch (err) {
+      if (approvalGone(err)) {
+        store.forgetApproval(safeIndex, entry);
+        break;
+      }
       // Vault locked mid-loop or a derivation hiccup: this owner
       // degrades to a manual row on the board, nothing fails.
       console.warn(`[SafeSign] auto-sign skipped for owner ${ownerIndex}:`, err.message);
@@ -119,11 +147,20 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
   if (hasSigned(entry.signatures, getWalletRecord(ownerIndex)?.address)) {
     return; // already signed — idempotent
   }
+  const approval = store.approvalOf(safeIndex, entry);
+  if (!approval) throw approvalNeeded();
 
   acquire(safeIndex);
   try {
     const signedId = store.idOf(entry);
-    const signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex });
+    let signature;
+    try {
+      signature = await collectOwnerSignature({ typedData: entry.typedData, ownerIndex, approval });
+    } catch (err) {
+      if (!approvalGone(err)) throw err;
+      store.forgetApproval(safeIndex, entry);
+      throw approvalNeeded();
+    }
 
     // The ceremony can take minutes: re-validate that THIS payload is
     // still the pending one before persisting into it.
@@ -136,6 +173,7 @@ async function signEntryOwner({ store, safeIndex, ownerIndex, ownerIndexes, expe
     }
     current.signatures = [...current.signatures, signature];
     store.set(safeIndex, current);
+    await store.signed?.(safeIndex, current);
   } finally {
     release(safeIndex);
   }

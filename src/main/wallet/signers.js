@@ -39,7 +39,12 @@ const {
   toCoreTransaction,
   assertBoundedTypeGraph,
 } = require('./signing-utils');
-const { signingAuthorization, spendConfirmation, confirmationError } = require('./signing-confirmation');
+const {
+  signingAuthorization,
+  safeAuthorization,
+  spendConfirmation,
+  confirmationError,
+} = require('./signing-confirmation');
 
 /**
  * @typedef {Object} Signer
@@ -64,10 +69,15 @@ const { signingAuthorization, spendConfirmation, confirmationError } = require('
  * What a vault signature sends beside its request (freedom-core design
  * 0012, API): the confirmation's `authorization`, which the core checks and
  * spends before any key is derived, and a page's PageContext, under which a
- * page's request is sent; none from main itself.
+ * page's request is sent; for a Safe's vault owner or its executor, the Safe
+ * approval (`{ safe }`) under the caller it was recorded for; none from main
+ * itself.
  */
-function signOptions({ confirmation = null, page = null } = {}) {
-  return confirmation ? signingAuthorization(confirmation) : { page };
+function signOptions({ confirmation = null, page = null, safe = null } = {}) {
+  if (confirmation) return signingAuthorization(confirmation);
+  // A Safe's owner or executor: the Safe approval, under its own caller.
+  if (safe) return safeAuthorization(safe);
+  return { page };
 }
 
 /** The core's refusal of a confirmation, in today's words, or null. */
@@ -179,8 +189,15 @@ function createVaultBackend(walletIndex, authorized = {}) {
  * PageContext, so it is sent under `page`, never as main's own.
  *
  * @param {number} walletIndex
- * @param {{confirmation?: object, page?: object}} [authorized] the
- *   confirmation (`signing-confirmation.js`) or a page's PageContext
+ * A Safe's owner or executor carries the Safe approval (`safe`: `{ id,
+ * page }`, `safe/safe-approvals.js`): a vault signature presents it to the
+ * core (design 0012, APB-1c). A device owner signs as before: the core
+ * doesn't make its signature, and has no check of a Safe approval for it
+ * (advised until 0016).
+ *
+ * @param {{confirmation?: object, page?: object, safe?: object}} [authorized]
+ *   the confirmation (`signing-confirmation.js`), a page's PageContext, or a
+ *   Safe approval
  * @returns {Signer}
  */
 function getSigner(walletIndex, authorized = {}) {

@@ -645,19 +645,42 @@ function registerWalletIpc() {
         if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
         throw notAuthorized('request differs from what was confirmed');
       }
+      const { startSafeSend, assertNoPendingSafeSend } = require('./safe/safe-transactions');
+      // One pending SafeTx per Safe, refused before the token is spent: the
+      // core's new approval for a Safe would end the pending one's.
+      try {
+        assertNoPendingSafeSend(safeIndex);
+      } catch (err) {
+        if (authorization?.confirmation) discardConfirmation(authorization.confirmation);
+        throw err;
+      }
       const confirmation = await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, { tx, chainId });
-      await spendSafeConfirmation(confirmation);
+      // Its Safe approval (design 0012, APB-1c): held for the SafeTx, and
+      // presented by each vault owner's signature and the executor's.
+      const { approval } = await spendSafeConfirmation(confirmation);
       const bound = display;
-      const { startSafeSend } = require('./safe/safe-transactions');
-      return startSafeSend({ safeIndex, tx, display: bound, chainId });
+      return startSafeSend({ safeIndex, tx, display: bound, chainId, approval });
     })
   );
 
+  // `authorization`: with no Safe approval held for the pending SafeTx
+  // (SAFE_APPROVAL_NEEDED: main restarted since it was confirmed, or the
+  // approval ended), the board confirms it again, a wallet 'safe-send'
+  // token for the SafeTx's call (design 0012), spent here for a new one.
   handle(
     'wallet:safe-sign',
-    safeStateHandler((safeIndex, ownerIndex) => {
-      const { signSafePending } = require('./safe/safe-transactions');
-      return signSafePending(safeIndex, ownerIndex);
+    safeStateHandler(async (safeIndex, ownerIndex, authorization) => {
+      const { signSafePending, getSafeSendState, pendingCall } = require('./safe/safe-transactions');
+      if (!authorization?.confirmation) return signSafePending(safeIndex, ownerIndex);
+      const safeTxHash = getSafeSendState(safeIndex)?.safeTxHash ?? null;
+      const call = safeTxHash ? pendingCall(safeIndex, safeTxHash) : null;
+      if (!call) {
+        discardConfirmation(authorization.confirmation);
+        throw new Error('No pending transaction for this account');
+      }
+      const confirmation = await authorizeSigning(authorization, CONFIRM_KINDS.SAFE_SEND, safeIndex, call);
+      const { approval } = await spendSafeConfirmation(confirmation);
+      return signSafePending(safeIndex, ownerIndex, { safeTxHash, approval });
     })
   );
 
@@ -679,9 +702,9 @@ function registerWalletIpc() {
 
   handle(
     'wallet:safe-cancel-pending',
-    safeStateHandler((safeIndex) => {
+    safeStateHandler(async (safeIndex) => {
       const { cancelSafeSend } = require('./safe/safe-transactions');
-      cancelSafeSend(safeIndex);
+      await cancelSafeSend(safeIndex);
     })
   );
 
@@ -738,9 +761,9 @@ function registerWalletIpc() {
 
   handle(
     'wallet:safe-message-cancel',
-    safeStateHandler((safeIndex, token) => {
+    safeStateHandler(async (safeIndex, token) => {
       const { cancelSafeMessage } = require('./safe/safe-messages');
-      cancelSafeMessage(safeIndex, token);
+      await cancelSafeMessage(safeIndex, token);
     })
   );
 

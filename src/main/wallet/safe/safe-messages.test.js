@@ -135,8 +135,13 @@ jest.mock('./safe-executor', () => ({
 const mockTypedDataHash = jest.fn(async ({ domain, types, message }) =>
   require('ethers').TypedDataEncoder.hash(domain, types, message)
 );
+// The core's `approval.end` (freedom-core design 0012).
+const mockApprovalEnd = jest.fn(async () => ({}));
 jest.mock('../../core/vault-backend', () => ({
-  vaultBackend: { typedDataHash: (...args) => mockTypedDataHash(...args) },
+  vaultBackend: {
+    typedDataHash: (...args) => mockTypedDataHash(...args),
+    approval: { end: (...args) => mockApprovalEnd(...args) },
+  },
 }));
 
 jest.mock('../provider-manager', () => ({
@@ -152,6 +157,14 @@ const {
 } = require('./safe-messages');
 const { getSession, discardSession } = require('./message-sessions');
 const { SAFE_MESSAGE_EXISTS } = require('./errors');
+const safeApprovals = require('./safe-approvals');
+
+// A page's Safe approval, as the core gives one at the spend of its
+// `safe-message` token or its site's rule: held for the page's PageContext.
+const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 2, navigation: 6, agent: false });
+let approvalCount = 0;
+const newApproval = (page = PAGE) => ({ id: (++approvalCount).toString(16).padStart(32, '0'), page });
+const endedIds = () => mockApprovalEnd.mock.calls.map(([id]) => id);
 
 // "hello" hex-encoded, the way dApps send personal_sign payloads.
 const HEX_MESSAGE = '0x68656c6c6f';
@@ -179,6 +192,7 @@ const TAB_B = { origin: 'other.example', webContentsId: 202 };
 
 const startPersonal = (safeIndex = 5, message = HEX_MESSAGE, requester = TAB_A) =>
   startSafeMessage({
+    approval: newApproval(PAGE),
     safeIndex,
     request: { method: 'personal_sign', params: [message, SAFE_ADDRESS] },
     display: DISPLAY,
@@ -189,6 +203,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockIsVaultUnlocked.mockResolvedValue(true);
   for (const index of [5, 6, 7, 8]) discardSession(index);
+  safeApprovals._reset();
   mockWebContentsById.clear();
   fakeWebContents(TAB_A.webContentsId);
   fakeWebContents(TAB_B.webContentsId);
@@ -245,6 +260,7 @@ describe('startSafeMessage', () => {
 
   test('wraps dApp typed data (JSON-string param), matching protocol-kit hashing', async () => {
     const state = await startSafeMessage({
+      approval: newApproval(PAGE),
       safeIndex: 5,
       request: {
         method: 'eth_signTypedData_v4',
@@ -284,6 +300,7 @@ describe('startSafeMessage', () => {
     };
     const start = () =>
       startSafeMessage({
+        approval: newApproval(PAGE),
         safeIndex: 5,
         request: typedRequest,
         display: { site: 'app.example', method: 'eth_signTypedData_v4' },
@@ -304,6 +321,7 @@ describe('startSafeMessage', () => {
       fakeWebContents(TAB_B.webContentsId);
       await expect(
         startSafeMessage({
+          approval: newApproval(PAGE),
           safeIndex: 5,
           request: typedRequest,
           display: { site: 'app.example', method: 'eth_signTypedData_v4' },
@@ -357,6 +375,7 @@ describe('startSafeMessage', () => {
     );
     await expect(
       startSafeMessage({
+        approval: newApproval(PAGE),
         safeIndex: 5,
         request: { method: 'eth_signTypedData_v4', params: [SAFE_ADDRESS, DAPP_TYPED_DATA] },
         display: { site: 'app.example', method: 'eth_signTypedData_v4' },
@@ -382,7 +401,7 @@ describe('startSafeMessage', () => {
     await expect(startPersonal(6)).rejects.toThrow(/activate/i);
     await expect(startPersonal(0)).rejects.toThrow(/not a Safe/i);
     await expect(
-      startSafeMessage({ safeIndex: 5, request: { method: 'eth_sign', params: [] }, display: {} })
+      startSafeMessage({ approval: newApproval(PAGE), safeIndex: 5, request: { method: 'eth_sign', params: [] }, display: {} })
     ).rejects.toThrow(/unsupported/i);
   });
 
@@ -472,8 +491,7 @@ describe('session lifecycle follows the requesting page', () => {
 
   test('completion unhooks the lifecycle listeners', async () => {
     const { token } = await startPersonal(7); // 1-of-N, complete right away
-    completeSafeMessage(7, token);
-
+    await completeSafeMessage(7, token);
     const contents = mockWebContentsById.get(TAB_A.webContentsId);
     expect(contents.listenerCount('destroyed')).toBe(0);
     expect(contents.listenerCount('did-navigate')).toBe(0);
@@ -545,11 +563,13 @@ describe('signSafeMessage', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     await expect(signSafeMessage(5, 4, token)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
-    expect(() => cancelSafeMessage(5, token)).toThrow(/current step/i);
-    expect(() => completeSafeMessage(5, token)).toThrow(/current step/i);
+    await expect(completeSafeMessage(5, token)).rejects.toThrow(/current step/i);
     // the SEND flow's guard is the same lock — one ceremony per Safe, full stop
     const { cancelSafeSend } = require('./safe-transactions');
-    expect(() => cancelSafeSend(5)).toThrow(/current step/i);
+    await expect(cancelSafeSend(5)).rejects.toThrow(/current step/i);
+    // A cancel meanwhile ends its approval first, then waits for the step.
+    await expect(cancelSafeMessage(5, token)).rejects.toThrow(/current step/i);
+    expect(safeApprovals.held('message', 5, getSession(5).hash)).toBeNull();
 
     resolveSign(signatureOf(2));
     await inFlight;
@@ -562,7 +582,7 @@ describe('completeSafeMessage', () => {
     const { token } = await startPersonal();
     await signSafeMessage(5, 2, token);
 
-    const { signature } = completeSafeMessage(5, token);
+    const { signature } = await completeSafeMessage(5, token);
 
     // protocol-kit sorts by signer address — byte-identical output
     expect(signature).toBe(buildSignatureBytes([signatureOf(0), signatureOf(2)]));
@@ -577,7 +597,7 @@ describe('completeSafeMessage', () => {
 
   test('refuses below the threshold', async () => {
     const { token } = await startPersonal();
-    expect(() => completeSafeMessage(5, token)).toThrow(/not enough signatures/i);
+    await expect(completeSafeMessage(5, token)).rejects.toThrow(/not enough signatures/i);
     expect(getSafeMessageState(5, token)).not.toBeNull(); // session survives
   });
 
@@ -585,8 +605,8 @@ describe('completeSafeMessage', () => {
     const { token } = await startPersonal();
     await signSafeMessage(5, 2, token); // threshold met
 
-    expect(() => completeSafeMessage(5, 'not-the-token')).toThrow(/different page/i);
-    expect(() => completeSafeMessage(5)).toThrow(/different page/i);
+    await expect(completeSafeMessage(5, 'not-the-token')).rejects.toThrow(/different page/i);
+    await expect(completeSafeMessage(5)).rejects.toThrow(/different page/i);
     expect(getSafeMessageState(5, token)).toMatchObject({ collected: 2 }); // still open
   });
 });
@@ -599,16 +619,16 @@ describe('getSafeMessageState / cancelSafeMessage', () => {
     // another page's probe sees nothing
     expect(getSafeMessageState(5, 'not-the-token')).toBeNull();
     expect(getSafeMessageState(5)).toBeNull();
-    cancelSafeMessage(5, token);
+    await cancelSafeMessage(5, token);
     expect(getSafeMessageState(5, token)).toBeNull();
     // cancelling again is a no-op, not an error
-    expect(() => cancelSafeMessage(5, token)).not.toThrow();
+    await expect(cancelSafeMessage(5, token)).resolves.toBeUndefined();
   });
 
   test('cancel with a wrong token is refused and leaves the session', async () => {
     const { token } = await startPersonal();
-    expect(() => cancelSafeMessage(5, 'not-the-token')).toThrow(/different page/i);
-    expect(() => cancelSafeMessage(5)).toThrow(/different page/i);
+    await expect(cancelSafeMessage(5, 'not-the-token')).rejects.toThrow(/different page/i);
+    await expect(cancelSafeMessage(5)).rejects.toThrow(/different page/i);
     expect(getSafeMessageState(5, token)).not.toBeNull();
   });
 
@@ -617,7 +637,7 @@ describe('getSafeMessageState / cancelSafeMessage', () => {
     destroyWebContents(TAB_A.webContentsId);
     const next = await startPersonal(5, 'a different message', TAB_B);
 
-    expect(() => cancelSafeMessage(5, first.token)).toThrow(/different page/i);
+    await expect(cancelSafeMessage(5, first.token)).rejects.toThrow(/different page/i);
     expect(getSafeMessageState(5, next.token)).not.toBeNull();
   });
 
@@ -644,6 +664,7 @@ describe('getSafeMessageState / cancelSafeMessage', () => {
 describe('a session main owns', () => {
   const startOwned = (requester = TAB_A) =>
     startSafeMessage({
+      approval: newApproval(PAGE),
       safeIndex: 5,
       request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
       display: DISPLAY,
@@ -670,7 +691,108 @@ describe('a session main owns', () => {
     const { token } = await startOwned();
     await signSafeMessage(5, 2, token);
     expect(getSafeMessageState(5, token)).toMatchObject({ collected: 2 });
-    const { signature } = completeSafeMessage(5, token);
+    const { signature } = await completeSafeMessage(5, token);
     expect(signature).toBe(buildSignatureBytes([signatureOf(0), signatureOf(2)]));
+  });
+});
+
+// freedom-core design 0012, APB-1c: every owner presents the session's Safe
+// approval, which main ends at the threshold's last signature, and before
+// the join, a cancel, or the drop of a session whose page went away.
+describe("a session's Safe approval", () => {
+  test('without one, no session opens; one given for none is ended', async () => {
+    await expect(
+      startSafeMessage({ safeIndex: 5, request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] }, display: DISPLAY, requester: TAB_A })
+    ).rejects.toThrow(/not confirmed/);
+    expect(getSession(5)).toBeNull();
+    const refused = newApproval();
+    await expect(
+      startSafeMessage({ approval: refused, safeIndex: 6, request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] }, display: DISPLAY, requester: TAB_A })
+    ).rejects.toThrow(/activate/i);
+    expect(endedIds()).toEqual([refused.id]);
+  });
+
+  test('each owner presents it; the last signature of the threshold ends it, under its page', async () => {
+    const approval = newApproval();
+    const state = await startSafeMessage({
+      approval,
+      safeIndex: 5,
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester: TAB_A,
+    });
+    expect(mockCollectOwnerSignature).toHaveBeenCalledWith(expect.objectContaining({ ownerIndex: 0, approval }));
+    expect(mockApprovalEnd).not.toHaveBeenCalled();
+    await signSafeMessage(5, 2, state.token);
+    expect(mockCollectOwnerSignature).toHaveBeenLastCalledWith(expect.objectContaining({ ownerIndex: 2, approval }));
+    expect(mockApprovalEnd).toHaveBeenCalledWith(approval.id, PAGE);
+    expect(safeApprovals.held('message', 5, state.hash)).toBeNull();
+    // Ended again before the join: the core answers {} whatever it was.
+    mockApprovalEnd.mockClear();
+    await completeSafeMessage(5, state.token);
+    expect(endedIds()).toEqual([]);
+  });
+
+  test('ended before the join, the Safe held meanwhile', async () => {
+    const approval = newApproval();
+    safeApprovals._reset();
+    const state = await startSafeMessage({
+      approval,
+      safeIndex: 7, // 1-of-N: complete after the free signature, which ends it
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester: TAB_A,
+    });
+    expect(endedIds()).toEqual([approval.id]);
+    expect(state.complete).toBe(true);
+    await expect(completeSafeMessage(7, state.token)).resolves.toMatchObject({ signature: expect.any(String) });
+  });
+
+  test('ended before a cancel, and before a session whose page went away is dropped', async () => {
+    const first = newApproval();
+    const one = await startSafeMessage({
+      approval: first,
+      safeIndex: 5,
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester: TAB_A,
+    });
+    mockApprovalEnd.mockImplementationOnce(async () => {
+      expect(getSession(5)).not.toBeNull();
+      return {};
+    });
+    await cancelSafeMessage(5, one.token);
+    expect(endedIds()).toEqual([first.id]);
+    expect(getSession(5)).toBeNull();
+
+    const second = newApproval();
+    await startSafeMessage({
+      approval: second,
+      safeIndex: 5,
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester: TAB_A,
+    });
+    destroyWebContents(TAB_A.webContentsId);
+    expect(endedIds()).toEqual([first.id, second.id]);
+    expect(getSession(5)).toBeNull();
+  });
+
+  test('none held, or one the core no longer knows: an owner is refused before any ceremony', async () => {
+    const state = await startSafeMessage({
+      approval: newApproval(),
+      safeIndex: 5,
+      request: { method: 'personal_sign', params: [HEX_MESSAGE, SAFE_ADDRESS] },
+      display: DISPLAY,
+      requester: TAB_A,
+    });
+    mockCollectOwnerSignature.mockRejectedValueOnce(
+      Object.assign(new Error('Signing was not confirmed: unknown'), { code: 'SIGNING_NOT_CONFIRMED', reason: 'unknown_token' })
+    );
+    await expect(signSafeMessage(5, 2, state.token)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_NEEDED' });
+    expect(safeApprovals.held('message', 5, state.hash)).toBeNull();
+    mockCollectOwnerSignature.mockClear();
+    await expect(signSafeMessage(5, 2, state.token)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_NEEDED' });
+    expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
   });
 });

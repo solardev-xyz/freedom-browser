@@ -253,6 +253,11 @@ function backends() {
         return () => {};
       }),
       sitePaymentWaiting: jest.fn(async () => state.paymentWaiting),
+      assertNoPendingSafeSend: jest.fn(() => {
+        if (state.safe.pendingExists) {
+          throw Object.assign(new Error('A transaction is already waiting for signatures'), { code: 'SAFE_PENDING_EXISTS' });
+        }
+      }),
       startSafeSend: jest.fn(async (options) => {
         state.safe.started.push(options);
         return { safeIndex: options.safeIndex, safeTxHash: SAFE_TX_HASH, threshold: 2, collected: 1, status: 'awaiting' };
@@ -853,7 +858,10 @@ describe("main's issuer: a dapp-send or a site's safe-send token only for its ha
       /differs/
     );
     const again = await mint({ ...safeTx, origin: KEY_A }, 'c'.repeat(64), 'safe-send', SAFE_INDEX);
-    await expect(confirmations.spendSafeConfirmation(again)).resolves.toEqual({ bound: true });
+    await expect(confirmations.spendSafeConfirmation(again)).resolves.toEqual({
+      bound: true,
+      approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE_A },
+    });
     expect(mockApprovals.calls.filter((call) => call.method === 'approval.spend').at(-1).page).toEqual(PAGE_A);
   });
 
@@ -1277,6 +1285,22 @@ describe('a DNS name over IPNS that moves off its key', () => {
 });
 
 describe("a Safe's send: a safe-send token for the site, and its board as a second prompt", () => {
+  // freedom-core design 0012, APB-1c: one pending SafeTx per Safe, refused
+  // before its token is spent, since the core's new approval for a Safe
+  // ends its pending one's.
+  test('a Safe with a SafeTx pending: the token is burnt, not spent, and no SafeTx starts', async () => {
+    const env = setup();
+    env.connect(KEY_A, SAFE_INDEX);
+    env.state.safe.pendingExists = true;
+    const answer = env.tab().send(CALL);
+    await flush();
+    env.decide(env.lastPrompt().handle, true, {});
+    const out = await answer;
+    expect(out.error).toBeDefined();
+    expect(env.state.safe.started).toEqual([]);
+    expect(mockApprovals.calls.map(({ method }) => method)).toEqual(['approval.issue', 'approval.discard']);
+  });
+
   test("the SafeTx starts for the requester's key, and the page gets the execution's hash", async () => {
     const env = setup();
     env.connect(KEY_A, SAFE_INDEX);
@@ -1296,18 +1320,21 @@ describe("a Safe's send: a safe-send token for the site, and its board as a seco
         tx: { to: CONTRACT, value: '0', data: DATA },
         display: { site: KEY_A, asset: null, toAddress: CONTRACT, amount: '0', label: 'a contract call to 0x8335…2913' },
         chainId: 100,
+        // The page's Safe approval (design 0012, APB-1c), with the request's
+        // PageContext: its owners and its executor present it under `page`.
+        approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: expect.objectContaining({ origin: KEY_A, agent: false }) },
       },
     ]);
     expect(env.minted()).toEqual([expect.objectContaining({ token: 'safe-send' })]);
     // Minted and spent through the core under the page (design 0012); the
-    // Safe approval it gave ended until APB-1c carries it to the owners.
+    // Safe approval it gave is held for the SafeTx, not ended.
     const page_ = expect.objectContaining({ origin: KEY_A, agent: false });
     expect(mockApprovals.calls.map(({ method, page: under }) => [method, under])).toEqual([
       ['approval.issue', page_],
       ['approval.spend', page_],
-      ['approval.end', page_],
       ['approval.discard', null],
     ]);
+    expect(env.state.safe.started[0].approval.page).toEqual(mockApprovals.calls[1].page);
     expect(mockApprovals.calls[0].params).toMatchObject({
       kind: 'safe-send',
       account: SAFE_INDEX,

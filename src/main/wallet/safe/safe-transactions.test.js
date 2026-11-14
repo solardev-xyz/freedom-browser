@@ -107,6 +107,13 @@ const deferred = () => {
   return { promise, resolve };
 };
 
+// The identity core's `approval.end` (freedom-core design 0012): each call
+// records what main still held then, so a test can check the order.
+const mockApprovalEnd = jest.fn(async () => ({}));
+jest.mock('../../core/vault-backend', () => ({
+  vaultBackend: { approval: { end: (...args) => mockApprovalEnd(...args) } },
+}));
+
 // Chain reads (the Safe nonce guard).
 const mockRpcRequest = jest.fn(async () => '0x3'); // == pending nonce → executable
 jest.mock('../provider-manager', () => ({
@@ -124,6 +131,14 @@ const {
   guardSiteSafeSend,
 } = require('./safe-transactions');
 const { getPending, setPending, clearPending } = require('./pending-store');
+const safeApprovals = require('./safe-approvals');
+
+// A Safe approval as the core gives one at a `safe-send` spend: the
+// wallet's (no page), or a page's with its PageContext.
+const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 3, navigation: 8, agent: false });
+let approvalCount = 0;
+const newApproval = (page = null) => ({ id: (++approvalCount).toString(16).padStart(32, '0'), page });
+const endedIds = () => mockApprovalEnd.mock.calls.map(([id]) => id);
 
 const DISPLAY = {
   toAddress: OWNERS[2],
@@ -135,8 +150,11 @@ const DISPLAY = {
 };
 const TX = { to: OWNERS[2], value: '1000', data: '0x' };
 
-const start = (safeIndex = 5, chainId = 100) =>
-  startSafeSend({ safeIndex, tx: TX, display: DISPLAY, chainId });
+let lastApproval = null;
+const start = (safeIndex = 5, chainId = 100, approval = newApproval()) => {
+  lastApproval = approval;
+  return startSafeSend({ safeIndex, tx: TX, display: DISPLAY, chainId, approval });
+};
 
 beforeEach(() => {
   mockTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'safe-pending-'));
@@ -144,6 +162,7 @@ beforeEach(() => {
   mockIsVaultUnlocked.mockResolvedValue(true);
   mockRpcRequest.mockResolvedValue('0x3');
   for (const index of [5, 6, 7]) clearPending(index);
+  safeApprovals._reset();
 });
 
 afterEach(() => {
@@ -162,7 +181,12 @@ describe('startSafeSend', () => {
     });
     // only the free (mnemonic) owner was asked — devices are never cold-called
     expect(mockCollectOwnerSignature).toHaveBeenCalledTimes(1);
-    expect(mockCollectOwnerSignature).toHaveBeenCalledWith({ typedData: builtResult.typedData, ownerIndex: 0 });
+    // presenting the SafeTx's approval (design 0012)
+    expect(mockCollectOwnerSignature).toHaveBeenCalledWith({
+      typedData: builtResult.typedData,
+      ownerIndex: 0,
+      approval: lastApproval,
+    });
     expect(mockExecTransaction).not.toHaveBeenCalled();
 
     expect(state).toMatchObject({
@@ -221,7 +245,7 @@ describe('startSafeSend', () => {
     await expect(start(5, 1)).rejects.toThrow(/only send on Gnosis/i);
     // A caller that forgets the chain entirely is refused too, rather than
     // silently defaulting back to the deployment chain.
-    await expect(startSafeSend({ safeIndex: 5, tx: TX, display: DISPLAY }))
+    await expect(startSafeSend({ safeIndex: 5, tx: TX, display: DISPLAY, approval: newApproval() }))
       .rejects.toThrow(/only send on Gnosis/i);
     expect(mockBuildSafeTransaction).not.toHaveBeenCalled();
     expect(getPending(5)).toBeNull();
@@ -235,7 +259,11 @@ describe('signSafePending', () => {
 
     const state = await signSafePending(5, 2);
 
-    expect(mockCollectOwnerSignature).toHaveBeenCalledWith({ typedData: builtResult.typedData, ownerIndex: 2 });
+    expect(mockCollectOwnerSignature).toHaveBeenCalledWith({
+      typedData: builtResult.typedData,
+      ownerIndex: 2,
+      approval: lastApproval,
+    });
     expect(state.collected).toBe(2);
     expect(state.owners.find((o) => o.index === 2).signed).toBe(true);
     expect(getPending(5).signatures).toHaveLength(2);
@@ -272,7 +300,7 @@ describe('signSafePending', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     await expect(signSafePending(5, 4)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
-    expect(() => cancelSafeSend(5)).toThrow(/current step/i);
+    await expect(cancelSafeSend(5)).rejects.toThrow(/current step/i);
 
     resolveSign(signatureOf(2));
     await inFlight;
@@ -349,6 +377,8 @@ describe('executeSafePending', () => {
       },
       // The wallet's own SafeTx: no site, so no request's guard.
       guardCommit: null,
+      // The executor presents the SafeTx's approval (design 0012).
+      approval: lastApproval,
     });
     expect(state.status).toBe('executed');
     expect(state.executed).toEqual({ hash: TX_HASH, explorerUrl: `https://gnosisscan.io/tx/${TX_HASH}` });
@@ -374,7 +404,7 @@ describe('executeSafePending', () => {
     expect(getSafeSendState(5).status).toBe('superseded');
     await expect(signSafePending(5, 4)).rejects.toThrow(/discard/i);
     // discard is the way out
-    cancelSafeSend(5);
+    await cancelSafeSend(5);
     expect(getSafeSendState(5)).toBeNull();
   });
 
@@ -411,7 +441,7 @@ describe('a step naming its SafeTx', () => {
     await expect(signSafePending(5, 2, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ collected: 2 });
     await expect(executeSafePending(5, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ status: 'executed' });
     await start();
-    cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH });
+    await cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH });
     expect(getPending(5)).toBeNull();
   });
 
@@ -426,15 +456,15 @@ describe('a step naming its SafeTx', () => {
     await expect(executeSafePending(5, { safeTxHash: OTHER })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     expect(mockRpcRequest).not.toHaveBeenCalled();
     expect(mockExecTransaction).not.toHaveBeenCalled();
-    expect(() => cancelSafeSend(5, { safeTxHash: OTHER })).toThrow(expect.objectContaining({ code: 'SAFE_DISCARDED' }));
+    await expect(cancelSafeSend(5, { safeTxHash: OTHER })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
     expect(getPending(5).signatures).toHaveLength(2);
     // Not busy after a refusal: the SafeTx named executes.
     await expect(executeSafePending(5, { safeTxHash: SAFE_TX_HASH })).resolves.toMatchObject({ status: 'executed' });
   });
 
-  test('none pending: a named discard is refused', () => {
-    expect(() => cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH })).toThrow(expect.objectContaining({ code: 'SAFE_DISCARDED' }));
-    expect(() => cancelSafeSend(5)).not.toThrow();
+  test('none pending: a named discard is refused', async () => {
+    await expect(cancelSafeSend(5, { safeTxHash: SAFE_TX_HASH })).rejects.toMatchObject({ code: 'SAFE_DISCARDED' });
+    await expect(cancelSafeSend(5)).resolves.toBeUndefined();
   });
 });
 
@@ -443,7 +473,7 @@ describe('getSafeSendState / cancelSafeSend', () => {
     expect(getSafeSendState(5)).toBeNull();
     await start();
     expect(getSafeSendState(5)).not.toBeNull();
-    cancelSafeSend(5);
+    await cancelSafeSend(5);
     expect(getSafeSendState(5)).toBeNull();
   });
 });
@@ -471,16 +501,16 @@ describe('onSafeSendSettled', () => {
     mockRpcRequest.mockResolvedValue('0x4');
     await executeSafePending(5);
     expect(heard).toHaveLength(1);
-    cancelSafeSend(5);
+    await cancelSafeSend(5);
     expect(heard.at(-1)).toEqual({ safeIndex: 5, safeTxHash: SAFE_TX_HASH, outcome: 'discarded' });
     // Nothing pending: nothing to hear.
-    cancelSafeSend(5);
+    await cancelSafeSend(5);
     expect(heard).toHaveLength(2);
 
     stop();
     stopThrowing();
     await start();
-    cancelSafeSend(5);
+    await cancelSafeSend(5);
     expect(heard).toHaveLength(2);
   });
 });
@@ -492,7 +522,7 @@ describe('onSafeSendSettled', () => {
 describe("a site's SafeTx at its execution", () => {
   const SITE = 'https://app.example';
   const startForSite = () =>
-    startSafeSend({ safeIndex: 5, tx: TX, display: { ...DISPLAY, site: SITE }, chainId: 100 });
+    startSafeSend({ safeIndex: 5, tx: TX, display: { ...DISPLAY, site: SITE }, chainId: 100, approval: newApproval(PAGE) });
 
   test("past its request's guard it executes for the site, the guard running the execution itself", async () => {
     await startForSite();
@@ -693,6 +723,133 @@ describe("a site's SafeTx at its execution", () => {
     expect(mockWithdrawExecutionSite).toHaveBeenCalledWith(100, SAFE_TX_HASH);
     expect(getPending(5).display).toEqual(DISPLAY);
     expect(getPending(5).signatures).toHaveLength(2);
+  });
+});
+
+// freedom-core design 0012, APB-1c: every signature of a SafeTx presents its
+// Safe approval, and main ends it before each step that ends its effect.
+describe("a SafeTx's Safe approval", () => {
+  test('without one, nothing is built, and one given for no SafeTx is ended', async () => {
+    await expect(startSafeSend({ safeIndex: 5, tx: TX, display: DISPLAY, chainId: 100 })).rejects.toThrow(/not confirmed/);
+    expect(mockBuildSafeTransaction).not.toHaveBeenCalled();
+    await start();
+    const second = newApproval();
+    await expect(start(5, 100, second)).rejects.toMatchObject({ code: 'SAFE_PENDING_EXISTS' });
+    expect(endedIds()).toEqual([second.id]);
+    const third = newApproval();
+    await expect(start(6, 100, third)).rejects.toThrow(/activate/i);
+    clearPending(5);
+    safeApprovals._reset();
+    mockBuildSafeTransaction.mockRejectedValueOnce(new Error('rpc down'));
+    const fourth = newApproval();
+    await expect(start(5, 100, fourth)).rejects.toThrow('rpc down');
+    expect(endedIds()).toEqual([second.id, third.id, fourth.id]);
+  });
+
+  test("a page's is held with its PageContext, for its SafeTx only", async () => {
+    const approval = newApproval(PAGE);
+    await start(5, 100, approval);
+    expect(safeApprovals.held('send', 5, SAFE_TX_HASH)).toEqual({ id: approval.id, page: PAGE });
+    expect(safeApprovals.held('send', 5, '0x' + 'ee'.repeat(32))).toBeNull();
+  });
+
+  test('none held (a restart since): no free signature, an owner refused before any ceremony, until it is confirmed again', async () => {
+    await start();
+    safeApprovals._reset(); // main restarted: it holds none, as the core holds none
+    mockCollectOwnerSignature.mockClear();
+    await expect(signSafePending(5)).resolves.toMatchObject({ collected: 1 });
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_NEEDED' });
+    expect(mockCollectOwnerSignature).not.toHaveBeenCalled();
+    // A page's approval is never taken as a new confirmation: the wallet's only.
+    const pageApproval = newApproval(PAGE);
+    await expect(signSafePending(5, 2, { approval: pageApproval })).rejects.toThrow(/not confirmed/);
+    expect(endedIds()).toEqual([pageApproval.id]);
+    const fresh = newApproval();
+    await expect(signSafePending(5, 2, { safeTxHash: SAFE_TX_HASH, approval: fresh })).resolves.toMatchObject({ collected: 2 });
+    expect(mockCollectOwnerSignature).toHaveBeenCalledWith(expect.objectContaining({ ownerIndex: 2, approval: fresh }));
+    expect(safeApprovals.held('send', 5, SAFE_TX_HASH)).toEqual(fresh);
+  });
+
+  test("a site's SafeTx its request still holds isn't confirmed again as the wallet's", async () => {
+    await startSafeSend({
+      safeIndex: 5,
+      tx: TX,
+      display: { ...DISPLAY, site: 'https://app.example' },
+      chainId: 100,
+      approval: newApproval(PAGE),
+    });
+    const stop = guardSiteSafeSend(SAFE_TX_HASH, async (execute) => execute());
+    try {
+      safeApprovals._reset();
+      const fresh = newApproval();
+      await expect(signSafePending(5, 2, { approval: fresh })).rejects.toThrow(/still holds it/);
+      expect(endedIds()).toEqual([fresh.id]);
+    } finally {
+      stop();
+    }
+    // Its request ended: it can be.
+    await expect(signSafePending(5, 2, { approval: newApproval() })).resolves.toMatchObject({ collected: 2 });
+  });
+
+  test('one the core no longer knows is forgotten, and the owner asks for a new confirmation', async () => {
+    await start();
+    mockCollectOwnerSignature.mockRejectedValueOnce(
+      Object.assign(new Error('Signing was not confirmed: unknown'), { code: 'SIGNING_NOT_CONFIRMED', reason: 'unknown_token' })
+    );
+    await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'SAFE_APPROVAL_NEEDED' });
+    expect(safeApprovals.held('send', 5, SAFE_TX_HASH)).toBeNull();
+  });
+
+  test('ended before its discard, the Safe held meanwhile', async () => {
+    await start();
+    const approval = lastApproval;
+    mockApprovalEnd.mockImplementationOnce(async () => {
+      expect(getPending(5)).not.toBeNull();
+      await expect(signSafePending(5, 2)).rejects.toMatchObject({ code: 'SAFE_BUSY' });
+      return {};
+    });
+    await cancelSafeSend(5);
+    expect(mockApprovalEnd).toHaveBeenCalledWith(approval.id, null);
+    expect(getPending(5)).toBeNull();
+    expect(safeApprovals.held('send', 5, SAFE_TX_HASH)).toBeNull();
+  });
+
+  test("a page's ended under its page, before it is marked superseded", async () => {
+    const approval = newApproval(PAGE);
+    await start(5, 100, approval);
+    await signSafePending(5, 2);
+    mockRpcRequest.mockResolvedValue('0x4');
+    mockApprovalEnd.mockImplementationOnce(async () => {
+      expect(getPending(5).superseded).toBeFalsy();
+      return {};
+    });
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'superseded' });
+    expect(mockApprovalEnd).toHaveBeenCalledWith(approval.id, PAGE);
+    expect(mockExecTransaction).not.toHaveBeenCalled();
+  });
+
+  test('ended once executed, before its entry is cleared; not after a failed execution', async () => {
+    await start();
+    const approval = lastApproval;
+    await signSafePending(5, 2);
+    mockExecTransaction.mockRejectedValueOnce(new Error('rpc down'));
+    await expect(executeSafePending(5)).rejects.toThrow('rpc down');
+    expect(mockApprovalEnd).not.toHaveBeenCalled();
+    mockApprovalEnd.mockImplementationOnce(async () => {
+      expect(getPending(5)).not.toBeNull();
+      return {};
+    });
+    await expect(executeSafePending(5)).resolves.toMatchObject({ status: 'executed' });
+    expect(endedIds()).toEqual([approval.id]);
+    expect(getPending(5)).toBeNull();
+  });
+
+  test('with none held, the executor is given none (its fee is asked as an executor-send)', async () => {
+    await start();
+    await signSafePending(5, 2);
+    safeApprovals._reset();
+    await executeSafePending(5);
+    expect(mockExecTransaction).toHaveBeenCalledWith(expect.objectContaining({ approval: null }));
   });
 });
 

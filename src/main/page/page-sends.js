@@ -345,6 +345,8 @@ function defaultSendDependencies() {
     checkFees: (tx) => require('../wallet/fee-check').checkFees(tx),
     checkAtApproval: (tx, options) => require('../wallet/fee-check').checkAtApproval(tx, options),
     startSafeSend: (options) => require('../wallet/safe/safe-transactions').startSafeSend(options),
+    assertNoPendingSafeSend: (safeIndex) =>
+      require('../wallet/safe/safe-transactions').assertNoPendingSafeSend(safeIndex),
     onSafeSendSettled: (listener) => require('../wallet/safe/safe-transactions').onSafeSendSettled(listener),
     guardSiteSafeSend: (safeTxHash, guard) =>
       require('../wallet/safe/safe-transactions').guardSiteSafeSend(safeTxHash, guard),
@@ -736,13 +738,20 @@ function createSendDispatchers(shared, deps = {}) {
       // owners sign later), and the SafeTx started.
       confirmation = await context.confirm(CONFIRM_KINDS.SAFE_SEND, ctx.walletIndex, payload);
       if (!grantExposes(requester.key, ctx.walletIndex)) return error(NOT_CONNECTED);
+      // One pending SafeTx per Safe, refused before the token is spent: the
+      // core's new approval for a Safe would end the pending one's.
+      d.assertNoPendingSafeSend(ctx.walletIndex);
       context.spend(confirmation);
-      await d.spendSafe(confirmation);
+      // Its Safe approval, the page's (design 0012, APB-1c): each vault
+      // owner's signature and the executor's present it under `page`, with
+      // this request's PageContext, the document gone or not.
+      const { approval } = await d.spendSafe(confirmation);
       started = await d.startSafeSend({
         safeIndex: ctx.walletIndex,
         tx: safeTx,
         display: safeDisplay(ctx.tx, requester.key),
         chainId: ctx.chainId,
+        approval,
       });
     } catch (err) {
       return failure(err);

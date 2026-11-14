@@ -485,11 +485,37 @@ describe("signing-confirmation: the core's kinds", () => {
     expect(mockCore.outstanding()).toBe(0);
   });
 
-  test("a Safe's send is spent through the core, and its Safe approval ended until APB-1c", async () => {
+  test("a Safe's send is spent through the core, for the Safe approval its signatures present (APB-1c)", async () => {
     const request = { tx: { to: TX.to, value: '5', data: '0x' }, chainId: 100 };
     const { token } = await sc.issueConfirmation(KINDS.SAFE_SEND, 9, request);
-    await expect(sc.spendSafeConfirmation(sc.confirmationFor(token, KINDS.SAFE_SEND, 9, request))).resolves.toEqual({ bound: true });
-    expect(mockCore.calls.map((call) => call.method)).toEqual(['approval.issue', 'approval.spend', 'approval.end']);
-    expect(mockCore.openSafeApprovals()).toBe(0);
+    const spent = await sc.spendSafeConfirmation(sc.confirmationFor(token, KINDS.SAFE_SEND, 9, request));
+    expect(spent).toEqual({ bound: true, approval: { id: expect.stringMatching(/^[0-9a-f]{32}$/), page: null } });
+    // Held, not ended: the owners and the executor present it.
+    expect(mockCore.calls.map((call) => call.method)).toEqual(['approval.issue', 'approval.spend']);
+    expect(mockCore.openSafeApprovals()).toBe(1);
+    // As `{ safe }`, the wallet's as main itself.
+    expect(sc.safeAuthorization(spent.approval)).toEqual({ authorization: { safe: spent.approval.id }, page: null });
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    expect(sc.safeAuthorization({ id: spent.approval.id, page })).toEqual({ authorization: { safe: spent.approval.id }, page });
+  });
+
+  test("a Safe message a site's rule answers spends { standing } under its page, for the page's Safe approval", async () => {
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const request = { method: 'personal_sign', params: ['0x68', '0x' + 'aa'.repeat(20)] };
+    const spend = jest.spyOn(mockCore.approval, 'spend').mockResolvedValue({ bound: true, safe: 'c3'.repeat(16) });
+    try {
+      await expect(sc.spendStandingSafeMessage(page, 9, request)).resolves.toEqual({ id: 'c3'.repeat(16), page });
+      expect(spend).toHaveBeenCalledWith(
+        { standing: {}, kind: KINDS.SAFE_MESSAGE, account: 9, payload: expect.objectContaining({ method: 'personal_sign' }) },
+        page
+      );
+      spend.mockRejectedValueOnce(
+        Object.assign(new Error('no standing rule covers this request'), { code: 'not_authorized', data: { reason: 'custody' } })
+      );
+      await expect(sc.spendStandingSafeMessage(page, 9, request)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED', reason: 'custody' });
+      await expect(sc.spendStandingSafeMessage(null, 9, request)).rejects.toMatchObject({ code: 'SIGNING_NOT_CONFIRMED' });
+    } finally {
+      spend.mockRestore();
+    }
   });
 });

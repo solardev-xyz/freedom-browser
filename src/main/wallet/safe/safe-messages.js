@@ -27,6 +27,14 @@
  * another start, and only main completes it: the chrome's signing board
  * collects its device signatures with the session token, and main hands the
  * signature to the page that asked.
+ *
+ * Every owner's signature presents the session's Safe approval (freedom-core
+ * design 0012, APB-1c; `safe-approvals.js`): the one the page's
+ * `safe-message` token gave, or its site's rule (`approval.spend {
+ * standing }`), held by the page, under whose PageContext each vault owner
+ * signs. Main ends it when the threshold's last signature is made, and
+ * again before the signatures are joined, before a cancel, and before a
+ * session whose page went away is dropped.
  */
 
 const { randomUUID } = require('crypto');
@@ -51,9 +59,28 @@ const {
   signEntryOwner,
 } = require('./signature-collection');
 const { getSession, setSession, discardSession } = require('./message-sessions');
+const safeApprovals = require('./safe-approvals');
 const { codedError, SAFE_BUSY, SAFE_MESSAGE_EXISTS } = require('./errors');
 
-const store = { get: getSession, set: setSession, idOf: (entry) => entry.hash };
+const MESSAGE = safeApprovals.KINDS.MESSAGE;
+const store = {
+  get: getSession,
+  set: setSession,
+  idOf: (entry) => entry.hash,
+  approvalOf: (safeIndex, entry) => safeApprovals.held(MESSAGE, safeIndex, entry.hash),
+  forgetApproval: (safeIndex, entry) => safeApprovals.forget(MESSAGE, safeIndex, entry.hash),
+  // The threshold's last signature ends the approval (design 0012): no
+  // owner signs the SafeMessage after it.
+  signed: async (safeIndex, entry) => {
+    if (entry.signatures.length >= entry.threshold) await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+  },
+};
+
+/** The session's approval ended (`approval.end`), then the session dropped. */
+async function endAndDiscard(safeIndex, entry) {
+  await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+  if (getSession(safeIndex) === entry) discardSession(safeIndex);
+}
 
 /**
  * The digest a VERIFIER computes for the dApp's request — EIP-191 for
@@ -157,6 +184,9 @@ function attachRequesterLifecycle(safeIndex, entry) {
   }
   const drop = () => {
     if (getSession(safeIndex) === entry) {
+      // Its approval ended first: main forgets it at once and sends its end
+      // to the core, then drops the session.
+      safeApprovals.end(MESSAGE, safeIndex, entry.hash);
       discardSession(safeIndex);
     }
   };
@@ -239,9 +269,24 @@ function getSafeMessageState(safeIndex, token) {
  * @param {{origin: string, webContentsId: number|null}} [params.requester]
  *   - The requesting page's identity (permission key + webview
  *   webContents id)
+ * @param {{id: string, page: object}} params.approval - The Safe approval
+ *   the request's `safe-message` token or its site's rule gave (design
+ *   0012): held for the session, and ended if none opens for it
  * @returns {Promise<Object>} SafeMessageState (including `token`)
  */
-async function startSafeMessage({ safeIndex, request, display, requester, owner = null }) {
+async function startSafeMessage({ safeIndex, request, display, requester, owner = null, approval }) {
+  let held = false;
+  try {
+    if (!safeApprovals.isApproval(approval)) throw new Error('This signature request was not confirmed');
+    const opened = await openSafeMessage({ safeIndex, request, display, requester, owner, approval });
+    held = opened.held;
+    return opened.state;
+  } finally {
+    if (!held) await safeApprovals.release(approval);
+  }
+}
+
+async function openSafeMessage({ safeIndex, request, display, requester, owner, approval }) {
   const mainOwned = owner === 'main';
   const initial = getSafeRecord(safeIndex);
   // isValidSignature lives on the deployed contract — nothing to verify
@@ -288,8 +333,8 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
     if (!mainOwned && !existing.mainOwned && existing.hash === hash && sameRequester(existing.requester, requester)) {
       // The identical request from the SAME page again (retried without
       // navigating) — resume: the collected signatures are still valid
-      // for this hash.
-      return signSafeMessage(safeIndex, undefined, existing.token);
+      // for this hash, under the session's own approval.
+      return { state: await signSafeMessage(safeIndex, undefined, existing.token), held: false };
     }
     if (!requesterGone(existing)) {
       // A different request, or the same digest from a DIFFERENT page:
@@ -300,7 +345,13 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
       );
     }
     // The requesting page provably no longer exists — dead leftover.
-    discardSession(safeIndex);
+    await endAndDiscard(safeIndex, existing);
+    if (getSession(safeIndex)) {
+      throw codedError(
+        'Another signature request is already open for this account — finish or cancel it first',
+        SAFE_MESSAGE_EXISTS
+      );
+    }
   }
 
   acquire(safeIndex);
@@ -320,12 +371,13 @@ async function startSafeMessage({ safeIndex, request, display, requester, owner 
       mainOwned,
     };
     setSession(safeIndex, entry);
+    await safeApprovals.hold(MESSAGE, safeIndex, approval, hash);
     attachRequesterLifecycle(safeIndex, entry);
     await collectFreeSignatures(store, safeIndex, record.owners);
   } finally {
     release(safeIndex);
   }
-  return sessionState(safeIndex);
+  return { state: sessionState(safeIndex), held: true };
 }
 
 /**
@@ -351,11 +403,14 @@ async function signSafeMessage(safeIndex, ownerIndex, token) {
  * owners' signatures sorted by signer and concatenated, ready to hand
  * back to the dApp (which verifies via `isValidSignature` on the Safe).
  *
+ * The session's approval is ended first (design 0012), the Safe held
+ * meanwhile, so no owner signs between the two.
+ *
  * @param {number} safeIndex
  * @param {string} token - The session token from startSafeMessage
- * @returns {{signature: string}}
+ * @returns {Promise<{signature: string}>}
  */
-function completeSafeMessage(safeIndex, token) {
+async function completeSafeMessage(safeIndex, token) {
   if (isBusy(safeIndex)) {
     throw codedError('Wait for the current step to finish first', SAFE_BUSY);
   }
@@ -365,25 +420,38 @@ function completeSafeMessage(safeIndex, token) {
       `Not enough signatures yet (${entry.signatures.length} of ${entry.threshold})`
     );
   }
-  // buildSignatureBytes sorts its input in place — hand it a copy.
-  const signature = buildSignatureBytes(entry.signatures.map((sig) => ({ ...sig })));
-  discardSession(safeIndex);
-  return { signature };
+  acquire(safeIndex);
+  try {
+    await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+    if (getSession(safeIndex) !== entry) {
+      throw new Error('No signature request is open for this account');
+    }
+    // buildSignatureBytes sorts its input in place — hand it a copy.
+    const signature = buildSignatureBytes(entry.signatures.map((sig) => ({ ...sig })));
+    discardSession(safeIndex);
+    return { signature };
+  } finally {
+    release(safeIndex);
+  }
 }
 
 /**
  * Drop the session (collected signatures are thrown away). Idempotent
- * when nothing is open; refused with someone else's token.
+ * when nothing is open; refused with someone else's token. Its approval is
+ * ended first (design 0012), even while a device's step runs: the session
+ * is then refused (SAFE_BUSY) and kept until its page goes, but no vault
+ * owner signs it again.
  */
-function cancelSafeMessage(safeIndex, token) {
-  if (isBusy(safeIndex)) {
-    throw codedError('Wait for the current step to finish first', SAFE_BUSY);
-  }
+async function cancelSafeMessage(safeIndex, token) {
   if (!getSession(safeIndex)) {
     return; // already gone — cancelling twice is fine
   }
-  requireSession(safeIndex, token);
-  discardSession(safeIndex);
+  const entry = requireSession(safeIndex, token);
+  await safeApprovals.end(MESSAGE, safeIndex, entry.hash);
+  if (isBusy(safeIndex)) {
+    throw codedError('Wait for the current step to finish first', SAFE_BUSY);
+  }
+  if (getSession(safeIndex) === entry) discardSession(safeIndex);
 }
 
 module.exports = {
