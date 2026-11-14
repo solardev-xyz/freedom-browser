@@ -1,0 +1,55 @@
+/* Tor-window chrome (#473).
+ *
+ * A Tor window is a private window (private.css applies in full) whose
+ * session goes through Arti. It gets its own dark teal-green palette, so it
+ * can't be mistaken for a private window, which is plum: Tor's own colour
+ * for "connected" is green. `body.private-window.tor-window` out-specifies
+ * private.css's `body.private-window` (0,2,1 over 0,1,1), and only the tokens
+ * change, so every private-window rule built on them follows.
+ */
+
+body.private-window.tor-window {
+  --bg: #14231f;
+  --toolbar: #1d3530;
+  --border: #2e4f46;
+  --text: #cfe3db;
+  --muted: #9db8ad;
+  --menu-bg: #172a25;
+  --modal-bg: #172a25;
+  --accent: #7fd4b0;
+}
+
+/* The badge: private.css's pill in the Tor palette, with Tor's state. */
+.tor-badge {
+  background: #2e4f46;
+  border-color: #3f6b5f;
+  color: #dff1e8;
+}
+
+.tor-badge-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: #b6cfc5;
+}
+
+.tor-badge-state::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  /* theme-literal: Tor-window chrome is dark in both themes, like private.css */
+  background: #8aa69b;
+}
+
+.tor-badge[data-tone='on'] .tor-badge-state::before {
+  /* theme-literal: as above */
+  background: #5fd39b;
+}
+
+.tor-badge[data-tone='pending'] .tor-badge-state::before {
+  /* theme-literal: as above */
+  background: #e0b45a;
+}

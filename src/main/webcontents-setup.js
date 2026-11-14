@@ -8,7 +8,11 @@ const {
   isPrivateWebContents,
   isPrivatePartition,
   getPartitionForWebContents,
+  isTorSession,
+  isTorWebContents,
+  isTorPartition,
 } = require('./private/private-windows');
+const { applyTorWebRtcPolicy, trackTorWindowNavigation } = require('./tor-window');
 const { WEBVIEW_BOOT_SWITCH, buildWebviewBootSwitch } = require('./webview-boot');
 const { isExternalProtocolUrl, trackUserGestures } = require('./external-protocol');
 const { requestOpenExternal } = require('./permissions/permissions-manager');
@@ -172,12 +176,14 @@ function hardenWebviewPreferences(webPreferences) {
 function attachWebviewBoot(embedder, webPreferences, params) {
   const partition = webPreferences.partition ?? params?.partition;
   const isPrivate = isPrivateWebContents(embedder) || isPrivatePartition(partition);
+  // A Tor window's tab (#473): its preload takes WebRTC away (tor-window.js).
+  const isTor = isTorWebContents(embedder) || isTorPartition(partition);
   const existing = Array.isArray(webPreferences.additionalArguments)
     ? webPreferences.additionalArguments
     : [];
   webPreferences.additionalArguments = [
     ...existing.filter((arg) => !String(arg).startsWith(WEBVIEW_BOOT_SWITCH)),
-    buildWebviewBootSwitch({ isPrivate }),
+    buildWebviewBootSwitch({ isPrivate, isTor }),
   ];
 }
 
@@ -212,6 +218,16 @@ function lockChromeWindow(contents, tag, isManagedPage) {
 
 function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
   app.on('web-contents-created', (_event, contents) => {
+    // TOR WINDOW GUARD (#473): no WebRTC UDP outside the SOCKS proxy, set
+    // before anything in the page runs (tor-window.js).
+    try {
+      if (isTorSession(contents.session)) {
+        applyTorWebRtcPolicy(contents);
+        trackTorWindowNavigation(contents);
+      }
+    } catch (err) {
+      log.warn('[tor-window] could not set the WebRTC policy:', err?.message || err);
+    }
     let previousRtcPolicy;
     contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
       if (!isMainFrame) return;

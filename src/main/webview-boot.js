@@ -98,8 +98,9 @@ function buildEthereumInjectSource(uuid) {
  * object `{ isPrivate, internalPages, ethereum? }`. A private webview never
  * gets the wallet providers, so its switch leaves the provider out.
  */
-function buildWebviewBootSwitch({ isPrivate }) {
-  const boot = { isPrivate: isPrivate === true, internalPages };
+function buildWebviewBootSwitch({ isPrivate, isTor = false }) {
+  // A Tor window (#473) is a private window too; `isTor` only ever adds.
+  const boot = { isPrivate: isPrivate === true || isTor === true, isTor: isTor === true, internalPages };
   if (!boot.isPrivate) {
     boot.ethereum = {
       info: getEthereumProviderInfoStatic(),

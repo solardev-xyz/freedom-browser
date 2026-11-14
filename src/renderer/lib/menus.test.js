@@ -311,6 +311,8 @@ describe('menus', () => {
         'Ctrl+T',
         'Ctrl+N',
         'Ctrl+Shift+N',
+        // New Tor Window (#473): Brave's keys, Alt-based off macOS.
+        'Alt+Shift+N',
         'Ctrl+H',
         // Downloads sits directly after History, Chrome's order (#326).
         'Ctrl+Shift+J',
@@ -350,6 +352,7 @@ describe('menus', () => {
       '⌘T',
       '⌘N',
       '⇧⌘N',
+      '⌥⌘N',
       '⌘Y',
       '⇧⌘J',
       '⌥⌘I',

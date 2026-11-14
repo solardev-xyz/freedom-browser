@@ -600,12 +600,14 @@ test('Shortcuts rows are sentence case, and search reads the label it shows', as
   expect(rendered).toContain('Actual size');
   expect(rendered).toContain('App developer tools');
   // Sentence case: nothing after the first word carries a capital, the same
-  // bar every other row label on the page already meets.
+  // bar every other row label on the page already meets. Proper nouns keep
+  // theirs: Agent (Freedom Agent) and Tor (#473).
+  const PROPER_NOUNS = new Set(['Agent', 'Tor']);
   const titleCased = rendered.filter((label) =>
     label
       .split(' ')
       .slice(1)
-      .some((word) => word !== 'Agent' && /^[A-Z]/.test(word))
+      .some((word) => !PROPER_NOUNS.has(word) && /^[A-Z]/.test(word))
   );
   expect(titleCased).toEqual([]);
 

@@ -300,6 +300,17 @@ const SHORTCUTS = [
     editable: true,
   },
   {
+    id: 'window.newTor',
+    description: 'New Tor Window',
+    settingsLabel: 'New Tor window',
+    // Brave's keys for its own Tor window.
+    defaultAccelerator: { darwin: 'Cmd+Alt+N', other: 'Alt+Shift+N' },
+    // 'both': as New Private Window, for the Linux menu-bar setups.
+    context: 'both',
+    category: 'Window',
+    editable: true,
+  },
+  {
     id: 'view.fullscreen',
     description: 'Toggle Full Screen',
     settingsLabel: 'Toggle full screen',

@@ -95,6 +95,13 @@ describe('design tokens (#1198)', () => {
     expect(declaration(block.body, 'color-scheme')).toBe('dark');
   });
 
+  test('so does the Tor window, a private window in its own palette (#473)', () => {
+    const selector = 'body.private-window.tor-window';
+    expect([...tokensOf(selector)].sort()).toEqual([...dark].sort());
+    const block = rulesOf(tokensCss).find((rule) => rule.selector === selector);
+    expect(declaration(block.body, 'color-scheme')).toBe('dark');
+  });
+
   test('a token that refers to another is declared on every theme scope', () => {
     // `--a: var(--b)` resolves where it is declared: declared on :root only,
     // a nested `data-theme` (the catalog's light column) or the private

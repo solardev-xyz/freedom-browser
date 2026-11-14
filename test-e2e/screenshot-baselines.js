@@ -104,7 +104,7 @@ const SURFACES = {
     '47-settings-updates-ready',
     '48-app-menu-update-ready',
   ],
-  'private window': ['60-private-window', '61-private-sidebar'],
+  'private window': ['60-private-window', '61-private-sidebar', '62-tor-window', '63-tor-page'],
   'internal page: home': ['49-page-home'],
   'AI entry points': ['54-settings-ai-off', '55-settings-ai-on', '56-home-ai-invitation'],
   // The shared blocks (#1198), as the catalog page shows them: one column per

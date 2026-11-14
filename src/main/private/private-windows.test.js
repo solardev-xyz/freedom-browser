@@ -87,7 +87,7 @@ describe('private-windows', () => {
     expect(p1.startsWith('persist:')).toBe(false);
 
     // The partition is handed to the window factory for the renderer.
-    expect(createMainWindow).toHaveBeenCalledWith(null, { privatePartition: p1 });
+    expect(createMainWindow).toHaveBeenCalledWith(null, { privatePartition: p1, tor: false });
     expect(mod.isPrivatePartition(p1)).toBe(true);
     expect(mod.isPrivatePartition('private-not-created')).toBe(false);
     expect(mod.isPrivatePartition('persist:main')).toBe(false);
@@ -307,5 +307,50 @@ describe('private-windows', () => {
     logContext.runWithPrivateLogContext(true, () =>
       expect(logContext.privateSessionLive()).toBe(true)
     );
+  });
+});
+
+describe('Tor windows (#473)', () => {
+  test('the session is routed through Tor before the window opens', async () => {
+    const { mod, createMainWindow, configurator } = loadWithWindowFactory();
+    const order = [];
+    const routeThroughTor = jest.fn(async (partition, session) => {
+      order.push(['route', partition, session]);
+    });
+    createMainWindow.mockImplementationOnce((initialUrl, options) => {
+      order.push(['open', options]);
+      const win = new FakeWindow(42);
+      win.webContents = { id: 4200, session: null };
+      return win;
+    });
+
+    const win = await mod.createTorWindow('https://example.org/', { routeThroughTor });
+
+    expect(win.id).toBe(42);
+    const [[, partition, session]] = order;
+    expect(order.map(([step]) => step)).toEqual(['route', 'open']);
+    expect(order[1][1]).toEqual({ privatePartition: partition, tor: true });
+    expect(configurator).toHaveBeenCalledWith(session, { partition, tor: true });
+    // A Tor window is a private window too, and both classifications hold
+    // for its session and its chrome renderer.
+    expect(mod.isTorSession(session)).toBe(true);
+    expect(mod.isPrivateWebContents({ session })).toBe(true);
+    expect(mod.isTorWebContents({ session })).toBe(true);
+  });
+
+  test('a session that cannot be routed opens no window', async () => {
+    const { mod, createMainWindow } = loadWithWindowFactory();
+    const routeThroughTor = jest.fn().mockRejectedValue(new Error('no proxy'));
+
+    await expect(mod.createTorWindow(null, { routeThroughTor })).resolves.toBeNull();
+    await expect(mod.createTorWindow(null, {})).resolves.toBeNull();
+    expect(createMainWindow).not.toHaveBeenCalled();
+  });
+
+  test('a private window is not a Tor window', () => {
+    const { mod } = loadWithWindowFactory();
+    const win = mod.createPrivateWindow();
+    expect(win.options).toEqual({ privatePartition: expect.any(String), tor: false });
+    expect(mod.isTorWebContents(win.webContents)).toBe(false);
   });
 });

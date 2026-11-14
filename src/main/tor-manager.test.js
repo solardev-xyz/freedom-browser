@@ -49,6 +49,7 @@ function loadTorManager(options = {}) {
   const defaultSession = options.defaultSession || {
     setProxy: jest.fn().mockResolvedValue(undefined),
   };
+  const saveSettings = jest.fn(() => true);
   const result = loadMainModule(require.resolve('./tor-manager'), {
     ipcMain,
     userDataDir: options.userDataDir,
@@ -63,6 +64,7 @@ function loadTorManager(options = {}) {
       }),
       [require.resolve('./settings-store')]: () => ({
         loadSettings: () => ({ enableTorIntegration }),
+        saveSettings,
       }),
       [require.resolve('./profile-resolver')]: () => ({
         getActiveProfile: jest.fn(() => options.activeProfile || null),
@@ -84,6 +86,7 @@ function loadTorManager(options = {}) {
   return {
     ...result,
     defaultSession,
+    saveSettings,
   };
 }
 
@@ -394,6 +397,57 @@ describe('tor-manager IPC', () => {
     }
   });
 
+  // #473: a Tor window held back while Arti is still shutting down must get
+  // Tor started once the stop is done, not wait on a stopped Tor forever.
+  test('a Tor window asking while Tor is stopping gets it started after the stop', async () => {
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-start-stopping-'));
+    const artiProcess = createArtiProcessMock();
+    // Arti takes its time to exit: it closes only when the test says so.
+    artiProcess.kill = jest.fn((signal) => {
+      artiProcess.kills.push(signal);
+      return true;
+    });
+    const spawn = jest.fn(() => artiProcess);
+
+    try {
+      const { mod } = loadTorManager({
+        userDataDir,
+        enableTorIntegration: true,
+        activeProfile: {
+          source: 'catalog',
+          metadata: { nodes: { tor: { mode: 'managed', socksPort: 19150 } } },
+        },
+        extraMocks: {
+          child_process: () => ({ spawn, execFile: jest.fn() }),
+        },
+      });
+
+      await mod.startTor({ checkDefaultExternalCandidate: true });
+      await flushMicrotasks();
+      expect(spawn).toHaveBeenCalledTimes(1);
+
+      const stopped = mod.stopTor();
+      expect(mod.getStatus().status).toBe('stopping');
+      mod.ensureTorForTorWindow();
+      artiProcess.emit('close', 0);
+      await stopped;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await flushMicrotasks();
+      expect(spawn).toHaveBeenCalledTimes(2);
+
+      const finalStop = mod.stopTor();
+      artiProcess.emit('close', 0);
+      await finalStop;
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
   test('getArtiVersion parses the Arti 2.x multi-line --version output', async () => {
     const realExistsSync = fs.existsSync;
     jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
@@ -672,6 +726,159 @@ describe('tor-manager .onion routing across sessions', () => {
       fs.rmSync(userDataDir, { recursive: true, force: true });
     }
   }, 15_000);
+});
+
+describe('tor-manager Tor window sessions (#473)', () => {
+  const createSessionMock = () => ({ setProxy: jest.fn().mockResolvedValue(undefined) });
+  const loadExternalTorManager = (overrides = {}) =>
+    loadTorManager({
+      enableTorIntegration: true,
+      socksProbeResult: true,
+      activeProfile: {
+        metadata: {
+          nodes: {
+            tor: { mode: 'external', externalSocks: 'socks5://127.0.0.1:9150/' },
+          },
+        },
+      },
+      ...overrides,
+    });
+  const socksCalls = (targetSession) =>
+    targetSession.setProxy.mock.calls
+      .filter(([arg]) => arg?.mode === 'fixed_servers')
+      .map(([arg]) => arg);
+  const nonSocksCalls = (targetSession) =>
+    targetSession.setProxy.mock.calls.filter(([arg]) => arg?.mode !== 'fixed_servers');
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test("a Tor window is held off on Freedom's own port until Tor runs", async () => {
+    const torSession = createSessionMock();
+    const { mod } = loadExternalTorManager();
+
+    await mod.registerTorWindowSession('private-tor', torSession);
+
+    // Everything, loopback included, never DIRECT or a PAC, and not at a port
+    // Arti isn't on: Freedom's own refusing port.
+    const [config] = socksCalls(torSession);
+    expect(config).toMatchObject({ mode: 'fixed_servers', proxyBypassRules: '<-loopback>' });
+    expect(config.proxyRules).toMatch(/^socks5:\/\/127\.0\.0\.1:\d+$/);
+    expect(config.proxyRules).not.toBe('socks5://127.0.0.1:9150');
+    expect(nonSocksCalls(torSession)).toEqual([]);
+    expect(mod.torWindowEndpoint()).toBeNull();
+  });
+
+  test('a Tor window goes through the endpoint Tor runs on, and is held off again when it stops', async () => {
+    const targetSession = createSessionMock();
+    const torSession = createSessionMock();
+    const { mod } = loadExternalTorManager();
+
+    await mod.registerTorWindowSession('private-tor', torSession);
+    const hold = socksCalls(torSession)[0].proxyRules;
+    await mod.startTor({ targetSession });
+    await mod.whenTorWindowsRouted();
+    expect(socksCalls(torSession).at(-1).proxyRules).toBe('socks5://127.0.0.1:9150');
+
+    await mod.stopTor();
+    await flushMicrotasks();
+    await new Promise((resolve) => setImmediate(resolve));
+    // The stop sets the .onion sessions DIRECT; a Tor window goes back to
+    // Freedom's refusing port, never DIRECT and never Arti's old port.
+    expect(targetSession.setProxy.mock.calls.some(([arg]) => arg?.mode === 'direct')).toBe(true);
+    expect(nonSocksCalls(torSession)).toEqual([]);
+    expect(socksCalls(torSession).at(-1).proxyRules).toBe(hold);
+    expect(mod.torWindowEndpoint()).toBeNull();
+  });
+
+  test('a closed Tor window stops receiving routing updates', async () => {
+    const targetSession = createSessionMock();
+    const torSession = createSessionMock();
+    const { mod } = loadExternalTorManager();
+
+    await mod.registerTorWindowSession('private-tor', torSession);
+    mod.unregisterTorWindowSession('private-tor');
+    await mod.startTor({ targetSession });
+
+    expect(socksCalls(torSession).map((c) => c.proxyRules)).not.toContain(
+      'socks5://127.0.0.1:9150'
+    );
+    await mod.stopTor();
+  });
+
+  test('a session whose proxy cannot be applied is refused and not tracked', async () => {
+    const targetSession = createSessionMock();
+    const torSession = { setProxy: jest.fn().mockRejectedValue(new Error('boom')) };
+    const { mod } = loadExternalTorManager();
+
+    await expect(mod.registerTorWindowSession('private-tor', torSession)).rejects.toThrow(
+      'could not route'
+    );
+    torSession.setProxy.mockClear();
+    await mod.startTor({ targetSession });
+    expect(torSession.setProxy).not.toHaveBeenCalled();
+    await mod.stopTor();
+  });
+
+  test('a Tor window route is live only while Tor runs on the endpoint it was pointed at', async () => {
+    const targetSession = createSessionMock();
+    const torSession = createSessionMock();
+    const stranger = createSessionMock();
+    const { mod } = loadExternalTorManager();
+
+    await mod.registerTorWindowSession('private-tor', torSession);
+    // Not started: an assumed port is not a route.
+    expect(mod.isTorWindowRouteLive(torSession)).toBe(false);
+
+    await mod.startTor({ targetSession });
+    await mod.whenTorWindowsRouted();
+    expect(mod.isTorWindowRouteLive(torSession)).toBe(true);
+    expect(mod.isTorWindowRouteLive(stranger)).toBe(false);
+
+    await mod.stopTor();
+    expect(mod.isTorWindowRouteLive(torSession)).toBe(false);
+
+    mod.unregisterTorWindowSession('private-tor');
+    expect(mod.isTorWindowRouteLive(torSession)).toBe(false);
+  });
+
+  test('a Tor window starts Tor, turning it on in Settings when it is off', async () => {
+    const off = loadExternalTorManager({ enableTorIntegration: false });
+    off.mod.ensureTorForTorWindow();
+    expect(off.saveSettings).toHaveBeenCalledWith({ enableTorIntegration: true });
+    expect(['starting', 'running']).toContain(off.mod.getStatus().status);
+    await flushMicrotasks();
+    await off.mod.stopTor();
+
+    const on = loadExternalTorManager();
+    on.mod.ensureTorForTorWindow();
+    expect(on.saveSettings).not.toHaveBeenCalled();
+    expect(['starting', 'running']).toContain(on.mod.getStatus().status);
+    await flushMicrotasks();
+    await on.mod.stopTor();
+  });
+
+  test('a Tor window is told once its route is live, and not while it is held off', async () => {
+    const torSession = createSessionMock();
+    const { mod } = loadExternalTorManager();
+    const liveWhenTold = [];
+    mod.onTorWindowsLive(() => liveWhenTold.push(mod.isTorWindowRouteLive(torSession)));
+
+    await mod.registerTorWindowSession('private-tor', torSession);
+    expect(liveWhenTold).toEqual([]);
+
+    await mod.startTor({ targetSession: createSessionMock() });
+    await mod.whenTorWindowsRouted();
+    expect(liveWhenTold.length).toBeGreaterThan(0);
+    expect(liveWhenTold.every(Boolean)).toBe(true);
+
+    liveWhenTold.length = 0;
+    await mod.stopTor();
+    await mod.whenTorWindowsRouted();
+    expect(liveWhenTold).toEqual([]);
+    mod.unregisterTorWindowSession('private-tor');
+  });
 });
 
 describe('tor-manager: an apply that completes after a stop or a restart', () => {

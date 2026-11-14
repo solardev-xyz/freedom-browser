@@ -12,6 +12,7 @@ jest.mock('./logger', () => mockLog);
 // real BrowserWindow, so stub the one predicate ens-resolver uses.
 jest.mock('./private/private-windows', () => ({
   isPrivateWebContents: (webContents) => webContents?.isPrivate === true,
+  isTorWebContents: (webContents) => webContents?.isTor === true,
   // The strict classifier's three answers: a sender it can't place (none,
   // destroyed, or without `isPrivate`) is unknown.
   classifyWebContents: (webContents) => {
@@ -3848,6 +3849,20 @@ describe('ens-resolver private-window logging', () => {
     ipcMain.handle.mockClear();
     registerEnsIpc();
     mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+  });
+
+  // #473: a Tor window doesn't look names up, since the RPC providers are
+  // outside Tor. Nothing is resolved or logged for it.
+  test('ENS_RESOLVE refuses a Tor window without looking the name up', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const result = await handlerFor(IPC.ENS_RESOLVE)(
+      { sender: { isPrivate: true, isTor: true } },
+      { name: SECRET }
+    );
+    expect(result).toMatchObject({ type: 'error', reason: 'TOR_WINDOW', name: SECRET });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(loggedText()).not.toContain(SECRET);
+    fetchSpy.mockRestore();
   });
 
   test('a private ENS_RESOLVE logs neither the name nor the resolved target', async () => {

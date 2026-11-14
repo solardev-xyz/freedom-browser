@@ -1,0 +1,6 @@
+- New Tor window: a private window whose pages all go through the bundled Tor client: sites see a Tor address instead of yours, and your network sees that you use Tor but not which sites ([#473](https://github.com/solardev-xyz/freedom-browser/issues/473))
+  - Open it with `Cmd+Option+N` / `Alt+Shift+N`, from File > New Tor Window or from the ☰ menu; its teal-green chrome and Tor badge show Tor's state
+  - Opening one starts Tor, turning it on in Settings if it's off; a page asked for while Tor connects opens once it's connected
+  - While Tor isn't connected, pages don't load rather than going direct, WebRTC can't reveal your IP address, and sites can't ask for your location
+  - Site permissions saved in normal windows don't apply in Tor windows; sites ask again
+  - Swarm, IPFS, Radicle and ENS names don't open in Tor windows, since they'd go through your own nodes and RPC providers outside Tor

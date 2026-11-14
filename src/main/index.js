@@ -434,7 +434,14 @@ const {
   getStatus: getTorStatus,
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
+  unregisterTorWindowSession,
 } = require('./tor-manager');
+const {
+  openTorWindow,
+  blockDwebSchemes,
+  installTorWindowGate,
+  TOR_DENIED_PERMISSIONS,
+} = require('./tor-window');
 const {
   registerIdentityIpc,
   hasVault,
@@ -604,6 +611,7 @@ async function bootstrap() {
     onSetTitle: setWindowTitle,
     onNewWindow: createMainWindow,
     onNewPrivateWindow: createPrivateWindow,
+    onNewTorWindow: openTorWindow,
   });
   registerSettingsIpc();
   registerWebMcpLaunchIpc(ipcMain);
@@ -746,6 +754,10 @@ async function bootstrap() {
   // First in the chain, so no rewrite or later handler can wave a request
   // to the local Ant API past it (docs/security-audit-electron.md, O-1).
   // Runs in test mode too — it is browser policy, like onchain-app-guard.
+  // The Tor window gate (#473) cancels a Tor window's requests while its
+  // route through Tor isn't live; it goes ahead of anything that could
+  // rewrite them.
+  installTorWindowGate();
   installAntApiGuard();
   installRequestRewriter();
   // After the rewriter (which owns scheme/gateway rewriting) and before
@@ -778,13 +790,19 @@ async function bootstrap() {
   // private sessions. The wallet providers are unavailable in private
   // windows, so no payment could ever be signed; excluding the x402
   // handlers keeps 402 responses flowing to the page untouched.
-  setPrivateSessionConfigurator((privateSession, { partition }) => {
+  setPrivateSessionConfigurator((privateSession, { partition, tor = false }) => {
     // The dweb protocol handlers log request URLs (and, underneath, the
     // names they resolve) to the persistent main.log. Passing the partition
     // marks this session's registrations private so those lines are
     // redacted — see src/main/private/private-log-context.js.
     if (TEST_MODE) {
       registerStubProtocols(privateSession, { privatePartition: partition });
+      // A Tor window (#473) answers the dweb schemes with its notice, in
+      // place of the harness's stubs too, so tests see what users get.
+      if (tor) blockDwebSchemes(privateSession);
+    } else if (tor) {
+      // Its own nodes and RPC providers are outside Tor: tor-window.js.
+      blockDwebSchemes(privateSession);
     } else {
       registerBzzProtocol(privateSession, { privatePartition: partition });
       registerIpfsProtocol(privateSession, { privatePartition: partition });
@@ -797,12 +815,18 @@ async function bootstrap() {
       exclude: (name) => name.startsWith('x402-'),
     });
     attachDownloadsManager(privateSession, { privatePartition: partition });
-    installPermissionHandlers(privateSession, { privatePartition: partition });
+    installPermissionHandlers(privateSession, {
+      privatePartition: partition,
+      alwaysDenied: tor ? TOR_DENIED_PERMISSIONS : [],
+      isolated: tor,
+    });
     // `.onion` routing is per-session: the PAC on the default session does
     // not cover this partition, so without this registration a private window
     // resolves *.onion DIRECT and hands the onion hostname to the system
     // resolver. Applies the live policy immediately when Tor is already up.
-    registerOnionRoutingSession(partition, privateSession);
+    // A Tor window's session is routed as a whole instead, and before its
+    // window opens (tor-window.js#openTorWindow).
+    if (!tor) registerOnionRoutingSession(partition, privateSession);
   });
   // On private-window close: cancel the window's still-running downloads
   // FIRST (once its rows are gone nothing can see or stop them, and a
@@ -814,6 +838,7 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => dropPrivateDownloads(partition));
   registerPrivateCleanup((partition) => clearPrivatePermissionDecisions(partition));
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
+  registerPrivateCleanup((partition) => unregisterTorWindowSession(partition));
   // Colibri's private store (#1058): the private windows share one in-memory
   // verifier store per chain, dropped once the last of them has closed.
   require('./ens/colibri-resolver').registerColibriPrivateCleanup({

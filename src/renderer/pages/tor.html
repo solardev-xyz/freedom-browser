@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';"
+    />
+    <title>Tor Window</title>
+    <link rel="stylesheet" href="styles/tokens.css" />
+    <link rel="stylesheet" href="styles/ui.css" />
+    <style>
+      /* A Tor window's start page (#473), built on the design system (#1198).
+         Like the window's chrome it stays dark in both themes: <body> carries
+         the Tor window's classes, so tokens.css paints it in the Tor palette
+         whatever theme <html> has. The pin keeps the page's own scrollbars and
+         form colours dark too (#233). */
+      html,
+      html[data-theme='light'] {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        min-height: 100%;
+        margin: 0;
+      }
+      body {
+        box-sizing: border-box;
+        padding: calc(2 * var(--space-6));
+        background: var(--surface-canvas);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      }
+      .tor-page {
+        max-width: 900px;
+      }
+      .tor-kicker {
+        margin: 0 0 var(--space-4);
+      }
+      /* The notices the chrome opens (renderer/lib/tor-window.js) show only
+         when the URL names them, so this page needs no script. */
+      .tor-targeted {
+        margin-bottom: var(--space-6);
+      }
+      .tor-targeted:not(:target) {
+        display: none;
+      }
+      .tor-lead {
+        max-width: 640px;
+        margin: 0 0 var(--space-6);
+        font-size: var(--font-size-lg);
+        line-height: 1.6;
+      }
+      .tor-columns {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: var(--space-6);
+      }
+      .tor-list {
+        margin: 0;
+        padding-left: var(--space-5);
+        font-size: var(--font-size-lg);
+        line-height: 1.7;
+      }
+      .tor-list li + li {
+        margin-top: var(--space-1);
+      }
+    </style>
+  </head>
+  <body class="private-window tor-window">
+    <main class="tor-page">
+      <p class="tor-kicker">
+        <span class="ui-badge ui-badge--accent" data-test="tor-page-badge">Tor window</span>
+      </p>
+      <header class="ui-page-header">
+        <h1 class="ui-page-header__title">You&rsquo;re browsing through Tor</h1>
+      </header>
+      <section class="tor-targeted" id="offline" data-test="tor-offline-notice">
+        <div class="ui-callout ui-callout--info">
+          <svg
+            class="ui-callout__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
+          </svg>
+          <div class="ui-callout__body">
+            <p class="ui-callout__title">Waiting for Tor</p>
+            Pages in this window only load through Tor, so this one opens once Tor is connected. If
+            the Tor badge says &ldquo;not connected&rdquo;, enter the address again to retry.
+          </div>
+        </div>
+      </section>
+      <section class="tor-targeted" id="blocked" data-test="tor-blocked-notice">
+        <div class="ui-callout ui-callout--warning">
+          <svg
+            class="ui-callout__icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path d="M12 3l9 16H3z" />
+            <path d="M12 10v4" />
+            <path d="M12 17h.01" />
+          </svg>
+          <div class="ui-callout__body">
+            <p class="ui-callout__title">That address can&rsquo;t open in a Tor window</p>
+            Swarm, IPFS, Radicle and on-chain addresses, and ENS or Tezos names, load through your
+            own nodes and blockchain RPC providers, which don&rsquo;t go through Tor. Open it in a
+            normal or private window instead.
+          </div>
+        </div>
+      </section>
+      <p class="tor-lead">
+        Pages in this window go through the Tor network: the sites you visit see a Tor address
+        instead of yours, and your network provider sees that you use Tor, but not which sites.
+        It&rsquo;s also a private window: nothing is saved to history, and cookies and site data
+        vanish when you close it.
+      </p>
+      <div class="tor-columns">
+        <div class="ui-card ui-card--inset">
+          <h2 class="ui-card__title">What this window does</h2>
+          <ul class="tor-list">
+            <li>Sites see a Tor address instead of yours</li>
+            <li>Your network provider only sees that you use Tor, not which sites</li>
+            <li>Tor looks up the sites&rsquo; names, so they don&rsquo;t leak to your DNS</li>
+            <li>WebRTC can&rsquo;t reveal your IP address</li>
+            <li>
+              Tor starts when the window opens; until it&rsquo;s connected, pages wait rather than
+              going direct
+            </li>
+          </ul>
+        </div>
+        <div class="ui-card ui-card--inset">
+          <h2 class="ui-card__title">What it doesn&rsquo;t do</h2>
+          <ul class="tor-list">
+            <li>
+              It isn&rsquo;t Tor Browser: sites can still recognise Freedom&rsquo;s fingerprint
+              across visits
+            </li>
+            <li>Sites you sign in to still know it&rsquo;s you</li>
+            <li>
+              Swarm, IPFS, Radicle and ENS names don&rsquo;t open here: they&rsquo;d go outside Tor
+            </li>
+            <li>Freedom&rsquo;s own requests, like updates and your wallet, don&rsquo;t use Tor</li>
+          </ul>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

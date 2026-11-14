@@ -272,6 +272,16 @@ describe('resolveGatewayOffer', () => {
 });
 
 describe('makeGatewayOfferHandler', () => {
+  // #473: the offer resolves the name over RPC, outside Tor.
+  test('a Tor window gets no offer, and nothing is looked up', async () => {
+    const resolveContent = jest.fn();
+    const handler = makeGatewayOfferHandler({ resolveContent, isTorSender: (s) => s?.tor === true });
+    await expect(
+      handler({ sender: { tor: true } }, { url: 'https://vitalik.eth.limo/' })
+    ).resolves.toBeNull();
+    expect(resolveContent).not.toHaveBeenCalled();
+  });
+
   test('answers the IPC payload, and null for a malformed one', async () => {
     const resolveContent = jest.fn().mockResolvedValue({ type: 'ok', protocol: 'ipfs' });
     const handler = makeGatewayOfferHandler({ resolveContent });
@@ -318,6 +328,7 @@ describe('registerGatewayOfferIpc', () => {
       }));
       jest.doMock('./private/private-windows', () => ({
         classifyWebContents: (contents) => contents?.kind ?? 'unknown',
+        isTorWebContents: (contents) => contents?.kind === 'tor',
       }));
       logContext = require('./private/private-log-context');
       require('./gateway-offer').registerGatewayOfferIpc();

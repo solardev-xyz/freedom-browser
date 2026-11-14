@@ -68,6 +68,7 @@ const PUBLIC_CHANNELS = [
   'adblock:scriptlets',
   'adblock:cosmetic',
   'private:is-private',
+  'private:is-tor',
   'internal:get-ethereum-inject-source',
   'internal:get-pages',
   // The popup blocker's gesture check for a dweb link the preload

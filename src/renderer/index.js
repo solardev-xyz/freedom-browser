@@ -97,7 +97,8 @@ import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFromPage } from './lib/wallet-ui.js';
 import { attachSubmenuHover } from './lib/submenu-hover.js';
-import { isPrivateWindow } from './lib/private-mode.js';
+import { isPrivateWindow, isTorWindow } from './lib/private-mode.js';
+import { initTorWindowBadge } from './lib/tor-window.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
 import { initPopoverBounds } from './lib/popover-bounds.js';
@@ -115,7 +116,17 @@ initTheme();
 if (isPrivateWindow()) {
   document.body.classList.add('private-window');
   const privateBadge = document.getElementById('private-badge');
-  if (privateBadge) privateBadge.hidden = false;
+  // A Tor window (#473) shows its own badge, with Tor's state, instead.
+  if (privateBadge) privateBadge.hidden = isTorWindow();
+}
+if (isTorWindow()) {
+  document.body.classList.add('tor-window');
+  const torBadge = document.getElementById('tor-badge');
+  if (torBadge) torBadge.hidden = false;
+  initTorWindowBadge({
+    badgeState: document.getElementById('tor-badge-state'),
+    tor: window.tor,
+  });
 }
 
 let closeProfileMenu = () => {};

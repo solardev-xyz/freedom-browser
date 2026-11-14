@@ -17,6 +17,9 @@
  *    check it against;
  *  - a token defined only in the light block is undefined in dark, and a token
  *    nothing paints with is dead weight in the file everything reads.
+ *
+ * A page that has moved onto the design system (#1198) links `tokens.css` and
+ * `ui.css` instead of this sheet, and `design-system.test.js` guards it.
  */
 
 const fs = require('fs');
@@ -26,6 +29,17 @@ const PAGES_DIR = path.join(__dirname, '..');
 const INTERNAL_PAGES = require('../../../shared/internal-pages.json');
 
 const pageFiles = [...Object.values(INTERNAL_PAGES.routable), ...INTERNAL_PAGES.other].sort();
+const pageHtml = (file) => fs.readFileSync(path.join(PAGES_DIR, file), 'utf8');
+/** The stylesheets a page links, in order, whatever order a tag's attributes are in. */
+const stylesheetLinks = (html) =>
+  [...html.matchAll(/<link\b[^>]*>/g)]
+    .map(([tag]) => tag)
+    .filter((tag) => /\brel=["']stylesheet["']/.test(tag))
+    .map((tag) => tag.match(/\bhref=["']([^"']+)["']/)?.[1])
+    .filter(Boolean);
+const onDesignSystem = (file) => stylesheetLinks(pageHtml(file)).includes('styles/tokens.css');
+// The pages this sheet paints.
+const themePages = pageFiles.filter((file) => !onDesignSystem(file));
 const THEME = fs.readFileSync(path.join(__dirname, 'theme.css'), 'utf8');
 
 /** Blank comment bodies so a commented-out declaration cannot satisfy a guard. */
@@ -141,11 +155,21 @@ describe('the shared internal-page palette', () => {
     expect(orphans).toEqual([]);
   });
 
-  test('every internal page links it, and its CSP can load it', () => {
+  test('every internal page links it, or the design system, and its CSP can load it', () => {
     const missing = [];
     for (const file of pageFiles) {
-      const html = fs.readFileSync(path.join(PAGES_DIR, file), 'utf8');
-      if (!html.includes('<link rel="stylesheet" href="styles/theme.css" />')) {
+      const html = pageHtml(file);
+      const links = stylesheetLinks(html);
+      if (onDesignSystem(file)) {
+        // tokens.css first: ui.css paints from it.
+        const blocks = links.indexOf('styles/ui.css');
+        if (blocks < 0 || blocks < links.indexOf('styles/tokens.css')) {
+          missing.push(`${file}: does not link styles/ui.css after styles/tokens.css`);
+        }
+        if (links.includes('styles/theme.css')) {
+          missing.push(`${file}: links styles/theme.css as well as the design system`);
+        }
+      } else if (!links.includes('styles/theme.css')) {
         missing.push(`${file}: does not link styles/theme.css`);
       }
       // A `<meta>` CSP without `'self'` in `style-src` blocks the sheet and the
@@ -158,10 +182,20 @@ describe('the shared internal-page palette', () => {
     expect(missing).toEqual([]);
   });
 
+  test("reads a page's stylesheet links whatever order their attributes are in", () => {
+    expect(
+      stylesheetLinks(
+        '<link href="styles/tokens.css" rel="stylesheet" />' +
+          '<link rel="icon" href="x.png" />' +
+          "<link rel='stylesheet' href='styles/ui.css'>"
+      )
+    ).toEqual(['styles/tokens.css', 'styles/ui.css']);
+  });
+
   test('no page declares a palette of its own (#261)', () => {
     const shared = tokensOf(darkBlock.body);
     const offenders = [];
-    for (const file of pageFiles) {
+    for (const file of themePages) {
       const css = cssFor(file);
       for (const { prelude, body } of blocks(css)) {
         // Any selector, not just `:root`/`html`: re-pinning `--accent` on a
@@ -192,7 +226,7 @@ describe('the shared internal-page palette', () => {
   test('every token a page paints with is defined here, and every token here is used (#249)', () => {
     const defined = tokensOf(darkBlock.body);
     const used = new Map();
-    for (const file of pageFiles) {
+    for (const file of themePages) {
       for (const [, name] of cssFor(file).matchAll(/var\((--[\w-]+)/g)) {
         if (!used.has(name)) used.set(name, []);
         used.get(name).push(file);

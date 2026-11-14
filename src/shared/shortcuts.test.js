@@ -81,8 +81,9 @@ describe('shortcut registry', () => {
 
     // Entries whose Settings label legitimately keeps an inner capital (a
     // product or protocol name), and only with a proper noun to point at:
-    // Agent is the product name of Freedom Agent, not a generic noun.
-    const PROPER_NOUNS = new Set(['view.toggleAgent']);
+    // Agent is the product name of Freedom Agent, not a generic noun; Tor is
+    // the Tor network's name (#473).
+    const PROPER_NOUNS = new Set(['view.toggleAgent', 'window.newTor']);
 
     const settingsLabelOf = (entry) => entry.settingsLabel || entry.description;
 
@@ -909,7 +910,12 @@ describe('hamburger menu shortcut hints', () => {
   // the registry.
   test('every data-shortcut hint is a real registry binding', () => {
     const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf-8');
-    const hints = [...html.matchAll(/data-shortcut(?:-other)?="([^"]+)"/g)].map((m) => m[1]);
+    // `data-shortcut-other` is the hint shown off macOS (menus.js), so it only
+    // has to resolve there.
+    const hints = [...html.matchAll(/data-shortcut(-other)?="([^"]+)"/g)].map((m) => ({
+      hint: m[2],
+      offMacOnly: Boolean(m[1]),
+    }));
     expect(hints.length).toBeGreaterThan(0);
 
     for (const platform of ['darwin', 'win32']) {
@@ -921,11 +927,12 @@ describe('hamburger menu shortcut hints', () => {
           registry.add(normalizeAccelerator(alias, platform));
         }
       }
-      for (const hint of hints) {
+      for (const { hint, offMacOnly } of hints) {
         const normalized = normalizeAccelerator(hint, platform);
         // A hint may be platform-specific (Cmd+Y is macOS-only), so it only
         // has to resolve on the platform whose modifier it names.
-        const appliesHere = platform === 'darwin' ? !/^Ctrl\+/.test(hint) : !/^Cmd\+/.test(hint);
+        const appliesHere =
+          platform === 'darwin' ? !offMacOnly && !/^Ctrl\+/.test(hint) : !/^Cmd\+/.test(hint);
         if (!appliesHere) continue;
         expect({ hint, platform, known: registry.has(normalized) }).toEqual({
           hint,

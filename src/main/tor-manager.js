@@ -22,7 +22,7 @@ const net = require('net');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint, parseSocksEndpoint } = require('../shared/socks-endpoint');
 const { success, failure } = require('./ipc-contract');
-const { loadSettings } = require('./settings-store');
+const { loadSettings, saveSettings } = require('./settings-store');
 const { getTorDataDir } = require('./profile-paths');
 const {
   getActiveProfile,
@@ -33,7 +33,7 @@ const {
   promptForDefaultExternalCandidateProtocol,
 } = require('./profile-external-candidates');
 const { probeSocks5Endpoint, probeTcpEndpoint } = require('./socks-probe');
-const { applyOnionProxy, clearOnionProxy } = require('./tor-proxy');
+const { applyOnionProxy, clearOnionProxy, applyTorWindowProxy } = require('./tor-proxy');
 const {
   MODE,
   DEFAULTS,
@@ -78,6 +78,36 @@ const proxySessions = new Map();
 // when `.onion` is routed DIRECT. A session registered later adopts it, so a
 // private window opened while Tor is already running inherits the same policy.
 let appliedSocksEndpoint = null;
+// Tor windows (#473): sessions that send *all* their traffic through Arti,
+// keyed by private partition. Unlike `proxySessions` they are never set to
+// DIRECT. A stop leaves them pointed at the port Arti listened on, so their
+// requests fail rather than leave outside Tor; a new endpoint (a restart on
+// another port, an external Tor) is applied to them as it is to `.onion`.
+const torWindowSessions = new Map();
+// The endpoint each Tor window's proxy was last applied with, by partition.
+// A Tor window's route is live only when this matches the endpoint Tor is
+// running on (isTorWindowRouteLive): until then tor-window.js's gate cancels
+// its requests, so they can't reach whatever else listens on an assumed port.
+const torWindowRoutes = new Map();
+// While Tor isn't running, Tor windows point at a loopback port Freedom holds
+// itself and that refuses every connection, rather than at a port Arti isn't
+// on (yet, or any more) that another program could take. The request gate
+// covers page requests; this covers what doesn't pass through it, like
+// WebRTC's TCP (#473).
+let holdingEndpoint = null;
+
+async function ensureHoldingEndpoint() {
+  if (holdingEndpoint) return holdingEndpoint;
+  const net = require('net');
+  const server = net.createServer((socket) => socket.destroy());
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  server.unref?.();
+  holdingEndpoint = `127.0.0.1:${server.address().port}`;
+  return holdingEndpoint;
+}
 let artiBootstrapped = false;
 let artiOutputBuffer = '';
 // Bumped by every start attempt and by every stop, so a start that is awaiting
@@ -229,6 +259,8 @@ function updateState(newState, error = null) {
   log.info('[Tor] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
   currentState = newState;
   lastError = error;
+  // Tor windows follow the state: held off unless Tor is up (rerouteTorWindows).
+  if (torWindowSessions.size > 0) rerouteTorWindows();
   const windows = require('electron').BrowserWindow.getAllWindows();
   for (const win of windows) {
     try {
@@ -314,9 +346,131 @@ function startHealthCheck(mode) {
  */
 async function applyOnionRouting(endpoint) {
   appliedSocksEndpoint = endpoint;
-  await Promise.all(
-    [...proxySessions.values()].map((targetSession) => applyOnionProxy(targetSession, endpoint))
-  );
+  await Promise.all([
+    ...[...proxySessions.values()].map((targetSession) => applyOnionProxy(targetSession, endpoint)),
+    rerouteTorWindows(),
+  ]);
+}
+
+// Apply a Tor window's proxy, and record the endpoint once it's in place.
+async function applyTorWindowRoute(key, targetSession, endpoint) {
+  torWindowRoutes.delete(key);
+  await applyTorWindowProxy(targetSession, endpoint);
+  if (torWindowSessions.get(key) === targetSession) torWindowRoutes.set(key, endpoint);
+}
+
+/**
+ * Whether a Tor window's session may send requests now: Tor is running, on an
+ * endpoint it validated, and this session's proxy points there. Anything else
+ * (Tor off, starting, stopped, crashed, or this session not yet re-pointed)
+ * is not live.
+ */
+function isTorWindowRouteLive(targetSession) {
+  if (currentState !== STATUS.RUNNING || !appliedSocksEndpoint) return false;
+  for (const [key, candidate] of torWindowSessions) {
+    if (candidate === targetSession) return torWindowRoutes.get(key) === appliedSocksEndpoint;
+  }
+  return false;
+}
+
+/**
+ * The SOCKS endpoint Tor windows go through while Tor runs, else null: they
+ * are held off on Freedom's own refusing port then (rerouteTorWindows).
+ */
+function torWindowEndpoint() {
+  // Only once running: after a crash `appliedSocksEndpoint` still names the
+  // dead run's port (kept for `.onion`, see reassertOnionRouting), and a
+  // restart's STARTING must not route Tor windows back to it before the new
+  // run has validated its own (applyTorProxy sets RUNNING after that).
+  return currentState === STATUS.RUNNING && appliedSocksEndpoint ? appliedSocksEndpoint : null;
+}
+
+// Told each time Tor windows have been pointed at a running Tor, so what they
+// held back meanwhile can open (tor-window.js#resumeHeldBack).
+const torWindowsLiveListeners = new Set();
+
+/** Call `listener` whenever Tor windows are routed through a running Tor. */
+function onTorWindowsLive(listener) {
+  torWindowsLiveListeners.add(listener);
+  return () => torWindowsLiveListeners.delete(listener);
+}
+
+// Re-point every Tor window at where it should go now: Arti while Tor is up on
+// an endpoint in use (torWindowEndpoint), Freedom's refusing port otherwise.
+// Runs are queued, and each decides when it runs, so the last one always
+// reflects the current state, whatever order the triggers fired in.
+let torWindowRouting = Promise.resolve();
+function rerouteTorWindows() {
+  torWindowRouting = torWindowRouting.then(async () => {
+    const endpoint = torWindowEndpoint();
+    const target = endpoint || (await ensureHoldingEndpoint());
+    await Promise.all(
+      [...torWindowSessions.entries()].map(([key, targetSession]) =>
+        torWindowRoutes.get(key) === target
+          ? null
+          : applyTorWindowRoute(key, targetSession, target).catch((err) => {
+              log.error(`[Tor] Failed to route Tor window session ${key}:`, err.message);
+            })
+      )
+    );
+    if (!endpoint) return;
+    for (const listener of torWindowsLiveListeners) {
+      try {
+        listener();
+      } catch (err) {
+        log.error('[Tor] Tor window listener failed:', err.message);
+      }
+    }
+  });
+  return torWindowRouting;
+}
+
+/**
+ * Track a Tor window's session and point it at Arti for everything. Resolves
+ * once the proxy is in place; the caller opens the window only then, so its
+ * first request can't go out before the route exists. Rejects if the proxy
+ * can't be applied, and the caller then refuses to open the window.
+ *
+ * @param {string} key - the window's private partition
+ * @param {import('electron').Session} targetSession
+ */
+async function registerTorWindowSession(key, targetSession) {
+  if (!key || !targetSession) throw new Error('Tor window session missing');
+  torWindowSessions.set(key, targetSession);
+  await rerouteTorWindows();
+  // rerouteTorWindows logs a failed apply; the window must not open on it.
+  if (!torWindowRoutes.has(key)) {
+    torWindowSessions.delete(key);
+    throw new Error('could not route the session through Tor');
+  }
+}
+
+/** Stop tracking a Tor window's session (its window closed). */
+function unregisterTorWindowSession(key) {
+  torWindowSessions.delete(key);
+  torWindowRoutes.delete(key);
+}
+
+/**
+ * Start Tor for a Tor window, unless it's running or on its way. Opening a Tor
+ * window is the request, and so is a page load in one while Tor isn't running
+ * (tor-window.js#notifyHeldBack): the window can do nothing without Tor. With
+ * Tor turned off in Settings, this turns it on first, as Settings → Advanced →
+ * Enable Tor would.
+ */
+function ensureTorForTorWindow({ promptWindow } = {}) {
+  if (loadSettings().enableTorIntegration !== true) {
+    log.info('[Tor] Turning Tor on for a Tor window');
+    saveSettings({ enableTorIntegration: true });
+  }
+  // While stopping too: startTor queues the start for once the stop is done.
+  if (currentState !== STATUS.RUNNING && currentState !== STATUS.STARTING) {
+    log.info('[Tor] Starting for a Tor window');
+    // The harness records the start instead in specs that check Tor windows
+    // with Tor not running (test-harness.js#recordTorWindowStarts).
+    const start = globalThis.__FREEDOM_TEST_TOR_WINDOW_START__ || startTor;
+    start({ checkDefaultExternalCandidate: true, promptWindow });
+  }
 }
 
 /**
@@ -335,7 +489,10 @@ async function reassertOnionRouting() {
   }
 }
 
-/** Restore DIRECT `.onion` connections on every tracked session. */
+/**
+ * Restore DIRECT `.onion` connections on every tracked session. Tor window
+ * sessions are deliberately not among them: they keep their SOCKS route.
+ */
 async function clearOnionRouting() {
   appliedSocksEndpoint = null;
   await Promise.all(
@@ -869,6 +1026,14 @@ module.exports = {
   stopTor,
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
+  registerTorWindowSession,
+  unregisterTorWindowSession,
+  torWindowEndpoint,
+  isTorWindowRouteLive,
+  onTorWindowsLive,
+  // Tests: settle once the queued Tor-window routing has run.
+  whenTorWindowsRouted: () => torWindowRouting,
+  ensureTorForTorWindow,
   getActivePort,
   getArtiVersion,
   getArtiBinaryPath,

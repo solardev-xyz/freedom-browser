@@ -49,3 +49,11 @@ test('only an explicit true is private', () => {
 test('the switch stays well inside a Windows command line', () => {
   expect(buildWebviewBootSwitch({ isPrivate: false }).length).toBeLessThan(20_000);
 });
+
+// #473: a Tor window's tab is private too, and knows it is a Tor window.
+test('a Tor boot is private and Tor, and carries no provider', () => {
+  const boot = decode(buildWebviewBootSwitch({ isPrivate: false, isTor: true }));
+  expect(boot).toMatchObject({ isPrivate: true, isTor: true });
+  expect(boot).not.toHaveProperty('ethereum');
+  expect(decode(buildWebviewBootSwitch({ isPrivate: true })).isTor).toBe(false);
+});

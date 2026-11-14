@@ -13,7 +13,7 @@ import {
   isNewTabPageName,
   isNewTabPageUrl,
 } from './page-urls.js';
-import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
+import { getPrivatePartition, isPrivateWindow, isTorWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 import { setupSwarmProvider } from './swarm-provider.js';
 import { setupRadicleProvider } from './radicle-provider.js';
@@ -580,9 +580,12 @@ export const updateActiveTabTitle = (title) => {
 // The friendly URL of the private start page; private windows open new
 // tabs here instead of the home page.
 const PRIVATE_START_URL = 'freedom://private';
+// A Tor window's start page (#473): what the window does and doesn't do.
+const TOR_START_URL = 'freedom://tor';
 
 // URL every fresh tab in this window starts on.
-const defaultNewTabUrl = () => (isPrivateWindow() ? PRIVATE_START_URL : homeUrl);
+const defaultNewTabUrl = () =>
+  isTorWindow() ? TOR_START_URL : isPrivateWindow() ? PRIVATE_START_URL : homeUrl;
 
 // True for both forms the private start page appears as in tab.url —
 // the friendly freedom:// form while resolving and the resolved
@@ -596,10 +599,11 @@ const defaultNewTabUrl = () => (isPrivateWindow() ? PRIVATE_START_URL : homeUrl)
 // window, so the narrower check loses nothing.
 const isPrivateStartUrl = (url) =>
   url === PRIVATE_START_URL ||
+  url === TOR_START_URL ||
   (isPrivateWindow() &&
     typeof url === 'string' &&
     url.startsWith('file:') &&
-    url.endsWith('/pages/private.html'));
+    (url.endsWith('/pages/private.html') || /\/pages\/tor\.html(#.*)?$/.test(url)));
 
 const refreshOnchainProvenance = async (tab, url) => {
   if (!tab?.navigationState) return;
@@ -2871,6 +2875,11 @@ export const initTabs = async () => {
     if (matchesShortcut(event, 'window.newPrivate')) {
       event.preventDefault();
       electronAPI?.newPrivateWindow?.();
+    }
+    // New Tor window (#473), the same fallback.
+    if (matchesShortcut(event, 'window.newTor')) {
+      event.preventDefault();
+      electronAPI?.newTorWindow?.();
     }
     // Close tab (skip pinned tabs)
     if (matchesShortcut(event, 'tab.close')) {

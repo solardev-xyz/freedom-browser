@@ -12,11 +12,28 @@ const {
   nativeImage,
   webContents,
   ClipboardItem,
+  session,
 } = require('electron');
 const { URL } = require('url');
 const path = require('path');
 const { activeBzzBases } = require('./state');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
+
+// TOR WINDOW GUARD (#473): Save Image and Copy Image fetch the image again.
+// http-fetch.js does that with Node's own stack, outside any session, so from
+// a Tor window it would go out from the user's own IP address. A Tor
+// window's fetch goes through its session instead, where the proxy and the
+// gate apply (tor-window.js), streamed to disk for a save and capped for the
+// clipboard. The sender is the window's chrome, so the session is found by
+// the window's partition. No partition: refused.
+const TOR_CLIPBOARD_IMAGE_MAX_BYTES = 50 * 1024 * 1024;
+
+function fetchSessionFor(sender) {
+  if (!isTorWebContents(sender)) return null;
+  const partition = getPartitionForWebContents(sender);
+  if (!partition) throw new Error("Tor window's session not found");
+  return session.fromPartition(partition);
+}
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
 const { normalizeSocksEndpoint } = require('../shared/socks-endpoint');
@@ -37,7 +54,11 @@ const {
   validateProfileDeletionForActiveApp,
 } = require('./profile-resolver');
 const { openOrFocusProfile } = require('./profile-launcher');
-const { isPrivateWebContents } = require('./private/private-windows');
+const {
+  isPrivateWebContents,
+  isTorWebContents,
+  getPartitionForWebContents,
+} = require('./private/private-windows');
 const { readProfileFocusAck, requestProfileQuitAsync } = require('./profile-focus-handoff');
 const { isProfileLocked } = require('./profile-lock');
 const { relaunchArgs } = require('./launch-urls');
@@ -689,8 +710,13 @@ function registerBaseIpcHandlers(callbacks = {}) {
   // Each probe is split across start/await/cancel so the renderer can
   // obtain the id before the probe settles (enabling mid-flight cancel
   // from the stop button / next navigation).
-  ipcMain.handle(IPC.BZZ_START_PROBE, (_event, payload = {}) => {
+  ipcMain.handle(IPC.BZZ_START_PROBE, (event, payload = {}) => {
     const { hash, path } = payload;
+    // TOR WINDOW GUARD (#473): the probe asks the user's own Swarm node,
+    // outside Tor, and a Tor window doesn't open Swarm content.
+    if (isTorWebContents(event?.sender)) {
+      return failure('TOR_WINDOW', "Swarm content doesn't open in Tor windows");
+    }
     if (typeof hash !== 'string' || !hash) {
       return failure('INVALID_HASH', 'Missing hash');
     }
@@ -834,6 +860,17 @@ function registerBaseIpcHandlers(callbacks = {}) {
   // sender through the private registry so the guard holds whatever the
   // renderer sends.
   ipcMain.on(IPC.WINDOW_NEW_WITH_URL, (event, url) => {
+    // TOR WINDOW GUARD (#473): asked from a Tor window, the link opens in
+    // another Tor window, never on a session outside Tor. Checked first: a
+    // Tor window is a private window too.
+    if (isTorWebContents(event?.sender)) {
+      if (callbacks.onNewTorWindow) {
+        callbacks.onNewTorWindow(url);
+      } else {
+        log.warn('[tor-window] no Tor-window factory — dropping window:new-with-url');
+      }
+      return;
+    }
     if (isPrivateWebContents(event?.sender)) {
       if (callbacks.onNewPrivateWindow) {
         callbacks.onNewPrivateWindow(url);
@@ -856,11 +893,21 @@ function registerBaseIpcHandlers(callbacks = {}) {
     }
   });
 
+  ipcMain.on(IPC.WINDOW_NEW_TOR, () => {
+    if (callbacks.onNewTorWindow) {
+      callbacks.onNewTorWindow();
+    }
+  });
+
   // Sync: a webview preload asks (before any page script runs) whether it
   // lives inside a private window, to gate wallet provider injection.
   // PRIVATE MODE GUARD (providers): consumer is src/main/webview-preload.js.
   ipcMain.on(IPC.PRIVATE_IS_PRIVATE, (event) => {
     event.returnValue = isPrivateWebContents(event.sender);
+  });
+
+  ipcMain.on(IPC.PRIVATE_IS_TOR, (event) => {
+    event.returnValue = isTorWebContents(event.sender);
   });
 
   ipcMain.on(IPC.APP_SHOW_ABOUT, () => {
@@ -969,7 +1016,12 @@ function registerBaseIpcHandlers(callbacks = {}) {
         return { success: false, canceled: true };
       }
 
-      await fetchToFile(imageUrl, result.filePath);
+      const torSession = fetchSessionFor(event?.sender);
+      if (torSession) {
+        await fetchToFile(imageUrl, result.filePath, { session: torSession });
+      } else {
+        await fetchToFile(imageUrl, result.filePath);
+      }
       return { success: true, filePath: result.filePath };
     } catch (error) {
       log.error('[context-menu] Failed to save image:', error);
@@ -1023,13 +1075,19 @@ function registerBaseIpcHandlers(callbacks = {}) {
   });
 
   // Copy image to clipboard
-  ipcMain.handle('clipboard:copy-image', async (_event, imageUrl) => {
+  ipcMain.handle('clipboard:copy-image', async (event, imageUrl) => {
     if (!imageUrl) {
       return { success: false, error: 'No image URL provided' };
     }
 
     try {
-      const imageData = await fetchBuffer(imageUrl);
+      const torSession = fetchSessionFor(event?.sender);
+      const imageData = torSession
+        ? await fetchBuffer(imageUrl, {
+            session: torSession,
+            maxBytes: TOR_CLIPBOARD_IMAGE_MAX_BYTES,
+          })
+        : await fetchBuffer(imageUrl);
       const image = nativeImage.createFromBuffer(imageData);
 
       if (image.isEmpty()) {

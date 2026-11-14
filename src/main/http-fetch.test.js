@@ -211,3 +211,38 @@ describe('http-fetch dweb schemes', () => {
     }
   });
 });
+
+// #473: a Tor window's Save Image / Copy Image hand their session in, so the
+// fetch goes through its proxy, never Node's own stack.
+describe('http-fetch through a given session', () => {
+  test('an https URL goes through the session it was given, not the default one', async () => {
+    session.defaultSession.fetch = jest.fn();
+    const torSession = { fetch: jest.fn().mockResolvedValue(okResponse('tor-bytes')) };
+    await expect(
+      fetchBuffer('https://example.com/x.png', { session: torSession })
+    ).resolves.toEqual(Buffer.from('tor-bytes'));
+    expect(torSession.fetch).toHaveBeenCalledWith(
+      'https://example.com/x.png',
+      expect.objectContaining({ signal: expect.anything() })
+    );
+    expect(session.defaultSession.fetch).not.toHaveBeenCalled();
+  });
+
+  test('a save streams to disk through that session', async () => {
+    const torSession = { fetch: jest.fn().mockResolvedValue(okResponse('saved')) };
+    const dest = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tor-save-')), 'x.png');
+    await fetchToFile('https://example.com/x.png', dest, { session: torSession });
+    expect(fs.readFileSync(dest, 'utf8')).toBe('saved');
+  });
+
+  test('maxBytes stops a body that runs past it', async () => {
+    const torSession = {
+      fetch: jest
+        .fn()
+        .mockResolvedValue({ ok: true, status: 200, body: bodyStream(['12345', '67890']) }),
+    };
+    await expect(
+      fetchBuffer('https://example.com/big', { session: torSession, maxBytes: 6 })
+    ).rejects.toThrow('larger than 6 bytes');
+  });
+});

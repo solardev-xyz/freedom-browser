@@ -1146,6 +1146,8 @@ jobs:
       # History menu, which reads private-window state (`history-menu`, #584),
       # and the Swarm ACT prompt a page's `window.swarm.openAct` raises
       # (`swarm-open-act`, #648).
+      # `tor-window` (#473) checks a Tor window's session sends everything to
+      # Arti's SOCKS port, even with Tor stopped, and keeps names and dweb out.
       - name: Run find + tab-mute + private-window + focus + sidebar-header + downloads + history-menu E2E
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         run: |
@@ -1153,6 +1155,7 @@ jobs:
             test-e2e/find-in-page.spec.js \
             test-e2e/tab-mute.spec.js \
             test-e2e/private-windows.spec.js \
+            test-e2e/tor-window.spec.js \
             test-e2e/page-providers-early.spec.js \
             test-e2e/swarm-open-act.spec.js \
             test-e2e/private-tab-color.spec.js \

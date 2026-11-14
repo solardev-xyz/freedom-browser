@@ -1676,6 +1676,72 @@ describe('permissions-manager private windows', () => {
 // `openExternal` request carrying `externalURL`. It used to be denied with no
 // prompt; it now goes through the same per-site prompt, keyed per scheme, and
 // an allow hands the URL to shell.openExternal — never to Electron's callback.
+// #473: the OS knows where the machine is whatever the route, so a Tor
+// window refuses location outright: no prompt, and no profile allow applies.
+describe('permissions-manager: a Tor window refuses location, and asks afresh', () => {
+  let userDataDir;
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+  });
+
+  afterEach(() => {
+    removeTempUserDataDir(userDataDir);
+  });
+
+  test('without a prompt, over a stored allow, in checks too', () => {
+    // The profile allowed location for the site in a normal window.
+    const profile = loadMainModule(require.resolve('./permissions-store'), { userDataDir }).mod;
+    profile.setDecision('https://www.google.com', 'geolocation', 'allow');
+    profile.setDecision('https://www.google.com', 'notifications', 'allow');
+    const ctx = loadMainModule(require.resolve('./permissions-manager'), {
+      userDataDir,
+      electronOverrides: {
+        systemPreferences: { askForMediaAccess: jest.fn(() => Promise.resolve(true)) },
+      },
+    });
+    const torSession = makeFakeSession();
+    const privateSession = makeFakeSession();
+    ctx.mod.installPermissionHandlers(torSession, {
+      privatePartition: 'private-tor-1',
+      alwaysDenied: ['geolocation'],
+      isolated: true,
+    });
+    ctx.mod.installPermissionHandlers(privateSession, { privatePartition: 'private-2' });
+    ctx.mod.registerPermissionsIpc();
+    const host = makeHost();
+    const url = 'https://www.google.com/';
+
+    const torCallback = jest.fn();
+    torSession.requestHandler(makeGuest(url, host), 'geolocation', torCallback, {
+      requestingUrl: url,
+    });
+    expect(torCallback).toHaveBeenCalledWith(false);
+    expect(host.send).not.toHaveBeenCalled();
+    expect(torSession.checkHandler(makeGuest(url, host), 'geolocation', url, {})).toBe(false);
+
+    // A private window inherits the profile's allow, as before.
+    const privateCallback = jest.fn();
+    privateSession.requestHandler(makeGuest(url, host), 'geolocation', privateCallback, {
+      requestingUrl: url,
+    });
+    expect(privateCallback).toHaveBeenCalledWith(true);
+
+    // Other permissions in the Tor window ask, even one the profile allowed:
+    // it takes none of the profile's saved decisions.
+    const notifyHost = makeHost();
+    const notifyCallback = jest.fn();
+    torSession.requestHandler(makeGuest(url, notifyHost), 'notifications', notifyCallback, {
+      requestingUrl: url,
+    });
+    expect(notifyCallback).not.toHaveBeenCalled();
+    expect(notifyHost.send).toHaveBeenCalledWith(
+      IPC.PERMISSIONS_PROMPT_REQUEST,
+      expect.objectContaining({ permission: 'notifications' })
+    );
+  });
+});
+
 describe('permissions-manager: external protocols (#406)', () => {
   const PARTITION = 'private-ext-1';
   let userDataDir;
@@ -1819,6 +1885,52 @@ describe('permissions-manager: external protocols (#406)', () => {
     await flush();
     expect(prompts(host)).toHaveLength(2);
     expect(shell.openExternal).toHaveBeenCalledTimes(2);
+  });
+
+  // #473: a torrent client launched for magnet: connects outside Tor, so a
+  // remembered allow from normal browsing must not launch it from a Tor
+  // window unasked: on a link, or on a popup's external URL, which reaches
+  // requestOpenExternal without the session's handler (webcontents-setup.js).
+  test("a Tor window doesn't take a remembered allow from normal browsing", async () => {
+    load();
+    const torSession = makeFakeSession();
+    ctx.mod.installPermissionHandlers(torSession, {
+      privatePartition: 'private-tor-ext',
+      isolated: true,
+    });
+    const host = makeHost();
+    const url = 'magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a';
+    openExternal(normalSession, guestFor(host), url);
+    await respond({ id: prompts(host)[0].id, decision: 'allow', remember: true });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+
+    const torGuest = guestFor(host);
+    torGuest.privatePartition = 'private-tor-ext';
+    openExternal(torSession, torGuest, url);
+    await flush();
+    expect(prompts(host)).toHaveLength(2);
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+
+    // The popup path, straight to requestOpenExternal.
+    const popupGuest = guestFor(host);
+    ctx.mod.requestOpenExternal({
+      webContents: popupGuest,
+      url,
+      isMainFrame: true,
+      requestingUrl: popupGuest.getURL(),
+      privatePartition: 'private-tor-ext',
+    });
+    await flush();
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+
+    // Nor does its indicator list the profile's decision as its own.
+    expect(
+      ctx.ipcMain.handlers.get(IPC.PERMISSIONS_GET_FOR_ORIGIN)(
+        { sender: { privatePartition: 'private-tor-ext' } },
+        'https://example.com'
+      )
+    ).toEqual({});
   });
 
   test('decisions are per scheme: allowing magnet: does not allow mailto:', async () => {

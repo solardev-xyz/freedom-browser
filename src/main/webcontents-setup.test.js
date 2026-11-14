@@ -86,6 +86,9 @@ function loadWebContentsSetupModule(options = {}) {
         isPrivateWebContents: options.isPrivateWebContents || (() => false),
         isPrivatePartition: options.isPrivatePartition || (() => false),
         getPartitionForWebContents: options.getPartitionForWebContents || (() => null),
+        isTorSession: options.isTorSession || (() => false),
+        isTorWebContents: options.isTorWebContents || (() => false),
+        isTorPartition: options.isTorPartition || (() => false),
       }),
       [require.resolve('./permissions/permissions-manager')]: () => ({
         requestOpenExternal,
@@ -297,6 +300,23 @@ describe('webcontents-setup', () => {
     const boot = bootOf(webPreferences);
     expect(boot.isPrivate).toBe(true);
     expect(boot).not.toHaveProperty('ethereum');
+  });
+
+  // #473: a Tor window's tab learns it is one, so its preload takes WebRTC
+  // away; by its partition or by its window, failing closed like private.
+  test('a Tor window\'s tab is told it is one, by partition or by window', () => {
+    const byPartition = attach(
+      loadWebContentsSetupModule({ isTorPartition: (p) => p === 'private-tor' }),
+      { partition: 'private-tor' }
+    );
+    expect(bootOf(byPartition.webPreferences)).toMatchObject({ isPrivate: true, isTor: true });
+    const byWindow = attach(
+      loadWebContentsSetupModule({ isTorWebContents: (contents) => contents.id === 3 }),
+      { partition: 'persist:p' }
+    );
+    expect(bootOf(byWindow.webPreferences)).toMatchObject({ isPrivate: true, isTor: true });
+    const normal = attach(loadWebContentsSetupModule(), { partition: 'persist:p' });
+    expect(bootOf(normal.webPreferences).isTor).toBe(false);
   });
 
   test('preview sessions are forced by main without replacing a private partition', () => {

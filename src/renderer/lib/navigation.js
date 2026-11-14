@@ -84,7 +84,9 @@ import {
   shouldRecordHistory,
   shouldCacheFavicons,
   shouldLearnAutocomplete,
+  isTorWindow,
 } from './private-mode.js';
+import { isTorBlockedTarget, torBlockedPageUrl } from './tor-window.js';
 import { parseEthereumUri } from './ethereum-uri.js';
 import {
   openSendFlow,
@@ -1197,6 +1199,15 @@ const handleEthereumUri = (value) => {
 const startBzzNavigationWithProbe = (webview, target, navState, displayUrl, options = {}) => {
   const gatewayUrl = target.targetUrl;
   const hash = target.swarmHash || extractBzzHash(gatewayUrl);
+  // TOR WINDOW GUARD (#473): a load with a Swarm reference (a bare hash, a
+  // gateway URL) would be probed and fetched through the user's own node,
+  // outside Tor, and isTorBlockedTarget can't tell it from the web by the
+  // typed text. Ordinary web addresses come through here too and load on.
+  if (hash && isTorWindow()) {
+    pushDebug('[TorWindow] Not opening Swarm content in a Tor window');
+    webview.loadURL(torBlockedPageUrl());
+    return;
+  }
   // Probe the same in-manifest path the navigation will load. The gateway
   // URL carries the full path in both the direct-hash and ENS-host cases
   // (the ENS resolution feeds `bzz://<hash><suffix>` back through
@@ -1493,6 +1504,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!webview) {
     pushDebug('No active webview to load target');
+    return;
+  }
+  // TOR WINDOW GUARD (#473): a name or a Swarm/IPFS/Radicle/on-chain address
+  // would be resolved and fetched outside Tor, so a Tor window shows its
+  // notice instead, before anything is looked up (tor-window.js).
+  if (isTorWindow() && isTorBlockedTarget(value)) {
+    pushDebug('[TorWindow] Not opening a name or dweb address in a Tor window');
+    webview.loadURL(torBlockedPageUrl());
     return;
   }
   // Swarm base bookkeeping follows the navigated tab too: a background page's

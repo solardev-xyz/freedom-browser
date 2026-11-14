@@ -10,7 +10,8 @@ const {
   runWithPrivateLogContext,
   redactForLog,
 } = require('./private/private-log-context');
-const { isPrivateWebContents } = require('./private/private-windows');
+const { isPrivateWebContents, isTorWebContents } = require('./private/private-windows');
+const { TOR_NAME_LOOKUP_REFUSAL } = require('./tor-window');
 
 // PRIVATE MODE GUARD (name logging): same contract as the ENS resolver —
 // the .tez name being resolved is the browsing history of the tab that
@@ -657,6 +658,8 @@ function invalidateTezosDomain(name) {
 
 function registerTezosDomainsIpc() {
   ipcMain.handle(IPC.TEZOS_DOMAINS_RESOLVE, async (event, { name } = {}) => {
+    // A Tor window (#473) doesn't look names up: see tor-window.js.
+    if (isTorWebContents(event?.sender)) return { ...TOR_NAME_LOOKUP_REFUSAL, system: 'tezos' };
     return runWithPrivateLogContext(isPrivateWebContents(event?.sender), async () => {
       try {
         return await resolveTezosDomain(name);

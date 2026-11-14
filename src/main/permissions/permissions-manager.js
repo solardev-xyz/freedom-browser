@@ -112,6 +112,16 @@ const sessionDecisions = new Map();
 // incognito content-settings inheritance), but nothing flows back.
 const privateDecisions = new Map();
 
+// Private partitions that take none of the profile's saved decisions: Tor
+// windows (#473). An allow from normal browsing would apply there unasked,
+// and some act outside Tor (a torrent client launched for `magnet:` connects
+// directly). They ask again, and keep their answers to themselves.
+const isolatedPartitions = new Set();
+
+// The profile's saved decision, as `privatePartition` may read it.
+const profileDecision = (origin, key, privatePartition) =>
+  isolatedPartitions.has(privatePartition) ? null : store.getDecision(origin, key);
+
 // Dismissal embargo (#364), Chromium's rule: three dismissals of the same
 // origin + permission auto-deny it from then on, without a prompt. Blocks
 // and allows are decisions, not dismissals — they reset the counter.
@@ -270,6 +280,7 @@ function setPrivateDecision(partition, origin, key, decision) {
  * Called from the private-window close cleanup (src/main/index.js).
  */
 function clearPrivateDecisions(partition) {
+  isolatedPartitions.delete(partition);
   clearPrivateDismissCounts(partition);
   fileSystemAccess.clearPrivateFileSystemGrants(partition);
   return privateDecisions.delete(partition);
@@ -445,7 +456,10 @@ function clearSessionDecision(origin, key) {
  */
 function getEffectiveDecision(origin, key, privatePartition = null) {
   if (privatePartition) {
-    return getPrivateDecision(privatePartition, origin, key) || store.getDecision(origin, key);
+    return (
+      getPrivateDecision(privatePartition, origin, key) ||
+      profileDecision(origin, key, privatePartition)
+    );
   }
   return store.getDecision(origin, key) || getSessionDecision(origin, key);
 }
@@ -1081,13 +1095,26 @@ function requestOpenExternal({
  * session — webviews carry no `partition` attribute, so they share it —
  * or a private window's ephemeral partition session, in which case
  * `privatePartition` names it and every decision stays session-only).
+ * `alwaysDenied` names permissions the session refuses without a prompt and
+ * whatever the profile has stored: a Tor window's location (#473). An
+ * `isolated` private partition (a Tor window) takes none of the profile's
+ * saved decisions (isolatedPartitions).
  */
-function installPermissionHandlers(targetSession, { privatePartition = null } = {}) {
+function installPermissionHandlers(
+  targetSession,
+  { privatePartition = null, alwaysDenied = [], isolated = false } = {}
+) {
   if (!targetSession || typeof targetSession.setPermissionRequestHandler !== 'function') {
     return;
   }
+  if (isolated && privatePartition) isolatedPartitions.add(privatePartition);
+  const denied = new Set(alwaysDenied);
 
   targetSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (denied.has(permission)) {
+      callback(false);
+      return;
+    }
     if (permission === 'media' && permitsDictationCapture(webContents, details)) {
       void getOsBlockedMediaKeys(['microphone']).then(blocked =>
         callback(!blocked.length && permitsDictationCapture(webContents, details)));
@@ -1148,6 +1175,7 @@ function installPermissionHandlers(targetSession, { privatePartition = null } = 
   });
 
   targetSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+    if (denied.has(permission)) return false;
     if (permission === 'media' && permitsDictationCapture(webContents, details, true)) return true;
     if (ALWAYS_ALLOWED.has(permission)) {
       return true;
@@ -1259,7 +1287,7 @@ function getDecisionsForOrigin(origin, privatePartition = null) {
   if (fileSystemAccess.hasFileSystemGrants(key, privatePartition)) {
     result[FILE_SYSTEM_KEY] = { decision: 'allow', remembered: false };
   }
-  const stored = store.getAllDecisions()[key] || {};
+  const stored = isolatedPartitions.has(privatePartition) ? {} : store.getAllDecisions()[key] || {};
   for (const [permission, decision] of Object.entries(stored)) {
     result[permission] = { decision, remembered: true };
   }

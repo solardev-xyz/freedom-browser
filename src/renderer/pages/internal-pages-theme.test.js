@@ -32,10 +32,10 @@ const INTERNAL_PAGES = require('../../shared/internal-pages.json');
 
 // Private windows are deliberately plum-on-dark in *both* themes — the whole
 // window chrome is, and the page is the start page a private window opens on
-// (`lib/tabs.js`). It is the one page that pins `color-scheme: dark` on
-// purpose, and `private.html:11-13` says why. Any other page that pins it is
-// #250 again.
-const DARK_ONLY = new Set(['private.html']);
+// (`lib/tabs.js`). It pins `color-scheme: dark` on purpose, and
+// `private.html:11-13` says why. A Tor window's start page, `tor.html`, is
+// the same in teal-green (#473). Any other page that pins it is #250 again.
+const DARK_ONLY = new Set(['private.html', 'tor.html']);
 
 const pageFiles = [...Object.values(INTERNAL_PAGES.routable), ...INTERNAL_PAGES.other].sort();
 
