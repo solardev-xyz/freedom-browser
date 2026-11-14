@@ -778,7 +778,21 @@ function createSendDispatchers(shared, deps = {}) {
     const remember = choices.alwaysAllow === true && rememberable(ctx);
     const deviceSend = ctx.account?.type === 'ledger' || ctx.account?.type === 'remote';
     let coreRule = null;
+    // The receipt is erased when the request ends before the flow does: its
+    // page navigates or its tab closes, and main answers the record
+    // (`context.signal`), while the device may still have the job. Erasing
+    // wipes the held object, so no reference left to it can present it; one
+    // handed on after the end is erased as it arrives. The flow's own end
+    // erases it too, presented or left to expire in the core.
+    const { signal } = context;
     let receipt = null;
+    const eraseReceipt = () => {
+      if (receipt) {
+        receipt.receipt = null;
+        receipt.page = null;
+      }
+      receipt = null;
+    };
     const mintedAndHeld = (run) =>
       stillHeld(null)(async () => {
         // The core judges the fee as it mints (design 0012): a fee the user
@@ -802,46 +816,53 @@ function createSendDispatchers(shared, deps = {}) {
         context.spend(confirmation);
         return run();
       });
-    let sent;
+    signal.addEventListener('abort', eraseReceipt, { once: true });
     try {
-      sent = await sendDappPayment(
-        {
-          walletIndex: ctx.walletIndex,
-          tx,
-          site: requester.key,
-          silent: false,
-          guard: mintedAndHeld,
-          afterSignature: stillHeld(null),
-          authorized: () => ({
-            confirmation,
-            onRule: (rule) => {
-              coreRule = rule;
-            },
-            onReceipt: (held) => {
-              receipt = held;
-            },
-          }),
-        },
-        paymentDeps
-      );
-    } catch (err) {
-      // Nothing was minted or signed: the prompt shows again (promptedSend).
-      if (feeAskAgain) return { feeAskAgain };
-      return err?.answer ?? failure(err);
+      let sent;
+      try {
+        sent = await sendDappPayment(
+          {
+            walletIndex: ctx.walletIndex,
+            tx,
+            site: requester.key,
+            silent: false,
+            guard: mintedAndHeld,
+            afterSignature: stillHeld(null),
+            authorized: () => ({
+              confirmation,
+              onRule: (rule) => {
+                coreRule = rule;
+              },
+              onReceipt: (held) => {
+                receipt = held;
+                if (signal.aborted) eraseReceipt();
+              },
+            }),
+          },
+          paymentDeps
+        );
+      } catch (err) {
+        // Nothing was minted or signed: the prompt shows again (promptedSend).
+        if (feeAskAgain) return { feeAskAgain };
+        return err?.answer ?? failure(err);
+      } finally {
+        // Spent at its presentation; one a send ended before is burnt.
+        if (confirmation) d.discardToken(confirmation.token);
+      }
+      // "Always allow": the core wrote the contract rule as it signed, for the
+      // requester's key, from the transaction the user just confirmed, so it
+      // covers only a (contract, selector, chain) the user saw, with no more
+      // value than this send's (design 0012, APB-2). Main writes none; it
+      // reports what the core said. A device's send has its receipt presented
+      // now, if main recorded it, and the core writes the same rule. The hash
+      // is the page's either way: the payment has gone out.
+      if (remember && deviceSend) await rememberDeviceSend(context, ctx, sent, () => receipt);
+      else if (remember) reportRule(requester.key, coreRule);
+      return { result: sent.hash };
     } finally {
-      // Spent at its presentation; one a send ended before is burnt.
-      if (confirmation) d.discardToken(confirmation.token);
+      signal.removeEventListener('abort', eraseReceipt);
+      eraseReceipt();
     }
-    // "Always allow": the core wrote the contract rule as it signed, for the
-    // requester's key, from the transaction the user just confirmed, so it
-    // covers only a (contract, selector, chain) the user saw, with no more
-    // value than this send's (design 0012, APB-2). Main writes none; it
-    // reports what the core said. A device's send has its receipt presented
-    // now, and the core writes the same rule. The hash is the page's either
-    // way: the payment has gone out.
-    if (remember && deviceSend) await rememberDeviceSend(context, ctx, receipt);
-    else if (remember) reportRule(requester.key, coreRule);
-    return { result: sent.hash };
   }
 
   /**
@@ -850,24 +871,35 @@ function createSendDispatchers(shared, deps = {}) {
    * through the core (`approval.remember`), under the PageContext the token
    * was spent under, and only while the name, the document's key and the
    * grant hold, in the same run as those checks (`recheckThen`), as today's
-   * rule was written. "Recorded" is `signAndRecord` resolving, the point
-   * main wrote the rule before APB-2: the intent journal holds the signed
-   * bytes and the broadcast's outcome (sent, or possibly sent), and the
-   * payment's row is written; a phone's own broadcast answered with its
-   * hash. A send that failed, was rejected at the device, or was withdrawn
-   * never gets here, and its receipt expires unused, as does one whose
-   * document has gone. Main waits for the reply, so the rule stands before
-   * the page hears the hash, and reports it as the vault path does.
+   * rule was written. "Recorded" is `signAndRecord` resolving with
+   * `recorded: true`, the point main wrote the rule before APB-2: the intent
+   * journal holds the signed bytes and the broadcast's outcome (sent, or
+   * possibly sent), and the payment's row is written; a phone's own
+   * broadcast answered with its hash, and its row written. A payment row
+   * that failed to save (`recorded: false`, tx-recorder) presents nothing: a
+   * phone's send then has no record of main's at all. A send that failed,
+   * was rejected at the device, or was withdrawn never gets here. Its
+   * receipt expires unused in the core, as does one whose document has
+   * gone, which main erased at the end (`heldNow` reads null). Main waits
+   * for the reply, so the rule stands before the page hears the hash, and
+   * reports it as the vault path does.
    */
-  async function rememberDeviceSend(context, ctx, held) {
+  async function rememberDeviceSend(context, ctx, sent, heldNow) {
     const { key } = context.requester;
-    if (!held) {
-      reportRule(key, { added: false, reason: 'no receipt' });
+    if (sent?.recorded !== true) {
+      reportRule(key, { added: false, reason: 'the send was not recorded' });
+      return;
+    }
+    if (!heldNow()) {
+      reportRule(key, { added: false, reason: context.signal.aborted ? 'the site no longer holds the send' : 'no receipt' });
       return;
     }
     let presented = null;
     await recheckThen(context, ctx, () => {
-      presented = d.rememberDeviceSend(held);
+      // Read in the same run as the checks: one the request's end erased
+      // while the name was read is not presented.
+      const held = heldNow();
+      if (held) presented = d.rememberDeviceSend(held);
       return presented;
     });
     // The name, the document or the grant no longer held: nothing presented.

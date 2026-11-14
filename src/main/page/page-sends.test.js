@@ -179,6 +179,12 @@ function backends() {
     // Thrown at the device, after its token's spend: its own refusal (a
     // Ledger's or a phone's "declined") or a failed signature.
     deviceFails: null,
+    // The payment's row failed to save: signAndRecord resolves with
+    // `recorded: false`, as tx-recorder does.
+    notRecorded: false,
+    // The finalize receipts a device's signer handed on (`onReceipt`), the
+    // very objects main holds.
+    handed: [],
     // Held at the device (a Ledger or the core's signature), before the
     // commit; and a phone's own send, which signs and broadcasts at once.
     signerHold: null,
@@ -197,6 +203,9 @@ function backends() {
   };
   const signer = { signTransaction: jest.fn() };
   const phoneSigner = { sendTransaction: jest.fn() };
+  // What tx-recorder adds to the reply: the payment's row written, or its
+  // save failed (the payment stands).
+  const recordOutcome = () => (state.notRecorded ? { recorded: false, recordError: 'disk full' } : { recorded: true, paymentId: 1 });
   const settle = (event) => {
     for (const listener of [...state.safe.listeners]) listener(event);
   };
@@ -284,7 +293,9 @@ function backends() {
         const confirmation = chosen.device?.confirmation;
         if (confirmation) {
           const spentReply = await confirmations.spendConfirmation(confirmation);
-          chosen.device.onReceipt?.(confirmations.finalizeReceiptOf(spentReply, confirmation.page));
+          const held = confirmations.finalizeReceiptOf(spentReply, confirmation.page);
+          if (held) state.handed.push(held);
+          chosen.device.onReceipt?.(held);
         }
         const last = chosen.beforeSign ?? (chosen.authorized?.confirmation ? null : chosen.authorized?.beforeSign);
         if (last) await last();
@@ -295,7 +306,7 @@ function backends() {
           if (state.phoneHold) await state.phoneHold.promise;
           state.committed.push(tx);
           options.onCommitted?.();
-          return { hash: PHONE_HASH };
+          return { hash: PHONE_HASH, ...recordOutcome() };
         }
         if (state.signerHold) await state.signerHold.promise;
         // The core signed a vault account's send: a flagged one's rule, which
@@ -316,7 +327,7 @@ function backends() {
         };
         await (options.guardCommit ? options.guardCommit(commit) : commit());
         options.onCommitted?.();
-        return { hash: HASH };
+        return { hash: HASH, ...recordOutcome() };
       }),
       takeSiteTurn: jest.fn(async (site, { wait }) => {
         state.turns.push([site, wait]);
@@ -727,6 +738,9 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     const remembers = () => mockApprovals.calls.filter((call) => call.method === 'approval.remember');
     // The core's dApp store, which the receipt's write reads (APB-2).
     const coreRule = (index) => mockApprovals.dapp.transactionRule(KEY_A, CONTRACT, SELECTOR, 100, '0') && mockApprovals.dapp.exposes(KEY_A, index);
+    // Main's copy of a receipt, once erased: the held object wiped.
+    const ERASED = { receipt: null, page: null };
+    const RECEIPT = { receipt: expect.stringMatching(/^[0-9a-f]{32}$/), page: expect.objectContaining({ origin: KEY_A }) };
 
     afterEach(() => {
       jest.restoreAllMocks();
@@ -748,12 +762,24 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
         expect(coreRule(index)).toBe(false);
         return remember(...args);
       });
+      // The abort listeners added and removed while the request runs.
+      const added = jest.spyOn(EventTarget.prototype, 'addEventListener');
+      const removed = jest.spyOn(EventTarget.prototype, 'removeEventListener');
       const page = env.tab();
       const answer = page.send(CALL);
       await flush();
       expect(env.lastPrompt().view.alwaysAllow).toBe(true);
       await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
       expect(await answer).toEqual({ result: hash });
+      // The flow's listener on the request's end was removed when it
+      // finished, and main's copy of the receipt erased.
+      const listeners = (spy) =>
+        spy.mock.calls.flatMap(([type, listener], i) => (type === 'abort' ? [[spy.mock.contexts[i], listener]] : []));
+      expect(listeners(added).length).toBeGreaterThan(0);
+      for (const [target, listener] of listeners(added)) {
+        expect(listeners(removed)).toContainEqual([target, listener]);
+      }
+      expect(env.state.handed).toEqual([ERASED]);
       // Minted flagged, under the page; spent under that same page by the
       // device's signer, which got a receipt.
       expect(issued().params.payload.remember).toBe(true);
@@ -801,36 +827,117 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
       await flush();
       await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
       expect(await answer).toEqual(answered);
-      // The spend gave its receipt; main never presented it.
+      // The spend gave its receipt; main never presented it, and erased its
+      // copy at the flow's end: the core's expires.
       expect(mockApprovals.openReceipts()).toBe(1);
       expect(remembers()).toEqual([]);
+      expect(env.state.handed).toEqual([ERASED]);
       expect(coreRule(index)).toBe(false);
     });
 
-    test('a document gone while the phone has the job: nothing is presented, and the receipt expires', async () => {
+    // tx-recorder resolves a send whose payment row failed to save with
+    // `recorded: false`: the payment stands, but main has no record of it
+    // (a phone's has none at all), so no rule is written for it.
+    test.each([
+      ['a Ledger', LEDGER_INDEX, HASH],
+      ['a phone', PHONE_INDEX, PHONE_HASH],
+    ])("%s: a send main couldn't record presents nothing, and writes no rule", async (_label, index, hash) => {
       const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = setup();
+      env.connect(KEY_A, index);
+      mockApprovals.dapp.connect(KEY_A, index, 100);
+      env.state.notRecorded = true;
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      await env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      // The hash is the page's: the payment has gone out.
+      expect(await answer).toEqual({ result: hash });
+      expect(env.state.committed).toHaveLength(1);
+      expect(remembers()).toEqual([]);
+      expect(mockApprovals.openReceipts()).toBe(1);
+      expect(env.state.handed).toEqual([ERASED]);
+      expect(coreRule(index)).toBe(false);
+      expect(env.state.txRules).toEqual([]);
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: the send was not recorded`));
+    });
+
+    // The request's end, while the device has the job: main erases its copy
+    // of the receipt then, not when the device answers. A Ledger's signed
+    // bytes are withdrawn before the commit; a phone has already sent, and
+    // the send, recorded, finds no receipt to present.
+    const navigates = (page) => page.guest.commit(`${KEY_B}/`);
+    const closes = (page) => page.guest.destroy();
+    test.each([
+      ['a Ledger', 'its document navigates', LEDGER_INDEX, navigates, 0],
+      ['a Ledger', 'its tab closes', LEDGER_INDEX, closes, 0],
+      ['a phone', 'its document navigates', PHONE_INDEX, navigates, 1],
+      ['a phone', 'its tab closes', PHONE_INDEX, closes, 1],
+    ])("%s holds the job and %s: the receipt is erased at once, nothing is presented, and the core's expires", async (_label, _end, index, end, sentAfter) => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = setup();
+      env.connect(KEY_A, index);
+      mockApprovals.dapp.connect(KEY_A, index, 100);
+      const hold = deferred();
+      if (index === PHONE_INDEX) env.state.phoneHold = hold;
+      else env.state.signerHold = hold;
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      const decided = env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      await flush();
+      // The device has the job, its token spent into a receipt main holds.
+      expect(env.state.signerAsked).toBe(1);
+      expect(env.state.committed).toEqual([]);
+      expect(env.state.handed).toEqual([RECEIPT]);
+      end(page);
+      // Erased as the request ends, the device still out.
+      expect(env.state.handed).toEqual([ERASED]);
+      expect(env.state.committed).toEqual([]);
+      hold.resolve();
+      await decided;
+      expect(await answer).toBe(GONE);
+      await flush();
+      expect(env.state.committed).toHaveLength(sentAfter);
+      expect(remembers()).toEqual([]);
+      expect(mockApprovals.openReceipts()).toBe(1);
+      expect(coreRule(index)).toBe(false);
+      const goneReported = errorLog.mock.calls.some(([line]) => String(line).includes(`contract rule not saved for ${KEY_A}: the site no longer holds the send`));
+      expect(goneReported).toBe(sentAfter === 1);
+    });
+
+    test('a receipt handed on after the request ended is erased as it arrives', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
       const env = setup();
       env.connect(KEY_A, PHONE_INDEX);
       mockApprovals.dapp.connect(KEY_A, PHONE_INDEX, 100);
+      // The spend's reply is held: the tab closes before it comes back.
+      const spend = mockApprovals.approval.spend;
+      const spendHold = deferred();
+      jest.spyOn(mockApprovals.approval, 'spend').mockImplementation(async (...args) => {
+        await spendHold.promise;
+        return spend(...args);
+      });
       env.state.phoneHold = deferred();
       const page = env.tab();
       const answer = page.send(CALL);
       await flush();
       const decided = env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
       await flush();
-      // The phone has the job, its token spent into a receipt; the tab
-      // navigates away before it answers.
-      expect(mockApprovals.openReceipts()).toBe(1);
-      page.guest.commit(`${KEY_B}/`);
+      expect(env.state.handed).toEqual([]);
+      page.guest.destroy();
+      expect(await answer).toBe(GONE);
+      spendHold.resolve();
+      await flush();
+      // Erased as it arrived, the phone still out with the job.
+      expect(env.state.signerAsked).toBe(1);
+      expect(env.state.committed).toEqual([]);
+      expect(env.state.handed).toEqual([ERASED]);
       env.state.phoneHold.resolve();
       await decided;
-      await answer;
       await flush();
-      expect(env.state.committed).toHaveLength(1);
-      expect(mockApprovals.openReceipts()).toBe(1);
       expect(remembers()).toEqual([]);
       expect(coreRule(PHONE_INDEX)).toBe(false);
-      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('the site no longer holds the send'));
     });
 
     test("what the core said of the receipt's rule is reported, as a vault send's is", async () => {
