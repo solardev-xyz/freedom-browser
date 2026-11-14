@@ -832,9 +832,9 @@ describe("main's issuer: a dapp-send or a site's safe-send token only for its ha
 
   test('a dapp-send token minted for handle A is refused for handle B, for another key, and spent twice', async () => {
     let confirmation = await mint({ ...TX, origin: KEY_A });
-    expect(() => present(confirmation, TX, { authorization: { token: confirmation.token, handle: 'b'.repeat(64) } })).toThrow(
-      /mismatch/
-    );
+    expect(() =>
+      present(confirmation, TX, { authorization: { token: confirmation.token, kind: 'dapp-send', handle: 'b'.repeat(64) } })
+    ).toThrow(/mismatch/);
     confirmation = await mint({ ...TX, origin: KEY_A });
     expect(() => present(confirmation, TX, { page: { ...PAGE_A, origin: KEY_B } })).toThrow(/mismatch/);
     confirmation = await mint({ ...TX, origin: KEY_A });

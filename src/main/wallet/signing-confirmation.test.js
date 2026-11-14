@@ -417,7 +417,10 @@ describe("signing-confirmation: the core's kinds", () => {
       params: { kind: 'dapp-send', account: 3, payload: { tx: WIRE }, handle: HANDLE },
       page: PAGE,
     });
-    expect(sc.signingAuthorization(confirmation)).toEqual({ authorization: { token: confirmation.token, handle: HANDLE }, page: PAGE });
+    expect(sc.signingAuthorization(confirmation)).toEqual({
+      authorization: { token: confirmation.token, kind: 'dapp-send', handle: HANDLE },
+      page: PAGE,
+    });
     const typed = await sc.issuePageConfirmation(KINDS.SIGN_TYPED_DATA, 0, TYPED_DATA, { handle: HANDLE, context: PAGE }, { chainId: 100 });
     expect(typed.hash).toMatch(/^0x[0-9a-f]{64}$/);
     for (const page of [null, {}, { handle: HANDLE }, { handle: 'xyz', context: PAGE }, { handle: HANDLE, context: { ...PAGE, origin: '' } }]) {
@@ -427,6 +430,17 @@ describe("signing-confirmation: the core's kinds", () => {
       /Not a page confirmation kind/
     );
     expect(mockCore.calls).toHaveLength(2);
+  });
+
+  test("a send's token names its kind at the signature; an intent-replace names its intent, a message neither (cored 0.15.0)", async () => {
+    for (const kind of [KINDS.WALLET_SEND, KINDS.EXECUTOR_SEND]) {
+      const { token } = await sc.issueConfirmation(kind, 3, TX);
+      expect(sc.signingAuthorization(sc.confirmationFor(token, kind, 3, TX))).toEqual({ authorization: { token, kind }, page: null });
+    }
+    const replace = { token: 'f'.repeat(64), kind: KINDS.INTENT_REPLACE, payload: {}, intent: { id: 'intent-0001' } };
+    expect(sc.signingAuthorization(replace)).toEqual({ authorization: { token: replace.token, intent: { id: 'intent-0001' } }, page: null });
+    const message = await sc.issuePageConfirmation(KINDS.SIGN_MESSAGE, 0, '0x68', { handle: HANDLE, context: PAGE });
+    expect(sc.signingAuthorization(message)).toEqual({ authorization: { token: message.token, handle: HANDLE }, page: PAGE });
   });
 
   test("the core's refusals in today's words; its fee check asks again with its verdict", async () => {
