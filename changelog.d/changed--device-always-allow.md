@@ -1,1 +1,0 @@
-- "Always allow" on a dApp's transaction from a Ledger or phone account is saved once the device has signed it and the transaction has gone out; one you decline on the device, or that fails, saves nothing ([#1258](https://github.com/solardev-xyz/freedom-browser/pull/1258))
