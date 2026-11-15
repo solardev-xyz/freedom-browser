@@ -63,6 +63,10 @@ describe('core deadlines', () => {
 
   test("a session gets its deadline, or the caller's shorter one, plus 15 s", () => {
     expect(watchdogMs('chain.request')).toBe(135_000);
+    // cored-v0.18.0's: a phone job's result, and a page's EIP-1193 request
+    // (the core's `Steps`, a session's 120 s until APB-4 pauses it).
+    expect(watchdogMs('phone.result')).toBe(135_000);
+    expect(watchdogMs('eip1193.request')).toBe(135_000);
     expect(watchdogMs('dweb.open', 10_000)).toBe(25_000);
     expect(watchdogMs('naming.resolve_content', 0)).toBe(15_000);
     for (const odd of [500_000, -1, 1.5, NaN, '10000', null]) {
