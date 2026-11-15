@@ -92,7 +92,7 @@ const log = require('../logger');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const intercept = require('./intercept');
 const { outgoingHeaderForVersion } = require('./intercept');
-const { registerX402Ipc, paymentApprovalRequest, CAP_EDIT_REFUSED } = require('./ipc');
+const { registerX402Ipc, paymentApprovalRequest } = require('./ipc');
 const { requestWindowId } = require('../windows/request-window');
 const confirmations = require('../wallet/signing-confirmation');
 const grants = require('../core/grants');
@@ -558,7 +558,7 @@ describe('x402:approve', () => {
 
     // The pending payment is now armed for the retry; the inject handler
     // should attach PAYMENT-SIGNATURE on the matching outbound request.
-    const injected = intercept.injectPaymentSignatureHandler({
+    const injected = await intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: { Accept: 'text/html' },
@@ -580,7 +580,7 @@ describe('x402:approve', () => {
     expect(result.error).toBe(VAULT_LOCKED_MESSAGE);
     expect(signed).toEqual([]);
     // No pending payment armed when signing failed.
-    expect(intercept.injectPaymentSignatureHandler({
+    expect(await intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -642,7 +642,7 @@ describe('x402:approve', () => {
     // The cap was revoked before the retry: withheld, and its charge
     // settled back (`withheld`).
     await revokeCap();
-    const injected = intercept.injectPaymentSignatureHandler({
+    const injected = await intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -682,7 +682,7 @@ describe('x402:approve', () => {
 
     // The pending payment carries CAP authorization. A cap gone withholds.
     await revokeCap();
-    const injected = intercept.injectPaymentSignatureHandler({
+    const injected = await intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -746,12 +746,12 @@ describe('x402:approve', () => {
     // still stands, so inject attaches the header — the CAP-withhold
     // behaviour is tested elsewhere; here we're verifying the right URL
     // was signed.
-    expect(intercept.injectPaymentSignatureHandler({
+    expect(await intercept.injectPaymentSignatureHandler({
       webContentsId: 42, url: urlA, requestHeaders: {},
     })).not.toBeNull();
 
     // And NO pending payment for B (the newer map detection was ignored).
-    expect(intercept.injectPaymentSignatureHandler({
+    expect(await intercept.injectPaymentSignatureHandler({
       webContentsId: 42, url: urlB, requestHeaders: {},
     })).toBeNull();
   });
@@ -800,12 +800,12 @@ describe('x402:approve', () => {
     expect(signed.map(({ url }) => url)).toEqual([urlB]);
 
     // Pending payment is for B (what the user actually approved), not A.
-    expect(intercept.injectPaymentSignatureHandler({
+    expect(await intercept.injectPaymentSignatureHandler({
       webContentsId: 42, url: urlB, requestHeaders: {},
     })).not.toBeNull();
     // And NO pending for A — the resume token survived (will be consumed
     // by x402:resume-unlock when the user finishes unlocking).
-    expect(intercept.injectPaymentSignatureHandler({
+    expect(await intercept.injectPaymentSignatureHandler({
       webContentsId: 42, url: urlA, requestHeaders: {},
     })).toBeNull();
 
@@ -838,7 +838,7 @@ describe('x402:approve', () => {
     await approveAsCard(42);
 
     // No cap covers it: the core charged nothing, and it goes out anyway.
-    const injected = intercept.injectPaymentSignatureHandler({
+    const injected = await intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -864,7 +864,7 @@ describe('x402:approve', () => {
     expect(signed).toHaveLength(1);
     expect(loadURL).not.toHaveBeenCalled();
     // Injection is still armed so a page-initiated retry gets paid.
-    const injected = intercept.injectPaymentSignatureHandler({
+    const injected = await intercept.injectPaymentSignatureHandler({
       webContentsId: 42,
       url: 'https://api.example/article',
       requestHeaders: {},
@@ -1068,33 +1068,47 @@ describe('x402:get-all-permissions + x402:revoke-permission', () => {
     expect(mockCore.cap(A, 8453, '0xabc')).not.toBeNull();
   });
 
-  // #1023, X402-2: a cap's amount and window are the core's. Widening one
-  // needs the core's decision (a payment's token that binds the new cap),
-  // and main has no method that changes either: an edit is refused, with
-  // nothing asked of the core and nothing changed, whatever it presents.
-  describe('update-permission is refused: a cap changes only as the core decides', () => {
-    const REFUSED = { success: false, error: CAP_EDIT_REFUSED, code: 'SIGNING_NOT_CONFIRMED' };
+  // #1023, X402-2, X402-2b: a cap's amount and window are the core's.
+  // Widening one needs the core's decision (a payment's token that binds
+  // the new cap); the pane lowers one through the core's narrowing
+  // (`x402.update`, as the chrome). A change that isn't strictly narrower is
+  // refused unasked, and nothing presented changes that.
+  describe('update-permission narrows only, through the core', () => {
+    const NARROW_ONLY = { success: false, error: require('./caps').NARROW_ONLY, code: 'forbidden' };
     const EDIT = { origin: A, chainId: 8453, asset: '0xabc', capAmount: '20000000' };
 
-    test('an edit is refused from any sender, nothing is asked of the core, and the cap is unchanged', async () => {
+    test('a raise, from any sender, is refused, nothing is asked of the core, and the cap is unchanged', async () => {
       const before = mockCore.cap(A, 8453, '0xabc');
       await flush();
       const asked = mockCore.calls.length;
       for (const [sender, edit] of [
         [fromChrome, EDIT],
         [fromChrome, { ...EDIT, capAmount: '99000000' }],
+        [fromChrome, { ...EDIT, capAmount: '1' }],
         [fromChrome, { ...EDIT, capAmount: undefined, windowSeconds: 365 * 86400 }],
-        [fromChrome, { ...EDIT, asset: '0xdef', chainId: 100 }],
-        [fromChrome, { ...EDIT, origin: 'https://b.example' }],
         [{ sender: { id: 9 } }, EDIT],
         [{}, EDIT],
       ]) {
-        expect(await ipcHandlers['x402:update-permission'](sender, edit)).toEqual(REFUSED);
+        expect(await ipcHandlers['x402:update-permission'](sender, edit)).toEqual(NARROW_ONLY);
       }
-      expect(await ipcHandlers['x402:update-permission'](fromChrome)).toEqual(REFUSED);
+      for (const edit of [{ ...EDIT, asset: '0xdef', chainId: 100 }, { ...EDIT, origin: 'https://b.example' }, undefined]) {
+        expect((await ipcHandlers['x402:update-permission'](fromChrome, edit)).success).toBe(false);
+      }
       expect(mockCore.calls.slice(asked)).toEqual([]);
       expect(mockCore.cap(A, 8453, '0xabc')).toEqual(before);
       expect((await ipcHandlers['x402:get-all-permissions'](senderEvent(42))).permissions[0]).toMatchObject({ capAmount: '1' });
+    });
+
+    test('a lower amount goes to the core as the chrome, which writes it', async () => {
+      mockCore.seedCap({ origin: A, chainId: 8453, asset: '0xabc', capAmount: '5000' });
+      await loadCaps();
+      const asked = mockCore.calls.length;
+      expect(await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, capAmount: '4000' })).toEqual({ success: true });
+      expect(mockCore.calls.slice(asked).find(({ method }) => method === 'x402.update')).toMatchObject({
+        params: { key: A, cap: { chain_id: 8453, asset: '0xabc' }, cap_amount: '4000' },
+        page: 'chrome',
+      });
+      expect(mockCore.cap(A, 8453, '0xabc')).toMatchObject({ capAmount: '4000' });
     });
 
     test("a token the renderer presents is not spent: it still pays the payment it was minted for", async () => {
@@ -1102,7 +1116,7 @@ describe('x402:get-all-permissions + x402:revoke-permission', () => {
       const confirmation = await tokenFor(paymentAsShown(42));
       const asked = mockCore.calls.length;
 
-      expect(await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation })).toEqual(REFUSED);
+      expect(await ipcHandlers['x402:update-permission'](fromChrome, { ...EDIT, confirmation })).toEqual(NARROW_ONLY);
       expect(mockCore.calls.slice(asked)).toEqual([]);
       expect(mockCore.outstanding()).toBe(1);
 
@@ -1638,11 +1652,11 @@ describe('x402:approve requires a confirmation token for exactly this payment', 
       expect(loadURL).toHaveBeenCalledWith('https://api.example/article');
       expect(coreCalls('approval.issue')).toEqual([]);
       expect(mockCore.cap(ORIGIN, 8453, USDC).spentAmount).toBe('10000');
-      expect(intercept.injectPaymentSignatureHandler({
+      expect((await intercept.injectPaymentSignatureHandler({
         webContentsId: 42,
         url: 'https://api.example/article',
         requestHeaders: {},
-      })?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+      }))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
     });
 
     test('a subresource the allowance covers is signed and redirected', async () => {

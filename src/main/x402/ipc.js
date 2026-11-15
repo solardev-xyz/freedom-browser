@@ -34,9 +34,11 @@
  *     over the caps the identity core holds (caps.js); a revoke is the
  *     core's (`approval.revoke`).
  *
- *   x402:update-permission — refused: an allowance's amount and window
- *     are the core's, and widening one needs its decision, a payment's
- *     token that binds the new cap (X402-2).
+ *   x402:update-permission({origin, chainId, asset, capAmount?,
+ *     windowSeconds?}) — lowers an allowance's amount or shortens its
+ *     window, through the core's narrowing (`x402.update`, cored 0.19.0).
+ *     Widening one needs the core's decision, a payment's token that binds
+ *     the new cap (X402-2): anything not strictly narrower is refused.
  *
  * Auto-pay (active cap covers the charge) doesn't go through these —
  * the detector calls signAndQueueRetry directly. See sign-flow.js.
@@ -60,7 +62,12 @@ const {
   sendToHost,
 } = require('./intercept');
 const { guestHostedBy } = require('../wallet/agent-tab-custody');
-const { revoke: revokePermission, revokeAllForOrigin, getAllPermissions } = require('./caps');
+const {
+  revoke: revokePermission,
+  revokeAllForOrigin,
+  getAllPermissions,
+  narrow: narrowPermission,
+} = require('./caps');
 const paymentHistory = require('../payment-history');
 const { signAndQueueRetry, isCapNotCoveredError } = require('./sign-flow');
 const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
@@ -185,9 +192,11 @@ function refreshAndBroadcastBalances(webContentsId, address) {
     });
 }
 
-// An auto-pay cap's edit, refused (X402-2).
+// Main's `x402-cap-update` confirmation, refused (wallet-ipc.js): a cap is
+// lowered through the core's narrowing, and raised only by a payment's
+// token that binds the new cap (X402-2, X402-2b).
 const CAP_EDIT_REFUSED =
-  "An auto-pay cap can't be changed here: revoke it, or set a new one when you approve a payment";
+  "An auto-pay cap can only be lowered here: to raise one, set a new cap when you approve a payment";
 
 // What a window is told when it names a payment on a tab it doesn't host.
 const NOT_THIS_WINDOW = 'This payment is not on a tab of this window';
@@ -673,13 +682,20 @@ function registerX402Ipc() {
     }
   });
 
-  // A cap's amount and window are the identity core's (X402-2): main changes
-  // neither. Widening one needs the core's decision, a payment's
-  // `x402-payment` token that binds the new cap, which replaces main's
-  // `x402-cap-update` token; the core has no method that narrows one but a
-  // revoke. So an edit is refused, with nothing changed.
-  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async () => {
-    return { success: false, error: CAP_EDIT_REFUSED, code: 'SIGNING_NOT_CONFIRMED' };
+  // A cap's amount and window are the identity core's (X402-2): main writes
+  // neither. The pane lowers one through the core's narrowing (`x402.update`,
+  // as the chrome), which needs no confirmation: it can only take auto-pay
+  // away. Widening one needs the core's decision, a payment's `x402-payment`
+  // token that binds the new cap, which replaces main's `x402-cap-update`
+  // token. A change that isn't strictly narrower is refused here, unasked,
+  // and by the core (`forbidden`), with nothing written.
+  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async (_event, { origin, chainId, asset, capAmount, windowSeconds } = {}) => {
+    try {
+      const reply = await narrowPermission(origin, chainId, asset, { capAmount, windowSeconds });
+      return reply?.saved === false ? { success: true, saved: false } : { success: true };
+    } catch (err) {
+      return { success: false, error: err.message, ...(err.code ? { code: err.code } : {}) };
+    }
   });
 }
 

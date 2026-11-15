@@ -64,6 +64,11 @@ function backend() {
   return backendOverride || require('./vault-backend').vaultBackend.approval;
 }
 
+/** The core's `x402.update` (vault-backend.js): a cap's narrowing. */
+function x402Update(params, caller) {
+  return require('./vault-backend').vaultBackend.x402.update(params, caller);
+}
+
 function createMirror(store) {
   const label = LABELS[store];
   const listed = LISTS.has(store);
@@ -216,7 +221,7 @@ function createMirror(store) {
     let reply = null;
     let failure = null;
     try {
-      reply = await backend()[method](params, caller);
+      reply = await (typeof method === 'function' ? method(params, caller) : backend()[method](params, caller));
     } catch (err) {
       failure = err;
     } finally {
@@ -294,6 +299,13 @@ function createMirror(store) {
     /** `approval.revoke { store, key, what }`. */
     revoke(key, what, caller) {
       return write('revoke', { store, key, what }, caller, key, 'hide');
+    },
+    /**
+     * `x402.update`: a cap's narrowing (cored 0.19.0), the chrome's. The
+     * key reads as no cap while the core writes, as for a revoke.
+     */
+    narrow(key, params, caller) {
+      return write(x402Update, params, caller, key, 'hide');
     },
     /** `approval.touch { store }`: a page's last use, under `page`. */
     touch(page) {

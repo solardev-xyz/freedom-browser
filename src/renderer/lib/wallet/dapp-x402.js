@@ -33,6 +33,7 @@ import {
   toAtomicUnits,
   X402_WINDOW_OPTIONS,
   isDeviceAccount,
+  deviceLabel,
   signingButtonLabel,
 } from './wallet-utils.js';
 import { getPermissionKey } from '../origin-utils.js';
@@ -395,18 +396,6 @@ async function showApproval({ webContentsId, detectionId, url, resourceType }) {
   openSidebarPanel();
 }
 
-// The identity core signs every x402 payment, and signs only with this
-// browser's own wallet (cored 0.18.0): a Ledger or phone account gets its
-// device path with freedom-core#392. Until then the card says so up front
-// and keeps Pay off, rather than minting a confirmation main would refuse.
-const DEVICE_PAYMENTS_UNAVAILABLE =
-  "x402 payments from Ledger and phone accounts aren't available yet. " +
-  "To pay, switch to an account in this browser's wallet.";
-
-function paysFromDevice() {
-  return isDeviceAccount(walletState.activeWalletIndex);
-}
-
 // Render the card from `pending.accepts` + `pending.selectedAcceptIndex`.
 // Branches on the count of fundable entries (locked decisions §2 + §3):
 // 0 → insufficient-funds state, Pay disabled
@@ -421,10 +410,14 @@ function renderCard() {
   const accepts = pending.accepts || [];
   const fundableCount = accepts.filter((e) => e.fundable).length;
 
-  // No account confirms an x402 payment on a device yet (freedom-core#392),
-  // so the note promising a device confirmation stays hidden.
-  ledgerNoteEl?.classList.add('hidden');
-  const fromDevice = paysFromDevice();
+  // A Ledger or phone account signs each payment on the device (the
+  // identity core's device path, cored 0.19.0): auto-pay can skip this
+  // dialog, never the device's confirmation, so the card says so.
+  const confirmWhere = deviceLabel(walletState.activeWalletIndex);
+  ledgerNoteEl?.classList.toggle('hidden', !confirmWhere);
+  if (ledgerNoteEl && confirmWhere) {
+    ledgerNoteEl.textContent = `Auto-pay skips this dialog, but every payment still needs a confirmation on ${confirmWhere}.`;
+  }
 
   let origin;
   try { origin = new URL(pending.url).origin; } catch { origin = pending.url; }
@@ -449,8 +442,7 @@ function renderCard() {
     showInsufficientState(accepts);
     approveBtn.disabled = true;
     grantRow.classList.add('hidden');
-    if (fromDevice) showError(DEVICE_PAYMENTS_UNAVAILABLE);
-    else hideError();
+    hideError();
     return;
   }
 
@@ -491,14 +483,6 @@ function renderCard() {
   } else {
     approveBtn.disabled = false;
     hideError();
-  }
-
-  // A Ledger or phone account can't pay x402 yet: Pay stays off, and
-  // auto-pay (which would pay from the same account) isn't offered.
-  if (fromDevice) {
-    approveBtn.disabled = true;
-    grantRow.classList.add('hidden');
-    showError(DEVICE_PAYMENTS_UNAVAILABLE);
   }
 
   // A live device prompt outranks every re-derived button state above:
@@ -731,9 +715,9 @@ function buildGrantPayloadFromInputs() {
 
 async function checkUnlockState() {
   try {
-    // A device account can't pay x402 yet (renderCard says so and keeps
-    // Pay off), so there is nothing to unlock the vault for (the
-    // short-circuit skips the status IPC).
+    // Device accounts sign payment authorizations on the device — no
+    // vault key, no unlock gate (short-circuit skips the status IPC): the
+    // identity core's device path uses no key of its own.
     // Either way: drop locked-mode collapse + re-derive Pay-button
     // state from fundability + asset-recognised. The locked branch
     // below force-disables Pay, so this is what restores the correct
@@ -825,13 +809,6 @@ async function approve() {
   // Pay) would start a second, concurrent device signature and let
   // whichever finishes first settle the other one's flight.
   if (!pending || pending.signing) return;
-  // Pay is off for a Ledger or phone account; this holds even if a stale
-  // re-render turned it back on. No confirmation is minted.
-  if (paysFromDevice()) {
-    approveBtn.disabled = true;
-    showError(DEVICE_PAYMENTS_UNAVAILABLE);
-    return;
-  }
 
   const request = pending;
   request.signing = true;

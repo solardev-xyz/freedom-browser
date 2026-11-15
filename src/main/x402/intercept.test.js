@@ -328,11 +328,11 @@ describe('detectPaymentRequiredHandler', () => {
       reservation,
       charged: true,
     });
-    expect(injectPaymentSignatureHandler({
+    expect((await injectPaymentSignatureHandler({
       webContentsId: 7,
       url: 'https://api.example/article',
       requestHeaders: {},
-    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    }))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     // Cap is exhausted: the charge of the signed attempt took it all.
     expect(spentOnCap()).toBe('10000');
 
@@ -363,11 +363,11 @@ describe('detectPaymentRequiredHandler', () => {
       reservation,
       charged: true,
     });
-    expect(injectPaymentSignatureHandler({
+    expect((await injectPaymentSignatureHandler({
       webContentsId: 7,
       url: 'https://api.example/article',
       requestHeaders: {},
-    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    }))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     // Cap still covers — without the guard the detector would re-sign.
     expect(spentOnCap()).toBe('10000');
 
@@ -705,7 +705,7 @@ describe('detectPaymentRequiredHandler', () => {
     expect(getDetectedPayment(7)?.url).toBe('https://api.example/article-2');
   });
 
-  test('clearDetectedPayment wipes a single tab', () => {
+  test('clearDetectedPayment wipes a single tab', async () => {
     detectPaymentRequiredHandler(detail());
     clearDetectedPayment(7);
     expect(getDetectedPayment(7)).toBeNull();
@@ -1135,13 +1135,13 @@ describe('injectPaymentSignatureHandler', () => {
     ...overrides,
   });
 
-  test('attaches PAYMENT-SIGNATURE when a V2 pending payment exists', () => {
+  test('attaches PAYMENT-SIGNATURE when a V2 pending payment exists', async () => {
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'eyJwYXlsb2FkIjp7fX0=',
     });
 
-    const result = injectPaymentSignatureHandler(detail());
+    const result = await injectPaymentSignatureHandler(detail());
     expect(result).toEqual({
       requestHeaders: {
         Accept: 'text/html',
@@ -1150,43 +1150,43 @@ describe('injectPaymentSignatureHandler', () => {
     });
   });
 
-  test('attaches X-PAYMENT when the pending entry is a V1 payload', () => {
+  test('attaches X-PAYMENT when the pending entry is a V1 payload', async () => {
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V1,
       value: 'eyJwYXlsb2FkIjp7fX0=',
     });
-    const result = injectPaymentSignatureHandler(detail());
+    const result = await injectPaymentSignatureHandler(detail());
     expect(result.requestHeaders['X-PAYMENT']).toBeDefined();
     expect(result.requestHeaders['PAYMENT-SIGNATURE']).toBeUndefined();
   });
 
-  test('one-shot: a second request to the same URL gets no injection', () => {
+  test('one-shot: a second request to the same URL gets no injection', async () => {
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
     });
-    expect(injectPaymentSignatureHandler(detail())).not.toBeNull();
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).not.toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
   });
 
-  test('passes through when there is no pending payment', () => {
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+  test('passes through when there is no pending payment', async () => {
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
   });
 
-  test('only fires for the exact (webContentsId, url) pair', () => {
+  test('only fires for the exact (webContentsId, url) pair', async () => {
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
     });
 
     // Wrong tab — pass through.
-    expect(injectPaymentSignatureHandler(detail({ webContentsId: 9 }))).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail({ webContentsId: 9 }))).toBeNull();
     // Wrong URL — pass through.
-    expect(injectPaymentSignatureHandler(detail({
+    expect(await injectPaymentSignatureHandler(detail({
       url: 'https://api.example/different',
     }))).toBeNull();
     // The original pending payment must still be there, not consumed.
-    expect(injectPaymentSignatureHandler(detail())).not.toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).not.toBeNull();
   });
 
   // The identity core charges a cap as it signs (#1024, `x402.authorize`):
@@ -1221,7 +1221,7 @@ describe('injectPaymentSignatureHandler', () => {
     const reservation = await chargedByCore();
     setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
 
-    const result = injectPaymentSignatureHandler(detail());
+    const result = await injectPaymentSignatureHandler(detail());
 
     expect(result.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     await flushSettles();
@@ -1240,7 +1240,7 @@ describe('injectPaymentSignatureHandler', () => {
       // stashes these, but the inject handler shouldn't blow up if a
       // test or future caller skips them.
     });
-    expect(injectPaymentSignatureHandler(detail())?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    expect((await injectPaymentSignatureHandler(detail()))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     await flushSettles();
     expect(mockCore.calls.filter(({ method }) => method.startsWith('x402.'))).toEqual([]);
   });
@@ -1253,7 +1253,7 @@ describe('injectPaymentSignatureHandler', () => {
     expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toBeNull();
     setPendingPayment(7, 'https://api.example/article', capSigned(reservation, { authorizedBy: 'manual' }));
 
-    const result = injectPaymentSignatureHandler(detail());
+    const result = await injectPaymentSignatureHandler(detail());
 
     expect(result.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     await flushSettles();
@@ -1267,14 +1267,14 @@ describe('injectPaymentSignatureHandler', () => {
     await caps.revoke(ORIGIN, CHAIN, USDC);
     setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
 
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
     await flushSettles();
     expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
     // Revoked, the cap takes nothing back: the core has no cap to give it to.
     expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toBeNull();
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
     // One-shot drop even on withhold — a second inject attempt finds nothing.
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
   });
 
   test('cap authorization with no charge withholds the signature', async () => {
@@ -1285,14 +1285,14 @@ describe('injectPaymentSignatureHandler', () => {
       authorizedBy: 'cap',
     });
 
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
     // One-shot drop even on withhold — a second inject attempt finds nothing.
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
 
     // Receipt context, and a cap that covers it, without the core's charge:
     // the same.
     setPendingPayment(7, 'https://api.example/article', capSigned(undefined, { charged: undefined }));
-    expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    expect(await injectPaymentSignatureHandler(detail())).toBeNull();
     await flushSettles();
     expect(mockCore.calls.filter(({ method }) => method.startsWith('x402.'))).toEqual([]);
     expect(spentOnCap()).toBe('0');
@@ -1312,7 +1312,7 @@ describe('injectPaymentSignatureHandler', () => {
     const realNow = Date.now;
     Date.now = () => realNow() + 3000;
     try {
-      expect(injectPaymentSignatureHandler(detail())).toBeNull();
+      expect(await injectPaymentSignatureHandler(detail())).toBeNull();
       await flushSettles();
     } finally {
       Date.now = realNow;
@@ -1329,23 +1329,23 @@ describe('injectPaymentSignatureHandler', () => {
   test('does NOT fire x402:cap-consumed when a signature goes out: it was charged at the sign', async () => {
     const reservation = await chargedByCore();
     setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
-    injectPaymentSignatureHandler(detail());
+    await injectPaymentSignatureHandler(detail());
     await flushSettles();
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
   });
 
   test('does NOT fire x402:cap-consumed for a manual pay without an existing cap (nothing to refresh)', async () => {
     setPendingPayment(7, 'https://api.example/article', capSigned(null, { authorizedBy: 'manual', charged: false }));
-    injectPaymentSignatureHandler(detail());
+    await injectPaymentSignatureHandler(detail());
     await flushSettles();
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
     expect(coreSettles()).toEqual([]);
   });
 
-  test('default (no authorizedBy field) treats as manual — backward-compatible', () => {
+  test('default (no authorizedBy field) treats as manual — backward-compatible', async () => {
     // No cap in the core, and no charge: a cap's signature would be withheld.
     setPendingPayment(7, 'https://api.example/article', capSigned(undefined, { authorizedBy: undefined, charged: undefined }));
-    const result = injectPaymentSignatureHandler(detail());
+    const result = await injectPaymentSignatureHandler(detail());
     expect(result?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
   });
 
@@ -1356,7 +1356,7 @@ describe('injectPaymentSignatureHandler', () => {
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
     try {
-      const result = injectPaymentSignatureHandler(detail());
+      const result = await injectPaymentSignatureHandler(detail());
       expect(result).toBeNull();
       await flushSettles();
       // Never sent: its charge goes back to the cap.
@@ -1391,13 +1391,13 @@ describe('injectPaymentSignatureHandler', () => {
       expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
       expect(spentOnCap()).toBe('0');
       // Old entry is gone (without this test even attempting to inject it).
-      expect(injectPaymentSignatureHandler({
+      expect(await injectPaymentSignatureHandler({
         webContentsId: 7,
         url: 'https://api.example/old',
         requestHeaders: {},
       })).toBeNull();
       // New entry survives.
-      const result = injectPaymentSignatureHandler({
+      const result = await injectPaymentSignatureHandler({
         webContentsId: 7,
         url: 'https://api.example/new',
         requestHeaders: {},
@@ -1466,7 +1466,7 @@ describe('unsent signatures settle without a further request', () => {
     expect(mockCore.openReservations()).toBe(0);
     expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
     // Gone: a late request carries no header.
-    expect(injectPaymentSignatureHandler(retry())).toBeNull();
+    expect(await injectPaymentSignatureHandler(retry())).toBeNull();
     await flushSettles();
     expect(coreSettles()).toHaveLength(1);
   });
@@ -1482,7 +1482,7 @@ describe('unsent signatures settle without a further request', () => {
     expect(spentOnCap()).toBe('0');
     expect(mockCore.openReservations()).toBe(0);
     // Coming back to the page later doesn't send the old signature.
-    expect(injectPaymentSignatureHandler(retry())).toBeNull();
+    expect(await injectPaymentSignatureHandler(retry())).toBeNull();
     // Settled once: the TTL settles nothing more.
     jest.advanceTimersByTime(61_000);
     await flushSettles();
@@ -1508,7 +1508,7 @@ describe('unsent signatures settle without a further request', () => {
     await flushSettles();
     expect(coreSettles()).toEqual([]);
 
-    expect(injectPaymentSignatureHandler(retry())?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    expect((await injectPaymentSignatureHandler(retry()))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     await flushSettles();
     expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
   });
@@ -1524,7 +1524,7 @@ describe('unsent signatures settle without a further request', () => {
     await flushSettles();
     expect(coreSettles()).toEqual([]);
 
-    const result = injectPaymentSignatureHandler(retry());
+    const result = await injectPaymentSignatureHandler(retry());
     expect(result?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     // The retry commits.
     settlePendingPaymentsOnNavigation(7, ARTICLE);
@@ -1565,7 +1565,7 @@ describe('unsent signatures settle without a further request', () => {
 // keyed by request shape, awaitingResponse keyed by followed-request id.
 
 describe('request-shape retry keying', () => {
-  test('two concurrent Range requests on the same URL each get their own signature (no swap)', () => {
+  test('two concurrent Range requests on the same URL each get their own signature (no swap)', async () => {
     // Detector saw two 402s for the same URL with different Range
     // headers — sign-flow stashes each under the matching retry key.
     setPendingPayment(7, 'https://x.example/media', {
@@ -1587,7 +1587,7 @@ describe('request-shape retry keying', () => {
 
     // Followed request for bytes=100-199 gets the bytes=100-199 sig —
     // not the bytes=0-99 one that was queued first.
-    const r1 = injectPaymentSignatureHandler({
+    const r1 = await injectPaymentSignatureHandler({
       id: 101,
       webContentsId: 7,
       url: 'https://x.example/media',
@@ -1596,7 +1596,7 @@ describe('request-shape retry keying', () => {
     expect(r1.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig-bytes-100-199');
 
     // And the other followed request gets the other sig.
-    const r2 = injectPaymentSignatureHandler({
+    const r2 = await injectPaymentSignatureHandler({
       id: 102,
       webContentsId: 7,
       url: 'https://x.example/media',
@@ -1605,7 +1605,7 @@ describe('request-shape retry keying', () => {
     expect(r2.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig-bytes-0-99');
   });
 
-  test('identical-shape requests share a FIFO bucket — first in, first out', () => {
+  test('identical-shape requests share a FIFO bucket — first in, first out', async () => {
     // Two truly indistinguishable requests (same URL, same Range). Each
     // gets a signature in the order it was queued.
     setPendingPayment(7, 'https://x.example/dup', {
@@ -1617,19 +1617,19 @@ describe('request-shape retry keying', () => {
       value: 'sig-second',
     });
 
-    const r1 = injectPaymentSignatureHandler({
+    const r1 = await injectPaymentSignatureHandler({
       id: 201,
       webContentsId: 7,
       url: 'https://x.example/dup',
       requestHeaders: {},
     });
-    const r2 = injectPaymentSignatureHandler({
+    const r2 = await injectPaymentSignatureHandler({
       id: 202,
       webContentsId: 7,
       url: 'https://x.example/dup',
       requestHeaders: {},
     });
-    const r3 = injectPaymentSignatureHandler({
+    const r3 = await injectPaymentSignatureHandler({
       id: 203,
       webContentsId: 7,
       url: 'https://x.example/dup',
@@ -1642,7 +1642,7 @@ describe('request-shape retry keying', () => {
     expect(r3).toBeNull();
   });
 
-  test('different webContents IDs never share a bucket even with identical URL+Range', () => {
+  test('different webContents IDs never share a bucket even with identical URL+Range', async () => {
     setPendingPayment(7, 'https://x.example/v', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig-tab-7',
@@ -1652,11 +1652,11 @@ describe('request-shape retry keying', () => {
       value: 'sig-tab-9',
     }, { range: 'bytes=0-99' });
 
-    const r7 = injectPaymentSignatureHandler({
+    const r7 = await injectPaymentSignatureHandler({
       id: 301, webContentsId: 7, url: 'https://x.example/v',
       requestHeaders: { Range: 'bytes=0-99' },
     });
-    const r9 = injectPaymentSignatureHandler({
+    const r9 = await injectPaymentSignatureHandler({
       id: 302, webContentsId: 9, url: 'https://x.example/v',
       requestHeaders: { Range: 'bytes=0-99' },
     });
@@ -1664,7 +1664,7 @@ describe('request-shape retry keying', () => {
     expect(r9.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig-tab-9');
   });
 
-  test('Range header lookup is case-insensitive (matches getHeaderValue)', () => {
+  test('Range header lookup is case-insensitive (matches getHeaderValue)', async () => {
     // Servers and clients can spell Range with arbitrary casing; the
     // bridging key has to normalize.
     setPendingPayment(7, 'https://x.example/m', {
@@ -1672,7 +1672,7 @@ describe('request-shape retry keying', () => {
       value: 'sig',
     }, { range: 'bytes=0-99' });
     // Chromium might emit `range` lowercase; either casing must match.
-    const result = injectPaymentSignatureHandler({
+    const result = await injectPaymentSignatureHandler({
       id: 400,
       webContentsId: 7,
       url: 'https://x.example/m',
@@ -1681,7 +1681,7 @@ describe('request-shape retry keying', () => {
     expect(result?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
   });
 
-  test('a request with no Range never shares a bucket with a Range-tagged signature', () => {
+  test('a request with no Range never shares a bucket with a Range-tagged signature', async () => {
     // Defensive: queue a Range-tagged sig; a non-Range request for the
     // same URL must not pick it up.
     setPendingPayment(7, 'https://x.example/m', {
@@ -1689,14 +1689,14 @@ describe('request-shape retry keying', () => {
       value: 'range-sig',
     }, { range: 'bytes=0-99' });
 
-    const r = injectPaymentSignatureHandler({
+    const r = await injectPaymentSignatureHandler({
       id: 500, webContentsId: 7, url: 'https://x.example/m',
       requestHeaders: {},
     });
     expect(r).toBeNull();
   });
 
-  test('awaitingResponse is keyed by followed-request id (not url) so concurrent retries attribute correctly', () => {
+  test('awaitingResponse is keyed by followed-request id (not url) so concurrent retries attribute correctly', async () => {
     // Arm two awaitingResponse entries from two distinct inject calls.
     setPendingPayment(7, 'https://x.example/media', {
       header: X402_HEADERS.SIGNATURE_V2,
@@ -1711,11 +1711,11 @@ describe('request-shape retry keying', () => {
       asset: '0xdef', amount: '20000',
     }, { range: 'bytes=100-199' });
 
-    injectPaymentSignatureHandler({
+    await injectPaymentSignatureHandler({
       id: 601, webContentsId: 7, url: 'https://x.example/media',
       requestHeaders: { Range: 'bytes=0-99' },
     });
-    injectPaymentSignatureHandler({
+    await injectPaymentSignatureHandler({
       id: 602, webContentsId: 7, url: 'https://x.example/media',
       requestHeaders: { Range: 'bytes=100-199' },
     });
@@ -1748,10 +1748,10 @@ describe('request-shape retry keying', () => {
       asset: USDC, amount: '10000', authorizedBy: 'cap',
       reservation, charged: true,
     });
-    expect(injectPaymentSignatureHandler({
+    expect((await injectPaymentSignatureHandler({
       id: 701, webContentsId: 7, url: 'https://api.example/article',
       requestHeaders: {},
-    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    }))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
 
     // Cap still covers; without the id-based loop guard the detector
     // would re-sign.
@@ -1778,10 +1778,10 @@ describe('request-shape retry keying', () => {
       asset: USDC, amount: '10000', authorizedBy: 'cap',
       reservation, charged: true,
     });
-    expect(injectPaymentSignatureHandler({
+    expect((await injectPaymentSignatureHandler({
       id: 801, webContentsId: 7, url: 'https://api.example/article',
       requestHeaders: {},
-    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    }))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
 
     // A SECOND request to the same URL (different id) 402s. Loop guard
     // shouldn't fire — this is a fresh request, not a rejected retry.
@@ -1925,7 +1925,7 @@ describe('clearRequestContextHandler', () => {
     });
   });
 
-  test('drops awaitingResponse for signed retries that error before response headers', () => {
+  test('drops awaitingResponse for signed retries that error before response headers', async () => {
     setPendingPayment(7, 'https://x.example/m', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
@@ -1934,7 +1934,7 @@ describe('clearRequestContextHandler', () => {
       asset: '0xa',
       amount: '1',
     });
-    injectPaymentSignatureHandler({
+    await injectPaymentSignatureHandler({
       id: 1010,
       webContentsId: 7,
       url: 'https://x.example/m',
@@ -2052,7 +2052,7 @@ describe('cleanupWebContents', () => {
     expect(getDetectedPayment(8)).not.toBeNull();
   });
 
-  test('drops only the closed tab\'s pending payments (not the URL on other tabs)', () => {
+  test('drops only the closed tab\'s pending payments (not the URL on other tabs)', async () => {
     setPendingPayment(7, 'https://x.example/', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig-7',
@@ -2064,12 +2064,12 @@ describe('cleanupWebContents', () => {
 
     cleanupWebContents(7);
 
-    expect(injectPaymentSignatureHandler({
+    expect(await injectPaymentSignatureHandler({
       webContentsId: 7,
       url: 'https://x.example/',
       requestHeaders: {},
     })).toBeNull();
-    expect(injectPaymentSignatureHandler({
+    expect(await injectPaymentSignatureHandler({
       webContentsId: 8,
       url: 'https://x.example/',
       requestHeaders: {},
@@ -2097,9 +2097,9 @@ describe('cleanupWebContents', () => {
     expect(coreSettles()).toEqual([{ reservation: seven, outcome: 'withheld' }]);
     expect(spentOnCap()).toBe('10000');
     // Tab 8's signature still goes out, keeping its charge.
-    expect(injectPaymentSignatureHandler({
+    expect((await injectPaymentSignatureHandler({
       webContentsId: 8, url: `${ORIGIN}/a`, requestHeaders: {},
-    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig-8');
+    }))?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig-8');
     await flushSettles();
     expect(coreSettles()).toEqual([
       { reservation: seven, outcome: 'withheld' },
@@ -2108,7 +2108,7 @@ describe('cleanupWebContents', () => {
     expect(spentOnCap()).toBe('10000');
   });
 
-  test('drops only the closed tab\'s in-flight awaitingResponse entries (keyed by request id, value-tagged with webContentsId)', () => {
+  test('drops only the closed tab\'s in-flight awaitingResponse entries (keyed by request id, value-tagged with webContentsId)', async () => {
     // Arm two in-flight entries from two tabs.
     setPendingPayment(7, 'https://x.example/a', {
       header: X402_HEADERS.SIGNATURE_V2, value: 'sig-7',
@@ -2118,11 +2118,11 @@ describe('cleanupWebContents', () => {
       header: X402_HEADERS.SIGNATURE_V2, value: 'sig-8',
       origin: 'https://x.example', chainId: 8453, asset: '0xa', amount: '1',
     });
-    injectPaymentSignatureHandler({
+    await injectPaymentSignatureHandler({
       id: 1300, webContentsId: 7, url: 'https://x.example/a',
       requestHeaders: {},
     });
-    injectPaymentSignatureHandler({
+    await injectPaymentSignatureHandler({
       id: 1301, webContentsId: 8, url: 'https://x.example/a',
       requestHeaders: {},
     });
@@ -2243,7 +2243,7 @@ describe('installX402Interception', () => {
 describe('paymentResponseLoggingHandler', () => {
   const responseB64 = Buffer.from(JSON.stringify({ txHash: '0xabc', success: true })).toString('base64');
 
-  test('short-circuits without iterating headers when no injection is awaiting', () => {
+  test('short-circuits without iterating headers when no injection is awaiting', async () => {
     // Set a header that would otherwise be picked up. The handler must
     // not touch responseHeaders unless armed via injectPaymentSignatureHandler.
     const responseHeaders = {

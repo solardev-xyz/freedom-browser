@@ -25,12 +25,33 @@ jest.mock('electron', () => ({
 const mockCore = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
 jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockCore.approval, x402: mockCore.x402 } }));
 
-// Account 0 is the vault's; 100 is a Ledger's index range.
+// Account 0 is the vault's; 100 a Ledger's, 101 a phone's, 102 a Safe's,
+// and 103 a device account since deleted (the device index range).
+const { Wallet: MockWallet } = require('ethers');
+const mockDeviceKey = new MockWallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+const mockOtherKey = new MockWallet('0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a');
 jest.mock('../identity-manager', () => ({
   getActiveWalletIndex: () => 0,
-  getWalletRecord: (index) => (index === 100 ? { index, type: 'ledger' } : null),
+  getWalletRecord: (index) =>
+    ({
+      100: { index, type: 'ledger', address: mockDeviceKey.address },
+      101: { index, type: 'remote', address: mockDeviceKey.address },
+      102: { index, type: 'safe', address: '0x' + '5a'.repeat(20) },
+    })[index] ?? null,
   isHardwareWalletIndex: (index) => index >= 100,
-  WALLET_TYPES: { MNEMONIC: 'mnemonic' },
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
+}));
+// A device's signature (wallet/signers.js: the Ledger's EIP-712 signature,
+// or the phone's through its core job), faked by a key over the hash the
+// core gave; the signer factory itself runs in x402.integration.test.js.
+const mockDevice = { asked: [], sign: null };
+jest.mock('../wallet/signers', () => ({
+  getSigner: (index) => ({
+    signTypedData: async (typedData, options) => {
+      mockDevice.asked.push({ index, typedData, options });
+      return mockDevice.sign(typedData, options);
+    },
+  }),
 }));
 jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
 
@@ -110,6 +131,8 @@ beforeEach(async () => {
   mockTabs.clear();
   mockLoadURL.mockClear();
   mockHostSend.mockClear();
+  mockDevice.asked.length = 0;
+  mockDevice.sign = (_typedData, { expectedHash }) => mockDeviceKey.signingKey.sign(expectedHash).serialized;
   await loadCaps();
 });
 
@@ -117,9 +140,12 @@ afterAll(() => grants._useBackendForTests(null));
 
 // Inspect the pending-payment slot the way the injector does, to
 // verify what would actually ride on the next request to a given URL.
-function consumePending(webContentsId, url) {
+async function consumePending(webContentsId, url) {
   return intercept.injectPaymentSignatureHandler({ webContentsId, url, requestHeaders: {} });
 }
+
+// A settle is fire-and-forget: its reply lands a few turns later.
+const flushSettles = () => new Promise((resolve) => setImmediate(resolve));
 
 function decodedHeader(result) {
   const value = result?.requestHeaders['PAYMENT-SIGNATURE'];
@@ -145,7 +171,7 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
         page: null,
       },
     ]);
-    const header = decodedHeader(consumePending(7, URL_));
+    const header = decodedHeader(await consumePending(7, URL_));
     expect(header.accepted).toEqual(gnosisAccept);
     expect(header.payload.authorization.from).toBe('0x' + '1'.padStart(40, '0'));
     // Nothing charged: no cap covers it.
@@ -164,7 +190,7 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
     expect(params).not.toHaveProperty('grant');
     expect(mockCore.cap(ORIGIN, 100, GNOSIS_USDCE).spentAmount).toBe('20000');
     expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
-    const injected = consumePending(7, URL_);
+    const injected = await consumePending(7, URL_);
     expect(decodedHeader(injected).accepted).toEqual(gnosisAccept);
     // The header went out: its charge is kept.
     expect(settles()).toEqual([{ reservation: expect.stringMatching(/^[0-9a-f]{32}$/), outcome: 'sent' }]);
@@ -177,7 +203,7 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
     const err = await signAndQueueRetry(7, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap' }).catch((e) => e);
 
     expect(err.code).toBe(CAP_NOT_COVERED);
-    expect(consumePending(7, URL_)).toBeNull();
+    expect(await consumePending(7, URL_)).toBeNull();
     expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe('0');
     expect(mockLoadURL).not.toHaveBeenCalled();
   });
@@ -209,7 +235,7 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
 
     expect(err.code).toBe(NOT_CONFIRMED);
     expect(err.reason).toBe('mismatch');
-    expect(consumePending(7, URL_)).toBeNull();
+    expect(await consumePending(7, URL_)).toBeNull();
     const again = await signAndQueueRetry(8, { detection, confirmation }).catch((e) => e);
     expect(again.reason).toBe('unknown_token');
   });
@@ -224,7 +250,7 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
     expect(corePayments()[0].params.grant).toEqual({ cap_amount: '100000', window_seconds: 86400 });
     expect(mockCore.cap(ORIGIN, 8453, BASE_USDC)).toMatchObject({ capAmount: '100000', spentAmount: '10000' });
     expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
-    expect(consumePending(7, URL_)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await consumePending(7, URL_))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 
   test('normalizes dweb ENS origins before cap accounting and banner refresh', async () => {
@@ -239,7 +265,7 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
     expect(corePayments()[0].params.detection.url).toBe('bzz://Paywall.eth/segment');
     expect(mockCore.cap('paywall.eth', 8453, BASE_USDC).spentAmount).toBe('10000');
     expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: 'paywall.eth' });
-    expect(consumePending(7, 'bzz://Paywall.eth/segment')?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await consumePending(7, 'bzz://Paywall.eth/segment'))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 });
 
@@ -269,7 +295,7 @@ describe('signAndQueueRetry — custody', () => {
     const err = await signAndQueueRetry(7, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap' }).catch((e) => e);
 
     expect(err.code).toBe(CAP_NOT_COVERED);
-    expect(consumePending(7, URL_)).toBeNull();
+    expect(await consumePending(7, URL_)).toBeNull();
     await new Promise(setImmediate);
     expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
     expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe('0');
@@ -294,31 +320,124 @@ describe('signAndQueueRetry — custody', () => {
 
     expect(isVaultLockedError(err)).toBe(true);
     expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe('0');
-    expect(consumePending(7, URL_)).toBeNull();
+    expect(await consumePending(7, URL_)).toBeNull();
   });
 });
 
-// cored 0.18.0 signs x402 payments only with the vault's own accounts: a
-// device account is refused before the core is asked (core #392 pending).
+// cored 0.19.0's device path (X402-2b): a Ledger's or a phone's payment is
+// authorized by the core with no key (`x402.authorize { device }`), signed
+// on the device over the core's typed data, and checked by the core
+// (`x402.settle { reservation, signature }`).
 describe('signAndQueueRetry — device accounts', () => {
-  test("a device account's auto-pay goes to the card, unasked", async () => {
-    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
-    await loadCaps();
+  const deviceSettles = () => settles().filter((params) => params.signature !== undefined);
 
-    const err = await signAndQueueRetry(7, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap', walletIndex: 100 }).catch((e) => e);
-
-    expect(err.code).toBe(CAP_NOT_COVERED);
-    expect(err.message).toMatch(/Ledger or phone/);
-    expect(corePayments()).toEqual([]);
-  });
-
-  test("a device account's approval is refused unasked, and its token burnt", async () => {
+  test("a Ledger's approval: the core spends the token with no key, the Ledger signs the core's typed data, and the core's payment is stashed", async () => {
     const detection = detectionFor();
     const confirmation = await approved(detection, { account: 100 });
 
-    await expect(signAndQueueRetry(7, { detection, confirmation, walletIndex: 100 })).rejects.toThrow(/Ledger or phone/);
+    await signAndQueueRetry(7, { detection, confirmation, walletIndex: 100 });
+
+    const [{ params }] = corePayments();
+    expect(params).toMatchObject({
+      account: 100,
+      device: { kind: 'ledger', address: mockDeviceKey.address },
+      authorization: { token: confirmation.token },
+      accept_index: 0,
+    });
+    // The device was asked once, for the typed data the core gave, to sign
+    // over the core's hash.
+    expect(mockDevice.asked).toHaveLength(1);
+    expect(mockDevice.asked[0].index).toBe(100);
+    expect(mockDevice.asked[0].typedData.message).toMatchObject({ from: mockDeviceKey.address, value: baseAccept.amount });
+    expect(mockDevice.asked[0].options.expectedHash).toMatch(/^0x[0-9a-f]{64}$/);
+    const [settled] = deviceSettles();
+    expect(settled).toEqual({ reservation: expect.stringMatching(/^[0-9a-f]{32}$/), signature: expect.any(String) });
+    // The header is the core's payment, with the device's signature in it.
+    const header = decodedHeader(await consumePending(7, URL_));
+    expect(header.payload.signature).toBe(settled.signature);
+    expect(header.payload.authorization.from).toBe(mockDeviceKey.address);
+    expect(settles().at(-1)).toEqual({ reservation: settled.reservation, outcome: 'sent' });
+  });
+
+  test("a phone's auto-pay: the cap is charged before the phone signs, and a locked vault doesn't stop it", async () => {
+    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
+    await loadCaps();
+    mockCore.setX402Locked(true);
+    let spentWhenAsked = null;
+    mockDevice.sign = (_typedData, { expectedHash }) => {
+      spentWhenAsked = mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount;
+      return mockDeviceKey.signingKey.sign(expectedHash).serialized;
+    };
+
+    await signAndQueueRetry(7, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap', walletIndex: 101 });
+
+    expect(corePayments()[0].params).toMatchObject({
+      account: 101,
+      device: { kind: 'phone', address: mockDeviceKey.address },
+      authorization: { cap: { agent: false, attributable: true } },
+    });
+    expect(spentWhenAsked).toBe('10000');
+    expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
+    expect(decodedHeader(await consumePending(7, URL_)).payload.authorization.from).toBe(mockDeviceKey.address);
+  });
+
+  test("a device that refuses: nothing is stashed, the device's error is the caller's, and the charge goes back (withheld)", async () => {
+    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
+    await loadCaps();
+    const refusal = Object.assign(new Error('Rejected on the device'), { code: 'LEDGER_REJECTED' });
+    mockDevice.sign = () => {
+      throw refusal;
+    };
+
+    const err = await signAndQueueRetry(7, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap', walletIndex: 100 }).catch((e) => e);
+
+    expect(err).toBe(refusal);
+    await flushSettles();
+    expect(deviceSettles()).toEqual([]);
+    expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
+    expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe('0');
+    expect(await consumePending(7, URL_)).toBeNull();
+  });
+
+  test('a signature from another key: the core refuses it and gives the charge back there; main settles nothing more', async () => {
+    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
+    await loadCaps();
+    mockDevice.sign = (_typedData, { expectedHash }) => mockOtherKey.signingKey.sign(expectedHash).serialized;
+
+    const err = await signAndQueueRetry(7, { detection: detectionFor(URL_, [baseAccept]), authorizedBy: 'cap', walletIndex: 100 }).catch((e) => e);
+
+    expect(err.message).toMatch(/another account/);
+    expect(err.cause.data).toEqual({ reason: 'wrong_account', refunded: true });
+    await flushSettles();
+    expect(settles()).toEqual([{ reservation: expect.any(String), signature: expect.any(String) }]);
+    expect(mockCore.cap(ORIGIN, 8453, BASE_USDC).spentAmount).toBe('0');
+    expect(mockCore.openReservations()).toBe(0);
+    expect(await consumePending(7, URL_)).toBeNull();
+  });
+
+  test("a malformed signature: refused (bad_response); a token's payment had charged nothing", async () => {
+    const detection = detectionFor();
+    const confirmation = await approved(detection, { account: 100 });
+    mockDevice.sign = () => '0x1234';
+
+    const err = await signAndQueueRetry(7, { detection, confirmation, walletIndex: 100 }).catch((e) => e);
+
+    expect(err.message).toMatch(/couldn't be read/);
+    expect(err.cause.data).toEqual({ reason: 'bad_response', refunded: false });
+    expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
+  });
+
+  test.each([
+    [102, /A Safe account can't pay/],
+    [103, /no longer exists/],
+  ])('account %i is refused unasked, and its token burnt', async (walletIndex, message) => {
+    const detection = detectionFor();
+    const confirmation = await approved(detection, { account: walletIndex });
+
+    await expect(signAndQueueRetry(7, { detection, confirmation, walletIndex })).rejects.toThrow(message);
 
     expect(corePayments()).toEqual([]);
+    expect(mockDevice.asked).toEqual([]);
     expect(mockCore.calls.filter(({ method }) => method === 'approval.discard').map(({ params }) => params))
       .toEqual([{ token: confirmation.token }]);
   });
@@ -351,7 +470,7 @@ describe('signAndQueueRetry — authorization freshness', () => {
 
     // No signature armed for the injector, no re-navigation: the doomed
     // retry that would trip the loop guard never goes out.
-    expect(consumePending(7, URL_)).toBeNull();
+    expect(await consumePending(7, URL_)).toBeNull();
     expect(mockLoadURL).not.toHaveBeenCalled();
   });
 
@@ -417,7 +536,7 @@ describe('signAndQueueRetry — authorization freshness', () => {
 
     await signAndQueueRetry(7, { detection: d, confirmation: await approved(d) });
 
-    expect(consumePending(7, URL_)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await consumePending(7, URL_))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
     expect(mockLoadURL).toHaveBeenCalledWith(URL_);
   });
 });
