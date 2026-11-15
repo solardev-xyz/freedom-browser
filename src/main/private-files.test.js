@@ -218,6 +218,25 @@ posix('managed directory handles (K-3)', () => {
     expect(fs.readdirSync(path.join(data, 'keys'))).toEqual(['swarm.key']);
   });
 
+  test("a directory's failed fsync is logged, or thrown when required", () => {
+    withPrivateDir(data, (dir) => {
+      const eio = Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' });
+      const fsync = jest.spyOn(fs, 'fsyncSync').mockImplementation(() => {
+        throw eio;
+      });
+      expect(() => dir.sync()).not.toThrow();
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Could not fsync'),
+        eio.message
+      );
+      console.warn.mockClear();
+      expect(() => dir.sync({ required: true })).toThrow(eio);
+      expect(console.warn).not.toHaveBeenCalled();
+      fsync.mockRestore();
+      expect(() => dir.sync({ required: true })).not.toThrow();
+    });
+  });
+
   test('names are plain file names', () => {
     withPrivateDir(data, (dir) => {
       for (const name of ['', '.', '..', '../outside', 'keys/swarm.key']) {

@@ -357,13 +357,16 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
     await expect(mod.hasVault()).rejects.toThrow('bad');
   });
 
-  test('a lost Quick Setup is finished by main: metadata, then the credential', async () => {
-    const completeQuickSetup = jest.fn(async () => {});
+  // Design 0013, PRF-2d: the core wrote a Quick Setup vault's credential
+  // with it, and no quick-unlock.dat is written, so quick-unlock.js has
+  // nothing to finish.
+  test('a lost Quick Setup is finished by main: the metadata, and no quick-unlock.dat', async () => {
+    const quickUnlock = jest.fn(() => ({}));
     const backend = makeVaultBackendMock({ exists: false, unlocked: false });
     const { mod, dirs } = setup(backend, {
-      [require.resolve('./quick-unlock')]: () => ({ completeQuickSetup }),
+      [require.resolve('./quick-unlock')]: quickUnlock,
     });
-    await mod.importExistingMnemonic('random-pass', 'abandon about', false);
+    await mod.importExistingMnemonic('random-pass', 'abandon about', false, { quickUnlock: true });
     const { onCommitted } = backend.importVault.mock.calls[0][2];
     const metaPath = path.join(dirs.identity, 'vault-meta.json');
     fs.rmSync(metaPath);
@@ -373,11 +376,8 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
       userKnowsPassword: false,
       addresses: { userWallet: '0xu', beeWallet: '0xb' },
     });
-    expect(completeQuickSetup).toHaveBeenCalledWith('random-pass');
-    // A password the user knows needs no credential.
-    await mod.createNewVault('password123');
-    await backend.createVault.mock.calls[0][2].onCommitted({ addresses: {} });
-    expect(completeQuickSetup).toHaveBeenCalledTimes(1);
+    expect(quickUnlock).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(dirs.identity, 'quick-unlock.dat'))).toBe(false);
   });
 
   // Design 0013, PRF-2b: Quick Setup's vault comes with quick unlock's
