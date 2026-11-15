@@ -47,7 +47,7 @@ const test = base.extend({
     await use(dirs);
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   },
-  electronApp: async ({ dirs }, use) => {
+  electronApp: async ({ dirs }, use, testInfo) => {
     const app = await electron.launch({
       args: ['.'],
       cwd: repoRoot,
@@ -61,8 +61,22 @@ const test = base.extend({
       },
       timeout: 30_000,
     });
+    // Main's own output, attached when a test fails: a refusal's cause is
+    // logged there, not shown to the wizard.
+    const mainLog = [];
+    for (const stream of [app.process().stdout, app.process().stderr]) {
+      stream?.on('data', (chunk) => {
+        mainLog.push(String(chunk));
+        if (mainLog.length > 400) mainLog.shift();
+      });
+    }
     await use(app);
     await closeApp(app);
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await testInfo.attach('main-process-log', { body: mainLog.join(''), contentType: 'text/plain' });
+      const lines = mainLog.join('').split('\n');
+      console.log(lines.filter((line) => /QuickUnlock|Identity|Vault|[Kk]ey ?store|[Ee]rror/.test(line)).slice(-60).join('\n'));
+    }
   },
   window: async ({ electronApp }, use) => {
     let win = null;
@@ -92,6 +106,18 @@ function stubTouchId(electronApp, { cancel = false } = {}) {
 
 const touchIdPrompts = (electronApp) => electronApp.evaluate(() => globalThis.__touchIdPrompts);
 
+/**
+ * Waits for the wizard's last step, or for the first alert, which is how it
+ * reports a failure: the alert's text is then the failure, at once.
+ */
+async function quickSetupFinished(win, dialogs) {
+  const complete = win.locator('[data-step="complete"]');
+  await expect
+    .poll(async () => dialogs.length > 0 || (await complete.isVisible()), { timeout: 120_000 })
+    .toBe(true);
+  expect(dialogs).toEqual([]);
+}
+
 /** The wizard's welcome step, on its Quick Setup layout, and the button clicked. */
 async function clickQuickSetup(win) {
   const dialogs = [];
@@ -118,6 +144,9 @@ function secrets(dirs) {
 
 test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
   test.skip(!keychainReady, 'macOS with the temporary keychain only (FREEDOM_TEST_KEYCHAIN)');
+  // A launch, the core's KDF and the keychain helper take longer than the
+  // harness project's 30 s.
+  test.describe.configure({ timeout: 180_000 });
 
   test('Touch ID first, the vault with its credential, quick-unlock.dat; then Touch ID unlocks through the core', async ({
     electronApp,
@@ -126,8 +155,7 @@ test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
   }) => {
     await stubTouchId(electronApp);
     const dialogs = await clickQuickSetup(win);
-    await win.locator('[data-step="complete"]').waitFor({ state: 'visible', timeout: 120_000 });
-    expect(dialogs).toEqual([]);
+    await quickSetupFinished(win, dialogs);
     expect(await touchIdPrompts(electronApp)).toEqual(['set up Freedom Browser with Touch ID']);
 
     // The core's credential, made through main's executor in the keychain.
@@ -192,8 +220,7 @@ test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
       };
     });
     const dialogs = await clickQuickSetup(win);
-    await win.locator('[data-step="complete"]').waitFor({ state: 'visible', timeout: 120_000 });
-    expect(dialogs).toEqual([]);
+    await quickSetupFinished(win, dialogs);
     expect(fs.existsSync(path.join(dirs.identity, 'identity-vault.json'))).toBe(true);
     expect(fs.existsSync(path.join(dirs.identity, 'quick-unlock.dat'))).toBe(false);
     expect(Object.keys(secrets(dirs).entries)).toEqual(['quick-unlock']);
