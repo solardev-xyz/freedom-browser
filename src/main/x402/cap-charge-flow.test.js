@@ -628,6 +628,29 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
       expect(mockCore.openReservations()).toBe(0);
     });
 
+    test("the core can't be asked: the header is withheld, and the charge offered back", async () => {
+      const reservation = await signedAutoPay(33);
+      const realSettle = mockCore.x402.settle;
+      mockCore.x402.settle = async (params, context) => {
+        if (params.outcome === 'sent') {
+          mockCore.calls.push({ method: 'x402.settle', params, page: context });
+          throw Object.assign(new Error('the identity core is not running'), { code: 'unavailable' });
+        }
+        return realSettle(params, context);
+      };
+      try {
+        expect(await retry(42, `${ORIGIN}/seg/33`, 43)).toBeNull();
+        await settle();
+      } finally {
+        mockCore.x402.settle = realSettle;
+      }
+      expect(settles()).toEqual([
+        { reservation, outcome: 'sent' },
+        { reservation, outcome: 'withheld' },
+      ]);
+      expect(spent()).toBe('0');
+    });
+
     test('the cap left alone: the header goes out', async () => {
       const reservation = await signedAutoPay(30);
       expect((await retry(42, `${ORIGIN}/seg/30`, 40))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();

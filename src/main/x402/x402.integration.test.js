@@ -659,8 +659,10 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
       expect(recoverAddress(options.digest, header.payload.signature)).toBe(LEDGER_KEY.address);
       expect(header.payload.authorization.from.toLowerCase()).toBe(LEDGER_KEY.address.toLowerCase());
       await waitFor(() => calls.some(({ method, params }) => method === 'x402.settle' && params.outcome === 'sent'));
-      // The grant is written after the signature, and the payment charged to it.
+      // The grant is written after the signature, and the payment charged to
+      // it, which the sidebar is told of.
       expect(capInFile()).toMatchObject({ capAmount: '20000', spentAmount: PRICE });
+      expect(hostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
     });
 
     test("a Ledger's auto-pay: the cap is charged first, and needs no unlocked vault", async () => {
