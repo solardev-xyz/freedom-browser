@@ -1000,7 +1000,14 @@ jobs:
       # executor end to end; the drain with main killed at each step; main
       # killed while a disable or a vault delete waits on its forget. On
       # Linux, the drain's steps against a stand-in key store. On Linux and
-      # Windows, the core asks main nothing.
+      # Windows, the core asks main nothing. Quick unlock through main
+      # (PRF-2b): on macOS the migration of a v2 and a legacy quick-unlock.dat
+      # (once through the file, then the core, the file's bytes unchanged),
+      # the reference quick-unlock.js still unlocking from it, a password
+      # change keeping quick unlock, Quick Setup and its refusal, disable, and
+      # main killed while a replace waits on its forget; then the Quick Setup
+      # e2e with a stubbed Touch ID. On every OS, a damaged secrets.json
+      # refusing a password change and a vault delete in main's words.
       - name: A temporary keychain, the default for the key-store steps (macOS)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
         run: |
@@ -1019,11 +1026,17 @@ jobs:
 
       - name: Key store through main (real freedom-cored)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: npx jest src/main/keystore.integration.test.js
+        run: npx jest src/main/keystore.integration.test.js src/main/quick-unlock.integration.test.js
         env:
           FREEDOM_CORED_KEYSTORE_TEST: '1'
           # On macOS the keychain legs must run, not skip.
           FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
+
+      - name: Quick Setup with a stubbed Touch ID E2E (macOS)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
+        run: npm run test:e2e -- --output=test-results/e2e-quick-setup test-e2e/quick-setup-touch-id.spec.js
+        env:
+          FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: '1'
 
       - name: Delete the temporary keychain (macOS)
         if: ${{ always() && runner.os == 'macOS' }}

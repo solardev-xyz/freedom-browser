@@ -1,0 +1,4 @@
+- Touch ID unlock keeps your vault password in Freedom's own keychain item, and the browser no longer reads it at each unlock ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - Earlier Touch ID setups move over at their next Touch ID unlock
+  - Quick Setup no longer deletes the new identity when a later step fails
+  - Clearer messages when the keychain refuses or Touch ID unlock's file is damaged

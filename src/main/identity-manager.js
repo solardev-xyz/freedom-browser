@@ -189,8 +189,11 @@ function saveNewVaultMeta(addresses, userKnowsPassword) {
  */
 async function finishLostSetup(found, password, userKnowsPassword) {
   saveNewVaultMeta(found.addresses, userKnowsPassword);
-  // Keeps the password and retries until the credential is stored.
-  if (!userKnowsPassword) await require('./quick-unlock').completeQuickSetup(password);
+  // quick-unlock.dat for older builds: the password sealed at once, never
+  // kept; only a failed write's sealed bytes, for a short retry.
+  // Not awaited: this runs inside the vault queue's mutation, and the write
+  // takes that queue itself.
+  if (!userKnowsPassword) void require('./quick-unlock').completeQuickSetup(password);
 }
 
 /**
@@ -240,11 +243,19 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
  * @param {string} password - User's password
  * @param {string} mnemonic - The mnemonic to import
  * @param {boolean} userKnowsPassword - Whether the user knows the password (false for Quick Setup)
+ * @param {{quickUnlock?: boolean}} [options] - `quickUnlock`: Quick Setup's
+ *   vault, created with quick unlock's credential in the core (design 0013)
  * @returns {Promise<void>}
  */
-async function importExistingMnemonic(password, mnemonic, userKnowsPassword = true) {
+async function importExistingMnemonic(
+  password,
+  mnemonic,
+  userKnowsPassword = true,
+  { quickUnlock = false } = {}
+) {
   const { addresses } = await vaultBackend.importVault(password, mnemonic, {
     overwrite: false,
+    quickUnlock,
     onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
   });
   console.log('[IdentityManager] Mnemonic imported to vault');
@@ -259,7 +270,49 @@ async function importExistingMnemonic(password, mnemonic, userKnowsPassword = tr
 async function unlockVault(password) {
   const { addresses } = await vaultBackend.unlock(password);
   console.log('[IdentityManager] Vault unlocked');
+  afterUnlock(addresses);
+}
 
+/**
+ * Unlock the vault with quick unlock's credential in the core, after main's
+ * Touch ID prompt (design 0013, PRF-2b): the password stays in the core.
+ * @returns {Promise<void>}
+ */
+async function quickUnlockVault() {
+  const { addresses } = await vaultBackend.quickUnlock();
+  console.log('[IdentityManager] Vault unlocked with quick unlock');
+  afterUnlock(addresses);
+}
+
+/**
+ * The recovery phrase through quick unlock's credential, after main's Touch
+ * ID prompt. The core unlocks the vault first, as the password flow does.
+ * @returns {Promise<string>}
+ */
+async function quickExportMnemonic() {
+  const mnemonic = await vaultBackend.quickExportMnemonic();
+  afterUnlock(null);
+  return mnemonic;
+}
+
+/**
+ * One account's private key through quick unlock's credential, after main's
+ * Touch ID prompt; the vault is unlocked first.
+ * @returns {Promise<string>}
+ */
+async function quickExportPrivateKeyForAccount(accountIndex) {
+  assertPrivateKeyExportable(accountIndex);
+  const privateKey = await vaultBackend.quickExportPrivateKey(accountIndex);
+  afterUnlock(null);
+  return privateKey;
+}
+
+/**
+ * What follows every unlock. `addresses` is the unlock's answer, or null
+ * when the unlock came with an export (the metadata migration waits for the
+ * next one).
+ */
+function afterUnlock(addresses) {
   // The Swarm node could not open its keystore at its last start: the core
   // writes it again, same key, with a new password (K-3).
   if (beeLifecycle.needsKeyReinjection?.() === true) {
@@ -270,7 +323,7 @@ async function unlockVault(password) {
 
   // Migrate old vaults: save addresses to metadata if not present
   const meta = getVaultMeta();
-  if (meta && !meta.addresses) {
+  if (addresses && meta && !meta.addresses) {
     console.log('[IdentityManager] Migrating vault metadata to include addresses');
     saveVaultMeta({
       ...meta,
@@ -2029,7 +2082,8 @@ async function getActiveWalletAddress() {
  * @param {string} newPassword
  */
 async function changeVaultPassword(currentPassword, newPassword) {
-  await vaultBackend.changePassword(currentPassword, newPassword);
+  // Quick unlock stays on through the change (design 0013).
+  await require('./quick-unlock').changePasswordKeepingQuickUnlock(currentPassword, newPassword);
   console.log('[IdentityManager] Vault password changed');
 }
 
@@ -2342,10 +2396,13 @@ module.exports = {
   createNewVault,
   importExistingMnemonic,
   unlockVault,
+  quickUnlockVault,
   lockVault,
   exportMnemonic,
+  quickExportMnemonic,
   assertPrivateKeyExportable,
   exportPrivateKeyForAccount,
+  quickExportPrivateKeyForAccount,
   changeVaultPassword,
   deleteVaultData,
 

@@ -200,13 +200,19 @@ function setupWelcomeStep() {
 }
 
 /**
- * Quick Setup flow - create identity with Touch ID in one step
+ * Quick Setup flow - create identity with Touch ID in one step.
+ *
+ * Main prompts for Touch ID, then creates the vault under a random password
+ * it keeps to itself, with quick unlock's credential written in the core
+ * before the vault commits (freedom-core design 0013, PRF-2b). A failure
+ * comes before any vault is written, or leaves the vault with its
+ * credential: nothing here deletes a vault.
  */
 async function performQuickSetup() {
   showLoading('Setting up with Touch ID…');
 
   try {
-    // Step 1: Prompt Touch ID first (to confirm user intent)
+    // Step 1: Touch ID must be there (main prompts for it before the vault)
     const touchIdResult = await window.quickUnlock.canUseTouchId();
     if (!touchIdResult) {
       hideLoading();
@@ -214,11 +220,7 @@ async function performQuickSetup() {
       return;
     }
 
-    // Step 2: Generate a random password (user never sees this)
-    const randomPassword = generateRandomPassword();
-    currentPassword = randomPassword;
-
-    // Step 3: Generate mnemonic
+    // Step 2: Generate mnemonic
     showLoading('Generating identity…');
     const mnemonicResult = await window.identity.generateMnemonic(256);
     if (!mnemonicResult.success) {
@@ -228,29 +230,18 @@ async function performQuickSetup() {
     }
     currentMnemonic = mnemonicResult.mnemonic;
 
-    // Step 4: Create vault with the random password (user does NOT know this password)
+    // Step 3: Touch ID, then the vault with quick unlock (user does NOT know
+    // its password)
     showLoading('Securing your identity…');
-    const vaultResult = await window.identity.importMnemonic(randomPassword, currentMnemonic, false);
-    if (!vaultResult.success) {
+    const setupResult = await window.quickUnlock.quickSetup(currentMnemonic);
+    if (!setupResult.success) {
       hideLoading();
-      alert('Failed to create vault: ' + vaultResult.error);
-      return;
-    }
-
-    // Step 5: Enable Touch ID (store random password in Keychain)
-    showLoading('Enabling Touch ID…');
-    const quickUnlockResult = await window.quickUnlock.enable(randomPassword);
-    if (!quickUnlockResult.success) {
-      hideLoading();
-      // Touch ID failed - this is a problem since user doesn't know the password
-      alert('Failed to enable Touch ID. Please try the secure setup option instead.');
-      // Clean up - delete the vault since it's unusable without Touch ID
-      await window.identity.deleteVault(randomPassword);
+      alert('Quick Setup did not finish: ' + setupResult.error);
       resetState();
       return;
     }
 
-    // Step 6: Inject identities into nodes
+    // Step 4: Inject identities into nodes
     // Check if nodes already have identities (user may have skipped setup initially)
     showLoading('Finalizing setup…');
     const status = await window.identity.getStatus();
@@ -280,15 +271,6 @@ async function performQuickSetup() {
     alert('Setup failed: ' + err.message);
     resetState();
   }
-}
-
-/**
- * Generate a cryptographically random password
- */
-function generateRandomPassword() {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /**
