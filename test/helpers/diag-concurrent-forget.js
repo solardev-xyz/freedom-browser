@@ -2,7 +2,8 @@
 // when two or three `freedom-cored keystore --op forget` of one Keychain item
 // run at once, in the job's temporary keychain.
 //
-//   node diag-concurrent-forget.js <freedom-cored> <rounds> <width>
+//   node diag-concurrent-forget.js <freedom-cored> <rounds> <width> [stagger ms list]
+// With a stagger list, round r starts helper i (r's stagger × i) ms late.
 
 const crypto = require('crypto');
 const { spawn } = require('child_process');
@@ -10,6 +11,8 @@ const { spawn } = require('child_process');
 const [cored, roundsArg = '40', widthArg = '2'] = process.argv.slice(2);
 const rounds = Number(roundsArg);
 const width = Number(widthArg);
+const staggers = (process.argv[5] || '0').split(',').map(Number);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function replyKey() {
   const { publicKey } = crypto.generateKeyPairSync('x25519');
@@ -49,19 +52,21 @@ function helper(args) {
       console.log('create failed', made.out.slice(0, 80), made.code, made.err);
       continue;
     }
+    const stagger = staggers[round % staggers.length];
     const answers = await Promise.all(
-      Array.from({ length: width }, () =>
-        helper(['--op', 'forget', '--policy', 'unattended', '--item', item])
-      )
+      Array.from({ length: width }, async (_, i) => {
+        await sleep(stagger * i);
+        return helper(['--op', 'forget', '--policy', 'unattended', '--item', item]);
+      })
     );
     const key = answers
       .map(
         (a) =>
           `${a.out}${a.code ? ` exit=${a.code}` : ''}${a.signal ? ` ${a.signal}` : ''}${a.err ? ` stderr=${a.err}` : ''}`
       )
-      .sort()
       .join(' | ');
-    tally.set(key, (tally.get(key) || 0) + 1);
+    const keyed = `+${stagger}ms: ${key}`;
+    tally.set(keyed, (tally.get(keyed) || 0) + 1);
   }
   console.log(`width ${width}, ${rounds} rounds:`);
   for (const [key, count] of tally) console.log(`  ${count}x  ${key}`);

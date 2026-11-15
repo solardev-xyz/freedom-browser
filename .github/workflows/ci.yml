@@ -1064,15 +1064,17 @@ jobs:
         continue-on-error: true
         run: |
           cored="freedom-cored-bin/mac-$(node -p process.arch)/freedom-cored"
-          node test/helpers/diag-concurrent-forget.js "$cored" 40 2
-          node test/helpers/diag-concurrent-forget.js "$cored" 20 3
+          node test/helpers/diag-concurrent-forget.js "$cored" 120 2 0,2,5,10,15,20,30,40,60,80
           swiftc -O -o "$RUNNER_TEMP/diag-del" test/helpers/diag-secitemdelete.swift
-          for i in $(seq 40); do
-            acct="$(openssl rand -hex 16)"
-            "$RUNNER_TEMP/diag-del" add "$acct" > /dev/null
-            "$RUNNER_TEMP/diag-del" delete "$acct" &
-            "$RUNNER_TEMP/diag-del" delete "$acct" &
-            wait
+          for d in 0 0.002 0.005 0.01 0.015 0.02 0.03 0.04 0.06 0.08; do
+            for i in $(seq 12); do
+              acct="$(openssl rand -hex 16)"
+              "$RUNNER_TEMP/diag-del" add "$acct" > /dev/null
+              ( "$RUNNER_TEMP/diag-del" delete "$acct" | sed 's/^/first  /' ) &
+              sleep "$d"
+              ( "$RUNNER_TEMP/diag-del" delete "$acct" | sed "s/^/second +$d /" ) &
+              wait
+            done
           done | sort | uniq -c
           for i in $(seq 12); do
             npx jest src/main/keystore.integration.test.js -t "two profiles" 2>&1 \
