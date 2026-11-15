@@ -1014,12 +1014,13 @@ jobs:
       # killed while a disable or a vault delete waits on its forget. On
       # Linux, the drain's steps against a stand-in key store. On Linux and
       # Windows, the core asks main nothing. Quick unlock through main
-      # (PRF-2b): on macOS the migration of a v2 and a legacy quick-unlock.dat
-      # (once through the file, then the core, the file's bytes unchanged),
-      # the reference quick-unlock.js still unlocking from it, a password
-      # change keeping quick unlock, Quick Setup and its refusal, disable, and
-      # main killed while a replace waits on its forget; then the Quick Setup
-      # e2e with a stubbed Touch ID. On every OS, a damaged secrets.json
+      # (PRF-2b, PRF-2d): on macOS the migration of a v2 and a legacy
+      # quick-unlock.dat (once through the file, then the core, the file
+      # removed once the enroll is confirmed), the reference quick-unlock.js
+      # then finding no file, a crash between the enroll and the removal, a
+      # password change keeping quick unlock, Quick Setup (no file) and its
+      # refusal, disable, and main killed while a replace waits on its
+      # forget; then the Quick Setup e2e with a stubbed Touch ID. On every OS, a damaged secrets.json
       # refusing a password change and a vault delete in main's words.
       - name: A temporary keychain, the default for the key-store steps (macOS)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}

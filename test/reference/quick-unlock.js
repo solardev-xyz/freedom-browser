@@ -2,10 +2,12 @@
  * The reference quick-unlock.js: src/main/quick-unlock.js as builds before
  * freedom-core design 0013's PRF-2b ran it (integration/rust-core at
  * 58cadeee), frozen for the downgrade tests. It reads and writes only
- * quick-unlock.dat; PRF-2b keeps that file byte for byte, so an older build
- * still unlocks from it (0013, PRF-2's row: "Downgrade: the reference
- * quick-unlock.js still unlocks from it"). Its requires point at the live
- * modules it used, which PRF-2b doesn't change. Not loaded by the app.
+ * quick-unlock.dat. Until the core confirms its credential, the current
+ * build leaves that file byte for byte, so an older build still unlocks
+ * from it; after that, it removes the file (PRF-2d, the user's decision of
+ * 2026-11-15), and an older build finds none and asks for the password.
+ * The tests also use it to write a file as an older build did. Its
+ * requires point at the live modules it used. Not loaded by the app.
  * It is a main module, not part of the JS identity stack, so it lives here
  * and not in test/legacy-identity/, which nothing in src/ may import
  * (src/main/core/identity-stack-boundary.test.js).

@@ -1,0 +1,2 @@
+- Touch ID unlock keeps your vault password in Freedom's own keychain item, and the browser no longer reads it at each unlock ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - The old Touch ID file is removed once moved; older versions then need your password or recovery phrase
