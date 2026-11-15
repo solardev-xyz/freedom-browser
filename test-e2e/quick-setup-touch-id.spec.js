@@ -40,9 +40,19 @@ const test = base.extend({
   // eslint-disable-next-line no-empty-pattern
   dirs: async ({}, use) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-quick-setup-e2e-'));
-    const dirs = { root, userData: path.join(root, 'userData'), identity: path.join(root, 'identity') };
+    const dirs = {
+      root,
+      userData: path.join(root, 'userData'),
+      identity: path.join(root, 'identity'),
+      // The wizard's last step injects a Radicle identity. Under macOS's long
+      // os.tmpdir() the profile's own radicle-data is too long a path for the
+      // node's control socket, and main refuses it: an explicit data dir, as
+      // onboarding-fixtures.js gives, skips that check.
+      radicle: path.join(root, 'radicle-data'),
+    };
     fs.mkdirSync(dirs.userData);
     fs.mkdirSync(dirs.identity, { mode: 0o700 });
+    fs.mkdirSync(dirs.radicle, { mode: 0o700 });
     fs.writeFileSync(path.join(dirs.userData, 'settings.json'), JSON.stringify(SETTINGS), 'utf-8');
     await use(dirs);
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -56,6 +66,7 @@ const test = base.extend({
         FREEDOM_TEST_MODE: '1',
         FREEDOM_TEST_USER_DATA: dirs.userData,
         FREEDOM_IDENTITY_DATA: dirs.identity,
+        FREEDOM_RADICLE_DATA: dirs.radicle,
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },
