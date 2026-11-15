@@ -26,8 +26,9 @@
  * mains draining at once do no harm: a `forget` of an item the other main
  * removed answers `not_found`, and `forget-done` for an id no longer listed
  * changes nothing. On the Keychain, a `forget` racing the other main's
- * answers `ok` as well, or `backend` (an OSStatus outside the helper's
- * table), which keeps the record until a later drain finds the item gone.
+ * answers `ok` as well, or `backend` (`errSecInvalidRecord`, outside the
+ * helper's table), which keeps the record until the other main's
+ * `forget-done` or a later drain drops it.
  *
  * The helper runs through keystore-shell.js's runner, one at a time with the
  * core's own `shell.keystore` calls, each under `forget`'s 10 s deadline,

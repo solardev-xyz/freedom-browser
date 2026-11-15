@@ -343,9 +343,10 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
         },
         heldMarker,
         // What the Keychain gives a forget that races another process's
-        // delete of the same item: an OSStatus outside the helper's table,
-        // so `backend`. It keeps the record, as 0013 says any answer but ok
-        // and not_found does, and a later drain finds the item gone.
+        // delete of the same item: `errSecInvalidRecord` (-67701), outside
+        // the helper's table, so `backend`. It keeps the record, as 0013
+        // says any answer but ok and not_found does, and a later drain finds
+        // the item gone (or the other main's forget-done drops it first).
         racedForget: ['{"ok":false,"error":"backend","reason":"status"}'],
         // A profile whose core made its quick-unlock item through main: the
         // profile, and the item its secrets file names.
@@ -612,10 +613,6 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       fs.writeFileSync(release, '');
       const counts = await Promise.all(mains.map(ends));
       const answers = mains.map(helperAnswers);
-      // TEMPORARY diagnostic, removed before review.
-      if (process.env.FREEDOM_DIAG_DRAIN) {
-        console.log(`DIAG ${JSON.stringify(counts)}\n${mains.map((m) => m.out).join('---\n')}`);
-      }
 
       // Each main asked the helper about both items. Every answer is one
       // that clears a record (ok, not_found), or the one the store gives a
