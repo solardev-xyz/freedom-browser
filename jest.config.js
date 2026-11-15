@@ -11,6 +11,12 @@ module.exports = {
     '/ant-bin/',
     '/ipfs-bin/',
     '/test-e2e/.*\\.spec\\.js$',
+    // Main's own phone-payment check before the identity core took it over
+    // (freedom-core design 0012, PHN-2): wallet/phone-payments.js and this
+    // suite are left in place, unused, until the user confirms their removal
+    // (AGENTS.md rule 1). Its cases run against the core in
+    // wallet/remote/phone-jobs.integration.test.js.
+    '/src/main/wallet/phone-payments\\.test\\.js$',
   ],
   collectCoverageFrom: ['src/**/*.js', '!src/**/*.test.js', '!src/renderer/vendor/**'],
   // Coverage thresholds are intentionally below typical "healthy" targets.

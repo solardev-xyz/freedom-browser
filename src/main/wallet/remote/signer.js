@@ -4,29 +4,33 @@
  * getAddress serves the address stored on the account record (learned via
  * eth_requestAccounts when the account was added) — no vault involved.
  *
- * Signing methods publish a JSON-RPC job to the renderer session broker
- * (see ./bridge.js), which shows a QR code, tunnels the request to the
- * phone over openlv, and returns the phone's answer. The answer is never
- * trusted: signatures must recover to the account's address (a phone
- * answering from a different account fails with REMOTE_WRONG_ACCOUNT).
- * What an answer showed about the record (signed as the account, or
- * answered from another one) is reported through `onAddressCheck`, so
- * the signer factory can keep it on the record (#1078).
+ * Every signature and payment is an identity core job (freedom-core design
+ * 0012, PHN-2; ./bridge.js `requestPhoneJob`): the core checks the
+ * request's authorization (`job`: what `sign.*` would present, and the
+ * page's PageContext; none for main's own), opens the job, and gives the
+ * JSON-RPC request main relays to the chrome's session, which shows a QR
+ * code and tunnels it to the phone. The core checks the phone's answer: a
+ * signature must recover to the account (typed data over the hash the user
+ * confirmed), and main checks it again (`verifiedSignature`), as it checks
+ * the core's own signatures. What an answer showed about the record
+ * (signed as the account, or answered from another one) is reported
+ * through `onAddressCheck`, so the signer factory can keep it on the
+ * record (#1078).
  *
  * Phone wallets expose `eth_sendTransaction`, not raw transaction
  * signing, so this backend implements the optional `sendTransaction`
  * capability instead of `signTransaction`: the phone picks the nonce,
- * estimates gas, and broadcasts through its own RPC. The reported
- * transaction is checked on-chain by transaction-service against every
- * field the job names (`from`, `to`, `value`, `data`, the chain), once it
- * is visible (the provider layer — this module never touches RPC).
+ * estimates gas, and broadcasts through its own RPC. The core compares the
+ * reported transaction with every field the job binds (`from`, `to`,
+ * `value`, `data`, the chain) once it is visible: at the answer
+ * (`verified`), or later (`unverified` until its `phone.checked`).
  */
 
-const { verifyMessage, verifyTypedData, toQuantity } = require('ethers');
+const { verifyMessage, recoverAddress, toQuantity } = require('ethers');
 
-const { requestRemoteSignature } = require('./bridge');
+const { requestPhoneJob } = require('./bridge');
 const { REMOTE_ERROR_CODES, UNREADABLE_ANSWER, createRemoteError } = require('./errors');
-const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
+const { messageToBytes } = require('../signing-utils');
 
 const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const SIGNATURE_RE = /^0x[0-9a-fA-F]{130}$/;
@@ -87,8 +91,23 @@ function verifiedSignature(address, signature, recover) {
  * @returns {import('../signers').Signer & {sendTransaction: (tx: object) => Promise<string>}}
  */
 function createRemoteBackend(record, { onAddressCheck } = {}) {
-  const request = (method, params, chain) =>
-    requestRemoteSignature({ walletIndex: record.index, address: record.address, method, params, chain });
+  /**
+   * One core job (`requestPhoneJob`): `job` is what the signer factory
+   * gives, the authorization and PageContext the core checks it under, and
+   * `beforeSign`, the caller's last check, awaited once the core opened the
+   * job, right before its request goes to the chrome.
+   */
+  const request = (method, payload, job = {}, extra = {}) =>
+    requestPhoneJob({
+      walletIndex: record.index,
+      address: record.address,
+      method,
+      payload,
+      ...(job.authorization ? { authorization: job.authorization } : {}),
+      page: job.page || null,
+      ...(job.beforeSign ? { beforeRelay: job.beforeSign } : {}),
+      ...extra,
+    });
 
   /** Report what the phone's answer showed about the record (#1078). */
   function report(matched) {
@@ -103,9 +122,10 @@ function createRemoteBackend(record, { onAddressCheck } = {}) {
   }
 
   /**
-   * The phone's signature, required to be the account's. A phone that
-   * answers from another account (a signature that recovers elsewhere, or
-   * the wallet's own EIP-1193 4100) shows the record doesn't match it.
+   * The phone's signature, which the core required to be the account's,
+   * checked again here. A phone that answers from another account (a
+   * signature that recovers elsewhere, or the wallet's own EIP-1193 4100)
+   * shows the record doesn't match it.
    */
   async function accountSignature(answer, recover) {
     let signature;
@@ -129,27 +149,37 @@ function createRemoteBackend(record, { onAddressCheck } = {}) {
       throw createRemoteError(REMOTE_ERROR_CODES.UNSUPPORTED);
     },
 
-    signMessage: async (message) => {
+    /**
+     * `job.payload`: the message as a token bound it (`{ message }`), or
+     * none, and it is made from the bytes.
+     */
+    signMessage: async (message, job = {}) => {
       const bytes = messageToBytes(message);
       return accountSignature(
-        request('personal_sign', ['0x' + bytes.toString('hex'), record.address]),
-        (sig) => verifyMessage(bytes, sig),
-      );
-    },
-
-    signTypedData: async (typedData) => {
-      // eth_signTypedData_v4 takes the full EIP-712 wire payload.
-      const { domain, strippedTypes, payload } = getEip712WirePayload(typedData);
-      return accountSignature(
-        request('eth_signTypedData_v4', [record.address, JSON.stringify(payload)]),
-        (sig) => verifyTypedData(domain, strippedTypes, typedData.message, sig),
+        request('message', job.payload || { message: '0x' + bytes.toString('hex') }, job),
+        (sig) => verifyMessage(bytes, sig)
       );
     },
 
     /**
-     * Ask the phone to sign AND broadcast. Only intent fields go over —
-     * the phone re-estimates gas, picks the nonce, and shows its own fee
-     * UI, exactly as it would for one of its own dApps. The chain
+     * `digest`: the hash the user confirmed, or the core's own for main's
+     * typed data (#1063); the core relays its view, which hashes to it, and
+     * the signature must recover over it. `job.payload`: `sign.typed_data`'s
+     * params without the key and the hash (the core's form of the data, and
+     * the `primary_type` and `chain_id` a token was minted with).
+     */
+    signTypedData: async (_typedData, { digest, job = {} } = {}) => {
+      if (typeof digest !== 'string') throw createRemoteError(REMOTE_ERROR_CODES.UNSUPPORTED);
+      return accountSignature(
+        request('typed_data', { ...job.payload, expected_hash: digest }, job),
+        (sig) => recoverAddress(digest, sig)
+      );
+    },
+
+    /**
+     * Ask the phone to sign AND broadcast. The core relays only the intent
+     * fields: the phone re-estimates gas, picks the nonce, and shows its
+     * own fee UI, exactly as it would for one of its own dApps. The chain
      * descriptor rides along so the broker can switch the phone's wallet
      * to the tx's chain first.
      *
@@ -157,23 +187,18 @@ function createRemoteBackend(record, { onAddressCheck } = {}) {
      * same: the payment may have been sent, so its outcome is unknown
      * (REMOTE_OUTCOME_UNKNOWN), not a failure to try again.
      *
-     * @param {{to: string, value?: string|bigint, data?: string, chainId: number}} tx
-     * @returns {Promise<string>} Transaction hash reported by the phone.
+     * @param {{chainId: number}} tx - the send; its chain names the descriptor
+     * @param {{payload: {tx: object}}} job - `sign.transaction`'s params
+     *   without the key: the transaction a token bound, or main's
+     * @returns {Promise<{hash: string, outcome: 'verified'|'unverified'|'unknown', job: string,
+     *   rule?: object, durable?: false}>} the core's judgement of the reported hash
      */
-    sendTransaction: async (tx) => {
-      const txParam = {
-        from: record.address,
-        to: tx.to,
-        value: toQuantity(tx.value ?? 0),
-        chainId: toQuantity(tx.chainId),
-      };
-      if (tx.data) txParam.data = tx.data;
-
-      const hash = await request('eth_sendTransaction', [txParam], buildChainDescriptor(tx.chainId));
-      if (typeof hash !== 'string' || !TX_HASH_RE.test(hash)) {
+    sendTransaction: async (tx, job = {}) => {
+      const sent = await request('transaction', job.payload, job, { chain: buildChainDescriptor(tx.chainId) });
+      if (typeof sent?.hash !== 'string' || !TX_HASH_RE.test(sent.hash)) {
         throw createRemoteError(REMOTE_ERROR_CODES.OUTCOME_UNKNOWN, UNREADABLE_ANSWER);
       }
-      return hash;
+      return sent;
     },
   };
 }

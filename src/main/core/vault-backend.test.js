@@ -547,7 +547,10 @@ describe('vaultBackend', () => {
   });
 
   test("every request carries its method's hang watchdog (design 0001)", async () => {
-    // 45 s on the vault queue (its 30 s deadline + 15 s), 15 s otherwise.
+    // 45 s on the vault queue (its 30 s deadline + 15 s), 135 s for a
+    // session (120 s + 15 s: `phone.result`, which may read the network for
+    // a payment's transaction), 15 s otherwise.
+    const SESSION = new Set(['phone.result']);
     const VAULT_QUEUE = new Set([
       'vault.unlock',
       'vault.verify_password',
@@ -626,6 +629,9 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
     await vaultBackend.typedDataHash({});
+    await vaultBackend.phone.job({ account: 0, method: 'message', payload: {}, target: 7 }, { ...page, agent: false });
+    await vaultBackend.phone.sent({ job: 'j', sender: 7 });
+    await vaultBackend.phone.result({ job: 'j', sender: 7, result: null });
     await vaultBackend.quickUnlockStatus();
     await vaultBackend.quickUnlockEnroll('password2');
     await vaultBackend.quickUnlock();
@@ -644,7 +650,7 @@ describe('vaultBackend', () => {
     for (const { method, options } of core.calls) {
       expect([method, options]).toEqual([
         method,
-        { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : 15_000 },
+        { watchdogMs: VAULT_QUEUE.has(method) ? 45_000 : SESSION.has(method) ? 135_000 : 15_000 },
       ]);
     }
   });
@@ -681,6 +687,28 @@ describe('vaultBackend', () => {
       ['approval.radicle_write', { caller: 'page', page }, undefined],
       ['swarm.sign_soc', { caller: 'page', page }, authorization],
       ['swarm.sign_soc', { caller: 'shell' }, undefined],
+    ]);
+  });
+
+  // Design 0012, PHN-2: a phone job opens under the page it is for (main's
+  // own as `shell`); the chrome's "sent" mark and answer go as `chrome`, and
+  // main's own end of a job (its timeout) as `shell`.
+  test('phone jobs go as the page or main, their marks and answers as the chrome or main', async () => {
+    const core = new FakeCore(() => ({}));
+    const { vaultBackend } = load(core);
+    const page = { origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false };
+    const job = { account: 1, address: '0xabc', method: 'message', payload: { message: '0x00' }, target: 7 };
+    await vaultBackend.phone.job({ ...job, authorization: { token: 't' } }, page);
+    await vaultBackend.phone.job(job);
+    await vaultBackend.phone.sent({ job: 'j-1', sender: 7 });
+    await vaultBackend.phone.result({ job: 'j-1', sender: 7, result: '0x' });
+    await vaultBackend.phone.result({ job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } }, null);
+    expect(core.calls.map(({ method, context, params }) => [method, context, params])).toEqual([
+      ['phone.job', { caller: 'page', page }, { ...job, authorization: { token: 't' } }],
+      ['phone.job', { caller: 'shell' }, job],
+      ['phone.sent', { caller: 'chrome' }, { job: 'j-1', sender: 7 }],
+      ['phone.result', { caller: 'chrome' }, { job: 'j-1', sender: 7, result: '0x' }],
+      ['phone.result', { caller: 'shell' }, { job: 'j-1', sender: 7, error: { code: 'REMOTE_TIMEOUT' } }],
     ]);
   });
 

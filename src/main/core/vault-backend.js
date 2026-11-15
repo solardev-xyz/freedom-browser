@@ -605,6 +605,34 @@ const vaultBackend = {
   },
 
   /**
+   * Phone jobs (freedom-core design 0012, PHN-1; cored 0.18.0), which main's
+   * bridge relays to the chrome's openlv session (wallet/remote/bridge.js).
+   * The core makes each job from a checked authorization, for the
+   * webContents main names as `target`, and checks the phone's answer.
+   */
+  phone: {
+    /**
+     * `{ account, address, method, payload, target, authorization? }` →
+     * `{ job, expires_in_ms, request: { method, params } }`, under `page`
+     * with the request's PageContext, or as main's own (`shell`).
+     */
+    job(params, page = null) {
+      return call('phone.job', params, page);
+    },
+    /** `{ job, sender }` → `{}`: the job marked possibly sent. `sender` is the IPC sender's id, never the message's. */
+    sent(params) {
+      return call('phone.sent', params, 'chrome');
+    },
+    /**
+     * `{ job, sender, result | error }` → the core's outcome. The chrome's
+     * answer goes as `chrome`; main's own timeout as `shell` (`caller` null).
+     */
+    result(params, caller = 'chrome') {
+      return call('phone.result', params, caller);
+    },
+  },
+
+  /**
    * The core process answering main's requests now, as an opaque mark, or
    * null while none does. What a process keeps only in its memory (design
    * 0012's Safe approvals) ends with it: the next process doesn't know it,

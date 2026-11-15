@@ -8,12 +8,15 @@
 // (freedom-core design 0011, PRQ-5b: page/page-sends.js, with the user's
 // approval of its prompt and main's own issuer), transaction service, phone
 // signer and bridge; the renderer's session broker (over a scripted openlv
-// session). Mocked: chain data, the quote, permissions, and the phone itself.
+// session). Mocked: chain data, the quote, permissions, and the phone itself;
+// simulated: the identity core's phone jobs (design 0012, PHN-2), whose
+// judgement of the answer decides (the real core's runs in
+// main/wallet/remote/phone-jobs.integration.test.js).
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Wallet } = require('ethers');
+const { Wallet, toQuantity } = require('ethers');
 
 // Main's IPC registry, a fresh one per test (startPhone).
 const mockMain = { handle: new Map(), on: new Map() };
@@ -75,8 +78,52 @@ jest.mock('../../../main/core/vault-backend', () => ({
     get approval() {
       return mockApprovals.approval;
     },
+    get phone() {
+      return mockPhoneCore;
+    },
   },
 }));
+// The identity core's phone jobs (design 0012, PHN-2), as far as these tests
+// reach: a payment's job, relayed as the phone wallet's eth_sendTransaction;
+// the chrome's "sent" mark; and the core's judgement of the answer. The
+// phone wallet's explicit refusals (EIP-1193 4001, 4100, 4200) are answers;
+// any other end of a payment that may have gone (an error, the user's
+// cancel, main's timeout) is unknown; before it went, a failure as reported.
+const mockPhoneCore = (() => {
+  const jobs = new Map();
+  let next = 0;
+  const refused = (reason) =>
+    Object.assign(new Error(`not authorized: ${reason}`), { code: 'not_authorized', data: { reason } });
+  const REFUSALS = { 4001: 'REMOTE_USER_REJECTED', 4100: 'REMOTE_WRONG_ACCOUNT', 4200: 'REMOTE_UNSUPPORTED' };
+  return {
+    jobs,
+    async job({ address, method, payload }) {
+      if (method !== 'transaction') throw refused('unsupported');
+      const { tx } = payload;
+      const job = `core-job-${(next += 1)}`;
+      jobs.set(job, { sent: false, settled: false });
+      const params = { from: address, to: tx.to, value: toQuantity(tx.value), chainId: toQuantity(tx.chain_id) };
+      if (tx.data && tx.data !== '0x') params.data = tx.data;
+      return { job, expires_in_ms: 5 * 60 * 1000, request: { method: 'eth_sendTransaction', params: [params] } };
+    },
+    async sent({ job }) {
+      const entry = jobs.get(job);
+      if (!entry || entry.settled) throw refused('settled');
+      entry.sent = true;
+      return {};
+    },
+    async result({ job, result, error }) {
+      const entry = jobs.get(job);
+      if (!entry || entry.settled) throw refused('settled');
+      entry.settled = true;
+      if (!error) return typeof result === 'string' ? { outcome: 'unverified', hash: result } : { outcome: 'unknown' };
+      const code = REFUSALS[error.rpc_code];
+      if (code) return { outcome: 'failed', code, ...(code !== 'REMOTE_USER_REJECTED' && error.message ? { message: error.message } : {}) };
+      if (entry.sent) return { outcome: 'unknown' };
+      return { outcome: 'failed', code: error.code || 'REMOTE_UNKNOWN', ...(error.message ? { message: error.message } : {}) };
+    },
+  };
+})();
 jest.mock('../../../main/identity-manager', () => ({
   getWalletRecord: () => null,
   getActiveWalletIndex: () => 0,
@@ -174,9 +221,19 @@ async function startPhone({ answer, holdRequestSent = null, holdAbort = false } 
   mockMain.handle = registry.handle;
   mockMain.on = registry.on;
 
+  mockPhoneCore.jobs.clear();
   const { createRemoteBackend } = require('../../../main/wallet/remote/signer');
+  const backend = createRemoteBackend({ index: PHONE_INDEX, address: PHONE.address });
+  // The signer factory's part (signers.js, tested in signers.test.js): the
+  // job's payload, the send in the core's form.
+  const jobOf = (tx) => ({
+    page: null,
+    payload: {
+      tx: { to: tx.to, value: BigInt(tx.value ?? 0).toString(), data: tx.data ?? '0x', chain_id: String(tx.chainId) },
+    },
+  });
   mockSigners = {
-    [PHONE_INDEX]: createRemoteBackend({ index: PHONE_INDEX, address: PHONE.address }),
+    [PHONE_INDEX]: { ...backend, sendTransaction: (tx) => backend.sendTransaction(tx, jobOf(tx)) },
   };
   require('../../../main/wallet/remote/bridge').registerRemoteSignerIpc();
   require('../../../main/wallet/wallet-ipc').registerWalletIpc();
