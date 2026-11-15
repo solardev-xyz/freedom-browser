@@ -91,7 +91,7 @@ function getVaultFingerprint() {
 function readCredential() {
   const credPath = getCredentialPath();
   const bytes = withCredentialDir((dir) => dir.read(path.basename(credPath)));
-  return bytes ? parseCredential(bytes) : null;
+  return bytes ? { ...parseCredential(bytes), bytes } : null;
 }
 
 /**
@@ -389,7 +389,13 @@ function cancelPendingSetup() {
   pendingSetup = null;
 }
 
+// The check against the vault and the write, under the vault's mutation
+// queue: no vault replaced between them.
 function trySetupCredential(setup) {
+  return vaultBackend.whileVaultHeld(() => trySetupCredentialHeld(setup));
+}
+
+function trySetupCredentialHeld(setup) {
   if (pendingSetup !== setup) return false; // superseded or cancelled
   setup.attemptsLeft -= 1;
   try {
@@ -412,7 +418,7 @@ function trySetupCredential(setup) {
       return false;
     }
     console.error(`[QuickUnlock] quick-unlock.dat for older builds not written yet (${errorCode(err)})`);
-    setup.timer = setTimeout(() => trySetupCredential(setup), SETUP_RETRY_MS);
+    setup.timer = setTimeout(() => void trySetupCredential(setup), SETUP_RETRY_MS);
     setup.timer.unref?.();
     return false;
   }
@@ -451,10 +457,17 @@ async function withTouchId(job) {
       const fallback = isDeadCredential(err) ? usableFileCredential() : null;
       if (!fallback) throw err;
       console.warn('[QuickUnlock] The core credential is unusable; using quick-unlock.dat:', err.data.reason);
-      return throughFile(fallback, job);
+      return heldThroughFile(fallback, job);
     }
   }
-  return throughFile(credential, job);
+  return heldThroughFile(credential, job);
+}
+
+// The file path holds the vault's mutation queue, taken after the Touch ID
+// prompt: from the re-check through the unlock to the enroll, no create,
+// import, password change or delete can replace the vault it checked.
+function heldThroughFile(credential, job) {
+  return vaultBackend.whileVaultHeld(() => throughFile(credential, job));
 }
 
 // The file and its binding are read again after the Touch ID prompt, right
@@ -465,8 +478,10 @@ const CHANGED_DURING_PROMPT = 'Quick unlock changed during the Touch ID prompt. 
 /**
  * quick-unlock.dat's password into `job.file`, then enrolled.
  *
- * A v2 file is bound to the vault: it is checked against the vault on disk
- * again here, after the prompt, and must still be the file read before it.
+ * Runs under the vault's mutation queue (heldThroughFile). The file must
+ * still be, byte for byte, the one read before the prompt, and a v2 file is
+ * checked against the vault on disk again; no mutation can replace that
+ * vault until the unlock and the enroll are done.
  * **A legacy file is the exception:** it carries no binding, so it opens any
  * vault that takes the same password (as before PRF-2b; a vault delete
  * leaves the file, as it always has). The core's enroll binds what it
@@ -474,7 +489,7 @@ const CHANGED_DURING_PROMPT = 'Quick unlock changed during the Touch ID prompt. 
  */
 async function throughFile(credential, job) {
   const current = usableFileCredential();
-  if (!current || current.type !== credential.type || !current.encrypted.equals(credential.encrypted)) {
+  if (!current || !current.bytes.equals(credential.bytes)) {
     throw new Error(CHANGED_DURING_PROMPT);
   }
   const password = safeStorage.decryptString(current.encrypted);

@@ -234,6 +234,39 @@ describe('vaultBackend', () => {
     expect(order.indexOf('vault.reconcile')).toBeLessThan(order.indexOf('vault.change_password'));
   });
 
+  test('whileVaultHeld runs between mutations: after one queued, before one queued later (0013 PRF-2b)', async () => {
+    let releaseChange;
+    const order = [];
+    const core = new FakeCore(async (method) => {
+      order.push(method);
+      if (method === 'vault.status') return { exists: true, fingerprint: FP };
+      if (method === 'vault.change_password') await new Promise((resolve) => (releaseChange = resolve));
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    const changing = vaultBackend.changePassword('password1', 'password2');
+    let releaseHeld;
+    const held = vaultBackend.whileVaultHeld(async () => {
+      order.push('held');
+      await new Promise((resolve) => (releaseHeld = resolve));
+      // Unlocks stay outside the queue: no deadlock inside the hold.
+      await vaultBackend.unlock('password2');
+      return 'done';
+    });
+    const deleting = vaultBackend.deleteVault('password2');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).not.toContain('held');
+    releaseChange();
+    await changing;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toContain('held');
+    expect(order).not.toContain('vault.delete');
+    releaseHeld();
+    await expect(held).resolves.toBe('done');
+    await deleting;
+    expect(order.indexOf('vault.unlock')).toBeLessThan(order.indexOf('vault.delete'));
+  });
+
   test('a pending mutation is settled as soon as the core is ready (M2)', async () => {
     let up = false;
     const onCommitted = jest.fn();

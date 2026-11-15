@@ -52,7 +52,16 @@ function makeCore({ password = null } = {}) {
     check(state.credential);
     state.unlocked = true;
   };
+  // vault-backend's mutation queue: `mutation` stands for a create, import,
+  // change or delete that takes it.
+  let queue = Promise.resolve();
+  const held = (task) => {
+    const run = queue.then(task);
+    queue = run.catch(() => {});
+    return run;
+  };
   const backend = {
+    whileVaultHeld: jest.fn(held),
     verifyPassword: jest.fn(async (pw) => check(pw)),
     quickUnlockStatus: jest.fn(async () => ({
       enabled: state.credential !== null,
@@ -73,7 +82,7 @@ function makeCore({ password = null } = {}) {
       if (state.credential !== null) state.credential = next;
     }),
   };
-  return { state, backend, check, throughCredential };
+  return { state, backend, check, throughCredential, mutation: held };
 }
 
 function makeIdentityManager(core = makeCore()) {
@@ -382,6 +391,36 @@ describe('quick-unlock', () => {
       }
     });
 
+    test("a retry's check and write wait for a vault mutation; a vault it replaced drops the bytes (#1262 r2)", async () => {
+      jest.useFakeTimers();
+      try {
+        const { mod, core, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
+        blockWrites();
+        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        unblockWrites();
+        // A mutation holds the queue when the retry comes due.
+        let release;
+        const mutation = core.mutation(
+          () =>
+            new Promise((resolve) => {
+              release = resolve;
+            })
+        );
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(fs.existsSync(credentialPath)).toBe(false);
+        expect(mod._internal.pendingSetup()).not.toBeNull();
+        writeVault(identityDir, 'vault-b');
+        release();
+        await mutation;
+        await jest.advanceTimersByTimeAsync(0);
+        expect(mod._internal.pendingSetup()).toBeNull();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(fs.existsSync(credentialPath)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     test('disabling quick unlock drops a pending write', async () => {
       jest.useFakeTimers();
       try {
@@ -519,6 +558,65 @@ describe('quick-unlock', () => {
       });
       expect(identityManager.unlockVault).not.toHaveBeenCalled();
       expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+    });
+
+    test('the vault swapped and the file rebound to it, its ciphertext kept: refused (#1262 r2)', async () => {
+      const { mod, core, identityManager, systemPreferences, identityDir } = await onTheFile();
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      systemPreferences.promptTouchID.mockImplementation(async () => {
+        writeVault(identityDir, 'vault-b');
+        const crypto = require('crypto');
+        const rebound = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
+        rebound.vaultFingerprint = crypto
+          .createHash('sha256')
+          .update(fs.readFileSync(path.join(identityDir, 'identity-vault.json')))
+          .digest('hex');
+        rebound.createdAt = new Date(0).toISOString();
+        fs.writeFileSync(credentialPath, JSON.stringify(rebound, null, 2));
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock changed during the Touch ID prompt. Try again.',
+      });
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+      expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+    });
+
+    test('a vault mutation queued after the re-check runs only after the unlock and the enroll (#1262 r2)', async () => {
+      const { mod, core, identityManager, safeStorage, identityDir } = await onTheFile();
+      const label = () =>
+        JSON.parse(fs.readFileSync(path.join(identityDir, 'identity-vault.json'), 'utf8')).label;
+      const order = [];
+      let replaced;
+      // Right after the re-check passes, a replacement of the vault is queued.
+      safeStorage.decryptString.mockImplementationOnce((buffer) => {
+        replaced = core.mutation(() => {
+          writeVault(identityDir, 'vault-b');
+          order.push('replace');
+        });
+        return buffer.toString().replace(/^encrypted:/, '');
+      });
+      identityManager.unlockVault.mockImplementation(async (pw) => {
+        // The unlock reaches the core over IPC.
+        await new Promise((resolve) => setImmediate(resolve));
+        order.push(`unlock ${label()}`);
+        core.check(pw);
+      });
+      const enroll = core.backend.quickUnlockEnroll.getMockImplementation();
+      core.backend.quickUnlockEnroll.mockImplementation(async (pw) => {
+        await new Promise((resolve) => setImmediate(resolve));
+        order.push(`enroll ${label()}`);
+        return enroll(pw);
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      await replaced;
+      expect(order).toEqual(['unlock vault-a', 'enroll vault-a', 'replace']);
+      // The file is bound to the replaced vault: it opens nothing now.
+      core.state.credential = null;
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock not enabled',
+      });
     });
 
     test('the vault unchanged: the file still unlocks once, then enrolls', async () => {
