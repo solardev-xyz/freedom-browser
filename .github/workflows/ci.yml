@@ -1057,6 +1057,32 @@ jobs:
           # On macOS the keychain legs must run, not skip.
           FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
 
+      # TEMPORARY diagnostic, removed before review: what concurrent forgets
+      # of one Keychain item answer, from the helper and from SecItemDelete.
+      - name: TEMP concurrent forgets of one Keychain item (macOS)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
+        continue-on-error: true
+        run: |
+          cored="freedom-cored-bin/mac-$(node -p process.arch)/freedom-cored"
+          node test/helpers/diag-concurrent-forget.js "$cored" 40 2
+          node test/helpers/diag-concurrent-forget.js "$cored" 20 3
+          swiftc -O -o "$RUNNER_TEMP/diag-del" test/helpers/diag-secitemdelete.swift
+          for i in $(seq 40); do
+            acct="$(openssl rand -hex 16)"
+            "$RUNNER_TEMP/diag-del" add "$acct" > /dev/null
+            "$RUNNER_TEMP/diag-del" delete "$acct" &
+            "$RUNNER_TEMP/diag-del" delete "$acct" &
+            wait
+          done | sort | uniq -c
+          for i in $(seq 12); do
+            npx jest src/main/keystore.integration.test.js -t "two profiles" 2>&1 \
+              | grep -E "DIAG|answer |failed |Tests:" || true
+          done
+        env:
+          FREEDOM_CORED_KEYSTORE_TEST: '1'
+          FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: '1'
+          FREEDOM_DIAG_DRAIN: '1'
+
       - name: Quick Setup with a stubbed Touch ID E2E (macOS)
         if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
         run: npm run test:e2e -- --output=test-results/e2e-quick-setup test-e2e/quick-setup-touch-id.spec.js

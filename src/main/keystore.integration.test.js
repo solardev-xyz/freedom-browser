@@ -572,6 +572,10 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
       );
       fs.writeFileSync(release, '');
       const counts = await Promise.all(mains.map(ends));
+      // TEMPORARY diagnostic, removed before review.
+      if (process.env.FREEDOM_DIAG_DRAIN) {
+        console.log(`DIAG ${JSON.stringify(counts)}\n${mains.map((m) => m.out).join('---\n')}`);
+      }
       // Each saw both items, and each counted both gone: one removed it, the
       // other found it not_found.
       expect(counts).toEqual([
