@@ -47,6 +47,19 @@ const SAFE_ADDRESS = '0x' + 'aa'.repeat(20);
 const LEDGER_INDEX = 1000000;
 const PHONE_INDEX = 1000001;
 const DEVICE_ADDRESS = new Wallet(ABANDON_KEY).address;
+// The chrome's webContents a phone job is sent to.
+const PHONE_CHROME = 7;
+// A phone wallet's JSON-RPC answer to the core's relayed request, signed with `key`.
+function phoneAnswer(key, { method, params }) {
+  if (method === 'personal_sign') return key.signMessage(require('ethers').getBytes(params[0]));
+  if (method === 'eth_signTypedData_v4') {
+    const view = JSON.parse(params[1]);
+    const { EIP712Domain: _domain, ...types } = view.types;
+    return key.signTypedData(view.domain, types, view.message);
+  }
+  // A payment the phone reports sent: not visible to the core yet.
+  return '0x' + 'ab'.repeat(32);
+}
 const DEVICE_RECORDS = Object.freeze({
   [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: DEVICE_ADDRESS, path: "44'/60'/0'/0/0" },
   [PHONE_INDEX]: { index: PHONE_INDEX, type: 'remote', address: DEVICE_ADDRESS },
@@ -151,7 +164,42 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
         }
       },
     }));
-    jest.doMock('./remote/signer', () => ({ createRemoteBackend: () => devices.phone }));
+    // A phone's signatures and payments are the core's jobs (design 0012,
+    // PHN-2): main's real phone backend (`remote/signer.js`), whose bridge
+    // here opens each job in the real core and answers it as a chrome would
+    // (`devices.phone.answer`, the phone's JSON-RPC answer to the relayed
+    // request, or a throw with its EIP-1193 `rpcCode`), checked by the core.
+    jest.doMock('./remote/bridge', () => ({
+      requestPhoneJob: async ({ walletIndex, address, method, payload, authorization, page, beforeRelay }) => {
+        const backend = require('../core/vault-backend').vaultBackend;
+        const opened = await backend.phone.job(
+          { account: walletIndex, address, method, payload, target: PHONE_CHROME, ...(authorization ? { authorization } : {}) },
+          page || null
+        );
+        const end = (error) => backend.phone.result({ job: opened.job, sender: PHONE_CHROME, error }, null);
+        if (beforeRelay) {
+          try {
+            await beforeRelay();
+          } catch (err) {
+            await end({ code: 'REMOTE_USER_CANCELLED' });
+            throw err;
+          }
+        }
+        await backend.phone.sent({ job: opened.job, sender: PHONE_CHROME });
+        let answer;
+        try {
+          answer = { result: await devices.phone.answer(opened.request) };
+        } catch (err) {
+          answer = { error: { rpc_code: err.rpcCode ?? 4001 } };
+        }
+        const reply = await backend.phone.result({ job: opened.job, sender: PHONE_CHROME, ...answer });
+        if (typeof reply.signature === 'string') return reply.signature;
+        if (typeof reply.hash === 'string') return { ...reply, job: opened.job };
+        const { createRemoteError } = require('./remote/errors');
+        throw Object.assign(createRemoteError(reply.code || 'REMOTE_OUTCOME_UNKNOWN'), { requestDelivered: true, otherAttemptDelivered: false });
+      },
+    }));
+    jest.doMock('./rpc-manager', () => ({ getKeylessRpcUrls: () => [] }));
     // Main's dApp file, written where the core reads it (its grant root).
     jest.doMock('../freedom-root', () => ({ getFreedomDataPath: (name) => path.join(root, name) }));
     sc = require('./signing-confirmation');
@@ -841,8 +889,72 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
     // the page it was spent under once the device signed and the send is
     // recorded; only then is the rule written. A send the device refused
     // presents nothing, and leaves no rule.
+    // Design 0012, "A phone payment's rule" (PHN-1, PHN-2): a phone's
+    // flagged dApp send presents its token to the core's job, which holds
+    // the rule in memory until the payment's transaction shows and matches.
+    // No receipt, no approval.spend; a hash the core can't see yet, or a
+    // send the phone refused, writes nothing.
+    describe('"Always allow" on a phone\'s send: held by the core\'s job until verified', () => {
+      const key = new Wallet(ABANDON_KEY);
+      let refuse;
+      const sendCheck = () =>
+        sc.checkStanding(PAGE, { kind: 'transaction', account: PHONE_INDEX, accountType: 'remote', payload: SEND, paused: false });
+      async function flaggedPhoneSend() {
+        const confirmation = await pageToken('dapp-send', PHONE_INDEX, { ...SEND, origin: PAGE.origin }, PAGE, HANDLE, {
+          remember: true,
+          phone: true,
+        });
+        const rules = [];
+        const receipts = [];
+        const signer = getSigner(PHONE_INDEX, {
+          confirmation,
+          onRule: (rule) => rules.push(rule),
+          onReceipt: (held) => receipts.push(held),
+        });
+        const sent = await signer.sendTransaction(buildTransaction({ ...SEND, nonce: 7 })).catch((err) => err);
+        return { sent, rules, receipts };
+      }
+      beforeEach(() => {
+        refuse = false;
+        devices.phone = {
+          answer: async (request) => {
+            if (refuse) throw Object.assign(new Error('declined'), { rpcCode: 4001 });
+            return phoneAnswer(key, request);
+          },
+        };
+      });
+
+      test("the token goes to the core's job under its page; an unverified payment writes no rule, and no receipt is given", async () => {
+        await permissions.grantPermission(SITE, PHONE_INDEX, 100, PAGE);
+        const { sent, rules, receipts } = await flaggedPhoneSend();
+        expect(sent).toMatchObject({ hash: '0x' + 'ab'.repeat(32), outcome: 'unverified' });
+        const job = calls.find((call) => call.method === 'phone.job');
+        expect(job).toMatchObject({
+          context: { caller: 'page', page: PAGE },
+          params: { account: PHONE_INDEX, method: 'transaction', authorization: { kind: 'dapp-send', handle: HANDLE } },
+        });
+        expect(calls.filter((call) => call.method === 'approval.spend')).toEqual([]);
+        expect(receipts).toEqual([]);
+        expect(rules).toEqual([null]);
+        expect(await sendCheck()).toEqual({ covered: false, reason: 'no_rule' });
+        const file = JSON.parse(fs.readFileSync(path.join(root, 'dapp-permissions.json'), 'utf8'));
+        expect(file[SITE].autoApprove.limited?.transactions ?? []).toEqual([]);
+        // The core keeps the payment's record, never the rule.
+        const phoneFile = fs.readFileSync(path.join(root, 'phone-payments.json'), 'utf8');
+        expect(phoneFile).not.toContain('rule');
+      });
+
+      test('a send the phone refused writes no rule', async () => {
+        await permissions.grantPermission(SITE, PHONE_INDEX, 100, PAGE);
+        refuse = true;
+        const { sent, rules } = await flaggedPhoneSend();
+        expect(sent).toMatchObject({ code: 'REMOTE_USER_REJECTED' });
+        expect(rules).toEqual([]);
+        expect(await sendCheck()).toEqual({ covered: false, reason: 'no_rule' });
+      });
+    });
+
     describe.each([
-      ['a phone', PHONE_INDEX, 'remote'],
       ['a Ledger', LEDGER_INDEX, 'ledger'],
     ])('"Always allow" on %s\'s send: a finalize receipt', (_label, index, type) => {
       const key = new Wallet(ABANDON_KEY);
@@ -876,13 +988,6 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
 
       beforeEach(() => {
         refuse = false;
-        devices.phone = {
-          getAddress: async () => DEVICE_ADDRESS,
-          sendTransaction: async () => {
-            if (refuse) throw Object.assign(new Error('declined'), { code: 'REMOTE_USER_REJECTED' });
-            return '0x' + 'ab'.repeat(32);
-          },
-        };
         devices.ledger = {
           open: async () => ({ close: async () => {} }),
           getAddress: async () => ({ address: DEVICE_ADDRESS }),
@@ -1062,7 +1167,9 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             await serviceWait.promise;
           }
           if (typeof signer.sendTransaction === 'function') {
-            return { hash: await signer.sendTransaction(buildTransaction({ ...tx, nonce: 7 })) };
+            // A phone's send answers the core's outcome (PHN-2), as the
+            // transaction service takes it.
+            return { hash: (await signer.sendTransaction(buildTransaction({ ...tx, nonce: 7 }))).hash };
           }
           const raw = await signer.signTransaction(buildTransaction({ ...tx, nonce: 7 }));
           let committed = null;
@@ -1170,28 +1277,13 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
           },
         };
       }
+      // A phone: its answer to the core's relayed job (PHN-2).
+      const ASKED = { personal_sign: 'signMessage', eth_signTypedData_v4: 'signTypedData', eth_sendTransaction: 'sendTransaction' };
       return {
-        getAddress: async () => DEVICE_ADDRESS,
-        signMessage: async (message) => {
-          asked('signMessage');
-          return key.signMessage(message);
+        answer: async (request) => {
+          asked(ASKED[request.method]);
+          return phoneAnswer(key, request);
         },
-        signTypedData: async (_data, { digest }) => {
-          asked('signTypedData');
-          return key.signingKey.sign(digest).serialized;
-        },
-        signTransaction: async (tx) => {
-          asked('signTransaction');
-          return key.signTransaction(tx);
-        },
-        ...(name === 'phone'
-          ? {
-              sendTransaction: async () => {
-                asked('sendTransaction');
-                return '0x' + 'ab'.repeat(32);
-              },
-            }
-          : {}),
       };
     }
 
@@ -1461,10 +1553,12 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
       ["Ledger typed data, at the core's spend", 'ledger', 'eth_signTypedData_v4', 'approval.spend'],
       ["a Ledger send, at the transaction service's wait", 'ledger', 'eth_sendTransaction', 'service'],
       ["a Ledger send, at the core's spend", 'ledger', 'eth_sendTransaction', 'approval.spend'],
-      ["a phone message, at the core's spend", 'phone', 'personal_sign', 'approval.spend'],
-      ["phone typed data, at the core's spend", 'phone', 'eth_signTypedData_v4', 'approval.spend'],
+      // A phone's job spends the token as the core opens it (PHN-2).
+      ["a phone message, at the core's job", 'phone', 'personal_sign', 'phone.job'],
+      ["phone typed data, at the core's hash", 'phone', 'eth_signTypedData_v4', 'typed_data.hash'],
+      ["phone typed data, at the core's job", 'phone', 'eth_signTypedData_v4', 'phone.job'],
       ["a phone send, at the transaction service's wait", 'phone', 'eth_sendTransaction', 'service'],
-      ["a phone send, at the core's spend", 'phone', 'eth_sendTransaction', 'approval.spend'],
+      ["a phone send, at the core's job", 'phone', 'eth_sendTransaction', 'phone.job'],
     ])('%s', (_label, held, method, holdAt) => {
       const [index, address] = ACCOUNTS[held];
 
@@ -1513,7 +1607,11 @@ describeIfBinary('approval tokens with the real freedom-cored (APB-1)', () => {
             } else {
               expect(signs).toEqual([]);
               expect(deviceAsked).toHaveLength(1);
-              expect(calls.filter((call) => call.method === 'approval.spend')).toHaveLength(1);
+              // A Ledger's token spent with approval.spend; a phone's by the
+              // core's job, which checked the phone's answer.
+              const spent = held === 'phone' ? ['phone.job', 'phone.result'] : ['approval.spend'];
+              for (const method of spent) expect(calls.filter((call) => call.method === method)).toHaveLength(1);
+              if (held === 'phone') expect(calls.filter((call) => call.method === 'approval.spend')).toEqual([]);
             }
           }
         } finally {

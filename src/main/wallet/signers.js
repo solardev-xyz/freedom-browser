@@ -39,6 +39,7 @@ const {
   toCoreTransaction,
   typedDataViewOptions,
   assertBoundedTypeGraph,
+  buildTransaction,
 } = require('./signing-utils');
 const {
   signingAuthorization,
@@ -212,6 +213,31 @@ function createVaultBackend(walletIndex, authorized = {}) {
 }
 
 /**
+ * A phone send no token binds (a standing rule's, main's own), as the core
+ * reads `sign.transaction`'s `tx` with no nonce (design 0012, PHN-1): the
+ * phone picks its own gas, fees and nonce, so a fee or gas limit main
+ * quoted none for is named as zero. The core relays only `to`, `value`,
+ * `data` and the chain.
+ */
+function phoneJobTx({ to, value, data, chainId, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice }) {
+  const { tx } = toCoreTransaction(
+    buildTransaction({
+      to,
+      value: value ?? 0,
+      data,
+      chainId,
+      nonce: 0,
+      gasLimit: gasLimit ?? 0,
+      ...(gasPrice != null && maxFeePerGas == null
+        ? { gasPrice }
+        : { maxFeePerGas: maxFeePerGas ?? 0, maxPriorityFeePerGas: maxPriorityFeePerGas ?? 0 }),
+    })
+  );
+  delete tx.nonce;
+  return tx;
+}
+
+/**
  * Build a signer for the given wallet index.
  *
  * Construction is cheap and does not touch the vault; each method borrows
@@ -223,12 +249,14 @@ function createVaultBackend(walletIndex, authorized = {}) {
  *
  * A signer for a confirmed request carries its confirmation (freedom-core
  * design 0012, APB-1): a vault account's signature presents it to the core,
- * which spends it there; a device's (Ledger, phone) spends it through the
- * core first (`approval.spend`), and its device signs only after. A page's
- * request a site's standing rule answers carries the page's PageContext and
- * `{ standing }`, so it is sent under `page`, never as main's own, and a
- * vault signature is judged by the core against the site's rule; a device
- * signs it as today (the core's `approval.check` advised the choice).
+ * which spends it there; a Ledger's spends it through the core first
+ * (`approval.spend`), and the device signs only after; a phone's opens a
+ * core job (`phone.job`, PHN-1/PHN-2) with it, and the core checks the
+ * phone's answer against what the job bound. A page's request a site's
+ * standing rule answers carries the page's PageContext and `{ standing }`,
+ * so it is sent under `page`, never as main's own: a vault signature and a
+ * phone job are judged by the core against the site's rule; a Ledger signs
+ * it as today (the core's `approval.check` advised the choice).
  *
  * `beforeSign`, the caller's last check, is awaited whenever the caller
  * gives one: a page's standing rule read again, with custody, for a
@@ -289,6 +317,10 @@ function getSigner(walletIndex, authorized = {}) {
   }
   let backend;
   let vaultSigned = false;
+  // A phone's signature is an identity core job (design 0012, PHN-2): the
+  // core checks and spends its authorization as it opens the job, as
+  // `sign.*` would, and runs nothing here first.
+  let phoneJob = false;
   // A Ledger's backend runs the caller's last check itself, in its device
   // session (after the queue, the transport and the address check), right
   // before each signing APDU (`ledger/signer.js`).
@@ -307,20 +339,34 @@ function getSigner(walletIndex, authorized = {}) {
       // it, so a record added before the phone check gets checked.
       onAddressCheck: (matched) => recordRemoteAddressCheck(walletIndex, matched),
     });
+    phoneJob = true;
   } else {
     backend = createVaultBackend(walletIndex, authorized);
     vaultSigned = true;
   }
-  // A device signs what it shows, so the core can only advise: its
-  // confirmation is spent first, and the device asked only after.
-  const confirmation = vaultSigned ? null : authorized?.confirmation || null;
+  // A Ledger signs what it shows, so the core can only advise: its
+  // confirmation is spent first, and the device asked only after. A
+  // phone's confirmation goes with its core job instead (`phone.job`).
+  const confirmation = vaultSigned || phoneJob ? null : authorized?.confirmation || null;
   // The caller's last check (`beforeSign`), after the token's spend: a
   // device's signature is never judged by the core, so it is awaited right
   // before the device is asked, after every other wait of the signer's,
   // whether a token answers it or not. A phone's backend asks the phone in
   // the same run as it is called; a Ledger's waits on its device session
   // first, so its backend runs the check there, right before the APDU.
-  const beforeSign = vaultSigned || backendChecks ? null : authorized?.beforeSign || null;
+  const beforeSign = vaultSigned || backendChecks || phoneJob ? null : authorized?.beforeSign || null;
+  // A phone job's authorization and PageContext (`signOptions`, as a vault
+  // signature presents them), `payload` the `sign.*` params without the
+  // key, and the caller's last check, which the bridge awaits once the core
+  // opened the job, right before the request goes to the chrome.
+  const jobOf = (payload) =>
+    phoneJob
+      ? {
+          ...signOptions(authorized),
+          payload,
+          ...(authorized?.beforeSign ? { beforeSign: authorized.beforeSign } : {}),
+        }
+      : undefined;
   // A flagged dApp send's spend for a device gives a finalize receipt
   // instead of a rule (design 0012, "A device send's rule"): handed to the
   // caller with the PageContext it was spent under, for it to present once
@@ -349,7 +395,7 @@ function getSigner(walletIndex, authorized = {}) {
     signMessage: async (message) => {
       const normalized = normalizeMessage(message);
       await spendAndCheck();
-      return backend.signMessage(normalized);
+      return backend.signMessage(normalized, jobOf(authorized?.confirmation?.payload));
     },
     /**
      * `expectedHash`: the hash the user confirmed (#88). The core refuses a
@@ -373,8 +419,22 @@ function getSigner(walletIndex, authorized = {}) {
       await spendAndCheck();
       // `digest`: the hash a device's signature must recover over (#1063):
       // the one the user confirmed, or the core's own for main's typed
-      // data, never one rebuilt from what the device was sent.
-      return backend.signTypedData(normalized, { expectedHash, digest: hash });
+      // data, never one rebuilt from what the device was sent. A phone's
+      // job carries the data as the core takes it, with the view a token
+      // was minted with (or a standing rule's, the page's).
+      const bound = authorized?.confirmation?.payload ?? {
+        typed_data: toCoreTypedData(normalized),
+        ...standingView(normalized, authorized),
+      };
+      return backend.signTypedData(normalized, {
+        expectedHash,
+        digest: hash,
+        job: jobOf({
+          typed_data: bound.typed_data,
+          ...(bound.primary_type !== undefined ? { primary_type: bound.primary_type } : {}),
+          ...(bound.chain_id !== undefined ? { chain_id: bound.chain_id } : {}),
+        }),
+      });
     },
   };
   // Optional capability: backends that sign AND broadcast through their
@@ -383,7 +443,14 @@ function getSigner(walletIndex, authorized = {}) {
   if (typeof backend.sendTransaction === 'function') {
     signer.sendTransaction = async (tx) => {
       await spendAndCheck();
-      return backend.sendTransaction(tx);
+      // The transaction a token bound, exactly; or the send as main has it,
+      // in the core's form (`phoneJobTx`). The core's reply says what became
+      // of a flagged dApp send's "Always allow" (`rule`), only once its
+      // transaction showed and matched.
+      const bound = authorized?.confirmation?.payload?.tx;
+      const sent = await backend.sendTransaction(tx, jobOf({ tx: bound ?? phoneJobTx(tx) }));
+      if (phoneJob && typeof authorized?.onRule === 'function') authorized.onRule(sent?.rule ?? null);
+      return sent;
     };
   }
   return signer;

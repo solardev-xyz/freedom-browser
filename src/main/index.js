@@ -864,8 +864,8 @@ async function bootstrap() {
   paymentHistory.repollPending(getTxStatus).catch((err) => {
     log.warn(`[App] payment-history repoll failed: ${err.message}`);
   });
-  // Phone payments an earlier run couldn't check yet: their fields are
-  // compared once their transactions are visible (design 0012, PHN-2).
+  // Phone payments an earlier run left unverified: each waits for the
+  // core's `phone.checked`, up to its deadline (design 0012, PHN-2).
   resumePhoneChecks();
 
   if (!TEST_MODE) {

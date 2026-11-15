@@ -43,7 +43,8 @@ const CLOSED_NOTE =
 
 // A phone account's payment, by its check (design 0012, "Unverified
 // payments"): sent from the phone but not compared with the payment
-// confirmed yet; the wrong transaction; or one that can't be checked.
+// confirmed yet; another transaction the phone sent, never the one
+// confirmed; or one that can't be checked.
 // Copies of PHONE_CHECK in lib/wallet/intent-texts.js, held equal by
 // payments.test.js. The row's `metadata.phoneCheck.state` decides, so no
 // later write of its status can show one of them as confirmed.
@@ -56,11 +57,11 @@ const PHONE_CHECK = {
       'you confirmed once the network shows it.',
   },
   mismatch: {
-    text: 'Wrong transaction',
+    text: 'Another transaction',
     status: 'wrong-transaction',
     note:
-      "Your phone reported a transaction that isn't the one you confirmed. Check your " +
-      "phone's wallet.",
+      "Your phone sent another transaction, not the payment you confirmed: its recipient, " +
+      "amount, data or network differs. Check your phone's wallet.",
   },
   unknown: {
     text: "Couldn't check",

@@ -189,6 +189,11 @@ function backends() {
     // commit; and a phone's own send, which signs and broadcasts at once.
     signerHold: null,
     phoneHold: null,
+    // The identity core's verdict on a phone's reported transaction (null:
+    // verified), and the `rule` its reply carries (undefined: as the core
+    // decides it, written for a flagged send once its payment verified).
+    phoneCheck: null,
+    phoneRule: undefined,
     // The transaction service's waits before a signer is asked, when held;
     // and how many times a signer (a device, or the core for a vault) was.
     serviceHold: null,
@@ -288,9 +293,12 @@ function backends() {
           state.serviceWaits += 1;
           await state.serviceHold.promise;
         }
-        // A device's token: spent through the core before the device is
-        // asked, as main's signers do; a flagged one gives a receipt.
-        const confirmation = chosen.device?.confirmation;
+        // A Ledger's token: spent through the core before the device is
+        // asked, as main's signers do; a flagged one gives a receipt. A
+        // phone's is the core's job's (design 0012, PHN-2): the core takes
+        // it as it opens the job, and main spends nothing.
+        const phone = typeof chosen.sendTransaction === 'function';
+        const confirmation = phone ? null : chosen.device?.confirmation;
         if (confirmation) {
           const spentReply = await confirmations.spendConfirmation(confirmation);
           const held = confirmations.finalizeReceiptOf(spentReply, confirmation.page);
@@ -301,12 +309,26 @@ function backends() {
         if (last) await last();
         state.signerAsked += 1;
         if (chosen.device && state.deviceFails) throw state.deviceFails;
-        if (typeof chosen.sendTransaction === 'function') {
+        if (phone) {
           // A phone: it signs and broadcasts in one step.
           if (state.phoneHold) await state.phoneHold.promise;
           state.committed.push(tx);
           options.onCommitted?.();
-          return { hash: PHONE_HASH, ...recordOutcome() };
+          // The core's check of the reported transaction (`state.phoneCheck`,
+          // verified unless a test says otherwise), and a flagged send's rule,
+          // which the core writes only once its payment verified ("A phone
+          // payment's rule"), in its reply (`state.phoneRule` when a test
+          // gives one), heard by `onRule` as signers.js passes it on.
+          const phoneCheck = state.phoneCheck ?? 'verified';
+          let rule = null;
+          if (state.phoneRule !== undefined) rule = state.phoneRule;
+          else if (chosen.device?.confirmation?.payload?.remember === true && phoneCheck === 'verified') {
+            rule = mockApprovals.dapp.exposes(context.origin, options.walletIndex)
+              ? (mockApprovals.dapp.allowTransaction(context.origin, tx.to, tx.data.slice(0, 10), tx.chainId, tx.value || 0), { added: true })
+              : { added: false, reason: 'not_exposed' };
+          }
+          chosen.device?.onRule?.(rule);
+          return { hash: PHONE_HASH, phoneCheck, ...recordOutcome() };
         }
         if (state.signerHold) await state.signerHold.promise;
         // The core signed a vault account's send: a flagged one's rule, which
@@ -732,7 +754,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
   // finalize receipt and writes nothing; main presents it once the device
   // signed and the send is recorded, under the PageContext it was spent
   // under, and the core writes the rule then.
-  describe('"always allow" for a Ledger\'s or a phone\'s send: a receipt, presented once the send is recorded', () => {
+  describe('"always allow" for a Ledger\'s send: a receipt, presented once the send is recorded', () => {
     const issued = () => mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1);
     const spends = () => mockApprovals.calls.filter((call) => call.method === 'approval.spend');
     const remembers = () => mockApprovals.calls.filter((call) => call.method === 'approval.remember');
@@ -748,7 +770,6 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
 
     test.each([
       ['a Ledger', LEDGER_INDEX, HASH],
-      ['a phone', PHONE_INDEX, PHONE_HASH],
     ])('%s: offered; ticked, the spend gives a receipt and writes nothing, and the receipt is presented after the record', async (_label, index, hash) => {
       const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
       const env = setup();
@@ -815,7 +836,6 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
 
     test.each([
       ["the Ledger's own refusal", LEDGER_INDEX, Object.assign(new Error('declined'), { code: 'LEDGER_USER_REJECTED' }), REJECTED],
-      ["the phone's own refusal", PHONE_INDEX, Object.assign(new Error('declined'), { code: 'REMOTE_USER_REJECTED' }), REJECTED],
       ['a failed signature', LEDGER_INDEX, new Error('The device was disconnected'), { error: { code: -32603, message: 'The device was disconnected' } }],
     ])('%s: nothing presented, the receipt left to expire, no rule', async (_label, index, failure, answered) => {
       const env = setup();
@@ -836,11 +856,10 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
     });
 
     // tx-recorder resolves a send whose payment row failed to save with
-    // `recorded: false`: the payment stands, but main has no record of it
-    // (a phone's has none at all), so no rule is written for it.
+    // `recorded: false`: the payment stands, but main has no record of it,
+    // so no rule is written for it.
     test.each([
       ['a Ledger', LEDGER_INDEX, HASH],
-      ['a phone', PHONE_INDEX, PHONE_HASH],
     ])("%s: a send main couldn't record presents nothing, and writes no rule", async (_label, index, hash) => {
       const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
       const env = setup();
@@ -864,23 +883,19 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
 
     // The request's end, while the device has the job: main erases its copy
     // of the receipt then, not when the device answers. A Ledger's signed
-    // bytes are withdrawn before the commit; a phone has already sent, and
-    // the send, recorded, finds no receipt to present.
+    // bytes are withdrawn before the commit.
     const navigates = (page) => page.guest.commit(`${KEY_B}/`);
     const closes = (page) => page.guest.destroy();
     test.each([
-      ['a Ledger', 'its document navigates', LEDGER_INDEX, navigates, 0],
-      ['a Ledger', 'its tab closes', LEDGER_INDEX, closes, 0],
-      ['a phone', 'its document navigates', PHONE_INDEX, navigates, 1],
-      ['a phone', 'its tab closes', PHONE_INDEX, closes, 1],
-    ])("%s holds the job and %s: the receipt is erased at once, nothing is presented, and the core's expires", async (_label, _end, index, end, sentAfter) => {
+      ['a Ledger', 'its document navigates', LEDGER_INDEX, navigates],
+      ['a Ledger', 'its tab closes', LEDGER_INDEX, closes],
+    ])("%s holds the job and %s: the receipt is erased at once, nothing is presented, and the core's expires", async (_label, _end, index, end) => {
       const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
       const env = setup();
       env.connect(KEY_A, index);
       mockApprovals.dapp.connect(KEY_A, index, 100);
       const hold = deferred();
-      if (index === PHONE_INDEX) env.state.phoneHold = hold;
-      else env.state.signerHold = hold;
+      env.state.signerHold = hold;
       const page = env.tab();
       const answer = page.send(CALL);
       await flush();
@@ -898,19 +913,19 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
       await decided;
       expect(await answer).toBe(GONE);
       await flush();
-      expect(env.state.committed).toHaveLength(sentAfter);
+      expect(env.state.committed).toEqual([]);
       expect(remembers()).toEqual([]);
       expect(mockApprovals.openReceipts()).toBe(1);
       expect(coreRule(index)).toBe(false);
       const goneReported = errorLog.mock.calls.some(([line]) => String(line).includes(`contract rule not saved for ${KEY_A}: the site no longer holds the send`));
-      expect(goneReported).toBe(sentAfter === 1);
+      expect(goneReported).toBe(false);
     });
 
     test('a receipt handed on after the request ended is erased as it arrives', async () => {
       jest.spyOn(console, 'error').mockImplementation(() => {});
       const env = setup();
-      env.connect(KEY_A, PHONE_INDEX);
-      mockApprovals.dapp.connect(KEY_A, PHONE_INDEX, 100);
+      env.connect(KEY_A, LEDGER_INDEX);
+      mockApprovals.dapp.connect(KEY_A, LEDGER_INDEX, 100);
       // The spend's reply is held: the tab closes before it comes back.
       const spend = mockApprovals.approval.spend;
       const spendHold = deferred();
@@ -918,7 +933,7 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
         await spendHold.promise;
         return spend(...args);
       });
-      env.state.phoneHold = deferred();
+      env.state.signerHold = deferred();
       const page = env.tab();
       const answer = page.send(CALL);
       await flush();
@@ -929,15 +944,15 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
       expect(await answer).toBe(GONE);
       spendHold.resolve();
       await flush();
-      // Erased as it arrived, the phone still out with the job.
+      // Erased as it arrived, the Ledger still out with the job.
       expect(env.state.signerAsked).toBe(1);
       expect(env.state.committed).toEqual([]);
       expect(env.state.handed).toEqual([ERASED]);
-      env.state.phoneHold.resolve();
+      env.state.signerHold.resolve();
       await decided;
       await flush();
       expect(remembers()).toEqual([]);
-      expect(coreRule(PHONE_INDEX)).toBe(false);
+      expect(coreRule(LEDGER_INDEX)).toBe(false);
     });
 
     test("what the core said of the receipt's rule is reported, as a vault send's is", async () => {
@@ -974,6 +989,150 @@ describe('a send through main, on the prompt main shows (0011 PRQ-5b)', () => {
       await confirmed();
       expect(remembers()).toHaveLength(before);
       expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: no receipt`));
+    });
+  });
+
+  // Design 0012, PHN-2 ("A phone payment's rule"): a phone's send is a core
+  // job. Main spends nothing and holds no receipt; the core writes a
+  // flagged send's rule once its payment's transaction shows and matches,
+  // and says so in its reply (`rule`) or, later, with `phone.checked`.
+  describe('"always allow" for a phone\'s send: the core\'s rule, once its payment verified', () => {
+    const issued = () => mockApprovals.calls.filter((call) => call.method === 'approval.issue').at(-1);
+    const spends = () => mockApprovals.calls.filter((call) => call.method === 'approval.spend');
+    const remembers = () => mockApprovals.calls.filter((call) => call.method === 'approval.remember');
+    const coreRule = () => mockApprovals.dapp.transactionRule(KEY_A, CONTRACT, SELECTOR, 100, '0') && mockApprovals.dapp.exposes(KEY_A, PHONE_INDEX);
+    const waits = `contract rule for ${KEY_A} waits until the phone's payment is checked`;
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    // A phone send, ticked or not; its answer to the page.
+    async function phoneSend(env, alwaysAllow = true) {
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      expect(env.lastPrompt().view.alwaysAllow).toBe(true);
+      await env.decide(env.lastPrompt().handle, true, { alwaysAllow });
+      return answer;
+    }
+
+    function connected() {
+      const env = setup();
+      env.connect(KEY_A, PHONE_INDEX);
+      mockApprovals.dapp.connect(KEY_A, PHONE_INDEX, 100);
+      return env;
+    }
+
+    test('ticked, its payment verified: main spends nothing and holds no receipt; the core wrote the rule, and main writes none', async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const env = connected();
+      expect(await phoneSend(env)).toEqual({ result: PHONE_HASH });
+      // Minted flagged, under the page, for the core's job.
+      expect(issued().params.payload.remember).toBe(true);
+      expect(issued().params.phone).toBe(true);
+      expect(spends()).toEqual([]);
+      expect(env.state.handed).toEqual([]);
+      expect(remembers()).toEqual([]);
+      expect(coreRule()).toBe(true);
+      expect(env.state.txRules).toEqual([]);
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining(waits));
+    });
+
+    test.each([['unverified'], ['unknown']])(
+      'ticked, its payment %s at the answer: the rule waits in the core, and main says so',
+      async (phoneCheck) => {
+        const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const env = connected();
+        env.state.phoneCheck = phoneCheck;
+        expect(await phoneSend(env)).toEqual({ result: PHONE_HASH });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(waits));
+        expect(errorLog).not.toHaveBeenCalled();
+        expect(coreRule()).toBe(false);
+        expect(remembers()).toEqual([]);
+      }
+    );
+
+    test("the core's word on the rule is reported as a vault send's is", async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const env = connected();
+      // Not written: its reason.
+      env.state.phoneRule = { added: false, reason: 'not_exposed' };
+      expect(await phoneSend(env)).toEqual({ result: PHONE_HASH });
+      expect(errorLog).toHaveBeenLastCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: not_exposed`));
+      // Written, but not durable: warned.
+      env.state.phoneRule = { added: true, durable: false };
+      await phoneSend(env);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('may not survive a power loss'));
+      // A verified payment whose reply says nothing of the rule.
+      env.state.phoneRule = null;
+      await phoneSend(env);
+      expect(errorLog).toHaveBeenLastCalledWith(expect.stringContaining(`contract rule not saved for ${KEY_A}: no reply`));
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining(waits));
+    });
+
+    test('not ticked: no flag, nothing reported, no rule', async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const env = connected();
+      expect(await phoneSend(env, false)).toEqual({ result: PHONE_HASH });
+      expect(issued().params.payload).not.toHaveProperty('remember');
+      expect(coreRule()).toBe(false);
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    test("the phone's own refusal: nothing spent in main, no receipt, no rule", async () => {
+      const env = connected();
+      env.state.deviceFails = Object.assign(new Error('declined'), { code: 'REMOTE_USER_REJECTED' });
+      expect(await phoneSend(env)).toEqual(REJECTED);
+      expect(spends()).toEqual([]);
+      expect(mockApprovals.openReceipts()).toBe(0);
+      expect(env.state.handed).toEqual([]);
+      expect(coreRule()).toBe(false);
+    });
+
+    // A phone's rule is the core's, written as its payment verified; main's
+    // payment row (tx-recorder.js) plays no part in it.
+    test("a send main couldn't record: the core's rule stands, and main reports it", async () => {
+      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = connected();
+      env.state.notRecorded = true;
+      expect(await phoneSend(env)).toEqual({ result: PHONE_HASH });
+      expect(env.state.committed).toHaveLength(1);
+      expect(coreRule()).toBe(true);
+      expect(errorLog).not.toHaveBeenCalled();
+    });
+
+    // The request's end while the phone holds the job: the phone has sent,
+    // and main holds no receipt to erase or present.
+    test.each([
+      ['its document navigates', (page) => page.guest.commit(`${KEY_B}/`)],
+      ['its tab closes', (page) => page.guest.destroy()],
+    ])('the phone holds the job and %s: the page is answered gone, the payment stands, and main presents nothing', async (_end, end) => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const env = connected();
+      env.state.phoneHold = deferred();
+      const page = env.tab();
+      const answer = page.send(CALL);
+      await flush();
+      const decided = env.decide(env.lastPrompt().handle, true, { alwaysAllow: true });
+      await flush();
+      expect(env.state.signerAsked).toBe(1);
+      expect(env.state.handed).toEqual([]);
+      end(page);
+      env.state.phoneHold.resolve();
+      await decided;
+      expect(await answer).toBe(GONE);
+      await flush();
+      expect(env.state.committed).toHaveLength(1);
+      expect(spends()).toEqual([]);
+      expect(remembers()).toEqual([]);
+      expect(env.state.handed).toEqual([]);
     });
   });
 

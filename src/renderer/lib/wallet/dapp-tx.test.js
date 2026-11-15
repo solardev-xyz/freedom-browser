@@ -24,6 +24,7 @@ const DAPP_TX_ELEMENT_IDS = [
   'dapp-tx-reject',
   'dapp-tx-approve',
   'dapp-tx-auto-approve-row',
+  'dapp-tx-auto-approve-phone-note',
   'dapp-tx-auto-approve',
   'dapp-tx-fee-max',
   'dapp-tx-fee-note',
@@ -54,8 +55,9 @@ async function loadDappTx() {
     DAPP_TX_ELEMENT_IDS.map((id) => [id, createElement('button')])
   );
   elementsById['dapp-tx-auto-approve'].checked = false;
-  // As in index.html: the prompt starts hidden.
+  // As in index.html: the prompt, and the phone's note, start hidden.
   elementsById['sidebar-dapp-tx'].classList.add('hidden');
+  elementsById['dapp-tx-auto-approve-phone-note'].classList.add('hidden');
   global.document = createDocument({ elementsById });
 
   // Main quotes, checks and sends a page's transaction: the screen asks
@@ -177,6 +179,29 @@ describe("dapp-tx: main's prompt (0011 PRQ-5b)", () => {
     await flush();
     expect(env.showing()).toBe(false);
     expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // Design 0012, PHN-2 ("A phone payment's rule"): a phone send's "Always
+  // allow" is saved only once its payment is checked, and the note under
+  // the box says so, for a phone's send it is offered on alone.
+  test('the phone\'s note shows only for a phone\'s send that offers "always allow"', async () => {
+    const env = await loadPage();
+    const note = () => !env.elements['dapp-tx-auto-approve-phone-note'].classList.contains('hidden');
+    const PHONE = { ...ACCOUNT, index: LEDGER_INDEX + 1, name: 'Phone', type: 'remote' };
+    env.show({ account: PHONE }, 'h1');
+    await flush();
+    expect(env.elements['dapp-tx-auto-approve-row'].classList.contains('hidden')).toBe(false);
+    expect(note()).toBe(true);
+    env.show({ account: PHONE, alwaysAllow: false }, 'h2');
+    await flush();
+    expect(note()).toBe(false);
+    env.show({ account: PHONE }, 'h3');
+    await flush();
+    expect(note()).toBe(true);
+    env.show({}, 'h4');
+    await flush();
+    expect(env.elements['dapp-tx-auto-approve-row'].classList.contains('hidden')).toBe(false);
+    expect(note()).toBe(false);
   });
 
   test('"always allow" goes to main as the choice, only where main offers it', async () => {
