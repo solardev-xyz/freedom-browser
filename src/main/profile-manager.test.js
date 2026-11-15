@@ -41,6 +41,11 @@ function load({ backend = 'core', activeProfile = packagedProfile, run, stale = 
   };
   const subcommands = { run: run || jest.fn(async () => ({ result: null })) };
   const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+  const drain = {
+    forgetItems: jest.fn(async () => ({ forgotten: 1, kept: 0 })),
+    drainForgetFile: jest.fn(async () => ({ forgotten: 0, kept: 0 })),
+  };
+  jest.doMock('./keystore-drain', () => drain);
   jest.doMock('electron', () => ({ app: { isPackaged: true } }), { virtual: true });
   jest.doMock('./profile-resolver', () => resolver);
   jest.doMock('./profile-subcommands', () => subcommands);
@@ -49,7 +54,7 @@ function load({ backend = 'core', activeProfile = packagedProfile, run, stale = 
   jest.doMock('./core/cored-binary', () => ({ getCoredBinaryPath: () => '/bin/freedom-cored' }));
   jest.doMock('./service-locks', () => ({ getLockDir: () => '/data/Freedom/locks' }));
   const manager = require('./profile-manager');
-  return { manager, resolver, run: subcommands.run, log, active: () => active };
+  return { manager, resolver, run: subcommands.run, log, drain, active: () => active };
 }
 
 const answer = (result) => jest.fn(async () => ({ result }));
@@ -219,9 +224,10 @@ describe('the catalog operations, through the subcommands', () => {
 });
 
 describe('deletion through profile delete', () => {
-  test('runs unbounded under every gate, and logs the items to forget', async () => {
-    const { manager, run, log } = load({
-      run: answer({ catalog: {}, record: { id: 'work' }, forget: [{ policy: 'p', item: 'a'.repeat(32) }] }),
+  test('runs unbounded under every gate, then forgets the items it recorded', async () => {
+    const forget = [{ policy: 'unattended', item: 'a'.repeat(32) }];
+    const { manager, run, log, drain } = load({
+      run: answer({ catalog: {}, record: { id: 'work' }, forget }),
     });
     await expect(manager.deleteProfile('work', 'Work')).resolves.toEqual(
       expect.objectContaining({ record: { id: 'work' } })
@@ -239,10 +245,85 @@ describe('deletion through profile delete', () => {
       'Work',
     ]);
     expect(run.mock.calls[0][2]).toEqual({ timeoutMs: 0 });
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.stringContaining('key-store items'),
-      expect.objectContaining({ items: 1 })
+    // Through the helper, right after (0013, "Forgetting an item"): the
+    // app root whose forget file names them, and the result's items.
+    expect(drain.forgetItems).toHaveBeenCalledTimes(1);
+    expect(drain.forgetItems).toHaveBeenCalledWith('/data/Freedom', forget, { log });
+    expect(drain.drainForgetFile).not.toHaveBeenCalled();
+    await new Promise(setImmediate);
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('key-store items'), {
+      forgotten: 1,
+      kept: 0,
+    });
+  });
+
+  test('no items, nothing forgotten; a secrets file it could not read is logged', async () => {
+    const { manager, drain, log } = load({
+      run: answer({ catalog: {}, record: { id: 'work' }, forget: [], forget_unknown: true }),
+    });
+    await manager.deleteProfile('work', 'Work');
+    expect(drain.forgetItems).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining("couldn't be read"));
+  });
+
+  test("a forget that fails is logged, and the delete's result still comes back", async () => {
+    const { manager, drain, log } = load({
+      run: answer({ catalog: {}, record: { id: 'work' }, forget: [{ policy: 'unattended', item: 'b'.repeat(32) }] }),
+    });
+    drain.forgetItems.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'busy' }));
+    await expect(manager.deleteProfile('work', 'Work')).resolves.toMatchObject({ record: { id: 'work' } });
+    await new Promise(setImmediate);
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Could not forget'), { code: 'busy' });
+  });
+
+  test('forget_backlog: the forget file is drained, and the delete asked once more', async () => {
+    const backlog = () => Object.assign(new Error('full'), { code: 'forget_backlog' });
+    const done = { result: { catalog: {}, record: { id: 'work' }, forget: [] } };
+    const run = jest.fn().mockRejectedValueOnce(backlog()).mockResolvedValueOnce(done);
+    const { manager, drain } = load({ run });
+    await expect(manager.deleteProfile('work', 'Work')).resolves.toMatchObject({ record: { id: 'work' } });
+    expect(drain.drainForgetFile).toHaveBeenCalledTimes(1);
+    expect(drain.drainForgetFile.mock.calls[0][0]).toBe('/data/Freedom');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1]).toEqual(run.mock.calls[0]);
+    // The drain ran between the two.
+    expect(drain.drainForgetFile.mock.invocationCallOrder[0]).toBeGreaterThan(
+      run.mock.invocationCallOrder[0]
     );
+    expect(drain.drainForgetFile.mock.invocationCallOrder[0]).toBeLessThan(
+      run.mock.invocationCallOrder[1]
+    );
+  });
+
+  test('forget_backlog twice: only one more ask, and the refusal says why', async () => {
+    const backlog = Object.assign(new Error("Freedom couldn't clear a deleted profile's saved keys yet."), {
+      code: 'forget_backlog',
+    });
+    const { manager, drain, run } = load({ run: refusing(backlog) });
+    await expect(manager.deleteProfile('work', 'Work')).rejects.toBe(backlog);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(drain.drainForgetFile).toHaveBeenCalledTimes(1);
+  });
+
+  test('a drain that fails still asks once more', async () => {
+    const backlog = () => Object.assign(new Error('full'), { code: 'forget_backlog' });
+    const run = jest
+      .fn()
+      .mockRejectedValueOnce(backlog())
+      .mockResolvedValueOnce({ result: { catalog: {}, record: { id: 'work' }, forget: [] } });
+    const { manager, drain, log } = load({ run });
+    drain.drainForgetFile.mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'busy' }));
+    await expect(manager.deleteProfile('work', 'Work')).resolves.toMatchObject({ record: { id: 'work' } });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('drain'), { code: 'busy' });
+  });
+
+  test('any other refusal drains nothing', async () => {
+    const { manager, drain, run } = load({
+      run: refusing(Object.assign(new Error('x'), { code: 'busy' })),
+    });
+    await expect(manager.deleteProfile('work', 'Work')).rejects.toMatchObject({ code: 'busy' });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(drain.drainForgetFile).not.toHaveBeenCalled();
   });
 
   test('the active profile is refused before anything runs', async () => {

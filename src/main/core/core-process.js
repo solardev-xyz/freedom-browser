@@ -19,6 +19,7 @@ const { attachChain, detachChain } = require('./chain');
 const { registerDwebShell } = require('./dweb-shell');
 const { attachDwebVerify, detachDwebVerify } = require('./dweb-verify');
 const { attachGrants, detachGrants } = require('./grants');
+const { registerKeystoreShell } = require('./keystore-shell');
 
 let client = null;
 // `shell.dweb_get`'s executor (design 0009) on the client; null before
@@ -90,6 +91,10 @@ async function startCore() {
   // The dApp grants, which the core writes (design 0012, APB-2): main's
   // copy read at each handshake, and again for each change the core sends.
   require('../wallet/dapp-permissions').attachCore(client);
+  // `shell.keystore` (design 0013, PRF-2): the core's key-store calls, each
+  // run in the one-shot helper. Only where the helper has a key store
+  // (macOS); elsewhere the core asks nothing.
+  registerKeystoreShell(client);
   const starting = client;
   let hello;
   try {

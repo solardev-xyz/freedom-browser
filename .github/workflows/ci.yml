@@ -987,6 +987,55 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # The key store through main (freedom-core design 0013, PRF-2): main's
+      # `shell.keystore` executor and the drain of the forget file, against
+      # the same binary. On macOS, the helper against a temporary keychain
+      # this job makes, the user's only keychain and default for these steps,
+      # then deletes, as freedom-core's keychain job does: the login keychain
+      # is never touched, and the steps after see the runner as it was. The
+      # executor end to end; the drain with main killed at each step; main
+      # killed while a disable or a vault delete waits on its forget. On
+      # Linux, the drain's steps against a stand-in key store. On Linux and
+      # Windows, the core asks main nothing.
+      - name: A temporary keychain, the default for the key-store steps (macOS)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' && runner.os == 'macOS' }}
+        run: |
+          keychain="$RUNNER_TEMP/freedom-keystore-test.keychain"
+          password="$(openssl rand -hex 16)"
+          security default-keychain -d user > "$RUNNER_TEMP/default-keychain-before"
+          security list-keychains -d user > "$RUNNER_TEMP/keychains-before"
+          security create-keychain -p "$password" "$keychain"
+          # No lock after a timeout or on sleep.
+          security set-keychain-settings "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -d user -s "$keychain"
+          security default-keychain -d user
+          echo "FREEDOM_TEST_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+      - name: Key store through main (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/keystore.integration.test.js
+        env:
+          FREEDOM_CORED_KEYSTORE_TEST: '1'
+          # On macOS the keychain legs must run, not skip.
+          FREEDOM_KEYSTORE_REQUIRE_KEYCHAIN: ${{ runner.os == 'macOS' && '1' || '' }}
+
+      - name: Delete the temporary keychain (macOS)
+        if: ${{ always() && runner.os == 'macOS' }}
+        run: |
+          if [ -s "$RUNNER_TEMP/default-keychain-before" ]; then
+            security default-keychain -d user -s "$(tr -d '" ' < "$RUNNER_TEMP/default-keychain-before")"
+          fi
+          if [ -s "$RUNNER_TEMP/keychains-before" ]; then
+            # shellcheck disable=SC2046
+            security list-keychains -d user -s $(tr -d '"' < "$RUNNER_TEMP/keychains-before")
+          fi
+          if [ -n "${FREEDOM_TEST_KEYCHAIN:-}" ]; then
+            security delete-keychain "$FREEDOM_TEST_KEYCHAIN"
+          fi
+          echo "FREEDOM_TEST_KEYCHAIN=" >> "$GITHUB_ENV"
+
       # ── was the `e2e-address-bar-clipboard` job ──
       # Issue #69 — address-bar clipboard: Win/Linux menu wiring + chrome context menu (all platforms).
       - name: Run address-bar clipboard E2E
