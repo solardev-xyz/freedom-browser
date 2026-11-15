@@ -7,7 +7,9 @@
  *   'utf8')`, as passworder does), and come back the same way (`mnemonic_b64`)
  *   or as `private_key_hex`.
  * - Core errors become `Error`s with the JS message (the core sends the
- *   parity strings) and a `code`.
+ *   parity strings) and a `code`. The key store's and the secrets file's
+ *   errors (design 0013) get main's own message, a cause and a way forward
+ *   (key-store-messages.js), with the core's `code` and `data` kept.
  * - Vault mutations run one at a time (design 0001, "Reconciliation"), so
  *   the `vault.status` recorded before each belongs to exactly that
  *   operation. If the core dies before replying, this waits for the
@@ -24,6 +26,7 @@
 const log = require('../logger');
 const { getCoreClient } = require('./core-process');
 const { watchdogMs } = require('./core-deadlines');
+const { keyStoreMessage } = require('./key-store-messages');
 
 const CORE_UNAVAILABLE = 'core_unavailable';
 // @scure/bip39 strengths (bits) and their word counts.
@@ -67,7 +70,8 @@ async function call(method, params = {}, page = null) {
     return await client().request(method, params, context, { watchdogMs: watchdogMs(method) });
   } catch (err) {
     if (err instanceof VaultBackendError) throw err;
-    throw new VaultBackendError(err.code || CORE_UNAVAILABLE, err.message, err.data);
+    const code = err.code || CORE_UNAVAILABLE;
+    throw new VaultBackendError(code, keyStoreMessage(code, err.data) ?? err.message, err.data);
   }
 }
 
@@ -288,13 +292,23 @@ const vaultBackend = {
     return { mnemonic: unb64(result.mnemonic_b64), addresses: result.addresses };
   },
 
-  async importVault(password, mnemonic, { overwrite = false, onCommitted } = {}) {
+  /**
+   * @param {boolean} [quickUnlock] - Quick Setup (design 0013, "The re-wrap's
+   *   two entries"): the core writes quick unlock's credential for the new
+   *   vault before the vault commits, so the vault never exists without it
+   */
+  async importVault(password, mnemonic, { overwrite = false, quickUnlock = false, onCommitted } = {}) {
     if (typeof mnemonic !== 'string' || !mnemonic.isWellFormed()) {
       throw new VaultBackendError('invalid_mnemonic', 'Invalid mnemonic');
     }
     const result = await mutate(
       'vault.import',
-      { password_b64: b64(password), mnemonic_b64: b64(mnemonic), overwrite },
+      {
+        password_b64: b64(password),
+        mnemonic_b64: b64(mnemonic),
+        overwrite,
+        ...(quickUnlock ? { quick_unlock: true } : {}),
+      },
       { op: 'import', password, mnemonic, install: true, onCommitted }
     );
     return { addresses: result.addresses };
@@ -351,6 +365,49 @@ const vaultBackend = {
       account,
     });
     return result.private_key_hex;
+  },
+
+  // ---- quick unlock (design 0013, "The re-wrap"; cored 0.17.0) ----
+  //
+  // The vault password in the core's key store. `enroll` is main's own
+  // (`shell`), with a password main has: one it unsealed from
+  // quick-unlock.dat, or one the user typed. The rest are the chrome's
+  // (`chrome`), each after main's Touch ID prompt; the password never comes
+  // back to main.
+
+  /** `{ enabled, policy, available }`, from the core's view of the file. */
+  quickUnlockStatus() {
+    return call('quick_unlock.status', {}, 'chrome');
+  },
+
+  /** Writes the credential for this vault; the password is checked first. */
+  async quickUnlockEnroll(password) {
+    await call('quick_unlock.enroll', { password_b64: b64(password) });
+  },
+
+  /** Unlocks with the credential, as `unlock` answers: `{ addresses }`. */
+  quickUnlock() {
+    watchCore();
+    return call('quick_unlock.unlock', {}, 'chrome');
+  },
+
+  /** Unlocks with the credential, then exports, with no password. */
+  async quickExportMnemonic() {
+    watchCore();
+    const result = await call('quick_unlock.export_mnemonic', {}, 'chrome');
+    return unb64(result.mnemonic_b64);
+  },
+
+  /** @returns {string} 0x private key */
+  async quickExportPrivateKey(account) {
+    watchCore();
+    const result = await call('quick_unlock.export_private_key', { account }, 'chrome');
+    return result.private_key_hex;
+  },
+
+  /** Removes the credential (both names); its key is forgotten after. */
+  async quickUnlockDisable() {
+    await call('quick_unlock.disable', {}, 'chrome');
   },
 
   /** Public data only; needs the vault unlocked. */

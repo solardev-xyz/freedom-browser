@@ -783,6 +783,9 @@ contextBridge.exposeInMainWorld('quickUnlock', {
   canUseTouchId: () => ipcRenderer.invoke('quick-unlock:can-use-touch-id'),
   isEnabled: () => ipcRenderer.invoke('quick-unlock:is-enabled'),
   enable: (password) => ipcRenderer.invoke('quick-unlock:enable', password),
+  // Quick Setup: Touch ID, then main makes the vault for `mnemonic` under a
+  // random password it keeps to itself; resolves {success, error?}.
+  quickSetup: (mnemonic) => ipcRenderer.invoke('quick-unlock:quick-setup', mnemonic),
   // Touch ID → main unlocks the vault itself; resolves {success, error?}
   // only. The stored password never reaches the renderer (audit O-8).
   unlock: () => ipcRenderer.invoke('quick-unlock:unlock'),

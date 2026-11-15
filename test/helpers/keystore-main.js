@@ -8,8 +8,9 @@
 //     drains the forget file, as main does after its first window;
 //   node keystore-main.js core <freedom-cored> <helper> <identity dir> <lock dir> <action> <password>
 //     runs the core with main's `shell.keystore` executor, writes `core <pid>`,
-//     and asks it `quick_unlock.disable` (`disable`) or `vault.delete`
-//     (`delete`).
+//     and asks it `quick_unlock.disable` (`disable`), `vault.delete`
+//     (`delete`) or `quick_unlock.enroll` (`enroll`, which replaces a dead
+//     key: PRF-2b's test).
 //
 // `<helper>` is what main runs for `freedom-cored keystore`: the binary
 // itself, or a stand-in. At `<stop at>` (`before-helper` or
@@ -84,7 +85,9 @@ async function main() {
     const asked =
       action === 'disable'
         ? client.request('quick_unlock.disable', {}, { caller: 'chrome' })
-        : client.request('vault.delete', { password_b64 }, { caller: 'shell' });
+        : action === 'enroll'
+          ? client.request('quick_unlock.enroll', { password_b64 }, { caller: 'shell' })
+          : client.request('vault.delete', { password_b64 }, { caller: 'shell' });
     asked.catch(() => {});
     process.stdout.write('asked\n');
     await asked;

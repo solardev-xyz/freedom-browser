@@ -412,6 +412,82 @@ describe('vaultBackend', () => {
     await expect(vaultBackend.sealRadicleKey('x')).rejects.toMatchObject({ code, message });
   });
 
+  // Design 0013, "The re-wrap"; cored 0.17.0's callers: enroll is main's
+  // own (`shell`), the other five the chrome's, after main's Touch ID.
+  test("quick unlock: enroll as shell, the rest as chrome; secrets as base64", async () => {
+    const core = new FakeCore((method) => {
+      if (method === 'quick_unlock.status') return { enabled: true, policy: 'unattended', available: true };
+      if (method === 'quick_unlock.unlock') return { addresses: { user_wallet: '0x1' } };
+      if (method === 'quick_unlock.export_mnemonic') return { mnemonic_b64: b64('abandon about') };
+      if (method === 'quick_unlock.export_private_key') return { private_key_hex: '0xabc' };
+      return {};
+    });
+    const { vaultBackend } = load(core);
+    await expect(vaultBackend.quickUnlockStatus()).resolves.toEqual({
+      enabled: true,
+      policy: 'unattended',
+      available: true,
+    });
+    await expect(vaultBackend.quickUnlockEnroll('pässwörd1')).resolves.toBeUndefined();
+    await expect(vaultBackend.quickUnlock()).resolves.toEqual({ addresses: { user_wallet: '0x1' } });
+    await expect(vaultBackend.quickExportMnemonic()).resolves.toBe('abandon about');
+    await expect(vaultBackend.quickExportPrivateKey(3)).resolves.toBe('0xabc');
+    await expect(vaultBackend.quickUnlockDisable()).resolves.toBeUndefined();
+    expect(core.calls.map(({ method, params, context }) => [method, params, context])).toEqual([
+      ['quick_unlock.status', {}, { caller: 'chrome' }],
+      ['quick_unlock.enroll', { password_b64: b64('pässwörd1') }, { caller: 'shell' }],
+      ['quick_unlock.unlock', {}, { caller: 'chrome' }],
+      ['quick_unlock.export_mnemonic', {}, { caller: 'chrome' }],
+      ['quick_unlock.export_private_key', { account: 3 }, { caller: 'chrome' }],
+      ['quick_unlock.disable', {}, { caller: 'chrome' }],
+    ]);
+  });
+
+  test('import with quick unlock sends quick_unlock: true; without, no member at all', async () => {
+    const core = new FakeCore((method) => {
+      if (method === 'vault.status') return { exists: false, fingerprint: null };
+      return { addresses: { user_wallet: '0x1' } };
+    });
+    const { vaultBackend } = load(core);
+    await vaultBackend.importVault('pw', 'abandon about', { quickUnlock: true });
+    await vaultBackend.importVault('pw2', 'abandon about');
+    const imports = core.calls.filter((c) => c.method === 'vault.import');
+    expect(imports[0].params).toEqual({
+      password_b64: b64('pw'),
+      mnemonic_b64: b64('abandon about'),
+      overwrite: false,
+      quick_unlock: true,
+    });
+    expect(imports[1].params).not.toHaveProperty('quick_unlock');
+  });
+
+  // The core's bare "Storage error" / "The key store is unavailable" /
+  // "Cancelled" become main's wording; code and data stay.
+  test.each([
+    ['storage', { kind: 'malformed', file: 'secrets' }, /secrets\.json.*damaged/],
+    ['key_store_unavailable', { reason: 'timeout' }, /didn't answer in time/],
+    ['key_store_cancelled', undefined, /cancelled/],
+  ])('a %s refusal gets a cause and a way forward, its code and data kept', async (code, data, message) => {
+    const core = new FakeCore(() => {
+      throw Object.assign(coreError(code, 'Storage error'), { data });
+    });
+    const { vaultBackend } = load(core);
+    const refused = await vaultBackend.changePassword('a', 'b').catch((err) => err);
+    expect(refused).toMatchObject({ code, data });
+    expect(refused.message).toMatch(message);
+  });
+
+  test("other storage errors keep the core's message", async () => {
+    const core = new FakeCore(() => {
+      throw Object.assign(coreError('storage', 'Storage error'), { data: { kind: 'permission' } });
+    });
+    const { vaultBackend } = load(core);
+    await expect(vaultBackend.verifyPassword('a')).rejects.toMatchObject({
+      code: 'storage',
+      message: 'Storage error',
+    });
+  });
+
   test("onVaultEvent: the core's vault events, until unsubscribed", async () => {
     const core = new FakeCore(() => ({}));
     const { vaultBackend } = load(core);
@@ -451,6 +527,11 @@ describe('vaultBackend', () => {
       'vault.reconcile',
       'nodes.write_identity',
       'nodes.op_status',
+      'quick_unlock.enroll',
+      'quick_unlock.unlock',
+      'quick_unlock.export_mnemonic',
+      'quick_unlock.export_private_key',
+      'quick_unlock.disable',
     ]);
     let lose = true;
     const core = new FakeCore((method) => {
@@ -468,6 +549,7 @@ describe('vaultBackend', () => {
         did: 'did:key:z',
         signature: '0x',
         hash: '0x',
+        private_key_hex: '0x',
       };
     });
     const { vaultBackend } = load(core);
@@ -510,6 +592,12 @@ describe('vaultBackend', () => {
     await vaultBackend.approval.grants({ store: 'dapp' });
     await vaultBackend.approval.grants({ store: 'radicle' });
     await vaultBackend.typedDataHash({});
+    await vaultBackend.quickUnlockStatus();
+    await vaultBackend.quickUnlockEnroll('password2');
+    await vaultBackend.quickUnlock();
+    await vaultBackend.quickExportMnemonic();
+    await vaultBackend.quickExportPrivateKey(0);
+    await vaultBackend.quickUnlockDisable();
     await vaultBackend.deleteVault('password2');
 
     const sent = new Set(core.calls.map((c) => c.method));

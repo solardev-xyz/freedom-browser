@@ -87,6 +87,19 @@ function makeVaultBackendMock({ exists = true, unlocked = true } = {}) {
       state.unlocked = true;
       return { addresses };
     }),
+    // Quick unlock through the core's credential (design 0013).
+    quickUnlock: jest.fn(async () => {
+      state.unlocked = true;
+      return { addresses };
+    }),
+    quickExportMnemonic: jest.fn(async () => {
+      state.unlocked = true;
+      return 'test mnemonic';
+    }),
+    quickExportPrivateKey: jest.fn(async () => {
+      state.unlocked = true;
+      return '0xkey';
+    }),
     lock: jest.fn(async () => {
       state.unlocked = false;
     }),
@@ -365,6 +378,58 @@ describe('identity-manager and the core (freedom-browser#651 review)', () => {
     await mod.createNewVault('password123');
     await backend.createVault.mock.calls[0][2].onCommitted({ addresses: {} });
     expect(completeQuickSetup).toHaveBeenCalledTimes(1);
+  });
+
+  // Design 0013, PRF-2b: Quick Setup's vault comes with quick unlock's
+  // credential in the core.
+  test("Quick Setup's import asks the core for quick unlock; others don't", async () => {
+    const backend = makeVaultBackendMock({ exists: false, unlocked: false });
+    const { mod, dirs } = setup(backend);
+    await mod.importExistingMnemonic('random-pass', 'abandon about', false, { quickUnlock: true });
+    expect(backend.importVault.mock.calls[0][2]).toMatchObject({
+      overwrite: false,
+      quickUnlock: true,
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(dirs.identity, 'vault-meta.json'), 'utf-8')))
+      .toMatchObject({ userKnowsPassword: false });
+    await mod.importExistingMnemonic('password123', 'abandon about');
+    expect(backend.importVault.mock.calls[1][2]).toMatchObject({ quickUnlock: false });
+  });
+
+  test("a quick unlock does what a password unlock does after: the old metadata's addresses", async () => {
+    const backend = makeVaultBackendMock({ exists: true, unlocked: false });
+    const { mod, dirs } = setup(backend);
+    const metaPath = path.join(dirs.identity, 'vault-meta.json');
+    fs.writeFileSync(metaPath, JSON.stringify({ userKnowsPassword: false }));
+    await mod.quickUnlockVault();
+    expect(backend.quickUnlock).toHaveBeenCalledTimes(1);
+    expect(backend.unlock).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(metaPath, 'utf-8')).addresses).toEqual({
+      userWallet: '0xuser',
+      beeWallet: '0xbee',
+    });
+  });
+
+  test("the quick exports: the core's, and a device account refused before it", async () => {
+    const backend = makeVaultBackendMock({ exists: true, unlocked: false });
+    const { mod } = setup(backend);
+    await expect(mod.quickExportMnemonic()).resolves.toBe('test mnemonic');
+    await expect(mod.quickExportPrivateKeyForAccount(2)).resolves.toBe('0xkey');
+    expect(backend.quickExportPrivateKey).toHaveBeenCalledWith(2);
+    await expect(mod.quickExportPrivateKeyForAccount(1_000_000)).rejects.toThrow(
+      /no exportable private key/
+    );
+    expect(backend.quickExportPrivateKey).toHaveBeenCalledTimes(1);
+  });
+
+  test('a password change goes through quick unlock, which keeps it on', async () => {
+    const changePasswordKeepingQuickUnlock = jest.fn(async () => {});
+    const backend = makeVaultBackendMock();
+    const { mod } = setup(backend, {
+      [require.resolve('./quick-unlock')]: () => ({ changePasswordKeepingQuickUnlock }),
+    });
+    await mod.changeVaultPassword('old-pw', 'new-pw');
+    expect(changePasswordKeepingQuickUnlock).toHaveBeenCalledWith('old-pw', 'new-pw');
   });
 });
 
@@ -2582,7 +2647,10 @@ describe('Swarm keystore password (K-3)', () => {
     expect(seen).toEqual([{ password: written[0], sealed: false }]);
   });
 
-  test('an unlock re-encrypts the keystore the node could not open, then starts it', async () => {
+  test.each([
+    ['a password unlock', (mod) => mod.unlockVault('password123')],
+    ['a quick unlock', (mod) => mod.quickUnlockVault()],
+  ])('%s re-encrypts the keystore the node could not open, then starts it', async (_kind, unlock) => {
     writeKeystore(VAULT_BEE);
     writeSeal('lost-password');
     writeNodeState();
@@ -2594,7 +2662,7 @@ describe('Swarm keystore password (K-3)', () => {
     });
     mod.setBeeLifecycle({ stop, start, needsKeyReinjection: () => needed });
 
-    await mod.unlockVault('password123');
+    await unlock(mod);
     await settle();
 
     // The core writes the same derived key with a new password; nothing is
@@ -2612,7 +2680,7 @@ describe('Swarm keystore password (K-3)', () => {
     expect(mod.isBeeIdentityInjected()).toBe(true);
 
     // Nothing to do on an unlock when the node opened its keystore.
-    await mod.unlockVault('password123');
+    await unlock(mod);
     await settle();
     expect(backend.writeNodeIdentity).toHaveBeenCalledTimes(1);
   });

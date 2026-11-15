@@ -1,8 +1,24 @@
 /**
  * Quick Unlock Module
  *
- * Provides Touch ID (macOS) support for quick vault unlock.
- * Stores the vault password in OS secure storage, protected by biometrics.
+ * Touch ID (macOS) in front of the vault password (freedom-core design 0013,
+ * "The re-wrap", step PRF-2b).
+ *
+ * - **The credential is the core's.** `quick_unlock.enroll` writes the vault
+ *   password into the core's key store, and `quick_unlock.unlock` and the
+ *   two exports use it after main's Touch ID prompt, so the password stays
+ *   in the core. A password change re-wraps it in the core, and Quick Setup
+ *   creates the vault with it (`quick_unlock: true`).
+ * - **quick-unlock.dat** is the credential every earlier build reads: the
+ *   password under Electron's `safeStorage`, bound to the profile and the
+ *   vault file. Quick Setup and enable still write it, for those builds.
+ *   Nothing here rewrites one that exists (a legacy one stays legacy), and
+ *   only disable removes it, together with the core's.
+ * - **The migration:** a profile with only quick-unlock.dat unlocks (or
+ *   exports) through it once, as before, and main then enrolls the password
+ *   it unsealed. A core credential whose key is gone (`not_found`,
+ *   `invalidated`) or whose entry doesn't open goes through the file the
+ *   same way, and the enroll replaces it.
  */
 
 const { app, ipcMain, systemPreferences, safeStorage } = require('electron');
@@ -20,6 +36,15 @@ const { withPrivateDir } = require('./private-files');
 const VAULT_FILE = 'identity-vault.json';
 
 const CREDENTIAL_VERSION = 2;
+
+const UNLOCK_PROMPT = 'unlock Freedom Browser';
+
+// The core's credential can't be used, but enrolling again replaces it:
+// its key is gone or invalidated, or its entry doesn't open.
+const DEAD_CREDENTIAL = new Set(['not_found', 'invalidated', 'entry_refused']);
+
+// Where the core has a key store for quick unlock (cored 0.17.0: macOS).
+const KEY_STORE_PLATFORMS = new Set(['darwin']);
 
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -132,6 +157,57 @@ function getCredentialPath() {
 }
 
 /**
+ * quick-unlock.dat, when it can unlock this vault: a legacy credential, or
+ * a bound one whose profile and vault match. Null otherwise, also for a
+ * credential or vault that is a link or not our regular file.
+ */
+function usableFileCredential() {
+  try {
+    const credential = readCredential();
+    if (!credential) return null;
+    if (credential.type === 'bound' && validateCredentialBinding(credential.payload) !== null) {
+      return null;
+    }
+    return credential;
+  } catch (err) {
+    console.warn('[QuickUnlock] quick-unlock.dat unavailable:', err.message);
+    return null;
+  }
+}
+
+/** Whether the core holds quick unlock's credential for this vault. */
+async function coreCredential() {
+  try {
+    return (await vaultBackend.quickUnlockStatus()).enabled === true;
+  } catch (err) {
+    console.warn('[QuickUnlock] Quick unlock status unavailable:', err.message);
+    return false;
+  }
+}
+
+function isDeadCredential(err) {
+  return err?.code === 'key_store_unavailable' && DEAD_CREDENTIAL.has(err.data?.reason);
+}
+
+/**
+ * Hands the core a password main already has, for quick unlock's
+ * credential (`quick_unlock.enroll`, which checks it first). A failure is
+ * logged: the caller's own step has succeeded, and the next one through
+ * quick-unlock.dat tries again.
+ * @returns {Promise<boolean>} whether the core holds it now
+ */
+async function enroll(password) {
+  try {
+    await vaultBackend.quickUnlockEnroll(password);
+    console.log('[QuickUnlock] Quick unlock is in the core');
+    return true;
+  } catch (err) {
+    console.error('[QuickUnlock] Quick unlock not moved into the core:', err.message);
+    return false;
+  }
+}
+
+/**
  * Check if Touch ID is available on this system
  * @returns {boolean}
  */
@@ -151,29 +227,19 @@ function isSecureStorageAvailable() {
 }
 
 /**
- * Check if quick unlock is enabled (credential exists)
- * @returns {boolean}
+ * Whether quick unlock is on for this vault: the core holds its credential,
+ * or quick-unlock.dat can still unlock it (until the migration).
+ * @returns {Promise<boolean>}
  */
-function isQuickUnlockEnabled() {
-  try {
-    const credential = readCredential();
-    if (!credential) {
-      return false;
-    }
-    if (credential.type === 'legacy') {
-      return true;
-    }
-    return validateCredentialBinding(credential.payload) === null;
-  } catch (err) {
-    // A credential or vault that is a link, or not our regular file.
-    console.warn('[QuickUnlock] Quick unlock unavailable:', err.message);
-    return false;
-  }
+async function isQuickUnlockEnabled() {
+  if (await coreCredential()) return true;
+  return usableFileCredential() !== null;
 }
 
 /**
- * Enable quick unlock by storing the password
- * Prompts for Touch ID to authorize storage
+ * Enable quick unlock for a password the user typed. Prompts for Touch ID
+ * to authorize it, then hands the password to the core, and writes
+ * quick-unlock.dat for older builds.
  * @param {string} password - The vault password to store
  * @returns {Promise<{success: boolean, error?: string}>}
  */
@@ -192,9 +258,10 @@ async function enableQuickUnlock(password) {
     // Prompt Touch ID to authorize storing the credential
     await systemPreferences.promptTouchID('enable Touch ID unlock for Freedom Browser');
 
-    writeCredential(password);
+    await vaultBackend.quickUnlockEnroll(password);
     // The user's own choice replaces a lost Quick Setup's pending one.
     cancelPendingSetup();
+    writeCredentialForOlderBuilds(password);
 
     console.log('[QuickUnlock] Touch ID unlock enabled');
     return { success: true };
@@ -204,16 +271,71 @@ async function enableQuickUnlock(password) {
   }
 }
 
+/**
+ * quick-unlock.dat for the builds before the core held the credential. The
+ * core has it already, so a failure here is logged, not answered.
+ */
+function writeCredentialForOlderBuilds(password) {
+  try {
+    writeCredential(password);
+    return true;
+  } catch (err) {
+    console.error('[QuickUnlock] quick-unlock.dat not written for older builds:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Quick Setup (design 0013, PRF-2b): Touch ID first, then a vault for
+ * `mnemonic` under a random password nobody sees, created with quick
+ * unlock's credential in the core (`quick_unlock: true`), so the vault never
+ * exists without it. quick-unlock.dat is written after, for older builds.
+ *
+ * Nothing the core committed is ever deleted here: a refusal comes before
+ * any vault is written, and a failure after the commit leaves the vault
+ * with its credential.
+ * @param {string} mnemonic
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function quickSetup(mnemonic) {
+  if (!canUseTouchId()) {
+    return { success: false, error: 'Touch ID not available' };
+  }
+  // quick-unlock.dat is the only copy an older build can use: Quick Setup
+  // still needs it written (0013: "still writes quick-unlock.dat").
+  if (!isSecureStorageAvailable()) {
+    return { success: false, error: 'Secure storage not available' };
+  }
+
+  try {
+    await systemPreferences.promptTouchID('set up Freedom Browser with Touch ID');
+    const password = crypto.randomBytes(32).toString('hex');
+    await identityManager().importExistingMnemonic(password, mnemonic, false, {
+      quickUnlock: true,
+    });
+    if (!writeCredentialForOlderBuilds(password)) {
+      // Kept and retried, as for a lost Quick Setup.
+      void completeQuickSetup(password);
+    }
+    console.log('[QuickUnlock] Quick Setup done');
+    return { success: true };
+  } catch (err) {
+    console.error('[QuickUnlock] Quick Setup failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 // A lost Quick Setup's password until it is stored (see completeQuickSetup).
 let pendingSetup = null;
 const SETUP_RETRY_MS = 30_000;
 
 /**
- * Stores a Quick Setup vault's random password as the quick-unlock
- * credential, for a setup the core confirmed only after its reply was lost
- * (freedom-core design 0001, "Reconciliation"). The onboarding renderer that
- * started it may be gone and nobody else knows this password, so main
- * finishes the setup the user chose. Main-internal only.
+ * Stores a Quick Setup vault's random password as quick-unlock.dat, for a
+ * setup the core confirmed only after its reply was lost (freedom-core design
+ * 0001, "Reconciliation"). The core wrote its own credential with the vault;
+ * this file is for older builds. The onboarding renderer that started it may
+ * be gone and nobody else knows this password, so main finishes the setup the
+ * user chose. Main-internal only.
  *
  * Until the credential is stored, main keeps the password and retries
  * (secure storage or the core may come back). It stops only when the vault
@@ -259,42 +381,49 @@ async function trySetupCredential(setup) {
 }
 
 /**
- * Touch ID, then the stored vault password — main-internal only. The
- * password never crosses IPC: every caller below finishes the job
- * (unlock, export) in main and returns only its outcome (security audit
- * O-8). Throws on any failure.
- * @returns {Promise<string>}
+ * Touch ID, then `job` — main-internal only. The password never crosses
+ * IPC: each job finishes in main (unlock, export) and returns only its
+ * outcome (security audit O-8). Throws on any failure.
+ *
+ * - With the core's credential, `job.core()` runs: the password stays in
+ *   the core.
+ * - Otherwise, or when the core's credential is dead (`DEAD_CREDENTIAL`),
+ *   quick-unlock.dat is unsealed and `job.file(password)` runs, as before;
+ *   then main enrolls that password, so the next time goes through the
+ *   core. The file isn't written.
+ * @param {{core: () => Promise<any>, file: (password: string) => Promise<any>}} job
  */
-async function retrievePasswordWithTouchId() {
+async function withTouchId(job) {
   if (!canUseTouchId()) {
     throw new Error('Touch ID not available');
   }
 
-  if (!isQuickUnlockEnabled()) {
+  const inCore = await coreCredential();
+  const credential = inCore ? null : usableFileCredential();
+  if (!inCore && !credential) {
     throw new Error('Quick unlock not enabled');
   }
 
-  const credential = readCredential();
-  if (!credential) {
-    throw new Error('Quick unlock not enabled');
-  }
-  if (credential.type === 'bound') {
-    const bindingError = validateCredentialBinding(credential.payload);
-    if (bindingError) {
-      throw new Error(bindingError);
+  await systemPreferences.promptTouchID(UNLOCK_PROMPT);
+
+  if (inCore) {
+    try {
+      return await job.core();
+    } catch (err) {
+      const fallback = isDeadCredential(err) ? usableFileCredential() : null;
+      if (!fallback) throw err;
+      console.warn('[QuickUnlock] The core credential is unusable; using quick-unlock.dat:', err.data.reason);
+      return throughFile(fallback, job);
     }
   }
+  return throughFile(credential, job);
+}
 
-  // Prompt for Touch ID
-  await systemPreferences.promptTouchID('unlock Freedom Browser');
-
+async function throughFile(credential, job) {
   const password = safeStorage.decryptString(credential.encrypted);
-  await verifyCredentialPassword(password);
-
-  if (credential.type === 'legacy') {
-    writeCredential(password);
-  }
-  return password;
+  const result = await job.file(password);
+  await enroll(password);
+  return result;
 }
 
 // Lazy: identity-manager pulls in the whole identity stack, which this
@@ -304,15 +433,17 @@ function identityManager() {
 }
 
 /**
- * Unlock the vault with Touch ID. Main unlocks the vault itself — exactly
- * what `identity:unlock` does with a typed password — and the renderer
- * learns only whether it worked.
+ * Unlock the vault with Touch ID. Main unlocks the vault itself, and the
+ * renderer learns only whether it worked.
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function unlockWithTouchId() {
   try {
-    const password = await retrievePasswordWithTouchId();
-    await identityManager().unlockVault(password);
+    const identity = identityManager();
+    await withTouchId({
+      core: () => identity.quickUnlockVault(),
+      file: (password) => identity.unlockVault(password),
+    });
     console.log('[QuickUnlock] Unlocked with Touch ID');
     return { success: true };
   } catch (err) {
@@ -329,10 +460,14 @@ async function unlockWithTouchId() {
  */
 async function exportMnemonicWithTouchId() {
   try {
-    const password = await retrievePasswordWithTouchId();
     const identity = identityManager();
-    await identity.unlockVault(password);
-    const mnemonic = await identity.exportMnemonic(password);
+    const mnemonic = await withTouchId({
+      core: () => identity.quickExportMnemonic(),
+      file: async (password) => {
+        await identity.unlockVault(password);
+        return identity.exportMnemonic(password);
+      },
+    });
     return { success: true, mnemonic };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export recovery phrase:', err.message);
@@ -352,9 +487,13 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
     const identity = identityManager();
     // Refuse a device/Safe account before prompting for Touch ID.
     identity.assertPrivateKeyExportable(accountIndex);
-    const password = await retrievePasswordWithTouchId();
-    await identity.unlockVault(password);
-    const privateKey = await identity.exportPrivateKeyForAccount(accountIndex, password);
+    const privateKey = await withTouchId({
+      core: () => identity.quickExportPrivateKeyForAccount(accountIndex),
+      file: async (password) => {
+        await identity.unlockVault(password);
+        return identity.exportPrivateKeyForAccount(accountIndex, password);
+      },
+    });
     return { success: true, privateKey };
   } catch (err) {
     console.error('[QuickUnlock] Failed to export private key:', err.message);
@@ -363,14 +502,36 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
 }
 
 /**
- * Disable quick unlock by removing stored credential
- * @returns {{success: boolean, error?: string}}
+ * A password change that keeps quick unlock (0013's deviation
+ * `quick-unlock-password-change`). The core re-wraps its own credential in
+ * the change. A profile still on quick-unlock.dat alone would lose it, as
+ * the file is bound to the vault being replaced: main enrolls the new
+ * password once the change is done. The file isn't written.
+ * @param {string} currentPassword
+ * @param {string} newPassword
  */
-function disableQuickUnlock() {
+async function changePasswordKeepingQuickUnlock(currentPassword, newPassword) {
+  const enrollAfter =
+    KEY_STORE_PLATFORMS.has(process.platform) &&
+    usableFileCredential() !== null &&
+    !(await coreCredential());
+  await vaultBackend.changePassword(currentPassword, newPassword);
+  if (enrollAfter) await enroll(newPassword);
+}
+
+/**
+ * Disable quick unlock: removes quick-unlock.dat, then the core's
+ * credential (whose key the core then forgets). In that order, so a failure
+ * never leaves the file to bring the core's credential back at the next
+ * Touch ID unlock.
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+async function disableQuickUnlock() {
   // A lost Quick Setup's retry must not bring the credential back.
   cancelPendingSetup();
   try {
     withCredentialDir((dir) => dir.remove(path.basename(getCredentialPath())));
+    await vaultBackend.quickUnlockDisable();
     console.log('[QuickUnlock] Touch ID unlock disabled');
     return { success: true };
   } catch (err) {
@@ -396,6 +557,12 @@ function registerQuickUnlockIpc() {
   // Enable quick unlock (store password)
   ipcMain.handle('quick-unlock:enable', async (_event, password) => {
     return enableQuickUnlock(password);
+  });
+
+  // Quick Setup: Touch ID, then a vault for the mnemonic with quick unlock.
+  // The random password is made in main and never leaves it.
+  ipcMain.handle('quick-unlock:quick-setup', async (_event, mnemonic) => {
+    return quickSetup(mnemonic);
   });
 
   // Unlock the vault with Touch ID. Returns success/failure only — the
@@ -428,9 +595,11 @@ module.exports = {
   isSecureStorageAvailable,
   isQuickUnlockEnabled,
   enableQuickUnlock,
+  quickSetup,
   unlockWithTouchId,
   exportMnemonicWithTouchId,
   exportPrivateKeyWithTouchId,
+  changePasswordKeepingQuickUnlock,
   disableQuickUnlock,
   registerQuickUnlockIpc,
 };
