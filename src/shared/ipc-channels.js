@@ -186,6 +186,9 @@ module.exports = {
   // <html> before their first paint (see src/main/webview-preload.js).
   GET_THEME: 'internal:get-theme',
   GET_ETHEREUM_INJECT_SOURCE: 'internal:get-ethereum-inject-source',
+  // The scripts and theme a tab needs to render a Markdown document, asked
+  // for by the webview preload only on one (src/main/markdown-view.js).
+  MARKDOWN_GET_VIEW: 'markdown:get-view',
   OPEN_URL_IN_NEW_TAB: 'internal:open-url-in-new-tab',
   SIDEBAR_OPEN_PUBLISH_SETUP: 'sidebar:open-publish-setup',
 

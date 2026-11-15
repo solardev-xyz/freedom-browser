@@ -64,6 +64,7 @@ const { isContainedPath, isContainedTarget } = require('../lib/gateway-path');
 const {
   PAGE_STATE_RESPONSE_HEADERS,
   stripPageStateHeaders,
+  labelMarkdownDocument,
 } = require('../lib/gateway-response-headers');
 const {
   runWithPrivateLogContext,
@@ -550,7 +551,10 @@ async function handleBzzRequest(
       attemptTimeoutMs
     );
     return withHeadAcceptRanges(
-      withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl)),
+      labelMarkdownDocument(
+        withoutPageStateHeaders(canonicalizeRedirect(response, gatewayUrl)),
+        request
+      ),
       method
     );
   } catch (err) {
