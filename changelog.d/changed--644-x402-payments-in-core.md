@@ -1,3 +1,3 @@
 - x402 payments and their auto-pay caps are handled by Freedom's identity core, which checks each payment against what you approved and charges a cap before it signs ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
-  - An auto-pay cap's amount and reset period can be lowered from the site's permissions, never raised there: to raise one, set a new cap when you next approve a payment
-  - A signed payment that never goes out (the page was left, or it waited a minute unsent) gives its charge back to the cap
+  - An auto-pay cap's amount or reset period can be lowered from the site's permissions, never raised
+  - A signed payment that never goes out gives its charge back to the cap
