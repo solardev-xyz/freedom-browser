@@ -7,6 +7,35 @@
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * freedom-core's helper-answer vectors (`vectors/keystore.json`, design 0013
+ * "Vectors": "the helper's answers under a fixed request key, with the
+ * refusals"), whose `answers` give the core's reading of each answer main
+ * relays. Skipped unless found: FREEDOM_CORE_KEYSTORE_VECTORS names the
+ * file, or it sits beside FREEDOM_CORE_VECTORS, or in the freedom-core
+ * checkout FREEDOM_CORED_PATH was built in. CI checks out freedom-core's at
+ * the reviewed commit and names it; a file named there that is missing
+ * fails the suite rather than skipping it.
+ */
+function keystoreVectorsPath() {
+  if (process.env.FREEDOM_CORE_KEYSTORE_VECTORS) return process.env.FREEDOM_CORE_KEYSTORE_VECTORS;
+  if (process.env.FREEDOM_CORE_VECTORS) {
+    return path.join(path.dirname(process.env.FREEDOM_CORE_VECTORS), 'keystore.json');
+  }
+  const binary = process.env.FREEDOM_CORED_PATH;
+  if (!binary) return null;
+  for (let dir = path.dirname(path.resolve(binary)); ; dir = path.dirname(dir)) {
+    const candidate = path.join(dir, 'vectors', 'keystore.json');
+    if (fs.existsSync(candidate)) return candidate;
+    if (path.dirname(dir) === dir) return null;
+  }
+}
+const vectorsFile = keystoreVectorsPath();
+const vectors =
+  vectorsFile && fs.existsSync(vectorsFile)
+    ? JSON.parse(fs.readFileSync(vectorsFile, 'utf8'))
+    : null;
+
 jest.mock('electron', () => ({ app: { isPackaged: true } }), { virtual: true });
 jest.mock('./logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 jest.mock('./core/cored-binary', () => ({ getCoredBinaryPath: () => '/bin/freedom-cored' }));
@@ -49,24 +78,127 @@ beforeEach(() => {
   subcommands.run.mockReset();
 });
 
-describe("the helper's answer to a forget", () => {
+describe("the helper's answer to a forget, read as the core reads it", () => {
+  // A backslash, so the escapes below reach the parser as written.
+  const BS = String.fromCharCode(92);
+  const padded = (bytes) => `{"ok":true${' '.repeat(bytes - 11)}}`;
+
   test.each([
-    ['ok', '{"ok":true}', true],
-    ['not_found', '{"ok":false,"error":"not_found"}', true],
-    ['not_found with a reason', '{"ok":false,"error":"not_found","reason":"gone"}', true],
-    ['unavailable', '{"ok":false,"error":"unavailable","reason":"no_keychain"}', false],
-    ['denied', '{"ok":false,"error":"denied"}', false],
-    ['backend', '{"ok":false,"error":"backend","reason":"status"}', false],
-    ['a key, as for an open', '{"ok":true,"key":"AAAA"}', false],
-    ['a blob, as for a Windows create', '{"ok":true,"sealed":"AAAA"}', false],
-    ['ok as a string', '{"ok":"true"}', false],
-    ['no ok', '{"error":"not_found"}', false],
-    ['an array', '[{"ok":true}]', false],
-    ['null', 'null', false],
-    ['not JSON', 'ok', false],
-  ])('%s: forgotten %s', (_, line, expected) => {
-    expect(isForgotten(line)).toBe(expected);
+    ['ok', '{"ok":true}'],
+    ["ok, with JSON's whitespace", ' { "ok" : true } '],
+    ['not_found', '{"ok":false,"error":"not_found"}'],
+    ['not_found, its members in another order', '{"error":"not_found","ok":false}'],
+    ['not_found with a reason in form', '{"ok":false,"error":"not_found","reason":"gone_2"}'],
+    ['a member name escaped, which the core decodes', `{"${BS}u006fk":true}`],
+    ['not_found escaped, which the core decodes', `{"ok":false,"error":"not${BS}u005ffound"}`],
+    ['4096 bytes', padded(4096)],
+  ])('%s: forgotten', (_, line) => {
+    expect(isForgotten(line)).toBe(true);
   });
+
+  test.each([
+    // Members named twice: JSON.parse keeps the last, the core refuses.
+    ['backend, then not_found', '{"ok":false,"error":"backend","error":"not_found"}'],
+    ['ok named twice', '{"ok":true,"ok":true}'],
+    ['ok false, then true', '{"ok":false,"error":"denied","ok":true}'],
+    ['not_found named twice', '{"ok":false,"error":"not_found","error":"not_found"}'],
+    ['ok named twice, once escaped', `{"ok":true,"o${BS}u006b":true}`],
+    // Unknown members.
+    ['an unknown member beside ok', '{"ok":true,"unknown":1}'],
+    ['an unknown string member beside ok', '{"ok":true,"extra":"x"}'],
+    ['an unknown member beside not_found', '{"ok":false,"error":"not_found","extra":true}'],
+    ['__proto__ beside ok', '{"ok":true,"__proto__":"x"}'],
+    // Fields the kind doesn't have.
+    ['an error beside ok', '{"ok":true,"error":"backend"}'],
+    ['not_found beside ok', '{"ok":true,"error":"not_found"}'],
+    ['a reason beside ok', '{"ok":true,"reason":"gone"}'],
+    ['a key, as for an open', '{"ok":true,"key":"AAAA"}'],
+    ['a blob, as for a Windows create', '{"ok":true,"sealed":"AAAA"}'],
+    ['a key on not_found', '{"ok":false,"error":"not_found","key":"ciphertext"}'],
+    ['a blob on not_found', '{"ok":false,"error":"not_found","sealed":"AAAA"}'],
+    // Out of form.
+    ['a reason in capitals', '{"ok":false,"error":"not_found","reason":"Gone"}'],
+    ['an empty reason', '{"ok":false,"error":"not_found","reason":""}'],
+    ['a reason of 33 bytes', `{"ok":false,"error":"not_found","reason":"${'a'.repeat(33)}"}`],
+    ['a reason as null', '{"ok":false,"error":"not_found","reason":null}'],
+    ['a reason as true', '{"ok":false,"error":"not_found","reason":true}'],
+    ['a key as null', '{"ok":true,"key":null}'],
+    ['ok as a string', '{"ok":"true"}'],
+    ['ok as null', '{"ok":null}'],
+    ['no ok', '{"error":"not_found"}'],
+    ['a failure without an error', '{"ok":false}'],
+    ['an empty object', '{}'],
+    ['a trailing comma', '{"ok":true,}'],
+    ['an object inside', '{"ok":true,"x":{"ok":true}}'],
+    ['bytes after the object', '{"ok":true} x'],
+    ['two objects', '{"ok":true}{"ok":true}'],
+    ['4097 bytes', padded(4097)],
+    // Other failures.
+    ['unavailable', '{"ok":false,"error":"unavailable","reason":"no_keychain"}'],
+    ['denied', '{"ok":false,"error":"denied"}'],
+    ['backend', '{"ok":false,"error":"backend","reason":"status"}'],
+    ['an array', '[{"ok":true}]'],
+    ['null', 'null'],
+    ['not JSON', 'ok'],
+    ['nothing', ''],
+  ])('%s: kept', (_, line) => {
+    expect(isForgotten(line)).toBe(false);
+  });
+
+  test('anything but a line is kept', () => {
+    expect(isForgotten(undefined)).toBe(false);
+    expect(isForgotten(Buffer.from('{"ok":true}'))).toBe(false);
+  });
+});
+
+/** Answers to another op that the core refuses only as not the kind the op
+ * needs: as a forget's answer, each is a Done. */
+const DONE_FOR_ANOTHER_OP = new Set(['done-to-create', 'done-to-open']);
+
+/** Whether the core takes `answer`'s text, as a forget's answer, as gone. */
+function goneAsTheCoreReads(answer) {
+  if (answer.request.op === 'forget') return answer.outcome.done === true;
+  return answer.outcome.error === 'not_found' || DONE_FOR_ANOTHER_OP.has(answer.id);
+}
+
+(process.env.FREEDOM_CORE_KEYSTORE_VECTORS ? test : test.skip)(
+  'the vectors FREEDOM_CORE_KEYSTORE_VECTORS names are there',
+  () => {
+    expect(fs.existsSync(vectorsFile)).toBe(true);
+    expect(vectors?.answers?.length).toBeGreaterThan(0);
+  }
+);
+
+(vectors ? describe : describe.skip)("freedom-core's helper-answer vectors", () => {
+  const answers = vectors?.answers ?? [];
+
+  test('they hold the cases this reading rests on', () => {
+    const byId = new Map(answers.map((answer) => [answer.id, answer]));
+    for (const id of [
+      'forget',
+      'forget-not-found',
+      'duplicate-ok-forget',
+      'trailing-bytes',
+      'key-to-forget',
+      'unknown-member',
+      'duplicate-error',
+    ]) {
+      expect(byId.has(id)).toBe(true);
+    }
+    for (const id of DONE_FOR_ANOTHER_OP) {
+      expect(byId.get(id)).toMatchObject({
+        text: '{"ok":true}',
+        outcome: { reason: 'answer_form' },
+      });
+    }
+  });
+
+  test.each(answers.map((answer) => [answer.id, answer]))(
+    '%s, as a forget answer, clears the record only where the core takes it as gone',
+    (_, answer) => {
+      expect(isForgotten(answer.text)).toBe(goneAsTheCoreReads(answer));
+    }
+  );
 });
 
 describe('the items main forgets', () => {
@@ -156,25 +288,39 @@ describe('forgetting a list', () => {
     ]);
   });
 
-  test.each(['linux', 'win32'])('nothing runs on %s', async (platform) => {
-    const runner = runnerOf({ [A]: '{"ok":true}' });
-    const subcommand = jest.fn();
-    await expect(
-      forgetItems('/apps/Freedom', [{ policy: 'unattended', item: A }], {
-        runner,
-        subcommand,
-        platform,
-      })
-    ).resolves.toEqual({ forgotten: 0, kept: 0 });
-    await expect(
-      drainForgetFile('/apps/Freedom', { runner, subcommand, platform })
-    ).resolves.toEqual({
-      forgotten: 0,
-      kept: 0,
-    });
-    expect(runner.run).not.toHaveBeenCalled();
-    expect(subcommand).not.toHaveBeenCalled();
-  });
+  test.each(['linux', 'win32'])(
+    '%s: forget-list still runs, so the core drops foreign records, but no helper and no forget-done',
+    async (platform) => {
+      const runner = runnerOf({ [A]: '{"ok":true}', [B]: '{"ok":true}' });
+      const subcommand = jest.fn(async () => ({ items: [] }));
+      const log = quiet();
+      // After a delete: no helper, no subcommand.
+      await expect(
+        forgetItems('/apps/Freedom', [{ policy: 'unattended', item: A }], {
+          runner,
+          subcommand,
+          platform,
+          log,
+        })
+      ).resolves.toEqual({ forgotten: 0, kept: 1 });
+      expect(subcommand).not.toHaveBeenCalled();
+
+      // The drain: forget-list, whose native list is empty here.
+      await expect(
+        drainForgetFile('/apps/Freedom', { runner, subcommand, platform, log })
+      ).resolves.toEqual({ forgotten: 0, kept: 0 });
+      expect(subcommand.mock.calls).toEqual([['forget-list', '/apps/Freedom', []]]);
+
+      // Even if it listed some, no helper runs for them, and they stay.
+      subcommand.mockClear();
+      subcommand.mockResolvedValueOnce({ items: [{ policy: 'unattended', item: B }] });
+      await expect(
+        drainForgetFile('/apps/Freedom', { runner, subcommand, platform, log })
+      ).resolves.toEqual({ forgotten: 0, kept: 1 });
+      expect(subcommand.mock.calls).toEqual([['forget-list', '/apps/Freedom', []]]);
+      expect(runner.run).not.toHaveBeenCalled();
+    }
+  );
 
   test('no items: no forget-done', async () => {
     const runner = runnerOf({});
@@ -254,6 +400,25 @@ describe('the drain at start, after the first window', () => {
     ).resolves.toBeNull();
     expect(subcommand).not.toHaveBeenCalled();
   });
+
+  test.each(['linux', 'win32'])(
+    "%s: profile open reported some: forget-list runs on the profile's app root, and no helper",
+    async (platform) => {
+      const runner = runnerOf({});
+      const subcommand = jest.fn(async () => ({ items: [] }));
+      await expect(
+        drainAfterFirstWindow({
+          resolver: resolverOf(1),
+          runner,
+          subcommand,
+          platform,
+          log: quiet(),
+        })
+      ).resolves.toEqual({ forgotten: 0, kept: 0 });
+      expect(subcommand.mock.calls).toEqual([['forget-list', '/apps/Freedom', []]]);
+      expect(runner.run).not.toHaveBeenCalled();
+    }
+  );
 
   test("profile open reported some: the active profile's app root is drained", async () => {
     const runner = runnerOf({ [A]: '{"ok":true}' });
