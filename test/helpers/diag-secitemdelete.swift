@@ -1,6 +1,6 @@
 // TEMPORARY diagnostic (removed before review): the OSStatus SecItemDelete
 // returns, with user interaction off as the helper has it, in the default
-// keychain. `add <account>` or `delete <account>`.
+// keychain. `add <account>` or `delete <account> [start at, ms since epoch]`.
 import Foundation
 import Security
 
@@ -19,6 +19,9 @@ if op == "add" {
   ]
   status = SecItemAdd(query as CFDictionary, nil)
 } else {
+  if args.count > 3, let at = Double(args[3]) {
+    while Date().timeIntervalSince1970 * 1000 < at {}
+  }
   let query: [String: Any] = [
     kSecClass as String: kSecClassGenericPassword,
     kSecAttrService as String: service,
