@@ -1,14 +1,14 @@
 // Quick Setup with Touch ID, end to end on macOS (freedom-core design 0013,
-// PRF-2b). Touch ID is stubbed in main: CI runners have none.
+// PRF-2b and PRF-2d). Touch ID is stubbed in main: CI runners have none.
 //
 // - The wizard's Quick Setup button: main prompts for Touch ID first, then
 //   creates the vault with quick unlock's credential in the core
-//   (`quick_unlock: true`), and writes quick-unlock.dat for older builds.
-//   Touch ID then unlocks through the core: main never unseals the file
-//   (its safeStorage decrypt is made to throw), and the file's bytes stay.
+//   (`quick_unlock: true`), and writes no quick-unlock.dat (PRF-2d). Touch
+//   ID then unlocks through the core: main never unseals anything (its
+//   safeStorage decrypt is made to throw).
 // - Its failure paths delete nothing the core committed: Touch ID cancelled
-//   makes no vault; quick-unlock.dat failing after the commit leaves the
-//   vault with its credential, and the setup finishes.
+//   makes no vault. Without safeStorage the setup still finishes, as it
+//   seals nothing.
 //
 // It needs the real freedom-cored, its key store through main's executor,
 // and the job's temporary keychain as the user's default (FREEDOM_TEST_KEYCHAIN,
@@ -153,13 +153,13 @@ function secrets(dirs) {
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 }
 
-test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
+test.describe('Quick Setup with Touch ID (0013, PRF-2b, PRF-2d)', () => {
   test.skip(!keychainReady, 'macOS with the temporary keychain only (FREEDOM_TEST_KEYCHAIN)');
   // A launch, the core's KDF and the keychain helper take longer than the
   // harness project's 30 s.
   test.describe.configure({ timeout: 180_000 });
 
-  test('Touch ID first, the vault with its credential, quick-unlock.dat; then Touch ID unlocks through the core', async ({
+  test('Touch ID first, the vault with its credential, no quick-unlock.dat; then Touch ID unlocks through the core', async ({
     electronApp,
     window: win,
     dirs,
@@ -173,11 +173,10 @@ test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
     const written = secrets(dirs);
     expect(written.keys.unattended.item).toMatch(/^[0-9a-f]{32}$/);
     expect(Object.keys(written.entries)).toEqual(['quick-unlock']);
-    // quick-unlock.dat for older builds, and a vault the user has no
-    // password for.
+    // No quick-unlock.dat (PRF-2d), and a vault the user has no password
+    // for.
     const credentialPath = path.join(dirs.identity, 'quick-unlock.dat');
-    const bytes = fs.readFileSync(credentialPath);
-    expect(JSON.parse(bytes.toString('utf8')).version).toBe(2);
+    expect(fs.existsSync(credentialPath)).toBe(false);
     const meta = JSON.parse(fs.readFileSync(path.join(dirs.identity, 'vault-meta.json'), 'utf8'));
     expect(meta.userKnowsPassword).toBe(false);
     await expect(win.evaluate(() => window.quickUnlock.isEnabled())).resolves.toBe(true);
@@ -196,7 +195,7 @@ test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
       isUnlocked: true,
     });
     expect((await touchIdPrompts(electronApp)).at(-1)).toBe('unlock Freedom Browser');
-    expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    expect(fs.existsSync(credentialPath)).toBe(false);
   });
 
   test('Touch ID cancelled: no vault, nothing written, nothing deleted', async ({
@@ -219,13 +218,14 @@ test.describe('Quick Setup with Touch ID (0013, PRF-2b)', () => {
     }
   });
 
-  test('quick-unlock.dat failing after the commit: the vault keeps its credential, the setup finishes', async ({
+  test('without safeStorage: the vault keeps its credential, no file, the setup finishes', async ({
     electronApp,
     window: win,
     dirs,
   }) => {
     await stubTouchId(electronApp);
     await electronApp.evaluate(({ safeStorage }) => {
+      safeStorage.isEncryptionAvailable = () => false;
       safeStorage.encryptString = () => {
         throw new Error('Encryption is not available');
       };
