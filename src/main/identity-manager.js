@@ -189,7 +189,8 @@ function saveNewVaultMeta(addresses, userKnowsPassword) {
  */
 async function finishLostSetup(found, password, userKnowsPassword) {
   saveNewVaultMeta(found.addresses, userKnowsPassword);
-  // Keeps the password and retries until the credential is stored.
+  // quick-unlock.dat for older builds: the password sealed at once, never
+  // kept; only a failed write's sealed bytes, for a short retry.
   if (!userKnowsPassword) await require('./quick-unlock').completeQuickSetup(password);
 }
 

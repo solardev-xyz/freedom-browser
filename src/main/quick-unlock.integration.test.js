@@ -20,8 +20,9 @@
  *     unlock once through the file and then through the core, with the
  *     file's bytes unchanged; **downgrade:** the reference quick-unlock.js
  *     still unlocks from it; disable removes both;
- *   - a password change keeps quick unlock: re-wrapped in the core, or
- *     enrolled after it for a profile still on the file alone;
+ *   - a password change keeps quick unlock: re-wrapped in the core; a
+ *     profile still on the file alone is enrolled first, under the old
+ *     vault, and the change's re-wrap carries it across;
  *   - Quick Setup: the vault and its credential, and quick-unlock.dat; a
  *     key-store refusal leaves no vault and deletes nothing;
  *   - **a replace waiting on `forget`** (PRF-2a left it to this step): an
@@ -429,7 +430,7 @@ describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', (
       expect(fs.readFileSync(credentialPath())).toEqual(bytes);
     }, 120_000);
 
-    test('a password change keeps quick unlock: enrolled after it, for a profile on the file alone', async () => {
+    test('a password change keeps quick unlock: enrolled first, for a profile on the file alone, then re-wrapped', async () => {
       await startCore();
       await vaultBackend.importVault(PASSWORD, ABANDON);
       await reference.enableQuickUnlock(PASSWORD);
@@ -437,6 +438,8 @@ describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', (
 
       await quickUnlock.changePasswordKeepingQuickUnlock(PASSWORD, NEW_PASSWORD);
       await expect(vaultBackend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
+      // The re-wrap finished: one entry, bound to the new vault.
+      expect(secretsItems(identity)).toMatchObject({ entries: ['quick-unlock'] });
       await vaultBackend.lock();
       await expect(quickUnlock.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(mockState.decrypts).toBe(0);

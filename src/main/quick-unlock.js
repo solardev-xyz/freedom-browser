@@ -39,6 +39,9 @@ const CREDENTIAL_VERSION = 2;
 
 const UNLOCK_PROMPT = 'unlock Freedom Browser';
 
+const FILE_NOT_REMOVED =
+  "Touch ID unlock is still on: its file in this profile's identity folder could not be removed. Try again; if it keeps failing, contact support.";
+
 // The core's credential can't be used, but enrolling again replaces it:
 // its key is gone or invalidated, or its entry doesn't open.
 const DEAD_CREDENTIAL = new Set(['not_found', 'invalidated', 'entry_refused']);
@@ -91,18 +94,24 @@ function readCredential() {
   return bytes ? parseCredential(bytes) : null;
 }
 
-function createCredentialPayload(password) {
+/**
+ * The password sealed under safeStorage as quick-unlock.dat's bytes, bound
+ * to the profile and to the vault on disk now (its fingerprint, returned
+ * too). Throws when safeStorage can't seal it.
+ */
+function sealCredential(password) {
   const encrypted = safeStorage.encryptString(password);
   const binding = getCurrentBinding();
+  const vaultFingerprint = getVaultFingerprint();
   const payload = {
     version: CREDENTIAL_VERSION,
     profileId: binding.profileId,
     userDataDirHash: binding.userDataDirHash,
-    vaultFingerprint: getVaultFingerprint(),
+    vaultFingerprint,
     encrypted: encrypted.toString('base64'),
     createdAt: new Date().toISOString(),
   };
-  return Buffer.from(JSON.stringify(payload, null, 2), 'utf-8');
+  return { bytes: Buffer.from(JSON.stringify(payload, null, 2), 'utf-8'), vaultFingerprint };
 }
 
 function parseCredential(buffer) {
@@ -139,9 +148,20 @@ function validateCredentialBinding(payload) {
   return null;
 }
 
+function writeSealed(sealed) {
+  withCredentialDir((dir) => dir.write(path.basename(getCredentialPath()), sealed.bytes));
+}
+
 function writeCredential(password) {
-  const payload = createCredentialPayload(password);
-  withCredentialDir((dir) => dir.write(path.basename(getCredentialPath()), payload));
+  writeSealed(sealCredential(password));
+}
+
+/**
+ * A failure, for the log: its code, never its message. A file error's
+ * message names the identity path (fs, private-files.js).
+ */
+function errorCode(err) {
+  return err?.code || err?.name || 'error';
 }
 
 async function verifyCredentialPassword(password) {
@@ -170,7 +190,7 @@ function usableFileCredential() {
     }
     return credential;
   } catch (err) {
-    console.warn('[QuickUnlock] quick-unlock.dat unavailable:', err.message);
+    console.warn('[QuickUnlock] quick-unlock.dat unavailable:', errorCode(err));
     return null;
   }
 }
@@ -280,7 +300,7 @@ function writeCredentialForOlderBuilds(password) {
     writeCredential(password);
     return true;
   } catch (err) {
-    console.error('[QuickUnlock] quick-unlock.dat not written for older builds:', err.message);
+    console.error('[QuickUnlock] quick-unlock.dat not written for older builds:', errorCode(err));
     return false;
   }
 }
@@ -313,10 +333,9 @@ async function quickSetup(mnemonic) {
     await identityManager().importExistingMnemonic(password, mnemonic, false, {
       quickUnlock: true,
     });
-    if (!writeCredentialForOlderBuilds(password)) {
-      // Kept and retried, as for a lost Quick Setup.
-      void completeQuickSetup(password);
-    }
+    // quick-unlock.dat for older builds: sealed now, and only the sealed
+    // bytes kept for a short retry of the write.
+    await completeQuickSetup(password);
     console.log('[QuickUnlock] Quick Setup done');
     return { success: true };
   } catch (err) {
@@ -325,56 +344,75 @@ async function quickSetup(mnemonic) {
   }
 }
 
-// A lost Quick Setup's password until it is stored (see completeQuickSetup).
+// quick-unlock.dat's sealed bytes for a write that failed, retried a few
+// times (see completeQuickSetup). Never the password.
 let pendingSetup = null;
 const SETUP_RETRY_MS = 30_000;
+const SETUP_ATTEMPTS = 3;
 
 /**
- * Stores a Quick Setup vault's random password as quick-unlock.dat, for a
- * setup the core confirmed only after its reply was lost (freedom-core design
- * 0001, "Reconciliation"). The core wrote its own credential with the vault;
- * this file is for older builds. The onboarding renderer that started it may
- * be gone and nobody else knows this password, so main finishes the setup the
- * user chose. Main-internal only.
+ * Writes quick-unlock.dat, for older builds, once the core has committed a
+ * vault with quick unlock's credential: Quick Setup, or one whose reply was
+ * lost and found again (freedom-core design 0001, "Reconciliation"). The
+ * core's credential is the one this build uses, and it is already there.
+ * Main-internal only.
  *
- * Until the credential is stored, main keeps the password and retries
- * (secure storage or the core may come back). It stops only when the vault
- * no longer takes the password: it was replaced or deleted. Other vault
- * operations aren't held up meanwhile, so a restore still works.
- * @returns {Promise<boolean>} whether it was stored now
+ * The password is sealed (safeStorage) here, at once, and never kept. If it
+ * can't be sealed, no file is written, and the log says so with the
+ * failure's code only. The sealed bytes are kept for at most
+ * SETUP_ATTEMPTS writes, SETUP_RETRY_MS apart, and dropped as soon as the
+ * vault they are bound to is no longer the one on disk.
+ * @returns {Promise<boolean>} whether it was written now
  */
 async function completeQuickSetup(password) {
-  if (pendingSetup) clearTimeout(pendingSetup.timer);
-  pendingSetup = { password, timer: null };
+  cancelPendingSetup();
+  let sealed;
+  try {
+    if (!isSecureStorageAvailable()) {
+      throw Object.assign(new Error('Secure storage not available'), { code: 'secure_storage_unavailable' });
+    }
+    sealed = sealCredential(password);
+  } catch (err) {
+    console.error(
+      `[QuickUnlock] quick-unlock.dat for older builds not written: the password could not be sealed (${errorCode(err)}). It is not kept; the core's credential is unaffected.`
+    );
+    return false;
+  }
+  pendingSetup = { sealed, attemptsLeft: SETUP_ATTEMPTS, timer: null };
   return trySetupCredential(pendingSetup);
 }
 
-/** Drops a lost Quick Setup's retained password; an attempt in flight won't write. */
+/** Drops a pending write's sealed bytes; a retry scheduled won't write. */
 function cancelPendingSetup() {
   if (!pendingSetup) return;
   clearTimeout(pendingSetup.timer);
   pendingSetup = null;
 }
 
-async function trySetupCredential(setup) {
+function trySetupCredential(setup) {
+  if (pendingSetup !== setup) return false; // superseded or cancelled
+  setup.attemptsLeft -= 1;
   try {
-    if (!isSecureStorageAvailable()) throw new Error('Secure storage not available');
-    await verifyCredentialPassword(setup.password);
-    if (pendingSetup !== setup) return false; // superseded meanwhile
-    writeCredential(setup.password);
-    pendingSetup = null;
-    console.log('[QuickUnlock] Quick Setup credential stored after reconciliation');
-    return true;
-  } catch (err) {
-    if (pendingSetup !== setup) return false;
-    if (err.code === 'incorrect_password' || err.code === 'no_vault') {
-      // The vault this password belonged to is gone.
+    if (getVaultFingerprint() !== setup.sealed.vaultFingerprint) {
+      // The vault was replaced or deleted: the file would be bound to none.
       pendingSetup = null;
-      console.error('[QuickUnlock] Lost Quick Setup credential dropped:', err.message);
+      console.error('[QuickUnlock] quick-unlock.dat for older builds not written: the vault changed');
       return false;
     }
-    console.error('[QuickUnlock] Quick Setup credential not stored yet:', err.message);
-    setup.timer = setTimeout(() => void trySetupCredential(setup), SETUP_RETRY_MS);
+    writeSealed(setup.sealed);
+    pendingSetup = null;
+    console.log('[QuickUnlock] quick-unlock.dat written for older builds');
+    return true;
+  } catch (err) {
+    if (setup.attemptsLeft <= 0) {
+      pendingSetup = null;
+      console.error(
+        `[QuickUnlock] quick-unlock.dat for older builds not written after ${SETUP_ATTEMPTS} tries (${errorCode(err)}); given up`
+      );
+      return false;
+    }
+    console.error(`[QuickUnlock] quick-unlock.dat for older builds not written yet (${errorCode(err)})`);
+    setup.timer = setTimeout(() => trySetupCredential(setup), SETUP_RETRY_MS);
     setup.timer.unref?.();
     return false;
   }
@@ -419,8 +457,27 @@ async function withTouchId(job) {
   return throughFile(credential, job);
 }
 
+// The file and its binding are read again after the Touch ID prompt, right
+// before use. A vault swapped (or a file replaced) while the prompt was up
+// fails closed rather than meet a stale credential.
+const CHANGED_DURING_PROMPT = 'Quick unlock changed during the Touch ID prompt. Try again.';
+
+/**
+ * quick-unlock.dat's password into `job.file`, then enrolled.
+ *
+ * A v2 file is bound to the vault: it is checked against the vault on disk
+ * again here, after the prompt, and must still be the file read before it.
+ * **A legacy file is the exception:** it carries no binding, so it opens any
+ * vault that takes the same password (as before PRF-2b; a vault delete
+ * leaves the file, as it always has). The core's enroll binds what it
+ * stores to the vault it checks the password against.
+ */
 async function throughFile(credential, job) {
-  const password = safeStorage.decryptString(credential.encrypted);
+  const current = usableFileCredential();
+  if (!current || current.type !== credential.type || !current.encrypted.equals(credential.encrypted)) {
+    throw new Error(CHANGED_DURING_PROMPT);
+  }
+  const password = safeStorage.decryptString(current.encrypted);
   const result = await job.file(password);
   await enroll(password);
   return result;
@@ -504,19 +561,37 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
 /**
  * A password change that keeps quick unlock (0013's deviation
  * `quick-unlock-password-change`). The core re-wraps its own credential in
- * the change. A profile still on quick-unlock.dat alone would lose it, as
- * the file is bound to the vault being replaced: main enrolls the new
- * password once the change is done. The file isn't written.
+ * the change, as one operation with the vault's write (0013, "The re-wrap's
+ * two entries").
+ *
+ * A profile still on quick-unlock.dat alone would lose quick unlock, as the
+ * file is bound to the vault being replaced. So main enrolls the current
+ * password first, under the vault as it is, and the change's re-wrap then
+ * carries the credential across. An enroll the core refuses refuses the
+ * change too, before anything is written: the password stays as it was,
+ * and quick unlock with it. The file isn't written.
  * @param {string} currentPassword
  * @param {string} newPassword
  */
 async function changePasswordKeepingQuickUnlock(currentPassword, newPassword) {
-  const enrollAfter =
+  const enrollFirst =
     KEY_STORE_PLATFORMS.has(process.platform) &&
     usableFileCredential() !== null &&
     !(await coreCredential());
+  if (enrollFirst) {
+    try {
+      await vaultBackend.quickUnlockEnroll(currentPassword);
+    } catch (err) {
+      // A wrong current password reads as the change's own refusal.
+      if (err.code !== 'incorrect_password') {
+        err.message = `The password was not changed: Touch ID unlock could not be kept. ${err.message}`;
+      }
+      console.error('[QuickUnlock] Password change refused: quick unlock not moved into the core:', errorCode(err));
+      throw err;
+    }
+    console.log('[QuickUnlock] Quick unlock is in the core, ahead of the password change');
+  }
   await vaultBackend.changePassword(currentPassword, newPassword);
-  if (enrollAfter) await enroll(newPassword);
 }
 
 /**
@@ -527,10 +602,17 @@ async function changePasswordKeepingQuickUnlock(currentPassword, newPassword) {
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function disableQuickUnlock() {
-  // A lost Quick Setup's retry must not bring the credential back.
+  // A pending write of quick-unlock.dat must not bring the file back.
   cancelPendingSetup();
   try {
     withCredentialDir((dir) => dir.remove(path.basename(getCredentialPath())));
+  } catch (err) {
+    // The file error's message names the identity path: the log gets its
+    // code, the renderer fixed words.
+    console.error('[QuickUnlock] Failed to disable: quick-unlock.dat not removed:', errorCode(err));
+    return { success: false, error: FILE_NOT_REMOVED };
+  }
+  try {
     await vaultBackend.quickUnlockDisable();
     console.log('[QuickUnlock] Touch ID unlock disabled');
     return { success: true };
@@ -590,6 +672,7 @@ function registerQuickUnlockIpc() {
 
 module.exports = {
   CREDENTIAL_VERSION,
+  FILE_NOT_REMOVED,
   completeQuickSetup,
   canUseTouchId,
   isSecureStorageAvailable,
@@ -602,4 +685,6 @@ module.exports = {
   changePasswordKeepingQuickUnlock,
   disableQuickUnlock,
   registerQuickUnlockIpc,
+  // Tests: what a failed write of quick-unlock.dat keeps.
+  _internal: { pendingSetup: () => pendingSetup },
 };

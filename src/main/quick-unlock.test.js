@@ -253,100 +253,150 @@ describe('quick-unlock', () => {
     await expect(mod.isQuickUnlockEnabled()).resolves.toBe(false);
   });
 
-  test('completeQuickSetup stores a verified password without prompting', async () => {
-    const userDataDir = tempUserData();
-    const identityDir = path.join(userDataDir, 'identity');
-    writeVault(identityDir);
-    const profile = makeProfile('work', userDataDir);
-    const { mod, verifyPassword, systemPreferences } = loadQuickUnlock({
-      activeProfile: profile,
-      userDataDir,
+  // quick-unlock.dat after the core committed its own credential (Quick
+  // Setup, or a lost one found again): sealed at once, never the password
+  // kept; a failed write's sealed bytes only, for three tries (#1262 r1).
+  describe('completeQuickSetup', () => {
+    function setUp() {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      const loaded = loadQuickUnlock({ activeProfile: makeProfile('work', userDataDir), userDataDir });
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      // A directory at the credential's name: every write fails.
+      const blockWrites = () => {
+        fs.mkdirSync(credentialPath);
+        fs.writeFileSync(path.join(credentialPath, 'x'), 'x');
+      };
+      const unblockWrites = () => fs.rmSync(credentialPath, { recursive: true, force: true });
+      return { ...loaded, userDataDir, identityDir, credentialPath, blockWrites, unblockWrites };
+    }
+
+    /** Whether `value` holds `needle` anywhere: a string, or a Buffer's text. */
+    function holds(value, needle, seen = new Set()) {
+      if (typeof value === 'string') return value.includes(needle);
+      if (Buffer.isBuffer(value)) return value.toString('utf8').includes(needle);
+      if (!value || typeof value !== 'object' || seen.has(value)) return false;
+      seen.add(value);
+      return Object.values(value).some((v) => holds(v, needle, seen));
+    }
+
+    const logged = () =>
+      [...console.error.mock.calls, ...console.log.mock.calls].flat().map(String).join('\n');
+
+    test('seals and writes the file, without prompting or asking the core', async () => {
+      const { mod, verifyPassword, systemPreferences, safeStorage, credentialPath } = setUp();
+      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(verifyPassword).not.toHaveBeenCalled();
+      expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
+      const payload = JSON.parse(fs.readFileSync(credentialPath, 'utf-8'));
+      expect(payload.encrypted).toBe(Buffer.from('encrypted:random-pass').toString('base64'));
+      expect(mod._internal.pendingSetup()).toBeNull();
     });
 
-    await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
-    expect(verifyPassword).toHaveBeenCalledWith('random-pass');
-    expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
-    const payload = JSON.parse(
-      fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8')
-    );
-    expect(payload.encrypted).toBe(Buffer.from('encrypted:random-pass').toString('base64'));
+    test('a failed write keeps only the sealed bytes, and writes them on a retry', async () => {
+      jest.useFakeTimers();
+      try {
+        const { mod, safeStorage, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
+        blockWrites();
+        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        const pending = mod._internal.pendingSetup();
+        expect(pending).not.toBeNull();
+        expect(holds(pending, 'random-pass')).toBe(false);
+        expect(logged()).not.toContain(identityDir);
+        unblockWrites();
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(JSON.parse(fs.readFileSync(credentialPath, 'utf-8')).encrypted).toBe(
+          Buffer.from('encrypted:random-pass').toString('base64')
+        );
+        // Sealed once: the retry wrote the bytes it kept.
+        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
+        expect(mod._internal.pendingSetup()).toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
 
-    // A password the vault doesn't take (it was replaced) is never stored,
-    // and not retried.
-    verifyPassword.mockRejectedValueOnce(
-      Object.assign(new Error('Incorrect password'), { code: 'incorrect_password' })
-    );
-    await expect(mod.completeQuickSetup('wrong')).resolves.toBe(false);
-    expect(JSON.parse(fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'), 'utf-8')).encrypted)
-      .toBe(Buffer.from('encrypted:random-pass').toString('base64'));
-  });
+    test('three failed writes, and the sealed bytes are dropped', async () => {
+      jest.useFakeTimers();
+      try {
+        const { mod, safeStorage, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
+        blockWrites();
+        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(mod._internal.pendingSetup()).not.toBeNull();
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(mod._internal.pendingSetup()).toBeNull();
+        unblockWrites();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(fs.existsSync(credentialPath)).toBe(false);
+        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
+        expect(logged()).not.toContain(identityDir);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
 
-  test('completeQuickSetup keeps the password and retries until it is stored', async () => {
-    jest.useFakeTimers();
-    try {
-      const userDataDir = tempUserData();
-      const identityDir = path.join(userDataDir, 'identity');
-      writeVault(identityDir);
-      const { mod, verifyPassword } = loadQuickUnlock({
-        activeProfile: makeProfile('work', userDataDir),
-        userDataDir,
-      });
-      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
-      // The core is down at first.
-      verifyPassword.mockRejectedValueOnce(
-        Object.assign(new Error('The core is not running'), { code: 'core_unavailable' })
-      );
-      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-      expect(fs.existsSync(credentialPath)).toBe(false);
-      await jest.advanceTimersByTimeAsync(30_000);
-      expect(verifyPassword).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(fs.readFileSync(credentialPath, 'utf-8')).encrypted).toBe(
-        Buffer.from('encrypted:random-pass').toString('base64')
-      );
-      // Stored: no more retries.
-      await jest.advanceTimersByTimeAsync(120_000);
-      expect(verifyPassword).toHaveBeenCalledTimes(2);
-    } finally {
-      jest.useRealTimers();
-    }
-  });
+    test('a password that cannot be sealed is dropped at once: no file, no retry, nothing kept', async () => {
+      jest.useFakeTimers();
+      try {
+        const thrown = setUp();
+        thrown.safeStorage.encryptString.mockImplementation(() => {
+          throw new Error('Encryption is not available');
+        });
+        await expect(thrown.mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        expect(thrown.mod._internal.pendingSetup()).toBeNull();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(thrown.safeStorage.encryptString).toHaveBeenCalledTimes(1);
+        expect(fs.existsSync(thrown.credentialPath)).toBe(false);
+        expect(logged()).toMatch(/could not be sealed/);
+        expect(logged()).not.toContain('random-pass');
 
-  test('disabling quick unlock cancels a pending Quick Setup credential', async () => {
-    jest.useFakeTimers();
-    try {
-      const userDataDir = tempUserData();
-      const identityDir = path.join(userDataDir, 'identity');
-      writeVault(identityDir);
-      let releaseVerify;
-      const verifyPasswordImpl = jest
-        .fn()
-        .mockRejectedValueOnce(
-          Object.assign(new Error('The core is not running'), { code: 'core_unavailable' })
-        )
-        .mockImplementationOnce(() => new Promise((resolve) => (releaseVerify = resolve)));
-      const { mod } = loadQuickUnlock({
-        activeProfile: makeProfile('work', userDataDir),
-        userDataDir,
-        verifyPasswordImpl,
-      });
-      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
-      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-      // A scheduled retry: disable cancels it.
-      await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
-      await jest.advanceTimersByTimeAsync(120_000);
-      expect(verifyPasswordImpl).toHaveBeenCalledTimes(1);
-      expect(fs.existsSync(credentialPath)).toBe(false);
-      // An attempt in flight when disabled doesn't write either.
-      const attempt = mod.completeQuickSetup('random-pass');
-      await Promise.resolve();
-      const disabled = mod.disableQuickUnlock();
-      releaseVerify();
-      await disabled;
-      await expect(attempt).resolves.toBe(false);
-      expect(fs.existsSync(credentialPath)).toBe(false);
-    } finally {
-      jest.useRealTimers();
-    }
+        const unavailable = setUp();
+        unavailable.safeStorage.isEncryptionAvailable.mockReturnValue(false);
+        await expect(unavailable.mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        expect(unavailable.mod._internal.pendingSetup()).toBeNull();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(unavailable.safeStorage.encryptString).not.toHaveBeenCalled();
+        expect(fs.existsSync(unavailable.credentialPath)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('a vault replaced before the retry: the sealed bytes are dropped, not written', async () => {
+      jest.useFakeTimers();
+      try {
+        const { mod, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
+        blockWrites();
+        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        unblockWrites();
+        writeVault(identityDir, 'vault-b');
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(mod._internal.pendingSetup()).toBeNull();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(fs.existsSync(credentialPath)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('disabling quick unlock drops a pending write', async () => {
+      jest.useFakeTimers();
+      try {
+        const { mod, credentialPath, blockWrites, unblockWrites } = setUp();
+        blockWrites();
+        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
+        unblockWrites();
+        await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+        expect(mod._internal.pendingSetup()).toBeNull();
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(fs.existsSync(credentialPath)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 
   test('hides a bound credential when the active profile does not match', async () => {
@@ -398,6 +448,87 @@ describe('quick-unlock', () => {
   // K-3: the credential is read, written, refreshed and removed through the
   // identity directory's handle, so a link planted at its name after the
   // startup repair is never followed.
+  // #1262 r1: the file is checked against the vault again after the Touch ID
+  // prompt, right before use; a vault swapped meanwhile fails closed.
+  describe('a vault swapped during the Touch ID prompt', () => {
+    async function onTheFile() {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir, 'vault-a');
+      const loaded = loadQuickUnlock({
+        activeProfile: makeProfile('default', userDataDir),
+        userDataDir,
+        // Both vaults take the same password: only the binding tells them apart.
+        core: makeCore({ password: 'same-pw' }),
+      });
+      await loaded.reference().enableQuickUnlock('same-pw');
+      loaded.core.backend.quickUnlockEnroll.mockClear();
+      loaded.safeStorage.decryptString.mockClear();
+      loaded.systemPreferences.promptTouchID.mockClear();
+      return { ...loaded, identityDir };
+    }
+
+    test('a v2 file bound to the vault before it: no unlock, no enroll, nothing unsealed', async () => {
+      const { mod, core, identityManager, safeStorage, systemPreferences, identityDir } = await onTheFile();
+      systemPreferences.promptTouchID.mockImplementation(async () => writeVault(identityDir, 'vault-b'));
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock changed during the Touch ID prompt. Try again.',
+      });
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+      expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+      expect(safeStorage.decryptString).not.toHaveBeenCalled();
+      expect(core.state.credential).toBeNull();
+      // The exports too, with the first vault back before the prompt.
+      writeVault(identityDir, 'vault-a');
+      await expect(mod.exportMnemonicWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock changed during the Touch ID prompt. Try again.',
+      });
+      expect(systemPreferences.promptTouchID).toHaveBeenCalledTimes(2);
+      expect(identityManager.exportMnemonic).not.toHaveBeenCalled();
+    });
+
+    test('the file replaced during the prompt by another one for the same vault: refused too', async () => {
+      const { mod, core, identityManager, systemPreferences, identityDir } = await onTheFile();
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      systemPreferences.promptTouchID.mockImplementation(async () => {
+        const other = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
+        other.encrypted = Buffer.from('encrypted:other-pw').toString('base64');
+        fs.writeFileSync(credentialPath, JSON.stringify(other));
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock changed during the Touch ID prompt. Try again.',
+      });
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+      expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+    });
+
+    test('the vault swapped and the v2 file turned legacy (its own ciphertext, unbound): refused', async () => {
+      const { mod, core, identityManager, systemPreferences, identityDir } = await onTheFile();
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      systemPreferences.promptTouchID.mockImplementation(async () => {
+        const { encrypted } = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
+        fs.writeFileSync(credentialPath, Buffer.from(encrypted, 'base64'));
+        writeVault(identityDir, 'vault-b');
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock changed during the Touch ID prompt. Try again.',
+      });
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+      expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+    });
+
+    test('the vault unchanged: the file still unlocks once, then enrolls', async () => {
+      const { mod, core, identityManager } = await onTheFile();
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('same-pw');
+      expect(core.state.credential).toBe('same-pw');
+    });
+  });
+
   describe('never through a link at the credential name (K-3)', () => {
     const posixTest = originalPlatform.value === 'win32' ? test.skip : test;
     const modeOf = (target) => fs.statSync(target).mode & 0o777;
@@ -464,20 +595,28 @@ describe('quick-unlock', () => {
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
     });
 
-    // PRF-2b: a legacy credential is no longer refreshed after its unlock
-    // (0013: quick-unlock.dat is left byte for byte), so nothing is written
-    // after the Touch ID prompt, and a link planted then is left alone.
-    posixTest('nothing is written after the Touch ID prompt: a link planted then is left alone', async () => {
+    // PRF-2b: nothing is written after the Touch ID prompt (0013:
+    // quick-unlock.dat is left byte for byte), and the file is read again
+    // after it (#1262 r1): a link planted then fails the unlock closed, and
+    // is left alone.
+    posixTest('a link planted during the Touch ID prompt: no unlock, no enroll, the link left alone', async () => {
       const { mod, core, credentialPath, plantLink, outsideUntouched, systemPreferences, identityManager } =
         setUp();
       fs.writeFileSync(credentialPath, Buffer.from('encrypted:legacy'));
       systemPreferences.promptTouchID.mockImplementation(async () => plantLink());
 
-      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
-      expect(identityManager.unlockVault).toHaveBeenCalledWith('legacy');
-      expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('legacy');
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock changed during the Touch ID prompt. Try again.',
+      });
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
+      expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
       expect(fs.lstatSync(credentialPath).isSymbolicLink()).toBe(true);
       outsideUntouched();
+      // The refused link is logged by its code, not its path.
+      const warned = console.warn.mock.calls.flat().map(String).join('\n');
+      expect(warned).toContain('UNSAFE_PRIVATE_PATH');
+      expect(warned).not.toContain(credentialPath);
     });
 
     posixTest('an older 0644 credential is replaced owner-only, never rewritten in place', async () => {
@@ -529,7 +668,7 @@ describe('quick-unlock', () => {
       await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
       expect(console.error).toHaveBeenCalledWith(
         '[QuickUnlock] quick-unlock.dat not written for older builds:',
-        expect.stringContaining('symbolic link')
+        'UNSAFE_PRIVATE_PATH'
       );
       expect(fs.readFileSync(credentialPath)).toEqual(credential);
       expect(modeOf(outsideVault)).toBe(0o644);
@@ -945,16 +1084,19 @@ describe('quick-unlock', () => {
       expect(core.state.credential).toBeNull();
     });
 
-    test('the file not removed: the core is left alone', async () => {
+    test('the file not removed: fixed words, no path; the core is left alone', async () => {
       const { mod, core, credentialPath } = await both();
       // A directory at the credential's name can't be removed as a file.
       fs.rmSync(credentialPath);
       fs.mkdirSync(credentialPath);
       fs.writeFileSync(path.join(credentialPath, 'x'), 'x');
       const result = await mod.disableQuickUnlock();
-      expect(result.success).toBe(false);
+      expect(result).toEqual({ success: false, error: mod.FILE_NOT_REMOVED });
       expect(core.backend.quickUnlockDisable).not.toHaveBeenCalled();
       expect(core.state.credential).toBe('vault-pw');
+      const logged = console.error.mock.calls.flat().map(String).join('\n');
+      expect(logged).toContain('quick-unlock.dat not removed');
+      expect(logged).not.toContain(path.dirname(credentialPath));
     });
   });
 
@@ -983,28 +1125,56 @@ describe('quick-unlock', () => {
       expect(core.state.credential).toBe('new-pw');
     });
 
-    test('quick-unlock.dat alone: the new password is enrolled after the change; the file stays', async () => {
+    test('quick-unlock.dat alone: the current password is enrolled first, and the change re-wraps it; the file stays', async () => {
       const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
       await mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
-      expect(core.backend.changePassword.mock.invocationCallOrder[0]).toBeLessThan(
-        core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]
+      expect(core.backend.quickUnlockEnroll).toHaveBeenCalledTimes(1);
+      expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('old-pw');
+      expect(core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]).toBeLessThan(
+        core.backend.changePassword.mock.invocationCallOrder[0]
       );
-      expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('new-pw');
+      expect(core.state.password).toBe('new-pw');
       expect(core.state.credential).toBe('new-pw');
       expect(fs.readFileSync(credentialPath)).toEqual(bytes);
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
     });
 
-    test('no quick unlock, a refused change, or no key store: nothing enrolled', async () => {
+    test('quick-unlock.dat alone, the enroll refused: the change is refused too, nothing changed', async () => {
+      const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+      core.backend.quickUnlockEnroll.mockRejectedValueOnce(
+        coreError('key_store_unavailable', 'The keychain did not answer in time. Try again.', {
+          reason: 'timeout',
+        })
+      );
+      const refused = mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
+      await expect(refused).rejects.toMatchObject({
+        code: 'key_store_unavailable',
+        data: { reason: 'timeout' },
+        message:
+          'The password was not changed: Touch ID unlock could not be kept. The keychain did not answer in time. Try again.',
+      });
+      expect(core.backend.changePassword).not.toHaveBeenCalled();
+      expect(core.state.password).toBe('old-pw');
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      // Quick unlock is still on, through the file, for the vault as it was.
+      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+      // Tried again, the change keeps quick unlock.
+      await mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
+      expect(core.state.credential).toBe('new-pw');
+    });
+
+    test('no quick unlock, a wrong password, or no key store: nothing enrolled', async () => {
       const none = await profile({ inCore: false, withFile: false });
       await none.mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
       expect(none.core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
 
+      // A wrong current password: the enroll refuses it, in the change's own words.
       const refused = await profile({ inCore: false, withFile: true });
       await expect(refused.mod.changePasswordKeepingQuickUnlock('wrong', 'new-pw')).rejects.toThrow(
-        'Incorrect password'
+        /^Incorrect password$/
       );
-      expect(refused.core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+      expect(refused.core.backend.changePassword).not.toHaveBeenCalled();
+      expect(refused.core.state.credential).toBeNull();
 
       const linux = await profile({ inCore: false, withFile: true });
       setPlatform('linux');
@@ -1105,16 +1275,12 @@ describe('quick-unlock', () => {
       expect(identityManager.deleteVaultData).not.toHaveBeenCalled();
     });
 
-    test('quick-unlock.dat failing after the commit: the setup stands, nothing deleted, the file retried', async () => {
+    test('quick-unlock.dat not sealed after the commit: the setup stands, nothing deleted, the password not kept', async () => {
       jest.useFakeTimers();
       try {
         const { mod, identityManager, safeStorage, core, identityDir, credentialPath } = setUp();
         const vault = () => fs.readFileSync(path.join(identityDir, 'identity-vault.json'));
-        safeStorage.encryptString.mockImplementationOnce(() => {
-          throw new Error('Encryption is not available');
-        });
-        // The retry's first attempt fails the same way.
-        safeStorage.encryptString.mockImplementationOnce(() => {
+        safeStorage.encryptString.mockImplementation(() => {
           throw new Error('Encryption is not available');
         });
 
@@ -1123,13 +1289,34 @@ describe('quick-unlock', () => {
         expect(core.state.credential).not.toBeNull();
         expect(fs.existsSync(credentialPath)).toBe(false);
         expect(identityManager.deleteVaultData).not.toHaveBeenCalled();
+        expect(mod._internal.pendingSetup()).toBeNull();
 
+        // Not retried: the password was dropped; the core's credential works.
+        await jest.advanceTimersByTimeAsync(10 * 60_000);
+        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
+        expect(fs.existsSync(credentialPath)).toBe(false);
+        expect(vault()).toEqual(committed);
+        await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test('quick-unlock.dat not written after the commit: the sealed bytes are retried, then written', async () => {
+      jest.useFakeTimers();
+      try {
+        const { mod, safeStorage, core, credentialPath } = setUp();
+        fs.mkdirSync(credentialPath);
+        fs.writeFileSync(path.join(credentialPath, 'x'), 'x');
+        await expect(mod.quickSetup('abandon about')).resolves.toEqual({ success: true });
+        expect(mod._internal.pendingSetup()).not.toBeNull();
+        fs.rmSync(credentialPath, { recursive: true });
         await jest.advanceTimersByTimeAsync(30_000);
         const payload = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
         expect(safeStorage.decryptString(Buffer.from(payload.encrypted, 'base64'))).toBe(
           core.state.credential
         );
-        expect(vault()).toEqual(committed);
+        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
       } finally {
         jest.useRealTimers();
       }
