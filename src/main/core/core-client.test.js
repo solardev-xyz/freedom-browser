@@ -264,7 +264,7 @@ describe('CoreClient', () => {
     expect(error.message).toBe('Vault is locked');
   });
 
-  // freedom-core design 0012, APR-3: the pinned core (0.16.0, as every core
+  // freedom-core design 0012, APR-3: the pinned core (0.17.0, as every core
   // from 0.14.0) requires `grant_root`, the permission files' directory; APB-2
   // moves the dApp file to the core and APB-3 Swarm's and Radicle's
   // (`grant_moved`), x402's staying main's.
@@ -1194,10 +1194,12 @@ describe('CoreClient', () => {
 
     test("`shell.keystore`, which main has no executor for yet, is answered unknown_method, and the core goes on", async () => {
       // freedom-core design 0013 (PRF-1b, cored 0.16.0): the core's key store
-      // asks main through `shell.keystore`. Main's executor is PRF-2's; until
-      // then the request finds no handler among main's `shell.*` executors
-      // and is answered `unknown_method`, which the core reads as its key
-      // store being unavailable. Nothing else changes: no protocol fault, the
+      // asks main through `shell.keystore`, which the core sends from 0.17.0
+      // (PRF-1c) on macOS when quick unlock is used. Main's executor is
+      // PRF-2's; until then the request finds no handler among main's
+      // `shell.*` executors and is answered `unknown_method`, which the core
+      // reads as its key store being unavailable (`key_store_unavailable`,
+      // reason `no_executor`). Nothing else changes: no protocol fault, the
       // core keeps running, and its other requests are served.
       const rpc = jest.fn(async () => ({ status: 200 }));
       const { send, replies, core, client } = await served((c) => {

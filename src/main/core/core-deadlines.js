@@ -59,6 +59,16 @@ const METHOD_CLASSES = Object.freeze({
   'vault.create': VAULT,
   'vault.import': VAULT,
   'vault.reconcile': VAULT,
+  // Design 0013's quick unlock (cored-v0.17.0, PRF-1c): the vault password
+  // in the core's key store. `enroll` is main's own (`shell`); the rest are
+  // the chrome's alone. All but `status` wait for the vault worker. Main
+  // sends none of them yet (PRF-2).
+  'quick_unlock.enroll': VAULT,
+  'quick_unlock.unlock': VAULT,
+  'quick_unlock.export_mnemonic': VAULT,
+  'quick_unlock.export_private_key': VAULT,
+  'quick_unlock.status': IMMEDIATE,
+  'quick_unlock.disable': VAULT,
   'nodes.write_identity': VAULT,
   'nodes.op_status': VAULT,
   'nodes.seal_radicle_key': IMMEDIATE,

@@ -97,6 +97,36 @@ describeIfBinary('vault-backend with the real freedom-cored', () => {
     expect(await vaultBackend.status()).toMatchObject({ exists: false, unlocked: false });
   }, 60_000);
 
+  test("a secrets file that doesn't read refuses a password change and a delete, with nothing written (cored 0.17.0)", async () => {
+    // freedom-core design 0013 (PRF-1c): from 0.17.0 every password change
+    // and delete reads the core's `secrets.json` (quick unlock's credential),
+    // with or without quick unlock. Main writes none before PRF-2 (its own
+    // Touch ID credential is `quick-unlock.dat`), so its flows leave none,
+    // and only a file that doesn't read refuses them: `storage`, naming the
+    // file, before the commit. mutate() takes the refusal as not committed.
+    const identity = path.join(root, 'identity');
+    await vaultBackend.importVault('testpass1', ABANDON);
+    await vaultBackend.changePassword('testpass1', 'testpass2');
+    expect(fs.readdirSync(identity)).not.toContain('secrets.json');
+
+    fs.writeFileSync(path.join(identity, 'secrets.json'), 'not json', { mode: 0o600 });
+    const refused = { code: 'storage', data: { kind: 'malformed', file: 'secrets' } };
+    await expect(vaultBackend.changePassword('testpass2', 'testpass3')).rejects.toMatchObject(
+      refused
+    );
+    await vaultBackend.verifyPassword('testpass2');
+    await expect(vaultBackend.deleteVault('testpass2')).rejects.toMatchObject(refused);
+    expect(await vaultBackend.status()).toMatchObject({ exists: true });
+    // Not written over.
+    expect(fs.readFileSync(path.join(identity, 'secrets.json'), 'utf8')).toBe('not json');
+
+    fs.rmSync(path.join(identity, 'secrets.json'));
+    await vaultBackend.changePassword('testpass2', 'testpass3');
+    await vaultBackend.deleteVault('testpass3');
+    expect(await vaultBackend.status()).toMatchObject({ exists: false });
+    expect(fs.readdirSync(identity)).not.toContain('secrets.json');
+  }, 60_000);
+
   test('mnemonics and creation', async () => {
     const phrase = await vaultBackend.generateMnemonic(128);
     expect(phrase.split(' ')).toHaveLength(12);
