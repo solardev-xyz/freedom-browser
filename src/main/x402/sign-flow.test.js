@@ -182,6 +182,20 @@ describe('signAndQueueRetry — the core picks and signs the entry', () => {
     expect(mockLoadURL).not.toHaveBeenCalled();
   });
 
+  test("a cap's payment handed the card's token burns it: the core is never shown it", async () => {
+    mockCore.seedCap({ origin: ORIGIN, chainId: 8453, asset: BASE_USDC, capAmount: '50000' });
+    await loadCaps();
+    const detection = detectionFor(URL_, [baseAccept]);
+    const confirmation = await approved(detection);
+
+    await signAndQueueRetry(7, { detection, authorizedBy: 'cap', confirmation });
+
+    expect(corePayments()[0].params.authorization).toEqual({ cap: { agent: false, attributable: true } });
+    expect(mockCore.calls.filter(({ method }) => method === 'approval.discard').map(({ params }) => params))
+      .toEqual([{ token: confirmation.token }]);
+    expect(mockCore.outstanding()).toBe(0);
+  });
+
   test('a manual payment without a token is not sent to the core', async () => {
     await expect(signAndQueueRetry(7, { detection: detectionFor() })).rejects.toThrow(/no confirmation token/);
     expect(corePayments()).toEqual([]);

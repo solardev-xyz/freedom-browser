@@ -259,7 +259,9 @@ async function authorizeAndStash(webContentsId, opts, held, presenting) {
     // Refuses a device account before the core is asked: the core would
     // sign with the vault's key at its index, an address the user never saw.
     reply = await withVaultAccount(walletIndex, () => {
-      presenting();
+      // Only a token sent to the core is spent there: one the payment
+      // doesn't present (a cap's) is burnt here, as one never asked.
+      if (params.authorization.token) presenting();
       return authorizePayment(params);
     });
   } catch (err) {

@@ -1305,6 +1305,7 @@ function withholdAtInject(signed, urlForLog) {
       `[x402:inject] cap-authorized signature for ${urlForLog} carries no cap charge; ` +
       'withholding signature so cap accounting cannot be bypassed'
     );
+    giveBackCharge(signed);
     return true;
   }
   // The cap as the core last reported it: revoked or expired since the
