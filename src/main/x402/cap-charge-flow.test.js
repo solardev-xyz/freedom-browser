@@ -58,7 +58,7 @@ const caps = require('./caps');
 const grants = require('../core/grants');
 const confirmations = require('../wallet/signing-confirmation');
 const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
-const { registerX402Ipc, paymentApprovalRequest, CAP_EDIT_REFUSED } = require('./ipc');
+const { registerX402Ipc, paymentApprovalRequest } = require('./ipc');
 
 const ORIGIN = 'https://api.example';
 // The core keys a cap's asset in lowercase.
@@ -213,7 +213,7 @@ describe('the core charges an auto-pay as it signs it (#1024)', () => {
     release();
     await expect(first).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
     expect(signatures()).toBe(1);
-    expect(retry(42, `${ORIGIN}/seg/1`, 11)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await retry(42, `${ORIGIN}/seg/1`, 11))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
     await settle();
     expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'sent' }]);
     expect(spent()).toBe(PRICE);
@@ -231,7 +231,7 @@ describe('the core charges an auto-pay as it signs it (#1024)', () => {
     expect(coreAsked()).toHaveLength(2);
     expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
-    expect(retry(41, `${ORIGIN}/a`, 13)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await retry(41, `${ORIGIN}/a`, 13))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
     // The one the core refused loads again, and its 402 goes to the card:
     // the mirror has read the charge back.
     expect(mockTabs.get(42).loadURL).toHaveBeenCalledWith(`${ORIGIN}/b`);
@@ -262,7 +262,7 @@ describe('the core charges an auto-pay as it signs it (#1024)', () => {
     await settle();
     expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
     expect(spent()).toBe('0');
-    expect(retry(42, `${ORIGIN}/seg/15`, 25)).toBeNull();
+    expect(await retry(42, `${ORIGIN}/seg/15`, 25)).toBeNull();
   });
 
   test('a locked vault charges nothing while the user unlocks it; unlocked, the core charges it and signs', async () => {
@@ -334,7 +334,7 @@ describe('a paywall auto-pay held for a vault unlock (#1024)', () => {
     await expect(resume(42)).resolves.toMatchObject({ success: true });
     expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
-    expect(retry(42, `${ORIGIN}/d`, 19)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await retry(42, `${ORIGIN}/d`, 19))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 });
 
@@ -370,7 +370,7 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
     // Nothing held is left for a later resume, and nothing signed to attach.
     expect(intercept.hasPendingUnlockWait(42)).toBe(false);
     expect(intercept.consumePendingUnlockResume(42)).toBeNull();
-    expect(retry(42, `${ORIGIN}/seg/51`, 61)).toBeNull();
+    expect(await retry(42, `${ORIGIN}/seg/51`, 61)).toBeNull();
 
     intercept.cleanupWebContents(42);
     await expect(pending).resolves.toBeNull();
@@ -420,7 +420,7 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
     expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
     expect(spent()).toBe('0');
     expect(cardsRaised()).toEqual(['req-54']);
-    expect(retry(42, `${ORIGIN}/seg/54`, 64)).toBeNull();
+    expect(await retry(42, `${ORIGIN}/seg/54`, 64)).toBeNull();
 
     intercept.cleanupWebContents(42);
     await expect(pending).resolves.toBeNull();
@@ -440,7 +440,7 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
 
     expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
     expect(spent()).toBe('0');
-    expect(retry(42, `${ORIGIN}/f`, 65)).toBeNull();
+    expect(await retry(42, `${ORIGIN}/f`, 65)).toBeNull();
     expect(mockTabs.get(42).loadURL).toHaveBeenCalledTimes(1);
     expect(mockTabs.get(42).loadURL).toHaveBeenCalledWith(`${ORIGIN}/f`);
   });
@@ -458,7 +458,7 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
     await expect(pending).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
     expect(spent()).toBe(PRICE);
     expect(cardsRaised()).toEqual([]);
-    expect(retry(42, `${ORIGIN}/seg/56`, 66)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await retry(42, `${ORIGIN}/seg/56`, 66))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 
   test("another tab in Agent custody does not stop a user tab's held paywall", async () => {
@@ -472,7 +472,7 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
     await expect(resume(42)).resolves.toMatchObject({ success: true });
     expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
-    expect(retry(42, `${ORIGIN}/g`, 67)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await retry(42, `${ORIGIN}/g`, 67))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 });
 
@@ -505,7 +505,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
     try {
-      expect(retry(41, 'https://elsewhere.example/', 36)).toBeNull();
+      expect(await retry(41, 'https://elsewhere.example/', 36)).toBeNull();
     } finally {
       Date.now = realNow;
     }
@@ -520,7 +520,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
     try {
-      expect(retry(42, `${ORIGIN}/seg/21`, 31)).toBeNull();
+      expect(await retry(42, `${ORIGIN}/seg/21`, 31)).toBeNull();
     } finally {
       Date.now = realNow;
     }
@@ -541,7 +541,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     const reservation = await signedAutoPay(23);
     // The activity pane's revoke, through the core.
     await caps.revoke(ORIGIN, CHAIN, USDC);
-    expect(retry(42, `${ORIGIN}/seg/23`, 33)).toBeNull();
+    expect(await retry(42, `${ORIGIN}/seg/23`, 33)).toBeNull();
     await settle();
     expect(settles()).toEqual([{ reservation, outcome: 'withheld' }]);
     expect(capConsumed()).toEqual([]);
@@ -573,7 +573,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
       await grantCap('20000', { createdAt: old.createdAt, expiresAt: old.expiresAt });
       expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual({ ...old, spentAmount: '0' });
       await expect(detect(41, { id: 90 })).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
-      expect(retry(41, `${ORIGIN}/seg/90`, 91)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+      expect((await retry(41, `${ORIGIN}/seg/90`, 91))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
       expect(spent()).toBe(PRICE);
       await settle();
       mockHostSend.mockReset();
@@ -598,7 +598,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
       await grantedAgainAndCharged();
 
       fixed += 61_000;
-      expect(retry(42, `${ORIGIN}/seg/31`, 41)).toBeNull();
+      expect(await retry(42, `${ORIGIN}/seg/31`, 41)).toBeNull();
       await settle();
       expect(settles()).toEqual([
         { reservation: expect.any(String), outcome: 'sent' },
@@ -608,9 +608,29 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
       expect(capConsumed()).toEqual([]);
     });
 
+    // X402-2's decision 3, closed by cored 0.19.0: the mirror shows a cap
+    // like the old one, so main's own check passes, but the core refuses
+    // `sent` for a cap that isn't the one charged (`cap_changed`), and the
+    // header is withheld. The reservation is spent there: nothing is given
+    // back to the new cap, and nothing more is settled.
+    test('the retry: the core refuses sent (cap_changed), and the header is withheld', async () => {
+      const reservation = await signedAutoPay(32);
+      await grantedAgainAndCharged();
+
+      expect(await retry(42, `${ORIGIN}/seg/32`, 42)).toBeNull();
+      await settle();
+      expect(settles()).toEqual([
+        { reservation: expect.any(String), outcome: 'sent' },
+        { reservation, outcome: 'sent' },
+      ]);
+      expect(spent()).toBe(PRICE);
+      expect(capConsumed()).toEqual([]);
+      expect(mockCore.openReservations()).toBe(0);
+    });
+
     test('the cap left alone: the header goes out', async () => {
       const reservation = await signedAutoPay(30);
-      expect(retry(42, `${ORIGIN}/seg/30`, 40)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+      expect((await retry(42, `${ORIGIN}/seg/30`, 40))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
       await settle();
       expect(settles()).toEqual([{ reservation, outcome: 'sent' }]);
       expect(spent()).toBe(PRICE);
@@ -619,7 +639,7 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
 
   test('once the header has gone out, the charge stays whatever the server answers', async () => {
     const reservation = await signedAutoPay(24);
-    expect(retry(42, `${ORIGIN}/seg/24`, 34)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    expect((await retry(42, `${ORIGIN}/seg/24`, 34))?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
     intercept.paymentResponseLoggingHandler({
       id: 34,
       statusLine: 'HTTP/1.1 402 Payment Required',
@@ -665,46 +685,97 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
   });
 });
 
-describe('x402:update-permission is refused: a cap is the core\'s (X402-2, #1023)', () => {
-  const EDIT = { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '99000000' };
-  const REFUSED = { success: false, error: CAP_EDIT_REFUSED, code: 'SIGNING_NOT_CONFIRMED' };
+describe('x402:update-permission narrows a cap through the core, and raises none (X402-2b, #1023)', () => {
   const update = (sender, args) => ipcHandlers['x402:update-permission']({ sender }, args);
   // The core asked anything since `from`.
   const askedSince = (from) => mockCore.calls.slice(from).map(({ method }) => method);
+  const NARROW_ONLY = caps.NARROW_ONLY;
 
-  test('a bare call raises nothing, and asks the core nothing', async () => {
+  test('a larger or equal amount or window is refused unasked, and the cap is unchanged', async () => {
     const cap = await grantCap(PRICE);
     const from = mockCore.calls.length;
+    const window = cap.expiresAt - cap.createdAt;
 
-    await expect(update(CHROME, EDIT)).resolves.toEqual(REFUSED);
-    await expect(update(CHROME, {
-      origin: ORIGIN,
-      chainId: CHAIN,
-      asset: USDC,
-      windowSeconds: 10 * 365 * 86400,
-    })).resolves.toEqual(REFUSED);
+    for (const change of [
+      { capAmount: '99000000' },
+      { capAmount: PRICE },
+      { windowSeconds: 10 * 365 * 86400 },
+      { windowSeconds: window },
+      { capAmount: '1', windowSeconds: window + 1 },
+    ]) {
+      await expect(update(CHROME, { origin: ORIGIN, chainId: CHAIN, asset: USDC, ...change })).resolves.toEqual({
+        success: false,
+        error: NARROW_ONLY,
+        code: 'forbidden',
+      });
+    }
 
     expect(askedSince(from)).toEqual([]);
     expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual(cap);
     expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: PRICE, expiresAt: cap.expiresAt });
   });
 
-  test("with a token minted for exactly that edit, from the window that confirmed it, it is refused all the same", async () => {
+  test('a lower amount, then a shorter window: x402.update as the chrome, and the mirror reads it back', async () => {
+    const cap = await grantCap('20000');
+    const from = mockCore.calls.length;
+
+    await expect(update(CHROME, { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '15000' })).resolves.toEqual({
+      success: true,
+    });
+    await expect(update(CHROME, { origin: ORIGIN, chainId: CHAIN, asset: USDC, windowSeconds: 600 })).resolves.toEqual({
+      success: true,
+    });
+
+    const narrowings = mockCore.calls.slice(from).filter(({ method }) => method === 'x402.update');
+    expect(narrowings.map(({ params, page }) => ({ params, page }))).toEqual([
+      { params: { key: ORIGIN, cap: { chain_id: CHAIN, asset: USDC }, cap_amount: '15000' }, page: 'chrome' },
+      { params: { key: ORIGIN, cap: { chain_id: CHAIN, asset: USDC }, window_seconds: 600 }, page: 'chrome' },
+    ]);
+    expect(askedSince(from).filter((method) => method !== 'approval.grants')).toEqual(['x402.update', 'x402.update']);
+    expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: '15000', expiresAt: cap.createdAt + 600 });
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: '15000', expiresAt: cap.createdAt + 600 });
+  });
+
+  test("a cap that isn't there, or a malformed amount, is refused unasked", async () => {
+    await grantCap('20000');
+    const from = mockCore.calls.length;
+    const other = await update(CHROME, { origin: 'https://other.example', chainId: CHAIN, asset: USDC, capAmount: '1' });
+    expect(other).toMatchObject({ success: false, error: 'This auto-pay cap is no longer there' });
+    const malformed = await update(CHROME, { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '0100' });
+    expect(malformed.success).toBe(false);
+    const nothing = await update(CHROME, { origin: ORIGIN, chainId: CHAIN, asset: USDC });
+    expect(nothing).toMatchObject({ success: false, error: 'Nothing to change' });
+    expect(askedSince(from)).toEqual([]);
+  });
+
+  test("a narrowing the core refuses (its file says otherwise) is the core's refusal, with nothing written", async () => {
+    await grantCap('20000');
+    // The core's cap is already lower than the mirror says.
+    const record = mockCore.cap(ORIGIN, CHAIN, USDC);
+    await mockCore.x402.update({ key: ORIGIN, cap: { chain_id: CHAIN, asset: USDC }, cap_amount: '5000' }, 'chrome');
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(record.capAmount);
+
+    const result = await update(CHROME, { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '15000' });
+    expect(result).toMatchObject({ success: false, code: 'forbidden' });
+    expect(mockCore.cap(ORIGIN, CHAIN, USDC).capAmount).toBe('5000');
+  });
+
+  test("main's own x402-cap-update token changes nothing: a narrowing needs none, and a widening isn't possible", async () => {
     const cap = await grantCap(PRICE);
-    // As main minted one before X402-2 (`wallet:confirm-signing` mints
-    // none now): bound to this window, this cap and this edit.
+    // As main minted one before X402-2: bound to this window, this cap and
+    // this (wider) edit.
+    const edit = { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '99000000' };
     const { token: confirmation } = confirmations.issueMainConfirmation(confirmations.KINDS.X402_CAP_UPDATE, null, {
       window: CHROME.id,
-      ...EDIT,
+      ...edit,
       current: { capAmount: cap.capAmount, createdAt: cap.createdAt, expiresAt: cap.expiresAt, generation: 1 },
     });
     const from = mockCore.calls.length;
 
-    await expect(update(CHROME, { ...EDIT, confirmation })).resolves.toEqual(REFUSED);
+    await expect(update(CHROME, { ...edit, confirmation })).resolves.toMatchObject({ success: false, code: 'forbidden' });
 
     expect(askedSince(from)).toEqual([]);
     expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual(cap);
-    expect(caps.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
   });
 });
 

@@ -274,7 +274,10 @@ describe('permission-manage x402 subscreen', () => {
     jest.restoreAllMocks();
   });
 
-  test('renders active caps read-only: an amount or a window is the core\'s (X402-2)', async () => {
+  const NARROW_ONLY =
+    'An auto-pay cap can only be lowered here. To raise it, set a new cap when you next approve a payment.';
+
+  test('renders active caps, and lowers a cap through the core, with no confirmation (X402-2b)', async () => {
     const ctx = await loadPermissionManage();
 
     await ctx.mod.showX402Permissions('https://pay.example');
@@ -282,7 +285,6 @@ describe('permission-manage x402 subscreen', () => {
     const list = ctx.elements['x402-perms-list'];
     const block = list.children[0];
     const capInput = block.querySelector('input');
-    const windowSelect = block.querySelector('select');
 
     expect(ctx.hideAllSubscreens).toHaveBeenCalled();
     expect(ctx.openSidebarPanel).toHaveBeenCalled();
@@ -292,19 +294,84 @@ describe('permission-manage x402 subscreen', () => {
     expect(block.querySelector('.x402-perm-asset-name').textContent).toBe('USDC');
     expect(block.querySelector('.x402-perm-usage-summary').textContent).toBe('2 of 10 USDC spent');
     expect(capInput.value).toBe('10');
-    // Shown, not editable: lowering a cap waits for the core (freedom-core #392).
-    expect(capInput.disabled).toBe(true);
-    expect(windowSelect.disabled).toBe(true);
-    expect(block.querySelector('.x402-perm-meta').textContent).toMatch(/revoke it and set a new one/);
+    // The field offers nothing above the cap, and the pane says why.
+    expect(capInput.max).toBe('10');
+    expect(capInput.disabled).toBeFalsy();
+    expect(block.querySelector('.x402-perm-meta').textContent).toMatch(/lower this cap or shorten its window here/);
+    expect(block.querySelector('.x402-perm-meta').textContent).toMatch(/To raise either, set a new cap/);
 
-    capInput.value = '25';
+    capInput.value = '5';
     await capInput.fire('change');
-    await windowSelect.fire('change');
 
-    // No edit is confirmed or sent, and no refusal shown.
+    // A narrowing, the core's: no confirmation is minted for it.
     expect(ctx.wallet.confirmSigning).not.toHaveBeenCalled();
-    expect(ctx.electronAPI.x402UpdatePermission).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.x402UpdatePermission).toHaveBeenCalledWith({
+      origin: 'https://pay.example',
+      chainId: 8453,
+      asset: '0xUSDC',
+      capAmount: '5000000',
+    });
+    expect(ctx.updateX402ConnectionBanner).toHaveBeenCalledWith('https://pay.example');
     expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(true);
+  });
+
+  test.each([['25'], ['10']])('an amount of %s, not below the cap, is refused in the pane and never sent', async (whole) => {
+    const ctx = await loadPermissionManage();
+    await ctx.mod.showX402Permissions('https://pay.example');
+    const capInput = ctx.elements['x402-perms-list'].children[0].querySelector('input');
+
+    capInput.value = whole;
+    await capInput.fire('change');
+
+    expect(ctx.electronAPI.x402UpdatePermission).not.toHaveBeenCalled();
+    expect(capInput.value).toBe('10');
+    expect(ctx.elements['x402-perms-error'].textContent).toBe(NARROW_ONLY);
+    expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(false);
+  });
+
+  test('the window offers the current one and only shorter ones; a shorter one goes to the core', async () => {
+    const ctx = await loadPermissionManage();
+    await ctx.mod.showX402Permissions('https://pay.example');
+    const windowSelect = ctx.elements['x402-perms-list'].children[0].querySelector('select');
+    const current = 30 * 24 * 60 * 60 + 60;
+
+    // The cap's own window (not a preset) and the presets shorter than it.
+    expect(windowSelect.children.map((o) => Number(o.value))).toEqual([86400, 7 * 86400, 30 * 86400, current]);
+    expect(windowSelect.children.find((o) => o.selected).value).toBe(String(current));
+    expect(windowSelect.children.map((o) => o.textContent)).toEqual(['1 day', '7 days', '30 days', 'Current']);
+
+    windowSelect.value = '86400';
+    await windowSelect.fire('change');
+    expect(ctx.electronAPI.x402UpdatePermission).toHaveBeenCalledWith({
+      origin: 'https://pay.example',
+      chainId: 8453,
+      asset: '0xUSDC',
+      windowSeconds: 86400,
+    });
+
+    // A longer window, however it got there, is refused unsent.
+    ctx.electronAPI.x402UpdatePermission.mockClear();
+    windowSelect.value = String(365 * 86400);
+    await windowSelect.fire('change');
+    expect(ctx.electronAPI.x402UpdatePermission).not.toHaveBeenCalled();
+    expect(windowSelect.value).toBe(String(current));
+    expect(ctx.elements['x402-perms-error'].textContent).toBe(NARROW_ONLY);
+  });
+
+  test("a narrowing the core refuses shows its refusal and refreshes the views", async () => {
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const ctx = await loadPermissionManage({
+      updateResult: { success: false, error: 'Not a narrowing.' },
+    });
+    await ctx.mod.showX402Permissions('https://pay.example');
+    const capInput = ctx.elements['x402-perms-list'].children[0].querySelector('input');
+
+    capInput.value = '5';
+    await capInput.fire('change');
+
+    expect(ctx.elements['x402-perms-error'].textContent).toBe('Not a narrowing.');
+    expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(false);
+    expect(ctx.updateX402ConnectionBanner).toHaveBeenCalledWith('https://pay.example');
   });
 
   test('revokes all x402 caps for the current origin and closes the subscreen', async () => {

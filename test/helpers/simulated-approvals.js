@@ -69,12 +69,23 @@
  *     replies `{ payload, reservation, accept_index, charged, grant? }`;
  *     `x402.settle` gives a reservation's charge back (`withheld`) only to
  *     the cap generation it was taken from, or keeps it (`sent`), once
- *     (an unknown reservation is `invalid_argument`). `seedCap`, `cap`,
+ *     (an unknown reservation is `invalid_argument`). cored 0.19.0
+ *     (X402-2b): `sent` for a cap's payment whose cap was revoked, or
+ *     revoked and granted again, since its charge is `cap_changed`; a
+ *     `device: { kind, address }` payment uses no key (a locked vault
+ *     doesn't stop it) and replies `{ device: { typed_data, hash },
+ *     reservation, accept_index, charged }` (simulated typed data, and a
+ *     sha256 digest the device's signature must recover over), then
+ *     `x402.settle { reservation, signature }` checks it (`wrong_account`,
+ *     `bad_response`, with `refunded`; the reservation spent) and replies
+ *     `{ payload, charged, grant? }`, a token's grant and charge written
+ *     then; and `x402.update` narrows a cap, each field given strictly
+ *     (`forbidden` otherwise; a page's `forbidden`). `seedCap`, `cap`,
  *     `setX402Locked`, `setX402Signer` and `openReservations` drive it.
  * Every call is recorded in `calls` as `{ method, params, page }`.
  */
 const crypto = require('crypto');
-const { TypedDataEncoder } = require('ethers');
+const { TypedDataEncoder, recoverAddress } = require('ethers');
 const { normalizeOrigin } = require('../../src/shared/origin-utils');
 const { VAULT_LOCKED_MESSAGE } = require('../../src/main/wallet/vault-errors');
 
@@ -398,15 +409,56 @@ function simulatedApprovals() {
     return BigInt(tuple.amount) <= BigInt(cap.capAmount) - BigInt(cap.spentAmount) ? { cap, tuple } : null;
   }
   // Charges the cap covering `accept`: its reservation, or null for none.
-  function chargeCap(origin, accept) {
+  // `byCap`: a cap's payment (`authorization: { cap }`), which `sent` holds
+  // to the cap it charged (`cap_changed`, cored 0.19.0).
+  function chargeCap(origin, accept, { byCap = false } = {}) {
     const found = covering(origin, accept);
     if (!found) return null;
     const { cap, tuple } = found;
     cap.spentAmount = (BigInt(cap.spentAmount) + BigInt(tuple.amount)).toString();
     while (reservations.size >= 64) reservations.delete(reservations.keys().next().value);
     const id = crypto.randomBytes(16).toString('hex');
-    reservations.set(id, { origin, chainId: cap.chainId, asset: cap.asset, amount: tuple.amount, generation: cap.generation });
+    reservations.set(id, {
+      origin,
+      chainId: cap.chainId,
+      asset: cap.asset,
+      amount: tuple.amount,
+      generation: cap.generation,
+      charged: true,
+      byCap,
+    });
     return id;
+  }
+  // A reservation's charge given back, only to the cap it was taken from:
+  // a revoke drops its generation. Whether it was.
+  function refund(held) {
+    if (!held?.charged) return false;
+    const cap = findCap(held.origin, held.chainId, held.asset);
+    if (!cap || cap.generation !== held.generation) return false;
+    const spent = BigInt(cap.spentAmount);
+    const amount = BigInt(held.amount);
+    cap.spentAmount = (spent >= amount ? spent - amount : 0n).toString();
+    return true;
+  }
+  // The device path's typed data (cored 0.19.0, `x402.authorize { device }`),
+  // simulated: EIP-3009's shape, and a digest of it the device's signature
+  // must recover over (the real core's is its EIP-712 hash).
+  function deviceTypedData(device, accept) {
+    const t = nowSeconds();
+    const typedData = {
+      domain: { name: accept.extra?.name ?? '', version: accept.extra?.version ?? '', chainId: tupleOf(accept)?.chainId, verifyingContract: accept.asset },
+      types: { TransferWithAuthorization: [{ name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'value', type: 'uint256' }] },
+      primaryType: 'TransferWithAuthorization',
+      message: {
+        from: device.address,
+        to: accept.payTo,
+        value: accept.amount,
+        validAfter: String(t - 600),
+        validBefore: String(t + (accept.maxTimeoutSeconds ?? 60)),
+        nonce: '0x' + crypto.randomBytes(32).toString('hex'),
+      },
+    };
+    return { typed_data: typedData, hash: '0x' + crypto.createHash('sha256').update(stable(typedData)).digest('hex') };
   }
   function writeCap(origin, chainId, asset, capAmount, windowSeconds, createdAt = nowSeconds()) {
     const caps = (x402Caps.get(origin) || []).filter((cap) => !(cap.chainId === chainId && cap.asset === asset.toLowerCase()));
@@ -442,15 +494,36 @@ function simulatedApprovals() {
     };
   }
 
+  // A device's reservation, waiting for its signature: what the payment
+  // binds, and the typed data's digest the signature must recover over.
+  function awaitSignature(device, accept, index, typed, { reservation, origin, grant }) {
+    let id = reservation;
+    if (!id) {
+      while (reservations.size >= 64) reservations.delete(reservations.keys().next().value);
+      id = crypto.randomBytes(16).toString('hex');
+      reservations.set(id, { origin, charged: false, byCap: false });
+    }
+    Object.assign(reservations.get(id), {
+      awaiting: { device, accept, index, hash: typed.hash, message: typed.typed_data.message, grant, origin },
+    });
+    return id;
+  }
+
   const x402 = {
     async authorize(params, context = null) {
       calls.push({ method: 'x402.authorize', params, page: context });
       if (callerOf(context) !== 'shell') throw coded('x402.authorize: main only', 'forbidden');
-      const { account, detection, requirements, authorization, accept_index: acceptIndex, grant } = params ?? {};
+      const { account, device, detection, requirements, authorization, accept_index: acceptIndex, grant } = params ?? {};
       const accepts = Array.isArray(requirements?.accepts) ? requirements.accepts : [];
       const origin = capKeyOf(detection?.url);
       if (!origin || typeof detection?.id !== 'string' || !Number.isSafeInteger(detection?.tab)) {
         throw coded('detection: invalid', 'invalid_argument');
+      }
+      if (
+        device !== undefined &&
+        (!['ledger', 'phone'].includes(device?.kind) || !/^0x[0-9a-fA-F]{40}$/.test(device?.address ?? ''))
+      ) {
+        throw coded('device: invalid', 'invalid_argument');
       }
       let grantReply;
       if (authorization?.cap) {
@@ -459,11 +532,17 @@ function simulatedApprovals() {
         }
         if (authorization.cap.agent === true) throw refused('custody');
         if (authorization.cap.attributable !== true) throw refused('no_rule');
-        if (x402Locked) throw new Error(VAULT_LOCKED_MESSAGE);
+        // A device's payment uses no key: a locked vault doesn't stop it.
+        if (x402Locked && !device) throw new Error(VAULT_LOCKED_MESSAGE);
         const index = accepts.findIndex((accept) => covering(origin, accept));
         if (index < 0) throw refused('cap');
         // The charge comes first: nothing is signed without it.
-        const reservation = chargeCap(origin, accepts[index]);
+        const reservation = chargeCap(origin, accepts[index], { byCap: true });
+        if (device) {
+          const typed = deviceTypedData(device, accepts[index]);
+          awaitSignature(device, accepts[index], index, typed, { reservation, origin });
+          return { device: typed, reservation, accept_index: index, charged: true };
+        }
         try {
           const payload = signPayment(params, accepts[index]);
           return { payload, reservation, accept_index: index, charged: true };
@@ -479,6 +558,12 @@ function simulatedApprovals() {
           ? { account, payload: { detection, accept_index: acceptIndex, accept: accepts[acceptIndex], grant }, page: null }
           : null
       );
+      if (device) {
+        // A token's grant and charge wait for the device's signature.
+        const typed = deviceTypedData(device, accepts[acceptIndex]);
+        const reservation = awaitSignature(device, accepts[acceptIndex], acceptIndex, typed, { origin, grant });
+        return { device: typed, reservation, accept_index: acceptIndex, charged: false };
+      }
       if (x402Locked) throw new Error(VAULT_LOCKED_MESSAGE);
       const index = acceptIndex;
       const payload = signPayment(params, accepts[index]);
@@ -505,18 +590,85 @@ function simulatedApprovals() {
       if (callerOf(context) !== 'shell') throw coded('x402.settle: main only', 'forbidden');
       const held = reservations.get(params?.reservation);
       if (!held) throw coded('reservation: unknown', 'invalid_argument');
+      if ((params.signature === undefined) === (params.outcome === undefined)) {
+        throw coded('signature and outcome: exactly one', 'invalid_argument');
+      }
+      if (params.signature !== undefined) return settleSignature(params.reservation, held, params.signature);
       if (params.outcome !== 'sent' && params.outcome !== 'withheld') throw coded('outcome: unknown', 'invalid_argument');
+      // `sent` before a device's signature: refused, the reservation kept.
+      if (held.awaiting && params.outcome === 'sent') throw coded('sent before the signature', 'invalid_argument');
       reservations.delete(params.reservation);
-      if (params.outcome === 'sent') return { refunded: false };
-      // Only to the cap it was taken from: a revoke drops its generation.
-      const cap = findCap(held.origin, held.chainId, held.asset);
-      if (!cap || cap.generation !== held.generation) return { refunded: false };
-      const spent = BigInt(cap.spentAmount);
-      const amount = BigInt(held.amount);
-      cap.spentAmount = (spent >= amount ? spent - amount : 0n).toString();
-      return { refunded: true };
+      if (params.outcome === 'sent') {
+        // A cap's payment goes out only while the cap it charged stands.
+        if (held.byCap) {
+          const cap = findCap(held.origin, held.chainId, held.asset);
+          if (!cap || cap.generation !== held.generation) throw refused('cap_changed');
+        }
+        return { refunded: false };
+      }
+      return { refunded: refund(held) };
+    },
+    /** `x402.update`: a cap's narrowing (cored 0.19.0), the chrome's or main's. */
+    async update(params, context = null) {
+      calls.push({ method: 'x402.update', params, page: context });
+      if (callerOf(context) === 'page') throw coded("a page doesn't narrow x402's caps", 'forbidden');
+      const { key, cap: which, cap_amount: capAmount, window_seconds: windowSeconds } = params ?? {};
+      if (capAmount === undefined && windowSeconds === undefined) throw coded('nothing to narrow', 'invalid_argument');
+      if (capAmount !== undefined && !/^(0|[1-9]\d*)$/.test(capAmount ?? '')) throw coded('cap_amount: invalid', 'invalid_argument');
+      if (windowSeconds !== undefined && (!Number.isSafeInteger(windowSeconds) || windowSeconds < 1)) {
+        throw coded('window_seconds: invalid', 'invalid_argument');
+      }
+      const cap = findCap(key, which?.chain_id, which?.asset);
+      if (!cap) throw coded('no such cap', 'invalid_argument');
+      // Each field given strictly narrower, or nothing is written.
+      if (capAmount !== undefined && !(BigInt(capAmount) < BigInt(cap.capAmount))) throw coded('not a narrowing', 'forbidden');
+      if (windowSeconds !== undefined && !(cap.createdAt + windowSeconds < cap.expiresAt)) throw coded('not a narrowing', 'forbidden');
+      if (capAmount !== undefined) cap.capAmount = capAmount;
+      if (windowSeconds !== undefined) cap.expiresAt = cap.createdAt + windowSeconds;
+      return { cap: capRecord(key, cap) };
     },
   };
+
+  // `x402.settle { reservation, signature }`: the device's answer, checked
+  // as PHN-1 checks a phone's (it must recover to the device's address over
+  // the digest). Refused, the reservation is spent and its charge given back.
+  function settleSignature(id, held, signature) {
+    const awaiting = held.awaiting;
+    if (!awaiting) throw coded('reservation: not waiting for a signature', 'invalid_argument');
+    const refuse = (reason) => {
+      reservations.delete(id);
+      return Object.assign(refused(reason), { data: { reason, refunded: refund(held) } });
+    };
+    if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) throw refuse('bad_response');
+    let signer;
+    try {
+      signer = recoverAddress(awaiting.hash, signature);
+    } catch {
+      throw refuse('bad_response');
+    }
+    if (signer.toLowerCase() !== awaiting.device.address.toLowerCase()) throw refuse('wrong_account');
+    delete held.awaiting;
+    let grantReply;
+    let charged = held.charged === true;
+    if (!held.charged) {
+      // A token's payment: the grant as bound, then a cap that covers it charged.
+      if (awaiting.grant) {
+        const tuple = tupleOf(awaiting.accept);
+        writeCap(awaiting.origin, tuple.chainId, tuple.asset, awaiting.grant.cap_amount, awaiting.grant.window_seconds);
+        grantReply = { added: true };
+      }
+      const found = covering(awaiting.origin, awaiting.accept);
+      if (found) {
+        const { cap, tuple } = found;
+        cap.spentAmount = (BigInt(cap.spentAmount) + BigInt(tuple.amount)).toString();
+        Object.assign(held, { chainId: cap.chainId, asset: cap.asset, amount: tuple.amount, generation: cap.generation, charged: true });
+        charged = true;
+      }
+    }
+    // The payment, the device's signature in it exactly as it answered.
+    const payload = { x402Version: 2, payload: { authorization: { ...awaiting.message }, signature }, accepted: awaiting.accept };
+    return { payload, charged, ...(grantReply ? { grant: grantReply } : {}) };
+  }
 
   const approval = {
     async issue(params, context = null) {

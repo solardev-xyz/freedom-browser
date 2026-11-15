@@ -14,6 +14,15 @@
  * unused) reads the core's file and finds the cap under the lowercase key
  * `tupleFromAccept` makes.
  *
+ * X402-2b (cored 0.19.0, freedom-core #393): a Ledger's and a phone's
+ * payments take the core's device path (`x402.authorize { device }`, the
+ * device's signature over the core's typed data, `x402.settle { reservation,
+ * signature }`), the Ledger through its signer backend (its device faked by
+ * a key) and the phone through main's real bridge and the core's phone job;
+ * the activity pane lowers a cap through `x402.update` and can't raise one;
+ * and a cap's payment whose cap was revoked and granted again since its
+ * charge is withheld at its retry (`cap_changed`).
+ *
  * Skipped unless FREEDOM_CORED_PATH points at a build, e.g.
  *   FREEDOM_CORED_PATH=…/freedom-cored-bin/linux-x64/freedom-cored npx jest src/main/x402/x402.integration
  * or FREEDOM_CORED_APPROVALS_TEST=1 asks for the binary `npm run core:download`
@@ -23,6 +32,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { Wallet, TypedDataEncoder, recoverAddress } = require('ethers');
 
 const required = process.env.FREEDOM_CORED_APPROVALS_TEST === '1';
 const binary =
@@ -54,6 +64,17 @@ const ENTRY = Object.freeze({
 const requirementsFor = (url, accepts = [ENTRY]) => ({ x402Version: 2, resource: { url }, accepts });
 const GRANT = Object.freeze({ capAmount: '20000', windowSeconds: 3600 });
 
+// A Ledger's and a phone's accounts: each device's key, faked.
+const LEDGER_KEY = new Wallet('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d');
+const PHONE_KEY = new Wallet('0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a');
+const OTHER_KEY = new Wallet('0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6');
+const LEDGER_INDEX = 1000000;
+const PHONE_INDEX = 1000001;
+const DEVICE_RECORDS = {
+  [LEDGER_INDEX]: { index: LEDGER_INDEX, type: 'ledger', address: LEDGER_KEY.address, path: "44'/60'/0'/0/0" },
+  [PHONE_INDEX]: { index: PHONE_INDEX, type: 'remote', address: PHONE_KEY.address },
+};
+
 describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
   jest.setTimeout(30000);
   let root;
@@ -71,6 +92,8 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
   const chrome = { id: 1, send: hostSend, isDestroyed: () => false };
   let activeIndex = 0;
   let seq = 100;
+  // The faked Ledger: what it was asked to sign, and the key it signs with.
+  const ledger = { asked: [], key: LEDGER_KEY, refuse: null };
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'x402-core-'));
@@ -86,8 +109,16 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     calls = [];
     const request = core.request.bind(core);
     core.request = (method, params, context, options) => {
-      calls.push({ method, context, params });
-      return request(method, params, context, options);
+      const call = { method, context, params };
+      calls.push(call);
+      const reply = request(method, params, context, options);
+      reply.then(
+        (value) => {
+          call.reply = value;
+        },
+        () => {}
+      );
+      return reply;
     };
     jest.resetModules();
     jest.doMock('../core/core-process', () => ({ getCoreClient: () => core }));
@@ -97,17 +128,46 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
         handle: (channel, handler) => {
           handlers[channel] = handler;
         },
+        on: (channel, handler) => {
+          handlers[channel] = handler;
+        },
         removeHandler() {},
       },
       webContents: { fromId: (id) => tabs.get(id) ?? null },
+      // The phone's job goes to the chrome (main's bridge, no approvals
+      // document): this window's.
+      BrowserWindow: {
+        getFocusedWindow: () => ({ isDestroyed: () => false, webContents: chrome }),
+        getAllWindows: () => [],
+        fromWebContents: () => null,
+      },
+    }));
+    jest.doMock('../approvals/approvals-document', () => ({ isApprovalsDocumentEnabled: () => false }));
+    jest.doMock('../wallet/rpc-manager', () => ({ getKeylessRpcUrls: () => [] }));
+    jest.doMock('../wallet/chains', () => ({ getChain: () => ({ name: 'Base', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 } }) }));
+    // A Ledger signs the EIP-712 data it is given: faked by a key, which
+    // signs the typed data itself (not the digest), as the device does.
+    jest.doMock('../wallet/ledger/signer', () => ({
+      createLedgerBackend: (record) => ({
+        getAddress: async () => record.address,
+        signTypedData: async (typedData, options = {}) => {
+          ledger.asked.push({ typedData, options });
+          if (ledger.refuse) throw ledger.refuse;
+          const types = { ...typedData.types };
+          delete types.EIP712Domain;
+          return ledger.key.signTypedData(typedData.domain, types, typedData.message);
+        },
+      }),
     }));
     jest.doMock('../logger', () => ({ info() {}, warn() {}, error() {}, debug() {} }));
     jest.doMock('../vault-timer', () => ({ resetVaultAutoLockTimer: () => {} }));
     jest.doMock('../identity-manager', () => ({
       getActiveWalletIndex: () => activeIndex,
       getActiveWalletAddress: async () => ACCOUNTS[activeIndex],
-      getWalletRecord: () => null,
+      getWalletRecord: (index) => DEVICE_RECORDS[index] ?? null,
       isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
+      recordLedgerAddressCheck: () => {},
+      recordRemoteAddressCheck: () => {},
       WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
     }));
     jest.doMock('../wallet/balance-service', () => ({
@@ -133,6 +193,7 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     signFlow = require('./sign-flow');
     ({ vaultBackend } = require('../core/vault-backend'));
     require('./ipc').registerX402Ipc();
+    require('../wallet/remote/bridge').registerRemoteSignerIpc();
     await core.start();
     expect(await require('../core/grants').grantStore('x402').whenLoaded()).toBe(true);
     await vaultBackend.importVault('testpass1', ABANDON);
@@ -147,6 +208,9 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
   beforeEach(() => {
     calls.length = 0;
     activeIndex = 0;
+    ledger.asked.length = 0;
+    ledger.key = LEDGER_KEY;
+    ledger.refuse = null;
     hostSend.mockReset();
     tabs.clear();
     for (const id of [41, 42, 43]) {
@@ -437,14 +501,15 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     const stored = await card(41);
     const token = await approveToken(stored, { tabId: 41, grant: GRANT });
     expect(await approve(41, stored, token, { grant: GRANT })).toEqual({ success: true });
+    await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC) !== null);
     calls.length = 0;
-    // No edit: an amount or a window is the core's, widened only by a
-    // payment's token that binds the new cap.
+    // No raise: an amount or a window is widened only by a payment's token
+    // that binds the new cap. Main refuses it unasked.
     const edit = await handlers['x402:update-permission'](
       { sender: chrome },
       { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '900000' }
     );
-    expect(edit.success).toBe(false);
+    expect(edit).toMatchObject({ success: false, code: 'forbidden' });
     expect(capInFile()).toMatchObject({ capAmount: '20000' });
     expect(methods()).toEqual([]);
     // A revoke is the core's, as the chrome's narrowing.
@@ -456,5 +521,244 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     expect(revoke.params).toEqual({ store: 'x402', key: ORIGIN, what: { cap: { chain_id: CHAIN, asset: USDC } } });
     expect(file()[ORIGIN]).toBeUndefined();
     expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toBeNull();
+  });
+
+  describe('X402-2b: the activity pane lowers a cap through x402.update', () => {
+    async function capOf20000() {
+      const stored = await card(41);
+      const token = await approveToken(stored, { tabId: 41, grant: GRANT });
+      expect(await approve(41, stored, token, { grant: GRANT })).toEqual({ success: true });
+      retry(41, stored.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      calls.length = 0;
+    }
+    const update = (change) =>
+      handlers['x402:update-permission']({ sender: chrome }, { origin: ORIGIN, chainId: CHAIN, asset: USDC, ...change });
+
+    test('a lower amount and a shorter window: written by the core, as the chrome, and the mirror follows', async () => {
+      await capOf20000();
+      const before = capInFile();
+      expect(await update({ capAmount: '15000' })).toEqual({ success: true });
+      const narrowing = calls.find(({ method }) => method === 'x402.update');
+      expect(narrowing.context).toEqual({ caller: 'chrome' });
+      expect(narrowing.params).toEqual({ key: ORIGIN, cap: { chain_id: CHAIN, asset: USDC }, cap_amount: '15000' });
+      expect(capInFile()).toMatchObject({ capAmount: '15000', spentAmount: PRICE, createdAt: before.createdAt, expiresAt: before.expiresAt });
+      expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: '15000' });
+
+      expect(await update({ windowSeconds: 1800 })).toEqual({ success: true });
+      expect(capInFile()).toMatchObject({ capAmount: '15000', expiresAt: before.createdAt + 1800 });
+      expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toMatchObject({ expiresAt: before.createdAt + 1800 });
+    });
+
+    test('an equal or larger amount or window is refused by main unasked, and by the core', async () => {
+      await capOf20000();
+      for (const change of [{ capAmount: '20000' }, { capAmount: '20001' }, { windowSeconds: 3600 }, { windowSeconds: 7200 }]) {
+        expect(await update(change)).toMatchObject({ success: false, code: 'forbidden' });
+      }
+      expect(methods()).not.toContain('x402.update');
+      // The core refuses each too, writing nothing: it decides, not main.
+      for (const change of [{ cap_amount: '20000' }, { cap_amount: '90000' }, { window_seconds: 3600 }, { cap_amount: '10', window_seconds: 7200 }]) {
+        const refused = await vaultBackend.x402
+          .update({ key: ORIGIN, cap: { chain_id: CHAIN, asset: USDC }, ...change }, 'chrome')
+          .catch((e) => e);
+        expect(refused.code).toBe('forbidden');
+      }
+      expect(capInFile()).toMatchObject({ capAmount: '20000' });
+      expect(capInFile().expiresAt - capInFile().createdAt).toBe(3600);
+    });
+  });
+
+  describe('X402-2b: cap_changed', () => {
+    test('a cap revoked and granted again between the signature and its retry: the core refuses sent, and the header is withheld', async () => {
+      // A cap with headroom, paid once.
+      const stored = await card(41);
+      const token = await approveToken(stored, { tabId: 41, grant: GRANT });
+      expect(await approve(41, stored, token, { grant: GRANT })).toEqual({ success: true });
+      retry(41, stored.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      // An auto-pay is charged and signed, its signature waiting.
+      const url = `${ORIGIN}/seg/cap-changed`;
+      const result = await detect(41, { resourceType: 'xhr', url });
+      expect(result.statusLine).toMatch(/307/);
+      expect(capInFile()).toMatchObject({ spentAmount: '20000' });
+      // The cap goes, and an equal one comes back, before the retry: the
+      // mirror shows a cap again, but not the one charged.
+      await caps.revoke(ORIGIN, CHAIN, USDC);
+      const again = await card(42);
+      const regrant = await approveToken(again, { tabId: 42, grant: GRANT });
+      expect(await approve(42, again, regrant, { grant: GRANT })).toEqual({ success: true });
+      retry(42, again.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      calls.length = 0;
+      // The retry: no header goes out.
+      expect(await retry(41, url)).toBeNull();
+      const settles = calls.filter(({ method }) => method === 'x402.settle');
+      expect(settles.map(({ params }) => params.outcome)).toEqual(['sent']);
+      // The new cap keeps its own charge only; the old charge isn't moved onto it.
+      expect(capInFile()).toMatchObject({ spentAmount: PRICE });
+    });
+
+    test('a cap that stands: the core accepts sent, and the header goes out', async () => {
+      const stored = await card(41);
+      const token = await approveToken(stored, { tabId: 41, grant: GRANT });
+      expect(await approve(41, stored, token, { grant: GRANT })).toEqual({ success: true });
+      retry(41, stored.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      const url = `${ORIGIN}/seg/stands`;
+      expect((await detect(41, { resourceType: 'xhr', url })).statusLine).toMatch(/307/);
+      calls.length = 0;
+      const injected = await retry(41, url);
+      expect(headerOf(injected).payload.authorization.value).toBe(PRICE);
+      expect(calls.filter(({ method }) => method === 'x402.settle').map(({ params }) => params.outcome)).toEqual(['sent']);
+      expect(capInFile()).toMatchObject({ spentAmount: '20000' });
+    });
+  });
+
+  describe('X402-2b: a Ledger or a phone pays through the core\'s device path', () => {
+    // A Ledger's payment the panel approved: the core spends the token and
+    // gives typed data, the Ledger signs it, and the core checks that.
+    async function approvedOnLedger({ grant = null } = {}) {
+      activeIndex = LEDGER_INDEX;
+      const stored = await card(41);
+      const token = await approveToken(stored, { tabId: 41, grant, account: LEDGER_INDEX });
+      const result = await approve(41, stored, token, grant ? { grant } : {});
+      return { stored, token, result };
+    }
+
+    test("a Ledger's payment: x402.authorize { device }, the Ledger signs the core's typed data, x402.settle { signature }, and the header is the core's payload", async () => {
+      const { stored, token, result } = await approvedOnLedger({ grant: GRANT });
+      expect(result).toEqual({ success: true });
+      const authorize = calls.find(({ method }) => method === 'x402.authorize');
+      expect(authorize.params).toMatchObject({
+        account: LEDGER_INDEX,
+        device: { kind: 'ledger', address: LEDGER_KEY.address },
+        authorization: { token },
+        accept_index: 0,
+        grant: { cap_amount: '20000', window_seconds: 3600 },
+      });
+      // The Ledger was asked once, with typed data that hashes to the
+      // core's hash, over the paywall's price to its payee.
+      expect(ledger.asked).toHaveLength(1);
+      const [{ typedData, options }] = ledger.asked;
+      const types = { ...typedData.types };
+      delete types.EIP712Domain;
+      expect(TypedDataEncoder.hash(typedData.domain, types, typedData.message)).toBe(options.digest);
+      expect(typedData.message).toMatchObject({ from: LEDGER_KEY.address, to: ENTRY.payTo, value: PRICE });
+      expect(typedData.domain).toMatchObject({ name: 'USD Coin', version: '2', chainId: CHAIN });
+      const settle = calls.find(({ method, params }) => method === 'x402.settle' && params.signature);
+      expect(settle.params.reservation).toEqual(expect.any(String));
+      // The header is the core's payload, the Ledger's signature in it as
+      // the Ledger answered.
+      const injected = retry(41, stored.url);
+      expect(Buffer.from(injected.requestHeaders['PAYMENT-SIGNATURE'], 'base64').toString('utf8')).toBe(
+        JSON.stringify(settle.reply.payload)
+      );
+      // The header carries the Ledger's signature, recovering to it.
+      const header = headerOf(injected);
+      expect(header.payload.signature).toBe(settle.params.signature);
+      expect(recoverAddress(options.digest, header.payload.signature)).toBe(LEDGER_KEY.address);
+      expect(header.payload.authorization.from.toLowerCase()).toBe(LEDGER_KEY.address.toLowerCase());
+      await waitFor(() => calls.some(({ method, params }) => method === 'x402.settle' && params.outcome === 'sent'));
+      // The grant is written after the signature, and the payment charged to it.
+      expect(capInFile()).toMatchObject({ capAmount: '20000', spentAmount: PRICE });
+    });
+
+    test("a Ledger's auto-pay: the cap is charged first, and needs no unlocked vault", async () => {
+      const { stored } = await approvedOnLedger({ grant: GRANT });
+      retry(41, stored.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      calls.length = 0;
+      ledger.asked.length = 0;
+      await vaultBackend.lock();
+      try {
+        const url = `${ORIGIN}/seg/ledger-auto`;
+        const result = await detect(41, { resourceType: 'xhr', url });
+        expect(result.statusLine).toMatch(/307/);
+        expect(calls.find(({ method }) => method === 'x402.authorize').params).toMatchObject({
+          account: LEDGER_INDEX,
+          device: { kind: 'ledger', address: LEDGER_KEY.address },
+          authorization: { cap: { agent: false, attributable: true } },
+        });
+        expect(ledger.asked).toHaveLength(1);
+        expect(capInFile()).toMatchObject({ spentAmount: '20000' });
+        const header = headerOf(await retry(41, url));
+        expect(header.payload.authorization.from.toLowerCase()).toBe(LEDGER_KEY.address.toLowerCase());
+      } finally {
+        await vaultBackend.unlock('testpass1');
+      }
+    });
+
+    test("a signature from another key: the core refuses it, nothing is stashed, and an auto-pay's charge goes back", async () => {
+      const { stored } = await approvedOnLedger({ grant: GRANT });
+      retry(41, stored.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      calls.length = 0;
+      hostSend.mockReset();
+      ledger.key = OTHER_KEY;
+      const url = `${ORIGIN}/seg/wrong-key`;
+      const err = await signFlow
+        .signAndQueueRetry(41, {
+          detection: { url, requirements: requirementsFor(url), resourceType: 'xhr', detectionId: 'req-wrong' },
+          authorizedBy: 'cap',
+        })
+        .catch((e) => e);
+      expect(err.message).toMatch(/another account/);
+      expect(err.cause?.data).toMatchObject({ reason: 'wrong_account', refunded: true });
+      // The core spent the reservation and gave the charge back: main settles nothing.
+      expect(calls.filter(({ method }) => method === 'x402.settle').map(({ params }) => Object.keys(params).sort())).toEqual([
+        ['reservation', 'signature'],
+      ]);
+      expect(capInFile()).toMatchObject({ spentAmount: PRICE });
+      expect(retry(41, url)).toBeNull();
+      expect(hostSend.mock.calls.filter(([channel]) => channel === 'x402:cap-consumed').length).toBeGreaterThanOrEqual(2);
+    });
+
+    test('a Ledger that refuses: nothing is stashed, the charge is given back (withheld), and the error is the device\'s', async () => {
+      const { stored } = await approvedOnLedger({ grant: GRANT });
+      retry(41, stored.url);
+      await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
+      calls.length = 0;
+      const { mapLedgerError } = jest.requireActual('../wallet/ledger/errors');
+      ledger.refuse = mapLedgerError(Object.assign(new Error('status 6a80'), { statusCode: 0x6a80 }));
+      const url = `${ORIGIN}/seg/refused`;
+      const err = await signFlow
+        .signAndQueueRetry(41, {
+          detection: { url, requirements: requirementsFor(url), resourceType: 'xhr', detectionId: 'req-refused' },
+          authorizedBy: 'cap',
+        })
+        .catch((e) => e);
+      expect(err).toBe(ledger.refuse);
+      await waitFor(() => calls.some(({ method }) => method === 'x402.settle'));
+      expect(calls.filter(({ method }) => method === 'x402.settle').map(({ params }) => params.outcome)).toEqual(['withheld']);
+      await waitFor(() => capInFile()?.spentAmount === PRICE);
+      expect(capInFile()).toMatchObject({ spentAmount: PRICE });
+    });
+
+    test("a phone's payment: the core's phone job relays the core's typed data to the chrome, and the phone's signature pays", async () => {
+      activeIndex = PHONE_INDEX;
+      const stored = await card(41);
+      const token = await approveToken(stored, { tabId: 41, account: PHONE_INDEX });
+      const paying = approve(41, stored, token);
+      // The bridge relays the core's job to this window's chrome.
+      await waitFor(() => hostSend.mock.calls.some(([channel]) => channel === 'remote-signer:request'));
+      const [, job] = hostSend.mock.calls.find(([channel]) => channel === 'remote-signer:request');
+      expect(job.method).toBe('eth_signTypedData_v4');
+      expect(job.params[0]).toBe(PHONE_KEY.address);
+      const authorize = calls.find(({ method }) => method === 'x402.authorize');
+      expect(authorize.params).toMatchObject({ account: PHONE_INDEX, device: { kind: 'phone', address: PHONE_KEY.address } });
+      const phoneJob = calls.find(({ method }) => method === 'phone.job');
+      expect(phoneJob.params).toMatchObject({ account: PHONE_INDEX, address: PHONE_KEY.address, method: 'typed_data' });
+      // The phone signs what it was shown.
+      const view = JSON.parse(job.params[1]);
+      const types = { ...view.types };
+      delete types.EIP712Domain;
+      const signature = await PHONE_KEY.signTypedData(view.domain, types, view.message);
+      handlers['remote-signer:response']({ sender: { id: chrome.id } }, { jobId: job.jobId, result: signature });
+      expect(await paying).toEqual({ success: true });
+      const header = headerOf(retry(41, stored.url));
+      expect(header.payload.signature).toBe(signature);
+      expect(header.payload.authorization.from.toLowerCase()).toBe(PHONE_KEY.address.toLowerCase());
+      expect(header.payload.authorization.value).toBe(PRICE);
+    });
   });
 });

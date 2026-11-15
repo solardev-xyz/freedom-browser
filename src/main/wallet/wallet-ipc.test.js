@@ -107,7 +107,7 @@ jest.mock('../x402/permissions', () => ({ capUpdateRequest: (...args) => mockCap
 const mockX402Record = { build: null };
 jest.mock('../x402/ipc', () => ({
   paymentApprovalRequest: (sender, payload) => mockX402Record.build(sender, payload),
-  CAP_EDIT_REFUSED: "An auto-pay cap can't be changed here: revoke it, or set a new one when you approve a payment",
+  CAP_EDIT_REFUSED: "An auto-pay cap can only be lowered here: to raise one, set a new cap when you approve a payment",
 }));
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
@@ -1011,7 +1011,7 @@ describe('signing handlers require a main-side confirmation', () => {
     for (const event of [AUTO, {}]) {
       expect(await handlers['wallet:confirm-signing'](event, 'x402-cap-update', null, edit)).toEqual({
         success: false,
-        error: expect.stringMatching(/can't be changed here/),
+        error: expect.stringMatching(/can only be lowered here/),
         code: 'SIGNING_NOT_CONFIRMED',
       });
     }

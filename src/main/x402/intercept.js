@@ -44,7 +44,7 @@ const { KINDS: PAYMENT_KINDS, STATUSES: PAYMENT_STATUSES } = paymentHistory;
 const { findCoveringPermission } = require('./payment-utils');
 // The caps are the identity core's (X402-2): it charges one as it signs, and
 // gives a charge back for a payment main withheld (`x402.settle`).
-const { settle: settlePayment, getPermission } = require('./caps');
+const { settle: settlePayment, settleSent, getPermission } = require('./caps');
 const { isVaultLockedError } = require('../wallet/vault-errors');
 const { isUserPageId } = require('../wallet/agent-tab-custody');
 const { normalizeOrigin } = require('../../shared/origin-utils');
@@ -1438,9 +1438,43 @@ function injectPaymentSignatureHandler(details) {
 
   if (withholdAtInject(signed, sanitizeUrlForLog(details.url))) return null; // one-shot drop already happened via shift()
 
+  // A cap's payment goes out only once the core accepts `sent` for it: the
+  // cap it was charged to may have been revoked, or revoked and granted
+  // again, since (`cap_changed`, cored 0.19.0), which the mirror can't see.
+  if (signed.authorizedBy === AUTHORIZED_BY.CAP) return sendIfCapStands(signed, details);
+
   // From here the header goes out: its charge stays, whatever the server
   // answers, since the seller holds the signed authorization.
   if (signed.reservation) settlePayment(signed.reservation, 'sent', signed.origin);
+  return attachPayment(signed, details);
+}
+
+/**
+ * A cap's payment, at its retry: `x402.settle { sent }` first, and the
+ * header attached only once the core accepts it. The core refuses it for a
+ * cap revoked, or revoked and granted again, since the charge
+ * (`cap_changed`): the reservation is spent there, the charge stays where
+ * it was taken, and the header is withheld, as main's own store withheld
+ * it (#1028). Any other failure to settle it withholds the header too (an
+ * auto-pay goes out only on the core's word), and its charge is offered
+ * back (`withheld`), which the core gives only for a reservation it still
+ * holds.
+ */
+async function sendIfCapStands(signed, details) {
+  const url = sanitizeUrlForLog(details.url);
+  const settled = await settleSent(signed.reservation, signed.origin);
+  if (settled.sent) return attachPayment(signed, details);
+  if (settled.reason === 'cap_changed') {
+    log.warn(`[x402:inject] the cap ${url} was charged to has changed since (cap_changed); withholding signature`);
+  } else {
+    log.warn(`[x402:inject] the core didn't accept the payment for ${url} as sent (${settled.reason}); withholding signature`);
+    giveBackCharge(signed);
+  }
+  return null;
+}
+
+// Attach a pending signature to this request, and arm the receipt logger.
+function attachPayment(signed, details) {
   // Arm the receipt logger by `details.id` — stable through to the
   // matching response. `webContentsId` rides along for cleanup-by-tab.
   awaitingResponse.set(details.id, {
