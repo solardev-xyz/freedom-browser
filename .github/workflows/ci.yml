@@ -203,13 +203,13 @@ jobs:
       # does, at one reviewed commit: moved on purpose when the protocol's
       # vectors, method table, Radicle vectors or key-store vectors change,
       # never with freedom-core's main. It is the commit
-      # `cored-v0.17.0` was built from. Each suite fails if a file it is
+      # `cored-v0.18.0` was built from. Each suite fails if a file it is
       # pointed at is missing.
       - name: Check out freedom-core's vectors and method table
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: solardev-xyz/freedom-core
-          ref: b31150b9e954fe52b4af9f2ea6166f87217b2211
+          ref: 4c430c4acc20d6b3b032c121300b840eecba2631
           path: .freedom-core
           persist-credentials: false
           sparse-checkout: |

@@ -377,4 +377,22 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
       ]);
     });
   });
+
+  // cored 0.18.0 (APR-5b): every page method but `eip1193.request`, which
+  // main doesn't send yet (APB-4), answers an empty PageContext.origin
+  // `invalid_argument`, and the core serves on. A null origin is a protocol
+  // error, after which the core exits: main refuses it before it is sent.
+  test("an empty origin is the core's invalid_argument; a null one never leaves main; the core serves on", async () => {
+    const generation = core.current;
+    const theCores = { code: 'invalid_argument', message: "a page request needs its page's origin" };
+    await expect(vaultBackend.approval.touch({ store: 'swarm' }, page(''))).rejects.toMatchObject(theCores);
+    await expect(vaultBackend.approval.radicleWrite({ key: '' }, page(''))).rejects.toMatchObject(theCores);
+    calls.length = 0;
+    const mains = { code: 'invalid_argument', message: 'A page request needs its page’s context' };
+    await expect(vaultBackend.approval.touch({ store: 'swarm' }, page(null))).rejects.toMatchObject(mains);
+    await expect(vaultBackend.approval.radicleWrite({ key: SITE }, page(SITE, { top_origin: null }))).rejects.toMatchObject(mains);
+    expect(calls).toEqual([]);
+    await expect(vaultBackend.approval.touch({ store: 'swarm' }, page(SITE))).resolves.toBeDefined();
+    expect(core.current).toBe(generation);
+  });
 });
