@@ -40,11 +40,14 @@
  *      again, custody is read again and the document must hold its key: a
  *      guest that entered custody meanwhile is refused (`agent_custody`),
  *      with nothing sent, and a fee the core no longer allows sends the
- *      request to its prompt, with nothing signed. A Ledger or a phone
+ *      request to its prompt, with nothing signed. A Ledger
  *      presents nothing the core judges as it signs, and the transaction
- *      service waits again before asking it (a Ledger's fee and nonce reads,
- *      a phone's address): the same reading is its signer's last check
- *      (`beforeSign`), right before the device, with no wait between. A vault
+ *      service waits again before asking it (its fee and nonce reads): the
+ *      same reading is its signer's last check (`beforeSign`), right before
+ *      the device, with no wait between. A phone's send is a core job
+ *      (`phone.job`, PHN-1/PHN-2): the core judges the request's
+ *      authorization (the token, or `{ standing }`) when the job opens, and
+ *      checks the phone's answer against the bound transaction. A vault
  *      signature goes under `page` with `{ standing }`, and the core judges
  *      the rule once more as it signs, a fee it no longer allows again
  *      sending the request to its prompt.
@@ -62,11 +65,14 @@
  *      core writes the contract rule for the requester's key as it signs
  *      (Q9's limited rule, which clears today's for the same call in the
  *      same write), and says so in its reply; main writes none (APB-2). A
- *      device's send (a Ledger, a phone) isn't signed by the core: its
- *      flagged token's spend gives a finalize receipt instead, which main
- *      presents (`approval.remember`) once the device signed and main
- *      recorded the send, and the core writes the same rule then (design
- *      0012, "A device send's rule"). It is offered for a contract call
+ *      Ledger's send isn't signed by the core: its flagged token's spend
+ *      gives a finalize receipt instead, which main presents
+ *      (`approval.remember`) once the device signed and main recorded the
+ *      send, and the core writes the same rule then (design 0012, "A device
+ *      send's rule"). A phone's flagged send gives no receipt: the core holds
+ *      the rule with the phone job and writes it only once the payment's
+ *      transaction is visible on chain and matches (design 0012, "A phone
+ *      payment's rule"); a restart before then drops it. It is offered for a contract call
  *      from any account but a Safe, whose send goes to its board.
  *
  * After the signer's wait (a Ledger, the core), and before the signed bytes

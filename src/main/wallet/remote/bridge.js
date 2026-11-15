@@ -2,11 +2,15 @@
  * Remote-signer IPC bridge.
  *
  * The openlv session lives in the chrome renderer (WebRTC is native
- * there), but signing policy stays in main: the remote signer backend
- * (./signer.js) calls `requestRemoteSignature` here, which publishes the
- * job to the renderer session broker and waits for its response. Main
- * never trusts the answer as-is — the backend verifies every signature
- * against the account record before returning it.
+ * there), but every phone signature and payment is a job of the identity
+ * core (design 0012, PHN-1/PHN-2): the core opens it (`phone.job`) for a
+ * checked authorization and the window's webContents, this bridge relays
+ * the core's request to the renderer session broker under the core's job
+ * id, reports `phone.sent`, and hands the phone's answer to the core
+ * (`phone.result`), which checks it against what the job bound. Main also
+ * checks the sender and verifies every signature before returning it.
+ * (The legacy `requestRemoteSignature` relay remains only for main's own
+ * account-proof check, #1078.)
  *
  * One channel pair:
  *   main → renderer  'remote-signer:request' { jobId, walletIndex, address, method, params }

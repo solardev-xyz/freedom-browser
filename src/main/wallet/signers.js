@@ -249,12 +249,14 @@ function phoneJobTx({ to, value, data, chainId, gasLimit, maxFeePerGas, maxPrior
  *
  * A signer for a confirmed request carries its confirmation (freedom-core
  * design 0012, APB-1): a vault account's signature presents it to the core,
- * which spends it there; a device's (Ledger, phone) spends it through the
- * core first (`approval.spend`), and its device signs only after. A page's
- * request a site's standing rule answers carries the page's PageContext and
- * `{ standing }`, so it is sent under `page`, never as main's own, and a
- * vault signature is judged by the core against the site's rule; a device
- * signs it as today (the core's `approval.check` advised the choice).
+ * which spends it there; a Ledger's spends it through the core first
+ * (`approval.spend`), and the device signs only after; a phone's opens a
+ * core job (`phone.job`, PHN-1/PHN-2) with it, and the core checks the
+ * phone's answer against what the job bound. A page's request a site's
+ * standing rule answers carries the page's PageContext and `{ standing }`,
+ * so it is sent under `page`, never as main's own: a vault signature and a
+ * phone job are judged by the core against the site's rule; a Ledger signs
+ * it as today (the core's `approval.check` advised the choice).
  *
  * `beforeSign`, the caller's last check, is awaited whenever the caller
  * gives one: a page's standing rule read again, with custody, for a
@@ -342,8 +344,9 @@ function getSigner(walletIndex, authorized = {}) {
     backend = createVaultBackend(walletIndex, authorized);
     vaultSigned = true;
   }
-  // A device signs what it shows, so the core can only advise: its
-  // confirmation is spent first, and the device asked only after.
+  // A Ledger signs what it shows, so the core can only advise: its
+  // confirmation is spent first, and the device asked only after. A
+  // phone's confirmation goes with its core job instead (`phone.job`).
   const confirmation = vaultSigned || phoneJob ? null : authorized?.confirmation || null;
   // The caller's last check (`beforeSign`), after the token's spend: a
   // device's signature is never judged by the core, so it is awaited right
