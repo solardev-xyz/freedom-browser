@@ -28,6 +28,7 @@ const {
   clearService,
 } = require('./service-registry');
 const { noteAntApiUrl } = require('./swarm/ant-api-guard');
+const { isOnionGatewayUrl } = require('./ipfs/gateway-transport');
 const { getLegacyExternalCandidateChoice } = require('./profile-external-candidates');
 const {
   clearAntProcessMarker,
@@ -706,6 +707,17 @@ async function startExternalAnt(config) {
   if (!apiUrl) {
     updateState(STATUS.ERROR, 'External Ant API endpoint is not configured');
     setStatusMessage('ant', 'External node not configured');
+    return;
+  }
+
+  // Every dial of this API (the probe below, bzz:// pages, publishing) uses
+  // Node's own HTTP stack, which ignores the session's Tor routing, so an
+  // onion host would go to the system resolver: a lookup that leaks the name
+  // and cannot succeed (#360). Settings refuses such an endpoint; this stops
+  // one saved before it did, without dialling it.
+  if (isOnionGatewayUrl(apiUrl)) {
+    updateState(STATUS.ERROR, 'External Ant API on a .onion address is not supported');
+    setStatusMessage('ant', 'External .onion node not supported');
     return;
   }
 

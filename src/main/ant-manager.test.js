@@ -1321,6 +1321,33 @@ describe('ant-manager', () => {
     expect(ctx.clearService).toHaveBeenCalledWith('ant');
   });
 
+  test('refuses a saved .onion external API without dialling it (#360)', async () => {
+    const setIntervalSpy = jest.spyOn(global, 'setInterval').mockReturnValue(456);
+    const ctx = loadAntManagerModule({
+      activeProfile: {
+        metadata: {
+          nodes: {
+            bee: { mode: 'external', externalApi: 'http://abcdefghijklmnop.onion:1633' },
+          },
+        },
+      },
+      portResolver: () => true,
+    });
+
+    await ctx.mod.startAnt();
+    await flushMicrotasks();
+
+    // The probe would hand the onion name to the system resolver.
+    expect(ctx.httpGet).not.toHaveBeenCalled();
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.updateService).not.toHaveBeenCalledWith(
+      'ant',
+      expect.objectContaining({ api: expect.any(String) })
+    );
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('ant', 'External .onion node not supported');
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
   test('marks a disabled profile Swarm node without probing or spawning', async () => {
     const checkedPorts = [];
     const ctx = loadAntManagerModule({

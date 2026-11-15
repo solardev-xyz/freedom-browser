@@ -1,0 +1,1 @@
+- Settings → Nodes no longer accepts a `.onion` address for an external Swarm node, which Freedom can't reach over Tor yet: it failed as "unreachable" and handed the onion name to the system's DNS resolver ([#360](https://github.com/solardev-xyz/freedom-browser/issues/360))
