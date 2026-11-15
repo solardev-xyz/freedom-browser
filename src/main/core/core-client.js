@@ -20,11 +20,12 @@
  *   their only writer from then on (design 0012, "One writer per file"):
  *   `dapp` (APB-2), whose every write main sends to the core's write methods
  *   (wallet/dapp-permissions.js), and `swarm` and `radicle` (APB-3), which
- *   main reads and changes only through the core (core/grants.js). Main
- *   still writes `x402-permissions.json` itself, by a temp file and a rename
- *   (lib/atomic-file.js), which the core only reads. Reverting a move gives
- *   the file back to main: the core then writes nothing in it, and older
- *   builds still read it (Q10).
+ *   main reads and changes only through the core (core/grants.js), and
+ *   `x402` (X402-2), whose caps the core charges, writes and revokes as it
+ *   pays (`x402.authorize`, `x402.settle`, `approval.revoke`; x402/caps.js).
+ *   Main writes none of the four files. Reverting a move gives the file back
+ *   to main: the core then writes nothing in it, and older builds still read
+ *   it (Q10).
  * - **The protocol** is 2 (design 0009), the only one the client speaks.
  *   Main and the core ship pinned together (0001), and the pinned core
  *   (0.19.0) speaks only 2: it answers a hello at any other protocol,
@@ -141,9 +142,9 @@ const CORE_SERVICE = Object.freeze({
     frames: ['fragment', 'stream'],
     // Where the permission files are (design 0012, APR-3), and those that
     // have moved to the core, which writes them from then on: the dApp file
-    // (APB-2), Swarm's and Radicle's (APB-3).
+    // (APB-2), Swarm's and Radicle's (APB-3), and x402's caps (X402-2).
     grant_root: client.grantRoot,
-    grant_moved: ['dapp', 'swarm', 'radicle'],
+    grant_moved: ['dapp', 'swarm', 'radicle', 'x402'],
   }),
   validHello,
   shutdownMethod: 'core.shutdown',

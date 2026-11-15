@@ -1,13 +1,17 @@
 /**
  * The permission files the identity core writes (freedom-core design 0012,
- * "The files (Q10)"; APB-3): `swarm-permissions.json` and
- * `radicle-permissions.json`. Main names their stores in the hello's
- * `grant_moved` (core-client.js) and writes neither file: every change goes
- * to the core's write methods (`approval.grant`, `approval.revoke`,
- * `approval.touch`), and main reads each store through the core
- * (`approval.grants`). The stores' modules (swarm/swarm-permissions.js,
- * radicle/radicle-permissions.js) keep their reads synchronous on the
- * mirror kept here.
+ * "The files (Q10)"; APB-3, X402-2): `swarm-permissions.json`,
+ * `radicle-permissions.json` and `x402-permissions.json`. Main names their
+ * stores in the hello's `grant_moved` (core-client.js) and writes none of
+ * them: every change goes to the core's write methods (`approval.grant`,
+ * `approval.revoke`, `approval.touch`; x402's caps change as the core pays,
+ * `x402.authorize` and `x402.settle`), and main reads each store through
+ * the core (`approval.grants`). The stores' modules
+ * (swarm/swarm-permissions.js, radicle/radicle-permissions.js, x402/caps.js)
+ * keep their reads synchronous on the mirror kept here. x402's key is a
+ * seller's origin, and its record the list of that origin's caps, each as
+ * `getAllPermissions` gives it (`{ origin, chainId, asset, capAmount,
+ * spentAmount, createdAt, expiresAt }`).
  *
  * - **The mirror** holds each store as the core last answered for it: the
  *   whole store at each start of the core (its `ready`), and a key again
@@ -44,8 +48,14 @@
 // Logged as the stores' own messages were, on the console.
 const log = console;
 
-const STORES = Object.freeze(['swarm', 'radicle']);
-const LABELS = Object.freeze({ swarm: '[SwarmPermissions]', radicle: '[RadiclePermissions]' });
+const STORES = Object.freeze(['swarm', 'radicle', 'x402']);
+const LABELS = Object.freeze({
+  swarm: '[SwarmPermissions]',
+  radicle: '[RadiclePermissions]',
+  x402: '[x402:permissions]',
+});
+// The stores whose key holds a list of records (x402: an origin's caps).
+const LISTS = new Set(['x402']);
 
 let backendOverride = null;
 
@@ -56,6 +66,7 @@ function backend() {
 
 function createMirror(store) {
   const label = LABELS[store];
+  const listed = LISTS.has(store);
   // The current core process's mirror (a generation): key -> the record as
   // that process holds it, the order of its answers, key -> the latest read
   // asked for it until it lands, and its load: not yet answered
@@ -115,7 +126,9 @@ function createMirror(store) {
     if (n > g.wholeAt) {
       const next = new Map();
       for (const record of Array.isArray(reply?.records) ? reply.records : []) {
-        if (record && typeof record === 'object' && typeof record.origin === 'string') next.set(record.origin, record);
+        if (!record || typeof record !== 'object' || typeof record.origin !== 'string') continue;
+        if (!listed) next.set(record.origin, record);
+        else next.set(record.origin, [...(next.get(record.origin) || []), record]);
       }
       // A key read or dropped after this load asked keeps its newer state.
       for (const [key, at] of g.keyAt) {
@@ -146,8 +159,11 @@ function createMirror(store) {
       .then(() => backend().grants({ store, key }))
       .then(
         (reply) => {
-          const record = Array.isArray(reply?.records) ? reply.records[0] : null;
-          apply(record && typeof record === 'object' ? record : null);
+          const records = (Array.isArray(reply?.records) ? reply.records : []).filter(
+            (record) => record && typeof record === 'object' && record.origin === key
+          );
+          if (listed) apply(records.length > 0 ? records : null);
+          else apply(records[0] || null);
         },
         (err) => {
           log.warn(`${label} could not read a grant from the identity core:`, err.message);
@@ -235,8 +251,13 @@ function createMirror(store) {
       const record = visible(key) ? gen.records.get(key) : null;
       return record ? structuredClone(record) : null;
     },
-    /** Every record (copies), most recently used first. */
+    /** Every record (copies), most recently used first; x402's caps in the core's order. */
     all() {
+      if (listed) {
+        return [...gen.records.entries()]
+          .filter(([key]) => visible(key))
+          .flatMap(([, records]) => structuredClone(records));
+      }
       return [...gen.records.values()]
         .filter((record) => visible(record.origin))
         .map((record) => structuredClone(record))
@@ -256,6 +277,12 @@ function createMirror(store) {
     restart,
     fail,
     changed,
+    /**
+     * The key read again, its record kept until the core's answer lands: a
+     * change main made itself through a method that isn't a grant write
+     * (x402's payments), which the core decides again at each payment.
+     */
+    reread: refresh,
     /**
      * `approval.grant { store, change }`: a page's for its own key, or main's
      * (`shell`, `change.key`).
@@ -282,7 +309,7 @@ function callerKey(caller, key) {
 
 const mirrors = new Map(STORES.map((store) => [store, createMirror(store)]));
 
-/** The store's mirror and writes: `swarm` or `radicle`. */
+/** The store's mirror and writes: `swarm`, `radicle` or `x402`. */
 function grantStore(store) {
   const mirror = mirrors.get(store);
   if (!mirror) throw new Error(`unknown grant store ${store}`);
@@ -315,7 +342,11 @@ function attachGrants(client) {
   const onExit = () => each((mirror) => mirror.restart());
   const onEvent = (name, data) => {
     if (name !== 'approval.changed' || typeof data?.key !== 'string' || !mirrors.has(data?.store)) return;
-    mirrors.get(data.store).changed(data.key);
+    // x402's caps change at each payment, as the core charges one, and the
+    // core decides each payment again: they are read again, not hidden, so
+    // a seller's next payment isn't sent to its card while the read is out.
+    if (LISTS.has(data.store)) mirrors.get(data.store).reread(data.key);
+    else mirrors.get(data.store).changed(data.key);
   };
   const onFailed = () => each((mirror) => mirror.fail());
   client.on('ready', onReady);

@@ -5,7 +5,9 @@
  * forced an earlier duplication.
  */
 
-const { getPermission } = require('./permissions');
+// The caps as the identity core holds them (X402-2): the core decides each
+// payment again, so these answer only which entry is worth asking it for.
+const { getPermission } = require('./caps');
 
 // CAIP-2 prefix for EIP-155 chains — the only `network` shape our cap
 // store can key on. V1 string networks ('base', 'ethereum', …) bail

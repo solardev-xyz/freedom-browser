@@ -16,6 +16,12 @@
 // Ledger. The page prompts below are sent to the chrome's own screens,
 // which main uses only with the panel off (the rollback): they still must
 // not cancel a payment on the device.
+//
+// X402-2: the identity core signs every x402 payment, and only with this
+// browser's own wallet (cored 0.18.0), so a Ledger can't pay one until
+// freedom-core#392 gives device accounts a path. Until then the card keeps
+// Pay off for a Ledger (the first test below), and the in-flight tests after
+// it are `fixme`: they come back with #392's device path.
 
 const { test, expect, approvalsPage, decideInPanel } = require('./approvals-fixtures');
 
@@ -224,7 +230,41 @@ function cancelCounts(electronApp) {
   return electronApp.evaluate(() => globalThis.__x402Cancels);
 }
 
-test('a dApp request mid-payment cannot cancel an in-flight Ledger payment', async ({
+test('a Ledger account is told that x402 payments from it are not available yet', async ({
+  electronApp,
+  window,
+}) => {
+  await stubMainIpc(electronApp, LEDGER);
+  await openPaymentCard(electronApp, window, LEDGER);
+
+  await expect(window.locator('#sidebar-x402-approval')).toBeVisible();
+  await expect(window.locator('#x402-approval-amount')).toHaveText('2.5 USDC');
+  await expect(window.locator('#x402-approval-approve')).toBeDisabled();
+  await expect(window.locator('#x402-approval-error')).toContainText(
+    "x402 payments from Ledger and phone accounts aren't available yet"
+  );
+  // No promise of a confirmation on the device, and no auto-pay offer.
+  await expect(window.locator('#x402-approval-ledger-note')).toBeHidden();
+  await expect(window.locator('#x402-approval-grant-row')).toBeHidden();
+  await window.screenshot({ path: 'test-results/x402-ledger-unavailable.png' });
+
+  // A click that bypasses the disabled button mints and sends nothing.
+  await window.evaluate(() => {
+    document.getElementById('x402-approval-approve').dispatchEvent(new Event('click'));
+  });
+  await window.waitForTimeout(500);
+  expect(await electronApp.evaluate(() => globalThis.__x402ApproveCalls)).toEqual([]);
+  await expect(window.locator('#x402-approval-approve')).toBeDisabled();
+
+  // The user can still decline the payment.
+  await expect(window.locator('#x402-approval-reject')).toBeEnabled();
+  await window.click('#x402-approval-reject');
+  await expect(window.locator('#sidebar-x402-approval')).toBeHidden();
+  expect(await cancelCounts(electronApp)).toEqual({ cancel: 1, reject: 0 });
+});
+
+// Back with freedom-core#392's device path (see the top of this file).
+test.fixme('a dApp request mid-payment cannot cancel an in-flight Ledger payment', async ({
   electronApp,
   window,
 }) => {
@@ -277,7 +317,10 @@ test('a dApp request mid-payment cannot cancel an in-flight Ledger payment', asy
 // re-render used to re-derive Pay as enabled — offering a second, concurrent
 // device signature for a different accept, whose failure would then release
 // the lock the first one still holds. The card must stay frozen instead.
-test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
+// Back with freedom-core#392's device path (see the top of this file). Its
+// token check then reads the core's binding: `x402-payment` is a core kind
+// since X402-2, which main's own `consumeConfirmation` doesn't hold.
+test.fixme('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
   electronApp,
   window,
 }) => {
@@ -355,7 +398,8 @@ test('flipping the accept chooser mid-payment cannot re-arm Pay', async ({
 // EIP-3009 authorization behind an x402 payment. The instruction the user
 // gets has to name the setting to change; "reconnect the device" is a dead
 // end. The message comes from the real main-process mapper.
-test('a blind-signing refusal tells the user which device setting to enable', async ({
+// Back with freedom-core#392's device path (see the top of this file).
+test.fixme('a blind-signing refusal tells the user which device setting to enable', async ({
   electronApp,
   window,
 }) => {
@@ -396,7 +440,8 @@ test('a blind-signing refusal tells the user which device setting to enable', as
 // -32002. Driven through the REAL detector + the REAL webContents
 // 'destroyed' handler against a real tab; only get-details/approve are
 // stubbed (the sign itself needs a device).
-test('closing the paying tab mid-payment releases the sidebar instead of bricking it', async ({
+// Back with freedom-core#392's device path (see the top of this file).
+test.fixme('closing the paying tab mid-payment releases the sidebar instead of bricking it', async ({
   electronApp,
   window,
 }) => {

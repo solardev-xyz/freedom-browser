@@ -1,6 +1,6 @@
 /**
  * Quick unlock against the real freedom-cored (freedom-core design 0013,
- * PRF-2b). Skipped unless FREEDOM_CORED_PATH points at a build, or
+ * PRF-2b, and PRF-2d: quick-unlock.dat removed once enrolled). Skipped unless FREEDOM_CORED_PATH points at a build, or
  * FREEDOM_CORED_KEYSTORE_TEST=1 asks for the binary `npm run core:download`
  * fetched (CI's e2e-desktop job, on each OS, next to
  * keystore.integration.test.js).
@@ -12,18 +12,21 @@
  * - **Every OS:** a `secrets.json` that doesn't read refuses a password
  *   change and a vault delete with main's wording, and changes nothing.
  * - **Linux:** with no key store in the core, a profile's quick-unlock.dat
- *   keeps unlocking through the file, unwritten, and Quick Setup is refused
- *   with nothing written.
+ *   keeps unlocking through the file, byte for byte (the refused enroll
+ *   removes nothing), and Quick Setup is refused with nothing written.
  * - **macOS,** only with FREEDOM_TEST_KEYCHAIN naming the job's temporary
  *   keychain, the user's default (as in keystore.integration.test.js):
  *   - **the migration suite:** a v2 and a legacy quick-unlock.dat each
- *     unlock once through the file and then through the core, with the
- *     file's bytes unchanged; **downgrade:** the reference quick-unlock.js
- *     still unlocks from it; disable removes both;
+ *     unlock once through the file and then through the core, and the file
+ *     goes once the core confirms the enroll; **downgrade:** the reference
+ *     quick-unlock.js then finds no file and asks for the password; disable
+ *     removes the core's credential;
+ *   - a crash between the enroll and the removal: the next unlock goes
+ *     through the core, then removes the file;
  *   - a password change keeps quick unlock: re-wrapped in the core; a
  *     profile still on the file alone is enrolled first, under the old
- *     vault, and the change's re-wrap carries it across;
- *   - Quick Setup: the vault and its credential, and quick-unlock.dat; a
+ *     vault, the file removed, and the change's re-wrap carries it across;
+ *   - Quick Setup: the vault and its credential, and no quick-unlock.dat; a
  *     key-store refusal leaves no vault and deletes nothing;
  *   - **a replace waiting on `forget`** (PRF-2a left it to this step): an
  *     enroll over a key removed by hand makes a new one and records the
@@ -199,7 +202,7 @@ function inKeychain(item) {
   );
 }
 
-describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', () => {
+describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b, PRF-2d)', () => {
   let root;
   let identity;
   let lockDir;
@@ -305,7 +308,7 @@ describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', (
   });
 
   describeIfLinux('Linux: no key store in the core', () => {
-    test('quick-unlock.dat keeps unlocking through the file, unwritten; the enroll is refused', async () => {
+    test('quick-unlock.dat keeps unlocking through the file, byte for byte; the enroll is refused, nothing removed', async () => {
       await startCore();
       await vaultBackend.importVault(PASSWORD, ABANDON);
       // Main's code as on a Mac; the core is this OS's, with no key store.
@@ -372,9 +375,11 @@ describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', (
         expect(item).toMatch(/^[0-9a-f]{32}$/);
         expect(inKeychain(item)).toBe(true);
         expect(runs.some((args) => args.includes('create'))).toBe(true);
-        expect(fs.readFileSync(credentialPath())).toEqual(bytes);
+        // Enrolled and confirmed: the file is gone.
+        expect(bytes.length).toBeGreaterThan(0);
+        expect(fs.existsSync(credentialPath())).toBe(false);
 
-        // Then through the core, behind Touch ID: the file isn't unsealed.
+        // Then through the core, behind Touch ID: nothing to unseal.
         await vaultBackend.lock();
         const before = runs.length;
         await expect(quickUnlock.unlockWithTouchId()).resolves.toEqual({ success: true });
@@ -390,16 +395,20 @@ describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', (
         });
         expect(runs.at(-1)).toEqual(expect.arrayContaining(['--reason', 'export']));
         expect(mockState.decrypts).toBe(1);
-        expect(fs.readFileSync(credentialPath())).toEqual(bytes);
 
-        // Downgrade: an older build reads only the file, and unlocks from it.
+        // Downgrade: an older build reads only the file, finds none, and
+        // asks for the password (the accepted cost, PRF-2d).
         await vaultBackend.lock();
-        await expect(reference.unlockWithTouchId()).resolves.toEqual({ success: true });
-        expect((await vaultBackend.status()).unlocked).toBe(true);
-        // (The reference upgrades a legacy file at its use, as it always did.)
-        if (kind === 'v2') expect(fs.readFileSync(credentialPath())).toEqual(bytes);
+        mockState.prompts = [];
+        expect(reference.isQuickUnlockEnabled()).toBe(false);
+        await expect(reference.unlockWithTouchId()).resolves.toEqual({
+          success: false,
+          error: 'Quick unlock not enabled',
+        });
+        expect(mockState.prompts).toEqual([]);
+        expect((await vaultBackend.status()).unlocked).toBe(false);
 
-        // Disable removes both: the file, and the core's entry and key.
+        // Disable removes the core's entry and key (the file is gone already).
         await expect(quickUnlock.disableQuickUnlock()).resolves.toEqual({ success: true });
         expect(fs.existsSync(credentialPath())).toBe(false);
         await waitFor(
@@ -413,53 +422,71 @@ describeIfBinary('quick unlock through the real freedom-cored (0013, PRF-2b)', (
       120_000
     );
 
+    // PRF-2d, as the row's test list asks: main stopped after its enroll
+    // and before the removal leaves the core's credential and the file. The
+    // next unlock goes through the core, then removes the file.
+    test('a crash between the enroll and the removal: the next unlock goes through the core, then removes the file', async () => {
+      await startCore();
+      await vaultBackend.importVault(PASSWORD, ABANDON);
+      await expect(reference.enableQuickUnlock(PASSWORD)).resolves.toEqual({ success: true });
+      const bytes = fs.readFileSync(credentialPath());
+      // The migration's enroll, and nothing after it.
+      await vaultBackend.quickUnlockEnroll(PASSWORD);
+      await expect(vaultBackend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
+      expect(fs.readFileSync(credentialPath())).toEqual(bytes);
+
+      await vaultBackend.lock();
+      mockState.prompts = [];
+      await expect(quickUnlock.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(mockState.prompts).toEqual([UNLOCK_PROMPT]);
+      expect(mockState.decrypts).toBe(0);
+      expect((await vaultBackend.status()).unlocked).toBe(true);
+      expect(fs.existsSync(credentialPath())).toBe(false);
+      expect(inKeychain(secretsItems(identity).committed)).toBe(true);
+    }, 120_000);
+
     test('a password change keeps quick unlock: re-wrapped in the core', async () => {
       await startCore();
       await vaultBackend.importVault(PASSWORD, ABANDON);
       await expect(quickUnlock.enableQuickUnlock(PASSWORD)).resolves.toEqual({ success: true });
       const { committed: item } = secretsItems(identity);
-      const bytes = fs.readFileSync(credentialPath());
+      // Enable writes no quick-unlock.dat (PRF-2d).
+      expect(fs.existsSync(credentialPath())).toBe(false);
 
       await quickUnlock.changePasswordKeepingQuickUnlock(PASSWORD, NEW_PASSWORD);
       await vaultBackend.verifyPassword(NEW_PASSWORD);
       await vaultBackend.lock();
       await expect(quickUnlock.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(mockState.decrypts).toBe(0);
-      // The same key, the entry bound to the new vault; the file untouched.
+      // The same key, the entry bound to the new vault; still no file.
       expect(secretsItems(identity)).toMatchObject({ committed: item, entries: ['quick-unlock'] });
-      expect(fs.readFileSync(credentialPath())).toEqual(bytes);
+      expect(fs.existsSync(credentialPath())).toBe(false);
     }, 120_000);
 
-    test('a password change keeps quick unlock: enrolled first, for a profile on the file alone, then re-wrapped', async () => {
+    test('a password change keeps quick unlock: enrolled first, for a profile on the file alone, the file removed, then re-wrapped', async () => {
       await startCore();
       await vaultBackend.importVault(PASSWORD, ABANDON);
       await reference.enableQuickUnlock(PASSWORD);
-      const bytes = fs.readFileSync(credentialPath());
+      expect(fs.existsSync(credentialPath())).toBe(true);
 
       await quickUnlock.changePasswordKeepingQuickUnlock(PASSWORD, NEW_PASSWORD);
+      expect(fs.existsSync(credentialPath())).toBe(false);
       await expect(vaultBackend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
       // The re-wrap finished: one entry, bound to the new vault.
       expect(secretsItems(identity)).toMatchObject({ entries: ['quick-unlock'] });
       await vaultBackend.lock();
       await expect(quickUnlock.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(mockState.decrypts).toBe(0);
-      expect(fs.readFileSync(credentialPath())).toEqual(bytes);
     }, 120_000);
 
-    test('Quick Setup: the vault with its credential, and quick-unlock.dat for older builds', async () => {
+    test('Quick Setup: the vault with its credential, and no quick-unlock.dat', async () => {
       await startCore();
       await expect(quickUnlock.quickSetup(ABANDON)).resolves.toEqual({ success: true });
       expect(mockState.prompts).toEqual(['set up Freedom Browser with Touch ID']);
       const { committed: item } = secretsItems(identity);
       expect(inKeychain(item)).toBe(true);
-      const payload = JSON.parse(fs.readFileSync(credentialPath(), 'utf8'));
-      expect(payload.version).toBe(2);
-      // The file's password is the vault's.
-      const password = Buffer.from(payload.encrypted, 'base64')
-        .toString('utf8')
-        .replace(STUB_PREFIX, '');
-      expect(password).toMatch(/^[0-9a-f]{64}$/);
-      await expect(vaultBackend.verifyPassword(password)).resolves.toBeUndefined();
+      expect(fs.existsSync(credentialPath())).toBe(false);
+      await expect(vaultBackend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
 
       await vaultBackend.lock();
       await expect(quickUnlock.unlockWithTouchId()).resolves.toEqual({ success: true });

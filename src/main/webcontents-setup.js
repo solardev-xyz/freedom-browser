@@ -2,7 +2,10 @@ const log = require('./logger');
 const path = require('path');
 const { BrowserWindow, app } = require('electron');
 const { activeBzzBases } = require('./state');
-const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
+const {
+  cleanupWebContents: cleanupX402WebContents,
+  settlePendingPaymentsOnNavigation: settleX402PaymentsOnNavigation,
+} = require('./x402/intercept');
 const { cleanupAdblockWebContents } = require('./adblock/service');
 const {
   isPrivateWebContents,
@@ -223,6 +226,12 @@ function registerWebContentsHandlers({ isManagedPage, openAgentPopup } = {}) {
         contents.setWebRTCIPHandlingPolicy?.(previousRtcPolicy);
         previousRtcPolicy = undefined;
       }
+    });
+    // A committed main-frame navigation leaves the page an unsent x402
+    // signature was waiting on: it is settled `withheld` unless this is its
+    // paid retry (x402/intercept.js).
+    contents.on('did-navigate', (_event, url) => {
+      settleX402PaymentsOnNavigation(contents.id, url);
     });
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);

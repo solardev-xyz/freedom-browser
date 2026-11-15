@@ -184,16 +184,12 @@ function saveNewVaultMeta(addresses, userKnowsPassword) {
  * Finishes a create or import whose reply was lost, once the core has
  * confirmed it committed (design 0001, "Reconciliation"): main does what the
  * caller's success path would have done. vault-meta.json must be written (a
- * failure is retried); a Quick Setup vault's random password is stored for
- * quick unlock, because nobody else knows it.
+ * failure is retried). A Quick Setup vault's credential needs nothing more:
+ * the core wrote it with the vault (`quick_unlock: true`), and no
+ * quick-unlock.dat is written for it (freedom-core design 0013, PRF-2d).
  */
-async function finishLostSetup(found, password, userKnowsPassword) {
+async function finishLostSetup(found, userKnowsPassword) {
   saveNewVaultMeta(found.addresses, userKnowsPassword);
-  // quick-unlock.dat for older builds: the password sealed at once, never
-  // kept; only a failed write's sealed bytes, for a short retry.
-  // Not awaited: this runs inside the vault queue's mutation, and the write
-  // takes that queue itself.
-  if (!userKnowsPassword) void require('./quick-unlock').completeQuickSetup(password);
 }
 
 /**
@@ -229,7 +225,7 @@ async function isVaultUnlocked() {
 async function createNewVault(password, strength = 256, userKnowsPassword = true) {
   const { mnemonic, addresses } = await vaultBackend.createVault(password, strength, {
     userKnowsPassword,
-    onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
+    onCommitted: (found) => finishLostSetup(found, userKnowsPassword),
   });
   console.log('[IdentityManager] New vault created');
   // The core unlocks after creation, as before; save the public addresses
@@ -256,7 +252,7 @@ async function importExistingMnemonic(
   const { addresses } = await vaultBackend.importVault(password, mnemonic, {
     overwrite: false,
     quickUnlock,
-    onCommitted: (found) => finishLostSetup(found, password, userKnowsPassword),
+    onCommitted: (found) => finishLostSetup(found, userKnowsPassword),
   });
   console.log('[IdentityManager] Mnemonic imported to vault');
   saveNewVaultMeta(addresses, userKnowsPassword);

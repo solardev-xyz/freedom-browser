@@ -1,26 +1,23 @@
-// x402 auto-pay caps through main's real detector, sign flow, injector, cap
-// store and confirmations; only the signer, Electron and the stores around
-// them are mocked.
+// x402 auto-pay caps through main's real detector, sign flow, injector, IPC,
+// cap mirror and confirmations, over the identity core's x402 methods
+// (cored 0.18.0, X402-1/X402-2), simulated (test/helpers/simulated-
+// approvals.js); the real core's in x402.integration.test.js. Only the
+// core, Electron and the stores around them are faked.
 //
-// #1024: a cap is charged before a payment is signed, so two auto-pays can
-// never both be signed against headroom for one, and the charge is given
-// back when the signature never goes out.
-// #1023: a cap's amount or window changes only with a confirmation for
-// exactly that edit.
-
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+// #1024: the core charges a cap as it signs a payment (`x402.authorize`), so
+// two auto-pays can never both be signed against headroom for one, and main
+// settles each charge with it (`x402.settle`): `withheld` gives the charge
+// back when the signature never goes out, `sent` keeps it.
+// #1044: an allowance pays only for a live tab the user controls.
+// #1023: a cap's amount or window is the core's; main's edit is refused.
 
 jest.mock('../logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
 
-let mockUserData;
 const ipcHandlers = {};
 const mockHostSend = jest.fn();
 // Tabs by webContents id: live user tabs of the chrome window (id 1).
 const mockTabs = new Map();
 jest.mock('electron', () => ({
-  app: { getPath: () => mockUserData },
   ipcMain: {
     handle: (channel, handler) => {
       ipcHandlers[channel] = handler;
@@ -29,15 +26,19 @@ jest.mock('electron', () => ({
   webContents: { fromId: (id) => mockTabs.get(id) ?? null },
 }));
 
-const mockClient = {
-  address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-  createPaymentPayload: jest.fn(),
-};
-jest.mock('./client', () => ({ createX402Client: jest.fn(async () => mockClient) }));
+// The identity core: its x402 store (main's mirror reads it), its
+// `x402-payment` tokens, `x402.authorize` and `x402.settle`.
+const mockCore = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockCore.approval, x402: mockCore.x402 } }));
+
 jest.mock('../identity-manager', () => ({
   getActiveWalletIndex: () => 0,
-  getActiveWalletAddress: async () => mockClient.address,
+  getActiveWalletAddress: async () => '0x0000000000000000000000000000000000000001',
+  getWalletRecord: () => null,
+  isHardwareWalletIndex: (index) => index >= 100,
+  WALLET_TYPES: { MNEMONIC: 'mnemonic' },
 }));
+jest.mock('../vault-timer', () => ({ resetVaultAutoLockTimer: jest.fn() }));
 jest.mock('../wallet/balance-service', () => ({
   getBalancesWithCache: async () => ({ balances: {}, fromCache: true }),
   getAllBalances: async () => ({}),
@@ -53,12 +54,14 @@ jest.mock('../payment-history', () => ({
 }));
 
 const intercept = require('./intercept');
-const permissions = require('./permissions');
+const caps = require('./caps');
+const grants = require('../core/grants');
 const confirmations = require('../wallet/signing-confirmation');
-const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
-const { registerX402Ipc } = require('./ipc');
+const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
+const { registerX402Ipc, paymentApprovalRequest, CAP_EDIT_REFUSED } = require('./ipc');
 
 const ORIGIN = 'https://api.example';
+// The core keys a cap's asset in lowercase.
 const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
 const CHAIN = 8453;
 const PRICE = '10000';
@@ -78,13 +81,36 @@ const REQUIREMENTS = {
   ],
 };
 const CHROME = { id: 1, send: mockHostSend, isDestroyed: () => false };
-const SIGNED = { x402Version: 2, payload: { authorization: {}, signature: '0xabc' } };
+const AUTO_PAY = { cap: { agent: false, attributable: true } };
+
+// The core's signature of a payment, each one counted: the account's
+// authorization, with a runway the facilitator accepts.
+const mockSigner = jest.fn((params, accept) => ({
+  x402Version: 2,
+  payload: {
+    authorization: {
+      from: '0x0000000000000000000000000000000000000001',
+      to: accept.payTo,
+      value: accept.amount,
+      validAfter: '0',
+      validBefore: String(Math.floor(Date.now() / 1000) + 300),
+      nonce: '0x' + '11'.repeat(32),
+    },
+    signature: '0xabc',
+  },
+  accepted: accept,
+}));
+const realAuthorize = mockCore.x402.authorize;
+
+// The mirror main reads caps from, loaded from the simulated core.
+const loadCaps = () => grants._useBackendForTests(mockCore.approval);
 
 beforeAll(() => registerX402Ipc());
 
-beforeEach(() => {
-  mockUserData = fs.mkdtempSync(path.join(os.tmpdir(), 'x402-cap-charge-'));
-  permissions._resetCache();
+beforeEach(async () => {
+  mockCore.reset();
+  mockCore.setX402Signer(mockSigner);
+  mockSigner.mockClear();
   confirmations._reset();
   intercept.clearAllPendingPayments();
   intercept.clearAllDetectedPayments();
@@ -104,16 +130,30 @@ beforeEach(() => {
     });
   }
   mockHostSend.mockReset();
-  mockClient.createPaymentPayload.mockReset().mockResolvedValue(SIGNED);
+  await loadCaps();
 });
 
 afterEach(() => {
-  fs.rmSync(mockUserData, { recursive: true, force: true });
+  mockCore.x402.authorize = realAuthorize;
 });
 
-// A cap of `capAmount` for the paid origin, as the approval card grants it.
-const grantCap = (capAmount = PRICE) => permissions.grant(ORIGIN, CHAIN, USDC, capAmount, 3600);
-const spent = () => permissions.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount;
+afterAll(() => grants._useBackendForTests(null));
+
+// A cap of `capAmount` the core holds for the paid origin (as the approval
+// card grants it), and main's mirror of it.
+async function grantCap(capAmount = PRICE, extra = {}) {
+  const cap = mockCore.seedCap({ origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount, windowSeconds: 3600, ...extra });
+  await loadCaps();
+  return cap;
+}
+// What the core has charged the cap.
+const spent = () => mockCore.cap(ORIGIN, CHAIN, USDC)?.spentAmount;
+const signatures = () => mockSigner.mock.calls.length;
+const coreAsked = () => mockCore.calls.filter(({ method }) => method === 'x402.authorize');
+// The settles of the core's charges, main's (the simulated core records
+// its own too, when a signature it charged for fails; only the test of
+// that case has one, and it reads none).
+const settles = () => mockCore.calls.filter(({ method }) => method === 'x402.settle').map(({ params }) => params);
 
 const detect = (tabId, { id, resourceType = 'xhr', url = `${ORIGIN}/seg/${id}` } = {}) =>
   intercept.detectPaymentRequiredHandler({
@@ -128,86 +168,135 @@ const detect = (tabId, { id, resourceType = 'xhr', url = `${ORIGIN}/seg/${id}` }
   });
 const retry = (tabId, url, id) =>
   intercept.injectPaymentSignatureHandler({ id, webContentsId: tabId, url, requestHeaders: {} });
+const resume = (tabId) => ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: tabId });
 const cardsRaised = () =>
   mockHostSend.mock.calls.filter(([channel]) => channel === 'x402:approval-needed').map(([, p]) => p.detectionId);
+const capConsumed = () => mockHostSend.mock.calls.filter(([channel]) => channel === 'x402:cap-consumed');
 const settle = async () => {
   for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
 };
+const toAgent = (tabId) => setAgentPageCustody(mockTabs.get(tabId), true);
 
-// A sign held on the device until the test lets it go.
+// The core's signature held (on the device, say) until the test lets it
+// go. The core charges the cap first, as it does before it signs.
 function holdSign() {
   let release;
-  mockClient.createPaymentPayload.mockImplementationOnce(
-    () => new Promise((resolve) => { release = () => resolve(SIGNED); }));
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  mockCore.x402.authorize = async (params, context) => {
+    mockCore.x402.authorize = realAuthorize;
+    const reply = await realAuthorize(params, context);
+    await gate;
+    return reply;
+  };
   return () => release();
 }
 
-describe('an auto-pay charges its cap before it signs (#1024)', () => {
+describe('the core charges an auto-pay as it signs it (#1024)', () => {
   test('two subresource auto-pays one cap covers: one is signed, the other goes to the card', async () => {
-    grantCap(PRICE);
+    await grantCap(PRICE);
     const release = holdSign();
 
     const first = detect(42, { id: 1 });
-    // The first is on the device; the cap has been charged already.
+    await settle();
+    // The first is on the device; the core has charged the cap already,
+    // though main's mirror hasn't read it back yet.
     expect(spent()).toBe(PRICE);
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC).spentAmount).toBe('0');
     const second = detect(42, { id: 2 });
     await settle();
 
+    // The mirror said it was covered: the core was asked, and refused it.
+    expect(coreAsked()).toHaveLength(2);
     expect(cardsRaised()).toEqual(['req-2']);
     release();
     await expect(first).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
-    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(signatures()).toBe(1);
     expect(retry(42, `${ORIGIN}/seg/1`, 11)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    await settle();
+    expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'sent' }]);
     expect(spent()).toBe(PRICE);
 
     intercept.cleanupWebContents(42);
     await expect(second).resolves.toBeNull();
   });
 
-  test('two paywalls on two tabs that one cap covers: one is signed, the other goes to the card', async () => {
-    grantCap(PRICE);
+  test('two paywalls on two tabs that one cap covers: one is signed, the other reloads to the card', async () => {
+    await grantCap(PRICE);
     expect(await detect(41, { id: 3, resourceType: 'mainFrame', url: `${ORIGIN}/a` })).toBeNull();
     expect(await detect(42, { id: 4, resourceType: 'mainFrame', url: `${ORIGIN}/b` })).toBeNull();
     await settle();
 
-    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
-    expect(cardsRaised()).toEqual(['req-4']);
+    expect(coreAsked()).toHaveLength(2);
+    expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
+    expect(retry(41, `${ORIGIN}/a`, 13)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+    // The one the core refused loads again, and its 402 goes to the card:
+    // the mirror has read the charge back.
+    expect(mockTabs.get(42).loadURL).toHaveBeenCalledWith(`${ORIGIN}/b`);
+    expect(cardsRaised()).toEqual([]);
+    expect(await detect(42, { id: 14, resourceType: 'mainFrame', url: `${ORIGIN}/b` })).toBeNull();
+    await settle();
+    expect(cardsRaised()).toEqual(['req-14']);
+    expect(signatures()).toBe(1);
   });
 
-  test('a sign that fails gives the charge back', async () => {
-    grantCap('20000');
-    mockClient.createPaymentPayload.mockRejectedValueOnce(new Error('device unplugged'));
+  test('a signature the core fails to make leaves the cap uncharged', async () => {
+    await grantCap('20000');
+    mockSigner.mockImplementationOnce(() => {
+      throw new Error('device unplugged');
+    });
     await expect(detect(42, { id: 5 })).resolves.toBeNull();
     expect(spent()).toBe('0');
   });
 
-  test('a vault that is locked gives the charge back while the user unlocks it', async () => {
-    grantCap('20000');
-    const { createX402Client } = require('./client');
-    createX402Client.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+  test("a signature main can't send (its runway ran out) gives the charge back", async () => {
+    await grantCap('20000');
+    mockSigner.mockImplementationOnce((params, accept) => ({
+      x402Version: 2,
+      payload: { authorization: { validBefore: String(Math.floor(Date.now() / 1000) + 2) }, signature: '0xabc' },
+      accepted: accept,
+    }));
+    await expect(detect(42, { id: 15 })).resolves.toBeNull();
+    await settle();
+    expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
+    expect(spent()).toBe('0');
+    expect(retry(42, `${ORIGIN}/seg/15`, 25)).toBeNull();
+  });
+
+  test('a locked vault charges nothing while the user unlocks it; unlocked, the core charges it and signs', async () => {
+    await grantCap('20000');
+    mockCore.setX402Locked(true);
     const pending = detect(42, { id: 6 });
     await settle();
+    expect(intercept.hasPendingUnlockWait(42)).toBe(true);
     expect(spent()).toBe('0');
+    expect(signatures()).toBe(0);
 
-    // Unlocked: it is charged again and signed.
-    await ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: 42 });
+    // Unlocked: the core is asked again, charges it and signs.
+    mockCore.setX402Locked(false);
+    await resume(42);
     await expect(pending).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+    expect(coreAsked()).toHaveLength(2);
     expect(spent()).toBe(PRICE);
   });
 
   test('spent while the vault was locked, it goes to the card instead of being signed', async () => {
-    grantCap(PRICE);
-    const { createX402Client } = require('./client');
-    createX402Client.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    await grantCap(PRICE);
+    mockCore.setX402Locked(true);
     const pending = detect(42, { id: 7 });
     await settle();
-    // Another payment uses the cap meanwhile.
-    expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
+    mockCore.setX402Locked(false);
+    // Another tab's auto-pay uses the cap meanwhile.
+    await expect(detect(41, { id: 70 })).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+    expect(spent()).toBe(PRICE);
 
-    await ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: 42 });
+    await resume(42);
     await settle();
-    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    // Asked again, the core refused it: only the other tab's was signed.
+    expect(coreAsked()).toHaveLength(3);
+    expect(signatures()).toBe(1);
     expect(cardsRaised()).toEqual(['req-7']);
 
     intercept.cleanupWebContents(42);
@@ -217,62 +306,65 @@ describe('an auto-pay charges its cap before it signs (#1024)', () => {
 
 describe('a paywall auto-pay held for a vault unlock (#1024)', () => {
   test('spent meanwhile, the unlock signs nothing and reloads the page to its card', async () => {
-    grantCap(PRICE);
-    const { createX402Client } = require('./client');
-    createX402Client.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+    await grantCap(PRICE);
+    mockCore.setX402Locked(true);
     expect(await detect(42, { id: 8, resourceType: 'mainFrame', url: `${ORIGIN}/c` })).toBeNull();
     await settle();
     expect(spent()).toBe('0');
-    expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
+    mockCore.setX402Locked(false);
+    await expect(detect(41, { id: 80 })).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
 
-    const result = await ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: 42 });
+    const result = await resume(42);
     expect(result).toMatchObject({ success: false, code: 'X402_CAP_NOT_COVERED' });
-    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    // The core was asked again, and signed only the other tab's.
+    expect(coreAsked()).toHaveLength(3);
+    expect(signatures()).toBe(1);
+    expect(spent()).toBe(PRICE);
     expect(mockTabs.get(42).loadURL).toHaveBeenCalledWith(`${ORIGIN}/c`);
   });
 
-  test('still covered, the unlock charges it again and signs it', async () => {
-    grantCap(PRICE);
-    const { createX402Client } = require('./client');
-    createX402Client.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
+  test('still covered, the unlock has the core charge it again and sign it', async () => {
+    await grantCap(PRICE);
+    mockCore.setX402Locked(true);
     expect(await detect(42, { id: 9, resourceType: 'mainFrame', url: `${ORIGIN}/d` })).toBeNull();
     await settle();
+    expect(spent()).toBe('0');
+    mockCore.setX402Locked(false);
 
-    await expect(ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: 42 }))
-      .resolves.toMatchObject({ success: true });
-    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    await expect(resume(42)).resolves.toMatchObject({ success: true });
+    expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
+    expect(retry(42, `${ORIGIN}/d`, 19)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 });
 
 // #1044: an allowance pays only for a tab the user controls. Detection reads
-// custody as the 402 arrives; a held auto-pay reads it again as it is
-// charged and signed, so a tab that went into Agent custody meanwhile gets
-// the approval card, with nothing charged or signed.
+// custody as the 402 arrives; a held auto-pay reads it again before the core
+// is asked and once it has signed, so a tab that went into Agent custody
+// meanwhile gets the approval card, with nothing charged or sent.
 describe('a held auto-pay does not pay from the cap once its tab is in Agent custody (#1044)', () => {
-  const { setAgentPageCustody } = require('../wallet/agent-tab-custody');
-  const { createX402Client } = require('./client');
-  const lockVaultOnce = () => createX402Client.mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
-  const resume = (tabId) => ipcHandlers['x402:resume-unlock']({ sender: CHROME }, { webContentsId: tabId });
-  const toAgent = (tabId) => setAgentPageCustody(mockTabs.get(tabId), true);
-
-  beforeEach(() => createX402Client.mockClear());
+  // A vault locked for the first payment, unlocked before the resume.
+  const lockVaultOnce = () => {
+    mockCore.setX402Locked(true);
+    return () => mockCore.setX402Locked(false);
+  };
 
   test('a subresource held for the unlock goes to the card, uncharged and unsigned', async () => {
-    grantCap(PRICE);
-    lockVaultOnce();
+    await grantCap(PRICE);
+    const unlock = lockVaultOnce();
     const pending = detect(42, { id: 51 });
     await settle();
     expect(intercept.hasPendingUnlockWait(42)).toBe(true);
     expect(spent()).toBe('0');
 
     toAgent(42);
+    unlock();
     await expect(resume(42)).resolves.toMatchObject({ success: true });
     await settle();
 
-    // The vault was not even opened again: only the locked attempt.
-    expect(createX402Client).toHaveBeenCalledTimes(1);
-    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    // The core was not even asked again: only the locked attempt.
+    expect(coreAsked()).toHaveLength(1);
+    expect(signatures()).toBe(0);
     expect(spent()).toBe('0');
     expect(cardsRaised()).toEqual(['req-51']);
     // Nothing held is left for a later resume, and nothing signed to attach.
@@ -285,16 +377,17 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
   });
 
   test('a paywall held for the unlock reloads to its card, uncharged and unsigned', async () => {
-    grantCap(PRICE);
-    lockVaultOnce();
+    await grantCap(PRICE);
+    const unlock = lockVaultOnce();
     expect(await detect(42, { id: 52, resourceType: 'mainFrame', url: `${ORIGIN}/e` })).toBeNull();
     await settle();
     expect(spent()).toBe('0');
 
     toAgent(42);
+    unlock();
     await expect(resume(42)).resolves.toMatchObject({ success: false, code: 'X402_CAP_NOT_COVERED' });
-    expect(createX402Client).toHaveBeenCalledTimes(1);
-    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(coreAsked()).toHaveLength(1);
+    expect(signatures()).toBe(0);
     expect(spent()).toBe('0');
     // The resume token is spent: a later resume finds nothing to sign.
     await expect(resume(42)).resolves.toMatchObject({
@@ -308,22 +401,23 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
     expect(await detect(42, { id: 53, resourceType: 'mainFrame', url: `${ORIGIN}/e` })).toBeNull();
     await settle();
     expect(cardsRaised()).toEqual(['req-53']);
-    expect(mockClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(coreAsked()).toHaveLength(1);
     expect(spent()).toBe('0');
   });
 
   test('a subresource whose tab goes into Agent custody while it is on the device: dropped, given back, to the card', async () => {
-    grantCap(PRICE);
+    await grantCap(PRICE);
     const release = holdSign();
     const pending = detect(42, { id: 54 });
-    expect(spent()).toBe(PRICE);
     await settle();
-    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(signatures()).toBe(1);
+    expect(spent()).toBe(PRICE);
 
     toAgent(42);
     release();
     await settle();
 
+    expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
     expect(spent()).toBe('0');
     expect(cardsRaised()).toEqual(['req-54']);
     expect(retry(42, `${ORIGIN}/seg/54`, 64)).toBeNull();
@@ -333,17 +427,18 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
   });
 
   test('a paywall whose tab goes into Agent custody while it is on the device: dropped, given back, reloaded to the card', async () => {
-    grantCap(PRICE);
+    await grantCap(PRICE);
     const release = holdSign();
     expect(await detect(42, { id: 55, resourceType: 'mainFrame', url: `${ORIGIN}/f` })).toBeNull();
     await settle();
-    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
 
     toAgent(42);
     release();
     await settle();
 
+    expect(settles()).toEqual([{ reservation: expect.any(String), outcome: 'withheld' }]);
     expect(spent()).toBe('0');
     expect(retry(42, `${ORIGIN}/f`, 65)).toBeNull();
     expect(mockTabs.get(42).loadURL).toHaveBeenCalledTimes(1);
@@ -351,13 +446,14 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
   });
 
   test("a tab back in the user's hands by the unlock is paid from the cap", async () => {
-    grantCap(PRICE);
-    lockVaultOnce();
+    await grantCap(PRICE);
+    const unlock = lockVaultOnce();
     const pending = detect(42, { id: 56 });
     await settle();
 
     toAgent(42);
     setAgentPageCustody(mockTabs.get(42), false);
+    unlock();
     await expect(resume(42)).resolves.toMatchObject({ success: true });
     await expect(pending).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
     expect(spent()).toBe(PRICE);
@@ -366,28 +462,46 @@ describe('a held auto-pay does not pay from the cap once its tab is in Agent cus
   });
 
   test("another tab in Agent custody does not stop a user tab's held paywall", async () => {
-    grantCap(PRICE);
-    lockVaultOnce();
+    await grantCap(PRICE);
+    const unlock = lockVaultOnce();
     expect(await detect(42, { id: 57, resourceType: 'mainFrame', url: `${ORIGIN}/g` })).toBeNull();
     await settle();
 
     toAgent(41);
+    unlock();
     await expect(resume(42)).resolves.toMatchObject({ success: true });
-    expect(mockClient.createPaymentPayload).toHaveBeenCalledTimes(1);
+    expect(signatures()).toBe(1);
     expect(spent()).toBe(PRICE);
     expect(retry(42, `${ORIGIN}/g`, 67)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
   });
 });
 
 describe('a charge is given back when its signature never goes out (#1024)', () => {
+  // The reservation the core gave main's last payment.
+  let reservationGiven = null;
+  const lastReservation = () => reservationGiven;
+  beforeEach(() => {
+    reservationGiven = null;
+    mockCore.x402.authorize = async (params, context) => {
+      const reply = await realAuthorize(params, context);
+      reservationGiven = reply.reservation;
+      return reply;
+    };
+  });
+
+  // An auto-pay signed and stashed, the cap charged for it: its reservation.
   async function signedAutoPay(id) {
-    grantCap('20000');
+    await grantCap('20000');
     await expect(detect(42, { id })).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
     expect(spent()).toBe(PRICE);
+    await settle();
+    mockHostSend.mockReset();
+    expect(lastReservation()).toMatch(/^[0-9a-f]{32}$/);
+    return lastReservation();
   }
 
   test('a pending signature that expires unsent, on the next request of any page', async () => {
-    await signedAutoPay(26);
+    const reservation = await signedAutoPay(26);
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
     try {
@@ -395,11 +509,14 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     } finally {
       Date.now = realNow;
     }
+    await settle();
+    expect(settles()).toEqual([{ reservation, outcome: 'withheld' }]);
     expect(spent()).toBe('0');
+    expect(capConsumed()).toEqual([['x402:cap-consumed', { origin: ORIGIN }]]);
   });
 
   test('a pending signature that expires unsent', async () => {
-    await signedAutoPay(21);
+    const reservation = await signedAutoPay(21);
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
     try {
@@ -407,83 +524,101 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     } finally {
       Date.now = realNow;
     }
+    await settle();
+    expect(settles()).toEqual([{ reservation, outcome: 'withheld' }]);
     expect(spent()).toBe('0');
   });
 
   test('the tab closing before the retry', async () => {
-    await signedAutoPay(22);
+    const reservation = await signedAutoPay(22);
     intercept.cleanupWebContents(42);
+    await settle();
+    expect(settles()).toEqual([{ reservation, outcome: 'withheld' }]);
     expect(spent()).toBe('0');
   });
 
-  test('the cap revoked and granted again before the retry: withheld, and the new cap is not charged', async () => {
-    await signedAutoPay(23);
-    permissions.revoke(ORIGIN, CHAIN, USDC);
-    const realNow = Date.now;
-    Date.now = () => realNow() + 2000; // a new grant is another cap
-    try {
-      grantCap('20000');
-      expect(retry(42, `${ORIGIN}/seg/23`, 33)).toBeNull();
-    } finally {
-      Date.now = realNow;
-    }
+  test('the cap revoked before the retry: withheld, and a cap granted again later is not given the old charge', async () => {
+    const reservation = await signedAutoPay(23);
+    // The activity pane's revoke, through the core.
+    await caps.revoke(ORIGIN, CHAIN, USDC);
+    expect(retry(42, `${ORIGIN}/seg/23`, 33)).toBeNull();
+    await settle();
+    expect(settles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(capConsumed()).toEqual([]);
+
+    await grantCap('20000');
     expect(spent()).toBe('0');
   });
 
-  // A cap's createdAt is in whole seconds: one revoked and granted again
-  // within the same second is still another cap (#1028 review).
-  describe('the cap revoked and granted again within the same second', () => {
+  // The core gives a charge back only to the cap it was taken from (its
+  // generation), however like it a cap granted again is: amount, createdAt
+  // and expiresAt to the second (#1028 review).
+  describe('the cap revoked and granted again, the same to the second', () => {
     let realNow;
+    let fixed;
     beforeEach(() => {
       realNow = Date.now;
-      const fixed = realNow();
+      fixed = realNow();
       Date.now = () => fixed;
     });
     afterEach(() => {
       Date.now = realNow;
     });
 
-    test('a new cap that does not cover it: the old charge does not stand, and the header is withheld', async () => {
-      await signedAutoPay(27);
-      const { createdAt } = permissions.getPermission(ORIGIN, CHAIN, USDC);
-      permissions.revoke(ORIGIN, CHAIN, USDC);
-      grantCap('1');
-      expect(permissions.getPermission(ORIGIN, CHAIN, USDC).createdAt).toBe(createdAt);
-
-      expect(retry(42, `${ORIGIN}/seg/27`, 37)).toBeNull();
-      expect(spent()).toBe('0');
-    });
-
-    test('a new cap the same as the old: withheld, and the old charge is not given back to it', async () => {
-      await signedAutoPay(28);
-      permissions.revoke(ORIGIN, CHAIN, USDC);
-      grantCap('20000');
-      // The new cap's own charge, which the old one's refund must not undo.
-      expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
-
-      expect(retry(42, `${ORIGIN}/seg/28`, 38)).toBeNull();
+    // The cap revoked and granted again as it was, and the new one
+    // charged by another tab's auto-pay, whose header goes out.
+    async function grantedAgainAndCharged() {
+      const old = mockCore.cap(ORIGIN, CHAIN, USDC);
+      await caps.revoke(ORIGIN, CHAIN, USDC);
+      await grantCap('20000', { createdAt: old.createdAt, expiresAt: old.expiresAt });
+      expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual({ ...old, spentAmount: '0' });
+      await expect(detect(41, { id: 90 })).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
+      expect(retry(41, `${ORIGIN}/seg/90`, 91)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
       expect(spent()).toBe(PRICE);
-    });
+      await settle();
+      mockHostSend.mockReset();
+    }
 
     test('the tab closing: the old charge is not given back to the new cap', async () => {
-      await signedAutoPay(29);
-      permissions.revoke(ORIGIN, CHAIN, USDC);
-      grantCap('20000');
-      expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
+      const reservation = await signedAutoPay(29);
+      await grantedAgainAndCharged();
 
       intercept.cleanupWebContents(42);
+      await settle();
+      expect(settles()).toEqual([
+        { reservation: expect.any(String), outcome: 'sent' },
+        { reservation, outcome: 'withheld' },
+      ]);
       expect(spent()).toBe(PRICE);
+      expect(capConsumed()).toEqual([]);
+    });
+
+    test('the signature expiring unsent: the old charge is not given back to the new cap', async () => {
+      const reservation = await signedAutoPay(31);
+      await grantedAgainAndCharged();
+
+      fixed += 61_000;
+      expect(retry(42, `${ORIGIN}/seg/31`, 41)).toBeNull();
+      await settle();
+      expect(settles()).toEqual([
+        { reservation: expect.any(String), outcome: 'sent' },
+        { reservation, outcome: 'withheld' },
+      ]);
+      expect(spent()).toBe(PRICE);
+      expect(capConsumed()).toEqual([]);
     });
 
     test('the cap left alone: the header goes out', async () => {
-      await signedAutoPay(30);
+      const reservation = await signedAutoPay(30);
       expect(retry(42, `${ORIGIN}/seg/30`, 40)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
+      await settle();
+      expect(settles()).toEqual([{ reservation, outcome: 'sent' }]);
       expect(spent()).toBe(PRICE);
     });
   });
 
   test('once the header has gone out, the charge stays whatever the server answers', async () => {
-    await signedAutoPay(24);
+    const reservation = await signedAutoPay(24);
     expect(retry(42, `${ORIGIN}/seg/24`, 34)?.requestHeaders['PAYMENT-SIGNATURE']).toBeDefined();
     intercept.paymentResponseLoggingHandler({
       id: 34,
@@ -491,7 +626,11 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
       responseHeaders: {},
       url: `${ORIGIN}/seg/24`,
     });
+    await settle();
+    expect(settles()).toEqual([{ reservation, outcome: 'sent' }]);
     expect(spent()).toBe(PRICE);
+    // Settled once: nothing left to give back.
+    expect(mockCore.openReservations()).toBe(0);
   });
 
   test('a payment the user approved with an allowance is charged as it is stashed, and given back unsent', async () => {
@@ -499,124 +638,114 @@ describe('a charge is given back when its signature never goes out (#1024)', () 
     await settle();
     expect(cardsRaised()).toEqual(['req-25']);
     const grant = { capAmount: '50000', windowSeconds: 3600 };
-    const payment = {
-      webContentsId: 42,
-      detectionId: 'req-25',
-      url: `${ORIGIN}/seg/25`,
-      acceptIndex: 0,
-      accept: REQUIREMENTS.accepts[0],
-      grant,
-    };
-    const { token } = confirmations.issueMainConfirmation(confirmations.KINDS.X402_PAYMENT, 0, payment);
-    await ipcHandlers['x402:approve']({ sender: CHROME }, {
-      webContentsId: 42,
-      detectionId: 'req-25',
-      selectedAcceptIndex: 0,
-      grant,
-      confirmation: token,
-    });
+    // The card's Pay: the panel's prompt names the payment from main's
+    // record, and the core mints the `x402-payment` token that binds it.
+    const payment = paymentApprovalRequest(CHROME, { webContentsId: 42, detectionId: 'req-25', acceptIndex: 0, grant });
+    const { token } = await confirmations.issueConfirmation(confirmations.KINDS.X402_PAYMENT, 0, payment);
+    await expect(
+      ipcHandlers['x402:approve']({ sender: CHROME }, {
+        webContentsId: 42,
+        detectionId: 'req-25',
+        selectedAcceptIndex: 0,
+        grant,
+        confirmation: token,
+      })
+    ).resolves.toEqual({ success: true, pending: true });
     await expect(pending).resolves.toMatchObject({ statusLine: 'HTTP/1.1 307 Temporary Redirect' });
-    expect(spent()).toBe(PRICE);
+    // The core spent the token, wrote the cap it binds and charged it.
+    expect(coreAsked()[0].params.authorization).toEqual({ token });
+    expect(coreAsked()[0].params.grant).toEqual({ cap_amount: '50000', window_seconds: 3600 });
+    expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: '50000', spentAmount: PRICE });
+    const reservation = lastReservation();
 
     intercept.cleanupWebContents(42);
+    await settle();
+    expect(settles()).toEqual([{ reservation, outcome: 'withheld' }]);
     expect(spent()).toBe('0');
   });
 });
 
-describe('x402:update-permission needs a confirmation for the edit (#1023)', () => {
+describe('x402:update-permission is refused: a cap is the core\'s (X402-2, #1023)', () => {
   const EDIT = { origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount: '99000000' };
-  const mint = (edit, windowId = CHROME.id) =>
-    confirmations.issueMainConfirmation(
-      confirmations.KINDS.X402_CAP_UPDATE,
-      null,
-      permissions.capUpdateRequest(windowId, edit)
-    ).token;
+  const REFUSED = { success: false, error: CAP_EDIT_REFUSED, code: 'SIGNING_NOT_CONFIRMED' };
+  const update = (sender, args) => ipcHandlers['x402:update-permission']({ sender }, args);
+  // The core asked anything since `from`.
+  const askedSince = (from) => mockCore.calls.slice(from).map(({ method }) => method);
 
-  test('a bare call raises nothing', async () => {
-    grantCap(PRICE);
-    const result = await ipcHandlers['x402:update-permission']({ sender: CHROME }, EDIT);
-    expect(result).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-    expect(permissions.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
+  test('a bare call raises nothing, and asks the core nothing', async () => {
+    const cap = await grantCap(PRICE);
+    const from = mockCore.calls.length;
 
-    const window = await ipcHandlers['x402:update-permission']({ sender: CHROME }, {
+    await expect(update(CHROME, EDIT)).resolves.toEqual(REFUSED);
+    await expect(update(CHROME, {
       origin: ORIGIN,
       chainId: CHAIN,
       asset: USDC,
       windowSeconds: 10 * 365 * 86400,
+    })).resolves.toEqual(REFUSED);
+
+    expect(askedSince(from)).toEqual([]);
+    expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual(cap);
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: PRICE, expiresAt: cap.expiresAt });
+  });
+
+  test("with a token minted for exactly that edit, from the window that confirmed it, it is refused all the same", async () => {
+    const cap = await grantCap(PRICE);
+    // As main minted one before X402-2 (`wallet:confirm-signing` mints
+    // none now): bound to this window, this cap and this edit.
+    const { token: confirmation } = confirmations.issueMainConfirmation(confirmations.KINDS.X402_CAP_UPDATE, null, {
+      window: CHROME.id,
+      ...EDIT,
+      current: { capAmount: cap.capAmount, createdAt: cap.createdAt, expiresAt: cap.expiresAt, generation: 1 },
     });
-    expect(window).toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-    const cap = permissions.getPermission(ORIGIN, CHAIN, USDC);
-    expect(cap.expiresAt - cap.createdAt).toBe(3600);
-  });
+    const from = mockCore.calls.length;
 
-  test('with its token, from the window that confirmed it, the edit is applied once', async () => {
-    grantCap(PRICE);
-    const confirmation = mint(EDIT);
-    await expect(ipcHandlers['x402:update-permission']({ sender: { id: 2 } }, { ...EDIT, confirmation }))
-      .resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
+    await expect(update(CHROME, { ...EDIT, confirmation })).resolves.toEqual(REFUSED);
 
-    await expect(
-      ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation: mint(EDIT) })
-    ).resolves.toMatchObject({ success: true, permission: { capAmount: '99000000' } });
-    expect(permissions.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe('99000000');
-  });
-
-  test('a token minted before the cap changed does not apply after', async () => {
-    grantCap(PRICE);
-    const confirmation = mint(EDIT);
-    // Spent meanwhile: not a change of the cap. Its window moved: one.
-    permissions.charge(ORIGIN, CHAIN, USDC, PRICE);
-    permissions.updatePermission(ORIGIN, CHAIN, USDC, { windowSeconds: 7200 });
-    await expect(ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation }))
-      .resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-    expect(permissions.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
-  });
-
-  test('a token minted before the cap was revoked and granted again, in the same second, does not apply after', async () => {
-    const realNow = Date.now;
-    const fixed = realNow();
-    Date.now = () => fixed;
-    try {
-      const old = grantCap(PRICE);
-      const confirmation = mint(EDIT);
-      permissions.revoke(ORIGIN, CHAIN, USDC);
-      // The same cap again, to the second: amount, createdAt and expiresAt.
-      const replacement = grantCap(PRICE);
-      expect(replacement).toEqual(old);
-
-      await expect(ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation }))
-        .resolves.toMatchObject({ success: false, code: 'SIGNING_NOT_CONFIRMED' });
-      expect(permissions.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
-
-      // A token minted for the replacement applies to it.
-      await expect(ipcHandlers['x402:update-permission']({ sender: CHROME }, { ...EDIT, confirmation: mint(EDIT) }))
-        .resolves.toMatchObject({ success: true, permission: { capAmount: '99000000' } });
-    } finally {
-      Date.now = realNow;
-    }
+    expect(askedSince(from)).toEqual([]);
+    expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toEqual(cap);
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC).capAmount).toBe(PRICE);
   });
 });
 
-describe('the cap store charges and gives back', () => {
-  test('a charge goes back only to the cap it was taken from, never below zero', () => {
-    grantCap('20000');
-    const taken = permissions.charge(ORIGIN, CHAIN, USDC, PRICE);
-    expect(taken).toMatchObject({ origin: ORIGIN, chainId: CHAIN, asset: USDC, amount: PRICE });
-    expect(permissions.chargeStands(taken)).toBe(true);
-    expect(permissions.refund(taken)).toBe(true);
+// caps.js over the core: what main's sign flow and injector rely on.
+describe('the core charges and gives back (caps.js)', () => {
+  const pay = (id) =>
+    caps.authorize({ account: 0, detection: { tab: 42, id, url: `${ORIGIN}/seg/${id}` }, requirements: REQUIREMENTS, authorization: AUTO_PAY });
+
+  test('a charge goes back once, and only to the cap it was taken from', async () => {
+    await grantCap('20000');
+    const { reservation, charged } = await pay('a');
+    expect(charged).toBe(true);
+    expect(spent()).toBe(PRICE);
+    // The mirror has read the charge back.
+    await settle();
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC).spentAmount).toBe(PRICE);
+
+    await expect(caps.settle(reservation, 'withheld', ORIGIN)).resolves.toBe(true);
     expect(spent()).toBe('0');
-    expect(permissions.refund(taken)).toBe(true);
+    // Settled already: the core holds it no more (`invalid_argument`), and
+    // nothing goes back again; caps.settle never rejects.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(caps.settle(reservation, 'withheld', ORIGIN)).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not settle a payment (withheld)'));
+    } finally {
+      warn.mockRestore();
+    }
     expect(spent()).toBe('0');
 
-    permissions.revoke(ORIGIN, CHAIN, USDC);
-    expect(permissions.chargeStands(taken)).toBe(false);
-    expect(permissions.refund(taken)).toBe(false);
+    // Revoked, the cap it was taken from is gone: nothing to give it back to.
+    const second = await pay('b');
+    await caps.revoke(ORIGIN, CHAIN, USDC);
+    await expect(caps.settle(second.reservation, 'withheld', ORIGIN)).resolves.toBe(false);
   });
 
-  test('no charge beyond the cap', () => {
-    grantCap(PRICE);
-    expect(permissions.charge(ORIGIN, CHAIN, USDC, PRICE)).not.toBeNull();
-    expect(permissions.charge(ORIGIN, CHAIN, USDC, '1')).toBeNull();
-    expect(permissions.tryConsume(ORIGIN, CHAIN, USDC, '1')).toBe(false);
+  test('no charge beyond the cap', async () => {
+    await grantCap(PRICE);
+    await expect(pay('a')).resolves.toMatchObject({ charged: true });
+    await expect(pay('b')).rejects.toMatchObject({ code: 'not_authorized', data: { reason: 'cap' } });
+    expect(spent()).toBe(PRICE);
+    expect(signatures()).toBe(1);
   });
 });

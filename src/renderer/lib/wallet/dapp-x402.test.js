@@ -223,6 +223,7 @@ const dappX402ElementIds = [
   'x402-approval-grant-cap-input',
   'x402-approval-grant-cap-symbol',
   'x402-approval-grant-window-select',
+  'x402-approval-ledger-note',
   'x402-approval-reject',
   'x402-approval-approve',
   'x402-connection-banner',
@@ -274,6 +275,7 @@ async function loadDappX402(options = {}) {
   document.elements['x402-approval-unlock'].classList.add('hidden');
   document.elements['x402-approval-error'].classList.add('hidden');
   document.elements['x402-approval-grant-row'].classList.add('hidden');
+  document.elements['x402-approval-ledger-note'].classList.add('hidden');
   document.elements['x402-connection-banner'].classList.add('hidden');
 
   const details = options.details || {
@@ -331,6 +333,7 @@ async function loadDappX402(options = {}) {
     walletState: {
       identityView,
       registeredChains: { 8453: { name: 'Base' } },
+      ...(options.walletState || {}),
     },
     registerScreenHider: jest.fn((fn) => screenHiders.push(fn)),
     hideAllSubscreens,
@@ -912,6 +915,96 @@ describe('dapp-x402 approval card lifecycle', () => {
 
     expect(ctx.electronAPI.x402Cancel).toHaveBeenCalledWith({ webContentsId: 7 });
     expect(paying.goBack).not.toHaveBeenCalled();
+  });
+});
+
+// X402-2: the identity core signs x402 payments only with this browser's own
+// wallet until freedom-core#392's device path, and main refuses a Ledger or
+// phone account before asking it. The card says so up front: Pay stays off,
+// and no confirmation is minted.
+describe('dapp-x402 approval card for a device account', () => {
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.HTMLInputElement = originalHtmlInputElement;
+    jest.restoreAllMocks();
+  });
+
+  const onAccount = (type) => ({
+    activeWalletIndex: 3,
+    derivedWallets: [{ index: 3, type, address: '0x3333333333333333333333333333333333333333' }],
+  });
+
+  async function showCard(ctx) {
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+  }
+
+  test.each([
+    ['ledger', 'a Ledger'],
+    ['remote', 'a phone'],
+  ])('%s: Pay is off, the card says device payments are not available yet, and Pay mints nothing', async (type) => {
+    const ctx = await loadDappX402({ walletState: onAccount(type) });
+    await showCard(ctx);
+
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-error'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-error'].textContent).toBe(
+      "x402 payments from Ledger and phone accounts aren't available yet. " +
+        "To pay, switch to an account in this browser's wallet."
+    );
+    // No promise of a confirmation on the device, and no auto-pay offer.
+    expect(ctx.elements['x402-approval-ledger-note'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['x402-approval-ledger-note'].textContent).not.toMatch(/confirmation on/);
+    expect(ctx.elements['x402-approval-grant-row'].classList.contains('hidden')).toBe(true);
+    // The payment details still show.
+    expect(ctx.elements['x402-approval-amount'].textContent).toBe('2.5 USDC');
+
+    // A click that gets through anyway mints and approves nothing.
+    await ctx.elements['x402-approval-approve'].fire('click');
+    expect(ctx.wallet.confirmSigning).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.x402Approve).not.toHaveBeenCalled();
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-approve'].textContent).not.toMatch(/Confirm on/);
+  });
+
+  test('a device account short of funds is told the same', async () => {
+    const ctx = await loadDappX402({
+      walletState: onAccount('ledger'),
+      details: {
+        success: true,
+        detectionId: 'det-1',
+        url: 'https://pay.example/article',
+        accepts: [createAccept({ balance: '0', fundable: false })],
+        initialSelectionIndex: 0,
+      },
+    });
+    await showCard(ctx);
+
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-error'].textContent).toMatch(
+      /Ledger and phone accounts aren't available yet/
+    );
+  });
+
+  test("an account in the browser's own wallet keeps Pay on and pays", async () => {
+    const ctx = await loadDappX402({ walletState: onAccount('mnemonic') });
+    await showCard(ctx);
+
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(false);
+    expect(ctx.elements['x402-approval-error'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['x402-approval-grant-row'].classList.contains('hidden')).toBe(false);
+
+    await ctx.elements['x402-approval-approve'].fire('click');
+    expect(ctx.wallet.confirmSigning).toHaveBeenCalledTimes(1);
+    expect(ctx.electronAPI.x402Approve).toHaveBeenCalledTimes(1);
   });
 });
 

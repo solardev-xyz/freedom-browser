@@ -350,8 +350,8 @@ const vaultBackend = {
   /**
    * Runs `task` on the mutation queue: no create, import, password change
    * or delete starts until it settles, and it starts only after those
-   * already queued (0013 PRF-2b: quick-unlock.dat is checked against the
-   * vault and used under it). Unlocks, reads and quick_unlock.* stay outside
+   * already queued (0013 PRF-2b, PRF-2d: quick-unlock.dat is checked
+   * against the vault, used and removed under it). Unlocks, reads and quick_unlock.* stay outside
    * the queue, so `task` may call them. Never call it from inside a
    * mutation's own continuation (`onCommitted`): it would wait on itself.
    */
@@ -568,10 +568,10 @@ const vaultBackend = {
     /**
      * The permission files' write methods (design 0012, API), for a file in
      * the hello's `grant_moved`: `dapp` from APB-2 (wallet/dapp-permissions.js),
-     * `swarm` and `radicle` from APB-3 (core/grants.js). `caller` is a page's
-     * PageContext (its own key), `'chrome'` (a narrowing from the chrome's
-     * settings) or null (`shell`, main's own: an account deleted, a manifest's
-     * projection).
+     * `swarm` and `radicle` from APB-3, and `x402`'s revokes from X402-2
+     * (core/grants.js). `caller` is a page's PageContext (its own key),
+     * `'chrome'` (a narrowing from the chrome's settings) or null (`shell`,
+     * main's own: an account deleted, a manifest's projection).
      */
     /** `{ store, change }` → `{ grant, durable? }` */
     grant(params, caller = null) {
@@ -601,6 +601,28 @@ const vaultBackend = {
     /** `{ store, key? }` → `{ records }`, the store as the core holds it */
     grants(params) {
       return call('approval.grants', params);
+    },
+  },
+
+  /**
+   * x402's payments (cored 0.18.0, design 0012 "x402"; X402-2), main's own
+   * (`shell`): the core checks the `x402-payment` token or a cap, charges the
+   * cap before it signs, builds the payment byte for byte as `@x402/evm`
+   * builds it and signs it with the account's vault key.
+   */
+  x402: {
+    /**
+     * `{ account, detection: { tab, id, url }, requirements, authorization:
+     * { token } | { cap: { agent, attributable } }, accept_index?, grant? }` →
+     * `{ payload, reservation, accept_index, charged, grant?, durable? }`.
+     * The payload is a signed authorization: never logged.
+     */
+    authorize(params) {
+      return call('x402.authorize', params);
+    },
+    /** `{ reservation, outcome: 'withheld' | 'sent' }` → `{ refunded, durable? }` */
+    settle(params) {
+      return call('x402.settle', params);
     },
   },
 

@@ -97,7 +97,7 @@ const TYPED_DATA = Object.freeze({
 // for a moved file only (`dapp` from APB-2; Swarm and Radicle from APB-3,
 // x402 from X402-2).
 const WRITE_METHODS = ['approval.grant', 'approval.revoke', 'approval.touch', 'approval.forget_account'];
-const MOVED = new Set(['dapp', 'swarm', 'radicle']);
+const MOVED = new Set(['dapp', 'swarm', 'radicle', 'x402']);
 const unmovedWrites = (calls) =>
   calls.filter(
     (call) =>
@@ -2205,7 +2205,7 @@ describeIfBinary('the dApp file, the core\'s from APB-2 (real freedom-cored)', (
   });
 
   test("the hello names the moved files in grant_moved, and main's copy is the store the core read", async () => {
-    expect([...core.service.helloParams(core).grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm']);
+    expect([...core.service.helloParams(core).grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
     expect(permissions.getPermission(SITE)).toEqual(TODAY[SITE]);
     expect(permissions.getPermission(OTHER_SITE)).toEqual(TODAY[OTHER_SITE]);
     expect(await coreRecords()).toEqual([TODAY[SITE], TODAY[OTHER_SITE]]);

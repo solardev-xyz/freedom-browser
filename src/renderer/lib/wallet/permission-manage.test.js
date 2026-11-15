@@ -274,7 +274,7 @@ describe('permission-manage x402 subscreen', () => {
     jest.restoreAllMocks();
   });
 
-  test('renders active caps and saves spend-cap edits', async () => {
+  test('renders active caps read-only: an amount or a window is the core\'s (X402-2)', async () => {
     const ctx = await loadPermissionManage();
 
     await ctx.mod.showX402Permissions('https://pay.example');
@@ -282,6 +282,7 @@ describe('permission-manage x402 subscreen', () => {
     const list = ctx.elements['x402-perms-list'];
     const block = list.children[0];
     const capInput = block.querySelector('input');
+    const windowSelect = block.querySelector('select');
 
     expect(ctx.hideAllSubscreens).toHaveBeenCalled();
     expect(ctx.openSidebarPanel).toHaveBeenCalled();
@@ -291,56 +292,19 @@ describe('permission-manage x402 subscreen', () => {
     expect(block.querySelector('.x402-perm-asset-name').textContent).toBe('USDC');
     expect(block.querySelector('.x402-perm-usage-summary').textContent).toBe('2 of 10 USDC spent');
     expect(capInput.value).toBe('10');
+    // Shown, not editable: lowering a cap waits for the core (freedom-core #392).
+    expect(capInput.disabled).toBe(true);
+    expect(windowSelect.disabled).toBe(true);
+    expect(block.querySelector('.x402-perm-meta').textContent).toMatch(/revoke it and set a new one/);
 
     capInput.value = '25';
     await capInput.fire('change');
+    await windowSelect.fire('change');
 
-    // The edit is confirmed with main first, then applied with that token.
-    const edit = {
-      origin: 'https://pay.example',
-      chainId: 8453,
-      asset: '0xUSDC',
-      capAmount: '25000000',
-    };
-    expect(ctx.wallet.confirmSigning).toHaveBeenCalledWith('x402-cap-update', null, edit);
-    expect(ctx.electronAPI.x402UpdatePermission).toHaveBeenCalledWith({
-      ...edit,
-      confirmation: 'cap-edit-token',
-    });
-    expect(ctx.updateX402ConnectionBanner).toHaveBeenCalledWith('https://pay.example');
-    expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(true);
-  });
-
-  test('a cap edit main refuses to confirm is not applied', async () => {
-    jest.spyOn(console, 'error').mockImplementation(() => {});
-    const ctx = await loadPermissionManage({
-      mintResult: { success: false, error: 'No such auto-pay cap' },
-    });
-
-    await ctx.mod.showX402Permissions('https://pay.example');
-    const capInput = ctx.elements['x402-perms-list'].children[0].querySelector('input');
-    capInput.value = '25';
-    await capInput.fire('change');
-
+    // No edit is confirmed or sent, and no refusal shown.
+    expect(ctx.wallet.confirmSigning).not.toHaveBeenCalled();
     expect(ctx.electronAPI.x402UpdatePermission).not.toHaveBeenCalled();
-    expect(ctx.elements['x402-perms-error'].textContent).toBe('No such auto-pay cap');
-  });
-
-  test('surfaces failed cap edits and refreshes the permission views', async () => {
-    jest.spyOn(console, 'error').mockImplementation(() => {});
-    const ctx = await loadPermissionManage({
-      updateResult: { success: false, error: 'Cap update rejected.' },
-    });
-
-    await ctx.mod.showX402Permissions('https://pay.example');
-    const capInput = ctx.elements['x402-perms-list'].children[0].querySelector('input');
-
-    capInput.value = '25';
-    await capInput.fire('change');
-
-    expect(ctx.elements['x402-perms-error'].textContent).toBe('Cap update rejected.');
-    expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(false);
-    expect(ctx.updateX402ConnectionBanner).toHaveBeenCalledWith('https://pay.example');
+    expect(ctx.elements['x402-perms-error'].classList.contains('hidden')).toBe(true);
   });
 
   test('revokes all x402 caps for the current origin and closes the subscreen', async () => {

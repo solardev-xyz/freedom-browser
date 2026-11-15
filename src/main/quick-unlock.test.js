@@ -41,7 +41,8 @@ const coreError = (code, message, data) => Object.assign(new Error(message), { c
  * the vault is unlocked. `password: null` takes any password.
  */
 function makeCore({ password = null } = {}) {
-  const state = { password, credential: null, unlocked: false };
+  // `held`: each enroll and status, and whether it ran under the queue.
+  const state = { password, credential: null, unlocked: false, held: [] };
   const check = (pw) => {
     if (state.password !== null && pw !== state.password) {
       throw coreError('incorrect_password', 'Incorrect password');
@@ -55,20 +56,32 @@ function makeCore({ password = null } = {}) {
   // vault-backend's mutation queue: `mutation` stands for a create, import,
   // change or delete that takes it.
   let queue = Promise.resolve();
+  let holding = 0;
   const held = (task) => {
-    const run = queue.then(task);
+    const run = queue.then(async () => {
+      holding += 1;
+      try {
+        return await task();
+      } finally {
+        holding -= 1;
+      }
+    });
     queue = run.catch(() => {});
     return run;
   };
   const backend = {
     whileVaultHeld: jest.fn(held),
     verifyPassword: jest.fn(async (pw) => check(pw)),
-    quickUnlockStatus: jest.fn(async () => ({
-      enabled: state.credential !== null,
-      policy: state.credential === null ? null : 'unattended',
-      available: true,
-    })),
+    quickUnlockStatus: jest.fn(async () => {
+      state.held.push(`status${holding > 0 ? ' held' : ''}`);
+      return {
+        enabled: state.credential !== null,
+        policy: state.credential === null ? null : 'unattended',
+        available: true,
+      };
+    }),
     quickUnlockEnroll: jest.fn(async (pw) => {
+      state.held.push(`enroll${holding > 0 ? ' held' : ''}`);
       check(pw);
       state.credential = pw;
     }),
@@ -199,7 +212,31 @@ describe('quick-unlock', () => {
     return dir;
   }
 
-  test('stores and unlocks a profile-bound credential', async () => {
+  const ioError = (code, syscall) =>
+    Object.assign(new Error(`${code}: failed, ${syscall}`), { code, syscall });
+
+  // Each fsync of the directory at `dirPath` runs `onSync` first (which may
+  // throw); every other fsync goes through.
+  function onDirSync(dirPath, onSync) {
+    const { dev, ino } = fs.statSync(dirPath);
+    const fsync = fs.fsyncSync;
+    return jest.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      const stat = fs.fstatSync(fd);
+      if (stat.dev === dev && stat.ino === ino) onSync();
+      return fsync(fd);
+    });
+  }
+
+  // Unlinking `name` fails; every other unlink goes through.
+  function unlinkFails(name) {
+    const unlink = fs.unlinkSync;
+    return jest.spyOn(fs, 'unlinkSync').mockImplementation((target) => {
+      if (path.basename(String(target)) === name) throw ioError('EPERM', 'unlink');
+      return unlink(target);
+    });
+  }
+
+  test('enable: the core holds the credential, and no quick-unlock.dat is written (PRF-2d)', async () => {
     const userDataDir = tempUserData();
     const identityDir = path.join(userDataDir, 'identity');
     writeVault(identityDir);
@@ -216,16 +253,10 @@ describe('quick-unlock', () => {
     expect(systemPreferences.promptTouchID.mock.invocationCallOrder[0]).toBeLessThan(
       core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]
     );
-    // ... and quick-unlock.dat is written for older builds.
-    const credentialPath = path.join(identityDir, 'quick-unlock.dat');
-    const payload = JSON.parse(fs.readFileSync(credentialPath, 'utf-8'));
-    expect(payload).toEqual(
-      expect.objectContaining({
-        version: mod.CREDENTIAL_VERSION,
-        profileId: 'work',
-        encrypted: Buffer.from('encrypted:password-a').toString('base64'),
-      })
-    );
+    // ... and nothing is sealed or written for older builds.
+    expect(fs.existsSync(path.join(identityDir, 'quick-unlock.dat'))).toBe(false);
+    expect(safeStorage.encryptString).not.toHaveBeenCalled();
+    await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
 
     // The unlock goes through the core: main never unseals the file.
     await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
@@ -262,180 +293,52 @@ describe('quick-unlock', () => {
     await expect(mod.isQuickUnlockEnabled()).resolves.toBe(false);
   });
 
-  // quick-unlock.dat after the core committed its own credential (Quick
-  // Setup, or a lost one found again): sealed at once, never the password
-  // kept; a failed write's sealed bytes only, for three tries (#1262 r1).
-  describe('completeQuickSetup', () => {
-    function setUp() {
-      const userDataDir = tempUserData();
-      const identityDir = path.join(userDataDir, 'identity');
-      writeVault(identityDir);
-      const loaded = loadQuickUnlock({ activeProfile: makeProfile('work', userDataDir), userDataDir });
-      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
-      // A directory at the credential's name: every write fails.
-      const blockWrites = () => {
-        fs.mkdirSync(credentialPath);
-        fs.writeFileSync(path.join(credentialPath, 'x'), 'x');
-      };
-      const unblockWrites = () => fs.rmSync(credentialPath, { recursive: true, force: true });
-      return { ...loaded, userDataDir, identityDir, credentialPath, blockWrites, unblockWrites };
-    }
-
-    /** Whether `value` holds `needle` anywhere: a string, or a Buffer's text. */
-    function holds(value, needle, seen = new Set()) {
-      if (typeof value === 'string') return value.includes(needle);
-      if (Buffer.isBuffer(value)) return value.toString('utf8').includes(needle);
-      if (!value || typeof value !== 'object' || seen.has(value)) return false;
-      seen.add(value);
-      return Object.values(value).some((v) => holds(v, needle, seen));
-    }
-
-    const logged = () =>
-      [...console.error.mock.calls, ...console.log.mock.calls].flat().map(String).join('\n');
-
-    test('seals and writes the file, without prompting or asking the core', async () => {
-      const { mod, verifyPassword, systemPreferences, safeStorage, credentialPath } = setUp();
-      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
-      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
-      expect(verifyPassword).not.toHaveBeenCalled();
-      expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
-      const payload = JSON.parse(fs.readFileSync(credentialPath, 'utf-8'));
-      expect(payload.encrypted).toBe(Buffer.from('encrypted:random-pass').toString('base64'));
-      expect(mod._internal.pendingSetup()).toBeNull();
+  // PRF-2d: a quick-unlock.dat an older build left goes once the core holds
+  // the credential: the enroll succeeded, and the status confirms it.
+  test('enable removes a file an older build left, only once the core confirms the credential', async () => {
+    const userDataDir = tempUserData();
+    const identityDir = path.join(userDataDir, 'identity');
+    writeVault(identityDir);
+    const { mod, core, reference } = loadQuickUnlock({
+      activeProfile: makeProfile('work', userDataDir),
+      userDataDir,
+      core: makeCore({ password: 'password-a' }),
     });
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+    await expect(reference().enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+    const bytes = fs.readFileSync(credentialPath);
 
-    test('a failed write keeps only the sealed bytes, and writes them on a retry', async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, safeStorage, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
-        blockWrites();
-        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        const pending = mod._internal.pendingSetup();
-        expect(pending).not.toBeNull();
-        expect(holds(pending, 'random-pass')).toBe(false);
-        expect(logged()).not.toContain(identityDir);
-        unblockWrites();
-        await jest.advanceTimersByTimeAsync(30_000);
-        expect(JSON.parse(fs.readFileSync(credentialPath, 'utf-8')).encrypted).toBe(
-          Buffer.from('encrypted:random-pass').toString('base64')
-        );
-        // Sealed once: the retry wrote the bytes it kept.
-        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
-        expect(mod._internal.pendingSetup()).toBeNull();
-      } finally {
-        jest.useRealTimers();
-      }
-    });
+    // Refused by the key store: the file stays, even beside a credential
+    // the status reports (one left from before).
+    core.state.credential = 'password-a';
+    core.backend.quickUnlockEnroll.mockRejectedValueOnce(
+      coreError('key_store_cancelled', 'The keychain request was cancelled.')
+    );
+    await expect(mod.enableQuickUnlock('password-a')).resolves.toMatchObject({ success: false });
+    expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    core.state.credential = null;
 
-    test('three failed writes, and the sealed bytes are dropped', async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, safeStorage, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
-        blockWrites();
-        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        await jest.advanceTimersByTimeAsync(30_000);
-        expect(mod._internal.pendingSetup()).not.toBeNull();
-        await jest.advanceTimersByTimeAsync(30_000);
-        expect(mod._internal.pendingSetup()).toBeNull();
-        unblockWrites();
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(fs.existsSync(credentialPath)).toBe(false);
-        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
-        expect(logged()).not.toContain(identityDir);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
+    // Enrolled, but the status doesn't confirm it (or doesn't answer): kept.
+    core.backend.quickUnlockStatus.mockResolvedValueOnce({ enabled: false, policy: null, available: true });
+    await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+    expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    core.backend.quickUnlockStatus.mockRejectedValueOnce(coreError('core_unavailable', 'The core exited'));
+    await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+    expect(fs.readFileSync(credentialPath)).toEqual(bytes);
 
-    test('a password that cannot be sealed is dropped at once: no file, no retry, nothing kept', async () => {
-      jest.useFakeTimers();
-      try {
-        const thrown = setUp();
-        thrown.safeStorage.encryptString.mockImplementation(() => {
-          throw new Error('Encryption is not available');
-        });
-        await expect(thrown.mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        expect(thrown.mod._internal.pendingSetup()).toBeNull();
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(thrown.safeStorage.encryptString).toHaveBeenCalledTimes(1);
-        expect(fs.existsSync(thrown.credentialPath)).toBe(false);
-        expect(logged()).toMatch(/could not be sealed/);
-        expect(logged()).not.toContain('random-pass');
-
-        const unavailable = setUp();
-        unavailable.safeStorage.isEncryptionAvailable.mockReturnValue(false);
-        await expect(unavailable.mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        expect(unavailable.mod._internal.pendingSetup()).toBeNull();
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(unavailable.safeStorage.encryptString).not.toHaveBeenCalled();
-        expect(fs.existsSync(unavailable.credentialPath)).toBe(false);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test('a vault replaced before the retry: the sealed bytes are dropped, not written', async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
-        blockWrites();
-        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        unblockWrites();
-        writeVault(identityDir, 'vault-b');
-        await jest.advanceTimersByTimeAsync(30_000);
-        expect(mod._internal.pendingSetup()).toBeNull();
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(fs.existsSync(credentialPath)).toBe(false);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test("a retry's check and write wait for a vault mutation; a vault it replaced drops the bytes (#1262 r2)", async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, core, credentialPath, blockWrites, unblockWrites, identityDir } = setUp();
-        blockWrites();
-        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        unblockWrites();
-        // A mutation holds the queue when the retry comes due.
-        let release;
-        const mutation = core.mutation(
-          () =>
-            new Promise((resolve) => {
-              release = resolve;
-            })
-        );
-        await jest.advanceTimersByTimeAsync(30_000);
-        expect(fs.existsSync(credentialPath)).toBe(false);
-        expect(mod._internal.pendingSetup()).not.toBeNull();
-        writeVault(identityDir, 'vault-b');
-        release();
-        await mutation;
-        await jest.advanceTimersByTimeAsync(0);
-        expect(mod._internal.pendingSetup()).toBeNull();
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(fs.existsSync(credentialPath)).toBe(false);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test('disabling quick unlock drops a pending write', async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, credentialPath, blockWrites, unblockWrites } = setUp();
-        blockWrites();
-        await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(false);
-        unblockWrites();
-        await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
-        expect(mod._internal.pendingSetup()).toBeNull();
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(fs.existsSync(credentialPath)).toBe(false);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
+    // Enrolled and confirmed: removed, the status asked after the enroll,
+    // both under the vault's queue.
+    core.backend.quickUnlockEnroll.mockClear();
+    core.backend.quickUnlockStatus.mockClear();
+    core.state.held.length = 0;
+    await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
+    expect(fs.existsSync(credentialPath)).toBe(false);
+    expect(core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]).toBeLessThan(
+      core.backend.quickUnlockStatus.mock.invocationCallOrder[0]
+    );
+    expect(core.state.held).toEqual(['enroll held', 'status held']);
+    await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
   });
 
   test('hides a bound credential when the active profile does not match', async () => {
@@ -448,7 +351,8 @@ describe('quick-unlock', () => {
       activeProfile: profileA,
       userDataDir: profileA.userDataDir,
     });
-    await first.mod.enableQuickUnlock('password-a');
+    // Written by an older build.
+    await first.reference().enableQuickUnlock('password-a');
 
     const profileB = makeProfile('profile-b', tempUserData());
     const second = loadQuickUnlock({
@@ -480,13 +384,17 @@ describe('quick-unlock', () => {
       success: false,
       error: 'Incorrect password',
     });
-    // Nothing is enrolled from a password the vault didn't take.
+    // Nothing is enrolled from a password the vault didn't take, and the
+    // file stays.
     expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+    expect(fs.readFileSync(path.join(identityDir, 'quick-unlock.dat'))).toEqual(
+      Buffer.from('encrypted:wrong')
+    );
   });
 
-  // K-3: the credential is read, written, refreshed and removed through the
-  // identity directory's handle, so a link planted at its name after the
-  // startup repair is never followed.
+  // K-3: the credential is read and removed through the identity
+  // directory's handle, so a link planted at its name after the startup
+  // repair is never followed.
   // #1262 r1: the file is checked against the vault again after the Touch ID
   // prompt, right before use; a vault swapped meanwhile fails closed.
   describe('a vault swapped during the Touch ID prompt', () => {
@@ -582,17 +490,18 @@ describe('quick-unlock', () => {
       expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
     });
 
-    test('a vault mutation queued after the re-check runs only after the unlock and the enroll (#1262 r2)', async () => {
+    test('a vault mutation queued after the re-check runs only after the unlock, the enroll and the removal (#1262 r2, PRF-2d)', async () => {
       const { mod, core, identityManager, safeStorage, identityDir } = await onTheFile();
       const label = () =>
         JSON.parse(fs.readFileSync(path.join(identityDir, 'identity-vault.json'), 'utf8')).label;
+      const fileThere = () => fs.existsSync(path.join(identityDir, 'quick-unlock.dat'));
       const order = [];
       let replaced;
       // Right after the re-check passes, a replacement of the vault is queued.
       safeStorage.decryptString.mockImplementationOnce((buffer) => {
         replaced = core.mutation(() => {
+          order.push(`replace, file ${fileThere() ? 'there' : 'gone'}`);
           writeVault(identityDir, 'vault-b');
-          order.push('replace');
         });
         return buffer.toString().replace(/^encrypted:/, '');
       });
@@ -608,10 +517,22 @@ describe('quick-unlock', () => {
         order.push(`enroll ${label()}`);
         return enroll(pw);
       });
+      const status = core.backend.quickUnlockStatus.getMockImplementation();
+      core.backend.quickUnlockStatus.mockImplementation(async () => {
+        await new Promise((resolve) => setImmediate(resolve));
+        order.push(`status ${label()}, file ${fileThere() ? 'there' : 'gone'}`);
+        return status();
+      });
       await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       await replaced;
-      expect(order).toEqual(['unlock vault-a', 'enroll vault-a', 'replace']);
-      // The file is bound to the replaced vault: it opens nothing now.
+      expect(order).toEqual([
+        'status vault-a, file there', // before the prompt: no core credential
+        'unlock vault-a',
+        'enroll vault-a',
+        'status vault-a, file there', // the confirmation, then the removal
+        'replace, file gone',
+      ]);
+      // No file, and the core's credential gone: nothing opens now.
       core.state.credential = null;
       await expect(mod.unlockWithTouchId()).resolves.toEqual({
         success: false,
@@ -619,11 +540,12 @@ describe('quick-unlock', () => {
       });
     });
 
-    test('the vault unchanged: the file still unlocks once, then enrolls', async () => {
-      const { mod, core, identityManager } = await onTheFile();
+    test('the vault unchanged: the file still unlocks once, then enrolls, then goes', async () => {
+      const { mod, core, identityManager, identityDir } = await onTheFile();
       await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(identityManager.unlockVault).toHaveBeenCalledWith('same-pw');
       expect(core.state.credential).toBe('same-pw');
+      expect(fs.existsSync(path.join(identityDir, 'quick-unlock.dat'))).toBe(false);
     });
   });
 
@@ -653,14 +575,6 @@ describe('quick-unlock', () => {
       return { ...ctx, credentialPath, plantLink, outsideUntouched };
     }
 
-    const expectOwnCredential = (mod, credentialPath) => {
-      expect(fs.lstatSync(credentialPath).isSymbolicLink()).toBe(false);
-      expect(modeOf(credentialPath)).toBe(0o600);
-      expect(JSON.parse(fs.readFileSync(credentialPath, 'utf8')).version).toBe(
-        mod.CREDENTIAL_VERSION
-      );
-    };
-
     beforeEach(() => {
       jest.spyOn(console, 'warn').mockImplementation(() => {});
     });
@@ -683,20 +597,21 @@ describe('quick-unlock', () => {
       outsideUntouched();
     });
 
-    posixTest('enabling replaces a planted link, its target untouched', async () => {
+    // PRF-2d: once the core confirms the credential, the name is removed: a
+    // link goes, its target stays.
+    posixTest('enabling removes a planted link, its target untouched', async () => {
       const { mod, credentialPath, plantLink, outsideUntouched } = setUp();
       plantLink();
 
       await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
-      expectOwnCredential(mod, credentialPath);
+      expect(fs.lstatSync(credentialPath, { throwIfNoEntry: false })).toBeUndefined();
       outsideUntouched();
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
     });
 
-    // PRF-2b: nothing is written after the Touch ID prompt (0013:
-    // quick-unlock.dat is left byte for byte), and the file is read again
-    // after it (#1262 r1): a link planted then fails the unlock closed, and
-    // is left alone.
+    // Nothing is written, and the file is read again after the Touch ID
+    // prompt (#1262 r1): a link planted then fails the unlock closed, and is
+    // left alone.
     posixTest('a link planted during the Touch ID prompt: no unlock, no enroll, the link left alone', async () => {
       const { mod, core, credentialPath, plantLink, outsideUntouched, systemPreferences, identityManager } =
         setUp();
@@ -717,7 +632,7 @@ describe('quick-unlock', () => {
       expect(warned).not.toContain(credentialPath);
     });
 
-    posixTest('an older 0644 credential is replaced owner-only, never rewritten in place', async () => {
+    posixTest('an older 0644 credential is removed by its name, never rewritten in place', async () => {
       const { mod, credentialPath } = setUp();
       fs.writeFileSync(credentialPath, Buffer.from('encrypted:legacy'));
       fs.chmodSync(credentialPath, 0o644);
@@ -726,8 +641,9 @@ describe('quick-unlock', () => {
       fs.linkSync(credentialPath, oldInode);
 
       await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
-      expectOwnCredential(mod, credentialPath);
+      expect(fs.existsSync(credentialPath)).toBe(false);
       expect(fs.readFileSync(oldInode, 'utf8')).toBe('encrypted:legacy');
+      expect(modeOf(oldInode)).toBe(0o644);
       fs.rmSync(oldInode);
     });
 
@@ -735,10 +651,10 @@ describe('quick-unlock', () => {
     // a credential to it, and reads it through the identity directory's
     // handle as well.
     posixTest('a vault that is a link is never hashed: quick unlock is off, nothing prompted', async () => {
-      const { mod, core, credentialPath, systemPreferences, identityManager, verifyPassword } = setUp();
-      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
-      // quick-unlock.dat alone, as before the migration.
-      core.state.credential = null;
+      const { mod, credentialPath, systemPreferences, identityManager, verifyPassword, reference } =
+        setUp();
+      // quick-unlock.dat alone, as an older build wrote it.
+      await expect(reference().enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
 
       // The same vault bytes, now behind a link at the vault's name.
@@ -761,30 +677,8 @@ describe('quick-unlock', () => {
       expect(verifyPassword).not.toHaveBeenCalled();
       expect(identityManager.unlockVault).not.toHaveBeenCalled();
 
-      // Nor is a new quick-unlock.dat bound to it. (The core checks the
-      // vault itself before it enrolls; here it stands in and takes it.)
-      await expect(mod.enableQuickUnlock('password-a')).resolves.toEqual({ success: true });
-      expect(console.error).toHaveBeenCalledWith(
-        '[QuickUnlock] quick-unlock.dat not written for older builds:',
-        'UNSAFE_PRIVATE_PATH'
-      );
       expect(fs.readFileSync(credentialPath)).toEqual(credential);
       expect(modeOf(outsideVault)).toBe(0o644);
-    });
-
-    // completeQuickSetup (freedom-core design 0001) stores the credential
-    // for a Quick Setup whose reply was lost: the same handle and writer.
-    posixTest("a lost Quick Setup's credential is stored owner-only, a planted link replaced", async () => {
-      const { mod, credentialPath, plantLink, outsideUntouched } = setUp();
-      const identityDir = path.dirname(credentialPath);
-      fs.chmodSync(identityDir, 0o755);
-      plantLink();
-
-      await expect(mod.completeQuickSetup('random-pass')).resolves.toBe(true);
-      expectOwnCredential(mod, credentialPath);
-      expect(modeOf(identityDir)).toBe(0o700);
-      outsideUntouched();
-      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
     });
   });
 
@@ -801,8 +695,10 @@ describe('quick-unlock', () => {
         userDataDir,
         ...options,
       });
-      await loaded.mod.enableQuickUnlock('s3cret-vault-pw');
-      if (through === 'file') loaded.core.state.credential = null;
+      // Through the core: enabled here. Through the file: as an older build
+      // wrote it, before the migration.
+      if (through === 'core') await loaded.mod.enableQuickUnlock('s3cret-vault-pw');
+      else await loaded.reference().enableQuickUnlock('s3cret-vault-pw');
       loaded.systemPreferences.promptTouchID.mockClear();
       loaded.mod.registerQuickUnlockIpc();
       return loaded;
@@ -915,11 +811,13 @@ describe('quick-unlock', () => {
     });
   });
 
-  // freedom-core design 0013, PRF-2's row: "a profile with a v2 and one with
-  // a legacy quick-unlock.dat unlocks once through it and then through the
-  // core, with the file's bytes unchanged. Downgrade: the reference
-  // quick-unlock.js still unlocks from it." (Against the real core and the
-  // Keychain: quick-unlock.integration.test.js, on macOS CI.)
+  // freedom-core design 0013, PRF-2's row as the user's decision of
+  // 2026-11-15 amends it (PRF-2d): a profile with a v2 and one with a legacy
+  // quick-unlock.dat unlocks once through it and then through the core; the
+  // file goes only after a confirmed enroll (the enroll succeeded, and
+  // `quick_unlock.status` says enabled). Downgrade: after that, an older
+  // build finds no file and asks for the password. (Against the real core
+  // and the Keychain: quick-unlock.integration.test.js, on macOS CI.)
   describe.each([
     ['v2', 'enable'],
     ['legacy', 'raw'],
@@ -945,14 +843,29 @@ describe('quick-unlock', () => {
       }
       loaded.systemPreferences.promptTouchID.mockClear();
       loaded.core.backend.verifyPassword.mockClear();
-      return { ...loaded, credentialPath, bytes: fs.readFileSync(credentialPath) };
+      // What each status answer saw: the file, and the core's credential.
+      const statusSaw = [];
+      const status = loaded.core.backend.quickUnlockStatus.getMockImplementation();
+      loaded.core.backend.quickUnlockStatus.mockImplementation(async () => {
+        statusSaw.push({ file: fs.existsSync(credentialPath), credential: loaded.core.state.credential });
+        return status();
+      });
+      return { ...loaded, credentialPath, bytes: fs.readFileSync(credentialPath), statusSaw };
     }
 
-    test('unlocks once through the file, then through the core; the bytes stay', async () => {
+    test('unlocks once through the file, then through the core; the file goes after the confirmed enroll', async () => {
       const ctx = await fileOnly();
-      const { mod, core, identityManager, safeStorage, systemPreferences, credentialPath, bytes } =
-        ctx;
+      const {
+        mod,
+        core,
+        identityManager,
+        safeStorage,
+        systemPreferences,
+        credentialPath,
+        statusSaw,
+      } = ctx;
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+      statusSaw.length = 0;
 
       // First: through the file, as before, then the enroll.
       await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
@@ -964,9 +877,19 @@ describe('quick-unlock', () => {
         core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]
       );
       expect(core.state.credential).toBe('vault-pw');
-      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      // The status before the prompt, then the one that confirmed the enroll
+      // with the file still there; then the file is gone.
+      expect(statusSaw).toEqual([
+        { file: true, credential: null },
+        { file: true, credential: 'vault-pw' },
+      ]);
+      expect(core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]).toBeLessThan(
+        core.backend.quickUnlockStatus.mock.invocationCallOrder.at(-1)
+      );
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
 
-      // Then: through the core, behind Touch ID; the file isn't unsealed.
+      // Then: through the core, behind Touch ID; nothing to unseal.
       core.state.unlocked = false;
       await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(systemPreferences.promptTouchID).toHaveBeenCalledTimes(2);
@@ -983,40 +906,56 @@ describe('quick-unlock', () => {
       await expect(mod.exportMnemonicWithTouchId()).resolves.toMatchObject({ success: true });
       expect(identityManager.quickExportMnemonic).toHaveBeenCalledTimes(1);
       expect(safeStorage.decryptString).toHaveBeenCalledTimes(1);
-      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      expect(fs.existsSync(credentialPath)).toBe(false);
     });
 
     test('an export migrates too: once through the file, then through the core', async () => {
-      const { mod, core, identityManager, safeStorage, credentialPath, bytes } = await fileOnly();
+      const { mod, core, identityManager, safeStorage, credentialPath } = await fileOnly();
 
       await expect(mod.exportPrivateKeyWithTouchId(2)).resolves.toMatchObject({ success: true });
       expect(identityManager.exportPrivateKeyForAccount).toHaveBeenCalledWith(2, 'vault-pw');
       expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('vault-pw');
+      expect(fs.existsSync(credentialPath)).toBe(false);
 
       await expect(mod.exportPrivateKeyWithTouchId(2)).resolves.toMatchObject({ success: true });
       expect(identityManager.quickExportPrivateKeyForAccount).toHaveBeenCalledWith(2);
       expect(safeStorage.decryptString).toHaveBeenCalledTimes(1);
-      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
     });
 
-    test('downgrade: the reference quick-unlock.js still unlocks from the file', async () => {
+    test('downgrade: until the confirmed enroll an older build unlocks from the file; after it, it asks for the password', async () => {
       const ctx = await fileOnly();
-      const { mod, core, identityManager, credentialPath, bytes } = ctx;
-      await mod.unlockWithTouchId();
-      await mod.unlockWithTouchId();
-      expect(core.state.credential).toBe('vault-pw');
+      const { mod, core, identityManager, systemPreferences, credentialPath, bytes } = ctx;
+      // An enroll refused: the file stays, and an older build still uses it.
+      core.backend.quickUnlockEnroll.mockRejectedValueOnce(
+        coreError('key_store_unavailable', 'The system keychain reported an error.', {
+          reason: 'backend',
+        })
+      );
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(fs.readFileSync(credentialPath)).toEqual(bytes);
-
-      // An older build reads only quick-unlock.dat.
       identityManager.unlockVault.mockClear();
       expect(ctx.reference().isQuickUnlockEnabled()).toBe(true);
       await expect(ctx.reference().unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(identityManager.unlockVault).toHaveBeenCalledWith('vault-pw');
-      // (The reference upgrades a legacy file at its use, as it always did.)
-      if (kind === 'v2') expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+
+      // Enrolled and confirmed: the file is gone. An older build reads only
+      // quick-unlock.dat, so it finds no quick unlock, prompts nothing, and
+      // its unlock screen asks for the password: the accepted cost.
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(core.state.credential).toBe('vault-pw');
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      identityManager.unlockVault.mockClear();
+      systemPreferences.promptTouchID.mockClear();
+      expect(ctx.reference().isQuickUnlockEnabled()).toBe(false);
+      await expect(ctx.reference().unlockWithTouchId()).resolves.toEqual({
+        success: false,
+        error: 'Quick unlock not enabled',
+      });
+      expect(systemPreferences.promptTouchID).not.toHaveBeenCalled();
+      expect(identityManager.unlockVault).not.toHaveBeenCalled();
     });
 
-    test('an enroll that fails leaves the unlock done; the next Touch ID tries again', async () => {
+    test('an enroll that fails leaves the unlock done and the file; the next Touch ID tries again', async () => {
       const { mod, core, identityManager, credentialPath, bytes } = await fileOnly();
       core.backend.quickUnlockEnroll.mockRejectedValueOnce(
         coreError('key_store_unavailable', 'The system keychain reported an error.', {
@@ -1026,11 +965,63 @@ describe('quick-unlock', () => {
 
       await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(core.state.credential).toBeNull();
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
       await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(identityManager.unlockVault).toHaveBeenCalledTimes(2);
       expect(core.backend.quickUnlockEnroll).toHaveBeenCalledTimes(2);
       expect(core.state.credential).toBe('vault-pw');
+      expect(fs.existsSync(credentialPath)).toBe(false);
+    });
+
+    test("an enroll the status doesn't confirm keeps the file", async () => {
+      const { mod, core, credentialPath, bytes } = await fileOnly();
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // The enroll answers, but the status after it reports no credential
+      // for this vault.
+      const enroll = core.backend.quickUnlockEnroll.getMockImplementation();
+      core.backend.quickUnlockEnroll.mockImplementationOnce(async (pw) => {
+        await enroll(pw);
+        core.backend.quickUnlockStatus.mockResolvedValueOnce({
+          enabled: false,
+          policy: null,
+          available: true,
+        });
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
       expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    });
+
+    test('a crash between the enroll and the removal leaves the file; the next unlock goes through the core, then removes it', async () => {
+      const { mod, core, identityManager, safeStorage, credentialPath, bytes } = await fileOnly();
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      // Nothing after the enroll happens: the core (and main) gone before
+      // the status answers.
+      const enroll = core.backend.quickUnlockEnroll.getMockImplementation();
+      core.backend.quickUnlockEnroll.mockImplementationOnce(async (pw) => {
+        await enroll(pw);
+        core.backend.quickUnlockStatus.mockRejectedValueOnce(
+          coreError('core_unavailable', 'The core exited')
+        );
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(core.state.credential).toBe('vault-pw');
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+
+      // The next unlock: through the core, nothing unsealed; then, under the
+      // vault's queue and with the status confirming, the file goes.
+      core.state.unlocked = false;
+      core.backend.whileVaultHeld.mockClear();
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(identityManager.quickUnlockVault).toHaveBeenCalledTimes(1);
+      expect(safeStorage.decryptString).toHaveBeenCalledTimes(1);
+      expect(core.backend.quickUnlockEnroll).toHaveBeenCalledTimes(1);
+      expect(core.backend.whileVaultHeld).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+
+      // No file left: the next one holds nothing.
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(identityManager.quickUnlockVault).toHaveBeenCalledTimes(2);
+      expect(core.backend.whileVaultHeld).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1046,9 +1037,11 @@ describe('quick-unlock', () => {
       });
       await loaded.mod.enableQuickUnlock('vault-pw');
       const credentialPath = path.join(identityDir, 'quick-unlock.dat');
-      if (!withFile) fs.rmSync(credentialPath);
+      // A file still there beside the core's credential: an older build's.
+      if (withFile) await loaded.reference().enableQuickUnlock('vault-pw');
       loaded.systemPreferences.promptTouchID.mockClear();
       loaded.core.backend.quickUnlockEnroll.mockClear();
+      loaded.core.backend.whileVaultHeld.mockClear();
       return { ...loaded, credentialPath };
     }
 
@@ -1066,12 +1059,70 @@ describe('quick-unlock', () => {
         expect(safeStorage.decryptString).toHaveBeenCalledTimes(1);
         expect(identityManager.unlockVault).toHaveBeenCalledWith('vault-pw');
         expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('vault-pw');
-        expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+        // Replaced and confirmed: the file goes.
+        expect(bytes.length).toBeGreaterThan(0);
+        expect(fs.existsSync(credentialPath)).toBe(false);
       }
     );
 
-    test('any other refusal is the answer: no file, no enroll', async () => {
-      const { mod, identityManager, safeStorage, core } = await enrolled();
+    // The status still reports the dead credential's entry for this vault,
+    // so only the enroll's own success may let the file go.
+    test("a dead credential whose re-enroll is refused keeps the file, though the status says enabled", async () => {
+      const { mod, core, identityManager, credentialPath } = await enrolled();
+      const bytes = fs.readFileSync(credentialPath);
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      identityManager.quickUnlockVault.mockRejectedValueOnce(
+        coreError('key_store_unavailable', 'gone', { reason: 'not_found' })
+      );
+      core.backend.quickUnlockEnroll.mockRejectedValueOnce(
+        coreError('key_store_unavailable', 'The system keychain reported an error.', {
+          reason: 'backend',
+        })
+      );
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(identityManager.unlockVault).toHaveBeenCalledWith('vault-pw');
+      await expect(core.backend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    });
+
+    test('a file left beside the credential goes after an unlock through the core, under the queue', async () => {
+      const { mod, core, identityManager, safeStorage, credentialPath } = await enrolled();
+      const fileAtStatus = [];
+      const status = core.backend.quickUnlockStatus.getMockImplementation();
+      core.backend.quickUnlockStatus.mockImplementation(async () => {
+        fileAtStatus.push(fs.existsSync(credentialPath));
+        return status();
+      });
+      await expect(mod.exportMnemonicWithTouchId()).resolves.toMatchObject({ success: true });
+      expect(identityManager.quickExportMnemonic).toHaveBeenCalledTimes(1);
+      expect(safeStorage.decryptString).not.toHaveBeenCalled();
+      expect(core.backend.whileVaultHeld).toHaveBeenCalledTimes(1);
+      // Asked before the prompt, and again under the queue before the removal.
+      expect(fileAtStatus).toEqual([true, true]);
+      expect(core.state.held.slice(-2)).toEqual(['status', 'status held']);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+    });
+
+    test('a file left beside the credential stays when the core fails, or the status no longer confirms it', async () => {
+      const { mod, core, identityManager, credentialPath } = await enrolled();
+      const bytes = fs.readFileSync(credentialPath);
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      identityManager.quickUnlockVault.mockRejectedValueOnce(
+        coreError('key_store_cancelled', 'The keychain request was cancelled.')
+      );
+      await expect(mod.unlockWithTouchId()).resolves.toMatchObject({ success: false });
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      // Unlocked through the core, then the status answers no.
+      identityManager.quickUnlockVault.mockImplementationOnce(async () => {
+        core.throughCredential();
+        core.backend.quickUnlockStatus.mockResolvedValueOnce({ enabled: false, policy: null, available: true });
+      });
+      await expect(mod.unlockWithTouchId()).resolves.toEqual({ success: true });
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    });
+
+    test('any other refusal is the answer: no file used, no enroll, none removed', async () => {
+      const { mod, identityManager, safeStorage, core, credentialPath } = await enrolled();
       for (const refusal of [
         coreError('key_store_cancelled', 'The keychain request was cancelled.'),
         coreError('key_store_unavailable', 'Denied.', { reason: 'denied' }),
@@ -1087,6 +1138,7 @@ describe('quick-unlock', () => {
       expect(safeStorage.decryptString).not.toHaveBeenCalled();
       expect(identityManager.unlockVault).not.toHaveBeenCalled();
       expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+      expect(fs.existsSync(credentialPath)).toBe(true);
     });
 
     test('a dead credential with no file left is the answer', async () => {
@@ -1153,6 +1205,8 @@ describe('quick-unlock', () => {
         core: makeCore({ password: 'vault-pw' }),
       });
       await loaded.mod.enableQuickUnlock('vault-pw');
+      // A file still there: an older build's, not yet removed.
+      await loaded.reference().enableQuickUnlock('vault-pw');
       const credentialPath = path.join(identityDir, 'quick-unlock.dat');
       expect(fs.existsSync(credentialPath)).toBe(true);
       expect(loaded.core.state.credential).toBe('vault-pw');
@@ -1167,6 +1221,15 @@ describe('quick-unlock', () => {
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(false);
       // Again: nothing left, still success.
       await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+    });
+
+    test('the core alone (the file already gone): the core removes it', async () => {
+      const { mod, core, credentialPath } = await both();
+      fs.rmSync(credentialPath);
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+      expect(core.backend.quickUnlockDisable).toHaveBeenCalledTimes(1);
+      expect(core.state.credential).toBeNull();
+      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(false);
     });
 
     test("the core refusing: the error, the file gone, and the core's still on", async () => {
@@ -1196,6 +1259,44 @@ describe('quick-unlock', () => {
       expect(logged).toContain('quick-unlock.dat not removed');
       expect(logged).not.toContain(path.dirname(credentialPath));
     });
+
+    // Design 0001's delete: the unlink, then the directory's fsync, and
+    // only then the core. A crash after the core's disable can't bring the
+    // file back to enable quick unlock again.
+    test("the file's removal is synced before the core is asked", async () => {
+      const { mod, core, credentialPath } = await both();
+      const synced = [];
+      onDirSync(path.dirname(credentialPath), () => {
+        synced.push(`file ${fs.existsSync(credentialPath)}, credential ${core.state.credential}`);
+      });
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+      expect(synced).toEqual(['file false, credential vault-pw']);
+      expect(core.state.credential).toBeNull();
+    });
+
+    test('the removal not synced: the disable refused, the core left alone', async () => {
+      const { mod, core, credentialPath } = await both();
+      const failing = onDirSync(path.dirname(credentialPath), () => {
+        throw ioError('EIO', 'fsync');
+      });
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({
+        success: false,
+        error: mod.FILE_NOT_REMOVED,
+      });
+      expect(core.backend.quickUnlockDisable).not.toHaveBeenCalled();
+      expect(core.state.credential).toBe('vault-pw');
+      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+      const logged = console.error.mock.calls.flat().map(String).join('\n');
+      expect(logged).toMatch(/quick-unlock\.dat not removed:\nEIO/);
+      // Tried again with the disk answering: the directory is synced though
+      // the file is already gone, then the core's credential goes.
+      failing.mockRestore();
+      const synced = [];
+      onDirSync(path.dirname(credentialPath), () => synced.push(core.state.credential));
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+      expect(synced).toEqual(['vault-pw']);
+      expect(core.state.credential).toBeNull();
+    });
   });
 
   describe('a password change keeps quick unlock', () => {
@@ -1223,17 +1324,37 @@ describe('quick-unlock', () => {
       expect(core.state.credential).toBe('new-pw');
     });
 
-    test('quick-unlock.dat alone: the current password is enrolled first, and the change re-wraps it; the file stays', async () => {
-      const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+    test('quick-unlock.dat alone: the current password is enrolled first, the file removed once confirmed, and the change re-wraps it', async () => {
+      const { mod, core, credentialPath } = await profile({ inCore: false, withFile: true });
+      const seen = [];
+      const status = core.backend.quickUnlockStatus.getMockImplementation();
+      core.backend.quickUnlockStatus.mockImplementation(async () => {
+        seen.push(`status: file ${fs.existsSync(credentialPath)}, credential ${core.state.credential}`);
+        return status();
+      });
+      const change = core.backend.changePassword.getMockImplementation();
+      core.backend.changePassword.mockImplementation(async (current, next) => {
+        seen.push(`change: file ${fs.existsSync(credentialPath)}`);
+        return change(current, next);
+      });
       await mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
       expect(core.backend.quickUnlockEnroll).toHaveBeenCalledTimes(1);
       expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('old-pw');
       expect(core.backend.quickUnlockEnroll.mock.invocationCallOrder[0]).toBeLessThan(
         core.backend.changePassword.mock.invocationCallOrder[0]
       );
+      // Before the enroll, whether the core has it; after it, the confirmation
+      // with the file still there; the change runs with the file gone.
+      expect(seen).toEqual([
+        'status: file true, credential null',
+        'status: file true, credential old-pw',
+        'change: file false',
+      ]);
+      // The enroll and its confirmation under the vault's queue.
+      expect(core.state.held).toEqual(['status', 'enroll held', 'status held']);
       expect(core.state.password).toBe('new-pw');
       expect(core.state.credential).toBe('new-pw');
-      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      expect(fs.existsSync(credentialPath)).toBe(false);
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
     });
 
@@ -1256,10 +1377,88 @@ describe('quick-unlock', () => {
       expect(fs.readFileSync(credentialPath)).toEqual(bytes);
       // Quick unlock is still on, through the file, for the vault as it was.
       await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
-      // Tried again, the change keeps quick unlock.
+      // Tried again, the change keeps quick unlock, and the file goes.
       await mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
       expect(core.state.credential).toBe('new-pw');
+      expect(fs.existsSync(credentialPath)).toBe(false);
     });
+
+    // The core wrote the credential, but the enroll's answer was an error:
+    // only the enroll's own success lets the file go.
+    test('quick-unlock.dat alone, a partial enroll: the change refused, the file kept though the status says enabled', async () => {
+      const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+      core.backend.quickUnlockEnroll.mockImplementationOnce(async (pw) => {
+        core.state.credential = pw;
+        throw coreError('core_unavailable', 'The core exited');
+      });
+      await expect(mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw')).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      expect(core.backend.changePassword).not.toHaveBeenCalled();
+      await expect(core.backend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    });
+
+    // The change goes ahead only once the core confirms the credential for
+    // the vault as it is and the file is gone. Otherwise it is refused
+    // under the queue, before anything is written.
+    test.each([
+      [
+        'the status says disabled',
+        (core) =>
+          core.backend.quickUnlockStatus.mockResolvedValue({ enabled: false, policy: null, available: true }),
+      ],
+      [
+        'the status does not answer',
+        (core) => core.backend.quickUnlockStatus.mockRejectedValue(coreError('core_unavailable', 'The core exited')),
+      ],
+    ])(
+      'quick-unlock.dat alone, an enroll that succeeds but %s: the change refused, nothing changed',
+      async (_label, statusAfterwards) => {
+        const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+        statusAfterwards(core);
+        await expect(mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw')).rejects.toThrow(
+          new Error(mod.CHANGE_REFUSED_FILE_KEPT)
+        );
+        expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('old-pw');
+        expect(core.state.held).toEqual(['enroll held']);
+        expect(core.backend.changePassword).not.toHaveBeenCalled();
+        expect(core.state.password).toBe('old-pw');
+        expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      }
+    );
+
+    test.each([
+      ['its unlink fails', (credentialPath) => unlinkFails(path.basename(credentialPath)), true],
+      [
+        'its directory sync fails',
+        (credentialPath) =>
+          onDirSync(path.dirname(credentialPath), () => {
+            throw ioError('EIO', 'fsync');
+          }),
+        false,
+      ],
+    ])(
+      'quick-unlock.dat alone, the file not removed (%s): the change refused, nothing changed',
+      async (_label, failRemoval, fileStays) => {
+        const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+        failRemoval(credentialPath);
+        await expect(mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw')).rejects.toThrow(
+          new Error(mod.CHANGE_REFUSED_FILE_KEPT)
+        );
+        // Confirmed, under the queue, and then the removal failed.
+        expect(core.state.held).toEqual(['status', 'enroll held', 'status held']);
+        expect(core.backend.changePassword).not.toHaveBeenCalled();
+        expect(core.state.password).toBe('old-pw');
+        if (fileStays) expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+        // The core holds the current password: quick unlock stays on.
+        expect(core.state.credential).toBe('old-pw');
+        await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+        const logged = console.error.mock.calls.flat().map(String).join('\n');
+        expect(logged).toContain('Password change refused');
+        expect(logged).not.toContain(path.dirname(credentialPath));
+      }
+    );
 
     test('no quick unlock, a wrong password, or no key store: nothing enrolled', async () => {
       const none = await profile({ inCore: false, withFile: false });
@@ -1273,17 +1472,74 @@ describe('quick-unlock', () => {
       );
       expect(refused.core.backend.changePassword).not.toHaveBeenCalled();
       expect(refused.core.state.credential).toBeNull();
+      expect(fs.readFileSync(refused.credentialPath)).toEqual(refused.bytes);
 
       const linux = await profile({ inCore: false, withFile: true });
       setPlatform('linux');
       await linux.mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
       expect(linux.core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+      expect(fs.readFileSync(linux.credentialPath)).toEqual(linux.bytes);
+    });
+  });
+
+  // PRF-2d: where the core has no key store (Linux, Windows), nothing
+  // enrolls, and quick-unlock.dat is never removed by main's own steps, even
+  // with a core that would take an enroll and report it.
+  describe.each(['linux', 'win32'])('no key store (%s): the file is never removed', (platform) => {
+    async function onTheFile() {
+      const userDataDir = tempUserData();
+      const identityDir = path.join(userDataDir, 'identity');
+      writeVault(identityDir);
+      const loaded = loadQuickUnlock({
+        activeProfile: makeProfile('default', userDataDir),
+        userDataDir,
+        core: makeCore({ password: 'vault-pw' }),
+      });
+      const credentialPath = path.join(identityDir, 'quick-unlock.dat');
+      await loaded.reference().enableQuickUnlock('vault-pw');
+      const bytes = fs.readFileSync(credentialPath);
+      setPlatform(platform);
+      return { ...loaded, credentialPath, bytes };
+    }
+
+    test('a password change, Touch ID, enable and Quick Setup leave it byte for byte', async () => {
+      const { mod, core, credentialPath, bytes } = await onTheFile();
+      await mod.changePasswordKeepingQuickUnlock('vault-pw', 'new-pw');
+      expect(core.backend.quickUnlockEnroll).not.toHaveBeenCalled();
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      // Even with a credential the core says it holds.
+      core.state.credential = 'new-pw';
+      for (const step of [
+        () => mod.unlockWithTouchId(),
+        () => mod.exportMnemonicWithTouchId(),
+        () => mod.enableQuickUnlock('new-pw'),
+        () => mod.quickSetup('abandon about'),
+      ]) {
+        await expect(step()).resolves.toEqual({ success: false, error: 'Touch ID not available' });
+      }
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    });
+
+    // The removal checks the platform itself, when it decides: a platform
+    // without a key store keeps the file even past the callers' checks.
+    test('the removal checks the platform itself: past the callers, the file stays', async () => {
+      const { mod, core, systemPreferences, credentialPath, bytes } = await onTheFile();
+      const originalPlatformValue = process.platform;
+      // canUseTouchId asks the platform first; let it pass, then put the
+      // platform back before the removal is decided.
+      systemPreferences.promptTouchID.mockImplementation(async () => setPlatform(originalPlatformValue));
+      setPlatform('darwin');
+      const darwinThenBack = mod.unlockWithTouchId();
+      await expect(darwinThenBack).resolves.toEqual({ success: true });
+      expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('vault-pw');
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
     });
   });
 
   // freedom-core design 0013, PRF-2b: Touch ID first, then the vault with
-  // quick unlock's credential (`quick_unlock: true`); quick-unlock.dat still
-  // written. Its failure path deletes nothing the core committed.
+  // quick unlock's credential (`quick_unlock: true`). PRF-2d: no
+  // quick-unlock.dat is written. Its failure path deletes nothing the core
+  // committed.
   describe('Quick Setup', () => {
     function setUp() {
       const userDataDir = tempUserData();
@@ -1307,7 +1563,7 @@ describe('quick-unlock', () => {
       return { ...loaded, identityDir, credentialPath: path.join(identityDir, 'quick-unlock.dat') };
     }
 
-    test('Touch ID, then the vault with the credential, then quick-unlock.dat', async () => {
+    test('Touch ID, then the vault with the credential, and no quick-unlock.dat', async () => {
       const { ipcHandlers, identityManager, systemPreferences, safeStorage, core, credentialPath } =
         setUp();
 
@@ -1324,10 +1580,10 @@ describe('quick-unlock', () => {
       expect(mnemonic).toBe('abandon about');
       expect(userKnowsPassword).toBe(false);
       expect(options).toEqual({ quickUnlock: true });
-      // The file holds the same password, bound to the new vault.
-      const payload = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
-      expect(payload.version).toBe(2);
-      expect(safeStorage.decryptString(Buffer.from(payload.encrypted, 'base64'))).toBe(password);
+      // The credential is the core's alone: nothing sealed, no file.
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      expect(fs.readdirSync(path.dirname(credentialPath))).toEqual(['identity-vault.json']);
+      expect(safeStorage.encryptString).not.toHaveBeenCalled();
       expect(core.state.credential).toBe(password);
       expect(JSON.stringify(result)).not.toContain(password);
       // No separate enroll: the credential came with the vault.
@@ -1336,7 +1592,7 @@ describe('quick-unlock', () => {
     });
 
     test('Touch ID cancelled, or missing: no vault is made', async () => {
-      const { mod, identityManager, systemPreferences, safeStorage, credentialPath } = setUp();
+      const { mod, identityManager, systemPreferences, credentialPath } = setUp();
       systemPreferences.promptTouchID.mockRejectedValueOnce(new Error('User cancelled'));
       await expect(mod.quickSetup('abandon about')).resolves.toEqual({
         success: false,
@@ -1346,11 +1602,6 @@ describe('quick-unlock', () => {
       await expect(mod.quickSetup('abandon about')).resolves.toEqual({
         success: false,
         error: 'Touch ID not available',
-      });
-      safeStorage.isEncryptionAvailable.mockReturnValueOnce(false);
-      await expect(mod.quickSetup('abandon about')).resolves.toEqual({
-        success: false,
-        error: 'Secure storage not available',
       });
       expect(systemPreferences.promptTouchID).toHaveBeenCalledTimes(1);
       expect(identityManager.importExistingMnemonic).not.toHaveBeenCalled();
@@ -1373,51 +1624,18 @@ describe('quick-unlock', () => {
       expect(identityManager.deleteVaultData).not.toHaveBeenCalled();
     });
 
-    test('quick-unlock.dat not sealed after the commit: the setup stands, nothing deleted, the password not kept', async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, identityManager, safeStorage, core, identityDir, credentialPath } = setUp();
-        const vault = () => fs.readFileSync(path.join(identityDir, 'identity-vault.json'));
-        safeStorage.encryptString.mockImplementation(() => {
-          throw new Error('Encryption is not available');
-        });
-
-        await expect(mod.quickSetup('abandon about')).resolves.toEqual({ success: true });
-        const committed = vault();
-        expect(core.state.credential).not.toBeNull();
-        expect(fs.existsSync(credentialPath)).toBe(false);
-        expect(identityManager.deleteVaultData).not.toHaveBeenCalled();
-        expect(mod._internal.pendingSetup()).toBeNull();
-
-        // Not retried: the password was dropped; the core's credential works.
-        await jest.advanceTimersByTimeAsync(10 * 60_000);
-        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
-        expect(fs.existsSync(credentialPath)).toBe(false);
-        expect(vault()).toEqual(committed);
-        await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
-      } finally {
-        jest.useRealTimers();
-      }
-    });
-
-    test('quick-unlock.dat not written after the commit: the sealed bytes are retried, then written', async () => {
-      jest.useFakeTimers();
-      try {
-        const { mod, safeStorage, core, credentialPath } = setUp();
-        fs.mkdirSync(credentialPath);
-        fs.writeFileSync(path.join(credentialPath, 'x'), 'x');
-        await expect(mod.quickSetup('abandon about')).resolves.toEqual({ success: true });
-        expect(mod._internal.pendingSetup()).not.toBeNull();
-        fs.rmSync(credentialPath, { recursive: true });
-        await jest.advanceTimersByTimeAsync(30_000);
-        const payload = JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
-        expect(safeStorage.decryptString(Buffer.from(payload.encrypted, 'base64'))).toBe(
-          core.state.credential
-        );
-        expect(safeStorage.encryptString).toHaveBeenCalledTimes(1);
-      } finally {
-        jest.useRealTimers();
-      }
+    // Nothing is sealed any more, so Quick Setup no longer needs safeStorage.
+    test('without safeStorage: the vault and its credential, still no file', async () => {
+      const { mod, safeStorage, core, credentialPath } = setUp();
+      safeStorage.isEncryptionAvailable.mockReturnValue(false);
+      safeStorage.encryptString.mockImplementation(() => {
+        throw new Error('Encryption is not available');
+      });
+      await expect(mod.quickSetup('abandon about')).resolves.toEqual({ success: true });
+      expect(core.state.credential).toMatch(/^[0-9a-f]{64}$/);
+      expect(fs.existsSync(credentialPath)).toBe(false);
+      expect(safeStorage.encryptString).not.toHaveBeenCalled();
+      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
     });
 
     test('a failure after the core committed (the metadata) deletes nothing', async () => {
