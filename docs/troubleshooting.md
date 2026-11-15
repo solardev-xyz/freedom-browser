@@ -73,6 +73,7 @@ launch opens unchanged.
 
 - If you have a system-wide Swarm node or Tor SOCKS5 proxy running, configure external mode in **Settings → Nodes**. Radicle has no external mode; it always runs as the profile's embedded node
 - External mode is per profile and per protocol
+- A Swarm node at a `.onion` address isn't supported yet. Freedom talks to the Swarm API outside Tor, so Settings refuses such an address ([#360](https://github.com/solardev-xyz/freedom-browser/issues/360)). An external IPFS gateway at a `.onion` address works while Tor is running
 - The Nodes panel shows external/shared status when connected to an external node
 - Freedom does not stop external nodes on quit
 
