@@ -403,8 +403,9 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
   // `eip1193.request`; until then it answers both `unknown_method`, and the
   // core takes main's error as a crossed answer. The page's request ends
   // `not_authorized` `mismatch`, nothing is written or marked, and the same
-  // core serves on. Main sends no `eip1193.request` of its own here: the
-  // test does, as APB-4 will.
+  // core serves on. Each answer frees the prompt's room, and each prompt
+  // gets a new ID. Main sends no `eip1193.request` of its own here: the test
+  // does, as APB-4 will.
   describe("a page's connect while main has no handler for the core's prompts (cored 0.19.0)", () => {
     const WORLD = {
       enabled: true,
@@ -455,44 +456,56 @@ describeIfBinary('the Swarm and Radicle files with the real freedom-cored (APB-3
     const answered = () => replies.mock.calls.map(([, , , outcome]) => outcome);
     const unknownMethod = { error: { code: 'unknown_method', message: 'Unknown method' } };
 
-    test("a key with no grant: the core's approval.request gets main's unknown_method, and the connect ends not_authorized mismatch", async () => {
+    // The core holds at most 64 approval.requests open (APR-5c-1); one past
+    // that waits for room. So 65 connects in a row, each reaching main
+    // within a few seconds, show that each unknown_method answer gives the
+    // prompt's room back.
+    const ROOM = 64;
+    const SOON_MS = 5_000;
+    const within = (promise, what) =>
+      Promise.race([
+        promise,
+        new Promise((resolve, reject) => {
+          setTimeout(() => reject(new Error(`${what}: no answer within ${SOON_MS} ms`)), SOON_MS).unref();
+        }),
+      ]);
+
+    test("a key with no grant, 65 times in a row: each connect's approval.request gets main's unknown_method, under a new prompt ID, and ends not_authorized mismatch", async () => {
       const KEY = 'https://connect.example';
       const generation = core.current;
       const before = dappText();
       expect(before === null || !Object.hasOwn(JSON.parse(before), KEY)).toBe(true);
 
-      const first = connect(KEY);
-      await expect(first.answer).rejects.toMatchObject(MISMATCH);
-      expect(asked()).toEqual([
-        {
-          method: 'approval.request',
-          params: {
-            request: first.sent.id,
-            prompt: expect.stringMatching(/^[0-9a-f]{32}$/),
-            page: page(KEY),
-            kind: 'eth.connect',
-            view: expect.objectContaining({ accounts: expect.any(Array) }),
-            choices: { walletIndex: [0, 1] },
+      const prompts = new Set();
+      for (let n = 1; n <= ROOM + 1; n += 1) {
+        lookups.mockClear();
+        replies.mockClear();
+        const { answer, sent } = connect(KEY);
+        await expect(within(answer, `connect ${n}`)).rejects.toMatchObject(MISMATCH);
+        expect(asked()).toEqual([
+          {
+            method: 'approval.request',
+            params: {
+              request: sent.id,
+              prompt: expect.stringMatching(/^[0-9a-f]{32}$/),
+              page: page(KEY),
+              kind: 'eth.connect',
+              view: expect.objectContaining({ accounts: expect.any(Array) }),
+              choices: { walletIndex: [0, 1] },
+            },
           },
-        },
-      ]);
-      expect(answered()).toEqual([unknownMethod]);
-
-      // The prompt was retired and its room freed: the same connect asks
-      // again, under a new prompt ID, and ends the same way.
-      const second = connect(KEY);
-      await expect(second.answer).rejects.toMatchObject(MISMATCH);
-      const [one, two] = asked().map(({ params }) => params);
-      expect(two.request).toBe(second.sent.id);
-      expect(two.prompt).not.toBe(one.prompt);
-      expect(answered()).toEqual([unknownMethod, unknownMethod]);
+        ]);
+        expect(answered()).toEqual([unknownMethod]);
+        prompts.add(asked()[0].params.prompt);
+      }
+      expect(prompts.size).toBe(ROOM + 1);
 
       expect(dappText()).toBe(before);
       expect(core.current).toBe(generation);
       expect(core.state).toBe('ready');
       await expect(vaultBackend.approval.touch({ store: 'swarm' }, page(SITE))).resolves.toBeDefined();
       expect(core.current).toBe(generation);
-    });
+    }, 120_000);
 
     test("a key with a grant: the core's approval.recheck gets main's unknown_method, and the connect ends not_authorized mismatch, nothing marked", async () => {
       const KEY = 'https://granted.example';
