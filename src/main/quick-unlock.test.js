@@ -1321,6 +1321,22 @@ describe('quick-unlock', () => {
       expect(fs.existsSync(credentialPath)).toBe(false);
     });
 
+    // The core wrote the credential, but the enroll's answer was an error:
+    // only the enroll's own success lets the file go.
+    test('quick-unlock.dat alone, a partial enroll: the change refused, the file kept though the status says enabled', async () => {
+      const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+      core.backend.quickUnlockEnroll.mockImplementationOnce(async (pw) => {
+        core.state.credential = pw;
+        throw coreError('core_unavailable', 'The core exited');
+      });
+      await expect(mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw')).rejects.toMatchObject({
+        code: 'core_unavailable',
+      });
+      expect(core.backend.changePassword).not.toHaveBeenCalled();
+      await expect(core.backend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
+      expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+    });
+
     test('no quick unlock, a wrong password, or no key store: nothing enrolled', async () => {
       const none = await profile({ inCore: false, withFile: false });
       await none.mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw');
