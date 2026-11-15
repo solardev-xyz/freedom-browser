@@ -544,6 +544,8 @@ describe('preload', () => {
       [exposures.browsingCredit, 'setSwapEnable', [false], IPC.SWARM_CREDIT_SET_SWAP_ENABLE, [false]],
       [exposures.remoteSigner, 'addAccount', ['My Phone', '0xabc'], 'wallet:add-remote-wallet', ['My Phone', '0xabc']],
       [exposures.remoteSigner, 'checkAccount', [1000001], 'wallet:check-remote-wallet', [1000001]],
+      // Quick Setup (0013 PRF-2b): the mnemonic only; main makes the password.
+      [exposures.quickUnlock, 'quickSetup', ['m'], 'quick-unlock:quick-setup', ['m']],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {

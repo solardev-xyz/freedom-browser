@@ -91,7 +91,7 @@ const { CoreClient } = require('./core/core-client');
 const { createHelperRunner, registerKeystoreShell } = require('./core/keystore-shell');
 const { vaultBackend, _internal: backendInternal } = require('./core/vault-backend');
 const quickUnlock = require('./quick-unlock');
-const reference = require('../../test/legacy-identity/quick-unlock');
+const reference = require('../../test/reference/quick-unlock');
 
 const sourceBinary = (() => {
   if (process.env.FREEDOM_CORED_PATH) return process.env.FREEDOM_CORED_PATH;
@@ -182,7 +182,7 @@ function secretsItems(identityDir) {
   const key = secrets.keys?.unattended;
   return {
     committed: key?.item ?? null,
-    pending: key?.pending ? [key.pending] : [],
+    pending: key?.pending ? [key.pending.item] : [],
     forget: (secrets.forget || []).map((record) => record.item),
     entries: Object.keys(secrets.entries || {}),
   };

@@ -152,7 +152,7 @@ function loadQuickUnlock({
     verifyPassword: core.backend.verifyPassword,
     // The reference quick-unlock.js (what builds before PRF-2b run), on the
     // same mocks and files.
-    reference: () => require('../../test/legacy-identity/quick-unlock'),
+    reference: () => require('../../test/reference/quick-unlock'),
   };
 }
 

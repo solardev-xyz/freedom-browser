@@ -6,6 +6,9 @@
  * still unlocks from it (0013, PRF-2's row: "Downgrade: the reference
  * quick-unlock.js still unlocks from it"). Its requires point at the live
  * modules it used, which PRF-2b doesn't change. Not loaded by the app.
+ * It is a main module, not part of the JS identity stack, so it lives here
+ * and not in test/legacy-identity/, which nothing in src/ may import
+ * (src/main/core/identity-stack-boundary.test.js).
  */
 
 /**
