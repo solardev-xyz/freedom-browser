@@ -264,7 +264,7 @@ describe('CoreClient', () => {
     expect(error.message).toBe('Vault is locked');
   });
 
-  // freedom-core design 0012, APR-3: the pinned core (0.17.0, as every core
+  // freedom-core design 0012, APR-3: the pinned core (0.18.0, as every core
   // from 0.14.0) requires `grant_root`, the permission files' directory; APB-2
   // moves the dApp file to the core and APB-3 Swarm's and Radicle's
   // (`grant_moved`), x402's staying main's.

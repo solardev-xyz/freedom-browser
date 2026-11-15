@@ -20,15 +20,15 @@ const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[ke
 const originalExitCode = process.exitCode;
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
 const TEST_TAG = 'v0.1.0-test';
-const PINNED_TAG = 'cored-v0.17.0';
-// The SHA256SUMS cored-v0.17.0 published, byte for byte. Its sha256 is the
+const PINNED_TAG = 'cored-v0.18.0';
+// The SHA256SUMS cored-v0.18.0 published, byte for byte. Its sha256 is the
 // pinned digest, so a bump has to replace it along with the tag and digest.
 const PUBLISHED_SUMS = [
-  '2242866b060329c0bda1597976f6437a9e8a14fd897fca6d9bca3080d7fcf95c  freedom-cored-v0.17.0-darwin-amd64.tar.gz',
-  'c131f688ff79f5326d388a1288dda94cb6433bbafb17776ce874af40a63a4726  freedom-cored-v0.17.0-darwin-arm64.tar.gz',
-  '6ad364605f6477e60040ffadf851810d9a2ab366ab68372e1facc5b2c6367509  freedom-cored-v0.17.0-linux-amd64.tar.gz',
-  '53e33ee49db05f8d151cf98f95187a53dcafb445e900c3bc86fadbbca5152507  freedom-cored-v0.17.0-linux-arm64.tar.gz',
-  '05559d561b3eb6abf5c1a2647cf5469ecdda015e8bbc60bce39e71bab820d376 *freedom-cored-v0.17.0-windows-amd64.zip',
+  'e8e5b81b94dc193a5662a4259ddbffc41972b77244ce1a8dfbfe625acbcb42f0  freedom-cored-v0.18.0-darwin-amd64.tar.gz',
+  '14f32eb532b79a5dae469828ff5ee571fae1fbb3313e5e042e9b8f0009658972  freedom-cored-v0.18.0-darwin-arm64.tar.gz',
+  'e040cd340123f316edad6a5b57e402d3701c7882976706c4e3f491cdb7ce1dc1  freedom-cored-v0.18.0-linux-amd64.tar.gz',
+  '9d0049631e45776da3608495045bc30710e8c43f751e1705afaf59b48a922afa  freedom-cored-v0.18.0-linux-arm64.tar.gz',
+  '163916e9fe076900869c4a616f5e305d7db5b1019e6d33476e1492b3956163ae *freedom-cored-v0.18.0-windows-amd64.zip',
   '',
 ].join('\n');
 const noWait = { sleep: () => Promise.resolve(), log: () => {} };
@@ -350,7 +350,7 @@ describe('verified installation', () => {
       'Error:',
       expect.objectContaining({
         message: expect.stringMatching(
-          /^Checksum mismatch for freedom-cored-v0\.17\.0-darwin-arm64\.tar\.gz: expected c131f688/
+          /^Checksum mismatch for freedom-cored-v0\.18\.0-darwin-arm64\.tar\.gz: expected 14f32eb5/
         ),
       })
     );
