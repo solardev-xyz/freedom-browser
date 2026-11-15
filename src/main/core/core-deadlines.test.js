@@ -39,6 +39,11 @@ const VAULT_QUEUE = [
   'vault.create',
   'vault.import',
   'vault.reconcile',
+  'quick_unlock.enroll',
+  'quick_unlock.unlock',
+  'quick_unlock.export_mnemonic',
+  'quick_unlock.export_private_key',
+  'quick_unlock.disable',
   'nodes.write_identity',
   'nodes.op_status',
 ];
