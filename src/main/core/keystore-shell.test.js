@@ -325,6 +325,123 @@ describe('the deadlines', () => {
   });
 });
 
+describe('the queue, on fake timers', () => {
+  const forget = { op: 'forget', policy: 'unattended', item: ITEM };
+  const create = { op: 'create', policy: 'unattended', item: ITEM, replyKey: REPLY_KEY };
+
+  /** A runner whose helpers run until they are killed, and what happened. */
+  function heldRunner() {
+    const { EventEmitter } = require('events');
+    const spawned = [];
+    const killed = [];
+    const spawn = (_, args) => {
+      const child = new EventEmitter();
+      child.pid = spawned.length + 1;
+      child.stdout = new EventEmitter();
+      child.kill = () => {
+        killed.push({ pid: child.pid, at: Date.now() });
+        // Closed on a later turn, as a killed child is (a promise job:
+        // fake timers leave those alone).
+        Promise.resolve().then(() => child.emit('close', null, 'SIGKILL'));
+      };
+      spawned.push({ op: args[2], at: Date.now() });
+      return child;
+    };
+    return { runner: createHelperRunner({ command: 'x', spawn }), spawned, killed };
+  }
+
+  /** `promise`'s outcome so far: `{ state, code, at }`. */
+  function watch(promise) {
+    const seen = { state: 'pending' };
+    promise.then(
+      () => Object.assign(seen, { state: 'resolved', at: Date.now() }),
+      (error) => Object.assign(seen, { state: 'rejected', code: error.code, at: Date.now() })
+    );
+    return seen;
+  }
+
+  beforeEach(() => jest.useFakeTimers({ now: 0 }));
+  afterEach(() => jest.useRealTimers());
+
+  test('a core forget queued behind two drain forgets answers timeout at its own 10 s, while the second still runs, and never runs', async () => {
+    const { runner, spawned, killed } = heldRunner();
+    const drain1 = watch(runner.run(forget));
+    const drain2 = watch(runner.run(forget));
+    await jest.advanceTimersByTimeAsync(1_000);
+    const core = watch(runner.run(forget, { fromArrival: true }));
+
+    // The first drain forget is killed at its 10 s; the second starts then.
+    await jest.advanceTimersByTimeAsync(9_000);
+    expect(drain1).toMatchObject({ state: 'rejected', code: 'timeout' });
+    expect(spawned.map((run) => run.at)).toEqual([0, 10_000]);
+    await jest.advanceTimersByTimeAsync(999);
+    expect(core.state).toBe('pending');
+
+    // The core's 10 s from its arrival: answered then, the helper still
+    // held by the second drain forget.
+    await jest.advanceTimersByTimeAsync(1);
+    expect(core).toEqual({ state: 'rejected', code: 'timeout', at: 11_000 });
+    expect(drain2.state).toBe('pending');
+    expect(killed).toHaveLength(1);
+
+    // The second runs its whole 10 s; the core's forget never runs after it.
+    await jest.advanceTimersByTimeAsync(9_000);
+    expect(drain2).toMatchObject({ state: 'rejected', code: 'timeout', at: 20_000 });
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(spawned).toHaveLength(2);
+
+    // The queue is free: the next call starts at once.
+    const later = watch(runner.run(forget));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(spawned).toHaveLength(3);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(later).toMatchObject({ state: 'rejected', code: 'timeout' });
+  });
+
+  test("an executor request that gets its turn runs for what's left of its deadline; a drain forget for its whole 10 s", async () => {
+    const { runner, spawned, killed } = heldRunner();
+    const drain1 = watch(runner.run(forget));
+    const core = watch(runner.run(create, { fromArrival: true }));
+    const drain2 = watch(runner.run(forget));
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(drain1).toMatchObject({ state: 'rejected', code: 'timeout' });
+    expect(spawned).toEqual([
+      { op: 'forget', at: 0 },
+      { op: 'create', at: 10_000 },
+    ]);
+    // Killed at 60 s from its arrival, not from its start.
+    await jest.advanceTimersByTimeAsync(49_999);
+    expect(core.state).toBe('pending');
+    await jest.advanceTimersByTimeAsync(1);
+    expect(killed.map((kill) => kill.at)).toEqual([10_000, 60_000]);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(core).toMatchObject({ state: 'rejected', code: 'timeout' });
+
+    // The drain's forget waited 60 s, and still gets its 10 s.
+    expect(spawned[2]).toEqual({ op: 'forget', at: 60_000 });
+    await jest.advanceTimersByTimeAsync(9_999);
+    expect(drain2.state).toBe('pending');
+    await jest.advanceTimersByTimeAsync(1);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(drain2).toMatchObject({ state: 'rejected', code: 'timeout', at: 70_000 });
+  });
+
+  test('a waiting call cancelled answers at once, and never runs', async () => {
+    const { runner, spawned } = heldRunner();
+    const first = watch(runner.run(forget));
+    const waiting = new AbortController();
+    const second = watch(runner.run(forget, { signal: waiting.signal, fromArrival: true }));
+    await jest.advanceTimersByTimeAsync(100);
+    waiting.abort();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(second).toEqual({ state: 'rejected', code: 'cancelled', at: 100 });
+    expect(first.state).toBe('pending');
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(spawned).toHaveLength(1);
+  });
+});
+
 posix('the helper run, with stand-in helpers', () => {
   let dir;
   let secretBefore;
@@ -497,16 +614,24 @@ posix('the helper run, with stand-in helpers', () => {
   });
 
   test("an executor request's deadline counts its wait in the queue; the drain's starts with its run", async () => {
-    const held = helper('held', 'sleep(1_500); process.stdout.write(\'{"ok":true}\\n\');');
+    const held = helper('held', 'sleep(3_000); process.stdout.write(\'{"ok":true}\\n\');');
     const runner = createHelperRunner({
       command: held.command,
-      deadlines: { create: 10_000, open: 10_000, forget: 1_000 },
+      deadlines: { create: 10_000, open: 10_000, forget: 500 },
     });
     const first = runner.run(create);
+    let firstDone = false;
+    first.then(() => {
+      firstDone = true;
+    });
+    const arrived = Date.now();
     const queued = runner.run(forget, { fromArrival: true });
-    await first;
-    // Its 1 s ran out while the first held the helper: no run of its own.
+    // Its 500 ms runs out while the first holds the helper: answered then,
+    // not once the first is done, and no run of its own.
     expect(await rejection(queued)).toMatchObject({ code: 'timeout' });
+    expect(Date.now() - arrived).toBeGreaterThanOrEqual(450);
+    expect(firstDone).toBe(false);
+    await expect(first).resolves.toBe('{"ok":true}');
     expect(held.runs()).toHaveLength(1);
 
     const fast = helper('fast', 'process.stdout.write(\'{"ok":true}\\n\');');
@@ -519,7 +644,7 @@ posix('the helper run, with stand-in helpers', () => {
     const drained = both.run(forget);
     await one;
     await expect(drained).resolves.toBe('{"ok":true}');
-  });
+  }, 20_000);
 
   test('cancelled while it runs: killed; while it waits, or before: never started', async () => {
     const stand = helper('held', 'sleep(30_000); process.stdout.write(\'{"ok":true}\\n\');');
@@ -528,11 +653,13 @@ posix('the helper run, with stand-in helpers', () => {
     const waiting = new AbortController();
     const first = runner.run(create, { signal: running.signal });
     const second = runner.run(forget, { signal: waiting.signal });
-    waiting.abort();
     while (stand.runs().length === 0) await new Promise((resolve) => setTimeout(resolve, 50));
+    waiting.abort();
+    // Answered at once, while the first still runs.
+    expect(await rejection(second)).toMatchObject({ code: 'cancelled' });
+    expect(isAlive(stand.runs()[0].pid)).toBe(true);
     running.abort();
     expect(await rejection(first)).toMatchObject({ code: 'cancelled' });
-    expect(await rejection(second)).toMatchObject({ code: 'cancelled' });
     const aborted = new AbortController();
     aborted.abort();
     expect(await rejection(runner.run(forget, { signal: aborted.signal }))).toMatchObject({

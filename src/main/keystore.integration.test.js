@@ -8,7 +8,9 @@
  * - **Linux and Windows:** the core asks main nothing. With a stand-in
  *   executor listening, `quick_unlock.*` and a `vault.import` with
  *   `quick_unlock: true` answer as cored 0.17.0 says, and nothing reaches
- *   it; main registers no executor there.
+ *   it; main registers no executor there. A forget file copied from a Mac:
+ *   the start's drain runs the real `forget-list`, which drops the foreign
+ *   record, and no helper runs.
  * - **macOS,** only with FREEDOM_TEST_KEYCHAIN naming the job's temporary
  *   keychain, the user's default (CI makes it, as freedom-core's keychain
  *   job does; the login keychain is never touched):
@@ -262,6 +264,43 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
 
       expect(asked).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(identity, 'secrets.json'))).toBe(false);
+    }, 60_000);
+
+    test("a record copied from macOS: the drain's forget-list drops it, and no helper runs", async () => {
+      launch('home');
+      // A deleted profile's record from a Mac, as an app root copied from
+      // one brings it: its backend isn't this OS's (0013, "An item already
+      // gone").
+      const item = crypto.randomBytes(16).toString('hex');
+      const record = {
+        version: 1,
+        deleted: [
+          {
+            id: 'copied',
+            dir: path.join(appRoot, 'Profiles', 'copied'),
+            items: [{ backend: 'macos-keychain', policy: 'unattended', item }],
+          },
+        ],
+      };
+      fs.writeFileSync(forgetFile(appRoot), JSON.stringify(record, null, 2), { mode: 0o600 });
+
+      const opened = launch('home');
+      expect(opened.report.forgetPending).toBe(1);
+      const runner = { run: jest.fn() };
+      await expect(
+        drainAfterFirstWindow({
+          resolver: {
+            getProfileLaunchReport: () => opened.report,
+            getActiveProfile: () => opened.profile,
+          },
+          runner,
+          log: quietLog,
+        })
+      ).resolves.toEqual({ forgotten: 0, kept: 0 });
+      expect(runner.run).not.toHaveBeenCalled();
+      expect(recordedItems(appRoot)).toEqual([]);
+      // The next start has nothing pending.
+      expect(launch('home').report.forgetPending).toBe(0);
     }, 60_000);
   });
 
@@ -521,9 +560,17 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
     test("two profiles' mains draining at once both leave the file empty", async () => {
       const items = [...(await store.makeDeleted('one')), ...(await store.makeDeleted('two'))];
       expect(recordedItems(appRoot).sort()).toEqual(items.map((i) => i.item).sort());
+      // Lined up before their first helper, so each has listed both items.
+      const release = path.join(root, 'release');
       const mains = [0, 1].map(() =>
-        runMain(['drain', sourceBinary, store.helper('real'), appRoot, '-'])
+        runMain(['drain', sourceBinary, store.helper('real'), appRoot, `before-helper@${release}`])
       );
+      await Promise.all(
+        mains.map((main) =>
+          waitFor(() => main.out.includes('at before-helper\n'), 60_000, 'main at before-helper')
+        )
+      );
+      fs.writeFileSync(release, '');
       const counts = await Promise.all(mains.map(ends));
       // Each saw both items, and each counted both gone: one removed it, the
       // other found it not_found.

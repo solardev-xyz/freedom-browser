@@ -26,9 +26,11 @@
  *   unlock prompt or on Touch ID, and 10 s for `forget`. An executor
  *   request's deadline runs from its arrival, its wait in the queue
  *   included, so main always answers within the core's own wait (main's
- *   deadline and 5 s); one that runs out while it waits answers `timeout`
- *   with no helper run. Past it, the helper is killed, and the answer is
- *   `timeout`: the core's `Unavailable` with `reason: "timeout"`.
+ *   deadline and 5 s): one whose deadline passes while it waits answers
+ *   `timeout` then, from a timer of its own, and leaves the queue, so no
+ *   helper ever runs for it late. Past the deadline a running helper is
+ *   killed, and the answer is `timeout`: the core's `Unavailable` with
+ *   `reason: "timeout"`.
  * - **The answer** is the helper's one line on stdout, relayed as received,
  *   byte for byte, as the response's `result` (a JsonText). Main reads at
  *   most 4 KiB and its newline: a longer answer kills the helper at once,
@@ -37,7 +39,8 @@
  *   any error other than `unknown_method`, `timeout` and `cancelled` as
  *   `Backend`, as 0013's "The answer" asks. The exit status isn't read.
  * - **Cancelled** (the core's cancel, or its exit): the helper is killed,
- *   or never started.
+ *   or, for a call still waiting, it answers `cancelled` at once and leaves
+ *   the queue.
  * - **Only where the helper has a backend:** macOS, until PRF-7 adds Linux's
  *   and Windows'. Elsewhere the core asks nothing (cored 0.17.0 answers
  *   `unsupported` without a call), and main registers no executor, so a
@@ -131,7 +134,9 @@ function answerLine(stdout) {
  * resolves to the answer line, or rejects with a ShellError: `timeout`,
  * `too_large`, `cancelled` or `internal`. With `fromArrival`, the deadline
  * runs from the call, its wait in the queue included; otherwise from the
- * helper's start.
+ * helper's start. A call still waiting answers at once when it's cancelled,
+ * or when a `fromArrival` deadline passes, and leaves the queue: no helper
+ * runs for it.
  *
  * @param {object} options
  * @param {string|function(): string} options.command - freedom-cored
@@ -145,7 +150,9 @@ function createHelperRunner({
   deadlines = DEADLINES_MS,
   env = () => scrubbedEnv(),
 } = {}) {
-  let tail = Promise.resolve();
+  // The calls waiting their turn, first first, and whether a helper runs.
+  const waiting = [];
+  let busy = false;
 
   function runOne(request, signal, until) {
     return new Promise((resolve, reject) => {
@@ -219,14 +226,50 @@ function createHelperRunner({
     });
   }
 
+  /** Starts the first waiting call once no helper runs. */
+  function next() {
+    if (busy) return;
+    const call = waiting.shift();
+    if (!call) return;
+    call.leave();
+    busy = true;
+    const until = call.until ?? Date.now() + deadlines[call.request.op];
+    runOne(call.request, call.signal, until)
+      .then(call.resolve, call.reject)
+      .finally(() => {
+        busy = false;
+        next();
+      });
+  }
+
   function run(request, { signal = null, fromArrival = false } = {}) {
-    const deadline = deadlines[request.op];
-    const arrived = Date.now();
-    const turn = tail.then(() =>
-      runOne(request, signal, (fromArrival ? arrived : Date.now()) + deadline)
-    );
-    tail = turn.catch(() => {});
-    return turn;
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new ShellError('cancelled'));
+        return;
+      }
+      const until = fromArrival ? Date.now() + deadlines[request.op] : null;
+      const call = { request, signal, until, resolve, reject };
+      // A call that waits answers at once when it's cancelled, or when an
+      // executor request's deadline runs out: it leaves the queue, and no
+      // helper runs for it.
+      const drop = (code) => {
+        const at = waiting.indexOf(call);
+        if (at === -1) return;
+        waiting.splice(at, 1);
+        call.leave();
+        reject(new ShellError(code));
+      };
+      const onAbort = () => drop('cancelled');
+      const timer = until === null ? null : setTimeout(() => drop('timeout'), until - Date.now());
+      signal?.addEventListener('abort', onAbort, { once: true });
+      call.leave = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      waiting.push(call);
+      next();
+    });
   }
 
   return { run };
