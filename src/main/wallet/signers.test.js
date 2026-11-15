@@ -559,18 +559,15 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
     expect(heard).toEqual([{ added: false, reason: 'not_exposed' }, null]);
   });
 
-  // Design 0012, "A device send's rule" (cored 0.16.0): a device's token is
+  // Design 0012, "A device send's rule" (cored 0.16.0): a Ledger's token is
   // spent before the device is asked, and a flagged one's spend gives a
   // finalize receipt, handed on with the PageContext it was spent under.
-  test.each([
-    ['a phone', { index: 1000001, type: 'remote', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' }, 'sendTransaction'],
-    ['a Ledger', { index: 1000000, type: 'ledger', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', path: "44'/60'/0'/0/0" }, 'signTransaction'],
-  ])("%s's flagged dApp send: the spend's receipt reaches `onReceipt`, with the page it was spent under, before the device", async (_label, record, method) => {
+  test("a Ledger's flagged dApp send: the spend's receipt reaches `onReceipt`, with the page it was spent under, before the device", async () => {
     const confirmations = require('./signing-confirmation');
+    const record = { index: 1000000, type: 'ledger', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', path: "44'/60'/0'/0/0" };
     mockGetWalletRecord.mockReturnValue(record);
-    const backend = method === 'sendTransaction' ? mockRemoteBackend : mockLedgerBackend;
     const order = [];
-    backend[method].mockReset().mockImplementation(async () => {
+    mockLedgerBackend.signTransaction.mockReset().mockImplementation(async () => {
       order.push('device');
       return '0xdone';
     });
@@ -578,7 +575,7 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
     const page = { handle: 'c'.repeat(64), context: PAGE };
     const heard = [];
     for (const remember of [true, false]) {
-      const confirmation = await confirmations.issuePageConfirmation('dapp-send', record.index, send, page, { remember, phone: record.type === 'remote' });
+      const confirmation = await confirmations.issuePageConfirmation('dapp-send', record.index, send, page, { remember });
       const signer = getSigner(record.index, {
         confirmation,
         onReceipt: (held) => {
@@ -586,13 +583,60 @@ describe('getSigner: a standing rule, and "Always allow"', () => {
           heard.push(held);
         },
       });
-      await signer[method]({ ...send, nonce: 1, type: 0 });
+      await signer.signTransaction({ ...send, nonce: 1, type: 0 });
     }
     expect(heard).toEqual([{ receipt: expect.stringMatching(/^[0-9a-f]{32}$/), page: PAGE }, null]);
     expect(order).toEqual(['receipt', 'device', 'receipt', 'device']);
     // Spent under the page; nothing written (the receipt waits for main).
     expect(approvals().calls.filter((call) => call.method === 'approval.spend').map((call) => call.page)).toEqual([PAGE, PAGE]);
     expect(approvals().openReceipts()).toBe(1);
+    expect(approvals().calls.filter((call) => call.method === 'approval.remember')).toEqual([]);
+  });
+
+  // Design 0012, PHN-2 ("A phone payment's rule"): a phone's send is a core
+  // job. Main spends nothing and holds no receipt; the token goes to the job
+  // as its authorization, under the page it was minted for, with the send
+  // it bound, and the core's reply says what became of "Always allow"
+  // (`rule`), written only once the payment's transaction matched.
+  test("a phone's flagged dApp send: main spends nothing; the token and its send go to the core's job, and its `rule` reaches `onRule`", async () => {
+    const confirmations = require('./signing-confirmation');
+    const record = { index: 1000001, type: 'remote', address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' };
+    mockGetWalletRecord.mockReturnValue(record);
+    const hash = '0x' + 'ab'.repeat(32);
+    const replies = [
+      { hash, outcome: 'verified', job: 'j-1', rule: { added: true } },
+      { hash, outcome: 'unverified', job: 'j-2' },
+    ];
+    mockRemoteBackend.sendTransaction.mockReset();
+    const send = { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '0', data: '0x095ea7b3', gasLimit: '50000', gasPrice: '7', chainId: 100, origin: PAGE.origin };
+    const page = { handle: 'c'.repeat(64), context: PAGE };
+    const heard = [];
+    const receipts = [];
+    for (const remember of [true, false]) {
+      const reply = replies.shift();
+      mockRemoteBackend.sendTransaction.mockImplementationOnce(async () => reply);
+      const confirmation = await confirmations.issuePageConfirmation('dapp-send', record.index, send, page, { remember, phone: true });
+      expect(confirmation.payload.tx).toMatchObject({ to: send.to, data: send.data });
+      const signer = getSigner(record.index, {
+        confirmation,
+        onRule: (rule) => heard.push(rule),
+        onReceipt: (held) => receipts.push(held),
+      });
+      await expect(signer.sendTransaction({ ...send, nonce: 1, type: 0 })).resolves.toBe(reply);
+      expect(mockRemoteBackend.sendTransaction).toHaveBeenLastCalledWith(
+        { ...send, nonce: 1, type: 0 },
+        {
+          authorization: { token: confirmation.token, kind: 'dapp-send', handle: page.handle },
+          page: PAGE,
+          // The send the token bound, exactly.
+          payload: { tx: confirmation.payload.tx },
+        }
+      );
+    }
+    // The core's word, once its payment showed; none for a send not flagged.
+    expect(heard).toEqual([{ added: true }, null]);
+    expect(receipts).toEqual([]);
+    expect(approvals().calls.filter((call) => call.method === 'approval.spend')).toEqual([]);
     expect(approvals().calls.filter((call) => call.method === 'approval.remember')).toEqual([]);
   });
 });
@@ -639,7 +683,8 @@ describe('getSigner (ledger-backed dispatch)', () => {
 
     // 0x-hex message reaches the backend as raw bytes
     await signer.signMessage('0x48656c6c6f');
-    expect(mockLedgerBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
+    // No phone job for a Ledger.
+    expect(mockLedgerBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'), undefined);
 
     // JSON-string typed data reaches the backend parsed
     const typed = { domain: { name: 'D' }, types: { M: [{ name: 'v', type: 'uint8' }] }, message: { v: 1 } };
@@ -734,16 +779,171 @@ describe('getSigner (remote-backed dispatch)', () => {
     expect(mockRecordRemoteAddressCheck).toHaveBeenLastCalledWith(4, false);
   });
 
-  test('advertises the backend sendTransaction capability', async () => {
+  test("advertises the backend sendTransaction capability, and returns the core's reply", async () => {
+    const reply = { hash: '0x' + 'ab'.repeat(32), outcome: 'unverified', job: 'j-1' };
+    mockRemoteBackend.sendTransaction.mockResolvedValue(reply);
     const signer = getSigner(4);
-    await expect(signer.sendTransaction({ to: '0x1', chainId: 100 })).resolves.toBe('0xhash');
-    expect(mockRemoteBackend.sendTransaction).toHaveBeenCalledWith({ to: '0x1', chainId: 100 });
+    const tx = { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', chainId: 100 };
+    await expect(signer.sendTransaction(tx)).resolves.toBe(reply);
+    // Main's own send: no authorization, no page, and the send in the
+    // core's form, a fee or gas limit main quoted none for named as zero.
+    expect(mockRemoteBackend.sendTransaction).toHaveBeenCalledWith(tx, {
+      page: null,
+      payload: {
+        tx: {
+          type: 2,
+          chain_id: '100',
+          gas_limit: '0',
+          to: tx.to,
+          value: '0',
+          data: '0x',
+          max_fee_per_gas: '0',
+          max_priority_fee_per_gas: '0',
+        },
+      },
+    });
+  });
+
+  test("a send's quoted gas and fees go in the core's form, with no nonce: the phone picks its own", async () => {
+    const signer = getSigner(4);
+    const to = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
+    await signer.sendTransaction({ to, value: '1000', data: '0xabcdef', chainId: 100, gasLimit: '21000', gasPrice: '7' });
+    await signer.sendTransaction({ to, value: '1000', chainId: 100, gasLimit: 21000n, maxFeePerGas: 10n, maxPriorityFeePerGas: 1n });
+    const [[, legacy], [, eip1559]] = mockRemoteBackend.sendTransaction.mock.calls;
+    expect(legacy.payload.tx).toEqual({
+      type: 0,
+      chain_id: '100',
+      gas_limit: '21000',
+      to,
+      value: '1000',
+      data: '0xabcdef',
+      gas_price: '7',
+    });
+    expect(eip1559.payload.tx).toEqual({
+      type: 2,
+      chain_id: '100',
+      gas_limit: '21000',
+      to,
+      value: '1000',
+      data: '0x',
+      max_fee_per_gas: '10',
+      max_priority_fee_per_gas: '1',
+    });
   });
 
   test('factory-level normalization applies to remote backends too', async () => {
     const signer = getSigner(4);
     await signer.signMessage('0x48656c6c6f');
-    expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
+    // Main's own message: the backend makes the payload from the bytes.
+    expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'), { page: null });
+    expect(mockRemoteBackend.signMessage.mock.calls[0][1].payload).toBeUndefined();
+  });
+
+  // Design 0012, PHN-2: what the core checks the phone's job under, as a
+  // vault signature presents it (`signOptions`), with the `sign.*` payload.
+  describe("the job: the authorization and page the core checks, and the payload", () => {
+    const PAGE = Object.freeze({ origin: 'https://app.example', top_origin: 'https://app.example', frame: 1, navigation: 2, agent: false });
+    const TO = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
+    const TYPED = {
+      domain: { name: 'Permit', chainId: 100, verifyingContract: '0x' + '11'.repeat(20) },
+      types: { Permit: [{ name: 'value', type: 'uint256' }] },
+      primaryType: 'Permit',
+      message: { value: '1' },
+    };
+    const HASH = TypedDataEncoder.hash(TYPED.domain, TYPED.types, TYPED.message);
+    const { toCoreTypedData } = require('./signing-utils');
+
+    beforeEach(() => {
+      mockRemoteBackend.signTypedData.mockReset().mockResolvedValue('0xsig712');
+      mockCore.approvals?.reset();
+      require('./signing-confirmation')._reset();
+    });
+
+    test("a token: `{ token, handle }` under its page, and the payload it bound; main spends nothing", async () => {
+      const confirmations = require('./signing-confirmation');
+      const handle = 'e'.repeat(64);
+      const confirmation = await confirmations.issuePageConfirmation('sign-message', 4, 'hello', { handle, context: PAGE });
+      await getSigner(4, { confirmation }).signMessage('hello');
+      expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith('hello', {
+        authorization: { token: confirmation.token, handle },
+        page: PAGE,
+        payload: confirmation.payload,
+      });
+      expect(confirmation.payload).toEqual({ message: '0x68656c6c6f' });
+      expect(mockCore.approvals.calls.filter((call) => call.method === 'approval.spend')).toEqual([]);
+    });
+
+    test("typed data's token: the data, `primary_type` and `chain_id` it was minted with, and the confirmed hash", async () => {
+      const confirmations = require('./signing-confirmation');
+      const handle = 'e'.repeat(64);
+      const confirmation = await confirmations.issuePageConfirmation('sign-typed-data', 4, TYPED, { handle, context: PAGE }, { chainId: 100 });
+      await getSigner(4, { confirmation }).signTypedData(TYPED, { expectedHash: HASH });
+      const [, options] = mockRemoteBackend.signTypedData.mock.calls[0];
+      expect(options).toEqual({
+        expectedHash: HASH,
+        digest: HASH,
+        job: {
+          authorization: { token: confirmation.token, handle },
+          page: PAGE,
+          payload: {
+            typed_data: confirmation.payload.typed_data,
+            ...(confirmation.payload.primary_type !== undefined ? { primary_type: confirmation.payload.primary_type } : {}),
+            ...(confirmation.payload.chain_id !== undefined ? { chain_id: confirmation.payload.chain_id } : {}),
+          },
+        },
+      });
+      expect(confirmation.payload.typed_data).toEqual(expect.any(Object));
+    });
+
+    test("a standing rule: `{ standing }` under the page, typed data viewed on the page's chain", async () => {
+      await getSigner(4, { page: PAGE, standing: {}, chainId: 100 }).signTypedData(TYPED, { expectedHash: HASH });
+      expect(mockRemoteBackend.signTypedData.mock.calls[0][1].job).toEqual({
+        authorization: { standing: {} },
+        page: PAGE,
+        payload: { typed_data: toCoreTypedData(TYPED), primary_type: 'Permit', chain_id: '100' },
+      });
+      await getSigner(4, { page: PAGE, standing: { paused: false } }).sendTransaction({ to: TO, chainId: 100 });
+      expect(mockRemoteBackend.sendTransaction.mock.calls[0][1]).toMatchObject({
+        authorization: { standing: { paused: false } },
+        page: PAGE,
+        payload: { tx: expect.objectContaining({ to: TO, chain_id: '100' }) },
+      });
+    });
+
+    test("a Safe owner's: `{ safe }` under the Safe approval's page", async () => {
+      await getSigner(4, { safe: { id: 'safe-approval-1', page: PAGE } }).signTypedData(TYPED);
+      expect(mockRemoteBackend.signTypedData.mock.calls[0][1].job).toEqual({
+        authorization: { safe: 'safe-approval-1' },
+        page: PAGE,
+        payload: { typed_data: toCoreTypedData(TYPED) },
+      });
+    });
+
+    test("the caller's last check goes to the job as `beforeSign`, and the signer doesn't run it", async () => {
+      const beforeSign = jest.fn(async () => {});
+      const signer = getSigner(4, { page: PAGE, standing: {}, chainId: 100, beforeSign });
+      await signer.signMessage('hello');
+      await signer.signTypedData(TYPED, { expectedHash: HASH });
+      await signer.sendTransaction({ to: TO, chainId: 100 });
+      expect(mockRemoteBackend.signMessage.mock.calls[0][1].beforeSign).toBe(beforeSign);
+      expect(mockRemoteBackend.signTypedData.mock.calls[0][1].job.beforeSign).toBe(beforeSign);
+      expect(mockRemoteBackend.sendTransaction.mock.calls[0][1].beforeSign).toBe(beforeSign);
+      expect(beforeSign).not.toHaveBeenCalled();
+      // None given, none in the job.
+      await getSigner(4, { page: PAGE, standing: {} }).signMessage('hello');
+      expect(mockRemoteBackend.signMessage.mock.calls[1][1]).not.toHaveProperty('beforeSign');
+    });
+
+    test("`onRule` hears the core's `rule` from a phone send's reply, or null", async () => {
+      const heard = [];
+      mockRemoteBackend.sendTransaction
+        .mockResolvedValueOnce({ hash: '0x' + 'ab'.repeat(32), outcome: 'verified', job: 'j-1', rule: { added: false, reason: 'not_exposed' } })
+        .mockResolvedValueOnce({ hash: '0x' + 'ab'.repeat(32), outcome: 'unverified', job: 'j-2' });
+      const signer = getSigner(4, { page: PAGE, standing: {}, onRule: (rule) => heard.push(rule) });
+      await signer.sendTransaction({ to: TO, chainId: 100 });
+      await signer.sendTransaction({ to: TO, chainId: 100 });
+      expect(heard).toEqual([{ added: false, reason: 'not_exposed' }, null]);
+    });
   });
 });
 
@@ -832,10 +1032,14 @@ describe("getSigner: main's own typed data on a device", () => {
         types: { [primaryType]: typed.types[primaryType] },
         message: typed.message,
       });
-      // With the core's hash, for the backend to recover the signature over.
+      // With the core's hash, for the backend to recover the signature over;
+      // a phone's job (main's own: no authorization, no page) carries the
+      // data the core hashed, in its form.
+      const digest = TypedDataEncoder.hash(typed.domain, { [primaryType]: typed.types[primaryType] }, typed.message);
       expect(backend.signTypedData).toHaveBeenCalledWith(typed, {
         expectedHash: undefined,
-        digest: TypedDataEncoder.hash(typed.domain, { [primaryType]: typed.types[primaryType] }, typed.message),
+        digest,
+        job: device === 'phone' ? { page: null, payload: { typed_data: hashed } } : undefined,
       });
       // Nothing of the vault's: no key, no vault signature.
       expect(coreCalls('sign.typed_data')).toEqual([]);
@@ -912,9 +1116,35 @@ describe("getSigner: the caller's last check, right before the signature", () =>
     });
   });
 
+  // A phone's backend hands the caller's check to the bridge, which awaits
+  // it once the core opened the job, right before the relay
+  // (`remote/bridge.js` `beforeRelay`, tested there); this one does it as
+  // the bridge does, so the order seen here is the signer's. A phone has no
+  // raw signing (`remote/signer.js`).
+  beforeEach(() => {
+    mockCreateRemoteBackend.mockClear();
+    mockCreateRemoteBackend.mockImplementation(() => {
+      const relayed = (method, jobOf) => async (...args) => {
+        const job = jobOf(args);
+        if (job?.beforeSign) await job.beforeSign();
+        return mockRemoteBackend[method](...args);
+      };
+      return {
+        getAddress: mockRemoteBackend.getAddress,
+        signTransaction: async () => {
+          throw Object.assign(new Error('unsupported'), { code: 'REMOTE_UNSUPPORTED' });
+        },
+        signMessage: relayed('signMessage', (args) => args[1]),
+        signTypedData: relayed('signTypedData', (args) => args[1]?.job),
+        sendTransaction: relayed('sendTransaction', (args) => args[1]),
+      };
+    });
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
     mockCreateLedgerBackend.mockImplementation(() => mockLedgerBackend);
+    mockCreateRemoteBackend.mockImplementation(() => mockRemoteBackend);
   });
 
   test("a Ledger's backend is handed the caller's check; the signer doesn't run it before the device session", async () => {
@@ -984,14 +1214,25 @@ describe("getSigner: the caller's last check, right before the signature", () =>
 
     test('a message, a transaction and a phone\'s send: the check right before the device, and its refusal stops it', async () => {
       const signer = getSigner(record.index, authorized());
+      // A phone signs no raw transaction: refused before any check.
+      const signTransaction = () =>
+        device === 'phone'
+          ? expect(signer.signTransaction(TX)).rejects.toMatchObject({ code: 'REMOTE_UNSUPPORTED' })
+          : signer.signTransaction(TX);
       await signer.signMessage('hello');
-      await signer.signTransaction(TX);
+      await signTransaction();
       if (signer.sendTransaction) await signer.sendTransaction(TX);
-      expect(order).toEqual(['check', 'signMessage', 'check', 'signTransaction', ...(signer.sendTransaction ? ['check', 'sendTransaction'] : [])]);
+      expect(order).toEqual([
+        'check',
+        'signMessage',
+        ...(device === 'phone' ? [] : ['check', 'signTransaction']),
+        ...(signer.sendTransaction ? ['check', 'sendTransaction'] : []),
+      ]);
       refusal = new Error('custody');
       order = [];
       await expect(signer.signMessage('hello')).rejects.toBe(refusal);
-      await expect(signer.signTransaction(TX)).rejects.toBe(refusal);
+      if (device === 'phone') await signTransaction();
+      else await expect(signer.signTransaction(TX)).rejects.toBe(refusal);
       if (signer.sendTransaction) await expect(signer.sendTransaction(TX)).rejects.toBe(refusal);
       expect(order.filter((step) => step !== 'check')).toEqual([]);
     });
@@ -1041,7 +1282,7 @@ describe("getSigner: the caller's last check, right before the signature", () =>
       expect(approvals().outstanding()).toBe(1);
     });
 
-    test.each(Object.keys(DEVICES))('on a %s: the check after the core\'s hash and the token\'s spend, right before the device; a refusal there: the device never asked', async (device) => {
+    test.each(['ledger'])('on a %s: the check after the core\'s hash and the token\'s spend, right before the device; a refusal there: the device never asked', async (device) => {
       const [record, backend] = DEVICES[device];
       mockGetWalletRecord.mockReturnValue(record);
       const order = [];
@@ -1076,6 +1317,55 @@ describe("getSigner: the caller's last check, right before the signature", () =>
       await expect(refusedSender.sendTransaction ? refusedSender.sendTransaction(TX) : refusedSender.signTransaction(TX)).rejects.toBe(refusal);
       // Spent through the core, then refused: no device asked.
       expect(order).toEqual([['check', 4], ['check', 5]]);
+    });
+
+    // Design 0012, PHN-2: a phone's token goes to the core's job, which
+    // spends it as it opens the job; main spends nothing. The check is the
+    // job's, run by the bridge after the core opened it, right before the
+    // relay.
+    test("on a phone: the token goes to the core's job under the Agent's PageContext, main spends nothing, and the check is right before the relay", async () => {
+      const [record] = DEVICES.phone;
+      mockGetWalletRecord.mockReturnValue(record);
+      const order = [];
+      let refusal = null;
+      const beforeSign = jest.fn(async () => {
+        order.push(['check', count('approval.spend')]);
+        if (refusal) throw refusal;
+      });
+      for (const method of ['signMessage', 'signTypedData', 'sendTransaction']) {
+        mockRemoteBackend[method].mockReset().mockImplementation(async () => {
+          order.push([method]);
+          return method === 'sendTransaction' ? { hash: '0x' + 'ab'.repeat(32), outcome: 'verified', job: 'j-1' } : '0xsig';
+        });
+      }
+      const typed = await mint('sign-typed-data', record.index, TYPED, { chainId: 100 });
+      await getSigner(record.index, { confirmation: { ...typed, page: AGENT }, beforeSign }).signTypedData(TYPED, { expectedHash: typed.hash });
+      const message = await mint('sign-message', record.index, 'hello');
+      await getSigner(record.index, { confirmation: { ...message, page: AGENT }, beforeSign }).signMessage('hello');
+      const send = await mint('dapp-send', record.index, SEND, { phone: true });
+      await getSigner(record.index, { confirmation: { ...send, page: AGENT }, beforeSign }).sendTransaction(TX);
+      expect(order).toEqual([['check', 0], ['signTypedData'], ['check', 0], ['signMessage'], ['check', 0], ['sendTransaction']]);
+      expect(mockRemoteBackend.signTypedData.mock.calls[0][1].job).toMatchObject({
+        authorization: { token: typed.token, handle },
+        page: AGENT,
+      });
+      expect(mockRemoteBackend.signMessage.mock.calls[0][1]).toMatchObject({
+        authorization: { token: message.token, handle },
+        page: AGENT,
+      });
+      expect(mockRemoteBackend.sendTransaction.mock.calls[0][1]).toMatchObject({
+        authorization: { token: send.token, kind: 'dapp-send', handle },
+        page: AGENT,
+        payload: { tx: send.payload.tx },
+      });
+      refusal = new Error('Signing was not confirmed: the Agent no longer holds this tab');
+      order.length = 0;
+      const refusedSend = await mint('dapp-send', record.index, SEND, { phone: true });
+      await expect(
+        getSigner(record.index, { confirmation: { ...refusedSend, page: AGENT }, beforeSign }).sendTransaction(TX)
+      ).rejects.toBe(refusal);
+      expect(order).toEqual([['check', 0]]);
+      expect(count('approval.spend')).toBe(0);
     });
   });
 

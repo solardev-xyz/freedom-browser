@@ -5,15 +5,20 @@
  * repollPending picks the row up on next boot.
  *
  * A phone payment whose transaction wasn't visible at the answer is
- * written `unverified`, with the fields it was confirmed for in the row's
- * `metadata.phoneCheck` (phone-payments.js), and is not polled for a
+ * written `unverified`, with the identity core's job id in the row's
+ * `metadata.phoneCheck` (design 0012, PHN-2), and is not polled for a
  * receipt: a receipt says the reported hash was mined, not that it is the
- * payment confirmed. Its fields are checked once the transaction is
- * visible, this run or the next (resumePhoneChecks): the same, it goes on
- * as `pending`, and the receipt poll follows; different, it is
- * `wrong-transaction`, for good; not seen within a day of the answer, or
- * under a clock set back, `unknown`. If its row can't be written, the
- * reply says `phoneCheck: 'unknown'` at once.
+ * payment confirmed. The core checks it once the transaction is visible,
+ * this run or the next, and says so with `phone.checked` for the job: the
+ * same, it goes on as `pending`, and the receipt poll follows; different,
+ * it is `wrong-transaction` (another transaction the phone sent), for good;
+ * not seen within a day of the answer, or under a clock set back,
+ * `unknown`. One whose record the core couldn't save is `unknown` at once,
+ * and a later `phone.checked` for it still counts. A `phone.lost` (the
+ * core's file of records found unreadable) ends every row still waiting
+ * as `unknown`, and so does a row older than the core's day by a margin,
+ * which no core can still report. If its row can't be written, the reply
+ * says `phoneCheck: 'unknown'` at once.
  */
 
 const log = require('../logger');
@@ -24,7 +29,6 @@ const {
   waitForTransaction,
 } = require('./transaction-service');
 const { getIntentStore } = require('./intent-store');
-const phonePayments = require('./phone-payments');
 const paymentHistory = require('../payment-history');
 const { KINDS, STATUSES } = paymentHistory;
 
@@ -165,19 +169,23 @@ async function signAndRecord(
   });
 }
 
-// A phone payment not yet checked keeps what it was confirmed for.
-function withPhoneRecord(metadata, phoneRecord) {
+// A phone payment the core hasn't verified keeps its job, for the core's
+// `phone.checked`: `unverified`, or `unknown` when the core couldn't save
+// its record.
+function withPhoneRecord(metadata, state, phoneRecord) {
   if (!phoneRecord) return metadata;
-  return { ...(metadata || {}), phoneCheck: { state: 'unverified', ...phoneRecord } };
+  return { ...(metadata || {}), phoneCheck: { state, ...phoneRecord } };
 }
 
 // One payment-history row per intent: write it, or update the row an
 // earlier reply of the same intent wrote, then poll for the receipt. A
 // phone payment not yet checked is written `unverified` and watched
-// instead (watchPhonePayment).
+// instead, for the core's `phone.checked` (phoneChecked).
 function recordSend(response, row) {
   const { phoneRecord, ...reply } = response;
   const unverified = reply.phoneCheck === 'unverified';
+  // The core couldn't save its record, and still checks it in memory.
+  const unsaved = reply.phoneCheck === 'unknown' && Boolean(phoneRecord);
   let written;
   let existing;
   try {
@@ -192,10 +200,11 @@ function recordSend(response, row) {
       written = paymentHistory.append({
         ...row,
         txHash: reply.hash,
-        ...(unverified ? { status: STATUSES.UNVERIFIED } : {}),
+        ...(unverified ? { status: STATUSES.UNVERIFIED } : unsaved ? { status: STATUSES.UNKNOWN } : {}),
         metadata: withPhoneRecord(
           withSentFields(metadataFor(row.metadata, reply), reply),
-          unverified ? phoneRecord : null
+          unverified ? 'unverified' : 'unknown',
+          unverified || unsaved ? phoneRecord : null
         ),
       });
     }
@@ -213,7 +222,9 @@ function recordSend(response, row) {
   }
 
   if (unverified) {
-    watchPhonePayment(written.id);
+    phoneDeadline(written.id, phoneRecord?.answeredAt);
+  } else if (unsaved) {
+    // Not polled: only the core's `phone.checked` can verify it.
   } else if (!existing || existing.status === STATUSES.PENDING) {
     // A row already settled by its first send's poll needs no second one.
     pollReceipt(written.id, reply.hash, row.chainId);
@@ -221,127 +232,178 @@ function recordSend(response, row) {
   return { ...reply, recorded: true, paymentId: written.id };
 }
 
-// The unverified phone payments this run watches, by row id: their next
-// recheck's timer.
-const phoneWatches = new Map();
+// The core's day for a phone payment's check, from its answer (design
+// 0012, "Unverified payments"), and the margin past it after which main
+// ends a row the core no longer reports (its record lost with no
+// `phone.lost`: removed, or never saved): `unknown`, never verified.
+const PHONE_CHECK_WINDOW_MS = 24 * 60 * 60 * 1000;
+const PHONE_DEADLINE_MARGIN_MS = 10 * 60 * 1000;
 
-// A phone check's end, by its outcome: the row's status from then on.
+// The rows this run waits on, by row id: their deadline's timer.
+const phoneDeadlines = new Map();
+
+// A phone check's end, by the core's outcome: the row's status from then on.
 const PHONE_CHECK_STATUS = Object.freeze({
   verified: STATUSES.PENDING,
   mismatch: STATUSES.WRONG_TRANSACTION,
   unknown: STATUSES.UNKNOWN,
 });
 
-/**
- * Check an unverified phone payment's row now, or after `delay` ms, and
- * keep checking it until it ends (phone-payments.js): after 5 s, then at
- * doubling intervals up to every 10 minutes, and never past a day from its
- * answer. Its age comes first, before any read. Once per row per run.
- *
- * @param {number} rowId
- * @param {number} [delay] - ms before the first check (default 5 s)
- */
-function watchPhonePayment(rowId, delay = phonePayments.FIRST_RECHECK_MS) {
-  if (phoneWatches.has(rowId)) return;
-  const schedule = (wait, previous) => {
-    const timer = setTimeout(() => {
-      checkPhonePayment(rowId)
-        .then((record) => {
-          if (!record) {
-            phoneWatches.delete(rowId);
-            return;
-          }
-          const next = phonePayments.nextRecheckIn(record, previous, Date.now());
-          schedule(next, next);
-        })
-        .catch((err) => {
-          phoneWatches.delete(rowId);
-          log.warn(`[TxRecorder] phone check failed for row ${rowId}: ${err.message}`);
-        });
-    }, wait);
-    timer.unref?.();
-    phoneWatches.set(rowId, timer);
-  };
-  schedule(delay, delay);
-}
-
-// The record of a row still unverified, or null.
-function unverifiedRecord(row) {
-  if (row?.status !== STATUSES.UNVERIFIED) return null;
-  const record = row.metadata?.phoneCheck;
-  return record && typeof record === 'object' ? record : null;
-}
-
-/**
- * One check of an unverified phone payment's row. Returns its record while
- * it still waits; null once it ended (verified, mismatch, unknown) or is no
- * longer unverified. A row whose record is unreadable ends unknown.
- */
-async function checkPhonePayment(rowId) {
-  const row = paymentHistory.getById(rowId);
-  if (row?.status !== STATUSES.UNVERIFIED) return null;
-  const record = unverifiedRecord(row);
-  const result = record
-    ? await phonePayments.recheck(row.txHash, record, row.chainId, Date.now())
-    : { state: 'unknown' };
-  if (result.state === 'unverified') {
-    if (result.error)
-      log.warn(`[TxRecorder] phone check lookup failed for row ${rowId}: ${result.error}`);
-    return record;
-  }
-  // Re-read: the lookup awaited, and the row may have been removed.
-  const current = paymentHistory.getById(rowId);
-  if (current?.status !== STATUSES.UNVERIFIED) return null;
-  const phoneCheck = {
-    ...(current.metadata?.phoneCheck || {}),
-    state: result.state,
-    checkedAt: Date.now(),
-    ...(result.state === 'mismatch' ? { code: result.code, observed: result.observed } : {}),
-  };
-  paymentHistory.update(rowId, {
-    status: PHONE_CHECK_STATUS[result.state],
-    metadata: { ...(current.metadata || {}), phoneCheck },
-  });
-  if (result.state === 'mismatch') {
-    log.warn(
-      `[TxRecorder] phone payment row ${rowId} is not the transaction confirmed (${result.code})`
-    );
-  }
-  if (result.state === 'verified') pollReceipt(rowId, current.txHash, current.chainId);
+// The job a row waits on: an unverified row's, or an unsaved one's (the
+// core still checks it in memory). Null for any other row.
+function waitingJob(row) {
+  const record = row?.metadata?.phoneCheck;
+  if (!record || typeof record.job !== 'string') return null;
+  if (row.status === STATUSES.UNVERIFIED) return record.job;
+  if (row.status === STATUSES.UNKNOWN && record.state === 'unknown' && record.durable === false) return record.job;
   return null;
 }
 
-// One page of unverified rows a start reads at a time: the history store's
-// own page cap (payment-history.js MAX_LIMIT).
+// One page of rows a scan reads at a time: the history store's own page
+// cap (payment-history.js MAX_LIMIT).
 const PHONE_PAGE = 500;
 
+// Every row of `status`, page by page. Best-effort, like every history read.
+function rowsWithStatus(status) {
+  const rows = [];
+  for (let offset = 0; ; offset += PHONE_PAGE) {
+    const page = paymentHistory.getRecent({ status, limit: PHONE_PAGE, offset });
+    rows.push(...page);
+    if (page.length < PHONE_PAGE) break;
+  }
+  return rows;
+}
+
+// The row waiting on `job`, or null.
+function rowOfJob(job) {
+  for (const status of [STATUSES.UNVERIFIED, STATUSES.UNKNOWN]) {
+    const row = rowsWithStatus(status).find((candidate) => waitingJob(candidate) === job);
+    if (row) return row;
+  }
+  return null;
+}
+
+// A row's check, ended: its status and its record's state, with what the
+// core said.
+function endPhoneCheck(row, state, extra = {}) {
+  clearTimeout(phoneDeadlines.get(row.id));
+  phoneDeadlines.delete(row.id);
+  paymentHistory.update(row.id, {
+    status: PHONE_CHECK_STATUS[state],
+    metadata: {
+      ...(row.metadata || {}),
+      phoneCheck: { ...(row.metadata?.phoneCheck || {}), state, checkedAt: Date.now(), ...extra },
+    },
+  });
+}
+
 /**
- * At a start: check every phone payment an earlier run left unverified,
- * now (its age first), then as watchPhonePayment does. It pages through
- * all of them, not just the newest page, so none is left unverified past
- * its 24 hours. The pages are read before any check runs (each check is
- * scheduled, not run inline), so a row changing state can't shift the
- * offsets. Best-effort, like every history read: returns how many it
- * watches.
+ * The core's `phone.checked { job, outcome, reason?, transaction?, rule? }`:
+ * the row waiting on the job ends. `verified` goes on as `pending`, and the
+ * receipt poll follows; `mismatch` is another transaction the phone sent,
+ * kept with its fields (`observed`), never the confirmed one; `unknown`
+ * stays unknown. `rule`: a flagged send's "Always allow", written by the
+ * core only now that its transaction showed and matched. Returns whether a
+ * row was updated.
  */
-function resumePhoneChecks() {
-  const ids = [];
+function phoneChecked(data) {
+  const { job, outcome } = data || {};
+  if (typeof job !== 'string' || !Object.hasOwn(PHONE_CHECK_STATUS, outcome)) return false;
+  if (data.rule && typeof data.rule === 'object') {
+    if (data.rule.added === true) log.info('[TxRecorder] a phone send\'s contract rule was saved once its payment verified');
+    else log.warn(`[TxRecorder] a phone send's contract rule was not saved: ${data.rule.reason || 'no reason'}`);
+  }
+  const row = rowOfJob(job);
+  if (!row) return false;
+  if (outcome === 'mismatch') {
+    endPhoneCheck(row, 'mismatch', {
+      ...(typeof data.reason === 'string' ? { code: data.reason } : {}),
+      ...(data.transaction && typeof data.transaction === 'object' ? { observed: data.transaction } : {}),
+    });
+    log.warn(`[TxRecorder] phone payment row ${row.id} is another transaction than the one confirmed`);
+    return true;
+  }
+  endPhoneCheck(row, outcome);
+  if (outcome === 'verified') pollReceipt(row.id, row.txHash, row.chainId);
+  return true;
+}
+
+/**
+ * The core's `phone.lost {}`: its file of records was unreadable, so no
+ * row still unverified will be reported. Each ends `unknown`.
+ */
+function phoneLost() {
+  let rows = [];
   try {
-    for (let offset = 0; ; offset += PHONE_PAGE) {
-      const page = paymentHistory.getRecent({
-        status: STATUSES.UNVERIFIED,
-        limit: PHONE_PAGE,
-        offset,
-      });
-      for (const row of page) ids.push(row.id);
-      if (page.length < PHONE_PAGE) break;
-    }
+    rows = rowsWithStatus(STATUSES.UNVERIFIED);
   } catch (err) {
     log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
-    if (ids.length === 0) return 0;
   }
-  for (const id of new Set(ids)) watchPhonePayment(id, 0);
-  return new Set(ids).size;
+  for (const row of rows) endPhoneCheck(row, 'unknown', { lost: true });
+  return rows.length;
+}
+
+// Ends the row `unknown` once the core's day and the margin have passed,
+// if it is still unverified then.
+function phoneDeadline(rowId, answeredAt) {
+  if (phoneDeadlines.has(rowId) || !Number.isFinite(answeredAt)) return;
+  const wait = Math.max(0, answeredAt + PHONE_CHECK_WINDOW_MS + PHONE_DEADLINE_MARGIN_MS - Date.now());
+  const timer = setTimeout(() => {
+    phoneDeadlines.delete(rowId);
+    try {
+      const row = paymentHistory.getById(rowId);
+      if (row?.status === STATUSES.UNVERIFIED) endPhoneCheck(row, 'unknown');
+    } catch (err) {
+      log.warn(`[TxRecorder] phone deadline failed for row ${rowId}: ${err.message}`);
+    }
+  }, Math.min(wait, 2 ** 31 - 1));
+  timer.unref?.();
+  phoneDeadlines.set(rowId, timer);
+}
+
+/**
+ * At a start: the phone payments an earlier run left unverified. One with
+ * the core's job waits for its `phone.checked` (the core rechecks its
+ * records at each start), up to its deadline; one an earlier build checked
+ * itself, with no job, can't be checked by the core, and ends `unknown`.
+ * Best-effort, like every history read: returns how many it waits on.
+ */
+function resumePhoneChecks() {
+  let rows;
+  try {
+    rows = rowsWithStatus(STATUSES.UNVERIFIED);
+  } catch (err) {
+    log.warn(`[TxRecorder] could not read unverified phone payments: ${err.message}`);
+    return 0;
+  }
+  let waiting = 0;
+  for (const row of rows) {
+    if (waitingJob(row)) {
+      phoneDeadline(row.id, row.metadata.phoneCheck.answeredAt);
+      waiting += 1;
+    } else {
+      endPhoneCheck(row, 'unknown');
+    }
+  }
+  return waiting;
+}
+
+/**
+ * core-process.js: the core's phone events, from its first handshake on.
+ * A restarted core rechecks its records at its start and reports them.
+ */
+let attachedCore = null;
+function attachPhoneEvents(client) {
+  if (!client || typeof client.on !== 'function' || client === attachedCore) return;
+  attachedCore = client;
+  client.on('event', (name, data) => {
+    try {
+      if (name === 'phone.checked') phoneChecked(data);
+      else if (name === 'phone.lost') phoneLost();
+    } catch (err) {
+      log.warn(`[TxRecorder] could not keep the core's ${name}: ${err.message}`);
+    }
+  });
 }
 
 const ERC20_TRANSFER = '0xa9059cbb';
@@ -477,5 +539,8 @@ module.exports = {
   replaceAndRecord,
   recordSettlement,
   resumePhoneChecks,
+  attachPhoneEvents,
+  phoneChecked,
+  phoneLost,
   KINDS,
 };

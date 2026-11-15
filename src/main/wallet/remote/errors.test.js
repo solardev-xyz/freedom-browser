@@ -1,4 +1,9 @@
-const { REMOTE_ERROR_CODES, createRemoteError, mapRemoteRpcError } = require('./errors');
+const {
+  REMOTE_ERROR_CODES,
+  createRemoteError,
+  isRemoteSendProvablyUnsent,
+  mapRemoteRpcError,
+} = require('./errors');
 
 describe('remote errors', () => {
   test('createRemoteError mints code + user-facing message from the registry', () => {
@@ -44,9 +49,55 @@ describe('remote errors', () => {
     expect(err.message).not.toMatch(/fail|QR|new code/i);
   });
 
+  test('a busy identity core says nothing went to the phone, and what to do', () => {
+    const err = createRemoteError(REMOTE_ERROR_CODES.BUSY);
+    expect(err.code).toBe('REMOTE_BUSY');
+    expect(err.message).toBe('Too many phone requests are waiting. Finish one on your phone, then try again.');
+  });
+
+  test('another transaction the phone sent is never called the one confirmed', () => {
+    const err = createRemoteError(REMOTE_ERROR_CODES.WRONG_TRANSACTION);
+    expect(err.message).toBe(
+      'Your phone sent another transaction, not the one you confirmed: its recipient, amount, data or ' +
+        "network differs. Check your phone's wallet."
+    );
+  });
+
   test('malformed RPC errors map to UNKNOWN with the registry message', () => {
     const err = mapRemoteRpcError(undefined);
     expect(err.code).toBe(REMOTE_ERROR_CODES.UNKNOWN);
     expect(err.message).toMatch(/failed/i);
+  });
+});
+
+describe('isRemoteSendProvablyUnsent', () => {
+  const failure = (code, fields) => Object.assign(createRemoteError(code), fields);
+
+  test('a failure before delivery, or an explicit refusal of the one attempt, is proof', () => {
+    expect(isRemoteSendProvablyUnsent(failure('REMOTE_BUSY', { requestDelivered: false }))).toBe(true);
+    expect(
+      isRemoteSendProvablyUnsent(
+        failure('REMOTE_USER_REJECTED', { requestDelivered: true, otherAttemptDelivered: false })
+      )
+    ).toBe(true);
+  });
+
+  test('a payment the core saw sent (phoneSent) is never proof, however its delivery reads', () => {
+    for (const code of ['REMOTE_WRONG_TRANSACTION', 'REMOTE_WRONG_ACCOUNT']) {
+      expect(isRemoteSendProvablyUnsent(failure(code, { phoneSent: true, requestDelivered: false }))).toBe(false);
+      expect(
+        isRemoteSendProvablyUnsent(
+          failure(code, { phoneSent: true, requestDelivered: true, otherAttemptDelivered: false })
+        )
+      ).toBe(false);
+    }
+  });
+
+  test('anything else fails closed', () => {
+    expect(isRemoteSendProvablyUnsent(null)).toBe(false);
+    expect(isRemoteSendProvablyUnsent(failure('REMOTE_WRONG_ACCOUNT', {}))).toBe(false);
+    expect(isRemoteSendProvablyUnsent(Object.assign(new Error('x'), { code: 'SIGNING_NOT_CONFIRMED' }))).toBe(
+      false
+    );
   });
 });

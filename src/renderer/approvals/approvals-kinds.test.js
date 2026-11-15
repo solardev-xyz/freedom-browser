@@ -451,6 +451,33 @@ describe('what each template shows and sends', () => {
     );
   });
 
+  // Design 0012, PHN-2 ("A phone payment's rule"): a phone send's "Always
+  // allow" is saved only once its payment shows as the one confirmed, and
+  // the prompt says so under the box, for a phone's send alone.
+  test('eth.send: a phone\'s "Always allow" says when it is saved; no other account\'s does', () => {
+    const NOTE =
+      'On a phone, this is saved only once the network shows the payment as the one you confirmed. ' +
+      'If Freedom restarts before then, the site asks again next time.';
+    const contract = { ...VIEWS['eth.send'].tx, data: '0xa9059cbb' };
+    const send = (type, alwaysAllow) =>
+      render('eth.send', { ...VIEWS['eth.send'], account: { ...ACCOUNT, type }, tx: contract, alwaysAllow });
+    const phone = send('remote', true);
+    const texts = phone.body.children.map((child) => child.textContent);
+    const box = texts.indexOf('Always allow this site to call this function without asking');
+    expect(box).toBeGreaterThan(-1);
+    // Right after the box.
+    expect(texts[box + 1]).toBe(NOTE);
+    expect(texts.filter((text) => text === NOTE)).toHaveLength(1);
+    expect(phone.form.choices()).toEqual({ alwaysAllow: false, feeAcknowledged: false });
+    // Not offered, or not a phone: no note.
+    expect(send('remote', false).body.textContent).not.toContain(NOTE);
+    for (const type of ['mnemonic', 'ledger']) {
+      const other = send(type, true);
+      expect(inputs(other.body, 'checkbox')).toHaveLength(1);
+      expect(other.body.textContent).not.toContain(NOTE);
+    }
+  });
+
   test('vault.unlock: the password, never empty; a wrong one said so', () => {
     const { body, form, approve } = render('vault.unlock', { ...VIEWS['vault.unlock'], failed: true });
     expect(approve).toBe('Unlock');

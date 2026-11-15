@@ -139,8 +139,10 @@ export const RESULT_TITLES = Object.freeze({
  * reports its hash; the wallet compares that transaction with the one
  * confirmed once the network shows it. Until then it was sent from the
  * phone but isn't checked, and is never shown as confirmed. One the network
- * shows different is the wrong transaction; one it never shows within a
- * day, or that the wallet couldn't keep to check, can't be checked. The
+ * shows different is another transaction the phone sent, never the one
+ * confirmed; one it never shows within a day, or that the wallet couldn't
+ * keep to check, can't be checked. The identity core does the checking
+ * (design 0012, PHN-2). The
  * payments page keeps a copy of the labels and notes, held equal by
  * pages/payments.test.js.
  */
@@ -153,10 +155,10 @@ export const PHONE_CHECK = Object.freeze({
       'you confirmed once the network shows it.',
   }),
   mismatch: Object.freeze({
-    label: 'Wrong transaction',
+    label: 'Another transaction',
     note:
-      "Your phone reported a transaction that isn't the one you confirmed. Check your " +
-      "phone's wallet.",
+      "Your phone sent another transaction, not the payment you confirmed: its recipient, " +
+      "amount, data or network differs. Check your phone's wallet.",
   }),
   unknown: Object.freeze({
     title: "Sent from your phone, couldn't check it",

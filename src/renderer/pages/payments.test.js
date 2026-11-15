@@ -307,6 +307,37 @@ describe("a phone payment's check", () => {
     expect(note.textContent).toBe(PHONE_CHECK.mismatch.note);
   });
 
+  // Design 0012, PHN-2: the identity core decides, and a mismatch is
+  // another transaction the phone sent, never the payment confirmed.
+  test('a mismatch reads as another transaction the phone sent', async () => {
+    expect(PHONE_CHECK.mismatch.label).toBe('Another transaction');
+    expect(PHONE_CHECK.mismatch.note).toBe(
+      'Your phone sent another transaction, not the payment you confirmed: its recipient, ' +
+        "amount, data or network differs. Check your phone's wallet."
+    );
+    const { pill, note } = await statusOf(phonePayment('mismatch', 'wrong-transaction'));
+    expect(pill.textContent).toBe('Another transaction');
+    expect(note.textContent).toBe(PHONE_CHECK.mismatch.note);
+  });
+
+  test("a record with the core's job, saved or not, reads by its state", async () => {
+    const unsaved = createPayment({
+      kind: 'wallet-send',
+      origin: null,
+      status: 'unknown',
+      metadata: { phoneCheck: { state: 'unknown', job: 'core-job-1', answeredAt: 1, durable: false } },
+    });
+    const { pill } = await statusOf(unsaved);
+    expect(pill.textContent).toBe(PHONE_CHECK.unknown.label);
+    const waiting = createPayment({
+      kind: 'wallet-send',
+      origin: null,
+      status: 'unverified',
+      metadata: { phoneCheck: { state: 'unverified', job: 'core-job-2', answeredAt: 1 } },
+    });
+    expect((await statusOf(waiting)).pill.textContent).toBe(PHONE_CHECK.unverified.label);
+  });
+
   test('a verified one reads as its stored status does', async () => {
     const { pill, note } = await statusOf(phonePayment('verified', 'confirmed'));
     expect(pill.textContent).toBe('Confirmed');

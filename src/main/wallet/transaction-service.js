@@ -9,13 +9,8 @@
 const { parseUnits, formatUnits, Interface, Transaction, keccak256 } = require('ethers');
 const chainData = require('../networks/chain-data');
 const { getTxExplorerUrl } = require('./chains');
-const { createRemoteError, isRemoteSendProvablyUnsent } = require('./remote/errors');
+const { isRemoteSendProvablyUnsent } = require('./remote/errors');
 const { closedText, getIntentStore } = require('./intent-store');
-const {
-  boundFieldsOf,
-  differenceOf,
-  lookUp: lookUpPhoneTransaction,
-} = require('./phone-payments');
 const { reserve, withAccountLock, withIntentKeyLock } = require('./nonce-reservations');
 // Every send is built one way, which a confirmation binds (signing-confirmation.js).
 const { buildTransaction } = require('./signing-utils');
@@ -131,46 +126,6 @@ function formatAmount(amount, decimals = 18) {
   return formatUnits(amount, decimals);
 }
 
-
-/**
- * Check of a device-broadcast tx at the answer: is it the one the job asked
- * for? A compromised responder (or the chrome renderer relaying the job)
- * could report the hash of someone else's transaction, or of another
- * transaction from this account. Every field the job bound is compared
- * (phone-payments.js): the sender (REMOTE_WRONG_ACCOUNT), then the
- * recipient, value, calldata and chain (REMOTE_WRONG_TRANSACTION); a
- * transaction with no chain id differs. The phone picks its own nonce, gas
- * and fees, so those aren't.
- *
- * The tx usually reaches our RPC a beat after the device's, so "not
- * visible yet", or a failed lookup, is no error: the payment is
- * `unverified`, and its bound fields go back to be recorded and checked
- * once it is visible (tx-recorder.js). Only a visible match is `verified`.
- *
- * @param {string} hash - The hash the device reported
- * @param {{from: string, to: string, value?: *, data?: string, chainId: number}} job
- * @param {number} answeredAt - When the device answered (wall clock, ms)
- * @returns {Promise<{phoneCheck: 'verified'} | {phoneCheck: 'unverified', phoneRecord: object}>}
- */
-async function verifyDeviceBroadcast(hash, job, answeredAt) {
-  const bound = boundFieldsOf(job);
-  let tx;
-  try {
-    tx = await lookUpPhoneTransaction(hash, job.chainId);
-  } catch (err) {
-    console.warn('[TransactionService] Device-broadcast lookup failed:', err.message);
-  }
-  if (!tx) {
-    if (tx === null) console.warn('[TransactionService] Device-broadcast tx not visible on our RPC yet:', hash);
-    return { phoneCheck: 'unverified', phoneRecord: { ...bound, answeredAt } };
-  }
-  const difference = differenceOf(tx, bound);
-  if (difference) {
-    console.warn('[TransactionService] Device-broadcast tx is not the one confirmed:', hash);
-    throw createRemoteError(difference);
-  }
-  return { phoneCheck: 'verified' };
-}
 
 /**
  * Fill in fee parameters the caller didn't supply.
@@ -314,28 +269,38 @@ function redactedSendError(broadcastAttempted) {
  * REMOTE_OUTCOME_UNKNOWN (remote/bridge.js), passed through as it is: the
  * payment may have been sent, and nothing here sends it again.
  *
- * The result carries `phoneCheck`: `verified` when the reported transaction
- * was visible at the answer and is the one asked for; `unverified`, with
- * `phoneRecord` (the bound fields and `answeredAt`), when it wasn't visible
- * yet or the lookup failed. tx-recorder.js keeps that record in the
- * payment's history row and checks it once the transaction is visible.
+ * The identity core checks the reported transaction (design 0012, PHN-2):
+ * the result carries its `phoneCheck`, `verified` when the transaction was
+ * visible at the answer and is the one asked for; `unverified`, with
+ * `phoneRecord` (the core's job id and `answeredAt`), when it wasn't
+ * visible yet or the read failed, and the core saved its record; `unknown`
+ * when that save failed (`durable: false`, the core still checks it in
+ * memory). tx-recorder.js keeps the job in the payment's history row, for
+ * the core's `phone.checked`. A visible transaction that isn't the one
+ * asked for is refused (REMOTE_WRONG_TRANSACTION, REMOTE_WRONG_ACCOUNT),
+ * never recorded as the payment.
  */
-async function sendThroughDevice({ to, value, data, chainId, redactErrors = false }, signer) {
+async function sendThroughDevice(
+  { to, value, data, chainId, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, redactErrors = false },
+  signer
+) {
   let broadcastAttempted = false;
   try {
     const from = await signer.getAddress();
     broadcastAttempted = true;
-    let hash;
+    let sent;
     try {
-      hash = await signer.sendTransaction({ to, value, data, chainId });
+      sent = await signer.sendTransaction({ to, value, data, chainId, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice });
     } catch (err) {
       // A phone rejection, or a failure before the request ever reached
       // the phone, broadcast nothing; only the rest stays uncertain.
       if (isRemoteSendProvablyUnsent(err)) broadcastAttempted = false;
       throw err;
     }
-    const check = await verifyDeviceBroadcast(hash, { from, to, value, data, chainId }, Date.now());
-    console.log('[TransactionService] Transaction broadcast by signer:', hash, check.phoneCheck);
+    const answeredAt = Date.now();
+    const { hash, outcome, job } = sent;
+    const phoneCheck = outcome === 'verified' || outcome === 'unverified' ? outcome : 'unknown';
+    console.log('[TransactionService] Transaction broadcast by signer:', hash, phoneCheck);
     return {
       hash,
       from,
@@ -343,7 +308,10 @@ async function sendThroughDevice({ to, value, data, chainId, redactErrors = fals
       value,
       chainId,
       explorerUrl: getTxExplorerUrl(chainId, hash),
-      ...check,
+      phoneCheck,
+      ...(phoneCheck !== 'verified' && typeof job === 'string'
+        ? { phoneRecord: { job, answeredAt, ...(sent.durable === false ? { durable: false } : {}) } }
+        : {}),
     };
   } catch (err) {
     logFailure('Transaction failed', err, redactErrors);

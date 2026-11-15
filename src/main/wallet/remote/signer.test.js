@@ -1,11 +1,11 @@
 /**
  * The fake phone answers with a real (well-known test) key, so every
- * assertion exercises actual cryptographic round-trips: the JSON-RPC
- * request shapes the backend publishes, and the recover-and-compare
- * verification of what comes back.
+ * assertion exercises actual cryptographic round-trips: the identity core
+ * job each method opens (./bridge.js `requestPhoneJob`, mocked here), and
+ * the recover-and-compare verification of what comes back.
  */
 
-const { Wallet, verifyMessage } = require('ethers');
+const { Wallet, TypedDataEncoder, recoverAddress, verifyMessage } = require('ethers');
 
 // Anvil/Hardhat-default test keys — well-known, never funded on mainnet.
 const TEST_PRIVATE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
@@ -20,9 +20,9 @@ const RECORD = {
   type: 'remote',
 };
 
-const mockRequestRemoteSignature = jest.fn();
+const mockRequestPhoneJob = jest.fn();
 jest.mock('./bridge', () => ({
-  requestRemoteSignature: (...args) => mockRequestRemoteSignature(...args),
+  requestPhoneJob: (...args) => mockRequestPhoneJob(...args),
 }));
 
 // Chain registry (pulls in electron via the network registry) and RPC
@@ -54,13 +54,13 @@ const { createRemoteBackend } = require('./signer');
 const backend = createRemoteBackend(RECORD);
 
 beforeEach(() => {
-  mockRequestRemoteSignature.mockReset();
+  mockRequestPhoneJob.mockReset();
 });
 
 describe('getAddress', () => {
   test('serves the stored address without a phone round-trip', async () => {
     await expect(backend.getAddress()).resolves.toBe(phoneWallet.address);
-    expect(mockRequestRemoteSignature).not.toHaveBeenCalled();
+    expect(mockRequestPhoneJob).not.toHaveBeenCalled();
   });
 });
 
@@ -69,47 +69,107 @@ describe('signTransaction', () => {
     await expect(backend.signTransaction({ to: '0x1', chainId: 1 })).rejects.toMatchObject({
       code: 'REMOTE_UNSUPPORTED',
     });
-    expect(mockRequestRemoteSignature).not.toHaveBeenCalled();
+    expect(mockRequestPhoneJob).not.toHaveBeenCalled();
   });
 });
 
 describe('signMessage', () => {
-  test('publishes personal_sign over the message bytes and returns a verified signature', async () => {
+  test('opens a core message job over the message bytes and returns a verified signature', async () => {
     const message = Buffer.from('hello freedom', 'utf8');
-    mockRequestRemoteSignature.mockImplementation(async ({ method, params }) => {
-      expect(method).toBe('personal_sign');
-      expect(params).toEqual(['0x' + message.toString('hex'), phoneWallet.address]);
-      return phoneWallet.signMessage(message);
-    });
+    mockRequestPhoneJob.mockImplementation(async () => phoneWallet.signMessage(message));
 
     const signature = await backend.signMessage(message);
-    expect(mockRequestRemoteSignature).toHaveBeenCalledWith(
-      expect.objectContaining({ walletIndex: 4, address: phoneWallet.address }),
-    );
+    // No job from the factory: main's own, with no authorization and no page.
+    expect(mockRequestPhoneJob).toHaveBeenCalledWith({
+      walletIndex: 4,
+      address: phoneWallet.address,
+      method: 'message',
+      payload: { message: '0x' + message.toString('hex') },
+      page: null,
+    });
     // Round-trip: the returned signature really recovers to the account.
     expect(verifyMessage(message, signature)).toBe(phoneWallet.address);
   });
 
   test('utf8 string messages sign over their bytes', async () => {
-    mockRequestRemoteSignature.mockImplementation(async ({ params }) => {
-      expect(params[0]).toBe('0x' + Buffer.from('plain text', 'utf8').toString('hex'));
+    mockRequestPhoneJob.mockImplementation(async ({ payload }) => {
+      expect(payload).toEqual({ message: '0x' + Buffer.from('plain text', 'utf8').toString('hex') });
       return phoneWallet.signMessage('plain text');
     });
     await expect(backend.signMessage('plain text')).resolves.toMatch(/^0x/);
   });
 
+  test("the payload a token bound goes to the core as it is, never rebuilt from the bytes", async () => {
+    const bound = { message: 'hello' };
+    mockRequestPhoneJob.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    await backend.signMessage('hello', { payload: bound });
+    expect(mockRequestPhoneJob.mock.calls[0][0].payload).toBe(bound);
+  });
+
   test('rejects a signature from a different account with REMOTE_WRONG_ACCOUNT', async () => {
-    mockRequestRemoteSignature.mockImplementation(async () => strangerWallet.signMessage('hello'));
+    mockRequestPhoneJob.mockImplementation(async () => strangerWallet.signMessage('hello'));
     await expect(backend.signMessage('hello')).rejects.toMatchObject({
       code: 'REMOTE_WRONG_ACCOUNT',
     });
   });
 
   test('rejects malformed responses with REMOTE_BAD_RESPONSE', async () => {
-    mockRequestRemoteSignature.mockResolvedValue('not-a-signature');
+    mockRequestPhoneJob.mockResolvedValue('not-a-signature');
     await expect(backend.signMessage('hello')).rejects.toMatchObject({
       code: 'REMOTE_BAD_RESPONSE',
     });
+  });
+});
+
+describe("the factory's job: what the core checks the request under", () => {
+  const PAGE = { origin: 'https://app.example', frame: 1 };
+
+  test.each([
+    ['a confirmation token', { token: 't-1', kind: 'message', handle: 'h-1' }],
+    ['a safe-view token', { safe: 's-1' }],
+    ['a standing rule', { standing: 'r-1' }],
+  ])('%s and the page go to the core as `authorization` and `page`', async (_name, authorization) => {
+    mockRequestPhoneJob.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    await backend.signMessage('hello', { authorization, page: PAGE, payload: { message: 'hello' } });
+    expect(mockRequestPhoneJob).toHaveBeenCalledWith({
+      walletIndex: 4,
+      address: phoneWallet.address,
+      method: 'message',
+      payload: { message: 'hello' },
+      authorization,
+      page: PAGE,
+    });
+  });
+
+  test("the caller's last check goes to the bridge as `beforeRelay`, and the signer never runs it", async () => {
+    const beforeSign = jest.fn(async () => {});
+    mockRequestPhoneJob.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    await backend.signMessage('hello', { beforeSign });
+    expect(mockRequestPhoneJob.mock.calls[0][0].beforeRelay).toBe(beforeSign);
+    expect(beforeSign).not.toHaveBeenCalled();
+  });
+
+  test('the same for typed data and a send', async () => {
+    const beforeSign = jest.fn(async () => {});
+    const job = { authorization: { standing: 'r-1' }, page: PAGE, beforeSign };
+    mockRequestPhoneJob.mockImplementation(async () =>
+      phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
+    await backend.signTypedData(TYPED_DATA, { digest: DIGEST, job: { ...job, payload: {} } });
+    expect(mockRequestPhoneJob.mock.calls[0][0]).toMatchObject({
+      authorization: { standing: 'r-1' },
+      page: PAGE,
+      beforeRelay: beforeSign,
+    });
+
+    mockRequestPhoneJob.mockReset();
+    mockRequestPhoneJob.mockResolvedValue({ hash: '0x' + 'ab'.repeat(32), outcome: 'verified', job: 'j-1' });
+    await backend.sendTransaction({ chainId: 100 }, { ...job, payload: { tx: {} } });
+    expect(mockRequestPhoneJob.mock.calls[0][0]).toMatchObject({
+      authorization: { standing: 'r-1' },
+      page: PAGE,
+      beforeRelay: beforeSign,
+    });
+    expect(beforeSign).not.toHaveBeenCalled();
   });
 });
 
@@ -130,39 +190,50 @@ const TYPED_DATA = {
 };
 
 const strippedTypes = { Payment: TYPED_DATA.types.Payment };
+// The hash the user confirmed: what the phone's signature must recover over.
+const DIGEST = TypedDataEncoder.hash(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message);
 
 describe('signTypedData', () => {
-  test('publishes eth_signTypedData_v4 with the full wire payload and verifies the signature', async () => {
-    mockRequestRemoteSignature.mockImplementation(async ({ method, params }) => {
-      expect(method).toBe('eth_signTypedData_v4');
-      expect(params[0]).toBe(phoneWallet.address);
-      const payload = JSON.parse(params[1]);
-      // Wire shape: EIP712Domain restored into types, explicit primaryType.
-      expect(payload.primaryType).toBe('Payment');
-      expect(payload.types.EIP712Domain).toBeDefined();
-      // getPayload normalizes quantities to hex on the wire.
-      expect(payload.domain).toEqual({ ...TYPED_DATA.domain, chainId: '0x64' });
-      return phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message);
-    });
+  test("opens a core typed-data job with the confirmed hash as `expected_hash`, and recovers over it", async () => {
+    const bound = { typed_data: { primary_type: 'Payment' }, primary_type: 'Payment', chain_id: 100 };
+    mockRequestPhoneJob.mockImplementation(async () =>
+      phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
 
-    const signature = await backend.signTypedData(TYPED_DATA);
+    const signature = await backend.signTypedData(TYPED_DATA, { digest: DIGEST, job: { payload: bound } });
     expect(signature).toMatch(/^0x[0-9a-f]{130}$/i);
+    expect(mockRequestPhoneJob).toHaveBeenCalledWith({
+      walletIndex: 4,
+      address: phoneWallet.address,
+      method: 'typed_data',
+      payload: { ...bound, expected_hash: DIGEST },
+      page: null,
+    });
+    expect(recoverAddress(DIGEST, signature)).toBe(phoneWallet.address);
   });
 
-  test('accepts ethers-style payloads without EIP712Domain in types', async () => {
-    mockRequestRemoteSignature.mockImplementation(async ({ params }) => {
-      expect(JSON.parse(params[1]).types.EIP712Domain).toBeDefined();
-      return phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message);
+  test('a signature over another hash than the one confirmed is from no account of ours', async () => {
+    const other = { ...TYPED_DATA.message, amount: '1001' };
+    mockRequestPhoneJob.mockImplementation(async () =>
+      phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, other));
+    await expect(backend.signTypedData(TYPED_DATA, { digest: DIGEST })).rejects.toMatchObject({
+      code: 'REMOTE_WRONG_ACCOUNT',
     });
-    await expect(
-      backend.signTypedData({ domain: TYPED_DATA.domain, types: strippedTypes, message: TYPED_DATA.message }),
-    ).resolves.toMatch(/^0x/);
+  });
+
+  test('with no hash to recover over, the phone is never asked', async () => {
+    await expect(backend.signTypedData(TYPED_DATA)).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED',
+    });
+    await expect(backend.signTypedData(TYPED_DATA, { digest: null })).rejects.toMatchObject({
+      code: 'REMOTE_UNSUPPORTED',
+    });
+    expect(mockRequestPhoneJob).not.toHaveBeenCalled();
   });
 
   test('rejects a typed-data signature from a different account', async () => {
-    mockRequestRemoteSignature.mockImplementation(async () =>
+    mockRequestPhoneJob.mockImplementation(async () =>
       strangerWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
-    await expect(backend.signTypedData(TYPED_DATA)).rejects.toMatchObject({
+    await expect(backend.signTypedData(TYPED_DATA, { digest: DIGEST })).rejects.toMatchObject({
       code: 'REMOTE_WRONG_ACCOUNT',
     });
   });
@@ -171,64 +242,76 @@ describe('signTypedData', () => {
 describe('sendTransaction', () => {
   const TX = { to: strangerWallet.address, value: '1500000000000000', data: '0xabcdef', chainId: 100 };
   const HASH = '0x' + 'ab'.repeat(32);
+  const BOUND = { tx: { to: TX.to, value: '0x5543df729c000', data: '0xabcdef', chain_id: 100 } };
 
-  test('publishes eth_sendTransaction with hex quantities and returns the phone-reported hash', async () => {
-    mockRequestRemoteSignature.mockImplementation(async ({ method, params, chain }) => {
-      expect(method).toBe('eth_sendTransaction');
-      expect(params).toEqual([
-        {
-          from: phoneWallet.address,
-          to: TX.to,
-          value: '0x5543df729c000',
-          chainId: '0x64',
-          data: '0xabcdef',
-        },
-      ]);
+  test("opens a core transaction job with the bound payload, and returns the core's reply as it is", async () => {
+    const reply = { hash: HASH, outcome: 'unverified', job: 'j-7', durable: false };
+    mockRequestPhoneJob.mockResolvedValue(reply);
+
+    await expect(backend.sendTransaction(TX, { payload: BOUND })).resolves.toBe(reply);
+    expect(mockRequestPhoneJob).toHaveBeenCalledWith({
+      walletIndex: 4,
+      address: phoneWallet.address,
+      method: 'transaction',
+      payload: BOUND,
+      page: null,
       // EIP-3085 descriptor for the pre-flight chain switch: public
       // https endpoints only — neither the localhost RPC nor the keyed
       // provider's URL may leak.
-      expect(chain).toEqual({
+      chain: {
         chainId: '0x64',
         chainName: 'Gnosis Chain',
         nativeCurrency: { name: 'xDAI', symbol: 'xDAI', decimals: 18 },
         blockExplorerUrls: ['https://gnosisscan.io'],
         rpcUrls: ['https://rpc.gnosischain.com'],
-      });
-      return HASH;
+      },
     });
+  });
 
-    await expect(backend.sendTransaction(TX)).resolves.toBe(HASH);
+  test.each([
+    [{ hash: HASH, outcome: 'verified', job: 'j-1', rule: { added: true } }],
+    [{ hash: HASH, outcome: 'unknown', job: 'j-2', durable: false }],
+  ])('the core\'s judgement %p comes back untouched', async (reply) => {
+    mockRequestPhoneJob.mockResolvedValue(reply);
+    await expect(backend.sendTransaction(TX, { payload: BOUND })).resolves.toEqual(reply);
   });
 
   test('unknown chains still ship a minimal descriptor (chainId only)', async () => {
-    mockRequestRemoteSignature.mockImplementation(async ({ chain }) => {
+    mockRequestPhoneJob.mockImplementation(async ({ chain }) => {
       expect(chain).toEqual({ chainId: '0x539' });
-      return HASH;
+      return { hash: HASH, outcome: 'verified', job: 'j-1' };
     });
-    await expect(backend.sendTransaction({ to: TX.to, chainId: 1337 })).resolves.toBe(HASH);
+    await expect(backend.sendTransaction({ to: TX.to, chainId: 1337 })).resolves.toMatchObject({
+      hash: HASH,
+    });
   });
 
-  test('omits value/data defaults', async () => {
-    mockRequestRemoteSignature.mockImplementation(async ({ params }) => {
-      expect(params[0].value).toBe('0x0');
-      expect(params[0].data).toBeUndefined();
-      return HASH;
+  // The phone answered, so it may have sent the payment: a reply with no
+  // hash leaves the outcome unknown, not failed.
+  test.each([
+    ['not-a-hash'],
+    [null],
+    [undefined],
+    [HASH],
+    [{ hash: 'not-a-hash', outcome: 'verified' }],
+    [{ hash: '0x' + 'ab'.repeat(31), outcome: 'verified' }],
+    [{ outcome: 'unknown' }],
+  ])('an unreadable reply (%p) is an unknown outcome', async (answer) => {
+    mockRequestPhoneJob.mockResolvedValue(answer);
+    await expect(backend.sendTransaction(TX, { payload: BOUND })).rejects.toMatchObject({
+      code: 'REMOTE_OUTCOME_UNKNOWN',
+      message: expect.stringMatching(/couldn't be read.*unknown whether this payment was sent/),
     });
-    await expect(backend.sendTransaction({ to: TX.to, chainId: 100 })).resolves.toBe(HASH);
   });
 
-  // The phone answered, so it may have sent the payment: an answer that is
-  // no hash leaves the outcome unknown, not failed.
-  test.each([['not-a-hash'], [null], [undefined], [{ hash: HASH }], ['0x' + 'ab'.repeat(31)]])(
-    'an unreadable answer (%p) is an unknown outcome',
-    async (answer) => {
-      mockRequestRemoteSignature.mockResolvedValue(answer);
-      await expect(backend.sendTransaction(TX)).rejects.toMatchObject({
-        code: 'REMOTE_OUTCOME_UNKNOWN',
-        message: expect.stringMatching(/couldn't be read.*unknown whether this payment was sent/),
-      });
-    }
-  );
+  test("the core's refusal passes through as it is", async () => {
+    const refused = Object.assign(new Error('another transaction'), {
+      code: 'REMOTE_WRONG_TRANSACTION',
+      phoneSent: true,
+    });
+    mockRequestPhoneJob.mockRejectedValue(refused);
+    await expect(backend.sendTransaction(TX, { payload: BOUND })).rejects.toBe(refused);
+  });
 });
 
 describe("what the phone's answer shows about the record (#1078)", () => {
@@ -240,41 +323,49 @@ describe("what the phone's answer shows about the record (#1078)", () => {
   });
 
   test('a signature as the account, message or typed data, reports a match', async () => {
-    mockRequestRemoteSignature.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    mockRequestPhoneJob.mockImplementation(async () => phoneWallet.signMessage('hello'));
     await reporting.signMessage('hello');
     expect(onAddressCheck).toHaveBeenLastCalledWith(true);
 
-    mockRequestRemoteSignature.mockImplementation(async () =>
+    mockRequestPhoneJob.mockImplementation(async () =>
       phoneWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
-    await reporting.signTypedData(TYPED_DATA);
+    await reporting.signTypedData(TYPED_DATA, { digest: DIGEST });
     expect(onAddressCheck).toHaveBeenLastCalledWith(true);
     expect(onAddressCheck).toHaveBeenCalledTimes(2);
   });
 
   test('a signature from another account reports a mismatch, and is refused', async () => {
-    mockRequestRemoteSignature.mockImplementation(async () => strangerWallet.signMessage('hello'));
+    mockRequestPhoneJob.mockImplementation(async () => strangerWallet.signMessage('hello'));
     await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_WRONG_ACCOUNT' });
     expect(onAddressCheck).toHaveBeenCalledWith(false);
 
     onAddressCheck.mockReset();
-    mockRequestRemoteSignature.mockImplementation(async () =>
+    mockRequestPhoneJob.mockImplementation(async () =>
       strangerWallet.signTypedData(TYPED_DATA.domain, strippedTypes, TYPED_DATA.message));
-    await expect(reporting.signTypedData(TYPED_DATA)).rejects.toMatchObject({ code: 'REMOTE_WRONG_ACCOUNT' });
+    await expect(reporting.signTypedData(TYPED_DATA, { digest: DIGEST })).rejects.toMatchObject({
+      code: 'REMOTE_WRONG_ACCOUNT',
+    });
     expect(onAddressCheck).toHaveBeenCalledWith(false);
   });
 
-  test("the phone's own refusal of the account (EIP-1193 4100) reports a mismatch", async () => {
-    mockRequestRemoteSignature.mockRejectedValue(
+  test("the phone's own refusal of the account (EIP-1193 4100), or the core's, reports a mismatch", async () => {
+    mockRequestPhoneJob.mockRejectedValue(
       Object.assign(new Error('Unauthorized'), { code: 'REMOTE_WRONG_ACCOUNT' })
     );
     await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_WRONG_ACCOUNT' });
     expect(onAddressCheck).toHaveBeenCalledWith(false);
+
+    onAddressCheck.mockReset();
+    await expect(reporting.signTypedData(TYPED_DATA, { digest: DIGEST })).rejects.toMatchObject({
+      code: 'REMOTE_WRONG_ACCOUNT',
+    });
+    expect(onAddressCheck).toHaveBeenCalledWith(false);
   });
 
   test('no answer, or a malformed one, reports nothing', async () => {
-    mockRequestRemoteSignature.mockRejectedValue(Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' }));
+    mockRequestPhoneJob.mockRejectedValue(Object.assign(new Error('timeout'), { code: 'REMOTE_TIMEOUT' }));
     await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_TIMEOUT' });
-    mockRequestRemoteSignature.mockResolvedValue('not-a-signature');
+    mockRequestPhoneJob.mockResolvedValue('not-a-signature');
     await expect(reporting.signMessage('hello')).rejects.toMatchObject({ code: 'REMOTE_BAD_RESPONSE' });
     expect(onAddressCheck).not.toHaveBeenCalled();
   });
@@ -284,7 +375,7 @@ describe("what the phone's answer shows about the record (#1078)", () => {
       throw new Error('disk full');
     });
     jest.spyOn(console, 'warn').mockImplementation(() => {});
-    mockRequestRemoteSignature.mockImplementation(async () => phoneWallet.signMessage('hello'));
+    mockRequestPhoneJob.mockImplementation(async () => phoneWallet.signMessage('hello'));
     await expect(reporting.signMessage('hello')).resolves.toMatch(/^0x/);
     console.warn.mockRestore();
   });

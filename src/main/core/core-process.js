@@ -91,6 +91,9 @@ async function startCore() {
   // The dApp grants, which the core writes (design 0012, APB-2): main's
   // copy read at each handshake, and again for each change the core sends.
   require('../wallet/dapp-permissions').attachCore(client);
+  // A phone payment's later check (design 0012, PHN-2): the core's
+  // `phone.checked` and `phone.lost`, which it sends from its start on.
+  require('../wallet/tx-recorder').attachPhoneEvents(client);
   // `shell.keystore` (design 0013, PRF-2): the core's key-store calls, each
   // run in the one-shot helper. Only where the helper has a key store
   // (macOS); elsewhere the core asks nothing.

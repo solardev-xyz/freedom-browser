@@ -3126,6 +3126,13 @@
   flex-shrink: 0;
 }
 
+/* A phone send's "Always allow": saved only once its payment is checked. */
+.auto-approve-note {
+  margin: 6px 0 0 24px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .swarm-connect-actions {
   display: flex;
   gap: 12px;

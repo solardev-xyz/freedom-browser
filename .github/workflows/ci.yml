@@ -983,6 +983,19 @@ jobs:
         env:
           FREEDOM_CORED_APPROVALS_TEST: '1'
 
+      # freedom-core design 0012, PHN-2: a phone's signatures and payments as
+      # the core's jobs, through main's bridge and the phone's backend, with
+      # a fake chrome and a local JSON-RPC node. bridge.test.js's and
+      # signer.test.js's cases against the binary: an answer from another
+      # webContents refused by the core as well as the bridge; a payment
+      # verified, refused as another transaction, or unverified until the
+      # core's phone.checked, which the payment history then shows.
+      - name: Phone jobs (real freedom-cored)
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npx jest src/main/wallet/remote/phone-jobs.integration.test.js
+        env:
+          FREEDOM_CORED_APPROVALS_TEST: '1'
+
       # freedom-core design 0012, APB-3: the Swarm and Radicle permission
       # files written by the core, and a page's SOC under `page`.
       - name: Swarm and Radicle grant files (real freedom-cored)
