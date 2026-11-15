@@ -56,10 +56,27 @@
  *     word. `{ standing }` answers only a page, and never a Safe's
  *     signature (`no_rule`), and `approval.check` never covers a Safe's
  *     request but a Safe account's.
+ *   - x402's store is the core's (X402-1, cored 0.18.0; X402-2: `grant_moved`
+ *     names `x402`): `approval.grants` reads an origin's caps as main's
+ *     mirror takes them, `approval.revoke` drops one (`{ cap: { chain_id,
+ *     asset } }`, any case) or all (`"grant"`) under the chrome or main;
+ *     `x402.authorize` (main only) pays with a token, spent against exactly
+ *     the tab, detection, URL, entry, account and grant it binds (the grant
+ *     written after the signature, then a covering cap charged), or under
+ *     `{ cap: { agent, attributable } }` the first entry a live cap covers,
+ *     charged before the signature (`agent` is `custody`, not attributable
+ *     `no_rule`, none covering `cap`; a locked vault charges nothing), and
+ *     replies `{ payload, reservation, accept_index, charged, grant? }`;
+ *     `x402.settle` gives a reservation's charge back (`withheld`) only to
+ *     the cap generation it was taken from, or keeps it (`sent`), once
+ *     (an unknown reservation is `invalid_argument`). `seedCap`, `cap`,
+ *     `setX402Locked`, `setX402Signer` and `openReservations` drive it.
  * Every call is recorded in `calls` as `{ method, params, page }`.
  */
 const crypto = require('crypto');
 const { TypedDataEncoder } = require('ethers');
+const { normalizeOrigin } = require('../../src/shared/origin-utils');
+const { VAULT_LOCKED_MESSAGE } = require('../../src/main/wallet/vault-errors');
 
 const PAGE_KINDS = new Set(['dapp-send', 'sign-message', 'sign-typed-data', 'safe-message']);
 const MAX_OUTSTANDING = 32;
@@ -335,6 +352,172 @@ function simulatedApprovals() {
     return entry;
   }
 
+  // x402's caps (X402-1): origin -> [{ chainId, asset (lowercase), capAmount,
+  // spentAmount, createdAt, expiresAt, generation }], and the reservations
+  // of their charges: id -> { origin, chainId, asset, amount, generation }.
+  const x402Caps = new Map();
+  const reservations = new Map();
+  let capGenerations = 0;
+  let x402Locked = false;
+  // `(params, accept) => payload`, or null for the default authorization.
+  let x402Signer = null;
+  const nowSeconds = () => Math.floor(wallNow() / 1000);
+  const capRecord = (origin, cap) => ({
+    origin,
+    chainId: cap.chainId,
+    asset: cap.asset,
+    capAmount: cap.capAmount,
+    spentAmount: cap.spentAmount,
+    createdAt: cap.createdAt,
+    expiresAt: cap.expiresAt,
+  });
+  // The cap key the core computes from a paid URL: its origin.
+  function capKeyOf(url) {
+    try {
+      const parsed = new URL(url);
+      return normalizeOrigin(parsed.origin === 'null' ? url : parsed.origin) || null;
+    } catch {
+      return null;
+    }
+  }
+  function tupleOf(accept) {
+    const match = typeof accept?.network === 'string' ? /^eip155:(\d+)$/.exec(accept.network) : null;
+    if (!match || typeof accept.amount !== 'string' || !/^\d+$/.test(accept.amount) || typeof accept.asset !== 'string') {
+      return null;
+    }
+    return { chainId: Number(match[1]), asset: accept.asset.toLowerCase(), amount: accept.amount };
+  }
+  function findCap(origin, chainId, asset) {
+    return (x402Caps.get(origin) || []).find((cap) => cap.chainId === chainId && cap.asset === String(asset).toLowerCase());
+  }
+  function covering(origin, accept) {
+    const tuple = tupleOf(accept);
+    const cap = tuple ? findCap(origin, tuple.chainId, tuple.asset) : null;
+    const t = nowSeconds();
+    if (!cap || !(cap.createdAt <= t && t < cap.expiresAt)) return null;
+    return BigInt(tuple.amount) <= BigInt(cap.capAmount) - BigInt(cap.spentAmount) ? { cap, tuple } : null;
+  }
+  // Charges the cap covering `accept`: its reservation, or null for none.
+  function chargeCap(origin, accept) {
+    const found = covering(origin, accept);
+    if (!found) return null;
+    const { cap, tuple } = found;
+    cap.spentAmount = (BigInt(cap.spentAmount) + BigInt(tuple.amount)).toString();
+    while (reservations.size >= 64) reservations.delete(reservations.keys().next().value);
+    const id = crypto.randomBytes(16).toString('hex');
+    reservations.set(id, { origin, chainId: cap.chainId, asset: cap.asset, amount: tuple.amount, generation: cap.generation });
+    return id;
+  }
+  function writeCap(origin, chainId, asset, capAmount, windowSeconds, createdAt = nowSeconds()) {
+    const caps = (x402Caps.get(origin) || []).filter((cap) => !(cap.chainId === chainId && cap.asset === asset.toLowerCase()));
+    caps.push({
+      chainId,
+      asset: asset.toLowerCase(),
+      capAmount,
+      spentAmount: '0',
+      createdAt,
+      expiresAt: createdAt + windowSeconds,
+      generation: ++capGenerations,
+    });
+    x402Caps.set(origin, caps);
+    return caps[caps.length - 1];
+  }
+  function signPayment(params, accept) {
+    if (x402Signer) return x402Signer(params, accept);
+    const t = nowSeconds();
+    return {
+      x402Version: params.requirements?.x402Version ?? 2,
+      payload: {
+        authorization: {
+          from: '0x' + (Number(params.account) + 1).toString(16).padStart(40, '0'),
+          to: accept.payTo,
+          value: accept.amount,
+          validAfter: String(t - 600),
+          validBefore: String(t + (accept.maxTimeoutSeconds ?? 60)),
+          nonce: '0x' + crypto.randomBytes(32).toString('hex'),
+        },
+        signature: '0x' + 'ab'.repeat(65),
+      },
+      accepted: accept,
+    };
+  }
+
+  const x402 = {
+    async authorize(params, context = null) {
+      calls.push({ method: 'x402.authorize', params, page: context });
+      if (callerOf(context) !== 'shell') throw coded('x402.authorize: main only', 'forbidden');
+      const { account, detection, requirements, authorization, accept_index: acceptIndex, grant } = params ?? {};
+      const accepts = Array.isArray(requirements?.accepts) ? requirements.accepts : [];
+      const origin = capKeyOf(detection?.url);
+      if (!origin || typeof detection?.id !== 'string' || !Number.isSafeInteger(detection?.tab)) {
+        throw coded('detection: invalid', 'invalid_argument');
+      }
+      let grantReply;
+      if (authorization?.cap) {
+        if (acceptIndex !== undefined || grant !== undefined) {
+          throw coded("a cap's payment takes no accept_index or grant", 'invalid_argument');
+        }
+        if (authorization.cap.agent === true) throw refused('custody');
+        if (authorization.cap.attributable !== true) throw refused('no_rule');
+        if (x402Locked) throw new Error(VAULT_LOCKED_MESSAGE);
+        const index = accepts.findIndex((accept) => covering(origin, accept));
+        if (index < 0) throw refused('cap');
+        // The charge comes first: nothing is signed without it.
+        const reservation = chargeCap(origin, accepts[index]);
+        try {
+          const payload = signPayment(params, accepts[index]);
+          return { payload, reservation, accept_index: index, charged: true };
+        } catch (err) {
+          await x402.settle({ reservation, outcome: 'withheld' });
+          throw err;
+        }
+      }
+      if (typeof authorization?.token !== 'string') throw refused('no_token');
+      // Spent against exactly what it binds, burnt whatever the outcome.
+      take(authorization.token, 'shell', (entry) =>
+        entry.kind === 'x402-payment'
+          ? { account, payload: { detection, accept_index: acceptIndex, accept: accepts[acceptIndex], grant }, page: null }
+          : null
+      );
+      if (x402Locked) throw new Error(VAULT_LOCKED_MESSAGE);
+      const index = acceptIndex;
+      const payload = signPayment(params, accepts[index]);
+      if (grant) {
+        const tuple = tupleOf(accepts[index]);
+        if (!tuple || !/^\d+$/.test(grant.cap_amount ?? '') || !Number.isSafeInteger(grant.window_seconds) || grant.window_seconds < 1) {
+          grantReply = { added: false, reason: 'invalid' };
+        } else {
+          writeCap(origin, tuple.chainId, tuple.asset, grant.cap_amount, grant.window_seconds);
+          grantReply = { added: true };
+        }
+      }
+      const reservation = chargeCap(origin, accepts[index]);
+      return {
+        payload,
+        reservation,
+        accept_index: index,
+        charged: reservation !== null,
+        ...(grantReply ? { grant: grantReply } : {}),
+      };
+    },
+    async settle(params, context = null) {
+      calls.push({ method: 'x402.settle', params, page: context });
+      if (callerOf(context) !== 'shell') throw coded('x402.settle: main only', 'forbidden');
+      const held = reservations.get(params?.reservation);
+      if (!held) throw coded('reservation: unknown', 'invalid_argument');
+      if (params.outcome !== 'sent' && params.outcome !== 'withheld') throw coded('outcome: unknown', 'invalid_argument');
+      reservations.delete(params.reservation);
+      if (params.outcome === 'sent') return { refunded: false };
+      // Only to the cap it was taken from: a revoke drops its generation.
+      const cap = findCap(held.origin, held.chainId, held.asset);
+      if (!cap || cap.generation !== held.generation) return { refunded: false };
+      const spent = BigInt(cap.spentAmount);
+      const amount = BigInt(held.amount);
+      cap.spentAmount = (spent >= amount ? spent - amount : 0n).toString();
+      return { refunded: true };
+    },
+  };
+
   const approval = {
     async issue(params, context = null) {
       calls.push({ method: 'approval.issue', params, page: context });
@@ -467,6 +650,19 @@ function simulatedApprovals() {
     async revoke(params, context = null) {
       calls.push({ method: 'approval.revoke', params, page: context });
       const { store, key, what } = params;
+      if (store === 'x402') {
+        if (callerOf(context) === 'page') throw coded("a page doesn't revoke x402's caps", 'forbidden');
+        const caps = x402Caps.get(key) || [];
+        let kept;
+        if (what === 'grant') kept = [];
+        else if (what?.cap) {
+          const asset = String(what.cap.asset).toLowerCase();
+          kept = caps.filter((cap) => !(cap.chainId === what.cap.chain_id && cap.asset === asset));
+        } else throw coded('what: unknown for this store', 'invalid_argument');
+        if (kept.length > 0) x402Caps.set(key, kept);
+        else x402Caps.delete(key);
+        return { revoked: kept.length !== caps.length };
+      }
       if (store !== 'dapp') throw coded('not moved', 'not_moved');
       if (callerOf(context) === 'page' && context.origin !== key) {
         throw coded('a page revokes only its own grant', 'forbidden');
@@ -502,6 +698,10 @@ function simulatedApprovals() {
     },
     async grants(params) {
       calls.push({ method: 'approval.grants', params, page: null });
+      if (params.store === 'x402') {
+        const keys = params.key !== undefined ? [params.key] : [...x402Caps.keys()];
+        return { records: keys.flatMap((key) => (x402Caps.get(key) || []).map((cap) => capRecord(key, cap))) };
+      }
       if (params.store !== 'dapp') return { records: [] };
       if (params.key !== undefined) {
         const entry = dapp.entry(params.key);
@@ -592,8 +792,27 @@ function simulatedApprovals() {
 
   return {
     approval,
+    x402,
     authorize,
     calls,
+    /** A cap as the core holds it: `{ origin, chainId, asset, capAmount, spentAmount?, createdAt?, expiresAt? | windowSeconds? }`. */
+    seedCap({ origin, chainId, asset, capAmount, spentAmount = '0', createdAt = nowSeconds() - 60, expiresAt, windowSeconds = 86400 }) {
+      const cap = writeCap(origin, chainId, asset, capAmount, (expiresAt ?? createdAt + windowSeconds) - createdAt, createdAt);
+      cap.spentAmount = spentAmount;
+      return capRecord(origin, cap);
+    },
+    /** The cap the core holds now, or null. */
+    cap(origin, chainId, asset) {
+      const cap = findCap(origin, chainId, asset);
+      return cap ? capRecord(origin, cap) : null;
+    },
+    setX402Locked(locked) {
+      x402Locked = locked === true;
+    },
+    setX402Signer(fn) {
+      x402Signer = typeof fn === 'function' ? fn : null;
+    },
+    openReservations: () => reservations.size,
     outstanding: () => tokens.size,
     openReceipts: () => receipts.size,
     setNow(fn) {
@@ -633,6 +852,10 @@ function simulatedApprovals() {
       remembered = null;
       receipts.clear();
       dapp.entries.clear();
+      x402Caps.clear();
+      reservations.clear();
+      x402Locked = false;
+      x402Signer = null;
     },
   };
 }

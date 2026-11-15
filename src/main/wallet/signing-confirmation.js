@@ -93,7 +93,7 @@
  * PRQ-5).
  *
  * Tokens through the core (freedom-core design 0012, APB-1): every kind but
- * x402's two is minted, checked and spent by the identity core
+ * `x402-cap-update` is minted, checked and spent by the identity core
  * (`approval.issue`, `approval.spend`, `approval.discard`), never in JS: a
  * wallet kind from main itself (`shell`), a page kind under `page` with the
  * request's PageContext. The core binds the request in the form it will
@@ -114,9 +114,13 @@
  * the kind"). Main keeps the kind it minted each of its own tokens as, and
  * burns one the chrome presents on another kind's route before the core is
  * asked to sign (`confirmationFor`).
- * `x402-payment` stays main's until the core can spend it (X402-1), and
- * `x402-cap-update`, the panel's decision, until X402-2: both are minted
- * and spent here, in JS, as before.
+ * An `x402-payment` token is the core's too (X402-2): minted as `shell`,
+ * and spent by the payment's own `x402.authorize`, which checks it against
+ * the tab, detection, URL, entry, account and grant it binds
+ * (x402/sign-flow.js). `x402-cap-update` is no longer minted: widening a cap
+ * needs the core's decision, a payment's token that binds the new cap
+ * (x402/caps.js), and `wallet:confirm-signing` refuses the kind. Its JS
+ * issuer and spender below stay in place, unused.
  */
 
 const crypto = require('crypto');
@@ -502,8 +506,9 @@ function digestFor(kind, accountIndex, payload) {
   return sha256(stableStringify({ kind, ...bindingFor(kind, accountIndex, payload) }));
 }
 
-// The kinds main still mints and spends in JS: x402's (above).
-const MAIN_KINDS = new Set([KINDS.X402_PAYMENT, KINDS.X402_CAP_UPDATE]);
+// The kind main minted and spent in JS before X402-2, which nothing mints now
+// (`wallet:confirm-signing` refuses it).
+const MAIN_KINDS = new Set([KINDS.X402_CAP_UPDATE]);
 const ALL_KINDS = new Set(Object.values(KINDS));
 
 /** Whether the identity core mints and spends `kind`'s tokens (APB-1). */
@@ -753,6 +758,24 @@ function corePayload(kind, accountIndex, payload, { chainId, remember } = {}) {
           hashes: facts.hashes,
         },
       };
+    case KINDS.X402_PAYMENT: {
+      // The core's binding (fc-approval, "x402-payment"): the detection, the
+      // entry by its index and as main's record holds it, and the cap
+      // granted with it. `x402.authorize` presents the same.
+      const grant = facts.grant;
+      if (grant && (typeof grant.capAmount !== 'string' || !Number.isSafeInteger(grant.windowSeconds))) {
+        throw new Error('Invalid grant');
+      }
+      return {
+        account: facts.walletIndex,
+        payload: {
+          detection: { tab: facts.webContentsId, id: facts.detectionId, url: facts.url },
+          accept_index: facts.acceptIndex,
+          accept: payload.accept,
+          ...(grant ? { grant: { cap_amount: grant.capAmount, window_seconds: grant.windowSeconds } } : {}),
+        },
+      };
+    }
     default:
       throw new Error(`Not a core confirmation kind: ${kind}`);
   }
@@ -802,8 +825,8 @@ async function issueCore(kind, accountIndex, payload, { page = null, handle, fee
 
 /**
  * Issue a single-use confirmation token for exactly this request, from
- * main itself: a wallet kind through the identity core (`approval.issue`
- * as `shell`), or one of x402's kinds in JS. Rejects on a malformed request
+ * main itself: a wallet kind or an x402 payment through the identity core
+ * (`approval.issue` as `shell`). Rejects on a malformed request
  * (nothing is issued), and with FEE_CHECK_ASK_AGAIN and the core's verdict
  * for a send above the fee check's threshold not acknowledged.
  *

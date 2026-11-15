@@ -474,10 +474,10 @@ function registerWalletIpc() {
       if (kind === CONFIRM_KINDS.X402_PAYMENT && !guestHostedBy(event?.sender, payload?.webContentsId)) {
         return { success: false, error: 'This payment is not on a tab of this window' };
       }
-      // An auto-pay cap's edit (#1023) is bound to the window confirming
-      // it and to the cap as main holds it, never to the caller's word.
+      // An auto-pay cap's edit is the identity core's decision (X402-2),
+      // never a token of main's: refused, with nothing asked or minted.
       if (kind === CONFIRM_KINDS.X402_CAP_UPDATE) {
-        payload = require('../x402/permissions').capUpdateRequest(event?.sender?.id, payload);
+        return { success: false, error: require('../x402/ipc').CAP_EDIT_REFUSED, code: NOT_CONFIRMED };
       }
       const index =
         kind === CONFIRM_KINDS.WALLET_SEND || kind === CONFIRM_KINDS.X402_PAYMENT
@@ -493,8 +493,8 @@ function registerWalletIpc() {
       // approvals document, which shows main's view of exactly the request
       // the token binds, checked first, and asks again for a fee above the
       // threshold itself: the chrome's acknowledgement counts for nothing.
-      // x402's two kinds too (APS-5): a payment, as main's record of its
-      // detection has it, not as the chrome's card says, and a cap's edit.
+      // An x402 payment too (APS-5), as main's record of its detection has
+      // it, not as the chrome's card says.
       const walletApprovals = require('../approvals/wallet-approvals');
       const approvals = walletApprovals.PROMPT_KINDS[kind] ? walletApprovals.getWalletApprovals() : null;
       if (approvals) {

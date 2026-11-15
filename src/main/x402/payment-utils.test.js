@@ -1,5 +1,5 @@
 const mockGetPermission = jest.fn();
-jest.mock('./permissions', () => ({
+jest.mock('./caps', () => ({
   getPermission: (...args) => mockGetPermission(...args),
 }));
 

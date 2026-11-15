@@ -35,23 +35,20 @@ jest.mock('./sign-flow', () => ({
 }));
 
 
-const mockGetPermission = jest.fn(() => null);
-const mockTryConsume = jest.fn(() => true);
-// The cap charge (#1024): the detector charges a covering cap before it
-// signs; a dropped signature gives its charge back.
-const mockCharge = jest.fn();
-const mockRefund = jest.fn(() => true);
-const mockChargeStands = jest.fn(() => true);
-const chargeFor = (origin, chainId, asset, amount) => ({ origin, chainId, asset, amount, generation: 1 });
-jest.mock('./permissions', () => ({
-  getPermission: (...args) => mockGetPermission(...args),
-  tryConsume: (...args) => mockTryConsume(...args),
-  charge: (...args) => mockCharge(...args),
-  refund: (...args) => mockRefund(...args),
-  chargeStands: (...args) => mockChargeStands(...args),
-}));
+// The identity core (cored 0.18.0, X402-1/X402-2), simulated
+// (test/helpers/simulated-approvals.js): its x402 store, which main reads on
+// the mirror core/grants.js keeps (the auto-pay pre-check and the inject
+// gate, through caps.js), and `x402.settle`, which gives a withheld
+// payment's charge back. The core charges a cap as it signs
+// (`x402.authorize`), in sign-flow.js, mocked here; a test that needs a
+// pending payment's charge takes it from the core directly
+// (`coreCharge`).
+const mockCore = require('../../../test/helpers/simulated-approvals').simulatedApprovals();
+jest.mock('../core/vault-backend', () => ({ vaultBackend: { approval: mockCore.approval, x402: mockCore.x402 } }));
 
 const { webContents } = require('electron');
+const grants = require('../core/grants');
+const caps = require('./caps');
 const log = require('../logger');
 const { netGatewayFetch } = require('../ipfs/gateway-transport');
 const { FakeClientRequest } = require('../../../test/helpers/fake-electron-net');
@@ -66,6 +63,7 @@ const {
   paymentResponseLoggingHandler,
   parsePaymentRequiredHeader,
   setPendingPayment,
+  settlePendingPaymentsOnNavigation,
   getDetectedPayment,
   clearDetectedPayment,
   clearAllPendingPayments,
@@ -94,7 +92,43 @@ const flushRetryMicrotasks = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 };
 
-beforeEach(() => {
+// A settle is fire-and-forget: its reply (and the `x402:cap-consumed` a
+// refund sends) lands a turn later.
+const flushSettles = () => new Promise((resolve) => setImmediate(resolve));
+
+// The paid origin and its asset as the core keys it (lowercase).
+const ORIGIN = 'https://api.example';
+const CHAIN = 8453;
+const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+
+// The mirror main reads caps from, loaded from the simulated core.
+const loadCaps = () => grants._useBackendForTests(mockCore.approval);
+
+// A cap the core holds for the paid origin, and main's mirror of it.
+async function coverWithCap({ capAmount = '20000', spentAmount = '0', ...rest } = {}) {
+  const cap = mockCore.seedCap({ origin: ORIGIN, chainId: CHAIN, asset: USDC, capAmount, spentAmount, ...rest });
+  await loadCaps();
+  return cap;
+}
+
+// A charge the core takes as it signs an auto-pay (`x402.authorize` under
+// a cap), as sign-flow.js asks for it: its reservation, which a pending
+// payment carries. The mirror is read again, as caps.authorize does.
+async function coreCharge({ tab = 7, id = `req-${tab}`, url = `${ORIGIN}/article` } = {}) {
+  const reply = await mockCore.x402.authorize({
+    account: 0,
+    detection: { tab, id, url },
+    requirements: sampleRequirements,
+    authorization: { cap: { agent: false, attributable: true } },
+  });
+  await loadCaps();
+  return reply.reservation;
+}
+
+const coreSettles = () => mockCore.calls.filter(({ method }) => method === 'x402.settle').map(({ params }) => params);
+const spentOnCap = () => mockCore.cap(ORIGIN, CHAIN, USDC)?.spentAmount;
+
+beforeEach(async () => {
   clearAllPendingPayments();
   clearAllDetectedPayments();
   clearAllAwaitingResponse();
@@ -110,12 +144,12 @@ beforeEach(() => {
   mockAppendReceipt.mockReset();
   mockHostSend.mockClear();
   mockSignAndQueueRetry.mockReset().mockResolvedValue(undefined);
-  mockGetPermission.mockReset().mockReturnValue(null);
-  mockTryConsume.mockReset().mockReturnValue(true);
-  mockCharge.mockReset().mockImplementation(chargeFor);
-  mockRefund.mockReset().mockReturnValue(true);
-  mockChargeStands.mockReset().mockReturnValue(true);
+  // No cap, by default: every 402 goes to the approval card.
+  mockCore.reset();
+  await loadCaps();
 });
+
+afterAll(() => grants._useBackendForTests(null));
 
 // Canonical Base USDC PaymentRequired (V2). `resource` is an object per
 // @x402/core/schemas — see PaymentRequiredV2Schema in
@@ -221,26 +255,32 @@ describe('detectPaymentRequiredHandler', () => {
     expect(getDetectedPayment(7)?.resourceType).toBe('mainFrame');
   });
 
-  test('cap-covered detection is tagged authorizedBy=cap on the stored entry so the resume-after-vault-unlock path preserves consent', () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+  test('cap-covered detection is tagged authorizedBy=cap on the stored entry so the resume-after-vault-unlock path preserves consent', async () => {
+    await coverWithCap();
     detectPaymentRequiredHandler(detail());
     expect(getDetectedPayment(7)?.authorizedBy).toBe('cap');
   });
 
+  test("the pre-check reads the core's caps: one with too little headroom left, or expired, sends the 402 to the card", async () => {
+    await coverWithCap({ capAmount: '20000', spentAmount: '10001' });
+    detectPaymentRequiredHandler(detail());
+    expect(getDetectedPayment(7)?.authorizedBy).toBeUndefined();
+
+    const now = Math.floor(Date.now() / 1000);
+    await coverWithCap({ capAmount: '20000', createdAt: now - 120, expiresAt: now - 1 });
+    detectPaymentRequiredHandler(detail({ webContentsId: 8 }));
+    expect(getDetectedPayment(8)?.authorizedBy).toBeUndefined();
+    expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
+  });
+
   test('non-cap-covered detection has no authorizedBy tag (sidebar approval = manual)', () => {
-    // Default mockGetPermission returns null → no coverage → approval card path.
+    // No cap in the core (beforeEach) → no coverage → approval card path.
     detectPaymentRequiredHandler(detail());
     expect(getDetectedPayment(7)?.authorizedBy).toBeUndefined();
   });
 
   test('subresource cap-covered 402 returns a same-URL 307 redirect (Chromium follows it transparently)', async () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     // mockSignAndQueueRetry defaults to resolve(undefined) in beforeEach
     // — the handler awaits this synchronously before returning the 307.
     const result = await detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
@@ -250,17 +290,23 @@ describe('detectPaymentRequiredHandler', () => {
         Location: ['https://api.example/article'],
       },
     });
-    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, expect.objectContaining({
+    // The detection and the cap's consent, nothing else: the core picks
+    // the entry and charges the cap as it signs (`x402.authorize`).
+    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, {
       detection: expect.objectContaining({
         url: 'https://api.example/article',
         resourceType: 'xhr',
+        detectionId: expect.any(String),
       }),
       authorizedBy: 'cap',
-      charge: expect.objectContaining({ amount: '10000' }),
-    }));
-    // No approval-needed event — auto-pay is silent; only the spend
-    // counter hears of the charge.
-    expect(mockHostSend.mock.calls.map(([channel]) => channel)).toEqual(['x402:cap-consumed']);
+    });
+    // The detector charged nothing and asked the core for nothing but its
+    // caps.
+    expect(spentOnCap()).toBe('0');
+    expect(mockCore.calls.filter(({ method }) => method.startsWith('x402.'))).toEqual([]);
+    // No approval-needed event — auto-pay is silent (the spend counter
+    // hears of the charge from the sign flow).
+    expect(mockHostSend).not.toHaveBeenCalled();
   });
 
   test('loop guard fires even when the cap no longer covers (rejected retry exhausted the cap; do not fall into approval-card flow)', async () => {
@@ -269,29 +315,30 @@ describe('detectPaymentRequiredHandler', () => {
     // guard sitting ABOVE the coverage check, this falls into the
     // approval-card path and prompts the user to re-authorise a charge
     // the server is refusing.
+    await coverWithCap({ capAmount: '10000' });
+    const reservation = await coreCharge();
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
       origin: 'https://api.example',
       chainId: 8453,
-      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      asset: USDC,
       amount: '10000',
       authorizedBy: 'cap',
-      charge: chargeFor('https://api.example', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '10000'),
+      reservation,
+      charged: true,
     });
-    injectPaymentSignatureHandler({
+    expect(injectPaymentSignatureHandler({
       webContentsId: 7,
       url: 'https://api.example/article',
       requestHeaders: {},
-    });
-    // Cap is exhausted (or revoked, or any other "no cover" state).
-    mockGetPermission.mockReturnValueOnce(null);
+    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    // Cap is exhausted: the charge of the signed attempt took it all.
+    expect(spentOnCap()).toBe('10000');
 
     const result = await detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
 
     // No 307, no approval-needed event — receipt handler will log failed.
-    // (The earlier injectPaymentSignatureHandler fires x402:cap-consumed
-    // during setup; we only care that no approval-needed event leaked.)
     expect(result).toBeNull();
     expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:approval-needed', expect.anything());
@@ -303,26 +350,26 @@ describe('detectPaymentRequiredHandler', () => {
     // leaves on the map after attaching a PAYMENT-SIGNATURE to an
     // outgoing request — then the server returns 402 (rejected) and
     // we hit the detector again with the same (id, url).
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge();
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
       origin: 'https://api.example',
       chainId: 8453,
-      asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      asset: USDC,
       amount: '10000',
       authorizedBy: 'cap',
-      charge: chargeFor('https://api.example', 8453, '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '10000'),
+      reservation,
+      charged: true,
     });
-    injectPaymentSignatureHandler({
+    expect(injectPaymentSignatureHandler({
       webContentsId: 7,
       url: 'https://api.example/article',
       requestHeaders: {},
-    });
+    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
     // Cap still covers — without the guard the detector would re-sign.
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '10000',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    expect(spentOnCap()).toBe('10000');
 
     const result = await detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
 
@@ -336,10 +383,7 @@ describe('detectPaymentRequiredHandler', () => {
     // The detector must NOT return null here — that would lose the
     // original fetch for vanilla `fetch()`/lazy-load/video callers that
     // don't retry. Hold the response open across user unlock instead.
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     mockSignAndQueueRetry.mockReset()
       .mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE))
       .mockResolvedValueOnce(undefined);
@@ -369,10 +413,7 @@ describe('detectPaymentRequiredHandler', () => {
   });
 
   test('subresource cap-covered locked-vault: tab destruction aborts the wait → handler returns null without re-signing', async () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     mockSignAndQueueRetry.mockReset().mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
 
     const handlerPromise = detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
@@ -388,10 +429,7 @@ describe('detectPaymentRequiredHandler', () => {
   });
 
   test('subresource cap-covered locked-vault: if the second sign also fails locked, fires unlock-needed again and re-arms the wait', async () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     mockSignAndQueueRetry.mockReset()
       .mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE))
       .mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE))
@@ -422,12 +460,9 @@ describe('detectPaymentRequiredHandler', () => {
     // Without this, a tab that navigates away without firing the
     // `destroyed` event (so cleanupWebContents never runs) leaves the
     // wait entry and the held-open onHeadersReceived sitting in memory.
+    await coverWithCap();
     jest.useFakeTimers();
     try {
-      mockGetPermission.mockReturnValueOnce({
-        capAmount: '20000', spentAmount: '0',
-        createdAt: 1, expiresAt: 9999999999,
-      });
       mockSignAndQueueRetry.mockReset().mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
 
       const handlerPromise = detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
@@ -448,10 +483,7 @@ describe('detectPaymentRequiredHandler', () => {
   });
 
   test('subresource cap-covered: non-vault-locked sign failure returns null without entering the retry loop', async () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     mockSignAndQueueRetry.mockReset().mockRejectedValueOnce(new Error('signTypedData reverted'));
 
     const result = await detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
@@ -466,10 +498,7 @@ describe('detectPaymentRequiredHandler', () => {
     const guest = { hostWebContents: { send: mockHostSend } };
     webContents.fromId.mockImplementation(() => guest);
     setAgentPageCustody(guest, true);
-    mockGetPermission.mockReturnValue({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     try {
       detectPaymentRequiredHandler(detail({ resourceType: 'mainFrame' }));
       await new Promise((resolve) => setImmediate(resolve));
@@ -488,10 +517,7 @@ describe('detectPaymentRequiredHandler', () => {
     ['names a guest already destroyed', () => ({ hostWebContents: { send: mockHostSend }, isDestroyed: () => true })],
   ])('a request whose id %s never auto-pays from a covering cap', async (_label, guestFor) => {
     webContents.fromId.mockImplementation(guestFor);
-    mockGetPermission.mockReturnValue({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     detectPaymentRequiredHandler(detail({ resourceType: 'xhr' }));
     await new Promise((resolve) => setImmediate(resolve));
     expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
@@ -499,53 +525,45 @@ describe('detectPaymentRequiredHandler', () => {
   });
 
   test('a request with no webContentsId (a service worker) is ignored, never paid', async () => {
-    mockGetPermission.mockReturnValue({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     await expect(detectPaymentRequiredHandler(detail({ webContentsId: undefined }))).resolves.toBeNull();
     await expect(detectPaymentRequiredHandler(detail({ webContentsId: -1 }))).resolves.toBeNull();
     expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
   });
 
-  test('auto-pay: when an active cap covers the charge, calls signAndQueueRetry with a detection snapshot and authorizedBy=cap', () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+  test('auto-pay: when an active cap covers the charge, calls signAndQueueRetry with a detection snapshot and authorizedBy=cap', async () => {
+    await coverWithCap();
     // Use real timers so the setImmediate inside the auto-pay branch
     // actually fires.
-    detectPaymentRequiredHandler(detail({ resourceType: 'mainFrame' }));
-    return new Promise((resolve) => setImmediate(() => {
-      expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, {
-        detection: expect.objectContaining({
-          url: 'https://api.example/article',
-          requirements: sampleRequirements,
-          resourceType: 'mainFrame',
-        }),
-        authorizedBy: 'cap',  // matches AUTHORIZED_BY.CAP
-        // Charged at the decision, before the sign (#1024).
-        charge: expect.objectContaining({ amount: '10000', generation: 1 }),
-      });
-      // No card: only the spend counter is told about the charge.
-      expect(mockHostSend.mock.calls.map(([channel]) => channel)).toEqual(['x402:cap-consumed']);
-      resolve();
-    }));
+    detectPaymentRequiredHandler(detail({ id: 4242, resourceType: 'mainFrame' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, {
+      detection: expect.objectContaining({
+        url: 'https://api.example/article',
+        requirements: sampleRequirements,
+        resourceType: 'mainFrame',
+        // The detection the core's charge is keyed to (`x402.authorize`).
+        detectionId: 'req-4242',
+      }),
+      authorizedBy: 'cap',  // matches AUTHORIZED_BY.CAP
+    });
+    // Nothing charged at the decision: the core charges the cap as it
+    // signs (#1024), in the sign flow.
+    expect(spentOnCap()).toBe('0');
+    // No card, and no spend-counter event from the detector.
+    expect(mockHostSend).not.toHaveBeenCalled();
   });
 
-  test('auto-pay: a locked-vault failure on mainFrame asks the host renderer to unlock AND stashes a resume token with the original snapshot', () => {
+  test('auto-pay: a locked-vault failure on mainFrame asks the host renderer to unlock AND stashes a resume token with the original snapshot', async () => {
     // mainFrame-specific: the setImmediate dispatch loses the detector
     // closure by the time the user unlocks, so the snapshot has to live
     // in the resume token. (Subresource keeps the snapshot in the
     // awaiting detector's closure — see the wait-loop tests above.)
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    await coverWithCap();
     mockSignAndQueueRetry.mockReset().mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
 
     detectPaymentRequiredHandler(detail({ resourceType: 'mainFrame' }));
-    return new Promise((resolve) => {
+    await new Promise((resolve) => {
       // Two setImmediate ticks: one to fire signAndQueueRetry, one for
       // the catch handler's microtask + sendToHost call.
       setImmediate(() => setImmediate(() => {
@@ -580,13 +598,12 @@ describe('detectPaymentRequiredHandler', () => {
     const t0 = realNow();
     Date.now = () => t0;
     try {
-      mockGetPermission.mockReturnValueOnce({
-        capAmount: '20000', spentAmount: '0',
-        createdAt: 1, expiresAt: 9999999999,
-      });
+      await coverWithCap();
       mockSignAndQueueRetry.mockReset().mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
       detectPaymentRequiredHandler(detail({ resourceType: 'mainFrame' }));
       await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+      // The token was stashed (the unlock prompt goes with it).
+      expect(mockHostSend).toHaveBeenCalledWith('x402:unlock-needed', expect.anything());
 
       // Jump past the 5-minute TTL.
       Date.now = () => t0 + 6 * 60 * 1000;
@@ -596,20 +613,16 @@ describe('detectPaymentRequiredHandler', () => {
     }
   });
 
-  test('cleanupWebContents drops a stashed mainFrame resume token for the closed tab', () => {
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '0',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+  test('cleanupWebContents drops a stashed mainFrame resume token for the closed tab', async () => {
+    await coverWithCap();
     mockSignAndQueueRetry.mockReset().mockRejectedValueOnce(new Error(VAULT_LOCKED_MESSAGE));
     detectPaymentRequiredHandler(detail({ resourceType: 'mainFrame' }));
-    return new Promise((resolve) => {
-      setImmediate(() => setImmediate(() => {
-        cleanupWebContents(7);
-        expect(consumePendingUnlockResume(7)).toBeNull();
-        resolve();
-      }));
-    });
+    await new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
+    // The token was stashed (the unlock prompt goes with it).
+    expect(mockHostSend).toHaveBeenCalledWith('x402:unlock-needed', expect.anything());
+
+    cleanupWebContents(7);
+    expect(consumePendingUnlockResume(7)).toBeNull();
   });
 
   test('accepts a V1 PaymentRequired payload from X-PAYMENT-REQUIRED', () => {
@@ -713,7 +726,7 @@ describe('approval-card subresource path (await user decision, then 307)', () =>
   });
 
   test('mints a detectionId and includes it + resourceType in the approval-needed event payload', async () => {
-    // Cap doesn't cover (default mockGetPermission returns null) → approval card path.
+    // No cap in the core (beforeEach) → approval card path.
     // Don't await the detector — it will hang on the approval Promise.
     detectPaymentRequiredHandler(detail());
     expect(mockHostSend).toHaveBeenCalledWith('x402:approval-needed', expect.objectContaining({
@@ -987,19 +1000,46 @@ describe('approval-card subresource path (await user decision, then 307)', () =>
     expect(mockSignAndQueueRetry).not.toHaveBeenCalled();
   });
 
-  test('grant payload from approval rides through to signAndQueueRetry', async () => {
+  test("the approval's confirmation, which binds its grant for the core, rides through to signAndQueueRetry", async () => {
     const handlerPromise = detectPaymentRequiredHandler(detail());
     await Promise.resolve();
 
+    // As x402:approve holds it (`confirmationFor`): the core's token, and
+    // the entry and grant it binds.
+    const confirmation = {
+      token: 'f'.repeat(64),
+      kind: 'x402-payment',
+      account: 3,
+      payload: {
+        detection: { tab: 7, id: 'req-1001', url: 'https://api.example/segment/0' },
+        accept_index: 0,
+        accept: sampleRequirements.accepts[0],
+        grant: { cap_amount: '10000000', window_seconds: 30 * 24 * 60 * 60 },
+      },
+    };
     settlePendingApproval('req-1001', {
       approved: true,
       grant: { capAmount: '10000000', windowSeconds: 30 * 24 * 60 * 60 },
+      selectedAcceptIndex: 0,
+      walletIndex: 3,
+      confirmation,
     });
 
     await handlerPromise;
-    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, expect.objectContaining({
-      grant: { capAmount: '10000000', windowSeconds: 30 * 24 * 60 * 60 },
-    }));
+    // The grant rides inside the token, never beside it: the core writes
+    // the cap the token binds.
+    expect(mockSignAndQueueRetry).toHaveBeenCalledWith(7, {
+      detection: {
+        url: 'https://api.example/segment/0',
+        requirements: sampleRequirements,
+        detectionId: 'req-1001',
+        resourceType: 'xhr',
+        requestShape: { method: 'GET', range: null },
+      },
+      authorizedBy: 'manual',
+      confirmation,
+      walletIndex: 3,
+    });
   });
 
   test('a newer 402 on the same tab aborts the older pending approval (single-card UI)', async () => {
@@ -1149,35 +1189,50 @@ describe('injectPaymentSignatureHandler', () => {
     expect(injectPaymentSignatureHandler(detail())).not.toBeNull();
   });
 
-  // The cap is charged before a payment is signed (#1024): the injector
-  // charges nothing. It withholds an auto-pay whose cap has gone since,
-  // and gives back the charge of anything it drops unsent.
-  const CHARGE = chargeFor('https://api.example', 8453, '0xabc', '10000');
-  const capSigned = (extra = {}) => ({
+  // The identity core charges a cap as it signs (#1024, `x402.authorize`):
+  // the injector charges nothing. It withholds an auto-pay without the
+  // core's charge, or whose cap has gone since (as the core last reported
+  // it), and settles each charge with the core (`x402.settle`): `sent` once
+  // its header is attached, `withheld` for anything it drops unsent, which
+  // gives the charge back to the cap it was taken from.
+  const capSigned = (reservation, extra = {}) => ({
     header: X402_HEADERS.SIGNATURE_V2,
     value: 'sig',
-    origin: 'https://api.example',
-    chainId: 8453,
-    asset: '0xabc',
+    origin: ORIGIN,
+    chainId: CHAIN,
+    asset: USDC,
     amount: '10000',
     authorizedBy: 'cap',
-    charge: CHARGE,
+    reservation,
+    charged: true,
     ...extra,
   });
 
-  test('charges nothing at inject: the cap was charged before the sign', () => {
-    setPendingPayment(7, 'https://api.example/article', capSigned());
+  // A cap of 20000 the core has charged 10000 for this payment.
+  async function chargedByCore() {
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge();
+    expect(spentOnCap()).toBe('10000');
+    mockCore.calls.length = 0;
+    return reservation;
+  }
+
+  test('charges nothing at inject: the cap was charged before the sign, and the header that goes out keeps it', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
 
     const result = injectPaymentSignatureHandler(detail());
 
     expect(result.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
-    expect(mockCharge).not.toHaveBeenCalled();
-    expect(mockTryConsume).not.toHaveBeenCalled();
-    expect(mockRefund).not.toHaveBeenCalled();
-    expect(mockChargeStands).toHaveBeenCalledWith(CHARGE);
+    await flushSettles();
+    // The core is asked nothing but to keep the charge.
+    expect(mockCore.calls.filter(({ method }) => method === 'x402.authorize')).toEqual([]);
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+    expect(spentOnCap()).toBe('10000');
+    expect(mockCore.openReservations()).toBe(0);
   });
 
-  test('skips cap consume when receipt context is incomplete (defensive)', () => {
+  test('skips cap accounting when receipt context is incomplete (defensive)', async () => {
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
@@ -1185,32 +1240,45 @@ describe('injectPaymentSignatureHandler', () => {
       // stashes these, but the inject handler shouldn't blow up if a
       // test or future caller skips them.
     });
-    injectPaymentSignatureHandler(detail());
-    expect(mockTryConsume).not.toHaveBeenCalled();
-    expect(mockCharge).not.toHaveBeenCalled();
+    expect(injectPaymentSignatureHandler(detail())?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    await flushSettles();
+    expect(mockCore.calls.filter(({ method }) => method.startsWith('x402.'))).toEqual([]);
   });
 
-  test('manual authorization attaches the header whatever the state of a cap (user-explicit consent)', () => {
-    mockChargeStands.mockReturnValue(false);
-    setPendingPayment(7, 'https://api.example/article', capSigned({ authorizedBy: 'manual' }));
+  test('manual authorization attaches the header whatever the state of a cap (user-explicit consent)', async () => {
+    const reservation = await chargedByCore();
+    // The cap the approved payment was charged to is revoked before the
+    // retry: the click was the consent, not the cap.
+    await caps.revoke(ORIGIN, CHAIN, USDC);
+    expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toBeNull();
+    setPendingPayment(7, 'https://api.example/article', capSigned(reservation, { authorizedBy: 'manual' }));
+
     const result = injectPaymentSignatureHandler(detail());
+
     expect(result.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
-    expect(mockRefund).not.toHaveBeenCalled();
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
   });
 
-  test('cap authorization: a cap gone since the sign withholds the signature, gives its charge back and drops the entry', () => {
-    // The cap was revoked, granted again or expired between the sign and
-    // the retry: the cap was the only consent.
-    mockChargeStands.mockReturnValueOnce(false);
-    setPendingPayment(7, 'https://api.example/article', capSigned());
+  test('cap authorization: a cap gone since the sign withholds the signature, settles it withheld and drops the entry', async () => {
+    // The cap was revoked between the sign and the retry: the cap was the
+    // only consent.
+    const reservation = await chargedByCore();
+    await caps.revoke(ORIGIN, CHAIN, USDC);
+    setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
 
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
-    expect(mockRefund).toHaveBeenCalledWith(CHARGE);
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    // Revoked, the cap takes nothing back: the core has no cap to give it to.
+    expect(mockCore.cap(ORIGIN, CHAIN, USDC)).toBeNull();
+    expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
     // One-shot drop even on withhold — a second inject attempt finds nothing.
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
   });
 
-  test('cap authorization with no charge withholds the signature', () => {
+  test('cap authorization with no charge withholds the signature', async () => {
+    await coverWithCap();
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'sig',
@@ -1218,23 +1286,39 @@ describe('injectPaymentSignatureHandler', () => {
     });
 
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
-    expect(mockTryConsume).not.toHaveBeenCalled();
     // One-shot drop even on withhold — a second inject attempt finds nothing.
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
 
-    // Receipt context without the charge it was signed against: the same.
-    setPendingPayment(7, 'https://api.example/article', capSigned({ charge: undefined }));
+    // Receipt context, and a cap that covers it, without the core's charge:
+    // the same.
+    setPendingPayment(7, 'https://api.example/article', capSigned(undefined, { charged: undefined }));
     expect(injectPaymentSignatureHandler(detail())).toBeNull();
+    await flushSettles();
+    expect(mockCore.calls.filter(({ method }) => method.startsWith('x402.'))).toEqual([]);
+    expect(spentOnCap()).toBe('0');
   });
 
-  test('fires x402:cap-consumed at the host when a withheld signature gives its charge back', () => {
+  test('fires x402:cap-consumed at the host when a withheld signature gives its charge back', async () => {
     // Silent auto-pay (video segments, lazy paragraphs) never round-
     // trips through the renderer; without this event the sidebar's
     // auto-pay banner spend counter would stay stale until the next
-    // page navigation.
-    mockChargeStands.mockReturnValueOnce(false);
-    setPendingPayment(7, 'https://api.example/article', capSigned());
-    injectPaymentSignatureHandler(detail());
+    // page navigation. The cap expires between the sign and the retry:
+    // main withholds the signature, and the core gives the charge back to
+    // the cap it was taken from.
+    const now = Math.floor(Date.now() / 1000);
+    await coverWithCap({ capAmount: '20000', createdAt: now - 60, expiresAt: now + 2 });
+    const reservation = await coreCharge();
+    setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
+    const realNow = Date.now;
+    Date.now = () => realNow() + 3000;
+    try {
+      expect(injectPaymentSignatureHandler(detail())).toBeNull();
+      await flushSettles();
+    } finally {
+      Date.now = realNow;
+    }
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
     // Origin is the only field the renderer needs (to filter multi-tab
     // payments) — full cap state is pulled fresh on the refresh IPC.
     expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', {
@@ -1242,48 +1326,58 @@ describe('injectPaymentSignatureHandler', () => {
     });
   });
 
-  test('does NOT fire x402:cap-consumed when a signature goes out: it was charged at the sign', () => {
-    setPendingPayment(7, 'https://api.example/article', capSigned());
+  test('does NOT fire x402:cap-consumed when a signature goes out: it was charged at the sign', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
     injectPaymentSignatureHandler(detail());
+    await flushSettles();
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
   });
 
-  test('does NOT fire x402:cap-consumed for a manual pay without an existing cap (nothing to refresh)', () => {
-    setPendingPayment(7, 'https://api.example/article', capSigned({ authorizedBy: 'manual', charge: null }));
+  test('does NOT fire x402:cap-consumed for a manual pay without an existing cap (nothing to refresh)', async () => {
+    setPendingPayment(7, 'https://api.example/article', capSigned(null, { authorizedBy: 'manual', charged: false }));
     injectPaymentSignatureHandler(detail());
+    await flushSettles();
     expect(mockHostSend).not.toHaveBeenCalledWith('x402:cap-consumed', expect.anything());
+    expect(coreSettles()).toEqual([]);
   });
 
   test('default (no authorizedBy field) treats as manual — backward-compatible', () => {
-    mockChargeStands.mockReturnValue(false);
-    setPendingPayment(7, 'https://api.example/article', capSigned({ authorizedBy: undefined, charge: undefined }));
+    // No cap in the core, and no charge: a cap's signature would be withheld.
+    setPendingPayment(7, 'https://api.example/article', capSigned(undefined, { authorizedBy: undefined, charged: undefined }));
     const result = injectPaymentSignatureHandler(detail());
     expect(result?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
   });
 
-  test('drops a stale pending entry past its TTL, does not attach the header, and gives its charge back', () => {
-    setPendingPayment(7, 'https://api.example/article', capSigned());
+  test('drops a stale pending entry past its TTL, does not attach the header, and gives its charge back', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, 'https://api.example/article', capSigned(reservation));
     // Jump Date.now past PENDING_TTL_MS (60s).
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
     try {
       const result = injectPaymentSignatureHandler(detail());
       expect(result).toBeNull();
+      await flushSettles();
       // Never sent: its charge goes back to the cap.
-      expect(mockRefund).toHaveBeenCalledWith(CHARGE);
+      expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+      expect(spentOnCap()).toBe('0');
       expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: 'https://api.example' });
     } finally {
       Date.now = realNow;
     }
   });
 
-  test('lazy sweep on setPendingPayment drops previously-expired entries from the map', () => {
+  test('lazy sweep on setPendingPayment drops previously-expired entries from the map', async () => {
     // Stash an entry, jump time past TTL, stash a fresh entry. The
     // fresh setPendingPayment should sweep the old one before adding.
+    const reservation = await chargedByCore();
     setPendingPayment(7, 'https://api.example/old', {
       header: X402_HEADERS.SIGNATURE_V2,
       value: 'old-sig',
-      charge: CHARGE,
+      origin: ORIGIN,
+      reservation,
+      charged: true,
     });
     const realNow = Date.now;
     Date.now = () => realNow() + 61_000;
@@ -1293,7 +1387,9 @@ describe('injectPaymentSignatureHandler', () => {
         value: 'new-sig',
       });
       // The swept entry was never sent: its charge went back.
-      expect(mockRefund).toHaveBeenCalledWith(CHARGE);
+      await flushSettles();
+      expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+      expect(spentOnCap()).toBe('0');
       // Old entry is gone (without this test even attempting to inject it).
       expect(injectPaymentSignatureHandler({
         webContentsId: 7,
@@ -1310,6 +1406,156 @@ describe('injectPaymentSignatureHandler', () => {
     } finally {
       Date.now = realNow;
     }
+  });
+});
+
+// === Unsent signatures settle on their own (TTL timer, navigation) ======
+//
+// A signature the core charged a cap for and that never went out is
+// settled `withheld` at its TTL by its own timer, whether or not the tab
+// makes another request, and when its tab commits a navigation elsewhere.
+// The paid retry itself still attaches it and settles it `sent`.
+describe('unsent signatures settle without a further request', () => {
+  const ARTICLE = `${ORIGIN}/article`;
+  const retry = (overrides = {}) => ({
+    webContentsId: 7,
+    url: ARTICLE,
+    requestHeaders: {},
+    ...overrides,
+  });
+  const capSigned = (reservation) => ({
+    header: X402_HEADERS.SIGNATURE_V2,
+    value: 'sig',
+    origin: ORIGIN,
+    chainId: CHAIN,
+    asset: USDC,
+    amount: '10000',
+    authorizedBy: 'cap',
+    reservation,
+    charged: true,
+  });
+
+  // A cap of 20000 the core has charged 10000 for this payment, with fake
+  // timers from here on (setImmediate stays real for `flushSettles`).
+  async function chargedByCore({ tab = 7 } = {}) {
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge({ tab });
+    mockCore.calls.length = 0;
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+    return reservation;
+  }
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('an idle tab past the TTL settles its signature withheld, with no further stash or request', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+    expect(spentOnCap()).toBe('10000');
+
+    jest.advanceTimersByTime(59_000);
+    await flushSettles();
+    expect(coreSettles()).toEqual([]);
+
+    jest.advanceTimersByTime(1_001);
+    await flushSettles();
+    // Nothing touched the Map: the entry's own timer settled it.
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
+    expect(mockCore.openReservations()).toBe(0);
+    expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
+    // Gone: a late request carries no header.
+    expect(injectPaymentSignatureHandler(retry())).toBeNull();
+    await flushSettles();
+    expect(coreSettles()).toHaveLength(1);
+  });
+
+  test('a same-tab navigation away settles the signature withheld at once, and its timer is stopped', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    settlePendingPaymentsOnNavigation(7, 'https://elsewhere.example/');
+    await flushSettles();
+
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
+    expect(mockCore.openReservations()).toBe(0);
+    // Coming back to the page later doesn't send the old signature.
+    expect(injectPaymentSignatureHandler(retry())).toBeNull();
+    // Settled once: the TTL settles nothing more.
+    jest.advanceTimersByTime(61_000);
+    await flushSettles();
+    expect(coreSettles()).toHaveLength(1);
+  });
+
+  test('a subresource signature is settled withheld when its page navigates to another URL', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, `${ORIGIN}/api/chunk`, capSigned(reservation), { method: 'GET', range: 'bytes=0-99' });
+
+    settlePendingPaymentsOnNavigation(7, `${ORIGIN}/next-page`);
+    await flushSettles();
+
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
+  });
+
+  test("another tab's navigation leaves the signature waiting for its retry", async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    settlePendingPaymentsOnNavigation(8, 'https://elsewhere.example/');
+    await flushSettles();
+    expect(coreSettles()).toEqual([]);
+
+    expect(injectPaymentSignatureHandler(retry())?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+  });
+
+  test('the paid retry still sends the header and settles sent; nothing is withheld at the TTL', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    // The 402 page commits after its auto-pay has signed, and the retry's
+    // own navigation starts: both go to the URL the signature waits for.
+    settlePendingPaymentsOnNavigation(7, ARTICLE);
+    settlePendingPaymentsOnNavigation(7, `${ARTICLE}#section`);
+    await flushSettles();
+    expect(coreSettles()).toEqual([]);
+
+    const result = injectPaymentSignatureHandler(retry());
+    expect(result?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    // The retry commits.
+    settlePendingPaymentsOnNavigation(7, ARTICLE);
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+    expect(spentOnCap()).toBe('10000');
+
+    // Its timer was stopped when it was attached.
+    jest.advanceTimersByTime(61_000);
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+    expect(spentOnCap()).toBe('10000');
+  });
+
+  test("a closed tab's signature is settled withheld once, and its timer is stopped", async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    cleanupWebContents(7);
+    jest.advanceTimersByTime(61_000);
+    await flushSettles();
+
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+  });
+
+  test('clearing every pending payment stops their timers', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    clearAllPendingPayments();
+    expect(jest.getTimerCount()).toBe(0);
   });
 });
 
@@ -1494,23 +1740,22 @@ describe('request-shape retry keying', () => {
   test('loop guard fires by followed-request id (not url)', async () => {
     // Set up "already signed" state for id=701; a 402 on id=701 must NOT
     // re-sign even though the URL is the same.
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge();
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2, value: 'sig',
       origin: 'https://api.example', chainId: 8453,
-      asset: '0xabc', amount: '10000', authorizedBy: 'cap',
-      charge: chargeFor('https://api.example', 8453, '0xabc', '10000'),
+      asset: USDC, amount: '10000', authorizedBy: 'cap',
+      reservation, charged: true,
     });
-    injectPaymentSignatureHandler({
+    expect(injectPaymentSignatureHandler({
       id: 701, webContentsId: 7, url: 'https://api.example/article',
       requestHeaders: {},
-    });
+    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
 
     // Cap still covers; without the id-based loop guard the detector
     // would re-sign.
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '10000',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    expect(spentOnCap()).toBe('10000');
     const result = await detectPaymentRequiredHandler({
       id: 701,
       webContentsId: 7,
@@ -1525,23 +1770,23 @@ describe('request-shape retry keying', () => {
 
   test('loop guard does NOT fire when a NEW request id 402s the same URL (a different request shape on the wire)', async () => {
     // First-signed (id=801) already in awaitingResponse from inject.
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge();
     setPendingPayment(7, 'https://api.example/article', {
       header: X402_HEADERS.SIGNATURE_V2, value: 'sig',
       origin: 'https://api.example', chainId: 8453,
-      asset: '0xabc', amount: '10000', authorizedBy: 'cap',
-      charge: chargeFor('https://api.example', 8453, '0xabc', '10000'),
+      asset: USDC, amount: '10000', authorizedBy: 'cap',
+      reservation, charged: true,
     });
-    injectPaymentSignatureHandler({
+    expect(injectPaymentSignatureHandler({
       id: 801, webContentsId: 7, url: 'https://api.example/article',
       requestHeaders: {},
-    });
+    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
 
     // A SECOND request to the same URL (different id) 402s. Loop guard
     // shouldn't fire — this is a fresh request, not a rejected retry.
-    mockGetPermission.mockReturnValueOnce({
-      capAmount: '20000', spentAmount: '10000',
-      createdAt: 1, expiresAt: 9999999999,
-    });
+    // The cap has headroom for it.
+    expect(spentOnCap()).toBe('10000');
     const result = await detectPaymentRequiredHandler({
       id: 802,
       webContentsId: 7,
@@ -1831,19 +2076,36 @@ describe('cleanupWebContents', () => {
     })).not.toBeNull();
   });
 
-  test("gives back the charges of the closed tab's unsent signatures, and no other tab's", () => {
-    const seven = chargeFor('https://x.example', 8453, '0xa', '7');
-    const eight = chargeFor('https://x.example', 8453, '0xa', '8');
-    setPendingPayment(7, 'https://x.example/', {
-      header: X402_HEADERS.SIGNATURE_V2, value: 'sig-7', authorizedBy: 'cap', charge: seven,
+  test("gives back the charges of the closed tab's unsent signatures, and no other tab's", async () => {
+    // One cap the core charged twice, once for each tab's signature.
+    await coverWithCap({ capAmount: '20000' });
+    const seven = await coreCharge({ tab: 7 });
+    const eight = await coreCharge({ tab: 8 });
+    expect(spentOnCap()).toBe('20000');
+    mockCore.calls.length = 0;
+    const signed = (value, reservation) => ({
+      header: X402_HEADERS.SIGNATURE_V2, value, authorizedBy: 'cap',
+      origin: ORIGIN, chainId: CHAIN, asset: USDC, amount: '10000',
+      reservation, charged: true,
     });
-    setPendingPayment(8, 'https://x.example/', {
-      header: X402_HEADERS.SIGNATURE_V2, value: 'sig-8', authorizedBy: 'cap', charge: eight,
-    });
+    setPendingPayment(7, `${ORIGIN}/a`, signed('sig-7', seven));
+    setPendingPayment(8, `${ORIGIN}/a`, signed('sig-8', eight));
 
     cleanupWebContents(7);
+    await flushSettles();
 
-    expect(mockRefund.mock.calls).toEqual([[seven]]);
+    expect(coreSettles()).toEqual([{ reservation: seven, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('10000');
+    // Tab 8's signature still goes out, keeping its charge.
+    expect(injectPaymentSignatureHandler({
+      webContentsId: 8, url: `${ORIGIN}/a`, requestHeaders: {},
+    })?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig-8');
+    await flushSettles();
+    expect(coreSettles()).toEqual([
+      { reservation: seven, outcome: 'withheld' },
+      { reservation: eight, outcome: 'sent' },
+    ]);
+    expect(spentOnCap()).toBe('10000');
   });
 
   test('drops only the closed tab\'s in-flight awaitingResponse entries (keyed by request id, value-tagged with webContentsId)', () => {

@@ -58,7 +58,7 @@ test('the app speaks protocol 2 to the core, and the dweb shell and verifier att
   expect(client.grantRoot).toBe(root);
   const params = client.service.helloParams(client);
   expect(params.grant_root).toBe(root);
-  expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm']);
+  expect([...params.grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
   expect(start).toHaveBeenCalledTimes(1);
   expect(handle).toHaveBeenCalledWith('shell.dweb_get', expect.any(Function), {
     streams: true,

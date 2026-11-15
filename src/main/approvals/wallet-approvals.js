@@ -507,7 +507,8 @@ function getWalletApprovals() {
       },
       x402Tuple: (accept) => require('../x402/payment-utils').tupleFromAccept(accept),
       x402Origin: (url) => require('../x402/intercept').originKeyForUrl(url),
-      x402Cap: (origin, chainId, asset) => require('../x402/permissions').getPermission(origin, chainId, asset),
+      // The cap as the identity core holds it (X402-2): main's mirror.
+      x402Cap: (origin, chainId, asset) => require('../x402/caps').getPermission(origin, chainId, asset),
     });
   }
   return shared;

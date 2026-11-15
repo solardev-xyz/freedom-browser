@@ -96,26 +96,18 @@ jest.mock('../core/vault-backend', () => {
     },
   };
 });
-// An x402 cap edit as main confirms it (#1023): the sending window, the
-// key, the cap as the store holds it, and the change.
-const mockCapHeld = { current: { capAmount: '10000000', createdAt: 1000, expiresAt: 87400, generation: 3 } };
-jest.mock('../x402/permissions', () => ({
-  capUpdateRequest: (windowId, { origin, chainId, asset, capAmount, windowSeconds } = {}) => ({
-    window: windowId,
-    origin,
-    chainId,
-    asset,
-    capAmount,
-    windowSeconds,
-    current: mockCapHeld.current,
-  }),
-}));
+// An x402 cap edit is the identity core's decision (X402-2): main reads no
+// cap for one and mints no token. The cap store (x402/permissions.js) is
+// never required here.
+const mockCapStoreRead = jest.fn();
+jest.mock('../x402/permissions', () => ({ capUpdateRequest: (...args) => mockCapStoreRead(...args) }));
 // x402's payment as main's record of its detection holds it (APS-5),
 // replaced per test: the panel's prompt and its token bind this, not the
 // chrome's copy.
 const mockX402Record = { build: null };
 jest.mock('../x402/ipc', () => ({
   paymentApprovalRequest: (sender, payload) => mockX402Record.build(sender, payload),
+  CAP_EDIT_REFUSED: "An auto-pay cap can't be changed here: revoke it, or set a new one when you approve a payment",
 }));
 jest.mock('./auto-approve-pause', () => ({
   transactionAutoApprovePaused: jest.fn(async () => false),
@@ -176,7 +168,7 @@ describe('signing handlers require a main-side confirmation', () => {
   const { startSafeSend } = require('./safe/safe-transactions');
   const confirmations = require('./signing-confirmation');
   const { toCoreTransaction, buildTransaction } = require('./signing-utils');
-  // Tokens outstanding: main's own (x402's) and the core's.
+  // Tokens outstanding: main's own (none mints them now) and the core's.
   const outstanding = () => confirmations._outstandingCount() + mockApprovals.outstanding();
   // What the core signed: a token is checked as it signs (design 0012).
   let signedTxs = [];
@@ -926,8 +918,9 @@ describe('signing handlers require a main-side confirmation', () => {
     });
   });
 
-  // x402:approve (x402/ipc.js) spends these; it signs with the active
-  // account, so that is the account the confirmation binds.
+  // The core spends these at the payment's `x402.authorize` (X402-2), which
+  // x402:approve has sign-flow.js present for main's record of the payment
+  // and the active account: so that is the account the confirmation binds.
   const X402_PAYMENT = {
     webContentsId: 42,
     detectionId: 'req-9100',
@@ -948,6 +941,27 @@ describe('signing handlers require a main-side confirmation', () => {
     expect(result.success).toBe(true);
     return result.token;
   };
+  // The token presented as sign-flow.js presents it, for `account` and
+  // `payment`: the core pays it, or refuses with its reason.
+  const payWith = async (token, account, payment = X402_PAYMENT) => {
+    const confirmation = confirmations.confirmationFor(token, 'x402-payment', account, payment);
+    const { detection, accept_index: acceptIndex, accept, grant } = confirmation.payload;
+    const accepts = [];
+    accepts[acceptIndex] = accept;
+    try {
+      await mockApprovals.x402.authorize({
+        account: confirmation.account,
+        detection,
+        requirements: { x402Version: 2, accepts },
+        authorization: { token },
+        accept_index: acceptIndex,
+        ...(grant ? { grant } : {}),
+      });
+      return 'paid';
+    } catch (err) {
+      return err.data?.reason ?? err.message;
+    }
+  };
 
   test('an x402-payment confirmation binds the active account, whatever index the renderer names', async () => {
     const feeCheck = require('./fee-check');
@@ -956,16 +970,15 @@ describe('signing handlers require a main-side confirmation', () => {
     getActiveWalletIndex.mockReturnValue(4);
     const token = await mintX402(9);
     expect(feeCheck.checkAtApproval).not.toHaveBeenCalled();
-    let refused;
-    try {
-      confirmations.consumeConfirmation(token, 'x402-payment', 9, X402_PAYMENT);
-    } catch (err) {
-      refused = err;
-    }
-    expect(refused?.code).toBe('SIGNING_NOT_CONFIRMED');
+    // Minted by the core, from main itself, for the active account.
+    const issued = mockApprovals.calls.filter(({ method }) => method === 'approval.issue');
+    expect(issued).toEqual([
+      expect.objectContaining({ params: expect.objectContaining({ kind: 'x402-payment', account: 4 }), page: null }),
+    ]);
+    expect(await payWith(token, 9)).toBe('mismatch');
 
     const again = await mintX402(9);
-    expect(() => confirmations.consumeConfirmation(again, 'x402-payment', 4, X402_PAYMENT)).not.toThrow();
+    expect(await payWith(again, 4)).toBe('paid');
   });
 
   test("an x402-payment confirmation is minted only by the window hosting the payment's tab", async () => {
@@ -987,34 +1000,24 @@ describe('signing handlers require a main-side confirmation', () => {
 
     // The hosting window's sidebar gets its token.
     const token = await mintX402(0);
-    expect(() => confirmations.consumeConfirmation(token, 'x402-payment', 0, X402_PAYMENT)).not.toThrow();
+    expect(await payWith(token, 0)).toBe('paid');
   });
 
-  test('an x402 cap edit is confirmed for the window that asks, and the cap main holds', async () => {
+  // X402-2: a cap's amount and window are the core's, widened only by a
+  // payment's token that binds the new cap. An edit's token is refused,
+  // from any window, with no cap read and nothing minted.
+  test('an x402 cap edit is refused, and no token minted', async () => {
     const edit = { origin: 'https://pay.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
-    const held = (windowId) => ({ ...edit, window: windowId, windowSeconds: undefined, current: mockCapHeld.current });
-    // What the renderer says about the window or the cap is not used.
-    const result = await handlers['wallet:confirm-signing'](
-      AUTO, 'x402-cap-update', null, { ...edit, window: 9, current: { capAmount: '1', createdAt: 1, expiresAt: 2, generation: 1 } });
-    expect(result.success).toBe(true);
-    expect(() => confirmations.consumeConfirmation(result.token, 'x402-cap-update', null, held(9)))
-      .toThrow(/differs/);
-
-    const again = await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit);
-    expect(() => confirmations.consumeConfirmation(again.token, 'x402-cap-update', null, held(CHROME.id)))
-      .not.toThrow();
-
-    // A sender that is no window, or a cap main doesn't hold: no token.
-    expect(await handlers['wallet:confirm-signing']({}, 'x402-cap-update', null, edit))
-      .toMatchObject({ success: false, error: expect.stringMatching(/window/) });
-    const saved = mockCapHeld.current;
-    mockCapHeld.current = null;
-    try {
-      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit))
-        .toMatchObject({ success: false, error: expect.stringMatching(/No such auto-pay cap/) });
-    } finally {
-      mockCapHeld.current = saved;
+    for (const event of [AUTO, {}]) {
+      expect(await handlers['wallet:confirm-signing'](event, 'x402-cap-update', null, edit)).toEqual({
+        success: false,
+        error: expect.stringMatching(/can't be changed here/),
+        code: 'SIGNING_NOT_CONFIRMED',
+      });
     }
+    expect(mockCapStoreRead).not.toHaveBeenCalled();
+    expect(mockApprovals.calls).toEqual([]);
+    expect(outstanding()).toBe(0);
   });
 
   // freedom-core design 0011, APS-5: with the approvals document on, the
@@ -1051,10 +1054,9 @@ describe('signing handlers require a main-side confirmation', () => {
         { sender: CHROME, kind: 'x402-payment', index: 0, payload: { ...X402_PAYMENT, accept: MAIN_ACCEPT }, feeChecked: false },
       ]);
       // The token binds main's entry, which x402:approve rebuilds; not the chrome's.
-      expect(() => confirmations.consumeConfirmation(result.token, 'x402-payment', 0, chrome)).toThrow(/differs/);
+      expect(await payWith(result.token, 0, chrome)).toBe('mismatch');
       const again = await handlers['wallet:confirm-signing'](AUTO, 'x402-payment', 0, chrome);
-      expect(() => confirmations.consumeConfirmation(again.token, 'x402-payment', 0, { ...X402_PAYMENT, accept: MAIN_ACCEPT }))
-        .not.toThrow();
+      expect(await payWith(again.token, 0, { ...X402_PAYMENT, accept: MAIN_ACCEPT })).toBe('paid');
 
       // Rejected in the panel: no token.
       answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
@@ -1081,28 +1083,15 @@ describe('signing handlers require a main-side confirmation', () => {
       expect(outstanding()).toBe(0);
     });
 
-    test('a cap\'s edit asks the panel with the cap main holds, and only its approval mints', async () => {
+    test('a cap\'s edit is refused before the panel is asked (X402-2)', async () => {
       const edit = { origin: 'https://pay.example', chainId: 8453, asset: '0xabc', capAmount: '20000000' };
-      const held = { ...edit, window: CHROME.id, windowSeconds: undefined, current: mockCapHeld.current };
-      const result = await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit);
-      expect(result).toMatchObject({ success: true, token: expect.any(String) });
-      expect(asked).toEqual([{ sender: CHROME, kind: 'x402-cap-update', index: null, payload: held, feeChecked: false }]);
-      expect(() => confirmations.consumeConfirmation(result.token, 'x402-cap-update', null, held)).not.toThrow();
-
-      answer = { approved: false, error: 'User rejected the request', code: 'USER_REJECTED' };
-      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit)).toMatchObject({ success: false, code: 'USER_REJECTED' });
+      expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit)).toMatchObject({
+        success: false,
+        code: 'SIGNING_NOT_CONFIRMED',
+      });
+      expect(asked).toEqual([]);
+      expect(mockCapStoreRead).not.toHaveBeenCalled();
       expect(outstanding()).toBe(0);
-
-      // A cap main doesn't hold: refused before anyone is asked.
-      const saved = mockCapHeld.current;
-      mockCapHeld.current = null;
-      try {
-        expect(await handlers['wallet:confirm-signing'](AUTO, 'x402-cap-update', null, edit))
-          .toMatchObject({ success: false, error: expect.stringMatching(/No such auto-pay cap/) });
-      } finally {
-        mockCapHeld.current = saved;
-      }
-      expect(asked).toHaveLength(2);
     });
   });
 

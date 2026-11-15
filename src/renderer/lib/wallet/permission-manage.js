@@ -570,7 +570,21 @@ function buildX402PermBlock(perm, asset, chain) {
   block.appendChild(buildEditDivider());
   block.appendChild(buildCapField(perm, decimals, symbol));
   block.appendChild(buildWindowField(perm));
+  if (!X402_CAP_EDITS) block.appendChild(buildCapEditNote());
   return block;
+}
+
+// A cap's amount and window are the identity core's (freedom-core design
+// 0012, X402-2): main changes neither, and lowering one waits for the
+// core's narrowing update (freedom-core #392). Until then the fields show
+// the cap read-only, and a cap can be revoked or set anew with a payment.
+const X402_CAP_EDITS = false;
+
+function buildCapEditNote() {
+  const note = document.createElement('div');
+  note.className = 'x402-perm-meta';
+  note.textContent = 'To change this cap, revoke it and set a new one when you next approve a payment.';
+  return note;
 }
 
 function buildPermHeader(symbol, chain) {
@@ -630,7 +644,7 @@ function buildExpiryLine(perm) {
 function buildEditDivider() {
   const div = document.createElement('div');
   div.className = 'x402-perm-divider';
-  div.textContent = 'Adjust';
+  div.textContent = X402_CAP_EDITS ? 'Adjust' : 'Limits';
   return div;
 }
 
@@ -647,7 +661,8 @@ function buildCapField(perm, decimals, symbol) {
   capInput.step = '1';
   capInput.className = 'x402-perm-input';
   capInput.value = atomicToWhole(perm.capAmount, decimals);
-  capInput.addEventListener('change', async () => {
+  capInput.disabled = !X402_CAP_EDITS;
+  if (X402_CAP_EDITS) capInput.addEventListener('change', async () => {
     const whole = capInput.value.trim();
     if (!/^\d+$/.test(whole) || whole === '0') {
       capInput.value = atomicToWhole(perm.capAmount, decimals);
@@ -680,7 +695,8 @@ function buildWindowField(perm) {
     if (opt.seconds === currentWindow) o.selected = true;
     windowSelect.appendChild(o);
   }
-  windowSelect.addEventListener('change', async () => {
+  windowSelect.disabled = !X402_CAP_EDITS;
+  if (X402_CAP_EDITS) windowSelect.addEventListener('change', async () => {
     await saveX402Patch(perm, { windowSeconds: Number(windowSelect.value) });
   });
   windowField.appendChild(windowLabel);

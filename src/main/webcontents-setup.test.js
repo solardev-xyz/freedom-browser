@@ -93,6 +93,9 @@ function loadWebContentsSetupModule(options = {}) {
         siteOriginForWebContents,
         allowSitePermission: jest.fn(() => true),
       }),
+      ...(options.x402Intercept
+        ? { [require.resolve('./x402/intercept')]: () => options.x402Intercept }
+        : {}),
     },
   });
   const state = require('./state');
@@ -153,6 +156,28 @@ describe('webcontents-setup', () => {
 
     contents.emit('destroyed');
     expect(ctx.state.activeBzzBases.has(contents.id)).toBe(false);
+  });
+
+  // X402-2: an unsent x402 signature is settled `withheld` when its tab
+  // commits a navigation elsewhere (x402/intercept.js decides which).
+  test("hands each committed main-frame navigation to x402's pending-payment settle", () => {
+    const x402Intercept = {
+      cleanupWebContents: jest.fn(),
+      settlePendingPaymentsOnNavigation: jest.fn(),
+    };
+    const ctx = loadWebContentsSetupModule({ x402Intercept });
+    const contents = createContentsMock({ id: 21, type: 'webview' });
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    contents.emit('did-navigate', {}, 'https://elsewhere.example/', 200, 'OK');
+    expect(x402Intercept.settlePendingPaymentsOnNavigation).toHaveBeenCalledWith(
+      21,
+      'https://elsewhere.example/'
+    );
+
+    contents.emit('destroyed');
+    expect(x402Intercept.cleanupWebContents).toHaveBeenCalledWith(21);
   });
 
   // #410: iframes need the webview preload for their adblock scriptlets; the

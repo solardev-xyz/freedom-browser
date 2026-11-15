@@ -14,13 +14,13 @@
  *     for amount formatting and the auto-pay state for cap rendering.
  *
  *   x402:approve({webContentsId, detectionId, selectedAcceptIndex?,
- *     grant?, confirmation}) — drive the vault-backed x402Client to
- *     sign, stash the signed header for the dispatcher to inject,
- *     optionally grant a per-origin allowance, and re-issue the original
- *     navigation. Signs nothing without `confirmation`: an
- *     'x402-payment' token the card minted through
- *     `wallet:confirm-signing` when the user pressed Pay, for exactly
- *     this detection, entry, account and grant.
+ *     grant?, confirmation}) — have the identity core sign the payment
+ *     (`x402.authorize`, X402-2), stash the signed header for the
+ *     dispatcher to inject, and re-issue the original navigation. The core
+ *     signs nothing without `confirmation`: the 'x402-payment' token it
+ *     minted through `wallet:confirm-signing` when the user pressed Pay,
+ *     which it spends against exactly this detection, entry, account and
+ *     grant, and it writes the per-origin allowance the token binds.
  *
  *   x402:cancel({webContentsId, navigate?}) — discard the detected
  *     payment and step the webview back one history entry (or
@@ -30,14 +30,13 @@
  *
  *   x402:get-receipts({limit?}) — recent payments for the Payments tab.
  *
- *   x402:get-all-permissions / x402:revoke-permission — allowance UI.
+ *   x402:get-all-permissions / x402:revoke-permission — allowance UI,
+ *     over the caps the identity core holds (caps.js); a revoke is the
+ *     core's (`approval.revoke`).
  *
- *   x402:update-permission({origin, chainId, asset, capAmount?,
- *     windowSeconds?, confirmation}) — change an allowance's amount or
- *     window. Changes nothing without `confirmation`: an
- *     'x402-cap-update' token the cap editor minted through
- *     `wallet:confirm-signing`, in this same window, for exactly this
- *     edit of the cap as main holds it.
+ *   x402:update-permission — refused: an allowance's amount and window
+ *     are the core's, and widening one needs its decision, a payment's
+ *     token that binds the new cap (X402-2).
  *
  * Auto-pay (active cap covers the charge) doesn't go through these —
  * the detector calls signAndQueueRetry directly. See sign-flow.js.
@@ -61,20 +60,14 @@ const {
   sendToHost,
 } = require('./intercept');
 const { guestHostedBy } = require('../wallet/agent-tab-custody');
-const {
-  revoke: revokePermission,
-  revokeAllForOrigin,
-  updatePermission,
-  capUpdateRequest,
-  getAllPermissions,
-} = require('./permissions');
+const { revoke: revokePermission, revokeAllForOrigin, getAllPermissions } = require('./caps');
 const paymentHistory = require('../payment-history');
 const { signAndQueueRetry, isCapNotCoveredError } = require('./sign-flow');
 const { tupleFromAccept, coverageForAccept } = require('./payment-utils');
 const { getActiveWalletAddress, getActiveWalletIndex } = require('../identity-manager');
 const {
   KINDS: CONFIRM_KINDS,
-  consumeConfirmation,
+  confirmationFor,
   discardConfirmation,
 } = require('../wallet/signing-confirmation');
 const { getBalancesWithCache, getAllBalances, clearBalanceCache } = require('../wallet/balance-service');
@@ -191,6 +184,10 @@ function refreshAndBroadcastBalances(webContentsId, address) {
       log.warn(`[x402:get-details] background balance refresh failed: ${err.message}`);
     });
 }
+
+// An auto-pay cap's edit, refused (X402-2).
+const CAP_EDIT_REFUSED =
+  "An auto-pay cap can't be changed here: revoke it, or set a new one when you approve a payment";
 
 // What a window is told when it names a payment on a tab it doesn't host.
 const NOT_THIS_WINDOW = 'This payment is not on a tab of this window';
@@ -449,9 +446,12 @@ function registerX402Ipc() {
 
     // The account that signs is the one the token was minted for: the
     // active account now, handed down so the signature can't use another.
+    // The token is read as the core binds it, from main's record; the core
+    // spends it at the payment's `x402.authorize`, against what it binds.
     const walletIndex = getActiveWalletIndex();
+    let held;
     try {
-      consumeConfirmation(confirmation, CONFIRM_KINDS.X402_PAYMENT, walletIndex, {
+      held = confirmationFor(confirmation, CONFIRM_KINDS.X402_PAYMENT, walletIndex, {
         webContentsId: record.webContentsId,
         detectionId,
         url: record.url,
@@ -478,6 +478,7 @@ function registerX402Ipc() {
         grant,
         selectedAcceptIndex: acceptIndex,
         walletIndex,
+        confirmation: held,
       });
       return { success: true, pending: true };
     }
@@ -496,9 +497,8 @@ function registerX402Ipc() {
       // chooser's job (cached balances) and the seller's facilitator is
       // the real settlement-time gate.
       await signAndQueueRetry(id, {
-        grant,
         authorizedBy: record.authorizedBy,
-        selectedAccept: accept,
+        confirmation: held,
         walletIndex,
       });
       return { success: true };
@@ -510,9 +510,9 @@ function registerX402Ipc() {
       if (getDetectedPayment(id)?.detectionId === detectionId) {
         releaseApprovalClaim(detectionId);
       }
-      // Vault locked / unparseable URL / sdk error all surface verbatim
-      // so the sidebar can prompt the right next step.
-      return { success: false, error: err.message };
+      // Vault locked / unparseable URL / the core's refusal all surface
+      // verbatim so the sidebar can prompt the right next step.
+      return { success: false, error: err.message, ...(err.code ? { code: err.code } : {}) };
     }
   });
 
@@ -654,44 +654,37 @@ function registerX402Ipc() {
     };
   });
 
-  ipcMain.handle(IPC.X402_REVOKE_PERMISSION, async (_event, { origin, chainId, asset }) => {
-    revokePermission(origin, chainId, asset);
-    return { success: true };
-  });
-
-  ipcMain.handle(IPC.X402_REVOKE_ALL_FOR_ORIGIN, async (_event, { origin } = {}) => {
-    revokeAllForOrigin(origin);
-    return { success: true };
-  });
-
-  // Changing a cap's amount or window changes what auto-pay may spend
-  // without asking (#1023), so it is gated like a payment: the cap editor
-  // mints an 'x402-cap-update' token through `wallet:confirm-signing` for
-  // the edit it is about to make, and the edit is applied only with that
-  // token, from the window that minted it, while the cap is still the one
-  // it was minted for. Any call presenting a token burns it.
-  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async (event, args = {}) => {
-    const { origin, chainId, asset, capAmount, windowSeconds, confirmation } = args ?? {};
+  // A revoke narrows: the core's (`approval.revoke`, as the chrome).
+  ipcMain.handle(IPC.X402_REVOKE_PERMISSION, async (_event, { origin, chainId, asset } = {}) => {
     try {
-      consumeConfirmation(
-        confirmation,
-        CONFIRM_KINDS.X402_CAP_UPDATE,
-        null,
-        capUpdateRequest(event?.sender?.id, { origin, chainId, asset, capAmount, windowSeconds })
-      );
-    } catch (err) {
-      return { success: false, error: err.message, code: err.code };
-    }
-    try {
-      const updated = updatePermission(origin, chainId, asset, { capAmount, windowSeconds });
-      return { success: true, permission: updated };
+      await revokePermission(origin, chainId, asset);
+      return { success: true };
     } catch (err) {
       return { success: false, error: err.message };
     }
+  });
+
+  ipcMain.handle(IPC.X402_REVOKE_ALL_FOR_ORIGIN, async (_event, { origin } = {}) => {
+    try {
+      await revokeAllForOrigin(origin);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // A cap's amount and window are the identity core's (X402-2): main changes
+  // neither. Widening one needs the core's decision, a payment's
+  // `x402-payment` token that binds the new cap, which replaces main's
+  // `x402-cap-update` token; the core has no method that narrows one but a
+  // revoke. So an edit is refused, with nothing changed.
+  ipcMain.handle(IPC.X402_UPDATE_PERMISSION, async () => {
+    return { success: false, error: CAP_EDIT_REFUSED, code: 'SIGNING_NOT_CONFIRMED' };
   });
 }
 
 module.exports = {
   registerX402Ipc,
   paymentApprovalRequest,
+  CAP_EDIT_REFUSED,
 };
