@@ -14,9 +14,12 @@
 // `<helper>` is what main runs for `freedom-cored keystore`: the binary
 // itself, or a stand-in. At `<stop at>` (`before-helper` or
 // `before-forget-done`, or `-` for none) it writes `at <step>` and stops
-// there for good. A drain or forget that ends writes `done <counts JSON>`;
+// there for good. `<step>@<file>` pauses there instead, the first time,
+// until `<file>` exists: a test lines two mains up at a step with it. A
+// drain or forget that ends writes `done <counts JSON>`;
 // `core` writes `asked` once its request has gone, and then waits.
 
+const fs = require('fs');
 const { spawn } = require('child_process');
 const { CoreClient } = require('../../src/main/core/core-client');
 const { createHelperRunner, registerKeystoreShell } = require('../../src/main/core/keystore-shell');
@@ -38,7 +41,9 @@ function stopForGood() {
 
 async function main() {
   if (mode === 'forget' || mode === 'drain') {
-    const [appRoot, stopAt, items] = rest;
+    const [appRoot, stopWhere, items] = rest;
+    const [stopAt, release] = stopWhere.split('@');
+    let paused = false;
     const deps = {
       runner,
       log,
@@ -46,10 +51,12 @@ async function main() {
       platform: 'darwin',
       subcommand: async (sub, root, extra) =>
         (await subcommands.run(cored, ['profile', sub, '--app-root', root, ...extra])).result,
-      step: (name) => {
-        if (name !== stopAt) return;
+      step: async (name) => {
+        if (name !== stopAt || paused) return;
         process.stdout.write(`at ${name}\n`);
-        stopForGood();
+        if (!release) stopForGood();
+        paused = true;
+        while (!fs.existsSync(release)) await new Promise((resolve) => setTimeout(resolve, 50));
       },
     };
     const counts =

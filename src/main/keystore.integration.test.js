@@ -560,9 +560,17 @@ describeIfBinary('the key store through main, with the real freedom-cored (0013,
     test("two profiles' mains draining at once both leave the file empty", async () => {
       const items = [...(await store.makeDeleted('one')), ...(await store.makeDeleted('two'))];
       expect(recordedItems(appRoot).sort()).toEqual(items.map((i) => i.item).sort());
+      // Lined up before their first helper, so each has listed both items.
+      const release = path.join(root, 'release');
       const mains = [0, 1].map(() =>
-        runMain(['drain', sourceBinary, store.helper('real'), appRoot, '-'])
+        runMain(['drain', sourceBinary, store.helper('real'), appRoot, `before-helper@${release}`])
       );
+      await Promise.all(
+        mains.map((main) =>
+          waitFor(() => main.out.includes('at before-helper\n'), 60_000, 'main at before-helper')
+        )
+      );
+      fs.writeFileSync(release, '');
       const counts = await Promise.all(mains.map(ends));
       // Each saw both items, and each counted both gone: one removed it, the
       // other found it not_found.
