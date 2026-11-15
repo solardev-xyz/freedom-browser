@@ -207,7 +207,10 @@ function computeRetryKey({ webContentsId, method, url, range }) {
 // somehow attached the facilitator would reject it; this is hygiene to
 // keep the Map from accumulating stranded signatures across long-lived
 // sessions and to avoid attaching a long-stale signature to a same-URL
-// request that happens to fire much later.
+// request that happens to fire much later. Each entry has its own timer:
+// at its TTL it is settled `withheld` whether or not the tab makes another
+// request, so an idle tab never keeps a cap charged for a payment that
+// never went out.
 const PENDING_TTL_MS = 60_000;
 
 /**
@@ -226,8 +229,9 @@ const PENDING_TTL_MS = 60_000;
  * MUST NOT attach without one, or once that cap has gone; manual ones
  * proceed regardless. Undefined → MANUAL for backward-compat. An entry
  * dropped without being attached is settled `withheld`, which gives its
- * charge back (#1024); one attached is settled `sent`.
- *
+ * charge back (#1024); one attached is settled `sent`. An entry is
+ * dropped at its TTL (its own timer), when the tab navigates elsewhere
+ * (`settlePendingPaymentsOnNavigation`), or when the tab is destroyed.
  *
  * `requestShape` defaults to `{ method: 'GET', range: null }` —
  * preserves no-Range behaviour for callers that predate request-shape
@@ -262,8 +266,80 @@ function setPendingPayment(webContentsId, url, signed, requestShape) {
     range: requestShape?.range,
   });
   const bucket = pendingPayments.get(key) ?? [];
-  bucket.push({ ...signed, webContentsId, expiresAt: now + PENDING_TTL_MS });
+  const entry = {
+    ...signed,
+    webContentsId,
+    retryKey: key,
+    retryUrl: withoutFragment(url),
+    expiresAt: now + PENDING_TTL_MS,
+  };
+  // Settled `withheld` at its TTL even if the tab never makes another
+  // request. `unref` so a waiting signature never holds the process open.
+  entry.timer = setTimeout(() => expirePendingPayment(entry), PENDING_TTL_MS);
+  entry.timer.unref?.();
+  bucket.push(entry);
   pendingPayments.set(key, bucket);
+}
+
+// A URL as the network sees it: webRequest's URLs carry no fragment, a
+// navigation's can.
+function withoutFragment(url) {
+  const at = typeof url === 'string' ? url.indexOf('#') : -1;
+  return at === -1 ? url : url.slice(0, at);
+}
+
+/**
+ * Take one entry out of `pendingPayments` and stop its timer. Returns
+ * false if it had already gone (attached, or settled `withheld`): an entry
+ * is settled once.
+ */
+function takePendingPayment(entry) {
+  clearTimeout(entry.timer);
+  const bucket = pendingPayments.get(entry.retryKey);
+  const at = bucket ? bucket.indexOf(entry) : -1;
+  if (at === -1) return false;
+  bucket.splice(at, 1);
+  if (bucket.length === 0) pendingPayments.delete(entry.retryKey);
+  return true;
+}
+
+// The entry's timer: past its TTL and never attached, it is settled
+// `withheld`, and its charge goes back.
+function expirePendingPayment(entry) {
+  if (!takePendingPayment(entry)) return;
+  log.info(
+    `[x402:pending] signature for ${sanitizeUrlForLog(entry.retryUrl)} expired unsent; settling it withheld`
+  );
+  giveBackCharge(entry);
+}
+
+/**
+ * A main-frame navigation of a tab committed (`did-navigate`, wired in
+ * webcontents-setup.js): the document whose retry a pending signature was
+ * waiting for is gone, so that retry will never come. Each of the tab's
+ * pending signatures is settled `withheld`, and its charge goes back,
+ * except one waiting for the URL navigated to: that navigation is the paid
+ * retry itself (sign-flow's `loadURL` of a paywalled page, or the 402 page
+ * committing after its auto-pay has already signed), whose request
+ * attaches it. A navigation that fails, or stays within the page, commits
+ * no new document and settles nothing.
+ */
+function settlePendingPaymentsOnNavigation(webContentsId, url) {
+  if (pendingPayments.size === 0) return;
+  const target = withoutFragment(url);
+  const prefix = `${webContentsId}|`;
+  for (const [key, bucket] of [...pendingPayments]) {
+    if (!key.startsWith(prefix)) continue;
+    for (const entry of [...bucket]) {
+      if (entry.retryUrl === target) continue;
+      takePendingPayment(entry);
+      log.info(
+        `[x402:pending] tab ${webContentsId} navigated away; settling the unsent signature for ` +
+        `${sanitizeUrlForLog(entry.retryUrl)} withheld`
+      );
+      giveBackCharge(entry);
+    }
+  }
 }
 
 /**
@@ -279,13 +355,16 @@ function giveBackCharge(entry) {
   });
 }
 
-// Lazy sweep: pages that never retry would otherwise leave entries
-// stranded. Fires only when this Map is already being touched, so no
-// timer to manage. What it drops was never attached: its charge goes back.
+// Backstop to each entry's timer, run whenever this Map is touched: a
+// timer counts monotonic time, so after a system sleep the wall clock can
+// be past an entry's `expiresAt` before its timer fires. What it drops was
+// never attached: its charge goes back.
 function sweepExpiredPendingPayments(now = Date.now()) {
   for (const [k, bucket] of pendingPayments) {
     while (bucket.length > 0 && bucket[0].expiresAt && now > bucket[0].expiresAt) {
-      giveBackCharge(bucket.shift());
+      const entry = bucket.shift();
+      clearTimeout(entry.timer);
+      giveBackCharge(entry);
     }
     if (bucket.length === 0) pendingPayments.delete(k);
   }
@@ -300,6 +379,9 @@ function clearDetectedPayment(webContentsId) {
 }
 
 function clearAllPendingPayments() {
+  for (const bucket of pendingPayments.values()) {
+    for (const entry of bucket) clearTimeout(entry.timer);
+  }
   pendingPayments.clear();
 }
 
@@ -654,7 +736,10 @@ function cleanupWebContents(webContentsId) {
     if (!key.startsWith(prefix)) continue;
     pendingPayments.delete(key);
     // Signed and never attached: their charges go back.
-    for (const entry of bucket) giveBackCharge(entry);
+    for (const entry of bucket) {
+      clearTimeout(entry.timer);
+      giveBackCharge(entry);
+    }
   }
   finalizeAwaitingResponsesForWebContents(webContentsId, 'tab destroyed');
   deleteByWebContents(requestContext, webContentsId);
@@ -1339,6 +1424,7 @@ function injectPaymentSignatureHandler(details) {
   if (!bucket || bucket.length === 0) return null;
 
   const signed = bucket.shift();
+  clearTimeout(signed.timer);
   if (bucket.length === 0) pendingPayments.delete(key);
 
   // EIP-3009 carries its own validAfter/validBefore; facilitator would
@@ -1409,6 +1495,7 @@ module.exports = {
   paymentResponseLoggingHandler,
   parsePaymentRequiredHeader,
   setPendingPayment,
+  settlePendingPaymentsOnNavigation,
   getDetectedPayment,
   clearDetectedPayment,
   clearAllPendingPayments,

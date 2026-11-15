@@ -63,6 +63,7 @@ const {
   paymentResponseLoggingHandler,
   parsePaymentRequiredHeader,
   setPendingPayment,
+  settlePendingPaymentsOnNavigation,
   getDetectedPayment,
   clearDetectedPayment,
   clearAllPendingPayments,
@@ -1405,6 +1406,156 @@ describe('injectPaymentSignatureHandler', () => {
     } finally {
       Date.now = realNow;
     }
+  });
+});
+
+// === Unsent signatures settle on their own (TTL timer, navigation) ======
+//
+// A signature the core charged a cap for and that never went out is
+// settled `withheld` at its TTL by its own timer, whether or not the tab
+// makes another request, and when its tab commits a navigation elsewhere.
+// The paid retry itself still attaches it and settles it `sent`.
+describe('unsent signatures settle without a further request', () => {
+  const ARTICLE = `${ORIGIN}/article`;
+  const retry = (overrides = {}) => ({
+    webContentsId: 7,
+    url: ARTICLE,
+    requestHeaders: {},
+    ...overrides,
+  });
+  const capSigned = (reservation) => ({
+    header: X402_HEADERS.SIGNATURE_V2,
+    value: 'sig',
+    origin: ORIGIN,
+    chainId: CHAIN,
+    asset: USDC,
+    amount: '10000',
+    authorizedBy: 'cap',
+    reservation,
+    charged: true,
+  });
+
+  // A cap of 20000 the core has charged 10000 for this payment, with fake
+  // timers from here on (setImmediate stays real for `flushSettles`).
+  async function chargedByCore({ tab = 7 } = {}) {
+    await coverWithCap({ capAmount: '20000' });
+    const reservation = await coreCharge({ tab });
+    mockCore.calls.length = 0;
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
+    return reservation;
+  }
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('an idle tab past the TTL settles its signature withheld, with no further stash or request', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+    expect(spentOnCap()).toBe('10000');
+
+    jest.advanceTimersByTime(59_000);
+    await flushSettles();
+    expect(coreSettles()).toEqual([]);
+
+    jest.advanceTimersByTime(1_001);
+    await flushSettles();
+    // Nothing touched the Map: the entry's own timer settled it.
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
+    expect(mockCore.openReservations()).toBe(0);
+    expect(mockHostSend).toHaveBeenCalledWith('x402:cap-consumed', { origin: ORIGIN });
+    // Gone: a late request carries no header.
+    expect(injectPaymentSignatureHandler(retry())).toBeNull();
+    await flushSettles();
+    expect(coreSettles()).toHaveLength(1);
+  });
+
+  test('a same-tab navigation away settles the signature withheld at once, and its timer is stopped', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    settlePendingPaymentsOnNavigation(7, 'https://elsewhere.example/');
+    await flushSettles();
+
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
+    expect(mockCore.openReservations()).toBe(0);
+    // Coming back to the page later doesn't send the old signature.
+    expect(injectPaymentSignatureHandler(retry())).toBeNull();
+    // Settled once: the TTL settles nothing more.
+    jest.advanceTimersByTime(61_000);
+    await flushSettles();
+    expect(coreSettles()).toHaveLength(1);
+  });
+
+  test('a subresource signature is settled withheld when its page navigates to another URL', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, `${ORIGIN}/api/chunk`, capSigned(reservation), { method: 'GET', range: 'bytes=0-99' });
+
+    settlePendingPaymentsOnNavigation(7, `${ORIGIN}/next-page`);
+    await flushSettles();
+
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+    expect(spentOnCap()).toBe('0');
+  });
+
+  test("another tab's navigation leaves the signature waiting for its retry", async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    settlePendingPaymentsOnNavigation(8, 'https://elsewhere.example/');
+    await flushSettles();
+    expect(coreSettles()).toEqual([]);
+
+    expect(injectPaymentSignatureHandler(retry())?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+  });
+
+  test('the paid retry still sends the header and settles sent; nothing is withheld at the TTL', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    // The 402 page commits after its auto-pay has signed, and the retry's
+    // own navigation starts: both go to the URL the signature waits for.
+    settlePendingPaymentsOnNavigation(7, ARTICLE);
+    settlePendingPaymentsOnNavigation(7, `${ARTICLE}#section`);
+    await flushSettles();
+    expect(coreSettles()).toEqual([]);
+
+    const result = injectPaymentSignatureHandler(retry());
+    expect(result?.requestHeaders['PAYMENT-SIGNATURE']).toBe('sig');
+    // The retry commits.
+    settlePendingPaymentsOnNavigation(7, ARTICLE);
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+    expect(spentOnCap()).toBe('10000');
+
+    // Its timer was stopped when it was attached.
+    jest.advanceTimersByTime(61_000);
+    await flushSettles();
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'sent' }]);
+    expect(spentOnCap()).toBe('10000');
+  });
+
+  test("a closed tab's signature is settled withheld once, and its timer is stopped", async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    cleanupWebContents(7);
+    jest.advanceTimersByTime(61_000);
+    await flushSettles();
+
+    expect(coreSettles()).toEqual([{ reservation, outcome: 'withheld' }]);
+  });
+
+  test('clearing every pending payment stops their timers', async () => {
+    const reservation = await chargedByCore();
+    setPendingPayment(7, ARTICLE, capSigned(reservation));
+
+    clearAllPendingPayments();
+    expect(jest.getTimerCount()).toBe(0);
   });
 });
 
