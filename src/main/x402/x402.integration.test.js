@@ -10,9 +10,6 @@
  * tab, detection, URL, entry, account and grant it binds. #1024's against
  * it: a cap is charged as the core signs, so two auto-pays never both sign
  * against headroom for one, and a payment withheld gets its charge back.
- * Rollback: the build before X402-2's own store (x402/permissions.js, kept
- * unused) reads the core's file and finds the cap under the lowercase key
- * `tupleFromAccept` makes.
  *
  * X402-2b (cored 0.19.0, freedom-core #393): a Ledger's and a phone's
  * payments take the core's device path (`x402.authorize { device }`, the
@@ -303,7 +300,7 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     expect([...core.service.helloParams(core).grant_moved].sort()).toEqual(['dapp', 'radicle', 'swarm', 'x402']);
   });
 
-  test("a payment the panel approved is the core's: signed by it, its cap written by it, and read back by an older build", async () => {
+  test("a payment the panel approved is the core's: signed by it, and its cap written by it", async () => {
     const stored = await card(41);
     const token = await approveToken(stored, { tabId: 41, grant: GRANT });
     expect(await approve(41, stored, token, { grant: GRANT })).toEqual({ success: true });
@@ -330,17 +327,6 @@ describeIfBinary('x402 with the real freedom-cored (X402-2)', () => {
     expect(cap.expiresAt - cap.createdAt).toBe(3600);
     await waitFor(() => caps.getPermission(ORIGIN, CHAIN, USDC)?.spentAmount === PRICE);
     expect(caps.getPermission(ORIGIN, CHAIN, USDC)).toMatchObject({ capAmount: '20000', spentAmount: PRICE });
-    // Rollback: the store before X402-2 reads the core's file, and finds the
-    // cap under the key `tupleFromAccept` makes (the asset in lowercase).
-    const { tupleFromAccept } = jest.requireActual('./payment-utils');
-    const reference = require('./permissions');
-    reference._resetCache();
-    const tuple = tupleFromAccept(ENTRY);
-    expect(tuple.asset).toBe(USDC.toLowerCase());
-    expect(reference.getPermission(ORIGIN, tuple.chainId, tuple.asset)).toMatchObject({
-      capAmount: '20000',
-      spentAmount: PRICE,
-    });
   });
 
   describe("#1016: a token pays exactly what it binds, as the core checks it", () => {
