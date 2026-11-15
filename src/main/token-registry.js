@@ -150,6 +150,7 @@ function registerTokenRegistryIpc() {
 
 module.exports = {
   initRegistry,
+  normalizeTokenKey,
   getTokens,
   getToken,
   getTokenKey,

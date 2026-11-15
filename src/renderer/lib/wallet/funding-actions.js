@@ -24,15 +24,16 @@ export function normalizeTokenKey(rawKey) {
   return asset === 'native' ? rawKey : `${chain}:${asset.toLowerCase()}`;
 }
 
+// Balance maps carry normalized keys: the registry emits them, and the
+// balance cache migrates any checksum-cased key it kept from before (#104).
+// The key as given is still tried, for a caller that holds one verbatim.
 export function getTokenMapEntry(map, tokenKey) {
   if (!map || !tokenKey) return null;
 
   const normalizedKey = normalizeTokenKey(tokenKey);
   if (Object.prototype.hasOwnProperty.call(map, normalizedKey)) return map[normalizedKey];
   if (Object.prototype.hasOwnProperty.call(map, tokenKey)) return map[tokenKey];
-
-  const match = Object.entries(map).find(([key]) => normalizeTokenKey(key) === normalizedKey);
-  return match ? match[1] : null;
+  return null;
 }
 
 export function hasPositiveTokenBalance(balances, tokenKey) {
