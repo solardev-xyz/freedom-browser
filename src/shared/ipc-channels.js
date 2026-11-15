@@ -474,6 +474,7 @@ module.exports = {
   SWARM_SETUP_WATCH: 'swarm:setup-watch',
   SWARM_SETUP_GET_PLANS: 'swarm:setup-get-plans',
   SWARM_SETUP_GET_EXTEND_OPTIONS: 'swarm:setup-get-extend-options',
+  SWARM_SETUP_QUOTE: 'swarm:setup-quote',
   SWARM_SETUP_ARM: 'swarm:setup-arm',
   SWARM_SETUP_CANCEL: 'swarm:setup-cancel',
   SWARM_SETUP_TRACK_FUNDING_TX: 'swarm:setup-track-funding-tx',

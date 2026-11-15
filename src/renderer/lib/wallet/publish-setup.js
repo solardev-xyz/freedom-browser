@@ -27,6 +27,7 @@ import {
   describeOperationTarget,
   describeOperationTitle,
   describePlan,
+  describeSize,
 } from './swarm-readiness.js';
 import { createTab } from '../tabs.js';
 import { isVisible as isSidebarVisible } from '../sidebar.js';
@@ -46,6 +47,14 @@ let plansWarning;
 let plansWarningText;
 let planList;
 let plansError;
+let customForm;
+let customSize;
+let customDays;
+let customDaysError;
+let customChoice;
+let customLabel;
+let customDesc;
+let customError;
 let readyView;
 let readyText;
 let manageBtn;
@@ -89,6 +98,18 @@ let plansRequestId = 0;
 // later render once this is PLANS_RETRY_MS old.
 let plansLoadedAt = 0;
 const PLANS_RETRY_MS = 10_000;
+// The custom size and duration (#1257): the price of the last choice priced
+// (`{ depth, days, quote, error }`), whether one is on its way, and which
+// request is current. A typed number of days is priced once typing pauses.
+let customQuote = null;
+let customLoading = false;
+let customRequestId = 0;
+let customTimer = null;
+// The depths the size picker was last filled with.
+let customSizesKey = null;
+const CUSTOM_QUOTE_DELAY_MS = 400;
+const CUSTOM_DEFAULT_DEPTH = 20;
+const CUSTOM_DEFAULT_DAYS = '30';
 // Why the last purchase, extension or top-up could not start (arm refused),
 // shown above whichever view is up until the user does something else.
 let startError = null;
@@ -124,6 +145,14 @@ export function initPublishSetup() {
   plansWarningText = document.getElementById('publish-setup-plans-warning-text');
   planList = document.getElementById('publish-plan-list');
   plansError = document.getElementById('publish-plans-error');
+  customForm = document.getElementById('publish-custom');
+  customSize = document.getElementById('publish-custom-size');
+  customDays = document.getElementById('publish-custom-days');
+  customDaysError = document.getElementById('publish-custom-days-error');
+  customChoice = document.getElementById('publish-custom-choice');
+  customLabel = document.getElementById('publish-custom-label');
+  customDesc = document.getElementById('publish-custom-desc');
+  customError = document.getElementById('publish-custom-error');
   readyView = document.getElementById('publish-setup-ready');
   readyText = document.getElementById('publish-setup-ready-text');
   manageBtn = document.getElementById('publish-setup-manage');
@@ -164,6 +193,16 @@ export function initPublishSetup() {
     showPlans = true;
     startError = null;
     render();
+  });
+  customForm?.addEventListener('toggle', () => {
+    if (customForm.open) scheduleCustomQuote(0);
+  });
+  customSize?.addEventListener('change', () => scheduleCustomQuote(0));
+  customDays?.addEventListener('input', () => scheduleCustomQuote(CUSTOM_QUOTE_DELAY_MS));
+  customChoice?.addEventListener('click', () => {
+    const choice = readCustomChoice();
+    if (!isPricedChoice(choice)) return;
+    armOperation({ kind: 'buy', depth: choice.depth, days: choice.days });
   });
   payWalletBtn?.addEventListener('click', () => payFromWallet());
   payCopyBtn?.addEventListener('click', () => copyPaymentAddress());
@@ -214,8 +253,16 @@ export function initPublishSetup() {
  * for a setup reason (the swarm provider routes it here) and `reason` is that
  * refusal's 4900 reason; `error` says why a purchase the opener tried to start
  * was refused (the storage and deposit screens arm before they hand over).
+ * `plans` opens on the plan list even when the node can already publish: the
+ * storage screen's Buy button, whose user has chosen to buy, would otherwise
+ * land on "Ready to publish" and its own way back to that screen.
  */
-export async function openPublishSetup({ origin = null, error = null, reason = null } = {}) {
+export async function openPublishSetup({
+  origin = null,
+  error = null,
+  reason = null,
+  plans: openOnPlans = false,
+} = {}) {
   if (refuseSubscreenWhileInFlight('Publish setup screen')) return;
 
   walletState.identityView?.classList.add('hidden');
@@ -223,9 +270,10 @@ export async function openPublishSetup({ origin = null, error = null, reason = n
   isOpen = true;
   requestOrigin = typeof origin === 'string' && origin ? origin : null;
   requestReason = requestOrigin && typeof reason === 'string' ? reason : null;
-  showPlans = false;
+  showPlans = openOnPlans === true;
   plans = null;
   plansLoadedAt = 0;
+  resetCustom();
   renderedQrUri = null;
   startError = typeof error === 'string' && error ? error : null;
   shownFinishedOpId = null;
@@ -257,6 +305,8 @@ export function closePublishSetup() {
   }
   shownFinishedOpId = null;
   startError = null;
+  clearTimeout(customTimer);
+  customRequestId++;
   isOpen = false;
   requestOrigin = null;
   requestReason = null;
@@ -435,6 +485,125 @@ function renderPlans() {
   const errorText = plansLoading ? '' : firstError || '';
   show(plansError, Boolean(errorText));
   if (plansError) plansError.textContent = errorText;
+  renderCustom();
+}
+
+// ============================================
+// Custom size and duration (#1257)
+// ============================================
+
+// What the custom fields say now: `days` is null while the field is empty
+// or not a whole number of days in range, and `error` says why once the
+// user has typed something.
+function readCustomChoice() {
+  const maxDays = setupState?.maxDays || 3650;
+  const depth = Number(customSize?.value);
+  const text = customDays?.value.trim() || '';
+  const days = /^\d+$/.test(text) ? Number(text) : null;
+  if (days === null || days < 1 || days > maxDays) {
+    return {
+      depth,
+      days: null,
+      error: text ? `Enter a whole number of days from 1 to ${maxDays}.` : null,
+    };
+  }
+  return { depth, days, error: null };
+}
+
+function isPricedChoice(choice) {
+  return Boolean(
+    choice.days &&
+    customQuote?.quote &&
+    customQuote.depth === choice.depth &&
+    customQuote.days === choice.days
+  );
+}
+
+function resetCustom() {
+  clearTimeout(customTimer);
+  customRequestId++;
+  customQuote = null;
+  customLoading = false;
+  if (customForm) customForm.open = false;
+  if (customDays) customDays.value = CUSTOM_DEFAULT_DAYS;
+  if (customSize && customSizesKey !== null) customSize.value = String(CUSTOM_DEFAULT_DEPTH);
+}
+
+// A changed field drops the price shown for the old choice and, once the
+// choice is complete, asks for the new one after `delay`.
+function scheduleCustomQuote(delay) {
+  clearTimeout(customTimer);
+  customRequestId++;
+  customQuote = null;
+  const choice = readCustomChoice();
+  customLoading = Boolean(choice.days);
+  if (choice.days) customTimer = setTimeout(() => loadCustomQuote(choice), delay);
+  render();
+}
+
+async function loadCustomQuote(choice) {
+  const requestId = ++customRequestId;
+  let priced;
+  try {
+    const result = await window.publishSetup?.quote({
+      kind: 'buy',
+      depth: choice.depth,
+      days: choice.days,
+    });
+    priced = {
+      quote: result?.quote || null,
+      error: result?.quote ? null : result?.error || 'Could not get a price from the Swarm node.',
+    };
+  } catch (err) {
+    priced = { quote: null, error: err.message || 'Could not get a price from the Swarm node.' };
+  }
+  if (requestId !== customRequestId) return;
+  customQuote = { depth: choice.depth, days: choice.days, ...priced };
+  customLoading = false;
+  render();
+}
+
+function fillCustomSizes() {
+  const sizes = setupState?.sizes || [];
+  const key = sizes.map((size) => size.depth).join(',');
+  if (!customSize || key === customSizesKey) return;
+  const selected = customSizesKey === null ? String(CUSTOM_DEFAULT_DEPTH) : customSize.value;
+  customSize.innerHTML = '';
+  sizes.forEach((size) => {
+    const option = document.createElement('option');
+    option.value = String(size.depth);
+    option.textContent = describeSize(size);
+    customSize.appendChild(option);
+  });
+  customSizesKey = key;
+  if (sizes.some((size) => String(size.depth) === selected)) customSize.value = selected;
+}
+
+function renderCustom() {
+  fillCustomSizes();
+  const choice = readCustomChoice();
+  const size = (setupState?.sizes || []).find((s) => s.depth === choice.depth);
+  const priced = isPricedChoice(choice) ? customQuote : null;
+
+  if (customDaysError) {
+    customDaysError.textContent = choice.error || '';
+    show(customDaysError, Boolean(choice.error));
+  }
+  customDays?.classList.toggle('error', Boolean(choice.error));
+
+  if (customLabel) {
+    if (priced) customLabel.textContent = `Custom · ${priced.quote.price.display} xDAI`;
+    else customLabel.textContent = customLoading ? 'Custom · …' : 'Custom';
+  }
+  if (customDesc) {
+    customDesc.textContent =
+      size && choice.days ? describePlan({ usableBytes: size.usableBytes, days: choice.days }) : '';
+  }
+  if (customChoice) customChoice.disabled = !priced;
+
+  const error = !customLoading && customQuote?.error ? customQuote.error : '';
+  show(customError, Boolean(error));
+  if (customError) customError.textContent = error;
 }
 
 async function loadPlans() {
@@ -458,7 +627,7 @@ async function loadPlans() {
 
 function renderPay(state, op) {
   const quote = op.quote;
-  if (payLabel) payLabel.textContent = describeOperationTarget(op, state.plans);
+  if (payLabel) payLabel.textContent = describeOperationTarget(op, state);
   if (payAmount) payAmount.textContent = quote ? `${quote.send.display} xDAI` : 'Getting a price…';
   if (payBalance) {
     payBalance.textContent = quote?.walletXdai ? `Your node holds ${quote.walletXdai} xDAI` : '';

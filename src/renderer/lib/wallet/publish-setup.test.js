@@ -198,6 +198,24 @@ describe('views', () => {
       expect(visible('publish-setup-ready')).toBe(false);
     }
   );
+
+  test.each(['ready', 'storage-pending'])(
+    "the storage screen's Buy button opens on the plan list from %s",
+    async (key) => {
+      const { mod, visible } = await load({
+        state: { canBuy: true, readiness: readiness(key), plans: [] },
+      });
+      await mod.openPublishSetup({ plans: true });
+      expect(visible('publish-setup-plans')).toBe(true);
+      expect(visible('publish-setup-ready')).toBe(false);
+
+      // Only for that visit: the next plain open lands on "Ready" again.
+      mod.closePublishSetup();
+      await mod.openPublishSetup();
+      expect(visible('publish-setup-ready')).toBe(true);
+      expect(visible('publish-setup-plans')).toBe(false);
+    }
+  );
 });
 
 describe('paying from the Freedom wallet', () => {
@@ -407,5 +425,149 @@ describe('finished operations and refusals', () => {
     push(state);
     await flush();
     expect(window.publishSetup.getPlans).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('custom size and duration (#1257)', () => {
+  const SIZES = [
+    { depth: 19, usableBytes: 112_060_000 },
+    { depth: 20, usableBytes: 687_620_000 },
+    { depth: 23, usableBytes: 19_940_000_000 },
+  ];
+  const plansState = () => ({
+    canBuy: true,
+    readiness: readiness('needs-storage'),
+    plans: [],
+    sizes: SIZES,
+    maxDays: 3650,
+  });
+
+  async function openCustom() {
+    const ctx = await load({ state: plansState() });
+    // The price names the request it was for, so a test can tell replies apart.
+    window.publishSetup.quote = jest.fn(async ({ depth, days }) => ({
+      request: { kind: 'buy', depth, days },
+      quote: { price: { display: `${depth}/${days}` } },
+      error: null,
+    }));
+    window.publishSetup.arm.mockResolvedValue({ ok: true });
+    await ctx.mod.openPublishSetup();
+    await flush();
+    const el = (id) => ctx.elements[`publish-custom${id}`];
+    el('').open = true;
+    el('').dispatch('toggle');
+    await jest.advanceTimersByTimeAsync(0);
+    await flush();
+    const type = async (days) => {
+      el('-days').value = days;
+      el('-days').dispatch('input');
+      await jest.advanceTimersByTimeAsync(400);
+      await flush();
+    };
+    return { ...ctx, el, type };
+  }
+
+  test('prices the default choice when opened, and buys exactly that', async () => {
+    const { el } = await openCustom();
+    expect(el('-size').children.map((o) => [o.value, o.textContent])).toEqual([
+      ['19', 'Depth 19 · up to 112 MB'],
+      ['20', 'Depth 20 · up to 688 MB'],
+      ['23', 'Depth 23 · up to 19.9 GB'],
+    ]);
+    expect(el('-size').value).toBe('20');
+    expect(window.publishSetup.quote).toHaveBeenCalledWith({ kind: 'buy', depth: 20, days: 30 });
+    expect(el('-label').textContent).toBe('Custom · 20/30 xDAI');
+    expect(el('-desc').textContent).toBe('Up to 688 MB for 1 month');
+    expect(el('-choice').disabled).toBe(false);
+
+    el('-choice').dispatch('click');
+    await flush();
+    expect(window.publishSetup.arm).toHaveBeenCalledWith({ kind: 'buy', depth: 20, days: 30 });
+  });
+
+  test('a new size or number of days drops the old price until the new one arrives', async () => {
+    const { el, type } = await openCustom();
+
+    el('-size').value = '23';
+    el('-size').dispatch('change');
+    expect(el('-label').textContent).toBe('Custom · …');
+    expect(el('-choice').disabled).toBe(true);
+    await jest.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(el('-label').textContent).toBe('Custom · 23/30 xDAI');
+
+    // Priced once typing pauses, not on every keystroke.
+    el('-days').value = '4';
+    el('-days').dispatch('input');
+    el('-days').value = '45';
+    el('-days').dispatch('input');
+    await jest.advanceTimersByTimeAsync(400);
+    await flush();
+    expect(window.publishSetup.quote).toHaveBeenLastCalledWith({
+      kind: 'buy',
+      depth: 23,
+      days: 45,
+    });
+    expect(window.publishSetup.quote).not.toHaveBeenCalledWith({
+      kind: 'buy',
+      depth: 23,
+      days: 4,
+    });
+    expect(el('-desc').textContent).toBe('Up to 19.9 GB for 45 days');
+
+    await type('400');
+    expect(el('-label').textContent).toBe('Custom · 23/400 xDAI');
+  });
+
+  test('a number of days out of range says so and prices nothing', async () => {
+    const { el, type } = await openCustom();
+    const calls = window.publishSetup.quote.mock.calls.length;
+
+    for (const days of ['0', '3651', '1.5', 'ten']) {
+      await type(days);
+      expect(el('-days-error').textContent).toBe('Enter a whole number of days from 1 to 3650.');
+      expect(el('-days-error').classList.contains('hidden')).toBe(false);
+      expect(el('-days').classList.contains('error')).toBe(true);
+      expect(el('-choice').disabled).toBe(true);
+    }
+    // Clearing the field is not an error yet.
+    await type('');
+    expect(el('-days-error').classList.contains('hidden')).toBe(true);
+    expect(el('-label').textContent).toBe('Custom');
+    expect(window.publishSetup.quote.mock.calls.length).toBe(calls);
+  });
+
+  test("the node's refusal shows under the choice, and a late reply is dropped", async () => {
+    const { el, type } = await openCustom();
+    window.publishSetup.quote.mockResolvedValueOnce({
+      request: null,
+      quote: null,
+      error: 'Getting a price failed on Gnosis Chain: rpc error',
+    });
+    await type('7');
+    expect(el('-error').textContent).toBe('Getting a price failed on Gnosis Chain: rpc error');
+    expect(el('-error').classList.contains('hidden')).toBe(false);
+    expect(el('-choice').disabled).toBe(true);
+
+    let answer;
+    window.publishSetup.quote.mockImplementationOnce(() => new Promise((r) => (answer = r)));
+    await type('8');
+    await type('9');
+    answer({ quote: { price: { display: 'stale' } }, error: null });
+    await flush();
+    expect(el('-label').textContent).toBe('Custom · 20/9 xDAI');
+    expect(el('-error').classList.contains('hidden')).toBe(true);
+  });
+
+  test('reopening the screen starts the form over', async () => {
+    const { mod, el, type } = await openCustom();
+    el('-size').value = '23';
+    await type('90');
+    mod.closePublishSetup();
+    await mod.openPublishSetup();
+    expect(el('').open).toBe(false);
+    expect(el('-days').value).toBe('30');
+    expect(el('-size').value).toBe('20');
+    expect(el('-label').textContent).toBe('Custom');
   });
 });
