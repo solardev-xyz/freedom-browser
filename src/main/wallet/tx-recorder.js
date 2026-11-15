@@ -222,7 +222,7 @@ function recordSend(response, row) {
   }
 
   if (unverified) {
-    phoneDeadline(written.id, phoneRecord.answeredAt);
+    phoneDeadline(written.id, phoneRecord?.answeredAt);
   } else if (unsaved) {
     // Not polled: only the core's `phone.checked` can verify it.
   } else if (!existing || existing.status === STATUSES.PENDING) {

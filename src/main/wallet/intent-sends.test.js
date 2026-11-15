@@ -476,20 +476,18 @@ describe('the phone path', () => {
   test('signs and broadcasts on the phone, with no record and no reservation', async () => {
     const { tx, store } = start();
     const hash = `0x${'cd'.repeat(32)}`;
+    // The identity core checked the reported transaction (design 0012,
+    // PHN-2): its verdict comes back with the hash.
     const phone = {
       getAddress: async () => ALICE.address,
-      sendTransaction: jest.fn(async () => hash),
+      sendTransaction: jest.fn(async () => ({ hash, outcome: 'verified', job: 'core-job-1' })),
     };
+    // Main reads nothing of the phone's transaction itself.
     mockChainRequest.mockImplementation(async (_chainId, method) => {
-      if (method === 'eth_getTransactionByHash') {
-        // The transaction the job asked for (the phone picks nonce and fees).
-        const sent = { from: ALICE.address, to: RECIPIENT, value: '0x3e8', input: '0x', chainId: `0x${CHAIN.toString(16)}` };
-        return { result: sent, source: 'direct' };
-      }
       throw new Error(`unexpected read ${method}`);
     });
 
-    await expect(tx.signAndSendTransaction(PARAMS, phone)).resolves.toMatchObject({ hash });
+    await expect(tx.signAndSendTransaction(PARAMS, phone)).resolves.toMatchObject({ hash, phoneCheck: 'verified' });
     await store.ready;
     expect(store.list()).toEqual([]);
     expect(fs.existsSync(intentFile())).toBe(false);

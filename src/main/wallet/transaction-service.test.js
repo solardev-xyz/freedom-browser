@@ -461,6 +461,10 @@ describe('signAndSendTransaction (signer-based)', () => {
     ['a timeout after the phone got the request', { code: 'REMOTE_TIMEOUT', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
     ['a cancel after the phone got the request', { code: 'REMOTE_USER_CANCELLED', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
     ['a bad phone response', { code: 'REMOTE_BAD_RESPONSE', requestDelivered: true }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['a busy identity core', { code: 'REMOTE_BUSY', requestDelivered: false }, 'DOMAIN_NOT_BROADCAST'],
+    // The core saw a transaction the phone reported, and refused it.
+    ['another transaction the phone sent, with no handshake', { code: 'REMOTE_WRONG_TRANSACTION', phoneSent: true, requestDelivered: false }, 'DOMAIN_BROADCAST_UNKNOWN'],
+    ['another account the phone sent from', { code: 'REMOTE_WRONG_ACCOUNT', phoneSent: true, requestDelivered: true, otherAttemptDelivered: false }, 'DOMAIN_BROADCAST_UNKNOWN'],
     ['an uncoded failure', {}, 'DOMAIN_BROADCAST_UNKNOWN'],
   ])('classifies %s from a phone wallet', async (_label, fields, expected) => {
     const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -474,7 +478,9 @@ describe('signAndSendTransaction (signer-based)', () => {
 
   describe('signer sendTransaction capability (device broadcasts itself)', () => {
     // Remote (phone) signers cannot produce a raw signed tx: the phone
-    // picks the nonce and broadcasts itself. Only intent fields go over.
+    // picks the nonce and broadcasts itself. The identity core checks the
+    // reported transaction (design 0012, PHN-2), and its verdict comes back
+    // with the hash: main reads nothing of the transaction itself.
     const hash = '0x' + 'cd'.repeat(32);
     const params = {
       to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
@@ -485,38 +491,32 @@ describe('signAndSendTransaction (signer-based)', () => {
       maxPriorityFeePerGas: '1000000000',
       chainId: 8453,
     };
-    let getTransaction;
     let broadcastingSigner;
+    const replies = (reply) => {
+      broadcastingSigner = { ...signer, sendTransaction: jest.fn(async () => reply) };
+    };
 
     beforeEach(() => {
-      getTransaction = jest.fn(async () => ({
-        from: testWallet.address,
-        to: params.to,
-        value: '0x3e8',
-        input: '0xabcdef',
-        chainId: '0x2105',
-      }));
-      mockChainRequest.mockImplementation(async (_chainId, method, args) => {
-        if (method === 'eth_getTransactionByHash') {
-          return { result: await getTransaction(...args), source: 'direct' };
-        }
-        return { result: '0x5', source: 'direct' };
-      });
-      broadcastingSigner = { ...signer, sendTransaction: jest.fn(async () => hash) };
+      replies({ hash, outcome: 'verified', job: 'job-1' });
     });
 
-    it('prefers the capability over sign+broadcast and verifies the tx sender', async () => {
+    it("prefers the capability over sign+broadcast, and takes the core's verdict", async () => {
       const result = await signAndSendTransaction(params, broadcastingSigner);
 
+      // The send, with the gas and fees main quoted, for the core's job.
       expect(broadcastingSigner.sendTransaction).toHaveBeenCalledWith({
         to: params.to,
         value: '1000',
         data: '0xabcdef',
         chainId: 8453,
+        gasLimit: '21000',
+        maxFeePerGas: '2000000000',
+        maxPriorityFeePerGas: '1000000000',
+        gasPrice: undefined,
       });
       expect(broadcastedRaw).toBeNull(); // never touched our provider's broadcast path
-      expect(getTransaction).toHaveBeenCalledWith(hash);
-      expect(mockChainRequest).toHaveBeenCalledWith(8453, 'eth_getTransactionByHash', [hash]);
+      // The core checks the transaction; main never looks it up.
+      expect(mockChainRequest).not.toHaveBeenCalledWith(8453, 'eth_getTransactionByHash', expect.anything());
       expect(mockGetFeeQuote).not.toHaveBeenCalled();
       expect(result).toEqual({
         hash,
@@ -529,122 +529,65 @@ describe('signAndSendTransaction (signer-based)', () => {
       });
     });
 
-    it('rejects with REMOTE_WRONG_ACCOUNT when the broadcast tx is from someone else', async () => {
-      getTransaction.mockResolvedValue({ from: '0x' + '11'.repeat(20) });
-      await expect(signAndSendTransaction(params, broadcastingSigner)).rejects.toMatchObject({
-        code: 'REMOTE_WRONG_ACCOUNT',
-      });
+    // Not visible at the answer, or the core's read failed: the hash goes
+    // back unverified, with the core's job, for tx-recorder to keep until
+    // the core's `phone.checked`.
+    it("reports an unverified payment with the core's job and when it was answered", async () => {
+      replies({ hash, outcome: 'unverified', job: 'job-2' });
+      const before = Date.now();
+      const result = await signAndSendTransaction(params, broadcastingSigner);
+      expect(result).toMatchObject({ hash, phoneCheck: 'unverified' });
+      expect(result.phoneRecord).toEqual({ job: 'job-2', answeredAt: expect.any(Number) });
+      expect(result.phoneRecord.answeredAt).toBeGreaterThanOrEqual(before);
     });
 
-    // The job binds from, to, value, data and the chain: a visible
-    // transaction that differs in any of them is not the one confirmed.
-    const confirmed = {
-      from: testWallet.address,
-      to: params.to,
-      value: '0x3e8',
-      input: '0xabcdef',
-      chainId: '0x2105',
-      nonce: '0x9',
-      gas: '0x5208',
-    };
-
-    it('accepts the transaction the job asked for, whatever nonce, gas and fees the phone picked', async () => {
-      getTransaction.mockResolvedValue({ ...confirmed, to: params.to.toLowerCase(), input: '0xABCDEF' });
-      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({
-        hash,
-        phoneCheck: 'verified',
-      });
+    it("reports a payment whose record the core couldn't save as unknown, still with its job", async () => {
+      replies({ hash, outcome: 'unknown', job: 'job-3', durable: false });
+      const result = await signAndSendTransaction(params, broadcastingSigner);
+      expect(result).toMatchObject({ hash, phoneCheck: 'unknown' });
+      expect(result.phoneRecord).toEqual({ job: 'job-3', answeredAt: expect.any(Number), durable: false });
     });
 
-    it.each([
-      ['another recipient', { to: '0x' + '22'.repeat(20) }],
-      ['a contract creation', { to: null }],
-      ['another amount', { value: '0x3e9' }],
-      ['no amount', { value: '0x0' }],
-      ['other calldata', { input: '0xabcdee' }],
-      ['no calldata', { input: '0x' }],
-      ['another chain', { chainId: '0x1' }],
-      // Pre-EIP-155: its signature is valid on every chain (design 0012, PHN-1).
-      ['no chain id', { chainId: undefined }],
-      ['a null chain id', { chainId: null }],
-      ['an unreadable amount', { value: 'lots' }],
-      ['unreadable calldata', { input: '0xabc' }],
-    ])('rejects with REMOTE_WRONG_TRANSACTION a visible tx with %s', async (_label, change) => {
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        getTransaction.mockResolvedValue({ ...confirmed, ...change });
-        await expect(signAndSendTransaction(params, broadcastingSigner)).rejects.toMatchObject({
-          code: 'REMOTE_WRONG_TRANSACTION',
-          message: expect.stringContaining("isn't the one you confirmed"),
-        });
-      } finally {
-        warn.mockRestore();
-        errorLog.mockRestore();
+    it('an outcome it does not know is unknown, never verified', async () => {
+      replies({ hash, outcome: 'confirmed', job: 'job-4' });
+      const result = await signAndSendTransaction(params, broadcastingSigner);
+      expect(result).toMatchObject({ hash, phoneCheck: 'unknown', phoneRecord: { job: 'job-4' } });
+    });
+
+    it('with no job to wait on, no record goes back', async () => {
+      replies({ hash, outcome: 'unverified' });
+      const result = await signAndSendTransaction(params, broadcastingSigner);
+      expect(result).toMatchObject({ hash, phoneCheck: 'unverified' });
+      expect(result).not.toHaveProperty('phoneRecord');
+    });
+
+    it('a legacy send passes its gas price', async () => {
+      const legacy = { to: params.to, value: '1000', gasLimit: '21000', gasPrice: '7', chainId: 8453 };
+      await signAndSendTransaction(legacy, broadcastingSigner);
+      expect(broadcastingSigner.sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ gasLimit: '21000', gasPrice: '7' })
+      );
+    });
+
+    // The core saw the reported transaction and refused it (another sender,
+    // recipient, amount, data or chain): the phone sent something.
+    it.each([['REMOTE_WRONG_TRANSACTION'], ['REMOTE_WRONG_ACCOUNT']])(
+      "the core's %s passes through, and a redacted one is of unknown outcome, never \"not sent\"",
+      async (code) => {
+        const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          const refused = () =>
+            Object.assign(new Error('another transaction'), { code, phoneSent: true, requestDelivered: true });
+          const phone = { ...signer, sendTransaction: async () => { throw refused(); } };
+          await expect(signAndSendTransaction(params, phone)).rejects.toMatchObject({ code, phoneSent: true });
+          await expect(
+            signAndSendTransaction({ ...params, redactErrors: true }, phone)
+          ).rejects.toMatchObject({ code: 'DOMAIN_BROADCAST_UNKNOWN' });
+        } finally {
+          errorLog.mockRestore();
+        }
       }
-    });
-
-    it('compares a plain transfer with no calldata and a value given in decimal', async () => {
-      const transfer = { to: params.to, value: '1000', chainId: 8453 };
-      getTransaction.mockResolvedValue({ ...confirmed, input: '0x' });
-      await expect(signAndSendTransaction(transfer, broadcastingSigner)).resolves.toMatchObject({ hash });
-      getTransaction.mockResolvedValue({ ...confirmed, input: '0x', value: '0x3e7' });
-      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        await expect(signAndSendTransaction(transfer, broadcastingSigner)).rejects.toMatchObject({
-          code: 'REMOTE_WRONG_TRANSACTION',
-        });
-      } finally {
-        errorLog.mockRestore();
-        warn.mockRestore();
-      }
-    });
-
-    it('a mismatch in a redacted send is a broadcast of unknown outcome, never "not sent"', async () => {
-      const errorLog = jest.spyOn(console, 'error').mockImplementation(() => {});
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        getTransaction.mockResolvedValue({ ...confirmed, to: '0x' + '22'.repeat(20) });
-        await expect(
-          signAndSendTransaction({ ...params, redactErrors: true }, broadcastingSigner)
-        ).rejects.toMatchObject({ code: 'DOMAIN_BROADCAST_UNKNOWN' });
-      } finally {
-        errorLog.mockRestore();
-        warn.mockRestore();
-      }
-    });
-
-    // Not visible yet, or a failed lookup: the hash goes back, unverified,
-    // with the fields the job bound, for tx-recorder to keep and check once
-    // the transaction is visible (phone-payments.test.js).
-    it.each([
-      ['a tx not yet visible on our RPC', () => getTransaction.mockResolvedValue(null)],
-      ['a failed lookup', () => getTransaction.mockRejectedValue(new Error('rpc down'))],
-    ])('reports %s as unverified, with the bound fields', async (_label, arrange) => {
-      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        arrange();
-        const before = Date.now();
-        const result = await signAndSendTransaction(params, broadcastingSigner);
-        expect(result).toMatchObject({ hash, phoneCheck: 'unverified' });
-        expect(result.phoneRecord).toEqual({
-          from: testWallet.address.toLowerCase(),
-          to: params.to.toLowerCase(),
-          value: '1000',
-          dataLength: 3,
-          dataSha256: require('crypto')
-            .createHash('sha256')
-            .update(Buffer.from('abcdef', 'hex'))
-            .digest('hex'),
-          chainId: '8453',
-          answeredAt: expect.any(Number),
-        });
-        expect(result.phoneRecord.answeredAt).toBeGreaterThanOrEqual(before);
-      } finally {
-        warn.mockRestore();
-      }
-    });
+    );
   });
 
   it('passes device-backend errors through with their stable code intact', async () => {

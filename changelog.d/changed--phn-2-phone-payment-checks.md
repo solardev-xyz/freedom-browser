@@ -1,0 +1,2 @@
+- A phone account's payment is checked by Freedom's wallet core: one the network shows differently is listed as another transaction sent from the phone, never as the payment you confirmed ([#644](https://github.com/solardev-xyz/freedom-browser/issues/644))
+  - "Always allow" on a phone's send says it is saved only once the network shows the payment as the one you confirmed
