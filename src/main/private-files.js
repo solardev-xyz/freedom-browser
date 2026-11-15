@@ -435,11 +435,19 @@ class PrivateDir {
     return child;
   }
 
-  sync() {
+  /**
+   * fsync this directory, so a change to its entries lasts. A failure is
+   * logged, unless `required`: then it is thrown, for a caller whose next
+   * step must wait until the change is durable. Windows has no directory
+   * descriptor, so there is nothing to sync there.
+   * @param {{required?: boolean}} [options]
+   */
+  sync({ required = false } = {}) {
     if (!POSIX || this.fd === undefined) return;
     try {
       fs.fsyncSync(this.fd);
     } catch (err) {
+      if (required) throw err;
       console.warn(`[PrivateFiles] Could not fsync ${this.path}:`, err.message);
     }
   }

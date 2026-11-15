@@ -212,6 +212,30 @@ describe('quick-unlock', () => {
     return dir;
   }
 
+  const ioError = (code, syscall) =>
+    Object.assign(new Error(`${code}: failed, ${syscall}`), { code, syscall });
+
+  // Each fsync of the directory at `dirPath` runs `onSync` first (which may
+  // throw); every other fsync goes through.
+  function onDirSync(dirPath, onSync) {
+    const { dev, ino } = fs.statSync(dirPath);
+    const fsync = fs.fsyncSync;
+    return jest.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      const stat = fs.fstatSync(fd);
+      if (stat.dev === dev && stat.ino === ino) onSync();
+      return fsync(fd);
+    });
+  }
+
+  // Unlinking `name` fails; every other unlink goes through.
+  function unlinkFails(name) {
+    const unlink = fs.unlinkSync;
+    return jest.spyOn(fs, 'unlinkSync').mockImplementation((target) => {
+      if (path.basename(String(target)) === name) throw ioError('EPERM', 'unlink');
+      return unlink(target);
+    });
+  }
+
   test('enable: the core holds the credential, and no quick-unlock.dat is written (PRF-2d)', async () => {
     const userDataDir = tempUserData();
     const identityDir = path.join(userDataDir, 'identity');
@@ -1235,6 +1259,44 @@ describe('quick-unlock', () => {
       expect(logged).toContain('quick-unlock.dat not removed');
       expect(logged).not.toContain(path.dirname(credentialPath));
     });
+
+    // Design 0001's delete: the unlink, then the directory's fsync, and
+    // only then the core. A crash after the core's disable can't bring the
+    // file back to enable quick unlock again.
+    test("the file's removal is synced before the core is asked", async () => {
+      const { mod, core, credentialPath } = await both();
+      const synced = [];
+      onDirSync(path.dirname(credentialPath), () => {
+        synced.push(`file ${fs.existsSync(credentialPath)}, credential ${core.state.credential}`);
+      });
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+      expect(synced).toEqual(['file false, credential vault-pw']);
+      expect(core.state.credential).toBeNull();
+    });
+
+    test('the removal not synced: the disable refused, the core left alone', async () => {
+      const { mod, core, credentialPath } = await both();
+      const failing = onDirSync(path.dirname(credentialPath), () => {
+        throw ioError('EIO', 'fsync');
+      });
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({
+        success: false,
+        error: mod.FILE_NOT_REMOVED,
+      });
+      expect(core.backend.quickUnlockDisable).not.toHaveBeenCalled();
+      expect(core.state.credential).toBe('vault-pw');
+      await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+      const logged = console.error.mock.calls.flat().map(String).join('\n');
+      expect(logged).toMatch(/quick-unlock\.dat not removed:\nEIO/);
+      // Tried again with the disk answering: the directory is synced though
+      // the file is already gone, then the core's credential goes.
+      failing.mockRestore();
+      const synced = [];
+      onDirSync(path.dirname(credentialPath), () => synced.push(core.state.credential));
+      await expect(mod.disableQuickUnlock()).resolves.toEqual({ success: true });
+      expect(synced).toEqual(['vault-pw']);
+      expect(core.state.credential).toBeNull();
+    });
   });
 
   describe('a password change keeps quick unlock', () => {
@@ -1336,6 +1398,67 @@ describe('quick-unlock', () => {
       await expect(core.backend.quickUnlockStatus()).resolves.toMatchObject({ enabled: true });
       expect(fs.readFileSync(credentialPath)).toEqual(bytes);
     });
+
+    // The change goes ahead only once the core confirms the credential for
+    // the vault as it is and the file is gone. Otherwise it is refused
+    // under the queue, before anything is written.
+    test.each([
+      [
+        'the status says disabled',
+        (core) =>
+          core.backend.quickUnlockStatus.mockResolvedValue({ enabled: false, policy: null, available: true }),
+      ],
+      [
+        'the status does not answer',
+        (core) => core.backend.quickUnlockStatus.mockRejectedValue(coreError('core_unavailable', 'The core exited')),
+      ],
+    ])(
+      'quick-unlock.dat alone, an enroll that succeeds but %s: the change refused, nothing changed',
+      async (_label, statusAfterwards) => {
+        const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+        statusAfterwards(core);
+        await expect(mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw')).rejects.toThrow(
+          new Error(mod.CHANGE_REFUSED_FILE_KEPT)
+        );
+        expect(core.backend.quickUnlockEnroll).toHaveBeenCalledWith('old-pw');
+        expect(core.state.held).toEqual(['enroll held']);
+        expect(core.backend.changePassword).not.toHaveBeenCalled();
+        expect(core.state.password).toBe('old-pw');
+        expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+      }
+    );
+
+    test.each([
+      ['its unlink fails', (credentialPath) => unlinkFails(path.basename(credentialPath)), true],
+      [
+        'its directory sync fails',
+        (credentialPath) =>
+          onDirSync(path.dirname(credentialPath), () => {
+            throw ioError('EIO', 'fsync');
+          }),
+        false,
+      ],
+    ])(
+      'quick-unlock.dat alone, the file not removed (%s): the change refused, nothing changed',
+      async (_label, failRemoval, fileStays) => {
+        const { mod, core, credentialPath, bytes } = await profile({ inCore: false, withFile: true });
+        failRemoval(credentialPath);
+        await expect(mod.changePasswordKeepingQuickUnlock('old-pw', 'new-pw')).rejects.toThrow(
+          new Error(mod.CHANGE_REFUSED_FILE_KEPT)
+        );
+        // Confirmed, under the queue, and then the removal failed.
+        expect(core.state.held).toEqual(['status', 'enroll held', 'status held']);
+        expect(core.backend.changePassword).not.toHaveBeenCalled();
+        expect(core.state.password).toBe('old-pw');
+        if (fileStays) expect(fs.readFileSync(credentialPath)).toEqual(bytes);
+        // The core holds the current password: quick unlock stays on.
+        expect(core.state.credential).toBe('old-pw');
+        await expect(mod.isQuickUnlockEnabled()).resolves.toBe(true);
+        const logged = console.error.mock.calls.flat().map(String).join('\n');
+        expect(logged).toContain('Password change refused');
+        expect(logged).not.toContain(path.dirname(credentialPath));
+      }
+    );
 
     test('no quick unlock, a wrong password, or no key store: nothing enrolled', async () => {
       const none = await profile({ inCore: false, withFile: false });

@@ -45,6 +45,12 @@ const UNLOCK_PROMPT = 'unlock Freedom Browser';
 const FILE_NOT_REMOVED =
   "Touch ID unlock is still on: its file in this profile's identity folder could not be removed. Try again; if it keeps failing, contact support.";
 
+// A password change on quick-unlock.dat alone, refused before anything is
+// written: the core didn't confirm the credential the change must carry,
+// or the file, bound to the vault the change replaces, wasn't removed.
+const CHANGE_REFUSED_FILE_KEPT =
+  "The password was not changed: Touch ID unlock could not be moved from its file in this profile's identity folder into the keychain. Try again; if it keeps failing, contact support.";
+
 // The core's credential can't be used, but enrolling again replaces it:
 // its key is gone or invalidated, or its entry doesn't open.
 const DEAD_CREDENTIAL = new Set(['not_found', 'invalidated', 'entry_refused']);
@@ -203,6 +209,22 @@ async function enroll(password) {
 }
 
 /**
+ * Removes quick-unlock.dat so the removal lasts (design 0001's delete): one
+ * unlink through the identity directory's handle (a link at the name goes,
+ * never its target), then the directory's fsync, also when there was no
+ * file to unlink (an earlier unlink may not have been synced). Throws if
+ * either fails: a removal that a crash could undo has not happened.
+ * @returns {boolean} whether there was a file to unlink
+ */
+function removeFileDurably() {
+  return withCredentialDir((dir) => {
+    const unlinked = dir.remove(path.basename(getCredentialPath()));
+    dir.sync({ required: true });
+    return unlinked;
+  });
+}
+
+/**
  * Removes quick-unlock.dat once the core holds quick unlock's credential
  * for the vault on disk (the user's decision of 2026-11-15, 0013 PRF-2d).
  * The caller's enroll has succeeded; the file goes only if
@@ -212,11 +234,11 @@ async function enroll(password) {
  * or doesn't answer.
  *
  * Runs under the vault's mutation queue, like the enroll before it, so no
- * vault is replaced between the status and the removal. The removal is one
- * unlink through the identity directory's handle (a link at the name goes,
- * never its target), then the directory is synced. A failure is logged by
- * its code, and the next Touch ID use through the core tries again.
- * @returns {Promise<boolean>} whether a file was removed
+ * vault is replaced between the status and the removal
+ * (`removeFileDurably`). A failure is logged by its code, and the next
+ * Touch ID use through the core tries again.
+ * @returns {Promise<boolean>} whether the core confirmed its credential and
+ *   no file is left: false when the file stays, or its removal may not last
  */
 async function removeFileOnceEnrolled() {
   if (!KEY_STORE_PLATFORMS.has(process.platform)) return false;
@@ -225,13 +247,10 @@ async function removeFileOnceEnrolled() {
     return false;
   }
   try {
-    const removed = withCredentialDir((dir) => {
-      const unlinked = dir.remove(path.basename(getCredentialPath()));
-      if (unlinked) dir.sync();
-      return unlinked;
-    });
-    if (removed) console.log('[QuickUnlock] quick-unlock.dat removed: quick unlock is in the core');
-    return removed;
+    if (removeFileDurably()) {
+      console.log('[QuickUnlock] quick-unlock.dat removed: quick unlock is in the core');
+    }
+    return true;
   } catch (err) {
     console.error('[QuickUnlock] quick-unlock.dat not removed:', errorCode(err));
     return false;
@@ -504,7 +523,8 @@ async function exportPrivateKeyWithTouchId(accountIndex) {
  * confirms the credential (PRF-2d), and the change's re-wrap then carries
  * the credential across. An enroll the core refuses refuses the change too,
  * before anything is written: the password stays as it was, and quick
- * unlock with it, through the file.
+ * unlock with it, through the file. So does an enroll the status doesn't
+ * confirm, or a file whose removal fails (`CHANGE_REFUSED_FILE_KEPT`).
  * @param {string} currentPassword
  * @param {string} newPassword
  */
@@ -525,8 +545,11 @@ async function changePasswordKeepingQuickUnlock(currentPassword, newPassword) {
         console.error('[QuickUnlock] Password change refused: quick unlock not moved into the core:', errorCode(err));
         throw err;
       }
+      if (!(await removeFileOnceEnrolled())) {
+        console.error('[QuickUnlock] Password change refused: quick-unlock.dat not moved into the core');
+        throw new Error(CHANGE_REFUSED_FILE_KEPT);
+      }
       console.log('[QuickUnlock] Quick unlock is in the core, ahead of the password change');
-      await removeFileOnceEnrolled();
     });
   }
   await vaultBackend.changePassword(currentPassword, newPassword);
@@ -536,13 +559,15 @@ async function changePasswordKeepingQuickUnlock(currentPassword, newPassword) {
  * Disable quick unlock: removes quick-unlock.dat if one is still there,
  * then the core's credential (whose key the core then forgets). In that
  * order, so a failure never leaves the file to bring the core's credential
- * back at the next Touch ID unlock. The user asked for it, so the file goes
- * on every platform, as it always did.
+ * back at the next Touch ID unlock. The removal is synced before the core
+ * is asked (`removeFileDurably`): a crash can't bring the file back after
+ * the core's disable, and a sync that fails refuses the disable. The user
+ * asked for it, so the file goes on every platform, as it always did.
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function disableQuickUnlock() {
   try {
-    withCredentialDir((dir) => dir.remove(path.basename(getCredentialPath())));
+    removeFileDurably();
   } catch (err) {
     // The file error's message names the identity path: the log gets its
     // code, the renderer fixed words.
@@ -610,6 +635,7 @@ function registerQuickUnlockIpc() {
 module.exports = {
   CREDENTIAL_VERSION,
   FILE_NOT_REMOVED,
+  CHANGE_REFUSED_FILE_KEPT,
   canUseTouchId,
   isQuickUnlockEnabled,
   enableQuickUnlock,
