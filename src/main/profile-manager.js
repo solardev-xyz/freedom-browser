@@ -59,6 +59,10 @@ function lockDir() {
   return require('./service-locks').getLockDir();
 }
 
+function keystoreDrain() {
+  return require('./keystore-drain');
+}
+
 /** `--dev --checkout-hash <hex8>` for a development build's catalog. */
 function buildArgs(profile) {
   if (!profile.isDev) return [];
@@ -257,9 +261,15 @@ async function waitForProfileGateFree(target, { deadline, intervalMs = 200 } = {
 /**
  * Deletes a registered profile under every gate it has: `{ catalog, record,
  * forget, forget_unknown? }` from the core (`forget`, the key-store items it
- * recorded for main to forget), the reference's result without it. Null
+ * recorded in the forget file), the reference's result without it. Null
  * without a catalog. `gates` are the JS reference's (withCoreGate, …), for
  * a development build without the core.
+ *
+ * The items are forgotten right after, through the helper, while the
+ * result goes back (keystore-drain.js, 0013 "Forgetting an item"). A delete
+ * refused with `forget_backlog` (the forget file full) drains the file and
+ * asks once more; refused again, it throws `forget_backlog`, whose message
+ * says why.
  */
 async function deleteProfile(profileId, expectedDisplayName, gates = {}) {
   const profile = activeCatalogProfile();
@@ -270,24 +280,34 @@ async function deleteProfile(profileId, expectedDisplayName, gates = {}) {
   if (!usesCore()) {
     return resolver.deleteProfileForActiveApp(profileId, expectedDisplayName, gates);
   }
+  const deleteArgs = [
+    '--app-root',
+    profile.appRoot,
+    '--lock-dir',
+    lockDir(),
+    '--id',
+    String(profileId ?? ''),
+    '--confirm-display-name',
+    String(expectedDisplayName ?? ''),
+    ...buildArgs(profile),
+  ];
+  // A delete removes the profile's data: no bound of its own.
+  const runDelete = () => profileSubcommand('delete', deleteArgs, { timeoutMs: 0 });
   let result;
   try {
-    result = await profileSubcommand(
-      'delete',
-      [
-        '--app-root',
-        profile.appRoot,
-        '--lock-dir',
-        lockDir(),
-        '--id',
-        String(profileId ?? ''),
-        '--confirm-display-name',
-        String(expectedDisplayName ?? ''),
-        ...buildArgs(profile),
-      ],
-      // A delete removes the profile's data: no bound of its own.
-      { timeoutMs: 0 }
-    );
+    try {
+      result = await runDelete();
+    } catch (error) {
+      if (error?.code !== 'forget_backlog') throw error;
+      // A drain that fails still asks once more: refused again, the delete
+      // says why.
+      await keystoreDrain()
+        .drainForgetFile(profile.appRoot, { log })
+        .catch((drainError) =>
+          log.warn('[profile] Could not drain the forget file', { code: drainError?.code })
+        );
+      result = await runDelete();
+    }
   } catch (error) {
     if (error?.code === 'lock_held') {
       const message =
@@ -297,13 +317,20 @@ async function deleteProfile(profileId, expectedDisplayName, gates = {}) {
     }
     throw error;
   }
+  if (result?.forget_unknown) {
+    log.warn("[profile] The deleted profile's secrets file couldn't be read; its key-store items stay");
+  }
   const forget = Array.isArray(result?.forget) ? result.forget : [];
-  if (forget.length || result?.forget_unknown) {
-    // Forgetting them is main's key-store executor's (PRF-2): logged until then.
-    log.warn('[profile] The deleted profile named key-store items to forget', {
-      items: forget.length,
-      unknown: result?.forget_unknown === true,
-    });
+  if (forget.length) {
+    keystoreDrain()
+      .forgetItems(profile.appRoot, forget, { log })
+      .then(
+        (counts) => log.info("[profile] Forgot the deleted profile's key-store items", counts),
+        (error) =>
+          log.warn("[profile] Could not forget the deleted profile's key-store items", {
+            code: error?.code,
+          })
+      );
   }
   return result;
 }

@@ -514,6 +514,7 @@ const {
   setRadicleLifecycle,
 } = require('./identity-manager');
 const { startCore, stopCore } = require('./core/core-process');
+const { drainAfterFirstWindow } = require('./keystore-drain');
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
 const { getIntentStore } = require('./wallet/intent-store');
@@ -1033,6 +1034,10 @@ async function bootstrap() {
     mainWindow.once('ready-to-show', () => {
       void purgeSetAsideBeeData({ logger: log });
       void purgeSetAsideLegacyKuboData({ logger: log });
+      // Deleted profiles' key-store items, when `profile open` reported
+      // some (freedom-core design 0013, "Forgetting an item"): after the
+      // first window, never on the startup path.
+      void drainAfterFirstWindow({ log });
     });
   }
 
