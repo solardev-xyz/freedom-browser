@@ -30,6 +30,9 @@ const REMOTE_ERROR_CODES = {
   ADDRESS_UNPROVEN: 'REMOTE_ADDRESS_UNPROVEN',
   // An account no phone has yet shown to hold.
   ACCOUNT_UNCHECKED: 'REMOTE_ACCOUNT_UNCHECKED',
+  // The identity core holds as many phone jobs as it can: nothing went to
+  // the phone (design 0012, PHN-1's `busy`).
+  BUSY: 'REMOTE_BUSY',
   UNKNOWN: 'REMOTE_UNKNOWN',
   OUTCOME_UNKNOWN: 'REMOTE_OUTCOME_UNKNOWN',
 };
@@ -41,7 +44,7 @@ const MESSAGES = {
   [REMOTE_ERROR_CODES.WRONG_ACCOUNT]:
     'Your phone answered from a different account than this wallet. Select the right account on your phone and try again.',
   [REMOTE_ERROR_CODES.WRONG_TRANSACTION]:
-    "Your phone reported a transaction that isn't the one you confirmed: its recipient, amount, data or network differs. " +
+    "Your phone sent another transaction, not the one you confirmed: its recipient, amount, data or network differs. " +
     "Check your phone's wallet.",
   [REMOTE_ERROR_CODES.BAD_RESPONSE]: 'Your phone sent an invalid response. Try again.',
   [REMOTE_ERROR_CODES.NO_UI]: 'No browser window available to show the signing QR code.',
@@ -52,6 +55,7 @@ const MESSAGES = {
     "Your phone didn't confirm that it holds this account, so it wasn't added. Try again, and sign the check on your phone.",
   [REMOTE_ERROR_CODES.ACCOUNT_UNCHECKED]:
     "This phone account hasn't been checked on your phone yet. Open its Wallet Settings and choose Check on Phone, then try again.",
+  [REMOTE_ERROR_CODES.BUSY]: 'Too many phone requests are waiting. Finish one on your phone, then try again.',
   [REMOTE_ERROR_CODES.UNKNOWN]: 'Phone signing failed. Try again.',
   [REMOTE_ERROR_CODES.OUTCOME_UNKNOWN]:
     "No answer came back from your phone, so it's unknown whether this payment was sent. " +
@@ -125,14 +129,18 @@ const UNSENT_CODES = new Set([
  * mints no new code for a payment once its request went, and the bridge
  * reports `otherAttemptDelivered` accordingly). A timeout, cancel, bad
  * response, unknown error or OUTCOME_UNKNOWN after delivery stays
- * uncertain too. Fails closed: a refusal without the bridge's explicit
- * `otherAttemptDelivered === false` is not proof.
+ * uncertain too, and so does a payment whose reported transaction the
+ * core saw and refused (`phoneSent`). Fails closed: a refusal without the
+ * bridge's explicit `otherAttemptDelivered === false` is not proof.
  *
  * @param {unknown} err
  * @returns {boolean}
  */
 function isRemoteSendProvablyUnsent(err) {
   if (!err || typeof err.code !== 'string' || !err.code.startsWith('REMOTE_')) return false;
+  // The phone reported a transaction the core saw and refused (another
+  // sender, recipient, amount, data or chain): something was sent.
+  if (err.phoneSent === true) return false;
   if (err.requestDelivered === false) return true;
   return UNSENT_CODES.has(err.code) && err.otherAttemptDelivered === false;
 }

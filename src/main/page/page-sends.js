@@ -214,6 +214,21 @@ function reportRule(key, rule) {
   console.error(`[PageSends] contract rule not saved for ${key}: ${rule?.reason || 'no reply'}`);
 }
 
+/**
+ * A phone send's "Always allow" the core holds until its payment's
+ * transaction shows and matches (design 0012, "A phone payment's rule"):
+ * written then, in the same run of the core, and reported with its
+ * `phone.checked` (tx-recorder.js); dropped on a mismatch, a day's end or
+ * a restart.
+ */
+function reportPhoneRuleWaits(key, sent) {
+  if (sent?.phoneCheck === 'unverified' || sent?.phoneCheck === 'unknown') {
+    console.warn(`[PageSends] contract rule for ${key} waits until the phone's payment is checked`);
+    return;
+  }
+  reportRule(key, null);
+}
+
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 // Bytes: pairs of hex digits.
 const HEX_DATA = /^0x(?:[0-9a-fA-F]{2})*$/;
@@ -702,10 +717,12 @@ function createSendDispatchers(shared, deps = {}) {
     // Just before the signature, and again after the signer's wait: the
     // name, then that reading, the last wait before the effect, so a rule
     // revoked or fee evidence refreshed while the name resolved is seen.
-    // A Ledger or a phone presents no `{ standing }` the core could judge as
-    // it signs, and the transaction service waits again before asking it (a
-    // Ledger's fee and nonce reads, a phone's address): the same reading is
-    // its signer's last check (`beforeSign`), right before the device.
+    // A Ledger presents no `{ standing }` the core could judge as it signs,
+    // and the transaction service waits again before asking it (a Ledger's
+    // fee and nonce reads, a phone's address): the same reading is its
+    // signer's last check (`beforeSign`), right before the device. A phone's
+    // job presents `{ standing }`, which the core judges as it opens the
+    // job, and the bridge runs the same check right before the relay.
     const ruleStillAnswers = (signed) => async (effect) => {
       if (!(await context.nameHolds())) throw withdrawn(error(NO_ADDRESS));
       await stillAnswers(signed);
@@ -772,11 +789,15 @@ function createSendDispatchers(shared, deps = {}) {
     let feeAskAgain = null;
     // "Always allow" for a contract call: minted into the token. The core
     // writes the rule as it signs a vault account's send (design 0012,
-    // APB-2), saying what became of it; a device's spend gives a finalize
+    // APB-2), saying what became of it; a Ledger's spend gives a finalize
     // receipt instead, held here with the PageContext the token was spent
-    // under, in memory only ("A device send's rule").
+    // under, in memory only ("A device send's rule"). A phone's job holds
+    // the rule in the core until its payment's transaction shows and
+    // matches ("A phone payment's rule"): written at the answer, or later
+    // in the same run of the core, never on the hash alone.
     const remember = choices.alwaysAllow === true && rememberable(ctx);
-    const deviceSend = ctx.account?.type === 'ledger' || ctx.account?.type === 'remote';
+    const deviceSend = ctx.account?.type === 'ledger';
+    const phoneSend = ctx.account?.type === 'remote';
     let coreRule = null;
     // The receipt is erased when the request ends before the flow does: its
     // page navigates or its tab closes, and main answers the record
@@ -857,6 +878,7 @@ function createSendDispatchers(shared, deps = {}) {
       // now, if main recorded it, and the core writes the same rule. The hash
       // is the page's either way: the payment has gone out.
       if (remember && deviceSend) await rememberDeviceSend(context, ctx, sent, () => receipt);
+      else if (remember && phoneSend && !coreRule) reportPhoneRuleWaits(requester.key, sent);
       else if (remember) reportRule(requester.key, coreRule);
       return { result: sent.hash };
     } finally {

@@ -105,6 +105,14 @@
     return `${parseFloat((bytes / 1024 ** i).toFixed(2))} ${sizes[i]}`;
   }
 
+  // A phone send's "Always allow" is written only once the payment's
+  // transaction shows on the network as the one confirmed (design 0012,
+  // "A phone payment's rule"), and is dropped by a restart before then.
+  // The chrome's sidebar shows the same text (index.html).
+  const PHONE_ALWAYS_ALLOW_NOTE =
+    'On a phone, this is saved only once the network shows the payment as the one you confirmed. ' +
+    'If Freedom restarts before then, the site asks again next time.';
+
   const DEVICE_NOTES = Object.freeze({
     ledger: 'You confirm this on your Ledger after you approve here.',
     remote: 'You confirm this on your phone after you approve here: its code opens in the sidebar.',
@@ -409,6 +417,7 @@
       if (DEVICE_NOTES[view.account.type]) body.append(ui.note(DEVICE_NOTES[view.account.type]));
       const always = view.alwaysAllow ? ui.checkbox('Always allow this site to call this function without asking') : null;
       if (always) body.append(always.element);
+      if (always && view.account.type === 'remote') body.append(ui.note(PHONE_ALWAYS_ALLOW_NOTE));
       return {
         choices() {
           // No fee yet: the approval asks main for the quote again.

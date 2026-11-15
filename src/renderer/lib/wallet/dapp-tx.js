@@ -53,6 +53,7 @@ let dappTxError;
 let dappTxRejectBtn;
 let dappTxApproveBtn;
 let dappTxAutoApproveRow;
+let dappTxAutoApprovePhoneNote;
 let dappTxAutoApproveCheckbox;
 
 // Local state. `dappTxPending.signing` is true while the signature and
@@ -95,6 +96,7 @@ export function initDappTx() {
   dappTxRejectBtn = document.getElementById('dapp-tx-reject');
   dappTxApproveBtn = document.getElementById('dapp-tx-approve');
   dappTxAutoApproveRow = document.getElementById('dapp-tx-auto-approve-row');
+  dappTxAutoApprovePhoneNote = document.getElementById('dapp-tx-auto-approve-phone-note');
   dappTxAutoApproveCheckbox = document.getElementById('dapp-tx-auto-approve');
   dappTxFeeCheck = new FeeConfirmation({
     maxEl: document.getElementById('dapp-tx-fee-max'),
@@ -379,6 +381,9 @@ function renderPageSend(request, prompt, view, tx, chain, symbol) {
   if (dappTxSite) dappTxSite.textContent = prompt?.site?.label || prompt?.site?.key || 'Unknown';
   if (dappTxAutoApproveCheckbox) dappTxAutoApproveCheckbox.checked = false;
   dappTxAutoApproveRow?.classList.toggle('hidden', !request.alwaysAllowOffered);
+  // A phone send's "Always allow" is saved only once its payment's
+  // transaction is checked (design 0012, "A phone payment's rule").
+  dappTxAutoApprovePhoneNote?.classList.toggle('hidden', !(request.alwaysAllowOffered && request.phone));
   setDappTxCancelEnabled(true);
   hideDappTxError();
   if (dappTxTo) {
